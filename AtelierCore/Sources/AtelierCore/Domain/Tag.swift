@@ -33,6 +33,13 @@ public struct AssetTag: Sendable, Equatable, Hashable, Codable {
     /// FK → ``Tag``.
     public var tagID: UUID
 
+    /// Explicit snake_case column/coding names (`assetID` ⇄ `asset_id`,
+    /// `tagID` ⇄ `tag_id`).
+    public enum CodingKeys: String, CodingKey {
+        case assetID = "asset_id"
+        case tagID = "tag_id"
+    }
+
     public init(assetID: UUID, tagID: UUID) {
         self.assetID = assetID
         self.tagID = tagID

@@ -35,6 +35,21 @@ public struct CollectionItem: Sendable, Equatable, Hashable, Codable, Identifiab
     /// Stacking order on the canvas.
     public var canvasZ: Int?
 
+    /// Explicit snake_case column/coding names (exact acronym mapping, e.g.
+    /// `collectionID` ⇄ `collection_id`, `assetID` ⇄ `asset_id`).
+    public enum CodingKeys: String, CodingKey {
+        case id
+        case collectionID = "collection_id"
+        case assetID = "asset_id"
+        case addedAt = "added_at"
+        case manualOrder = "manual_order"
+        case canvasX = "canvas_x"
+        case canvasY = "canvas_y"
+        case canvasW = "canvas_w"
+        case canvasH = "canvas_h"
+        case canvasZ = "canvas_z"
+    }
+
     public init(
         id: UUID,
         collectionID: UUID,

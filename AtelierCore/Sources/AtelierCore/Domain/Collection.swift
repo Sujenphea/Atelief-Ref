@@ -22,6 +22,15 @@ public struct Collection: Sendable, Equatable, Hashable, Codable, Identifiable {
     /// When last modified.
     public var updatedAt: Date
 
+    /// Explicit snake_case column/coding names (exact acronym mapping, e.g.
+    /// `coverAssetID` ⇄ `cover_asset_id`).
+    public enum CodingKeys: String, CodingKey {
+        case id, name, description
+        case coverAssetID = "cover_asset_id"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+
     public init(
         id: UUID,
         name: String,

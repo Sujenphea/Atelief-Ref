@@ -35,6 +35,19 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
     /// FK → ``Source``. **Required** — where the asset came from.
     public var sourceId: UUID
 
+    /// Explicit snake_case column/coding names (the persistence layer binds
+    /// these as SQLite columns; chosen explicitly so acronym mapping is exact).
+    public enum CodingKeys: String, CodingKey {
+        case id, kind
+        case blobHash = "blob_hash"
+        case mimeType = "mime_type"
+        case width, height, duration
+        case fileSize = "file_size"
+        case downloadState = "download_state"
+        case createdAt = "created_at"
+        case sourceId = "source_id"
+    }
+
     public init(
         id: UUID,
         kind: AssetKind,

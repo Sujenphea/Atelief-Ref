@@ -28,6 +28,18 @@ public struct Source: Sendable, Equatable, Hashable, Codable, Identifiable {
     /// IG shortcode, Cosmos cluster) — the escape hatch against schema churn.
     public var rawMetadata: JSONValue
 
+    /// Explicit snake_case column/coding names (exact acronym mapping, e.g.
+    /// `originalURL` ⇄ `original_url`).
+    public enum CodingKeys: String, CodingKey {
+        case id, platform
+        case originalURL = "original_url"
+        case authorHandle = "author_handle"
+        case authorName = "author_name"
+        case title
+        case capturedAt = "captured_at"
+        case rawMetadata = "raw_metadata"
+    }
+
     public init(
         id: UUID,
         platform: Platform,
