@@ -31,7 +31,12 @@ let package = Package(
         ),
         .testTarget(
             name: "AtelierCoreTests",
-            dependencies: ["AtelierCore"]
+            dependencies: [
+                "AtelierCore",
+                // The migration suite imports GRDB directly to assert on the
+                // DatabaseMigrator / Database it operates over.
+                .product(name: "GRDB", package: "GRDB.swift")
+            ]
         )
     ],
     swiftLanguageModes: [.v6]
