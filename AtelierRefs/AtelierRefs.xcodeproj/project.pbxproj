@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		CA0000000000000000000003 /* CanvasRenderer in Frameworks */ = {isa = PBXBuildFile; productRef = CA0000000000000000000002 /* CanvasRenderer */; };
+		DA0000000000000000000003 /* AtelierCore in Frameworks */ = {isa = PBXBuildFile; productRef = DA0000000000000000000002 /* AtelierCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +58,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CA0000000000000000000003 /* CanvasRenderer in Frameworks */,
+				DA0000000000000000000003 /* AtelierCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -118,6 +120,7 @@
 			name = AtelierRefs;
 			packageProductDependencies = (
 				CA0000000000000000000002 /* CanvasRenderer */,
+				DA0000000000000000000002 /* AtelierCore */,
 			);
 			productName = AtelierRefs;
 			productReference = 9907786E2FF364EF00718815 /* AtelierRefs.app */;
@@ -203,6 +206,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				CA0000000000000000000001 /* XCLocalSwiftPackageReference "../CanvasRenderer" */,
+				DA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierCore" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9907786F2FF364EF00718815 /* Products */;
@@ -588,12 +592,20 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../CanvasRenderer;
 		};
+		DA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierCore;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		CA0000000000000000000002 /* CanvasRenderer */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = CanvasRenderer;
+		};
+		DA0000000000000000000002 /* AtelierCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

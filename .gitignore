@@ -11,4 +11,4 @@ DerivedData/
 # Swift Package Manager
 .build/
 .swiftpm/
-Package.resolved
+# Package.resolved is committed (pins GRDB) for reproducible app/CI builds.
