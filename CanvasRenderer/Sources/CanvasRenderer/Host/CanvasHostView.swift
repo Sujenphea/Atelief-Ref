@@ -6,6 +6,7 @@ import AppKit
 @MainActor
 public final class CanvasHostView: NSView {
     private let engine: CanvasEngine
+    private var hasFramedContent = false
 
     public init(
         provider: TileProvider,
@@ -32,7 +33,14 @@ public final class CanvasHostView: NSView {
         super.layout()
         engine.rootLayer.frame = bounds
         engine.viewportSize = bounds.size
-        engine.sync()
+        // Frame the board to fit the very first time we know our size; afterwards
+        // a resize just re-syncs (it must not stomp the user's pan/zoom).
+        if !hasFramedContent, bounds.width > 0, bounds.height > 0 {
+            hasFramedContent = true
+            engine.frameToContent()
+        } else {
+            engine.sync()
+        }
     }
 
     public override func scrollWheel(with event: NSEvent) {

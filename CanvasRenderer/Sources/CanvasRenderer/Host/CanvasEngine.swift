@@ -91,6 +91,45 @@ public final class CanvasEngine {
         sync()
     }
 
+    /// Frames all content to fit the viewport (with fractional `padding` on each
+    /// side), centred. The host calls this once on first layout so the canvas
+    /// opens *over* the tiles instead of on empty world space. No-op if the
+    /// viewport is empty or there are no drawable tiles.
+    public func frameToContent(padding: CGFloat = 0.1) {
+        guard viewportSize.width > 0, viewportSize.height > 0 else { return }
+
+        var content: CGRect?
+        for tile in provider.tiles where !tile.isDegenerate {
+            content = content.map { $0.union(tile.worldFrame) } ?? tile.worldFrame
+        }
+        guard let bounds = content, bounds.width > 0, bounds.height > 0 else { return }
+
+        let usableWidth = viewportSize.width * max(0.01, 1 - padding * 2)
+        let usableHeight = viewportSize.height * max(0.01, 1 - padding * 2)
+        let fitScale = min(usableWidth / bounds.width, usableHeight / bounds.height)
+
+        let centre = CGPoint(x: bounds.midX, y: bounds.midY)
+        let viewportCentre = CGPoint(x: viewportSize.width / 2, y: viewportSize.height / 2)
+        // CanvasTransform clamps fitScale into range; recompute translation from
+        // the *clamped* scale so the content stays centred even at a zoom limit.
+        let framed = CanvasTransform(
+            scale: fitScale,
+            translation: .zero,
+            minScale: transform.minScale,
+            maxScale: transform.maxScale
+        )
+        let translation = CGPoint(
+            x: viewportCentre.x - centre.x * framed.scale,
+            y: viewportCentre.y - centre.y * framed.scale
+        )
+        setTransform(CanvasTransform(
+            scale: framed.scale,
+            translation: translation,
+            minScale: transform.minScale,
+            maxScale: transform.maxScale
+        ))
+    }
+
     // MARK: The per-frame sync
 
     /// Reconciles the layer tree with the current transform. Cheap by design:

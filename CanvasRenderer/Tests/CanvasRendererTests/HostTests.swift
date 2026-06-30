@@ -223,4 +223,25 @@ struct CanvasEngineTests {
         engine.sync()
         #expect(engine.activeLayerCount == 0)
     }
+
+    @Test("frameToContent brings scattered content into view (blank-canvas regression)")
+    func frameToContentShowsTiles() {
+        // The app harness config: 5,000 tiles scattered across ±20k world units.
+        // At the default origin transform almost nothing is visible — the blank
+        // page. frameToContent must fit the board so most tiles appear.
+        let engine = CanvasEngine(
+            provider: DummyTileProvider(config: DummyTileGenerator.Config(count: 5_000)),
+            images: FixtureImageSet(count: 4, seed: 1),
+            viewportSize: CGSize(width: 1_000, height: 700)
+        )
+        engine.frameToContent()
+        #expect(engine.activeLayerCount > 1_000)
+        // Content is centred: the world centre maps near the viewport centre.
+        let allTiles = DummyTileProvider(config: DummyTileGenerator.Config(count: 5_000)).tiles
+        var bounds = allTiles[0].worldFrame
+        for tile in allTiles { bounds = bounds.union(tile.worldFrame) }
+        let centreOnScreen = engine.transform.worldToScreen(CGPoint(x: bounds.midX, y: bounds.midY))
+        #expect(abs(centreOnScreen.x - 500) < 1)
+        #expect(abs(centreOnScreen.y - 350) < 1)
+    }
 }
