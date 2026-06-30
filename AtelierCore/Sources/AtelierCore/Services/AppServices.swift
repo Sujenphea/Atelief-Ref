@@ -1,0 +1,525 @@
+// AtelierCore — the public App Services mutation surface (chunk 5, A2/A4/C6)
+//
+// The ONE public type of the package (A2). Every mutation in the app routes
+// through this class's single private `write {}` funnel (A4): validation (C8)
+// and invariants (C6) run inside or before each transaction, never bypassed,
+// and GRDB errors are mapped to `AtelierError` on the way out (C7) so the
+// toolkit never leaks. Reads / search are a separate chunk; this is writes only.
+
+import Foundation
+import GRDB
+
+/// The public, `Sendable` write surface over the internal ``LibraryDatabase``.
+///
+/// `final class … Sendable` (A3): the only stored property is the `Sendable`
+/// store; no in-memory mutable state. All mutations are `async` and serialized
+/// by the underlying `DatabasePool` writer (WAL).
+public final class AppServices: Sendable {
+    /// The internal store. Never exposed — only the funnel touches its pool.
+    private let database: LibraryDatabase
+
+    /// Open (or create) a library at `databasePath`, migrated to the latest
+    /// schema.
+    public init(databasePath: String) throws {
+        self.database = try LibraryDatabase(path: databasePath)
+    }
+
+    /// Compose over an existing store (tests / future wiring). `internal` (A2).
+    init(database: LibraryDatabase) {
+        self.database = database
+    }
+
+    // MARK: - The single write funnel (A4)
+
+    /// EVERY mutation routes through here. Runs `op` in the pool's serialized
+    /// writer transaction and maps any thrown error to an ``AtelierError`` (C7)
+    /// so GRDB types never cross the public boundary (A2). Validation /
+    /// `.notFound` thrown inside `op` pass through unchanged.
+    private func write<T: Sendable>(
+        _ op: @Sendable @escaping (Database) throws -> T
+    ) async throws -> T {
+        do {
+            return try await database.pool.write(op)
+        } catch {
+            throw AtelierError(mapping: error)
+        }
+    }
+
+    /// The read counterpart of the funnel. Runs `op` in a concurrent snapshot
+    /// of the pool (A3) and maps any thrown error to an ``AtelierError`` (C7) so
+    /// GRDB never crosses the public boundary (A2). `.notFound` thrown inside
+    /// `op` passes through unchanged. Reads do NOT serialize behind the writer —
+    /// browse-while-importing (A3).
+    private func read<T: Sendable>(
+        _ op: @Sendable @escaping (Database) throws -> T
+    ) async throws -> T {
+        do {
+            return try await database.pool.read(op)
+        } catch {
+            throw AtelierError(mapping: error)
+        }
+    }
+
+    // MARK: - Collections
+
+    /// Create a collection. Validates + trims the name (C8); the service
+    /// generates `id` and `createdAt`/`updatedAt` (server-authoritative).
+    @discardableResult
+    public func createCollection(
+        name: String, description: String? = nil
+    ) async throws -> Collection {
+        let trimmed = try Validation.collectionName(name)
+        let now = Date()
+        let collection = Collection(
+            id: UUID(), name: trimmed, description: description,
+            coverAssetID: nil, createdAt: now, updatedAt: now)
+        return try await write { db in
+            try collection.insert(db)
+            return collection
+        }
+    }
+
+    /// Rename a collection. `.notFound` if absent; bumps `updatedAt`.
+    @discardableResult
+    public func renameCollection(id: UUID, to name: String) async throws -> Collection {
+        let trimmed = try Validation.collectionName(name)
+        return try await write { db in
+            guard var collection = try Collection.fetchOne(db, key: Self.key(id)) else {
+                throw AtelierError.notFound(entity: "collection", id: id)
+            }
+            collection.name = trimmed
+            collection.updatedAt = Date()
+            try collection.update(db)
+            return collection
+        }
+    }
+
+    /// Set a collection's cover. Both the collection and the asset must exist
+    /// (`.notFound`); bumps `updatedAt`.
+    public func setCollectionCover(collectionID: UUID, assetID: UUID) async throws {
+        try await write { db in
+            guard var collection = try Collection.fetchOne(db, key: Self.key(collectionID)) else {
+                throw AtelierError.notFound(entity: "collection", id: collectionID)
+            }
+            guard try Asset.exists(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            collection.coverAssetID = assetID
+            collection.updatedAt = Date()
+            try collection.update(db)
+        }
+    }
+
+    /// Delete a collection. `.notFound` if absent. Its memberships CASCADE
+    /// (schema 17A).
+    public func deleteCollection(id: UUID) async throws {
+        try await write { db in
+            guard try Collection.deleteOne(db, key: Self.key(id)) else {
+                throw AtelierError.notFound(entity: "collection", id: id)
+            }
+        }
+    }
+
+    // MARK: - Ingest (C6 provenance + 18A dedup)
+
+    /// Ingest an asset with its REQUIRED provenance into a collection, in ONE
+    /// transaction (C6 — `source` is non-optional, so "asset with no origin"
+    /// cannot compile). Implements the 18A dedup rule and is idempotent on
+    /// re-ingest of identical bytes + provenance into the same collection.
+    ///
+    /// Steps inside the funnel:
+    /// 1. validate dimensions / fileSize / blobHash / per-platform originalURL
+    ///    (+ placement if supplied);
+    /// 2. assert the target collection exists (`.notFound`);
+    /// 3. **18A dedup** — reuse an existing asset (and its source) sharing the
+    ///    blob hash whose source matches the incoming provenance;
+    /// 4. ensure exactly ONE membership of the resolved asset in the collection.
+    @discardableResult
+    public func ingest(
+        _ asset: AssetDraft,
+        from source: SourceDraft,
+        into collectionID: UUID,
+        placement: CanvasPlacement? = nil
+    ) async throws -> IngestResult {
+        // 1. validate (fail fast, before opening the write).
+        try Validation.dimensions(width: asset.width, height: asset.height)
+        try Validation.fileSize(asset.fileSize)
+        let blobHash = try Validation.blobHash(asset.blobHash)
+        try Validation.originalURL(source.originalURL, platform: source.platform)
+        if let placement {
+            try Validation.canvasPlacement(
+                x: placement.x, y: placement.y, w: placement.w, h: placement.h)
+        }
+
+        return try await write { db in
+            // 2. the collection must exist.
+            guard try Collection.exists(db, key: Self.key(collectionID)) else {
+                throw AtelierError.notFound(entity: "collection", id: collectionID)
+            }
+
+            // 3. 18A dedup — reuse an existing asset+source on match.
+            let resolvedAsset: Asset
+            let wasDeduplicated: Bool
+            if let existing = try Self.findDuplicate(db, blobHash: blobHash, source: source) {
+                resolvedAsset = existing
+                wasDeduplicated = true
+            } else {
+                let newSource = Source(
+                    id: UUID(), platform: source.platform,
+                    originalURL: source.originalURL, authorHandle: source.authorHandle,
+                    authorName: source.authorName, title: source.title,
+                    capturedAt: source.capturedAt, rawMetadata: source.rawMetadata)
+                try newSource.insert(db)
+                let newAsset = Asset(
+                    id: UUID(), kind: asset.kind, blobHash: blobHash,
+                    mimeType: asset.mimeType, width: asset.width, height: asset.height,
+                    duration: asset.duration, fileSize: asset.fileSize,
+                    downloadState: asset.downloadState, createdAt: Date(),
+                    sourceId: newSource.id)
+                try newAsset.insert(db)
+                resolvedAsset = newAsset
+                wasDeduplicated = false
+            }
+
+            // 4. ensure ONE membership (ingest is idempotent on membership; a
+            //    second placement of the same asset is a deliberate caller act
+            //    via addAssets, not a side effect of re-ingest).
+            let alreadyMember = try Self.membership(
+                db, collectionID: collectionID, assetID: resolvedAsset.id) != nil
+            if !alreadyMember {
+                let item = CollectionItem(
+                    id: UUID(), collectionID: collectionID, assetID: resolvedAsset.id,
+                    addedAt: Date(), manualOrder: nil,
+                    canvasX: placement?.x, canvasY: placement?.y,
+                    canvasW: placement?.w, canvasH: placement?.h, canvasZ: placement?.z)
+                try item.insert(db)
+            }
+
+            return IngestResult(asset: resolvedAsset, wasDeduplicated: wasDeduplicated)
+        }
+    }
+
+    // MARK: - Arrange / bulk (P15 — each ONE transaction)
+
+    /// Set (or clear) the canvas placement of an asset's membership. Validates
+    /// finite/positive (C8); `.notFound` if the asset is not a member.
+    public func setCanvasPlacement(
+        collectionID: UUID, assetID: UUID,
+        x: Double?, y: Double?, w: Double?, h: Double?, z: Int?
+    ) async throws {
+        try Validation.canvasPlacement(x: x, y: y, w: w, h: h)
+        try await write { db in
+            guard var item = try Self.membership(
+                db, collectionID: collectionID, assetID: assetID) else {
+                throw AtelierError.notFound(entity: "collection_item", id: assetID)
+            }
+            item.canvasX = x
+            item.canvasY = y
+            item.canvasW = w
+            item.canvasH = h
+            item.canvasZ = z
+            try item.update(db)
+        }
+    }
+
+    /// Assign `manualOrder` 0,1,2,… to the listed memberships, IN ONE
+    /// transaction (P15). `.notFound` (rolling back the whole batch) if a listed
+    /// asset is not a member.
+    public func setGridOrder(collectionID: UUID, orderedAssetIDs: [UUID]) async throws {
+        try await write { db in
+            for (index, assetID) in orderedAssetIDs.enumerated() {
+                guard var item = try Self.membership(
+                    db, collectionID: collectionID, assetID: assetID) else {
+                    throw AtelierError.notFound(entity: "collection_item", id: assetID)
+                }
+                item.manualOrder = index
+                try item.update(db)
+            }
+        }
+    }
+
+    /// Bulk-add memberships, IN ONE transaction (P15). Idempotent per asset
+    /// (skips ones already members). `.notFound` (rolling back) for a missing
+    /// collection or asset.
+    public func addAssets(_ assetIDs: [UUID], to collectionID: UUID) async throws {
+        try await write { db in
+            guard try Collection.exists(db, key: Self.key(collectionID)) else {
+                throw AtelierError.notFound(entity: "collection", id: collectionID)
+            }
+            let now = Date()
+            for assetID in assetIDs {
+                guard try Asset.exists(db, key: Self.key(assetID)) else {
+                    throw AtelierError.notFound(entity: "asset", id: assetID)
+                }
+                let isMember = try Self.membership(
+                    db, collectionID: collectionID, assetID: assetID) != nil
+                if !isMember {
+                    let item = CollectionItem(
+                        id: UUID(), collectionID: collectionID,
+                        assetID: assetID, addedAt: now)
+                    try item.insert(db)
+                }
+            }
+        }
+    }
+
+    /// Bulk-remove memberships, IN ONE transaction (P15). Idempotent — removing
+    /// a non-member is a no-op.
+    public func removeAssets(_ assetIDs: [UUID], from collectionID: UUID) async throws {
+        try await write { db in
+            for assetID in assetIDs {
+                try CollectionItem
+                    .filter(Column("collection_id") == Self.key(collectionID))
+                    .filter(Column("asset_id") == Self.key(assetID))
+                    .deleteAll(db)
+            }
+        }
+    }
+
+    // MARK: - Reads (P16 — collection-scoped reads return full arrays)
+
+    /// Every collection, ordered by `name` then `id` (stable). The library's
+    /// collection count is small and bounded, so this returns the full
+    /// inventory (P16 — only the unbounded library-wide reads are paged).
+    public func listCollections() async throws -> [Collection] {
+        try await read { db in
+            try Collection.order(Column("name"), Column("id")).fetchAll(db)
+        }
+    }
+
+    /// One collection by id; `.notFound` if absent.
+    public func getCollection(id: UUID) async throws -> Collection {
+        try await read { db in
+            guard let collection = try Collection.fetchOne(db, key: Self.key(id)) else {
+                throw AtelierError.notFound(entity: "collection", id: id)
+            }
+            return collection
+        }
+    }
+
+    /// The P14 joined read for a collection — every membership with its full
+    /// asset + source, in the store's order (`manual_order` then `id`), mapped
+    /// to the public GRDB-free ``CollectionItemDetail`` (A2). Collection-scoped,
+    /// so the FULL array is returned (P16 — the views need every item).
+    /// `.notFound` if the collection is absent.
+    public func collectionItems(in collectionID: UUID) async throws -> [CollectionItemDetail] {
+        try await read { db in
+            guard try Collection.exists(db, key: Self.key(collectionID)) else {
+                throw AtelierError.notFound(entity: "collection", id: collectionID)
+            }
+            // CollectionItem ⋈ Asset ⋈ Source, all required (P14): one round-trip,
+            // no N+1. GRDB qualifies the base columns to `collection_item`.
+            let request = CollectionItem
+                .filter(Column("collection_id") == Self.key(collectionID))
+                .including(required: CollectionItem.asset
+                    .including(required: Asset.source))
+                .order(Column("manual_order"), Column("id"))
+            return try CollectionItemRow.fetchAll(db, request).map {
+                CollectionItemDetail(item: $0.item, asset: $0.asset, source: $0.source)
+            }
+        }
+    }
+
+    /// One asset with its required provenance; `.notFound` if absent. Metadata
+    /// only (P16) — never the blob bytes.
+    public func getAsset(id: UUID) async throws -> AssetDetail {
+        try await read { db in
+            let request = Asset
+                .filter(Column("id") == Self.key(id))
+                .including(required: Asset.source)
+            guard let row = try AssetSourceRow.fetchOne(db, request) else {
+                throw AtelierError.notFound(entity: "asset", id: id)
+            }
+            return AssetDetail(asset: row.asset, source: row.source)
+        }
+    }
+
+    // MARK: - Search (P16 bounded + FTS5)
+
+    /// Search assets library-wide, bounded (P16) and keyset-paged.
+    ///
+    /// - `text`: when non-nil/non-empty, full-text matched against `source_fts`
+    ///   (the source `title` / `author_handle` / `author_name`); the matching
+    ///   sources' assets are returned. When nil/blank, lists all assets
+    ///   (optionally platform-filtered) — still bounded.
+    /// - `platform`: optional filter on the asset's source.
+    /// - Ordered `created_at DESC, id DESC` (stable), so the keyset cursor is
+    ///   well-defined.
+    /// - `limit` is clamped to `1...500`; at most `limit` rows are returned.
+    /// - `after`: a keyset cursor (P16) — only rows STRICTLY after it in the
+    ///   order are returned (`(created_at, id) < (cursor.createdAt, cursor.id)`),
+    ///   so paging never drifts or repeats as new assets land (no OFFSET).
+    ///
+    /// Returns ``AssetDetail`` (asset + source) — metadata only, never blob
+    /// bytes (P16).
+    public func searchAssets(
+        text: String? = nil,
+        platform: Platform? = nil,
+        limit: Int = 50,
+        after cursor: AssetPageCursor? = nil
+    ) async throws -> [AssetDetail] {
+        let clampedLimit = min(max(limit, 1), 500)
+        let trimmedText = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await read { db in
+            // The source is required and carries the platform filter when given,
+            // so the included join doubles as the filter (inner join).
+            var sourceAssociation = Asset.source
+            if let platform {
+                sourceAssociation = sourceAssociation.filter(
+                    Column("platform") == platform.rawValue)
+            }
+            var request = Asset.including(required: sourceAssociation)
+
+            // FTS5: restrict to assets whose source MATCHes the sanitized query.
+            // The subquery maps `source_fts.rowid` → `source.rowid` → `source.id`
+            // (external-content FTS), keeping the base asset query unqualified.
+            if let trimmedText, !trimmedText.isEmpty {
+                request = request.filter(sql: """
+                    source_id IN (
+                        SELECT source.id FROM source
+                        JOIN source_fts ON source_fts.rowid = source.rowid
+                        WHERE source_fts MATCH ?
+                    )
+                    """, arguments: [Self.ftsMatchQuery(trimmedText)])
+            }
+
+            // Keyset seek: rows strictly after the cursor in the DESC order.
+            // GRDB qualifies these `Column`s to the base `asset` table; the Date
+            // binds to the same sortable text encoding the column stores (C5).
+            if let cursor {
+                request = request.filter(
+                    Column("created_at") < cursor.createdAt
+                    || (Column("created_at") == cursor.createdAt
+                        && Column("id") < Self.key(cursor.id)))
+            }
+
+            request = request
+                .order(Column("created_at").desc, Column("id").desc)
+                .limit(clampedLimit)
+
+            return try AssetSourceRow.fetchAll(db, request).map {
+                AssetDetail(asset: $0.asset, source: $0.source)
+            }
+        }
+    }
+
+    // MARK: - Tags (schema-reserved; the agent interface needs these)
+
+    /// Apply a tag to an asset. Validates + trims the name (C8); finds-or-creates
+    /// the `(name, source)` tag, then links it idempotently (no duplicate join
+    /// row). `.notFound` if the asset is absent. Through the write funnel.
+    @discardableResult
+    public func applyTag(_ name: String, to assetID: UUID, source: TagSource) async throws -> Tag {
+        let trimmed = try Validation.tagName(name)
+        return try await write { db in
+            guard try Asset.exists(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            // Find-or-create by (name, source): user vs agent tags are distinct.
+            let tag: Tag
+            if let existing = try Tag
+                .filter(Column("name") == trimmed)
+                .filter(Column("source") == source.rawValue)
+                .fetchOne(db) {
+                tag = existing
+            } else {
+                let created = Tag(id: UUID(), name: trimmed, source: source)
+                try created.insert(db)
+                tag = created
+            }
+            // Idempotent link — skip if the join row already exists.
+            let linked = try AssetTag
+                .filter(Column("asset_id") == Self.key(assetID))
+                .filter(Column("tag_id") == Self.key(tag.id))
+                .fetchCount(db) > 0
+            if !linked {
+                try AssetTag(assetID: assetID, tagID: tag.id).insert(db)
+            }
+            return tag
+        }
+    }
+
+    /// Remove a tag from an asset. Idempotent — a no-op if the tag or the link
+    /// is absent (the tag row itself is left intact for other assets). Through
+    /// the write funnel.
+    public func removeTag(_ name: String, from assetID: UUID, source: TagSource) async throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        try await write { db in
+            guard let tag = try Tag
+                .filter(Column("name") == trimmed)
+                .filter(Column("source") == source.rawValue)
+                .fetchOne(db) else { return }
+            try AssetTag
+                .filter(Column("asset_id") == Self.key(assetID))
+                .filter(Column("tag_id") == Self.key(tag.id))
+                .deleteAll(db)
+        }
+    }
+
+    /// An asset's tags, ordered by `name` then `id` (stable). Read.
+    public func tags(for assetID: UUID) async throws -> [Tag] {
+        try await read { db in
+            try Tag
+                .filter(sql: "id IN (SELECT tag_id FROM asset_tag WHERE asset_id = ?)",
+                        arguments: [Self.key(assetID)])
+                .order(Column("name"), Column("id"))
+                .fetchAll(db)
+        }
+    }
+
+    // MARK: - Private query helpers
+
+    /// Sanitize arbitrary user text into a safe FTS5 MATCH query. Each
+    /// whitespace-separated term is wrapped as a quoted FTS5 string (doubling
+    /// any embedded `"` per FTS5's escaping rule) and the quoted terms are joined
+    /// with spaces (implicit AND). So `brass wood` → `"brass" "wood"` (both must
+    /// match) and punctuation / stray quotes can never form malformed MATCH
+    /// syntax (no syntax-error throw). Quoting also neutralizes the FTS5
+    /// operators (`*`, `:`, `^`, `-`, `(`, `OR`, …) as literal text.
+    static func ftsMatchQuery(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace })
+            .map { term in "\"\(term.replacingOccurrences(of: "\"", with: "\"\""))\"" }
+            .joined(separator: " ")
+    }
+
+    /// The on-disk key form of a UUID (lowercased TEXT, C5) — what GRDB's
+    /// key-based fetch and the column filters must bind to.
+    private static func key(_ id: UUID) -> String { id.uuidString.lowercased() }
+
+    /// The (collection, asset) membership row, if any.
+    private static func membership(
+        _ db: Database, collectionID: UUID, assetID: UUID
+    ) throws -> CollectionItem? {
+        try CollectionItem
+            .filter(Column("collection_id") == key(collectionID))
+            .filter(Column("asset_id") == key(assetID))
+            .fetchOne(db)
+    }
+
+    /// 18A dedup lookup: an existing asset sharing `blobHash` whose source
+    /// matches the incoming provenance — same `original_url` when one is given,
+    /// else same `platform` (the local-capture case where no URL exists). The
+    /// shared blob hash means the bytes are identical; the source match means
+    /// the provenance is identical, so reuse is safe.
+    private static func findDuplicate(
+        _ db: Database, blobHash: String, source: SourceDraft
+    ) throws -> Asset? {
+        // Candidate sources whose provenance matches the incoming draft.
+        let matchingSources: QueryInterfaceRequest<Source>
+        if let url = source.originalURL,
+           !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            matchingSources = Source.filter(Column("original_url") == url)
+        } else {
+            matchingSources = Source.filter(Column("platform") == source.platform.rawValue)
+        }
+        let sourceIDs = try String.fetchAll(
+            db, matchingSources.select(Column("id")))
+        guard !sourceIDs.isEmpty else { return nil }
+
+        // The first asset sharing the blob hash AND one of those sources.
+        return try Asset
+            .filter(Column("blob_hash") == blobHash)
+            .filter(sourceIDs.contains(Column("source_id")))
+            .fetchOne(db)
+    }
+}
