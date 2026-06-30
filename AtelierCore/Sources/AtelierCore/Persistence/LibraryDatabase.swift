@@ -50,29 +50,43 @@ final class LibraryDatabase: Sendable {
     /// that asset's ``Source``, loaded in ONE round-trip via GRDB associations
     /// (P14 — no N+1). Ordered deterministically by `manual_order` (NULLs first,
     /// SQLite ascending) then `id`, so grid order is stable.
-    func collectionItemDetails(in collectionID: UUID) throws -> [CollectionItemDetail] {
+    func collectionItemDetails(in collectionID: UUID) throws -> [CollectionItemRow] {
         try read { db in
             // CollectionItem ⋈ Asset ⋈ Source, all required (inner joins): every
             // item has an asset (FK NOT NULL) and every asset has a source (C6).
             // `including(required:)` nests the asset scope, and the source scope
-            // under it; `CollectionItemDetail` flattens both via the scope tree.
+            // under it; `CollectionItemRow` flattens both via the scope tree.
             let request = CollectionItem
                 .filter(Column("collection_id") == collectionID.uuidString.lowercased())
                 .including(required: CollectionItem.asset
                     .including(required: Asset.source))
                 .order(Column("manual_order"), Column("id"))
-            return try CollectionItemDetail.fetchAll(db, request)
+            return try CollectionItemRow.fetchAll(db, request)
         }
     }
 }
 
 /// One row of the P14 joined read: a membership plus its decoded asset + source.
 ///
+/// INTERNAL (A2) — a GRDB `FetchableRecord`. The public read API maps this to
+/// the GRDB-free ``CollectionItemDetail`` value type so no toolkit type leaks.
+///
 /// GRDB resolves `asset` and `source` through the request's scope tree (the
 /// `source` scope is nested under `asset`, but the breadth-first scope lookup
 /// finds it), and decodes `item` from the base `collection_item` columns.
-struct CollectionItemDetail: FetchableRecord, Decodable, Equatable {
+struct CollectionItemRow: FetchableRecord, Decodable, Equatable {
     var item: CollectionItem
+    var asset: Asset
+    var source: Source
+}
+
+/// One row of the asset read/search join: an asset plus its required source,
+/// loaded via `Asset.including(required: Asset.source)` in one round-trip.
+///
+/// INTERNAL (A2) — a GRDB `FetchableRecord`. `asset` has no matching row scope
+/// so GRDB decodes it from the base `asset` columns; `source` matches the
+/// included scope. The read API maps this to the GRDB-free ``AssetDetail``.
+struct AssetSourceRow: FetchableRecord, Decodable, Equatable {
     var asset: Asset
     var source: Source
 }

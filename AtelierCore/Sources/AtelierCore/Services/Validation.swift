@@ -24,6 +24,15 @@ enum Validation {
         return trimmed
     }
 
+    /// Trim a tag name and reject empty/whitespace-only (`.invalidName`).
+    /// Returns the trimmed name to persist (mirrors ``collectionName``).
+    @discardableResult
+    static func tagName(_ name: String) throws -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw AtelierError.invalidName }
+        return trimmed
+    }
+
     /// Reject non-positive intrinsic dimensions (`.invalidDimensions`).
     static func dimensions(width: Int, height: Int) throws {
         guard width > 0, height > 0 else { throw AtelierError.invalidDimensions }

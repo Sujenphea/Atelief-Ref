@@ -95,6 +95,61 @@ public struct CanvasPlacement: Sendable, Equatable {
     }
 }
 
+// MARK: - Read outputs (GRDB-free, A2)
+
+/// One membership of a collection joined to its full ``Asset`` and that asset's
+/// ``Source`` — the public, GRDB-free projection of the P14 joined read.
+///
+/// The persistence layer fetches an internal `CollectionItemRow`
+/// (`FetchableRecord`); the read API maps it to this value type so no GRDB type
+/// crosses the public boundary (A2). Metadata only — never blob bytes (P16).
+public struct CollectionItemDetail: Sendable, Equatable {
+    /// The membership row (placement / order live here).
+    public let item: CollectionItem
+    /// The asset the membership points at.
+    public let asset: Asset
+    /// The asset's required provenance.
+    public let source: Source
+
+    public init(item: CollectionItem, asset: Asset, source: Source) {
+        self.item = item
+        self.asset = asset
+        self.source = source
+    }
+}
+
+/// An ``Asset`` joined to its required ``Source`` — the unit of the read/search
+/// API. Metadata only (P16): provenance facts, never the blob bytes.
+public struct AssetDetail: Sendable, Equatable {
+    /// The captured media's metadata.
+    public let asset: Asset
+    /// Where it came from (required — C6).
+    public let source: Source
+
+    public init(asset: Asset, source: Source) {
+        self.asset = asset
+        self.source = source
+    }
+}
+
+/// An opaque keyset (seek) cursor for paging ``AppServices/searchAssets`` (P16).
+///
+/// Carries the sort key of the LAST row of the previous page — the asset's
+/// `createdAt` and `id`. The next call returns only rows strictly after it in
+/// the `(created_at DESC, id DESC)` order, so paging never drifts or repeats
+/// even as new assets are ingested (no OFFSET).
+public struct AssetPageCursor: Sendable, Equatable {
+    /// `createdAt` of the last row returned.
+    public let createdAt: Date
+    /// `id` of the last row returned (breaks ties on equal `createdAt`).
+    public let id: UUID
+
+    public init(createdAt: Date, id: UUID) {
+        self.createdAt = createdAt
+        self.id = id
+    }
+}
+
 /// The outcome of an ``AppServices/ingest(_:from:into:placement:)``: the
 /// resolved ``Asset`` (newly inserted or reused) and whether the 18A dedup rule
 /// reused an existing asset.
