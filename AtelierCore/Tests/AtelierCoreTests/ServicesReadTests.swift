@@ -34,11 +34,14 @@ struct ServicesReadTests {
 
     // MARK: listCollections
 
-    @Test("listCollections is empty on a fresh store")
+    @Test("listCollections holds only the seeded Unsorted folder on a fresh store")
     func listEmpty() async throws {
         let (services, temp) = try makeServices()
         defer { temp.cleanup() }
-        #expect(try await services.listCollections().isEmpty)
+        // The v2 migration seeds the protected Unsorted folder; a fresh store
+        // therefore starts with exactly that one collection.
+        let ids = try await services.listCollections().map(\.id)
+        #expect(ids == [Collection.unsortedID])
     }
 
     @Test("listCollections is ordered by name then id")
@@ -48,7 +51,10 @@ struct ServicesReadTests {
         _ = try await services.createCollection(name: "Zephyr")
         _ = try await services.createCollection(name: "Alpha")
         _ = try await services.createCollection(name: "Mango")
-        let names = try await services.listCollections().map(\.name)
+        // Exclude the seeded Unsorted folder — its ordering is exercised elsewhere.
+        let names = try await services.listCollections()
+            .filter { $0.id != Collection.unsortedID }
+            .map(\.name)
         #expect(names == ["Alpha", "Mango", "Zephyr"])
     }
 
@@ -59,7 +65,10 @@ struct ServicesReadTests {
         // Two collections with the same name → tie broken by id, stably.
         let a = try await services.createCollection(name: "Dup")
         let b = try await services.createCollection(name: "Dup")
-        let ids = try await services.listCollections().map(\.id)
+        // Exclude the seeded Unsorted folder; assert the two "Dup" rows order by id.
+        let ids = try await services.listCollections()
+            .filter { $0.id != Collection.unsortedID }
+            .map(\.id)
         let expected = [a.id, b.id].sorted {
             $0.uuidString.lowercased() < $1.uuidString.lowercased()
         }

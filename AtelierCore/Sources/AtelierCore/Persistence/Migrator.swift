@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1"]
+    static let registeredIdentifiers = ["v1", "v2"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -45,6 +45,11 @@ enum Migrator {
         // v1 — initial schema. SHIPPED: never edit this body (see file header).
         migrator.registerMigration("v1") { db in
             try createV1Schema(db)
+        }
+
+        // v2 — nested folders. SHIPPED: never edit this body (see file header).
+        migrator.registerMigration("v2") { db in
+            try createV2Schema(db)
         }
 
         return migrator
@@ -174,5 +179,40 @@ enum Migrator {
             t.column("author_handle")
             t.column("author_name")
         }
+    }
+
+    // MARK: - v2
+
+    /// Nested folders (decision F1/F3/F4). Folders *are* collections, so this
+    /// adds a self-referential parent link to `collection` (nullable — `NULL` =
+    /// a root folder) with `ON DELETE CASCADE`: deleting a folder recurses through
+    /// its descendant folders, and the existing `collection_item.collection_id`
+    /// cascade drops their memberships — deleting a whole subtree while the
+    /// underlying assets survive (F4).
+    private static func createV2Schema(_ db: Database) throws {
+        // Add the self-referential FK column. An ALTER-added FK column must be
+        // nullable with a NULL default (SQLite requirement).
+        try db.execute(sql: """
+            ALTER TABLE collection
+                ADD COLUMN parent_collection_id TEXT
+                    REFERENCES collection(id) ON DELETE CASCADE;
+            """)
+
+        // Access path for "children of a folder" (P13).
+        try db.execute(sql: """
+            CREATE INDEX index_collection_on_parent_collection_id
+                ON collection(parent_collection_id);
+            """)
+
+        // Seed the protected "Unsorted" root folder (F3): the fixed well-known id
+        // (Collection.unsortedID, lowercased), a root (parent NULL). A migration
+        // can't call Date(), so timestamps are literal TEXT.
+        try db.execute(sql: """
+            INSERT INTO collection
+                (id, name, description, cover_asset_id, created_at, updated_at, parent_collection_id)
+            VALUES
+                ('00000000-0000-0000-0000-000000000001', 'Unsorted', NULL, NULL,
+                 '2024-01-01 00:00:00.000', '2024-01-01 00:00:00.000', NULL);
+            """)
     }
 }
