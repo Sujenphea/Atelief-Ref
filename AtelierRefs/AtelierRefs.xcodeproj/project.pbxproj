@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		CA0000000000000000000003 /* CanvasRenderer in Frameworks */ = {isa = PBXBuildFile; productRef = CA0000000000000000000002 /* CanvasRenderer */; };
 		DA0000000000000000000003 /* AtelierCore in Frameworks */ = {isa = PBXBuildFile; productRef = DA0000000000000000000002 /* AtelierCore */; };
+		EA0000000000000000000003 /* AtelierIngestion in Frameworks */ = {isa = PBXBuildFile; productRef = EA0000000000000000000002 /* AtelierIngestion */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +60,7 @@
 			files = (
 				CA0000000000000000000003 /* CanvasRenderer in Frameworks */,
 				DA0000000000000000000003 /* AtelierCore in Frameworks */,
+				EA0000000000000000000003 /* AtelierIngestion in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -121,6 +123,7 @@
 			packageProductDependencies = (
 				CA0000000000000000000002 /* CanvasRenderer */,
 				DA0000000000000000000002 /* AtelierCore */,
+				EA0000000000000000000002 /* AtelierIngestion */,
 			);
 			productName = AtelierRefs;
 			productReference = 9907786E2FF364EF00718815 /* AtelierRefs.app */;
@@ -207,6 +210,7 @@
 			packageReferences = (
 				CA0000000000000000000001 /* XCLocalSwiftPackageReference "../CanvasRenderer" */,
 				DA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierCore" */,
+				EA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierIngestion" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9907786F2FF364EF00718815 /* Products */;
@@ -596,6 +600,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../AtelierCore;
 		};
+		EA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierIngestion" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierIngestion;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -606,6 +614,10 @@
 		DA0000000000000000000002 /* AtelierCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AtelierCore;
+		};
+		EA0000000000000000000002 /* AtelierIngestion */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierIngestion;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
