@@ -32,6 +32,12 @@ public enum AtelierError: Error, Equatable {
     case invalidPlacement
     /// A platform that requires provenance was missing its `originalURL`.
     case missingOriginalURL(platform: Platform)
+    /// An attempt to rename / delete / move the protected "Unsorted" folder
+    /// (decision F3). Its id is `Collection.unsortedID`.
+    case protectedCollection(id: UUID)
+    /// A reparent that would make a folder its own ancestor/descendant — a
+    /// cycle in the folder tree (decision F6).
+    case folderCycle
     /// A database constraint (FK / NOT NULL / UNIQUE) was violated — mapped from
     /// GRDB so the raw `DatabaseError` never leaks (A2/C7).
     case constraintViolation
