@@ -11,15 +11,18 @@
 
 const PIN_BASE = "https://www.pinterest.com/pin";
 
-/** The `videoUrls` array embedded in a pin page's server HTML, or `[]`. */
+/** Every video URL on the pin's video CDN, embedded in the pin page's server HTML.
+ *
+ * A regular video pin exposes a `"videoUrls":[…]` array; a STORY / IDEA pin nests
+ * the same MP4/HLS URLs under `storyPinData` instead. Rather than depend on one
+ * JSON shape, pull every `v*.pinimg.com/videos/…` URL directly (deduped). The SEO
+ * HTML for a pin contains only that pin's own video(s) — related/feed content is
+ * loaded client-side — so this doesn't grab unrelated media. */
 export function extractVideoUrls(html) {
-  const match = html.match(/"videoUrls":\[([^\]]*)\]/);
-  if (!match) return [];
-  try {
-    return JSON.parse("[" + match[1] + "]");
-  } catch {
-    return [];
-  }
+  const urls = html.match(
+    /https:\/\/v\d*\.pinimg\.com\/videos\/[^"\\\s]+?\.(?:mp4|m3u8|mpd)/g
+  );
+  return urls ? [...new Set(urls)] : [];
 }
 
 /** The best downloadable MP4 from a `videoUrls` list, or null. Prefers H.264

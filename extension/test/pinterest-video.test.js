@@ -42,10 +42,22 @@ test("selectBestVideo: only manifests (HLS/DASH) → null", () => {
   assert.equal(selectBestVideo([]), null);
 });
 
-test("extractVideoUrls: pulls the array out of server HTML", () => {
+test("extractVideoUrls: pulls video-CDN URLs from a regular video pin", () => {
   const html = `<script>{"pin":{"videos":{"videoUrls":${JSON.stringify(realVideoUrls)}}}}</script>`;
-  assert.deepEqual(extractVideoUrls(html), realVideoUrls);
+  // Deduped set of every v*.pinimg.com/videos URL (mp4 + manifests).
+  assert.deepEqual(extractVideoUrls(html).sort(), [...new Set(realVideoUrls)].sort());
   assert.deepEqual(extractVideoUrls("<html>no video pin</html>"), []);
+});
+
+test("extractVideoUrls: pulls the MP4 from a STORY/IDEA pin (no videoUrls array)", () => {
+  // Real shape: the URL sits under a "url" key inside storyPinData, NOT a
+  // "videoUrls" array — the old regex missed it entirely.
+  const mp4 = `${B}/expMp4/65/da/4d/65da4d3ee2c1ce5dfbe5976248a822ab_720w.mp4`;
+  const hls = `${B}/hls/65/da/4d/65da4d3ee2c1ce5dfbe5976248a822ab.m3u8`;
+  const html = `x"storyPinData":{"pages":[{"blocks":[{"video":{"thumbnail":"https://i.pinimg.com/videos/thumbnails/x.jpg","url":"${mp4}","hls":"${hls}"}}]}]}x`;
+  const urls = extractVideoUrls(html);
+  assert.ok(urls.includes(mp4), "should find the story-pin MP4");
+  assert.equal(selectBestVideo(urls), mp4);
 });
 
 test("shouldResolveVideo: only for a pin with a pinId AND a video signal", () => {
