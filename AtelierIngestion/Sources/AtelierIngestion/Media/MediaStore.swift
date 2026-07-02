@@ -168,6 +168,42 @@ public struct MediaStore: Sendable {
         try Data(contentsOf: thumbnailURL(hash: hash, size: size, fileExtension: fileExtension))
     }
 
+    // MARK: - Removal (move to Trash)
+
+    /// Move the blob for `(hash, fileExtension)` to the user's Trash, returning
+    /// its new Trash location (or `nil` if the file didn't exist). IDEMPOTENT:
+    /// an already-absent blob is a no-op, not an error. Trash (not a hard delete)
+    /// so the media stays recoverable after a delete. Path math mirrors
+    /// ``blobURL(hash:fileExtension:)`` exactly, so it reclaims the same file
+    /// ``storeBlob(_:hash:fileExtension:)`` wrote.
+    @discardableResult
+    public func removeBlob(hash: String, fileExtension: String) throws -> URL? {
+        try trash(blobURL(hash: hash, fileExtension: fileExtension))
+    }
+
+    /// Move the thumbnail tier for `(hash, size, fileExtension)` to the Trash,
+    /// returning its new Trash location (or `nil` if absent). Idempotent — same
+    /// semantics as ``removeBlob(hash:fileExtension:)``.
+    @discardableResult
+    public func removeThumbnail(
+        hash: String, size: Int, fileExtension: String
+    ) throws -> URL? {
+        try trash(thumbnailURL(hash: hash, size: size, fileExtension: fileExtension))
+    }
+
+    /// Move `url` to the Trash, returning the resulting Trash URL, or `nil` when
+    /// the file is already absent (idempotent no-op). Any real IO failure is
+    /// rethrown. Uses `trashItem` rather than `removeItem` so the bytes remain
+    /// recoverable; the file lives under the app's own Library root, which the
+    /// app can always move.
+    private func trash(_ url: URL) throws -> URL? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return nil }
+        var resultingURL: NSURL?
+        try fm.trashItem(at: url, resultingItemURL: &resultingURL)
+        return resultingURL as URL?
+    }
+
     // MARK: - Atomic + idempotent write
 
     /// Write `data` to `destination` atomically and idempotently.
