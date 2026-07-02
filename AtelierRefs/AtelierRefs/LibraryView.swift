@@ -20,7 +20,11 @@ struct LibraryView: View {
     @State private var showInspector = true
     @State private var showCaptureInfo = false
 
-    private let columns = [GridItem(.adaptive(minimum: 112, maximum: 140), spacing: 8)]
+    private static let gridItemMinWidth: CGFloat = 112
+    private static let gridSpacing: CGFloat = 8
+    private let columns = [
+        GridItem(.adaptive(minimum: gridItemMinWidth, maximum: 140), spacing: gridSpacing)
+    ]
 
     var body: some View {
         NavigationSplitView {
@@ -197,37 +201,77 @@ struct LibraryView: View {
     }
 
     private var grid: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(model.items, id: \.item.id) { detail in
-                    Button {
-                        model.select(detail)
-                    } label: {
-                        FolderThumbnail(
-                            image: model.thumbnail(for: detail),
-                            isSelected: model.selectedItemID == detail.item.id)
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        Button("Remove from Folder") {
-                            model.removeFromFolder(assetIDs: [detail.asset.id])
+        // A `GeometryReader` gives the width the adaptive grid packs into, so
+        // Up/Down can step by the ACTUAL column count; a `ScrollViewReader` lets
+        // arrow-key selection scroll the newly-selected thumbnail into view.
+        GeometryReader { geo in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
+                        ForEach(model.items, id: \.item.id) { detail in
+                            Button {
+                                model.select(detail)
+                            } label: {
+                                FolderThumbnail(
+                                    image: model.thumbnail(for: detail),
+                                    isSelected: model.selectedItemID == detail.item.id)
+                            }
+                            .buttonStyle(.plain)
+                            .id(detail.item.id)
+                            .contextMenu {
+                                Button("Remove from Folder") {
+                                    model.removeFromFolder(assetIDs: [detail.asset.id])
+                                }
+                                Button("Delete", role: .destructive) {
+                                    model.requestDelete(assetIDs: [detail.asset.id])
+                                }
+                            }
                         }
-                        Button("Delete", role: .destructive) {
-                            model.requestDelete(assetIDs: [detail.asset.id])
-                        }
                     }
+                    .padding(.top, 4)
                 }
+                // Focus is required to receive key events; keep click-to-select
+                // and ⌫ / Delete (destructive → confirmed) working alongside.
+                .focusable()
+                .onDeleteCommand { model.requestDeleteSelected() }
+                .onKeyPress(.leftArrow) { move(.left, width: geo.size.width, proxy: proxy) }
+                .onKeyPress(.rightArrow) { move(.right, width: geo.size.width, proxy: proxy) }
+                .onKeyPress(.upArrow) { move(.up, width: geo.size.width, proxy: proxy) }
+                .onKeyPress(.downArrow) { move(.down, width: geo.size.width, proxy: proxy) }
             }
-            .padding(.top, 4)
         }
-        // ⌫ / Delete removes the selected thumbnail (destructive → confirmed).
-        .onDeleteCommand { model.requestDeleteSelected() }
         .overlay {
             if model.items.isEmpty {
                 Text("No items in this folder yet.")
                     .foregroundStyle(.tertiary)
             }
         }
+    }
+
+    /// Move the grid selection by one arrow press, then scroll the new selection
+    /// into view. Returns `.handled` when a grid item exists to act on (consuming
+    /// the arrow), `.ignored` for an empty folder.
+    private func move(
+        _ key: GridArrowKey, width: CGFloat, proxy: ScrollViewProxy
+    ) -> KeyPress.Result {
+        let currentIndex = model.selectedItemID.flatMap { id in
+            model.items.firstIndex { $0.item.id == id }
+        }
+        let columnCount = gridColumnCount(
+            availableWidth: width,
+            minItemWidth: Self.gridItemMinWidth,
+            spacing: Self.gridSpacing)
+        guard let target = nextGridIndex(
+            from: currentIndex, key: key,
+            count: model.items.count, columns: columnCount)
+        else { return .ignored }
+
+        let detail = model.items[target]
+        if detail.item.id != model.selectedItemID {
+            model.select(detail)
+        }
+        withAnimation { proxy.scrollTo(detail.item.id, anchor: .center) }
+        return .handled
     }
 
     // MARK: - Import actions
