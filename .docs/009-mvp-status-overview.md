@@ -51,8 +51,9 @@ documented fallback. See [005](./005-canvas-overview.md), `.change-log/001`–`0
 - [x] `IngestCoordinator` (bounded concurrency, progress, cancel-safe)
 - [x] Direct input: paste / drag (file or browser image) → correct provenance
 - [x] Paste bug fixed — reads the real file, not the icon/QuickLook preview
-- [ ] ⏸️ **Link resolution (fallback)** — paste a bare post/pin URL → resolve media
+- [ ] ⏸️ **Link resolution (fallback)** — paste/drag a bare URL → resolve media
       + provenance. Explicitly deferred (007 §scope); MVP-in-scope but not built.
+      Covers the reported direct-image-URL case — see **Backlog B1**.
 
 ### 4. Grid view — 🟡 partial
 A `LazyVGrid` thumbnail grid of a folder's direct items exists in `LibraryView`
@@ -107,6 +108,26 @@ surface. See [008](./008-folders-overview.md), `.change-log/020`–`022`.
 - [ ] **Runtime UI verification** — all SwiftUI is compile-verified only; no GUI
       auto-tests. A manual run-through of the app is pending.
 - [ ] XCUITest UI flows (drag-drop, grid interaction, inspector) — 004 §testing.
+
+## Backlog (reported gaps)
+
+Concrete issues hit in use, parked for later (not being worked now).
+
+- [ ] **B1 — Drag/paste an image *URL* does nothing.** Dragging an image that the
+      browser delivers as a URL only (e.g. a Pinterest image,
+      `https://i.pinimg.com/…​.jpg`), or pasting such a URL as text, is a silent
+      no-op: the app ingests bytes it's handed (`.data` / `.fileURL`) and never
+      downloads from a URL. Two parts:
+      - **Download a direct image URL** → fetch the bytes → ingest with the URL as
+        `.web` provenance. Scoped: direct image URLs only; a *page* URL that needs
+        HTML scraping stays with link-resolution / the Chrome extension (#6).
+        A small injectable `RemoteImageFetcher` in `AtelierIngestion` (unit-tested:
+        image / non-image / network-error paths). Crosses the deliberately-
+        deferred network-ingestion boundary (007 §scope).
+      - **Feedback on unhandled drops** — a drop the app can't read should say so
+        (status line) instead of doing nothing silently. (Small; independent of
+        the download work.)
+      Related: build-order #3 link-resolution (deferred), #6 Chrome extension.
 
 ## Deferred to later phases (designed-for, not MVP)
 - ⏸️ **Phase 2** — bulk import / backfill per platform; extension breadth
