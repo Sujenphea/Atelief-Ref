@@ -174,13 +174,19 @@ struct LibraryView: View {
 
     /// Convert dropped providers into inputs targeting the selected folder,
     /// off-main, then run them.
+    ///
+    /// A browser image drag delivers its source PAGE URL either on the same
+    /// provider as the image or as a separate URL provider, so we collect any
+    /// web URL across the whole drop FIRST, then attach it to the image(s) as
+    /// provenance — mirroring the pasteboard path (`DirectInputReader.inputs`).
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         guard model.isReady else { return false }
         let target = model.selectedFolderID
         Task {
+            let pageURL = await Self.firstWebURL(in: providers)
             var inputs: [IngestInput] = []
             for provider in providers {
-                if let input = await Self.input(from: provider, into: target) {
+                if let input = await Self.input(from: provider, pageURL: pageURL, into: target) {
                     inputs.append(input)
                 }
             }
@@ -191,10 +197,12 @@ struct LibraryView: View {
 
     // MARK: - NSItemProvider → IngestInput
 
-    /// Interpret one dropped provider (files → `.localDrag`; images →
-    /// `.localPaste`). Web-URL-only providers are skipped.
+    /// Interpret one dropped provider. Files → `.localDrag` (reading the real
+    /// bytes). An image with an accompanying web `pageURL` → `.web` (browser
+    /// image, page URL as provenance); an image without one → `.localPaste`.
+    /// URL-only providers are skipped (their URL is captured via `pageURL`).
     private nonisolated static func input(
-        from provider: NSItemProvider, into collectionID: UUID
+        from provider: NSItemProvider, pageURL: URL?, into collectionID: UUID
     ) async -> IngestInput? {
         let now = Date()
         if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier),
@@ -203,8 +211,28 @@ struct LibraryView: View {
         }
         if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier),
            let data = await loadData(provider, type: UTType.image.identifier) {
+            if let pageURL {
+                return DirectInputReader.browserImageInput(
+                    imageData: data, pageURL: pageURL, into: collectionID, at: now)
+            }
             return DirectInputReader.pasteInput(
                 imageData: data, sourceURL: nil, into: collectionID, at: now)
+        }
+        return nil
+    }
+
+    /// The first web (`http`/`https`) URL across all dropped providers, or `nil`.
+    /// File-URL providers are skipped (a file URL also conforms to `public.url`,
+    /// but it isn't provenance); the scheme test is shared with the pasteboard
+    /// path via `DirectInputReader.isWebURL`.
+    private nonisolated static func firstWebURL(in providers: [NSItemProvider]) async -> URL? {
+        for provider in providers {
+            guard provider.hasItemConformingToTypeIdentifier(UTType.url.identifier),
+                  !provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+            else { continue }
+            if let url = await loadURL(provider), DirectInputReader.isWebURL(url) {
+                return url
+            }
         }
         return nil
     }
