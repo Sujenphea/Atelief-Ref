@@ -16,7 +16,12 @@ import {
   buildCaptureRequest, postCapture, DEFAULT_ENDPOINT,
   buildProvenanceHeader, postVideoCapture,
 } from "./endpoint.js";
-import { resolveTwitterVideo, shouldResolveVideo } from "./twitter-video.js";
+import {
+  resolveTwitterVideo, shouldResolveVideo as twitterHasVideo,
+} from "./twitter-video.js";
+import {
+  resolvePinterestVideo, shouldResolveVideo as pinterestHasVideo,
+} from "./pinterest-video.js";
 
 const TOKEN_KEY = "atelierToken";
 
@@ -65,17 +70,27 @@ async function capture(tab, context) {
     return flash("KEY", "#e08c00", "Set your Atelier token in the extension options.");
   }
 
-  // A Twitter status may be a video. Syndication is the source of truth, so try it
-  // for any tweet with an id (unless the user explicitly right-clicked a photo).
-  // Any failure — incl. a non-video tweet (no MP4 variant) — falls through to the
-  // image path below, so a capture is never worse than before.
-  if (shouldResolveVideo(provenance, context)) {
-    try {
-      await captureVideo(provenance, provenance.rawMetadata.tweetId, token);
-      return;
-    } catch (error) {
-      console.log("[Atelier] no video / capture failed → image fallback", String(error));
+  // The post may be a video. Resolve the actual MP4 per platform, download it,
+  // and POST to /ingest-video. ANY failure (not a video, resolution/fetch/ingest
+  // error) falls through to the image path below, so a capture is never worse
+  // than before.
+  //   • Twitter — syndication API by tweet id (cheap), unless a /media/ photo was
+  //     explicitly right-clicked.
+  //   • Pinterest — fetch the pin page by id and parse its MP4 variants, only when
+  //     the harvested page actually shows a video (so image pins skip the fetch).
+  try {
+    let mp4Url = null;
+    if (twitterHasVideo(provenance, context)) {
+      mp4Url = await resolveTwitterVideo(provenance.rawMetadata.tweetId);
+    } else if (pinterestHasVideo(provenance, harvest)) {
+      mp4Url = await resolvePinterestVideo(provenance.rawMetadata.pinId);
     }
+    if (mp4Url) {
+      await downloadAndIngestVideo(provenance, mp4Url, token);
+      return;
+    }
+  } catch (error) {
+    console.log("[Atelier] no video / capture failed → image fallback", String(error));
   }
 
   const fetched = await fetchImage(
@@ -104,11 +119,10 @@ async function capture(tab, context) {
   }
 }
 
-/** Download a video tweet's actual MP4 and POST it to the video endpoint. Flashes
- * success; THROWS on any failure so the caller can fall back to the poster image.
- * A non-200 ingest also throws (the poster path may still succeed). */
-async function captureVideo(provenance, tweetId, token) {
-  const mp4Url = await resolveTwitterVideo(tweetId);
+/** Download the resolved MP4 and POST it to the video endpoint. Flashes success;
+ * THROWS on any failure so the caller can fall back to the poster image. A non-200
+ * ingest also throws (the poster path may still succeed). */
+async function downloadAndIngestVideo(provenance, mp4Url, token) {
   const response = await fetch(mp4Url);
   if (!response.ok) throw new Error(`video HTTP ${response.status} for ${mp4Url}`);
   const contentType = response.headers.get("content-type") || "";

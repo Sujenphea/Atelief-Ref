@@ -7,6 +7,7 @@
   "host_permissions": [
     "http://127.0.0.1/*",
     "*://*.twimg.com/*",
+    "*://*.pinterest.com/*",
     "*://*.pinimg.com/*",
     "*://*.cdninstagram.com/*",
     "*://*.fbcdn.net/*",

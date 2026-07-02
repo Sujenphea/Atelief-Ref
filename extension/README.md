@@ -22,12 +22,17 @@ localhost endpoint (`http://127.0.0.1:47321/ingest`).
 Supported sites: Twitter/X, Pinterest, Instagram, Cosmos, plus a generic
 Open-Graph fallback for any other page.
 
-**Video tweets** are saved as the **actual video**: the service worker resolves
-the tweet's MP4 via Twitter's public syndication API (by tweet id) and downloads
-it to the app's `/ingest-video` endpoint (the app renders a poster tile you can
-open to play). If MP4 resolution fails (e.g. Twitter changes the API), it falls
-back to capturing a still — the on-screen `<canvas>` frame if the video has been
-played, else Twitter's poster thumbnail.
+**Video posts are saved as the actual video** (the app renders a poster tile you
+can open to play). The service worker resolves the downloadable MP4 per platform,
+downloads it in-session, and POSTs it to `/ingest-video`:
+- **Twitter/X** — the tweet's MP4 via the public syndication API (by tweet id).
+- **Pinterest** — the pin's MP4, parsed from the pin page's `videoUrls` (fetched
+  cookie-less by pin id — a logged-in request returns a shell without them). Only
+  triggered when the page actually shows a video, so image pins skip the fetch.
+
+If MP4 resolution fails (e.g. a platform changes its API), it falls back to
+capturing a still — for Twitter the on-screen `<canvas>` frame if the video has
+been played, else the poster thumbnail.
 
 ## Install (unpacked, for development)
 

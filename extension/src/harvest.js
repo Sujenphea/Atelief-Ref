@@ -68,6 +68,19 @@ export function harvestSignals() {
         alt: null,
       });
     }
+    // A real (non-blob) video source is a strong "this is a video" signal — even
+    // when it's an HLS manifest we can't ingest directly, it tells the SW to
+    // resolve the downloadable MP4 (e.g. a Pinterest video pin).
+    const videoSrc = video.currentSrc || video.getAttribute("src") || "";
+    if (videoSrc && !videoSrc.startsWith("blob:") && !videoSrc.startsWith("data:")) {
+      media.push({
+        kind: "video-src",
+        src: videoSrc,
+        width: video.videoWidth || 0,
+        height: video.videoHeight || 0,
+        alt: null,
+      });
+    }
   }
 
   const canonicalEl = document.querySelector('link[rel="canonical"]');
