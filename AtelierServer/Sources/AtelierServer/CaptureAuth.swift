@@ -99,7 +99,8 @@ public struct CaptureAuth: Sendable {
     public func corsHeaders(origin: String?) -> [String: String] {
         var headers = [
             "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, \(Self.tokenHeaderName)",
+            "Access-Control-Allow-Headers":
+                "Content-Type, \(Self.tokenHeaderName), \(CaptureDecoder.provenanceHeaderName)",
             "Access-Control-Max-Age": "600",
             "Vary": "Origin",
         ]

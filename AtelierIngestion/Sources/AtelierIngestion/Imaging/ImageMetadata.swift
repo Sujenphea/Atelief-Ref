@@ -16,6 +16,7 @@
 //     whether the bytes are a still image or a movie, and gives the canonical
 //     MIME + extension.
 
+import AVFoundation
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -39,13 +40,19 @@ public struct ImageMetadata: Sendable, Equatable {
     public let kind: AssetKind
     /// The container's canonical filename extension (e.g. `png`, `jpeg`), no dot.
     public let fileExtension: String
+    /// Playback duration in seconds for a `.video`; `nil` for a still image.
+    public let duration: Double?
 
-    public init(width: Int, height: Int, mimeType: String, kind: AssetKind, fileExtension: String) {
+    public init(
+        width: Int, height: Int, mimeType: String, kind: AssetKind,
+        fileExtension: String, duration: Double? = nil
+    ) {
         self.width = width
         self.height = height
         self.mimeType = mimeType
         self.kind = kind
         self.fileExtension = fileExtension
+        self.duration = duration
     }
 }
 
@@ -99,6 +106,53 @@ extension ImageMetadata {
         return ImageMetadata(
             width: width, height: height,
             mimeType: mimeType, kind: kind, fileExtension: fileExtension)
+    }
+
+    /// Extract metadata from a MOVIE container's `data` via AVFoundation — the
+    /// video counterpart to ``extract(from:)`` (which can't, since `CGImageSource`
+    /// won't open movie containers). AVFoundation needs a URL, so the bytes are
+    /// written to a temp file for the read.
+    ///
+    /// Dimensions are DISPLAY-oriented: the video track's `naturalSize` is run
+    /// through its `preferredTransform` (which encodes any rotation), matching how
+    /// the poster thumbnail — and a player — present it.
+    ///
+    /// Throws ``ImageError/unsupportedType(mime:)`` if the container has no video
+    /// track, or ``ImageError/unreadable`` if the bytes can't be staged/opened.
+    public static func videoMetadata(from data: Data) async throws -> ImageMetadata {
+        let (mime, fileExtension) = MediaProbe.movieContainer(data)
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(fileExtension)
+        do {
+            try data.write(to: tempURL)
+        } catch {
+            throw ImageError.unreadable
+        }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let asset = AVURLAsset(url: tempURL)
+        do {
+            guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+                throw ImageError.unsupportedType(mime: mime)
+            }
+            let (naturalSize, transform) = try await track.load(.naturalSize, .preferredTransform)
+            let displayed = naturalSize.applying(transform)
+            let width = Int(abs(displayed.width).rounded())
+            let height = Int(abs(displayed.height).rounded())
+
+            let seconds = try await CMTimeGetSeconds(asset.load(.duration))
+            let duration = seconds.isFinite && seconds > 0 ? seconds : nil
+
+            return ImageMetadata(
+                width: width, height: height, mimeType: mime, kind: .video,
+                fileExtension: fileExtension, duration: duration)
+        } catch let error as ImageError {
+            throw error
+        } catch {
+            throw ImageError.unreadable
+        }
     }
 
     /// Classify a container UTI into an ``AssetKind``, or throw

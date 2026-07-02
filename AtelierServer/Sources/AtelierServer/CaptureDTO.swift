@@ -88,10 +88,33 @@ public struct CaptureResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// The metadata that rides alongside a raw **video** upload. The image path
+/// carries provenance inside the JSON body, but a video body is the raw file
+/// bytes (streamed, never base64/JSON — see ``CaptureServer``), so its provenance
+/// travels in the ``CaptureDecoder/provenanceHeaderName`` header as base64 JSON of
+/// this DTO. Same fields as ``CaptureRequest`` minus the inline image.
+public struct VideoCaptureHeader: Codable, Equatable, Sendable {
+    public var provenance: ProvenanceDTO
+    public var collectionId: UUID?
+
+    public init(provenance: ProvenanceDTO, collectionId: UUID? = nil) {
+        self.provenance = provenance
+        self.collectionId = collectionId
+    }
+}
+
 /// A validated capture, ready to become an ``IngestInput`` — the output of the
 /// pure `decode` step.
 public struct DecodedCapture: Equatable, Sendable {
     public let imageData: Data
+    public let provenance: SourceDraft
+    public let collectionID: UUID?
+}
+
+/// A validated **video** capture: its provenance (from the header) + target
+/// collection. The bytes are NOT here — they were streamed to a temp file whose
+/// URL the route pairs with this (``CaptureRoutes/handleIngestVideo``).
+public struct DecodedVideoCapture: Equatable, Sendable {
     public let provenance: SourceDraft
     public let collectionID: UUID?
 }
@@ -103,6 +126,8 @@ public enum CaptureDecodeError: Error, Equatable {
     case invalidBase64
     case emptyImage
     case unknownPlatform(String)
+    case missingProvenanceHeader
+    case malformedProvenanceHeader
 
     public var message: String {
         switch self {
@@ -110,11 +135,21 @@ public enum CaptureDecodeError: Error, Equatable {
         case .invalidBase64: return "The `image` field is not valid base64."
         case .emptyImage: return "The decoded image is empty."
         case .unknownPlatform(let value): return "Unknown platform '\(value)'."
+        case .missingProvenanceHeader:
+            return "Missing the \(CaptureDecoder.provenanceHeaderName) header."
+        case .malformedProvenanceHeader:
+            return "The \(CaptureDecoder.provenanceHeaderName) header is not valid "
+                + "base64-encoded VideoCaptureHeader JSON."
         }
     }
 }
 
 public enum CaptureDecoder {
+    /// The request header carrying a video capture's provenance (base64 JSON of
+    /// ``VideoCaptureHeader``). Named in the CORS allow-list so the browser lets
+    /// the POST through (``CaptureAuth/corsHeaders(origin:)``).
+    public static let provenanceHeaderName = "X-Atelier-Provenance"
+
     /// Turn a raw JSON request body into a validated ``DecodedCapture``.
     ///
     /// `now` is the server-owned capture timestamp (we do NOT trust a
@@ -136,22 +171,53 @@ public enum CaptureDecoder {
         guard !imageData.isEmpty else {
             throw CaptureDecodeError.emptyImage
         }
-        guard let platform = Platform(rawValue: request.provenance.platform) else {
-            throw CaptureDecodeError.unknownPlatform(request.provenance.platform)
-        }
-
-        let provenance = SourceDraft(
-            platform: platform,
-            originalURL: request.provenance.originalURL,
-            authorHandle: request.provenance.authorHandle,
-            authorName: request.provenance.authorName,
-            title: request.provenance.title,
-            capturedAt: now,
-            rawMetadata: request.provenance.rawMetadata ?? .object([:]))
 
         return DecodedCapture(
             imageData: imageData,
-            provenance: provenance,
+            provenance: try makeSourceDraft(request.provenance, now: now),
             collectionID: request.collectionId)
+    }
+
+    /// Turn the base64-JSON provenance header of a **video** upload into a
+    /// validated ``DecodedVideoCapture``. The bytes are handled separately (the
+    /// route streamed them to a temp file); this validates only the metadata, with
+    /// the same platform check + server-owned `now` as ``decode(body:now:)``.
+    public static func decodeVideoHeader(
+        _ headerValue: String?, now: Date
+    ) throws -> DecodedVideoCapture {
+        guard let headerValue, !headerValue.isEmpty else {
+            throw CaptureDecodeError.missingProvenanceHeader
+        }
+        guard let json = Data(base64Encoded: headerValue) else {
+            throw CaptureDecodeError.malformedProvenanceHeader
+        }
+        let header: VideoCaptureHeader
+        do {
+            header = try JSONDecoder().decode(VideoCaptureHeader.self, from: json)
+        } catch {
+            throw CaptureDecodeError.malformedProvenanceHeader
+        }
+        return DecodedVideoCapture(
+            provenance: try makeSourceDraft(header.provenance, now: now),
+            collectionID: header.collectionId)
+    }
+
+    /// Validate a wire ``ProvenanceDTO`` into a ``SourceDraft`` (shared by the
+    /// image and video paths — DRY). The only structural check is a known
+    /// `platform`; `now` is the server-owned capture time.
+    private static func makeSourceDraft(
+        _ dto: ProvenanceDTO, now: Date
+    ) throws -> SourceDraft {
+        guard let platform = Platform(rawValue: dto.platform) else {
+            throw CaptureDecodeError.unknownPlatform(dto.platform)
+        }
+        return SourceDraft(
+            platform: platform,
+            originalURL: dto.originalURL,
+            authorHandle: dto.authorHandle,
+            authorName: dto.authorName,
+            title: dto.title,
+            capturedAt: now,
+            rawMetadata: dto.rawMetadata ?? .object([:]))
     }
 }

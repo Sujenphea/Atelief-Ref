@@ -66,7 +66,34 @@ public struct CaptureRoutes: Sendable {
             imageData: decoded.imageData,
             provenance: decoded.provenance,
             into: collectionID)
+        return await ingest(input, into: collectionID)
+    }
 
+    /// Ingest one captured **video** from a temp file the transport already
+    /// streamed to disk (its bytes never sit in memory as base64/JSON). Provenance
+    /// arrives in the ``CaptureDecoder/provenanceHeaderName`` header rather than
+    /// the body. `now` is the server-owned capture time. Never throws.
+    public func handleIngestVideo(
+        fileURL: URL, provenanceHeader: String?, now: Date
+    ) async -> HandlerResult {
+        let decoded: DecodedVideoCapture
+        do {
+            decoded = try CaptureDecoder.decodeVideoHeader(provenanceHeader, now: now)
+        } catch let error as CaptureDecodeError {
+            return HandlerResult(statusCode: 400, response: .error(error.message))
+        } catch {
+            return HandlerResult(statusCode: 400, response: .error("Bad request."))
+        }
+
+        let collectionID = decoded.collectionID ?? defaultCollectionID()
+        let input = DirectInputReader.remoteVideo(
+            fileURL: fileURL, provenance: decoded.provenance, into: collectionID)
+        return await ingest(input, into: collectionID)
+    }
+
+    /// Run one input through the shared coordinator, fire `onCapture`, and map the
+    /// single outcome to a `HandlerResult` (image + video paths share this — DRY).
+    private func ingest(_ input: IngestInput, into collectionID: UUID) async -> HandlerResult {
         let outcomes = await coordinator.ingest([input])
         onCapture?(collectionID, outcomes)
 

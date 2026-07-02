@@ -47,6 +47,22 @@ public struct IngestPipeline: Sendable {
     /// ``ThumbnailGenerator``'s JPEG output).
     private static let thumbnailExtension = "jpg"
 
+    /// Byte-derived metadata, trying the still-image path first and falling back to
+    /// the AVFoundation video path for movie containers (which `CGImageSource`
+    /// can't open). Image-first ordering keeps `ftyp`-based image formats (HEIC,
+    /// AVIF) on the image path; the video path is attempted only when the image
+    /// path fails AND the bytes actually sniff as a movie, so a corrupt image still
+    /// surfaces its own `decodeFailed`/`unreadable` error rather than a misleading
+    /// "unsupported".
+    private static func extractMetadata(from bytes: Data) async throws -> ImageMetadata {
+        do {
+            return try ImageMetadata.extract(from: bytes)
+        } catch let error as ImageError {
+            guard MediaProbe.looksLikeMovie(bytes) else { throw error }
+            return try await ImageMetadata.videoMetadata(from: bytes)
+        }
+    }
+
     /// Ingest one image. Never throws — any thrown error is folded to
     /// `.failed(IngestError(mapping:))` (C8).
     ///
@@ -79,8 +95,9 @@ public struct IngestPipeline: Sendable {
             let hash = ContentHasher.hash(bytes)
 
             // 3. Byte-derived metadata (throws ImageError → decode/unsupported/
-            //    unreadable via IngestError(mapping:)).
-            let meta = try ImageMetadata.extract(from: bytes)
+            //    unreadable via IngestError(mapping:)). A movie container can't be
+            //    read by CGImageSource, so it falls back to the AVFoundation path.
+            let meta = try await Self.extractMetadata(from: bytes)
 
             // 4. Blob-first (A2) + hash-first short-circuit (P14).
             //    Store the blob only if it is not already present; a blob that
@@ -93,18 +110,29 @@ public struct IngestPipeline: Sendable {
                 }
             }
 
-            // Generate + store ONLY the missing thumbnail tiers. A tier already
-            // on disk is skipped (no decode); a purged tier is regenerated.
-            for tier in tiers where !store.hasThumbnail(
-                hash: hash, size: tier.rawValue, fileExtension: Self.thumbnailExtension
-            ) {
-                let thumbnail = try ThumbnailGenerator.makeThumbnail(from: bytes, tier: tier)
-                do {
-                    try store.storeThumbnail(
-                        thumbnail, hash: hash, size: tier.rawValue,
-                        fileExtension: Self.thumbnailExtension)
-                } catch {
-                    throw IngestError.blobWriteFailed
+            // Generate + store ONLY the missing thumbnail tiers. A tier already on
+            // disk is skipped (no decode); a purged tier is regenerated. For a
+            // video the thumbnail source is a poster frame rendered ONCE at the
+            // largest tier (P14: only when a tier is actually missing).
+            let missingTiers = tiers.filter {
+                !store.hasThumbnail(
+                    hash: hash, size: $0.rawValue, fileExtension: Self.thumbnailExtension)
+            }
+            if !missingTiers.isEmpty {
+                let thumbnailSource = meta.kind == .video
+                    ? try await ThumbnailGenerator.makeVideoPoster(
+                        from: bytes, maxPixelSize: ThumbnailTier.large.rawValue)
+                    : bytes
+                for tier in missingTiers {
+                    let thumbnail = try ThumbnailGenerator.makeThumbnail(
+                        from: thumbnailSource, tier: tier)
+                    do {
+                        try store.storeThumbnail(
+                            thumbnail, hash: hash, size: tier.rawValue,
+                            fileExtension: Self.thumbnailExtension)
+                    } catch {
+                        throw IngestError.blobWriteFailed
+                    }
                 }
             }
 
@@ -116,7 +144,7 @@ public struct IngestPipeline: Sendable {
                 mimeType: meta.mimeType,
                 width: meta.width,
                 height: meta.height,
-                duration: nil,
+                duration: meta.duration,
                 fileSize: bytes.count,
                 downloadState: .downloaded)
             let result = try await services.ingest(

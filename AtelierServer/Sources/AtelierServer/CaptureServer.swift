@@ -27,9 +27,13 @@ public actor CaptureServer {
     /// The fixed default port the extension hard-codes (P4). `0` lets the OS pick
     /// an ephemeral port (used by integration tests).
     public static let defaultPort: UInt16 = 47321
-    /// Reject bodies larger than this (P1). 50 MB comfortably covers any single
-    /// captured image while bounding worst-case memory.
+    /// Reject image bodies larger than this (P1). 50 MB comfortably covers any
+    /// single captured image while bounding worst-case memory.
     public static let defaultMaxBodyBytes = 50 * 1024 * 1024
+    /// Reject video uploads larger than this. Videos are much larger than images
+    /// but are STREAMED to a temp file (never buffered as base64/JSON), so the cap
+    /// bounds disk use, not memory. 512 MB covers any reasonable social clip.
+    public static let defaultMaxVideoBodyBytes = 512 * 1024 * 1024
 
     private let port: UInt16
     private let handler: CaptureHTTPHandler
@@ -40,11 +44,13 @@ public actor CaptureServer {
         port: UInt16 = CaptureServer.defaultPort,
         auth: CaptureAuth,
         routes: CaptureRoutes,
-        maxBodyBytes: Int = CaptureServer.defaultMaxBodyBytes
+        maxBodyBytes: Int = CaptureServer.defaultMaxBodyBytes,
+        maxVideoBodyBytes: Int = CaptureServer.defaultMaxVideoBodyBytes
     ) {
         self.port = port
         self.handler = CaptureHTTPHandler(
-            auth: auth, routes: routes, maxBodyBytes: maxBodyBytes)
+            auth: auth, routes: routes,
+            maxBodyBytes: maxBodyBytes, maxVideoBodyBytes: maxVideoBodyBytes)
     }
 
     /// Bind the loopback listener and start serving. Idempotent. Throws if the
@@ -94,6 +100,11 @@ struct CaptureHTTPHandler: HTTPHandler {
     let auth: CaptureAuth
     let routes: CaptureRoutes
     let maxBodyBytes: Int
+    let maxVideoBodyBytes: Int
+
+    /// Raised while streaming a body when it exceeds the cap — distinguishes a
+    /// too-large upload (→ 413) from an I/O failure (→ 500).
+    private struct BodyTooLarge: Error {}
 
     func handleRequest(_ request: HTTPRequest) async throws -> HTTPResponse {
         let origin = request.headers[HTTPHeader("Origin")]
@@ -111,15 +122,23 @@ struct CaptureHTTPHandler: HTTPHandler {
             break
         }
 
-        // Liveness/authorized probe.
-        if request.method == .GET, request.path == "/health" {
+        switch (request.method, request.path) {
+        case (.GET, "/health"):
             return makeResponse(.ok, cors: cors, body: CaptureResponse(status: "ok"))
-        }
-
-        guard request.method == .POST, request.path == "/ingest" else {
+        case (.POST, "/ingest"):
+            return try await handleImageIngest(request, cors: cors)
+        case (.POST, "/ingest-video"):
+            return await handleVideoIngest(request, cors: cors)
+        default:
             return makeResponse(.notFound, cors: cors, body: .error("Not found."))
         }
+    }
 
+    /// The base64-image-in-JSON path: buffer the whole (modest) body, cap it,
+    /// hand to the pure route.
+    private func handleImageIngest(
+        _ request: HTTPRequest, cors: [String: String]
+    ) async throws -> HTTPResponse {
         // Body-size cap (P1): reject via Content-Length before buffering when we
         // can, then re-check the actual bytes in case the header was absent/lying.
         if let lengthHeader = request.headers[.contentLength],
@@ -136,6 +155,68 @@ struct CaptureHTTPHandler: HTTPHandler {
         let result = await routes.handleIngest(body: body, now: Date())
         return makeResponse(
             statusCode(result.statusCode), cors: cors, body: result.response)
+    }
+
+    /// The raw-video path: the body is the file bytes, provenance rides in a
+    /// header. STREAM the body to a temp file (never a single in-memory `Data`,
+    /// which would spike ~0.5 GB on a large clip), cap it while streaming, then
+    /// ingest via the file URL. The temp file is removed once ingest has read it.
+    private func handleVideoIngest(
+        _ request: HTTPRequest, cors: [String: String]
+    ) async -> HTTPResponse {
+        // Early reject via Content-Length before writing a single byte.
+        if let lengthHeader = request.headers[.contentLength],
+           let declared = Int(lengthHeader), declared > maxVideoBodyBytes {
+            return makeResponse(
+                .payloadTooLarge, cors: cors, body: .error("Payload too large."))
+        }
+
+        let header = request.headers[HTTPHeader(CaptureDecoder.provenanceHeaderName)]
+        let fileURL: URL
+        do {
+            fileURL = try await streamBodyToTempFile(request, cap: maxVideoBodyBytes)
+        } catch is BodyTooLarge {
+            return makeResponse(
+                .payloadTooLarge, cors: cors, body: .error("Payload too large."))
+        } catch {
+            return makeResponse(
+                .internalServerError, cors: cors,
+                body: .error("Could not read the upload."))
+        }
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let result = await routes.handleIngestVideo(
+            fileURL: fileURL, provenanceHeader: header, now: Date())
+        return makeResponse(
+            statusCode(result.statusCode), cors: cors, body: result.response)
+    }
+
+    /// Stream the request body to a fresh temp file, enforcing `cap` as bytes
+    /// arrive. Throws `BodyTooLarge` past the cap (deleting the partial file), or
+    /// rethrows an I/O error. Returns the temp file URL on success.
+    private func streamBodyToTempFile(_ request: HTTPRequest, cap: Int) async throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atelier-capture", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(UUID().uuidString)
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: url)
+
+        var total = 0
+        do {
+            for try await chunk in request.bodySequence {
+                total += chunk.count
+                if total > cap { throw BodyTooLarge() }
+                try handle.write(contentsOf: chunk)
+            }
+            try handle.close()
+        } catch {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
+        return url
     }
 
     private func makeResponse(
