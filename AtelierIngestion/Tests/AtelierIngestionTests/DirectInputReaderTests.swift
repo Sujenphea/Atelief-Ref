@@ -87,6 +87,32 @@ struct DirectInputReaderTests {
         }
     }
 
+    @Test("remoteInput → carries the caller's SourceDraft verbatim + bytes in-memory")
+    func remoteInputProvenance() {
+        let provenance = SourceDraft(
+            platform: .twitter,
+            originalURL: "https://x.com/designer/status/42",
+            authorHandle: "@designer",
+            authorName: "A Designer",
+            title: "a great reference",
+            capturedAt: Self.capturedAt,
+            rawMetadata: .object(["likes": .number(1234)]))
+        let input = DirectInputReader.remoteInput(
+            imageData: Data([0xDE, 0xAD]), provenance: provenance,
+            into: Self.collectionID)
+
+        // The rich provenance is passed straight through, unmodified.
+        #expect(input.provenance == provenance)
+        #expect(input.provenance.platform == .twitter)
+        #expect(input.provenance.authorHandle == "@designer")
+        #expect(input.collectionID == Self.collectionID)
+        if case .data(let d) = input.source {
+            #expect(d == Data([0xDE, 0xAD]))
+        } else {
+            Issue.record("expected .data source (bytes ride in with the request)")
+        }
+    }
+
     // MARK: - Pasteboard interpretation (named pasteboard, no GUI)
 
     /// A fresh, uniquely-named pasteboard so tests never touch `.general` and

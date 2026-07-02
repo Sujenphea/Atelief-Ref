@@ -73,6 +73,25 @@ public enum DirectInputReader {
             collectionID: collectionID)
     }
 
+    /// A REMOTE capture (the Chrome extension) → an ``IngestInput`` from bytes the
+    /// caller already fetched plus a fully-populated ``SourceDraft``.
+    ///
+    /// Unlike the three local factories above, the provenance is built by the
+    /// caller (the localhost endpoint, from the extension's JSON) rather than
+    /// derived here — the extension's whole value is rich per-site provenance
+    /// (platform, author, title, `raw_metadata`), so this factory stays a thin,
+    /// DRY wrapper over the same ``IngestInput`` shape the pipeline already
+    /// ingests. The app never downloads: the bytes ride in with the request
+    /// (007 §scope — the app stays off the network).
+    public static func remoteInput(
+        imageData: Data, provenance: SourceDraft, into collectionID: UUID
+    ) -> IngestInput {
+        IngestInput(
+            source: .data(imageData),
+            provenance: provenance,
+            collectionID: collectionID)
+    }
+
     // MARK: - Pasteboard interpretation
 
     /// The image data types we recognize on a pasteboard, in preference order.
