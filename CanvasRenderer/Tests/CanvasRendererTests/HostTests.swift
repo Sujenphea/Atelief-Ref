@@ -147,13 +147,23 @@ struct DecodeSchedulerTests {
         let key = ThumbnailCache.Key(imageID: 0, tier: .low)
 
         await confirmation("onDecoded fires once") { decoded in
-            scheduler.onDecoded = { firedKey in
-                #expect(firedKey == key)
-                decoded()
+            // Await the real completion signal — the main-actor `onDecoded`
+            // callback — instead of guessing at a wall-clock window. The
+            // scheduler fires `onDecoded` exactly once for this key after it has
+            // populated the cache and cleared the in-flight entry, so bridging it
+            // to a continuation lets the test proceed the instant the decode
+            // completes (no race under parallel suite load).
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                var resumed = false // guard: resume exactly once (all on main actor)
+                scheduler.onDecoded = { firedKey in
+                    #expect(firedKey == key)
+                    decoded()
+                    guard !resumed else { return }
+                    resumed = true
+                    continuation.resume()
+                }
+                scheduler.request(key: key, data: images.encoded[0], maxPixelSize: 128)
             }
-            scheduler.request(key: key, data: images.encoded[0], maxPixelSize: 128)
-            // Give the background decode + main-actor hop time to complete.
-            try? await Task.sleep(for: .seconds(2))
         }
         #expect(cache.image(for: key) != nil)
         #expect(scheduler.inFlightCount == 0)
