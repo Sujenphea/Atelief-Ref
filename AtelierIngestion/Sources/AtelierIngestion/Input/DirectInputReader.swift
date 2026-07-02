@@ -163,8 +163,10 @@ public enum DirectInputReader {
     }
 
     /// Whether `url` looks like a web PAGE (an `http`/`https` scheme) — the
-    /// marker that distinguishes a browser-image drag from a plain paste.
-    private static func isWebURL(_ url: URL) -> Bool {
+    /// marker that distinguishes a browser image (paste OR drag) from a plain
+    /// paste/file. Public so the app's drop handler shares one definition of
+    /// "web URL" with the pasteboard path (they must agree).
+    public static func isWebURL(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased() else { return false }
         return scheme == "http" || scheme == "https"
     }
