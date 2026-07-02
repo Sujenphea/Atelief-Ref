@@ -18,6 +18,7 @@ struct LibraryView: View {
     @ObservedObject var model: IngestionModel
     @State private var isTargeted = false
     @State private var showInspector = true
+    @State private var showCaptureInfo = false
 
     private let columns = [GridItem(.adaptive(minimum: 112, maximum: 140), spacing: 8)]
 
@@ -45,12 +46,69 @@ struct LibraryView: View {
         .toolbar {
             ToolbarItem {
                 Button {
+                    showCaptureInfo.toggle()
+                } label: {
+                    Label("Browser Capture", systemImage: "puzzlepiece.extension")
+                }
+                .popover(isPresented: $showCaptureInfo, arrowEdge: .bottom) {
+                    captureInfo
+                }
+            }
+            ToolbarItem {
+                Button {
                     showInspector.toggle()
                 } label: {
                     Label("Toggle Inspector", systemImage: "sidebar.right")
                 }
             }
         }
+    }
+
+    // MARK: - Browser capture info
+
+    /// The endpoint status + the token to paste into the Chrome extension.
+    private var captureInfo: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Browser Capture", systemImage: "puzzlepiece.extension")
+                .font(.headline)
+
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(model.captureEndpointRunning ? Color.green : Color.orange)
+                    .frame(width: 8, height: 8)
+                Text(model.captureEndpointRunning
+                     ? "Listening on 127.0.0.1:\(model.capturePort)"
+                     : "Endpoint unavailable (port \(model.capturePort) in use)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            Text("Extension token")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text(model.captureToken.isEmpty ? "—" : model.captureToken)
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                Spacer()
+                Button {
+                    model.copyCaptureToken()
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .disabled(model.captureToken.isEmpty)
+            }
+
+            Text("Paste this token into the Atelier Chrome extension's options to authorize captures.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding()
+        .frame(width: 320)
     }
 
     // MARK: - Detail

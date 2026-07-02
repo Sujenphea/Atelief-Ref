@@ -13,6 +13,7 @@
 import AppKit
 import AtelierCore
 import AtelierIngestion
+import AtelierServer
 import Combine
 import SwiftUI
 
@@ -86,10 +87,25 @@ final class IngestionModel: ObservableObject {
         var total: Int
     }
 
+    // MARK: - Capture endpoint (Chrome extension)
+
+    /// The shared-secret the extension must present (shown in the UI so the user
+    /// can paste it into the extension's options). Empty until the Library opens.
+    @Published private(set) var captureToken: String = ""
+    /// The loopback port the capture endpoint listens on.
+    let capturePort = CaptureServer.defaultPort
+    /// Whether the capture endpoint bound successfully (false if the port was in
+    /// use). Drives a hint in the UI.
+    @Published private(set) var captureEndpointRunning = false
+
     // The Library, populated once `bootstrap()` completes.
     private var store: MediaStore?
     private var coordinator: IngestCoordinator?
     private var services: AppServices?
+    private var captureServer: CaptureServer?
+
+    /// UserDefaults key persisting the capture token across launches.
+    private static let captureTokenKey = "AtelierCaptureToken"
 
     /// The protected default import target (available before the Library opens).
     var unsortedFolderID: UUID { Collection.unsortedID }
@@ -127,19 +143,90 @@ final class IngestionModel: ObservableObject {
             let services = try AppServices(databasePath: dbPath)
 
             let pipeline = IngestPipeline(store: store, services: services)
+            let coordinator = IngestCoordinator(pipeline: pipeline)
             self.store = store
             self.services = services
-            self.coordinator = IngestCoordinator(pipeline: pipeline)
+            self.coordinator = coordinator
             self.selectedFolderID = services.unsortedFolderID
             self.isReady = true
             self.status = "Library ready — paste an image or drop a file."
 
             await refreshFolders()
             loadContents(of: selectedFolderID)
+            await startCaptureEndpoint(coordinator: coordinator)
         } catch {
             self.lastError = "Failed to open library: \(error)"
             self.status = "Failed to open library."
         }
+    }
+
+    // MARK: - Capture endpoint
+
+    /// Start the localhost capture endpoint the Chrome extension POSTs to. Runs
+    /// off the launch path; a bind failure (port already in use) is surfaced as a
+    /// hint, never fatal — the app is fully usable without the extension.
+    ///
+    /// Captures ingest through the SAME bounded coordinator as paste/drag (no new
+    /// queue), defaulting to the protected Unsorted folder when the request omits
+    /// a target. `onCapture` hops to the main actor to refresh the live UI (CQ1).
+    private func startCaptureEndpoint(coordinator: IngestCoordinator) async {
+        let token = loadOrCreateCaptureToken()
+        self.captureToken = token
+
+        let routes = CaptureRoutes(
+            coordinator: coordinator,
+            defaultCollectionID: { Collection.unsortedID },
+            onCapture: { [weak self] collectionID, outcomes in
+                Task { @MainActor in
+                    self?.handleRemoteCapture(collectionID: collectionID, outcomes: outcomes)
+                }
+            })
+        let server = CaptureServer(auth: CaptureAuth(token: token), routes: routes)
+        self.captureServer = server
+
+        do {
+            try await server.start()
+            captureEndpointRunning = true
+            status = "Library ready — capture endpoint on 127.0.0.1:\(capturePort)."
+        } catch {
+            captureEndpointRunning = false
+            status = "Library ready. Capture endpoint unavailable (port \(capturePort) in use)."
+        }
+    }
+
+    /// Refresh the live UI after a browser capture: reload the visible folder when
+    /// it received the item, and always refresh the tree's counts. Runs on the
+    /// main actor (hopped from the server's off-main callback).
+    private func handleRemoteCapture(collectionID: UUID, outcomes: [IngestOutcome]) {
+        let imported = outcomes.reduce(into: 0) { count, outcome in
+            if case .ingested = outcome { count += 1 }
+        }
+        Task { await refreshFolders() }
+        if collectionID == selectedFolderID {
+            loadContents(of: selectedFolderID)
+        }
+        status = imported > 0
+            ? "Captured \(imported) from the browser."
+            : "A browser capture failed."
+    }
+
+    /// Load the persisted capture token, generating and storing one on first run.
+    private func loadOrCreateCaptureToken() -> String {
+        let defaults = UserDefaults.standard
+        if let existing = defaults.string(forKey: Self.captureTokenKey),
+           !existing.isEmpty {
+            return existing
+        }
+        let token = CaptureToken.generate()
+        defaults.set(token, forKey: Self.captureTokenKey)
+        return token
+    }
+
+    /// Copy the capture token to the pasteboard (for pasting into the extension).
+    func copyCaptureToken() {
+        guard !captureToken.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(captureToken, forType: .string)
     }
 
     // MARK: - Folder actions

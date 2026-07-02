@@ -1,6 +1,15 @@
 {
-  "originHash" : "7bd58b20bd4afdeb16702199280002d4460b8f5fa8c338b730e58c8fe9548bfa",
+  "originHash" : "69843189d476060f6bacac9ce12a252d004b23ec09a5082b61c5bce17a140fbf",
   "pins" : [
+    {
+      "identity" : "flyingfox",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swhitty/FlyingFox.git",
+      "state" : {
+        "revision" : "de38230104cf63ef4843cb569ba11c13f8165685",
+        "version" : "0.26.2"
+      }
+    },
     {
       "identity" : "grdb.swift",
       "kind" : "remoteSourceControl",
