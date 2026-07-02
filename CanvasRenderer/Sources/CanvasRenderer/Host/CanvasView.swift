@@ -8,15 +8,25 @@ import SwiftUI
 public struct CanvasView: NSViewRepresentable {
     private let provider: any TileProvider
     private let images: any TileImageSource
+    private let onActivateTile: ((Int) -> Void)?
 
-    public init(provider: any TileProvider, images: any TileImageSource) {
+    public init(
+        provider: any TileProvider,
+        images: any TileImageSource,
+        onActivateTile: ((Int) -> Void)? = nil
+    ) {
         self.provider = provider
         self.images = images
+        self.onActivateTile = onActivateTile
     }
 
     public func makeNSView(context: Context) -> CanvasHostView {
-        CanvasHostView(provider: provider, images: images)
+        let view = CanvasHostView(provider: provider, images: images)
+        view.onActivateTile = onActivateTile
+        return view
     }
 
-    public func updateNSView(_ nsView: CanvasHostView, context: Context) {}
+    public func updateNSView(_ nsView: CanvasHostView, context: Context) {
+        nsView.onActivateTile = onActivateTile
+    }
 }

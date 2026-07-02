@@ -8,6 +8,10 @@ public final class CanvasHostView: NSView {
     private let engine: CanvasEngine
     private var hasFramedContent = false
 
+    /// Called with a tile's id when the user double-clicks it (e.g. to open a
+    /// video). Set by the host; `nil` disables activation.
+    public var onActivateTile: ((Int) -> Void)?
+
     public init(
         provider: TileProvider,
         images: any TileImageSource,
@@ -50,5 +54,18 @@ public final class CanvasHostView: NSView {
     public override func magnify(with event: NSEvent) {
         let anchor = convert(event.locationInWindow, from: nil)
         engine.zoom(by: 1 + event.magnification, aroundScreenPoint: anchor)
+    }
+
+    /// Double-click activates the tile under the cursor (single clicks are left
+    /// alone — panning/zooming stay on scroll/pinch).
+    public override func mouseDown(with event: NSEvent) {
+        guard event.clickCount == 2 else {
+            super.mouseDown(with: event)
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        if let tile = engine.tile(atScreenPoint: point) {
+            onActivateTile?(tile.id)
+        }
     }
 }

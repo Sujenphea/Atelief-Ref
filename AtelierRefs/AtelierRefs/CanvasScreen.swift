@@ -13,6 +13,8 @@ import SwiftUI
 
 struct CanvasScreen: View {
     @ObservedObject var model: IngestionModel
+    /// Retains the QuickLook window used to play a double-clicked video.
+    @State private var quickLook = QuickLookPresenter()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -39,8 +41,13 @@ struct CanvasScreen: View {
         if let content = model.canvasContent() {
             // Rebuild the host when the folder's contents change (new import or
             // folder switch); this reframes to fit and resets pan/zoom.
-            CanvasView(provider: content, images: content)
-                .id(model.contentsVersion)
+            CanvasView(provider: content, images: content) { tileID in
+                // Double-click a video tile → play it inline in QuickLook.
+                if let url = content.videoURL(forTileID: tileID) {
+                    quickLook.present(url: url, title: url.lastPathComponent)
+                }
+            }
+            .id(model.contentsVersion)
         } else {
             ContentUnavailableView {
                 Label("Nothing on the canvas", systemImage: "square.grid.2x2")

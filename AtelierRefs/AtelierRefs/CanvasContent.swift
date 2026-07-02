@@ -57,6 +57,20 @@ final class CanvasContent: TileProvider, TileImageSource {
 
     // (tiles is the stored property above)
 
+    /// A ▶ badge on video tiles, so a captured video reads as playable.
+    func badge(for tile: Tile) -> TileBadge? {
+        detail(for: tile.id)?.asset.kind == .video ? .play : nil
+    }
+
+    /// The on-disk video file behind a tile, or `nil` if the tile isn't a video
+    /// (or is out of range). Used to open a video to play. The extension mirrors
+    /// ``IngestionModel/blobURL(for:)`` (round-trips the store-time extension).
+    func videoURL(forTileID id: Int) -> URL? {
+        guard let detail = detail(for: id), detail.asset.kind == .video else { return nil }
+        let ext = ImageMetadata.fileExtension(forMIMEType: detail.asset.mimeType)
+        return store.blobURL(hash: detail.asset.blobHash, fileExtension: ext)
+    }
+
     // MARK: - TileImageSource
 
     func imageKey(for tile: Tile) -> Int {

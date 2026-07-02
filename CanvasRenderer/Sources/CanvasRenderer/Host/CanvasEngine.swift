@@ -1,3 +1,4 @@
+import CoreGraphics
 import QuartzCore
 
 /// The heart of the renderer: each frame it culls to the viewport, recycles
@@ -31,6 +32,11 @@ public final class CanvasEngine {
 
     private var active: [Int: CALayer] = [:]
     private var keyByTile: [Int: ThumbnailCache.Key] = [:]
+    /// Badge overlay layers (e.g. the ▶ for a video), keyed by tile id — siblings
+    /// of the tile layers, so they never entangle with the recycling ``LayerPool``.
+    private var badges: [Int: CALayer] = [:]
+    /// The ▶ glyph, rendered once and shared by every badge layer's `contents`.
+    private lazy var playBadgeImage: CGImage? = Self.makePlayBadgeImage()
 
     public init(
         provider: TileProvider,
@@ -142,11 +148,13 @@ public final class CanvasEngine {
         let visible = currentVisibleTiles()
         let visibleIDs = Set(visible.map(\.id))
 
-        // Recycle layers for tiles that left the viewport.
+        // Recycle layers for tiles that left the viewport (+ drop their badges).
         for (id, layer) in active where !visibleIDs.contains(id) {
             pool.recycle(layer)
             active[id] = nil
             keyByTile[id] = nil
+            badges[id]?.removeFromSuperlayer()
+            badges[id] = nil
         }
 
         // Place / update layers for visible tiles.
@@ -161,8 +169,10 @@ public final class CanvasEngine {
                 active[tile.id] = layer
             }
 
-            layer.frame = transform.worldToScreen(tile.worldFrame)
+            let screenFrame = transform.worldToScreen(tile.worldFrame)
+            layer.frame = screenFrame
             layer.zPosition = CGFloat(tile.z)
+            updateBadge(for: tile, screenFrame: screenFrame)
 
             let onScreenEdge = CGFloat(tile.longestWorldEdge) * transform.scale
             let tier = lod.tier(forOnScreenLongestEdge: onScreenEdge, previous: keyByTile[tile.id]?.tier)
@@ -214,6 +224,65 @@ public final class CanvasEngine {
             layer.contents = image
         }
         CATransaction.commit()
+    }
+
+    // MARK: Badges + hit-testing
+
+    /// Show / size / hide a tile's badge overlay for the current frame. The badge
+    /// is a fixed-ish screen size centred on the tile, hidden when the tile is too
+    /// small on screen to badge legibly.
+    private func updateBadge(for tile: Tile, screenFrame: CGRect) {
+        let shorter = min(screenFrame.width, screenFrame.height)
+        let size = min(48, shorter * 0.42)
+        guard provider.badge(for: tile) == .play, size >= 16 else {
+            badges[tile.id]?.removeFromSuperlayer()
+            badges[tile.id] = nil
+            return
+        }
+        let badge: CALayer
+        if let existing = badges[tile.id] {
+            badge = existing
+        } else {
+            badge = CALayer()
+            badge.contents = playBadgeImage
+            badge.contentsGravity = .resizeAspect
+            badges[tile.id] = badge
+            rootLayer.addSublayer(badge)
+        }
+        badge.bounds = CGRect(x: 0, y: 0, width: size, height: size)
+        badge.position = CGPoint(x: screenFrame.midX, y: screenFrame.midY)
+        badge.zPosition = CGFloat(tile.z) + 0.5 // above its own tile
+    }
+
+    /// The topmost visible tile whose on-screen frame contains `screenPoint`, or
+    /// `nil`. Used by the host view to resolve a click to an asset.
+    public func tile(atScreenPoint screenPoint: CGPoint) -> Tile? {
+        currentVisibleTiles()
+            .filter { transform.worldToScreen($0.worldFrame).contains(screenPoint) }
+            .max { $0.z < $1.z }
+    }
+
+    /// Render the ▶ glyph once: a white triangle in a translucent dark disc.
+    private static func makePlayBadgeImage() -> CGImage? {
+        let side = 128
+        guard let ctx = CGContext(
+            data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        let s = CGFloat(side)
+        ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.55))
+        ctx.fillEllipse(in: CGRect(x: 0, y: 0, width: s, height: s).insetBy(dx: 6, dy: 6))
+
+        // Triangle nudged right of centre so it looks optically centred.
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.95))
+        ctx.move(to: CGPoint(x: s * 0.40, y: s * 0.30))
+        ctx.addLine(to: CGPoint(x: s * 0.40, y: s * 0.70))
+        ctx.addLine(to: CGPoint(x: s * 0.72, y: s * 0.50))
+        ctx.closePath()
+        ctx.fillPath()
+        return ctx.makeImage()
     }
 
     /// Target decoded pixel size (longest edge) per LOD tier.
