@@ -16,7 +16,7 @@ import {
   buildCaptureRequest, postCapture, DEFAULT_ENDPOINT,
   buildProvenanceHeader, postVideoCapture,
 } from "./endpoint.js";
-import { resolveTwitterVideo } from "./twitter-video.js";
+import { resolveTwitterVideo, shouldResolveVideo } from "./twitter-video.js";
 
 const TOKEN_KEY = "atelierToken";
 
@@ -65,18 +65,16 @@ async function capture(tab, context) {
     return flash("KEY", "#e08c00", "Set your Atelier token in the extension options.");
   }
 
-  // A video tweet: try to download the ACTUAL MP4 (via the syndication API). Any
-  // failure (resolution, fetch, or a non-200 ingest) falls through to the image
-  // path below, which captures the poster/frame — never worse than before.
-  if (provenance.mediaKind === "video" && provenance.platform === "twitter") {
-    const tweetId = provenance.rawMetadata?.tweetId;
-    if (tweetId) {
-      try {
-        await captureVideo(provenance, tweetId, token);
-        return;
-      } catch (error) {
-        console.log("[Atelier] video capture failed → poster fallback", String(error));
-      }
+  // A Twitter status may be a video. Syndication is the source of truth, so try it
+  // for any tweet with an id (unless the user explicitly right-clicked a photo).
+  // Any failure — incl. a non-video tweet (no MP4 variant) — falls through to the
+  // image path below, so a capture is never worse than before.
+  if (shouldResolveVideo(provenance, context)) {
+    try {
+      await captureVideo(provenance, provenance.rawMetadata.tweetId, token);
+      return;
+    } catch (error) {
+      console.log("[Atelier] no video / capture failed → image fallback", String(error));
     }
   }
 

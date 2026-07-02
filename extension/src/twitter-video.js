@@ -45,6 +45,19 @@ export function selectBestVideo(result) {
   return mp4s[0].url;
 }
 
+/** Whether the SW should try to resolve a video for this capture. Syndication is
+ * the source of truth for "is there a video" (so we don't rely on fragile DOM
+ * heuristics); this only screens on cheap signals: a Twitter status with a tweet
+ * id, and NOT an explicit right-click on a photo (a `/media/` image — respect that
+ * the user pointed at a still). A non-video tweet simply yields no MP4 variant and
+ * falls back to the image path. */
+export function shouldResolveVideo(provenance, context = {}) {
+  if (provenance.platform !== "twitter") return false;
+  if (!provenance.rawMetadata || !provenance.rawMetadata.tweetId) return false;
+  if (/pbs\.twimg\.com\/media\//.test(context.srcUrl || "")) return false;
+  return true;
+}
+
 /** Resolve `tweetId` to a downloadable MP4 URL via the syndication API. Throws if
  * the request fails or the payload carries no MP4 variant. */
 export async function resolveTwitterVideo(tweetId, { fetchImpl = fetch } = {}) {

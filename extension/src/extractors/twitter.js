@@ -57,14 +57,8 @@ export const twitter = {
     const mediaUrlFallback =
       rendered === videoFrame ? videoPoster : rendered && mediaUrl !== rendered ? rendered : null;
 
-    // A video tweet: there's a video frame/poster and no still photo. The SW uses
-    // this to try downloading the actual MP4 (via syndication), falling back to
-    // the poster/frame image (mediaUrl above) if that fails.
-    const isVideo = !!(videoFrame || videoPoster) && !clicked && !domPhoto;
-
     return {
       platform: "twitter",
-      mediaKind: isVideo ? "video" : "image",
       originalURL: url,
       mediaUrl,
       mediaUrlFallback,

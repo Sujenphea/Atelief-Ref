@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  selectBestVideo, syndicationURL, resolveTwitterVideo,
+  selectBestVideo, syndicationURL, resolveTwitterVideo, shouldResolveVideo,
 } from "../src/twitter-video.js";
 
 // A representative tweet-result payload for a video tweet (mediaDetails shape).
@@ -59,6 +59,23 @@ test("syndicationURL: targets the tweet-result endpoint with the id + a token", 
   assert.match(url, /^https:\/\/cdn\.syndication\.twimg\.com\/tweet-result\?/);
   assert.match(url, /[?&]id=1780000000000000000(&|$)/);
   assert.match(url, /[?&]token=[^&]+/); // some derived, non-empty token
+});
+
+test("shouldResolveVideo: try for any twitter tweet id; skip a right-clicked photo", () => {
+  const twitterProvenance = { platform: "twitter", rawMetadata: { tweetId: "1" } };
+  // The reported bug: a right-click on a video sets context.srcUrl to the poster
+  // (a pbs.twimg.com image that is NOT /media/) — we must STILL try the video.
+  assert.equal(shouldResolveVideo(twitterProvenance, {}), true);
+  assert.equal(shouldResolveVideo(twitterProvenance, {
+    srcUrl: "https://pbs.twimg.com/amplify_video_thumb/1/img/x.jpg",
+  }), true);
+  // But an explicit right-click on a photo (/media/) is honoured as a still.
+  assert.equal(shouldResolveVideo(twitterProvenance, {
+    srcUrl: "https://pbs.twimg.com/media/ABC?format=jpg&name=small",
+  }), false);
+  // Non-twitter, or no tweet id → never.
+  assert.equal(shouldResolveVideo({ platform: "pinterest", rawMetadata: { pinId: "9" } }, {}), false);
+  assert.equal(shouldResolveVideo({ platform: "twitter", rawMetadata: {} }, {}), false);
 });
 
 test("resolveTwitterVideo: fetches the payload and returns the best MP4", async () => {
