@@ -104,6 +104,10 @@ final class IngestionModel: ObservableObject {
     private var services: AppServices?
     private var captureServer: CaptureServer?
 
+    /// Downloads a bare image URL (drag/paste with no bytes) off-main. Stateless +
+    /// injectable; the default uses the shared session (tests inject a stub one).
+    private let remoteFetcher = RemoteImageFetcher()
+
     /// UserDefaults key persisting the capture token across launches.
     private static let captureTokenKey = "AtelierCaptureToken"
 
@@ -531,6 +535,47 @@ final class IngestionModel: ObservableObject {
 
             await refreshFolders()
             loadContents(of: selectedFolderID)
+        }
+    }
+
+    /// Download a BARE image URL (a drag/paste that carried a URL but no bytes —
+    /// e.g. a Pinterest image), then ingest it as `.web` provenance through the
+    /// same batch path as everything else. The network fetch runs OFF-MAIN (the
+    /// fetcher's `await`s hop off this actor); progress + failure surface through
+    /// the existing `status` / `lastError` infra. A no-op if not ready.
+    func ingestRemoteImage(from url: URL) {
+        guard isReady else { return }
+        let target = selectedFolderID
+        let fetcher = remoteFetcher
+        status = "Downloading image…"
+        Task {
+            do {
+                let input = try await fetcher.ingestInput(for: url, into: target, at: Date())
+                run(inputs: [input])
+            } catch {
+                status = Self.remoteFetchStatus(for: error)
+            }
+        }
+    }
+
+    /// Report a drop the app couldn't read at all (no image bytes, no file, no
+    /// downloadable image URL) — no more silent no-op (backlog B1).
+    func reportUnreadableDrop() {
+        status = "Couldn't read that drop — no image, file, or image URL."
+    }
+
+    /// A friendly status line for a failed remote-image download.
+    private static func remoteFetchStatus(for error: Error) -> String {
+        guard let error = error as? RemoteImageFetchError else {
+            return "Couldn't download that image."
+        }
+        switch error {
+        case .notAnImage:
+            return "That link isn't a direct image."
+        case .tooLarge:
+            return "That image is too large to import."
+        case .invalidURL, .requestFailed, .httpStatus:
+            return "Couldn't download that image."
         }
     }
 

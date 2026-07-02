@@ -232,12 +232,37 @@ struct LibraryView: View {
 
     // MARK: - Import actions
 
-    /// Paste from the GENERAL pasteboard into the selected folder.
+    /// Paste from the GENERAL pasteboard into the selected folder. Mirrors the
+    /// drop path's three outcomes (backlog B1): ingestible bytes → run them; a
+    /// bare image URL (no bytes) → download + ingest it; nothing readable → a
+    /// status line, never a silent no-op.
     private func paste() {
         guard model.isReady else { return }
+        let pasteboard = NSPasteboard.general
         let inputs = DirectInputReader.inputs(
-            from: .general, into: model.selectedFolderID, now: Date())
-        model.run(inputs: inputs)
+            from: pasteboard, into: model.selectedFolderID, now: Date())
+        if !inputs.isEmpty {
+            model.run(inputs: inputs)
+        } else if let url = Self.firstWebURL(on: pasteboard) {
+            model.ingestRemoteImage(from: url)
+        } else {
+            model.reportUnreadableDrop()
+        }
+    }
+
+    /// The first web (`http`/`https`) URL on `pasteboard`, skipping file URLs — the
+    /// pasteboard counterpart of ``firstWebURL(in:)`` for the Paste path. Shares
+    /// one definition of "web URL" with the reader via `DirectInputReader.isWebURL`.
+    private static func firstWebURL(on pasteboard: NSPasteboard) -> URL? {
+        if let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+           let url = objects.first(where: { !$0.isFileURL && DirectInputReader.isWebURL($0) }) {
+            return url
+        }
+        if let string = pasteboard.string(forType: .URL),
+           let url = URL(string: string), DirectInputReader.isWebURL(url) {
+            return url
+        }
+        return nil
     }
 
     /// Convert dropped providers into inputs targeting the selected folder,
@@ -247,18 +272,31 @@ struct LibraryView: View {
     /// provider as the image or as a separate URL provider, so we collect any
     /// web URL across the whole drop FIRST, then attach it to the image(s) as
     /// provenance — mirroring the pasteboard path (`DirectInputReader.inputs`).
+    ///
+    /// Three outcomes (backlog B1): the drop carried ingestible bytes → run them;
+    /// it carried only a bare image URL (no bytes) → download + ingest it as
+    /// `.web`; it carried nothing we can read → a status line, never a silent
+    /// no-op.
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         guard model.isReady else { return false }
         let target = model.selectedFolderID
         Task {
-            let pageURL = await Self.firstWebURL(in: providers)
+            let webURL = await Self.firstWebURL(in: providers)
             var inputs: [IngestInput] = []
             for provider in providers {
-                if let input = await Self.input(from: provider, pageURL: pageURL, into: target) {
+                if let input = await Self.input(from: provider, pageURL: webURL, into: target) {
                     inputs.append(input)
                 }
             }
-            model.run(inputs: inputs)
+            if !inputs.isEmpty {
+                model.run(inputs: inputs)
+            } else if let webURL {
+                // No bytes on the drop, but a web URL — treat it as a direct image
+                // URL and download it (a non-image response fails cleanly).
+                model.ingestRemoteImage(from: webURL)
+            } else {
+                model.reportUnreadableDrop()
+            }
         }
         return true
     }
