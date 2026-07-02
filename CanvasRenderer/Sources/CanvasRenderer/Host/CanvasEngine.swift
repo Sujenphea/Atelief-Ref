@@ -14,7 +14,7 @@ public final class CanvasEngine {
     public let rootLayer: CALayer
 
     private let provider: TileProvider
-    private let images: FixtureImageSet
+    private let images: any TileImageSource
     private let culler = TileCuller()
     private let lod: LODPolicy
     private let pool: LayerPool
@@ -34,7 +34,7 @@ public final class CanvasEngine {
 
     public init(
         provider: TileProvider,
-        images: FixtureImageSet,
+        images: any TileImageSource,
         transform: CanvasTransform = CanvasTransform(),
         viewportSize: CGSize = .zero,
         lod: LODPolicy = LODPolicy(),
@@ -166,16 +166,16 @@ public final class CanvasEngine {
 
             let onScreenEdge = CGFloat(tile.longestWorldEdge) * transform.scale
             let tier = lod.tier(forOnScreenLongestEdge: onScreenEdge, previous: keyByTile[tile.id]?.tier)
-            let key = ThumbnailCache.Key(imageID: tile.id % images.count, tier: tier)
+            let key = ThumbnailCache.Key(imageID: images.imageKey(for: tile), tier: tier)
             keyByTile[tile.id] = key
             neededKeys.insert(key)
 
             if let image = cache.image(for: key) {
                 layer.contents = image
-            } else {
+            } else if let data = images.imageData(for: tile, tier: tier) {
                 scheduler.request(
                     key: key,
-                    data: images.data(forTileID: tile.id),
+                    data: data,
                     maxPixelSize: Self.pixelSize(for: tier)
                 )
             }
@@ -191,10 +191,11 @@ public final class CanvasEngine {
         for tile in currentVisibleTiles() {
             let onScreenEdge = CGFloat(tile.longestWorldEdge) * transform.scale
             let tier = lod.tier(forOnScreenLongestEdge: onScreenEdge, previous: keyByTile[tile.id]?.tier)
-            let key = ThumbnailCache.Key(imageID: tile.id % images.count, tier: tier)
+            let key = ThumbnailCache.Key(imageID: images.imageKey(for: tile), tier: tier)
             guard cache.image(for: key) == nil else { continue }
+            guard let data = images.imageData(for: tile, tier: tier) else { continue }
             if let image = DecodeScheduler.decodeBlocking(
-                data: images.data(forTileID: tile.id),
+                data: data,
                 maxPixelSize: Self.pixelSize(for: tier)
             ) {
                 cache.insert(image, for: key)

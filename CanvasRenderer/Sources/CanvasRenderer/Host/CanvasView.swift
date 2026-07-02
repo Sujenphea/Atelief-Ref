@@ -1,13 +1,15 @@
 import SwiftUI
 
-/// SwiftUI wrapper around ``CanvasHostView`` for the manual smoothness harness
-/// (decision T11) and for build-order step 5's eventual real view. Takes the
-/// concrete (`Sendable`) dummy provider + fixture set for the spike.
+/// SwiftUI wrapper around ``CanvasHostView``. Drives the canvas from any
+/// ``TileProvider`` + ``TileImageSource`` — the spike passes its dummy generator
+/// and fixture set; build-order step 5's real view passes a `CollectionItem`-
+/// backed provider/source. The host is rebuilt (not mutated) when the content
+/// changes, so callers swap boards with SwiftUI's `.id(_:)`.
 public struct CanvasView: NSViewRepresentable {
-    private let provider: DummyTileProvider
-    private let images: FixtureImageSet
+    private let provider: any TileProvider
+    private let images: any TileImageSource
 
-    public init(provider: DummyTileProvider, images: FixtureImageSet) {
+    public init(provider: any TileProvider, images: any TileImageSource) {
         self.provider = provider
         self.images = images
     }

@@ -216,6 +216,7 @@ final class IngestionModel: ObservableObject {
                    !items.contains(where: { $0.item.id == selectedItemID }) {
                     select(nil)
                 }
+                contentsVersion &+= 1
             } catch {
                 lastError = Self.message(for: error)
             }
@@ -294,6 +295,29 @@ final class IngestionModel: ObservableObject {
             hash: detail.asset.blobHash, size: ThumbnailTier.medium.rawValue,
             fileExtension: "jpg")
         return NSImage(contentsOf: url)
+    }
+
+    // MARK: - Canvas content
+
+    /// Bumped whenever the selected folder's ``items`` change, so the Canvas tab
+    /// can rebuild its view (via SwiftUI `.id`) to reflect the new set.
+    @Published private(set) var contentsVersion = 0
+
+    private var cachedCanvasContent: CanvasContent?
+    private var cachedCanvasVersion = -1
+
+    /// Canvas content for the currently loaded folder items — rebuilt only when
+    /// ``contentsVersion`` changes (SwiftUI re-evaluates `body` often, and the
+    /// layout pass is not free). `nil` before the Library opens or when empty.
+    func canvasContent() -> CanvasContent? {
+        if cachedCanvasVersion == contentsVersion { return cachedCanvasContent }
+        cachedCanvasVersion = contentsVersion
+        guard let store, !items.isEmpty else {
+            cachedCanvasContent = nil
+            return nil
+        }
+        cachedCanvasContent = CanvasContent(items: items, store: store)
+        return cachedCanvasContent
     }
 
     // MARK: - Import

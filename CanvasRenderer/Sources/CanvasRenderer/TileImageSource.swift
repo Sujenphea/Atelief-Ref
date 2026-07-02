@@ -1,0 +1,26 @@
+import Foundation
+
+/// The renderer's **image-content seam** — the second stable seam alongside
+/// ``TileProvider`` (decision A2).
+///
+/// ``TileProvider`` says *where* tiles are; this says *what each tile draws*.
+/// The spike backs it with ``FixtureImageSet`` (procedural bytes); at build-order
+/// step 5 the app re-implements it over real assets — reading pre-generated
+/// thumbnails from the on-disk media store — with **no change to the renderer**.
+///
+/// Both members are called by ``CanvasEngine`` on the **main actor** during the
+/// per-frame sync, so a conformer need not be `Sendable`; it must, however, be
+/// cheap (the returned bytes are decoded off-main by the ``DecodeScheduler``).
+public protocol TileImageSource {
+    /// A stable cache identity for the image `tile` draws. Tiles that draw the
+    /// **same** underlying image must return the **same** key, so they share a
+    /// single decode and one cached bitmap per LOD tier; distinct images must
+    /// return distinct keys (a collision would paint the wrong image).
+    func imageKey(for tile: Tile) -> Int
+
+    /// The encoded image bytes for `tile` at `tier`, to be decoded/downsampled to
+    /// the tier's pixel size, or `nil` when nothing is available yet (the tile's
+    /// layer stays blank until a later frame can supply bytes). May be called
+    /// again on a subsequent frame, so returning `nil` is not terminal.
+    func imageData(for tile: Tile, tier: LODTier) -> Data?
+}
