@@ -105,9 +105,11 @@ works; editing/persistence and real-data profiling remain.
 - [x] New image-content seam `TileImageSource` (renderer no longer fixture-bound)
 - [x] Host `CanvasView` in the app against the selected folder (shared model)
 - [x] Justified-rows auto-layout; honours explicit `canvas_*` when present
-- [ ] Persist tile placement (canvas coordinates) back through App Services — the
-      `setCanvasPlacement` seam exists but no UI calls it; needs a drag-to-place
-      canvas editor (later, Phase 4)
+- [x] Persist tile placement (canvas coordinates) back through App Services —
+      **drag-to-place** editor: drag a tile to reposition; in-memory provider
+      mutation keeps pan/zoom (no rebuild) and `canvas_x/y/w/h/z` persist via
+      `setCanvasPlacement`, so the layout survives folder switch + relaunch
+      (`.change-log/050`)
 - [ ] ⏸️ Re-profile with real, variable-size assets (005 caveat): the thumbnail
       `Data(contentsOf:)` read is still **on the main thread** before the off-main
       decode (`CanvasContent.swift:89`). **Profile with Instruments first** — do
@@ -182,8 +184,8 @@ See `.change-log/041`–`044`.
 - ⏸️ **Phase 3** — Tags UI + filtering (schema reserved); external agent
   interface (localhost API → CLI/HTTP → MCP); new-ingest inbox / triage.
 - ⏸️ **Phase 4** — canvas richness (grouping, snapping, connections, LOD tuning);
-  **canvas placement persistence + drag-to-place editor** (the `setCanvasPlacement`
-  seam is ready); more views (timeline, source-grouped, graph); smart / nested
+  ~~canvas placement persistence + drag-to-place editor~~ ✅ done (`.change-log/050`);
+  more views (timeline, source-grouped, graph); smart / nested
   collections; quick-capture (global hotkey, share/menu-bar).
 - ⏸️ **Phase 5** — sync / backup; export; collection sharing.
 
