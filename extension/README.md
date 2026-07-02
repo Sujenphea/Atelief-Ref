@@ -22,10 +22,12 @@ localhost endpoint (`http://127.0.0.1:47321/ingest`).
 Supported sites: Twitter/X, Pinterest, Instagram, Cosmos, plus a generic
 Open-Graph fallback for any other page.
 
-**Video tweets** have no still image on the server, so the extension captures the
-frame currently on screen (via `<canvas>`). Play/scrub to the frame you want,
-then right-click → Save. An un-played (or cross-origin-tainted) video falls back
-to Twitter's poster thumbnail.
+**Video tweets** are saved as the **actual video**: the service worker resolves
+the tweet's MP4 via Twitter's public syndication API (by tweet id) and downloads
+it to the app's `/ingest-video` endpoint (the app renders a poster tile you can
+open to play). If MP4 resolution fails (e.g. Twitter changes the API), it falls
+back to capturing a still — the on-screen `<canvas>` frame if the video has been
+played, else Twitter's poster thumbnail.
 
 ## Install (unpacked, for development)
 

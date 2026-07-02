@@ -80,6 +80,28 @@ test("twitter: video tweet → captured live frame wins over the poster, poster 
   assert.equal(p.mediaUrlFallback, "https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/x.jpg");
 });
 
+test("twitter: mediaKind flags video (poster/frame, no photo) vs image", () => {
+  const videoTweet = harvest({
+    url: "https://x.com/a/status/1",
+    media: [
+      { kind: "video-poster", src: "https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/x.jpg", width: 1280, height: 720, alt: null },
+    ],
+  });
+  assert.equal(twitter.extract(videoTweet).mediaKind, "video");
+
+  const photoTweet = harvest({
+    url: "https://x.com/a/status/1",
+    media: [img("https://pbs.twimg.com/media/PIC?format=jpg&name=large", 900, 900)],
+  });
+  assert.equal(twitter.extract(photoTweet).mediaKind, "image");
+
+  // A right-clicked image on a video tweet is a photo capture, not a video.
+  const clickedOnVideo = twitter.extract(videoTweet, {
+    srcUrl: "https://pbs.twimg.com/media/CLICK?format=jpg&name=small",
+  });
+  assert.equal(clickedOnVideo.mediaKind, "image");
+});
+
 test("twitter: video tweet with no decodable frame → falls back to the poster", () => {
   // readyState/taint failures mean harvest emits only the poster (no video-frame).
   const h = harvest({

@@ -12,7 +12,11 @@
 
 import { harvestSignals } from "./harvest.js";
 import { extractProvenance } from "./extractors/registry.js";
-import { buildCaptureRequest, postCapture, DEFAULT_ENDPOINT } from "./endpoint.js";
+import {
+  buildCaptureRequest, postCapture, DEFAULT_ENDPOINT,
+  buildProvenanceHeader, postVideoCapture,
+} from "./endpoint.js";
+import { resolveTwitterVideo } from "./twitter-video.js";
 
 const TOKEN_KEY = "atelierToken";
 
@@ -61,6 +65,21 @@ async function capture(tab, context) {
     return flash("KEY", "#e08c00", "Set your Atelier token in the extension options.");
   }
 
+  // A video tweet: try to download the ACTUAL MP4 (via the syndication API). Any
+  // failure (resolution, fetch, or a non-200 ingest) falls through to the image
+  // path below, which captures the poster/frame — never worse than before.
+  if (provenance.mediaKind === "video" && provenance.platform === "twitter") {
+    const tweetId = provenance.rawMetadata?.tweetId;
+    if (tweetId) {
+      try {
+        await captureVideo(provenance, tweetId, token);
+        return;
+      } catch (error) {
+        console.log("[Atelier] video capture failed → poster fallback", String(error));
+      }
+    }
+  }
+
   const fetched = await fetchImage(
     [provenance.mediaUrl, provenance.mediaUrlFallback].filter(Boolean)
   );
@@ -85,6 +104,29 @@ async function capture(tab, context) {
   } catch {
     flash("ERR", "#cc3333", "Could not reach Atelier — is the app running?");
   }
+}
+
+/** Download a video tweet's actual MP4 and POST it to the video endpoint. Flashes
+ * success; THROWS on any failure so the caller can fall back to the poster image.
+ * A non-200 ingest also throws (the poster path may still succeed). */
+async function captureVideo(provenance, tweetId, token) {
+  const mp4Url = await resolveTwitterVideo(tweetId);
+  const response = await fetch(mp4Url);
+  if (!response.ok) throw new Error(`video HTTP ${response.status} for ${mp4Url}`);
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType && !contentType.startsWith("video/")) {
+    throw new Error(`non-video response (${contentType})`);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  console.log("[Atelier] fetched video", { url: mp4Url, contentType, bytes: bytes.length });
+
+  const { status, body } = await postVideoCapture(bytes, {
+    token,
+    provenanceHeader: buildProvenanceHeader(provenance),
+  });
+  console.log("[Atelier] ingest-video response", { status, body });
+  if (status !== 200) throw new Error(body.error || `ingest HTTP ${status}`);
+  flash("✓", "#2e8b57", body.deduplicated ? "Already saved." : "Saved video to Atelier.");
 }
 
 /** The saved shared-secret token, or "" if unset. */
