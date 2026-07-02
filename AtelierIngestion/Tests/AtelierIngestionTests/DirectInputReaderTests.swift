@@ -113,6 +113,28 @@ struct DirectInputReaderTests {
         }
     }
 
+    @Test("remoteVideo → caller's SourceDraft verbatim + bytes read from a file URL")
+    func remoteVideoProvenance() {
+        let url = URL(fileURLWithPath: "/tmp/atelier-capture/clip.mp4")
+        let provenance = SourceDraft(
+            platform: .twitter,
+            originalURL: "https://x.com/designer/status/42",
+            authorHandle: "@designer",
+            capturedAt: Self.capturedAt,
+            rawMetadata: .object(["tweetId": .string("42")]))
+        let input = DirectInputReader.remoteVideo(
+            fileURL: url, provenance: provenance, into: Self.collectionID)
+
+        #expect(input.provenance == provenance)
+        #expect(input.collectionID == Self.collectionID)
+        // Bytes stream from disk (a video is too large to hold in memory).
+        if case .fileURL(let u) = input.source {
+            #expect(u == url)
+        } else {
+            Issue.record("expected .fileURL source (video streamed to a temp file)")
+        }
+    }
+
     // MARK: - Pasteboard interpretation (named pasteboard, no GUI)
 
     /// A fresh, uniquely-named pasteboard so tests never touch `.general` and

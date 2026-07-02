@@ -92,6 +92,22 @@ public enum DirectInputReader {
             collectionID: collectionID)
     }
 
+    /// A REMOTE VIDEO capture (the Chrome extension). Same rich caller-supplied
+    /// provenance as ``remoteInput(imageData:provenance:into:)``, but the bytes
+    /// are a whole video file — far too large to carry in memory as base64/JSON —
+    /// so the localhost endpoint STREAMS them to a temp file and hands us its URL,
+    /// read at ingest time via ``ByteSource/fileURL(_:)`` (the same disk-backed
+    /// path a dragged file uses). The pipeline already classifies `.movie` bytes
+    /// as a `.video` asset, so no other change is needed downstream.
+    public static func remoteVideo(
+        fileURL: URL, provenance: SourceDraft, into collectionID: UUID
+    ) -> IngestInput {
+        IngestInput(
+            source: .fileURL(fileURL),
+            provenance: provenance,
+            collectionID: collectionID)
+    }
+
     // MARK: - Pasteboard interpretation
 
     /// The image data types we recognize on a pasteboard, in preference order.
