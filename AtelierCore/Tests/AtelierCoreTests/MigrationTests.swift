@@ -86,7 +86,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1"]
+    static let committedIdentifiers = ["v1", "v2"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -537,5 +537,177 @@ struct MigrationCascadeTests {
             #expect(joins == 0)
             #expect(assets == 1)
         }
+    }
+}
+
+// MARK: - v2 · nested folders (F1/F3/F4)
+
+@Suite("Migration v2: nested-folder schema shape")
+struct FolderSchemaShapeTests {
+
+    @Test("collection gains a nullable parent_collection_id (TEXT) column")
+    func parentColumnExistsNullable() throws {
+        let dbQueue = try makeMigratedQueue()
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(collection)")
+            let parent = rows.first { ($0["name"] as String) == "parent_collection_id" }
+            #expect(parent != nil, "collection missing parent_collection_id")
+            #expect((parent?["notnull"] as Int?) == 0, "parent_collection_id must be nullable")
+            #expect((parent?["type"] as String?) == "TEXT", "parent_collection_id must be TEXT")
+        }
+    }
+
+    @Test("index_collection_on_parent_collection_id exists")
+    func parentIndexExists() throws {
+        let dbQueue = try makeMigratedQueue()
+        let names = try dbQueue.read { db in
+            try String.fetchSet(db, sql: "SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        #expect(names.contains("index_collection_on_parent_collection_id"))
+    }
+
+    @Test("foreign keys stay enforced after v2")
+    func foreignKeysStillOn() throws {
+        let dbQueue = try makeMigratedQueue()
+        let on = try dbQueue.read { db in try Int.fetchOne(db, sql: "PRAGMA foreign_keys") }
+        #expect(on == 1)
+    }
+}
+
+@Suite("Migration v2: seeded Unsorted folder (F3)")
+struct FolderSeedTests {
+
+    @Test("a protected Unsorted root folder is seeded with the fixed well-known id")
+    func unsortedSeeded() throws {
+        let dbQueue = try makeMigratedQueue()
+        try dbQueue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT id, name, parent_collection_id FROM collection WHERE id = ?",
+                arguments: [Collection.unsortedID.uuidString.lowercased()]
+            )
+            #expect(row != nil, "Unsorted folder not seeded")
+            #expect((row?["name"] as String?) == "Unsorted")
+            #expect((row?["parent_collection_id"] as String?) == nil, "Unsorted must be a root folder")
+        }
+    }
+
+    @Test("the seeded id matches Collection.unsortedID")
+    func unsortedIDMatchesConstant() {
+        #expect(Collection.unsortedID == UUID(uuidString: "00000000-0000-0000-0000-000000000001"))
+    }
+}
+
+@Suite("Migration v2: subtree cascade (F4)")
+struct FolderCascadeTests {
+
+    private func count(_ db: Database, _ sql: String, _ args: StatementArguments) throws -> Int {
+        try Int.fetchOne(db, sql: sql, arguments: args) ?? -1
+    }
+
+    /// Builds P → C → G folders, a source+asset, and a membership filing the
+    /// asset directly into C. Returns the ids.
+    private func seedTree(_ db: Database)
+        throws -> (p: String, c: String, g: String, source: String, asset: String, item: String)
+    {
+        let p = newID(), c = newID(), g = newID()
+        let sourceID = newID(), assetID = newID(), itemID = newID()
+
+        try db.execute(sql: """
+            INSERT INTO collection (id, name, created_at, updated_at, parent_collection_id)
+            VALUES (?, 'P', ?, ?, NULL)
+            """, arguments: [p, ts, ts])
+        try db.execute(sql: """
+            INSERT INTO collection (id, name, created_at, updated_at, parent_collection_id)
+            VALUES (?, 'C', ?, ?, ?)
+            """, arguments: [c, ts, ts, p])
+        try db.execute(sql: """
+            INSERT INTO collection (id, name, created_at, updated_at, parent_collection_id)
+            VALUES (?, 'G', ?, ?, ?)
+            """, arguments: [g, ts, ts, c])
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, captured_at, raw_metadata)
+            VALUES (?, 'web', ?, '{}')
+            """, arguments: [sourceID, ts])
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, blob_hash, mime_type, width, height, file_size, download_state, created_at, source_id)
+            VALUES (?, 'image', 'hash1', 'image/jpeg', 100, 100, 2048, 'downloaded', ?, ?)
+            """, arguments: [assetID, ts, sourceID])
+        try db.execute(sql: """
+            INSERT INTO collection_item (id, collection_id, asset_id, added_at)
+            VALUES (?, ?, ?, ?)
+            """, arguments: [itemID, c, assetID, ts])
+
+        return (p, c, g, sourceID, assetID, itemID)
+    }
+
+    @Test("deleting root P cascades the whole subtree (P, C, G) + C's memberships; asset & source survive")
+    func deleteSubtreeCascades() throws {
+        let dbQueue = try makeMigratedQueue()
+        let ids = try dbQueue.write { db in try seedTree(db) }
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM collection WHERE id = ?", arguments: [ids.p])
+        }
+        try dbQueue.read { db in
+            // The recursive parent-FK cascade removed every folder in the subtree.
+            let pCount = try count(db, "SELECT count(*) FROM collection WHERE id = ?", [ids.p])
+            let cCount = try count(db, "SELECT count(*) FROM collection WHERE id = ?", [ids.c])
+            let gCount = try count(db, "SELECT count(*) FROM collection WHERE id = ?", [ids.g])
+            // C's membership went with it (collection_item.collection_id cascade).
+            let itemCount = try count(db, "SELECT count(*) FROM collection_item WHERE id = ?", [ids.item])
+            // Library rows survive.
+            let assetCount = try count(db, "SELECT count(*) FROM asset WHERE id = ?", [ids.asset])
+            let sourceCount = try count(db, "SELECT count(*) FROM source WHERE id = ?", [ids.source])
+            #expect(pCount == 0)
+            #expect(cCount == 0)
+            #expect(gCount == 0)
+            #expect(itemCount == 0)
+            #expect(assetCount == 1)
+            #expect(sourceCount == 1)
+        }
+    }
+}
+
+@Suite("Migration v2: Collection record round-trips parent_collection_id")
+struct FolderRoundTripTests {
+
+    private let createdAt = Date(timeIntervalSince1970: 1_700_000_222.500)
+    private let updatedAt = Date(timeIntervalSince1970: 1_700_000_333.750)
+
+    @Test("a Collection with a non-nil parentCollectionID inserts + fetches back equal")
+    func childFolderRoundTrips() throws {
+        let dbQueue = try makeMigratedQueue()
+        let parent = Collection(
+            id: UUID(), name: "Parent",
+            createdAt: createdAt, updatedAt: updatedAt)
+        let child = Collection(
+            id: UUID(), name: "Child",
+            createdAt: createdAt, updatedAt: updatedAt,
+            parentCollectionID: parent.id)
+
+        try dbQueue.write { db in
+            try parent.insert(db)
+            try child.insert(db)
+        }
+        let fetched = try dbQueue.read { db in
+            try Collection.filter(Column("id") == child.id.uuidString.lowercased()).fetchOne(db)
+        }
+        #expect(fetched == child)
+        #expect(fetched?.parentCollectionID == parent.id)
+    }
+
+    @Test("a root Collection (nil parent) round-trips with parentCollectionID nil")
+    func rootFolderRoundTrips() throws {
+        let dbQueue = try makeMigratedQueue()
+        let root = Collection(
+            id: UUID(), name: "Root",
+            createdAt: createdAt, updatedAt: updatedAt)
+
+        try dbQueue.write { try root.insert($0) }
+        let fetched = try dbQueue.read { db in
+            try Collection.filter(Column("id") == root.id.uuidString.lowercased()).fetchOne(db)
+        }
+        #expect(fetched == root)
+        #expect(fetched?.parentCollectionID == nil)
     }
 }

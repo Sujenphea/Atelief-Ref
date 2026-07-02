@@ -62,26 +62,39 @@ public final class AppServices: Sendable {
 
     // MARK: - Collections
 
-    /// Create a collection. Validates + trims the name (C8); the service
-    /// generates `id` and `createdAt`/`updatedAt` (server-authoritative).
+    /// Create a collection (a folder — folders ARE collections, decision F1).
+    /// Validates + trims the name (C8); the service generates `id` and
+    /// `createdAt`/`updatedAt` (server-authoritative). When `parent` is given it
+    /// must exist (`.notFound`) — the new collection nests under it; `nil` ⇒ a
+    /// root folder (the existing no-parent behaviour).
     @discardableResult
     public func createCollection(
-        name: String, description: String? = nil
+        name: String, description: String? = nil, parent parentID: UUID? = nil
     ) async throws -> Collection {
         let trimmed = try Validation.collectionName(name)
         let now = Date()
         let collection = Collection(
             id: UUID(), name: trimmed, description: description,
-            coverAssetID: nil, createdAt: now, updatedAt: now)
+            coverAssetID: nil, createdAt: now, updatedAt: now,
+            parentCollectionID: parentID)
         return try await write { db in
+            if let parentID {
+                guard try Collection.exists(db, key: Self.key(parentID)) else {
+                    throw AtelierError.notFound(entity: "collection", id: parentID)
+                }
+            }
             try collection.insert(db)
             return collection
         }
     }
 
-    /// Rename a collection. `.notFound` if absent; bumps `updatedAt`.
+    /// Rename a collection. Rejects the protected Unsorted folder
+    /// (`.protectedCollection`, F3); `.notFound` if absent; bumps `updatedAt`.
     @discardableResult
     public func renameCollection(id: UUID, to name: String) async throws -> Collection {
+        if id == Collection.unsortedID {
+            throw AtelierError.protectedCollection(id: id)
+        }
         let trimmed = try Validation.collectionName(name)
         return try await write { db in
             guard var collection = try Collection.fetchOne(db, key: Self.key(id)) else {
@@ -110,15 +123,79 @@ public final class AppServices: Sendable {
         }
     }
 
-    /// Delete a collection. `.notFound` if absent. Its memberships CASCADE
-    /// (schema 17A).
+    /// Delete a collection (folder). Rejects the protected Unsorted folder
+    /// (`.protectedCollection`, F3); `.notFound` if absent. The whole subtree —
+    /// descendant folders (parent FK) and every membership (schema 17A) —
+    /// CASCADEs at the DB level (F4); descendants are NOT hand-deleted here.
     public func deleteCollection(id: UUID) async throws {
+        if id == Collection.unsortedID {
+            throw AtelierError.protectedCollection(id: id)
+        }
         try await write { db in
             guard try Collection.deleteOne(db, key: Self.key(id)) else {
                 throw AtelierError.notFound(entity: "collection", id: id)
             }
         }
     }
+
+    /// Reparent a folder (decision F6). Rejects the protected Unsorted folder
+    /// (`.protectedCollection`, F3); the folder must exist (`.notFound`). When
+    /// `newParentID` is non-nil it must exist (`.notFound`) and must NOT be `id`
+    /// nor a descendant of `id` — else `.folderCycle`. `nil` ⇒ the folder
+    /// becomes a root. Bumps `updatedAt`.
+    public func moveCollection(id: UUID, toParent newParentID: UUID?) async throws {
+        if id == Collection.unsortedID {
+            throw AtelierError.protectedCollection(id: id)
+        }
+        try await write { db in
+            guard var collection = try Collection.fetchOne(db, key: Self.key(id)) else {
+                throw AtelierError.notFound(entity: "collection", id: id)
+            }
+            if let newParentID {
+                guard try Collection.exists(db, key: Self.key(newParentID)) else {
+                    throw AtelierError.notFound(entity: "collection", id: newParentID)
+                }
+                // Cycle prevention (F6): walk UP the ancestor chain from the
+                // proposed parent via parent_collection_id. If the walk reaches
+                // `id`, then `id` is an ancestor of newParentID — i.e.
+                // newParentID is `id` itself or one of its descendants — so the
+                // move would form a cycle. A self-move (newParentID == id) is
+                // caught on the very first step.
+                var cursor: UUID? = newParentID
+                while let current = cursor {
+                    if current == id {
+                        throw AtelierError.folderCycle
+                    }
+                    cursor = try Collection
+                        .filter(Column("id") == Self.key(current))
+                        .select(Column("parent_collection_id"), as: UUID?.self)
+                        .fetchOne(db) ?? nil
+                }
+            }
+            collection.parentCollectionID = newParentID
+            collection.updatedAt = Date()
+            try collection.update(db)
+        }
+    }
+
+    /// The DIRECT children of a folder (decision F5/P13), ordered by `name` then
+    /// `id` (stable). `nil` ⇒ the root folders (`parent_collection_id IS NULL`,
+    /// including the protected Unsorted folder). Read.
+    public func childCollections(of parentID: UUID?) async throws -> [Collection] {
+        try await read { db in
+            let filter: QueryInterfaceRequest<Collection>
+            if let parentID {
+                filter = Collection.filter(Column("parent_collection_id") == Self.key(parentID))
+            } else {
+                filter = Collection.filter(Column("parent_collection_id") == nil)
+            }
+            return try filter.order(Column("name"), Column("id")).fetchAll(db)
+        }
+    }
+
+    /// The fixed id of the protected default-import "Unsorted" folder (F3), so
+    /// the app has a default target without reaching into the domain constant.
+    public var unsortedFolderID: UUID { Collection.unsortedID }
 
     // MARK: - Ingest (C6 provenance + 18A dedup)
 

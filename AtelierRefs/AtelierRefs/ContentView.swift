@@ -8,15 +8,16 @@
 import CanvasRenderer
 import SwiftUI
 
-// Chunk 5: two tabs — the EXISTING Canvas spike harness (unchanged) and the new
-// Import demo that proves the ingestion capture loop end-to-end.
+// Two tabs — the EXISTING Canvas spike harness (unchanged) and the Library:
+// a nested folder tree + folder browsing + import into the selected folder
+// (chunk 3 of the folders feature).
 struct ContentView: View {
     var body: some View {
         TabView {
             CanvasTab()
                 .tabItem { Label("Canvas", systemImage: "square.grid.2x2") }
-            ImportView()
-                .tabItem { Label("Import", systemImage: "square.and.arrow.down") }
+            LibraryView()
+                .tabItem { Label("Library", systemImage: "folder") }
         }
         .frame(minWidth: 800, minHeight: 600)
     }
