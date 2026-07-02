@@ -46,6 +46,14 @@ public final class CanvasEngine {
     /// sublayer count), then reused and hidden when there's nothing to highlight.
     private var selectionLayer: CALayer?
 
+    /// The tile currently being live-dragged, or `nil`. While set, its world
+    /// frame is displayed offset by ``dragWorldOffset`` (in ``sync()`` and
+    /// hit-testing) so the tile, its badge, and the highlight follow the cursor
+    /// without touching the provider until the drag ends.
+    private var dragTileID: Int?
+    /// The live-drag's world-space offset from the dragged tile's stored origin.
+    private var dragWorldOffset: CGSize = .zero
+
     public init(
         provider: TileProvider,
         images: any TileImageSource,
@@ -80,6 +88,15 @@ public final class CanvasEngine {
     /// Outstanding async decodes.
     public var inFlightDecodeCount: Int { scheduler.inFlightCount }
 
+    /// The on-screen frame a tile is currently drawn at — its stored world frame
+    /// plus any live-drag offset, mapped through the transform — or `nil` if the
+    /// tile isn't among the currently visible tiles. Mirrors the math ``sync()``
+    /// uses to place each layer; introspection for the drag tests.
+    public func currentScreenFrame(forTileID id: Int) -> CGRect? {
+        guard let tile = currentVisibleTiles().first(where: { $0.id == id }) else { return nil }
+        return transform.worldToScreen(displayWorldFrame(for: tile))
+    }
+
     /// The tiles visible under the current transform + viewport + prefetch margin.
     public func currentVisibleTiles() -> [Tile] {
         guard viewportSize.width > 0, viewportSize.height > 0 else { return [] }
@@ -111,6 +128,58 @@ public final class CanvasEngine {
         guard selectedTileID != id else { return }
         selectedTileID = id
         sync()
+    }
+
+    // MARK: Live drag (transient placement, no provider mutation)
+
+    /// Begin live-dragging `tileID`. Records the tile and resets the offset; the
+    /// tile doesn't move until ``updateDrag(byScreenDelta:)`` reports movement.
+    public func beginDrag(tileID: Int) {
+        dragTileID = tileID
+        dragWorldOffset = .zero
+    }
+
+    /// Update the live drag to a **cumulative** screen delta from the drag's
+    /// start point. Converts to a world delta (world = screen / `scale`; the
+    /// mapping is `screen = world * scale + translation`, uniform positive scale
+    /// with no y-flip in the transform, so the sign is direct) and re-syncs so
+    /// the dragged tile follows the cursor.
+    public func updateDrag(byScreenDelta screenDelta: CGSize) {
+        guard dragTileID != nil else { return }
+        dragWorldOffset = CGSize(
+            width: screenDelta.width / transform.scale,
+            height: screenDelta.height / transform.scale)
+        sync()
+    }
+
+    /// Finalize the live drag: return the dragged tile's FINAL world origin
+    /// (stored origin + offset) and clear the drag state, WITHOUT syncing.
+    ///
+    /// Ordering matters (avoids a viewport reset / snap-back): the host calls
+    /// this, hands the origin to the provider (an in-memory placement update),
+    /// then calls ``sync()`` — by then the provider reports the new geometry and
+    /// the offset is cleared, so the tile stays exactly where it was dropped.
+    /// Returns `nil` when nothing was being dragged.
+    public func endDrag() -> (tileID: Int, worldOrigin: CGPoint)? {
+        guard let id = dragTileID,
+              let tile = provider.tiles.first(where: { $0.id == id }) else {
+            dragTileID = nil
+            dragWorldOffset = .zero
+            return nil
+        }
+        let origin = CGPoint(
+            x: tile.worldFrame.origin.x + dragWorldOffset.width,
+            y: tile.worldFrame.origin.y + dragWorldOffset.height)
+        dragTileID = nil
+        dragWorldOffset = .zero
+        return (id, origin)
+    }
+
+    /// The world frame a tile is drawn at this frame — its stored frame, offset
+    /// by the live-drag delta when it's the tile under the drag.
+    private func displayWorldFrame(for tile: Tile) -> CGRect {
+        guard tile.id == dragTileID else { return tile.worldFrame }
+        return tile.worldFrame.offsetBy(dx: dragWorldOffset.width, dy: dragWorldOffset.height)
     }
 
     /// Frames all content to fit the viewport (with fractional `padding` on each
@@ -186,7 +255,7 @@ public final class CanvasEngine {
                 active[tile.id] = layer
             }
 
-            let screenFrame = transform.worldToScreen(tile.worldFrame)
+            let screenFrame = transform.worldToScreen(displayWorldFrame(for: tile))
             layer.frame = screenFrame
             layer.zPosition = CGFloat(tile.z)
             updateBadge(for: tile, screenFrame: screenFrame)
@@ -314,7 +383,7 @@ public final class CanvasEngine {
     /// `nil`. Used by the host view to resolve a click to an asset.
     public func tile(atScreenPoint screenPoint: CGPoint) -> Tile? {
         currentVisibleTiles()
-            .filter { transform.worldToScreen($0.worldFrame).contains(screenPoint) }
+            .filter { transform.worldToScreen(displayWorldFrame(for: $0)).contains(screenPoint) }
             .max { $0.z < $1.z }
     }
 

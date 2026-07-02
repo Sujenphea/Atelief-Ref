@@ -65,6 +65,12 @@ struct CanvasScreen: View {
                     if let detail = content.detail(forTileID: tileID) {
                         model.requestDelete(assetIDs: [detail.asset.id])
                     }
+                },
+                onMoveTile: { tileID, worldOrigin in
+                    // Drag-to-place: persist the new position (keeps w/h/z). The
+                    // in-memory update keeps the tile put — no view rebuild here,
+                    // so pan/zoom survive.
+                    model.moveCanvasTile(tileID: tileID, to: worldOrigin)
                 })
             .id(model.contentsVersion)
         } else {

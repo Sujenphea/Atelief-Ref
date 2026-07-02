@@ -14,6 +14,7 @@ import AppKit
 import AtelierCore
 import AtelierIngestion
 import AtelierServer
+import CanvasRenderer
 import Combine
 import SwiftUI
 
@@ -357,6 +358,43 @@ final class IngestionModel: ObservableObject {
             }
             // Reload to the persisted truth either way (core sorts by manual_order).
             loadContents(of: folder)
+        }
+    }
+
+    // MARK: - Canvas drag-to-place
+
+    /// Move a canvas tile to `worldOrigin` and PERSIST the placement. The tile's
+    /// current `w/h/z` are re-persisted alongside the new `x/y` so the placement
+    /// "pins" the tile at its dropped size — a later provider rebuild (folder
+    /// switch / relaunch) then honours `canvas_*` and reproduces it exactly.
+    ///
+    /// The in-memory `content.setPlacement` runs synchronously (so the tile stays
+    /// put, no snap-back / viewport reset — the renderer reads it next `sync()`);
+    /// the DB write hops OFF the main actor and surfaces failures via `lastError`.
+    /// A no-op if the tile can't be resolved to a current asset.
+    func moveCanvasTile(tileID: Int, to worldOrigin: CGPoint) {
+        guard let services, let content = cachedCanvasContent,
+              let detail = content.detail(forTileID: tileID),
+              content.tiles.indices.contains(tileID) else { return }
+
+        let assetID = detail.asset.id
+        let folder = selectedFolderID
+        let tile = content.tiles[tileID]
+        let (w, h, z) = (tile.w, tile.h, tile.z)
+        let x = Double(worldOrigin.x)
+        let y = Double(worldOrigin.y)
+
+        // In-memory update first — keeps the tile exactly where it was dropped.
+        content.setPlacement(tileID: tileID, x: x, y: y)
+
+        Task {
+            do {
+                try await services.setCanvasPlacement(
+                    collectionID: folder, assetID: assetID,
+                    x: x, y: y, w: w, h: h, z: z)
+            } catch {
+                lastError = Self.message(for: error)
+            }
         }
     }
 

@@ -13,6 +13,7 @@ public struct CanvasView: NSViewRepresentable {
     private let onSelectTile: ((Int?) -> Void)?
     private let onRemoveTile: ((Int) -> Void)?
     private let onDeleteTile: ((Int) -> Void)?
+    private let onMoveTile: ((Int, CGPoint) -> Void)?
 
     public init(
         provider: any TileProvider,
@@ -21,7 +22,8 @@ public struct CanvasView: NSViewRepresentable {
         onActivateTile: ((Int) -> Void)? = nil,
         onSelectTile: ((Int?) -> Void)? = nil,
         onRemoveTile: ((Int) -> Void)? = nil,
-        onDeleteTile: ((Int) -> Void)? = nil
+        onDeleteTile: ((Int) -> Void)? = nil,
+        onMoveTile: ((Int, CGPoint) -> Void)? = nil
     ) {
         self.provider = provider
         self.images = images
@@ -30,6 +32,7 @@ public struct CanvasView: NSViewRepresentable {
         self.onSelectTile = onSelectTile
         self.onRemoveTile = onRemoveTile
         self.onDeleteTile = onDeleteTile
+        self.onMoveTile = onMoveTile
     }
 
     public func makeNSView(context: Context) -> CanvasHostView {
@@ -50,6 +53,7 @@ public struct CanvasView: NSViewRepresentable {
         view.onSelectTile = onSelectTile
         view.onRemoveTile = onRemoveTile
         view.onDeleteTile = onDeleteTile
+        view.onMoveTile = onMoveTile
         view.selectedTileID = selectedTileID
     }
 }

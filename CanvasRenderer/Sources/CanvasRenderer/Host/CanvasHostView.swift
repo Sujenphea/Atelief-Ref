@@ -23,6 +23,28 @@ public final class CanvasHostView: NSView {
     /// "Delete" or the ⌫ / Delete key on the current selection.
     public var onDeleteTile: ((Int) -> Void)?
 
+    /// Called when a tile is dragged to a new position: its id and the FINAL
+    /// world-space origin. The host updates the provider in memory (so the tile
+    /// stays put) and persists off-main. `nil` disables drag-to-place.
+    public var onMoveTile: ((Int, CGPoint) -> Void)?
+
+    // MARK: Drag tracking (click-vs-drag)
+
+    /// The screen point of the current `mouseDown`, or `nil` when not tracking.
+    private var dragStartPoint: CGPoint?
+    /// The tile hit at `mouseDown` — the drag candidate (nil over empty space).
+    private var dragCandidateTileID: Int?
+    /// Whether movement has passed the threshold and a live drag is in progress.
+    private var isDragging = false
+    /// Screen-point movement before a press-and-move becomes a drag (not a click).
+    static let dragThreshold: CGFloat = 3
+
+    /// Whether a cumulative press-move `delta` (screen points) is far enough to
+    /// count as a drag rather than a click. Pure + static so it's unit-testable.
+    static func exceedsDragThreshold(_ delta: CGSize, threshold: CGFloat = dragThreshold) -> Bool {
+        hypot(delta.width, delta.height) > threshold
+    }
+
     /// Reflect an externally-driven selection (e.g. the host selected an item in
     /// another view) into the engine's highlight.
     public var selectedTileID: Int? {
@@ -86,6 +108,43 @@ public final class CanvasHostView: NSView {
         if event.clickCount == 2, let tileID {
             onActivateTile?(tileID)
         }
+        // Arm click-vs-drag: a tile hit is a drag candidate; empty space isn't
+        // (panning stays on scroll, so a drag over the void does nothing).
+        dragStartPoint = point
+        dragCandidateTileID = tileID
+        isDragging = false
+    }
+
+    /// Once movement passes the threshold, begin (then continue) a live drag of
+    /// the candidate tile. Empty-space presses never drag. The delta is
+    /// cumulative from the press point, so the engine can replace its offset.
+    public override func mouseDragged(with event: NSEvent) {
+        guard let start = dragStartPoint, let tileID = dragCandidateTileID else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let delta = CGSize(width: point.x - start.x, height: point.y - start.y)
+        if !isDragging {
+            guard Self.exceedsDragThreshold(delta) else { return }
+            isDragging = true
+            engine.beginDrag(tileID: tileID)
+        }
+        engine.updateDrag(byScreenDelta: delta)
+    }
+
+    /// Finalize a drag: hand the final origin to the host (which updates the
+    /// provider in memory + persists), THEN sync — so the tile stays put with no
+    /// flicker and the viewport is untouched. A press with no drag is a plain
+    /// click (already handled on down), so it's a no-op here.
+    public override func mouseUp(with event: NSEvent) {
+        defer {
+            dragStartPoint = nil
+            dragCandidateTileID = nil
+            isDragging = false
+        }
+        guard isDragging else { return }
+        if let result = engine.endDrag() {
+            onMoveTile?(result.tileID, result.worldOrigin)
+        }
+        engine.sync()
     }
 
     /// Right-click: select the tile under the cursor and offer Remove / Delete.

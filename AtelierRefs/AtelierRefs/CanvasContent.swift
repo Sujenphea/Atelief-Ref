@@ -24,8 +24,10 @@ import Foundation
 /// ``MediaStore``. Built once per content version and handed to `CanvasView`;
 /// used only on the main actor (the renderer calls its seams during sync).
 final class CanvasContent: TileProvider, TileImageSource {
-    /// World-space tiles, index-aligned to ``details`` by ``Tile/id``.
-    let tiles: [Tile]
+    /// World-space tiles, index-aligned to ``details`` by ``Tile/id``. Mutable
+    /// so a canvas drag can update a tile's placement in place (the renderer
+    /// reads this next `sync()`), keeping the tile put without a provider rebuild.
+    private(set) var tiles: [Tile]
 
     /// The items behind the tiles; `tile.id` indexes straight into this.
     private let details: [CollectionItemDetail]
@@ -87,6 +89,19 @@ final class CanvasContent: TileProvider, TileImageSource {
             fileExtension: "jpg")
         // Small pre-sized JPEG; missing tier ⇒ nil (tile stays blank this frame).
         return try? Data(contentsOf: url)
+    }
+
+    // MARK: - Placement mutation (canvas drag)
+
+    /// Move `tileID` to a new world-space origin, keeping its current `w/h/z`.
+    /// This is the in-memory update the renderer reads next `sync()`, so the
+    /// dragged tile stays exactly where it was dropped (the durable DB write via
+    /// `setCanvasPlacement` happens separately). A no-op for an out-of-range id.
+    func setPlacement(tileID: Int, x: Double, y: Double) {
+        guard tiles.indices.contains(tileID) else { return }
+        let existing = tiles[tileID]
+        tiles[tileID] = Tile(
+            id: existing.id, x: x, y: y, w: existing.w, h: existing.h, z: existing.z)
     }
 
     // MARK: - Lookups
