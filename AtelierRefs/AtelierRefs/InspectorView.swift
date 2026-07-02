@@ -149,6 +149,23 @@ struct InspectorView: View {
                     .frame(maxWidth: .infinity)
             }
             .disabled(!hasSource)
+
+            Divider().padding(.vertical, 2)
+
+            // Membership-only (reversible) vs library-wide (destructive) delete.
+            Button {
+                model.removeFromFolder(assetIDs: [detail.asset.id])
+            } label: {
+                Label("Remove from Folder", systemImage: "minus.circle")
+                    .frame(maxWidth: .infinity)
+            }
+
+            Button(role: .destructive) {
+                model.requestDelete(assetIDs: [detail.asset.id])
+            } label: {
+                Label("Delete", systemImage: "trash")
+                    .frame(maxWidth: .infinity)
+            }
         }
         .controlSize(.large)
     }
