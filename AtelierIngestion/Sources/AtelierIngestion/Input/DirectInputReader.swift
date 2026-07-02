@@ -88,40 +88,45 @@ public enum DirectInputReader {
     /// contents, producing zero or more ``IngestInput``s for `collectionID`.
     ///
     /// The decision order (007 §scope · the three LOCAL paths):
-    ///   1. **Image data present** (`.png` / `.tiff` / `public.jpeg`). If a WEB
-    ///      page URL is also present, this is a dragged browser image → one
-    ///      `.web` input carrying that page URL. Otherwise it is a paste-image →
-    ///      one `.localPaste` input, attaching any (non-web) URL the clipboard
-    ///      carried as the source URL.
-    ///   2. **File URL(s) present** (and no image). Each file → one `.localDrag`
-    ///      input reading its bytes at ingest.
+    ///   1. **File URL(s) present** → each file → one `.localDrag` input, reading
+    ///      the real bytes from disk at ingest. This is preferred over any inline
+    ///      image on the SAME pasteboard: when you copy an image *file* (Finder,
+    ///      most apps), the clipboard carries BOTH the file URL (the full-
+    ///      resolution asset) AND a small inline image that is only an icon /
+    ///      QuickLook *preview* — reading the file avoids ingesting the preview.
+    ///   2. **Inline image data** (`.png` / `.tiff` / `public.jpeg`) and NO file
+    ///      URL → a genuine bitmap copy (Preview, a browser's "Copy Image", …).
+    ///      A WEB page URL alongside it marks a browser image → one `.web` input
+    ///      carrying that page URL; otherwise a paste-image → one `.localPaste`
+    ///      input, attaching any (non-web) URL the clipboard also carried.
     ///   3. Otherwise (empty / unsupported) → `[]`.
     public static func inputs(
         from pasteboard: NSPasteboard, into collectionID: UUID, now: Date
     ) -> [IngestInput] {
-        // 1. Image data wins: a browser image and a plain paste both surface
-        //    image bytes; the presence of a WEB url disambiguates them.
-        if let imageData = firstImageData(on: pasteboard) {
-            let urls = self.urls(on: pasteboard)
-            if let pageURL = urls.first(where: isWebURL) {
-                // A browser image drag: bytes + the source page URL.
-                return [browserImageInput(
-                    imageData: imageData, pageURL: pageURL,
-                    into: collectionID, at: now)]
-            }
-            // A plain paste: attach any URL the clipboard also carried (may be
-            // nil — the common bare-image paste).
-            return [pasteInput(
-                imageData: imageData, sourceURL: urls.first,
-                into: collectionID, at: now)]
-        }
+        let urls = self.urls(on: pasteboard)
 
-        // 2. No image — treat any FILE urls as dragged/pasted files.
-        let fileURLs = self.urls(on: pasteboard).filter(\.isFileURL)
+        // 1. A FILE url is the real asset — prefer it. An inline image rep that
+        //    accompanies a file URL is typically just an icon / QuickLook
+        //    preview (e.g. copying an image file in Finder), NOT the full-
+        //    resolution bytes, so reading the file is what actually captures it.
+        let fileURLs = urls.filter(\.isFileURL)
         if !fileURLs.isEmpty {
             return fileURLs.map {
                 fileInput(fileURL: $0, into: collectionID, at: now)
             }
+        }
+
+        // 2. No file URL — an inline image is a genuine bitmap copy. A WEB page
+        //    URL alongside it disambiguates a browser image from a plain paste.
+        if let imageData = firstImageData(on: pasteboard) {
+            if let pageURL = urls.first(where: isWebURL) {
+                return [browserImageInput(
+                    imageData: imageData, pageURL: pageURL,
+                    into: collectionID, at: now)]
+            }
+            return [pasteInput(
+                imageData: imageData, sourceURL: urls.first,
+                into: collectionID, at: now)]
         }
 
         // 3. Nothing we can ingest.

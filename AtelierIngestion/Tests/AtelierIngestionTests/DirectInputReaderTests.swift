@@ -179,6 +179,42 @@ struct DirectInputReaderTests {
         }
     }
 
+    @Test("inputs(from:) prefers a file URL over an accompanying inline image (Finder copy)")
+    func pasteboardFileURLBeatsInlinePreview() throws {
+        // The shape a copied image FILE produces: the file URL (real full-res
+        // bytes) PLUS a small inline image that is only an icon/QuickLook
+        // preview. We must ingest the file, not the preview.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let fileURL = dir.appendingPathComponent("real.png")
+        let realBytes = try FixtureImages.solidImage(width: 64, height: 64, format: .png)
+        try realBytes.write(to: fileURL)
+
+        // A tiny, DIFFERENT inline "preview" image alongside the file URL.
+        let preview = try FixtureImages.solidImage(width: 8, height: 8, format: .png)
+        let previewItem = NSPasteboardItem()
+        previewItem.setData(preview, forType: .png)
+
+        let pb = makePasteboard()
+        pb.writeObjects([previewItem, fileURL as NSURL])
+
+        let inputs = DirectInputReader.inputs(
+            from: pb, into: Self.collectionID, now: Self.capturedAt)
+
+        #expect(inputs.count == 1)
+        let input = try #require(inputs.first)
+        // The file URL won: a .localDrag reading the real file, NOT a paste of
+        // the 8×8 preview bytes.
+        #expect(input.provenance.platform == .localDrag)
+        if case .fileURL(let u) = input.source {
+            #expect(u.lastPathComponent == "real.png")
+        } else {
+            Issue.record("expected .fileURL source (the real file), not the inline preview")
+        }
+    }
+
     @Test("inputs(from:) over an empty pasteboard → []")
     func pasteboardEmpty() {
         let pb = makePasteboard()
