@@ -51,7 +51,7 @@ async function capture(tab, context) {
   if (!harvest) return flash("ERR", "#cc3333", "Could not read the page.");
 
   const provenance = extractProvenance(harvest, context);
-  console.log("[Atelier] capture", { context, provenance });
+  console.log("[Atelier] capture", { context, provenance: logSafe(provenance) });
   if (!provenance.mediaUrl) {
     return flash("?", "#e08c00", "No image found on this page.");
   }
@@ -128,6 +128,16 @@ async function fetchImage(urls) {
     }
   }
   throw lastError;
+}
+
+/** A log-friendly copy of provenance: a captured video frame is a multi-MB
+ * data-URL, so summarize any data-URL field rather than dumping it. */
+function logSafe(provenance) {
+  const shorten = (v) =>
+    typeof v === "string" && v.startsWith("data:")
+      ? `${v.slice(0, v.indexOf(",") + 1)}…(${v.length} chars)`
+      : v;
+  return { ...provenance, mediaUrl: shorten(provenance.mediaUrl) };
 }
 
 /** Brief action-badge feedback (title carries the full message). */

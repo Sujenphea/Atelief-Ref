@@ -103,6 +103,12 @@ export function firstMedia(harvest, pattern) {
   return mediaMatching(harvest, pattern)[0] || null;
 }
 
+/** First (DOM order) media of a given `kind` (e.g. "video-frame", whose data-URL
+ * `src` can't be matched by host pattern). */
+export function firstMediaOfKind(harvest, kind) {
+  return mediaList(harvest).find((m) => m.kind === kind && m.src) || null;
+}
+
 /** Largest (by rendered area) media matching `pattern` — for closeup pages where
  * the main image is the biggest (e.g. a Pinterest pin). */
 export function largestMedia(harvest, pattern) {

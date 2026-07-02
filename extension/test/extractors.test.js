@@ -66,6 +66,48 @@ test("twitter: video tweet → uses the video poster", () => {
   );
 });
 
+test("twitter: video tweet → captured live frame wins over the poster, poster is the fallback", () => {
+  const frame = "data:image/png;base64,AAAABBBBCCCC"; // canvas grab of the on-screen frame
+  const h = harvest({
+    url: "https://x.com/a/status/1",
+    media: [
+      { kind: "video-frame", src: frame, width: 1280, height: 720, alt: null },
+      { kind: "video-poster", src: "https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/x.jpg", width: 1280, height: 720, alt: null },
+    ],
+  });
+  const p = twitter.extract(h);
+  assert.equal(p.mediaUrl, frame); // the exact frame, not rewritten
+  assert.equal(p.mediaUrlFallback, "https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/x.jpg");
+});
+
+test("twitter: video tweet with no decodable frame → falls back to the poster", () => {
+  // readyState/taint failures mean harvest emits only the poster (no video-frame).
+  const h = harvest({
+    url: "https://x.com/a/status/1",
+    media: [
+      { kind: "video-poster", src: "https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/x.jpg", width: 1280, height: 720, alt: null },
+    ],
+  });
+  assert.equal(
+    twitter.extract(h).mediaUrl,
+    "https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/x.jpg"
+  );
+});
+
+test("twitter: a real photo still beats a video frame (higher fidelity than a canvas grab)", () => {
+  const h = harvest({
+    url: "https://x.com/a/status/1",
+    media: [
+      { kind: "video-frame", src: "data:image/png;base64,ZZZZ", width: 640, height: 360, alt: null },
+      img("https://pbs.twimg.com/media/PHOTO?format=jpg&name=medium", 1200, 800),
+    ],
+  });
+  assert.equal(
+    twitter.extract(h).mediaUrl,
+    "https://pbs.twimg.com/media/PHOTO?format=jpg&name=orig"
+  );
+});
+
 test("twitter: no DOM media → falls back to og:image", () => {
   const h = harvest({
     url: "https://x.com/a/status/1",

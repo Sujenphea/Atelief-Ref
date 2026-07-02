@@ -36,6 +36,29 @@ export function harvestSignals() {
     });
   }
   for (const video of document.querySelectorAll("video")) {
+    // A video tweet has no still image on the server — Twitter only exposes the
+    // poster (a keyframe it chose). To capture the frame the user is actually
+    // looking at, draw the video's CURRENT frame to a canvas and read it as a
+    // data-URL. Only possible when a frame is decoded (readyState >=
+    // HAVE_CURRENT_DATA) and the pixels aren't cross-origin-tainted; on either
+    // failure we skip it and the poster below is used instead.
+    if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext("2d").drawImage(video, 0, 0);
+        media.push({
+          kind: "video-frame",
+          src: canvas.toDataURL("image/png"), // throws SecurityError if tainted
+          width: video.videoWidth,
+          height: video.videoHeight,
+          alt: null,
+        });
+      } catch {
+        // Tainted or unavailable — fall through to the poster.
+      }
+    }
     if (video.poster && !video.poster.startsWith("data:")) {
       media.push({
         kind: "video-poster",

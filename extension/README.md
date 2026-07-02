@@ -22,6 +22,11 @@ localhost endpoint (`http://127.0.0.1:47321/ingest`).
 Supported sites: Twitter/X, Pinterest, Instagram, Cosmos, plus a generic
 Open-Graph fallback for any other page.
 
+**Video tweets** have no still image on the server, so the extension captures the
+frame currently on screen (via `<canvas>`). Play/scrub to the frame you want,
+then right-click → Save. An un-played (or cross-origin-tainted) video falls back
+to Twitter's poster thumbnail.
+
 ## Install (unpacked, for development)
 
 1. Open `chrome://extensions`, enable **Developer mode**.
