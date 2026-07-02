@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Atelier Capture",
+  "version": "0.1.0",
+  "description": "Save the current post/pin (with provenance) to ref-atelier.",
+  "permissions": ["activeTab", "scripting", "storage", "contextMenus"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "*://*.twimg.com/*",
+    "*://*.pinimg.com/*",
+    "*://*.cdninstagram.com/*",
+    "*://*.fbcdn.net/*",
+    "*://*.cosmos.so/*"
+  ],
+  "background": {
+    "service_worker": "src/sw.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Save to Atelier"
+  },
+  "options_page": "src/options.html"
+}

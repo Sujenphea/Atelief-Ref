@@ -1,0 +1,10 @@
+{
+  "name": "atelier-capture-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Chrome MV3 extension that captures the current post/pin to ref-atelier.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

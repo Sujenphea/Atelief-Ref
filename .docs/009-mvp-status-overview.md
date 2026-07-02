@@ -15,9 +15,10 @@
 > its source → it appears in a collection → view it in **grid and canvas** → and
 > from anywhere **open the original source**. Fast, no spinners.
 
-Loop status: capture ✅ · store ✅ · organize ✅ · **view** ✅ (grid + inspector +
-canvas all on real data) · **open source** ✅ (inspector: Open Original Source).
-Remaining MVP gap: **#6 Chrome extension** (the primary platform capture path).
+Loop status: capture ✅ (paste/drag + **Chrome extension** #6) · store ✅ ·
+organize ✅ · **view** ✅ (grid + inspector + canvas all on real data) ·
+**open source** ✅ (inspector: Open Original Source). **All MVP build-order items
+complete** (compile/test-verified); a manual end-to-end pass is the remaining gate.
 
 ## Build order (004 §recommended build order)
 
@@ -79,13 +80,18 @@ works; editing/persistence and real-data profiling remain.
 - [ ] Re-profile with real, variable-size assets (005 caveat); move thumbnail
       reads off-main if panning janks
 
-### 6. Chrome extension + localhost endpoint — ⬜ not started
+### 6. Chrome extension + localhost endpoint — ✅ done
 The primary platform-ingestion path (Twitter / Pinterest / Instagram / Cosmos)
-and the seam the future agent reuses.
-- [ ] Localhost HTTP endpoint over the App Services mutation path
-- [ ] Chrome extension: capture current post/pin via the authenticated session
-- [ ] Per-site content scripts (provenance extraction)
-- [ ] POST full provenance → ingest through the shared pipeline
+and the seam the future agent reuses. See [011](./011-capture-extension-overview.md),
+`.change-log/026`–`029`. Compile/test-verified; runtime bind + real capture are a
+pending manual pass.
+- [x] Localhost HTTP endpoint (`AtelierServer` / FlyingFox) over the shared pipeline
+- [x] `network.server` sandbox entitlement; endpoint wired into `IngestionModel`
+- [x] Token + `Origin` auth gate + CORS/preflight; 50 MB body cap
+- [x] Chrome extension (MV3): capture current post/pin via the authenticated session
+- [x] Per-site extractors (Twitter/Pinterest/Instagram/Cosmos + web fallback)
+- [x] POST bytes + full provenance → `DirectInputReader.remoteInput` → ingest
+- [ ] Manual pass: run the signed app + load the unpacked extension end-to-end
 
 ### 7. Inspector + provenance actions — ⬜ not started
 Closes the loop's tail: look at an image and get back to where it came from.
