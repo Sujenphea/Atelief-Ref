@@ -38,6 +38,14 @@ public final class CanvasEngine {
     /// The ▶ glyph, rendered once and shared by every badge layer's `contents`.
     private lazy var playBadgeImage: CGImage? = Self.makePlayBadgeImage()
 
+    /// The currently selected tile's id, or `nil`. Drives the selection highlight
+    /// and is the target the host acts on for Delete / context-menu actions.
+    public private(set) var selectedTileID: Int?
+    /// The highlight border drawn around the selected tile. Created lazily on the
+    /// first selection (so a canvas that's never selected keeps its exact
+    /// sublayer count), then reused and hidden when there's nothing to highlight.
+    private var selectionLayer: CALayer?
+
     public init(
         provider: TileProvider,
         images: any TileImageSource,
@@ -94,6 +102,14 @@ public final class CanvasEngine {
 
     public func zoom(by factor: CGFloat, aroundScreenPoint anchor: CGPoint) {
         transform = transform.zoomed(by: factor, aroundScreenPoint: anchor)
+        sync()
+    }
+
+    /// Select a tile (or clear with `nil`) and redraw the highlight. Idempotent —
+    /// re-selecting the same tile is a no-op, so it's cheap to call on every click.
+    public func setSelected(_ id: Int?) {
+        guard selectedTileID != id else { return }
+        selectedTileID = id
         sync()
     }
 
@@ -159,6 +175,7 @@ public final class CanvasEngine {
 
         // Place / update layers for visible tiles.
         var neededKeys = Set<ThumbnailCache.Key>()
+        var selectedFrame: CGRect?
         for tile in visible {
             let layer: CALayer
             if let existing = active[tile.id] {
@@ -173,6 +190,7 @@ public final class CanvasEngine {
             layer.frame = screenFrame
             layer.zPosition = CGFloat(tile.z)
             updateBadge(for: tile, screenFrame: screenFrame)
+            if tile.id == selectedTileID { selectedFrame = screenFrame }
 
             let onScreenEdge = CGFloat(tile.longestWorldEdge) * transform.scale
             let tier = lod.tier(forOnScreenLongestEdge: onScreenEdge, previous: keyByTile[tile.id]?.tier)
@@ -190,6 +208,9 @@ public final class CanvasEngine {
                 )
             }
         }
+
+        // Draw / hide the selection highlight for this frame.
+        updateSelectionHighlight(frame: selectedFrame)
 
         // Drop decodes whose tiles are no longer needed (decision P15).
         scheduler.retainOnly(neededKeys)
@@ -253,6 +274,41 @@ public final class CanvasEngine {
         badge.position = CGPoint(x: screenFrame.midX, y: screenFrame.midY)
         badge.zPosition = CGFloat(tile.z) + 0.5 // above its own tile
     }
+
+    /// Whether the selection highlight is currently drawn (a tile is selected AND
+    /// visible in the viewport). Introspection for the invariant tests.
+    public var isSelectionHighlightVisible: Bool {
+        selectionLayer.map { !$0.isHidden } ?? false
+    }
+
+    /// Position the highlight border around the selected tile's on-screen frame,
+    /// or hide it when nothing is selected / the selected tile is off-screen. The
+    /// layer is created on first use and kept above all tiles + badges.
+    private func updateSelectionHighlight(frame: CGRect?) {
+        guard let frame else {
+            selectionLayer?.isHidden = true
+            return
+        }
+        let layer = selectionLayer ?? makeSelectionLayer()
+        selectionLayer = layer
+        layer.isHidden = false
+        layer.frame = frame.insetBy(dx: -Self.selectionInset, dy: -Self.selectionInset)
+        layer.zPosition = .greatestFiniteMagnitude // always on top
+    }
+
+    private func makeSelectionLayer() -> CALayer {
+        let layer = CALayer()
+        layer.borderWidth = 3
+        layer.borderColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 1.0) // accent blue
+        layer.cornerRadius = 3
+        layer.backgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0) // border only
+        rootLayer.addSublayer(layer)
+        return layer
+    }
+
+    /// Screen-point outset of the highlight beyond the tile edge (so the border
+    /// frames the image rather than covering it).
+    private static let selectionInset: CGFloat = 2
 
     /// The topmost visible tile whose on-screen frame contains `screenPoint`, or
     /// `nil`. Used by the host view to resolve a click to an asset.
