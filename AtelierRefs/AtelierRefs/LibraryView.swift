@@ -218,6 +218,14 @@ struct LibraryView: View {
                             }
                             .buttonStyle(.plain)
                             .id(detail.item.id)
+                            // Drag-to-reorder. `LazyVGrid` has no `.onMove`, so we
+                            // carry the dragged item's ASSET id (the unit
+                            // `setGridOrder` persists) as the payload and compute
+                            // the insertion ourselves on drop.
+                            .draggable(detail.asset.id.uuidString)
+                            .dropDestination(for: String.self) { payloads, _ in
+                                reorder(dropped: payloads, onto: detail.asset.id)
+                            }
                             .contextMenu {
                                 Button("Remove from Folder") {
                                     model.removeFromFolder(assetIDs: [detail.asset.id])
@@ -272,6 +280,17 @@ struct LibraryView: View {
         }
         withAnimation { proxy.scrollTo(detail.item.id, anchor: .center) }
         return .handled
+    }
+
+    /// Thin drop glue: the payload is the dragged cell's asset-id `uuidString`.
+    /// Parse the first one and ask the model to move it to `targetAssetID`'s slot
+    /// (the model no-ops on a foreign / self drop). Returns whether we accepted a
+    /// well-formed internal payload.
+    private func reorder(dropped payloads: [String], onto targetAssetID: UUID) -> Bool {
+        guard let first = payloads.first, let movingAssetID = UUID(uuidString: first)
+        else { return false }
+        model.reorderItem(movingAssetID: movingAssetID, toIndexOf: targetAssetID)
+        return true
     }
 
     // MARK: - Import actions

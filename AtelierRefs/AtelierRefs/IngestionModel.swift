@@ -326,6 +326,40 @@ final class IngestionModel: ObservableObject {
         }
     }
 
+    // MARK: - Reorder (drag-to-reorder)
+
+    /// Move the item with `movingAssetID` to the grid slot currently held by
+    /// `targetAssetID`, within the selected folder. OPTIMISTIC: reorders the local
+    /// ``items`` immediately for feedback, then persists the new full order via
+    /// `setGridOrder` (the write hops OFF the main actor). On failure the message
+    /// surfaces via ``lastError`` and the folder reloads to the truth; on success
+    /// it reloads too (core sorts by `manual_order`, so state stays consistent).
+    /// A no-op when the ids match or either isn't a current item (foreign drop).
+    func reorderItem(movingAssetID: UUID, toIndexOf targetAssetID: UUID) {
+        guard let services else { return }
+        let currentIDs = items.map { $0.asset.id }
+        guard let newOrder = reorderedIDs(
+            ids: currentIDs, movingID: movingAssetID, toIndexOf: targetAssetID)
+        else { return }
+
+        // Optimistic local reorder — rebuild `items` in the new order.
+        let byAssetID = Dictionary(uniqueKeysWithValues: items.map { ($0.asset.id, $0) })
+        items = newOrder.compactMap { byAssetID[$0] }
+        contentsVersion &+= 1
+
+        let folder = selectedFolderID
+        Task {
+            do {
+                try await services.setGridOrder(
+                    collectionID: folder, orderedAssetIDs: newOrder)
+            } catch {
+                lastError = Self.message(for: error)
+            }
+            // Reload to the persisted truth either way (core sorts by manual_order).
+            loadContents(of: folder)
+        }
+    }
+
     // MARK: - Selection + inspector
 
     /// Select `detail` (or clear with `nil`) and load its preview off-main.
