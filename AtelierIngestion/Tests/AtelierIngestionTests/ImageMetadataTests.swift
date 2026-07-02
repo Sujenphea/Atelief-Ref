@@ -81,6 +81,32 @@ struct ImageMetadataTests {
         #expect(try ImageMetadata.extract(from: data).mimeType == "image/png")
     }
 
+    // MARK: - mimeType → fileExtension round-trip
+
+    @Test("fileExtension(forMIMEType:) inverts extract's extension for real bytes",
+          arguments: [FixtureImages.Format.png, .jpeg])
+    func fileExtensionRoundTrips(_ format: FixtureImages.Format) throws {
+        // The invariant the helper guarantees: a stored blob's extension can be
+        // reconstructed from the Asset's persisted mimeType alone.
+        let data = try FixtureImages.solidImage(width: 16, height: 16, format: format)
+        let meta = try ImageMetadata.extract(from: data)
+        #expect(ImageMetadata.fileExtension(forMIMEType: meta.mimeType) == meta.fileExtension)
+    }
+
+    @Test("fileExtension(forMIMEType:) maps known MIME types to canonical extensions")
+    func fileExtensionKnownMappings() {
+        #expect(ImageMetadata.fileExtension(forMIMEType: "image/jpeg") == "jpeg")
+        #expect(ImageMetadata.fileExtension(forMIMEType: "image/png") == "png")
+        #expect(ImageMetadata.fileExtension(forMIMEType: "image/gif") == "gif")
+    }
+
+    @Test("fileExtension(forMIMEType:) returns \"\" for an unresolvable MIME")
+    func fileExtensionUnknownMIME() {
+        // Matches the empty extension `extract` would store (dotless blob path),
+        // so the URL round-trips even for an unknown type.
+        #expect(ImageMetadata.fileExtension(forMIMEType: "application/x-not-a-real-type") == "")
+    }
+
     // MARK: - Degenerate inputs → typed errors
 
     @Test("corrupt / truncated bytes throw decodeFailed or unreadable")

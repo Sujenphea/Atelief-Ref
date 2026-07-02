@@ -117,6 +117,24 @@ extension ImageMetadata {
         throw ImageError.unsupportedType(mime: utType.preferredMIMEType)
     }
 
+    /// The canonical filename extension a stored blob of `mimeType` uses — the
+    /// inverse of ``extract(from:)``'s `fileExtension` derivation.
+    ///
+    /// `extract` stores a blob under `utType.preferredFilenameExtension` and
+    /// persists `utType.preferredMIMEType` as the asset's `mimeType`. An ``Asset``
+    /// keeps only the MIME type, so to rebuild the blob's content-addressed URL
+    /// (``MediaStore/blobURL(hash:fileExtension:)``) a reader maps the MIME back to
+    /// the SAME canonical extension here. Because both directions resolve the one
+    /// canonical `UTType` for the type, the round-trip is exact (e.g.
+    /// `image/jpeg` ⇄ `jpeg`, `image/png` ⇄ `png`).
+    ///
+    /// Returns `""` for a MIME the system can't resolve — matching the empty
+    /// extension `extract` would have stored (``MediaStore`` then uses a dotless
+    /// path), so the URL still round-trips.
+    public static func fileExtension(forMIMEType mimeType: String) -> String {
+        UTType(mimeType: mimeType)?.preferredFilenameExtension ?? ""
+    }
+
     /// Apply an EXIF orientation to stored pixel dimensions, returning
     /// DISPLAY-oriented `(width, height)`.
     ///

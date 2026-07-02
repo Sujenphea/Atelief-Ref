@@ -17,6 +17,7 @@ import UniformTypeIdentifiers
 struct LibraryView: View {
     @StateObject private var model = IngestionModel()
     @State private var isTargeted = false
+    @State private var showInspector = true
 
     private let columns = [GridItem(.adaptive(minimum: 112, maximum: 140), spacing: 8)]
 
@@ -36,6 +37,19 @@ struct LibraryView: View {
             Button("OK", role: .cancel) { model.lastError = nil }
         } message: {
             Text(model.lastError ?? "")
+        }
+        .inspector(isPresented: $showInspector) {
+            InspectorView(model: model)
+                .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
+        }
+        .toolbar {
+            ToolbarItem {
+                Button {
+                    showInspector.toggle()
+                } label: {
+                    Label("Toggle Inspector", systemImage: "sidebar.right")
+                }
+            }
         }
     }
 
@@ -128,7 +142,14 @@ struct LibraryView: View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(model.items, id: \.item.id) { detail in
-                    FolderThumbnail(image: model.thumbnail(for: detail))
+                    Button {
+                        model.select(detail)
+                    } label: {
+                        FolderThumbnail(
+                            image: model.thumbnail(for: detail),
+                            isSelected: model.selectedItemID == detail.item.id)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .padding(.top, 4)
@@ -207,9 +228,11 @@ struct LibraryView: View {
     }
 }
 
-/// One thumbnail cell — shows the loaded image, or a placeholder tile.
+/// One thumbnail cell — shows the loaded image, or a placeholder tile. A
+/// selection ring marks the item currently shown in the inspector.
 private struct FolderThumbnail: View {
     let image: NSImage?
+    var isSelected: Bool = false
 
     var body: some View {
         Group {
@@ -228,5 +251,11 @@ private struct FolderThumbnail: View {
         }
         .frame(width: 128, height: 128)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(
+                    isSelected ? Color.accentColor : .clear,
+                    lineWidth: 3)
+        }
     }
 }

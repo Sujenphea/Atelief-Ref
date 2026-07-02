@@ -60,6 +60,15 @@ final class IngestionModel: ObservableObject {
     /// The selected folder's immediate subfolders (navigable).
     @Published private(set) var subfolders: [Collection] = []
 
+    // MARK: - Selected item (inspector)
+
+    /// The membership id of the item shown in the inspector, or `nil` when
+    /// nothing is selected. Cleared automatically when it leaves ``items``.
+    @Published private(set) var selectedItemID: UUID?
+    /// The selected item's large (1280-tier) preview, loaded OFF-MAIN; `nil`
+    /// while loading, when nothing is selected, or if the tier can't be decoded.
+    @Published private(set) var previewImage: NSImage?
+
     // MARK: - Import / status
 
     /// The in-flight batch's `(completed, total)`, or `nil` when idle.
@@ -91,6 +100,13 @@ final class IngestionModel: ObservableObject {
     /// Look up a folder's name (for menus / titles).
     func name(for id: UUID) -> String {
         folders.first { $0.id == id }?.name ?? "Folder"
+    }
+
+    /// The selected item's detail, resolved from the loaded ``items`` (the
+    /// membership id is the source of truth so it survives a contents reload).
+    var selectedItem: CollectionItemDetail? {
+        guard let selectedItemID else { return nil }
+        return items.first { $0.item.id == selectedItemID }
     }
 
     init() {
@@ -194,10 +210,80 @@ final class IngestionModel: ObservableObject {
             do {
                 items = try await services.collectionItems(in: id)
                 subfolders = try await services.childCollections(of: id)
+                // Drop a selection that no longer exists in the reloaded set
+                // (folder switch, or the item was removed).
+                if let selectedItemID,
+                   !items.contains(where: { $0.item.id == selectedItemID }) {
+                    select(nil)
+                }
             } catch {
                 lastError = Self.message(for: error)
             }
         }
+    }
+
+    // MARK: - Selection + inspector
+
+    /// Select `detail` (or clear with `nil`) and load its preview off-main.
+    func select(_ detail: CollectionItemDetail?) {
+        selectedItemID = detail?.item.id
+        previewImage = nil
+        guard let detail else { return }
+        loadPreview(for: detail)
+    }
+
+    /// Load the large (1280-tier) thumbnail for `detail` off-main, then publish
+    /// it only if that item is still the selection (guards rapid re-selection).
+    private func loadPreview(for detail: CollectionItemDetail) {
+        guard let store else { return }
+        let targetID = detail.item.id
+        let url = store.thumbnailURL(
+            hash: detail.asset.blobHash, size: ThumbnailTier.large.rawValue,
+            fileExtension: "jpg")
+        Task.detached(priority: .userInitiated) {
+            let image = NSImage(contentsOf: url)
+            await MainActor.run { [weak self] in
+                guard let self, self.selectedItemID == targetID else { return }
+                self.previewImage = image
+            }
+        }
+    }
+
+    /// The on-disk full-resolution blob URL for `detail`, rebuilt from the
+    /// asset's persisted `mimeType` (round-trips the store-time extension).
+    func blobURL(for detail: CollectionItemDetail) -> URL? {
+        guard let store else { return nil }
+        let ext = ImageMetadata.fileExtension(forMIMEType: detail.asset.mimeType)
+        return store.blobURL(hash: detail.asset.blobHash, fileExtension: ext)
+    }
+
+    /// Open the selected item's original source URL in the default browser.
+    /// A no-op when the source has no (valid) `originalURL`.
+    func openSource(_ detail: CollectionItemDetail) {
+        guard let string = detail.source.originalURL,
+              let url = URL(string: string) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Open the full-resolution blob in the default image app (e.g. Preview).
+    func openBlob(_ detail: CollectionItemDetail) {
+        guard let url = blobURL(for: detail),
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Reveal the full-resolution blob in Finder.
+    func revealInFinder(_ detail: CollectionItemDetail) {
+        guard let url = blobURL(for: detail),
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Copy the selected item's original source URL to the general pasteboard.
+    func copySourceLink(_ detail: CollectionItemDetail) {
+        guard let string = detail.source.originalURL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
     }
 
     /// Load the 512-tier thumbnail for a folder item from the `MediaStore`,
