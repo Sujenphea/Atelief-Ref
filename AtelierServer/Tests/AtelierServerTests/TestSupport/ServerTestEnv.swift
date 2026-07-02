@@ -5,7 +5,9 @@
 // wired IngestPipeline/IngestCoordinator. AtelierServer's TestSupport can't reach
 // AtelierIngestion's (test targets aren't products), so we build a small one here.
 
+import AVFoundation
 import CoreGraphics
+import CoreVideo
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -81,6 +83,66 @@ enum ServerFixtures {
     /// to drive `IngestError.unsupportedType`.
     static func nonImageBase64() -> String {
         Data("not an image".utf8).base64EncodedString()
+    }
+
+    /// A tiny real H.264 MP4 (synthesized via AVAssetWriter, no committed binary)
+    /// — the raw body of a `POST /ingest-video`.
+    static func mp4(width: Int = 240, height: Int = 180, frames: Int = 10, fps: Int = 10) -> Data {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AtelierServerVideoFixtures", isDirectory: true)
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(UUID().uuidString + ".mp4")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let writer = try! AVAssetWriter(outputURL: url, fileType: .mp4)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: width, AVVideoHeightKey: height,
+        ])
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+            ])
+        writer.add(input)
+        writer.startWriting()
+        writer.startSession(atSourceTime: .zero)
+        for frame in 0 ..< frames {
+            while !input.isReadyForMoreMediaData { Thread.sleep(forTimeInterval: 0.001) }
+            var pb: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &pb)
+            let buffer = pb!
+            CVPixelBufferLockBaseAddress(buffer, [])
+            memset(
+                CVPixelBufferGetBaseAddress(buffer),
+                Int32(40 + (frame * 15) % 180),
+                CVPixelBufferGetBytesPerRow(buffer) * height)
+            CVPixelBufferUnlockBaseAddress(buffer, [])
+            adaptor.append(buffer, withPresentationTime: CMTime(
+                value: CMTimeValue(frame), timescale: CMTimeScale(fps)))
+        }
+        input.markAsFinished()
+        let semaphore = DispatchSemaphore(value: 0)
+        writer.finishWriting { semaphore.signal() }
+        semaphore.wait()
+        return try! Data(contentsOf: url)
+    }
+
+    /// The base64-JSON value for the `X-Atelier-Provenance` header of a video POST.
+    static func provenanceHeader(
+        platform: String = "twitter", collectionId: UUID? = nil
+    ) -> String {
+        let header = VideoCaptureHeader(
+            provenance: ProvenanceDTO(
+                platform: platform,
+                originalURL: "https://x.com/designer/status/42",
+                authorHandle: "@designer",
+                rawMetadata: .object(["tweetId": .string("42")])),
+            collectionId: collectionId)
+        return try! JSONEncoder().encode(header).base64EncodedString()
     }
 }
 

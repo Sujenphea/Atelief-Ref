@@ -45,6 +45,51 @@ struct CaptureRoutesTests {
             onCapture: onCapture)
     }
 
+    // MARK: - Video route
+
+    /// Write mp4 bytes to a temp file (the transport streams to disk; the route
+    /// ingests from the URL). Returns the URL; caller removes it.
+    private func tempFile(_ data: Data) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".mp4")
+        try data.write(to: url)
+        return url
+    }
+
+    @Test("valid video → 200 ingested + persisted .video asset from the header")
+    func validVideoPersists() async throws {
+        let env = try await makeServerTestEnv(); defer { env.cleanup() }
+        let routes = makeRoutes(env)
+        let file = try tempFile(ServerFixtures.mp4()); defer { try? FileManager.default.removeItem(at: file) }
+        let header = ServerFixtures.provenanceHeader(collectionId: env.collectionID)
+
+        let result = await routes.handleIngestVideo(
+            fileURL: file, provenanceHeader: header, now: Self.now)
+
+        #expect(result.statusCode == 200)
+        #expect(result.response.status == "ingested")
+        #expect(result.response.assetId != nil)
+        let items = try await env.items()
+        #expect(items.count == 1)
+        #expect(items.first?.asset.kind == .video)
+        #expect(items.first?.asset.mimeType == "video/mp4")
+        #expect((items.first?.asset.duration ?? 0) > 0)
+    }
+
+    @Test("video with a missing provenance header → 400, nothing persisted")
+    func videoMissingHeader() async throws {
+        let env = try await makeServerTestEnv(); defer { env.cleanup() }
+        let routes = makeRoutes(env)
+        let file = try tempFile(ServerFixtures.mp4()); defer { try? FileManager.default.removeItem(at: file) }
+
+        let result = await routes.handleIngestVideo(
+            fileURL: file, provenanceHeader: nil, now: Self.now)
+
+        #expect(result.statusCode == 400)
+        #expect(result.response.status == "error")
+        #expect(try await env.items().isEmpty)
+    }
+
     @Test("valid capture → 200 ingested + asset persisted with full provenance")
     func validCapturePersists() async throws {
         let env = try await makeServerTestEnv(); defer { env.cleanup() }

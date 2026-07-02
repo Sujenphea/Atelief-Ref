@@ -26,7 +26,10 @@ struct CaptureServerIntegrationTests {
         let port: UInt16
     }
 
-    private func start(maxBodyBytes: Int = CaptureServer.defaultMaxBodyBytes) async throws -> Running {
+    private func start(
+        maxBodyBytes: Int = CaptureServer.defaultMaxBodyBytes,
+        maxVideoBodyBytes: Int = CaptureServer.defaultMaxVideoBodyBytes
+    ) async throws -> Running {
         let env = try await makeServerTestEnv()
         let target = env.collectionID
         let routes = CaptureRoutes(
@@ -35,7 +38,8 @@ struct CaptureServerIntegrationTests {
             port: 0,
             auth: CaptureAuth(token: Self.token),
             routes: routes,
-            maxBodyBytes: maxBodyBytes)
+            maxBodyBytes: maxBodyBytes,
+            maxVideoBodyBytes: maxVideoBodyBytes)
         try await server.start()
         let port = try #require(await server.boundPort())
         return Running(server: server, env: env, port: port)
@@ -54,6 +58,61 @@ struct CaptureServerIntegrationTests {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         return req
+    }
+
+    /// A raw-bytes video request: octet-stream body + the provenance header.
+    private func videoRequest(
+        _ running: Running, body: Data, header: String?,
+        origin: String? = origin, token: String? = token
+    ) -> URLRequest {
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(running.port)/ingest-video")!)
+        req.httpMethod = "POST"
+        if let origin { req.setValue(origin, forHTTPHeaderField: "Origin") }
+        if let token { req.setValue(token, forHTTPHeaderField: CaptureAuth.tokenHeaderName) }
+        if let header { req.setValue(header, forHTTPHeaderField: CaptureDecoder.provenanceHeaderName) }
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        req.httpBody = body
+        return req
+    }
+
+    @Test("valid POST /ingest-video over the socket → 200 + .video asset persisted")
+    func validVideoPost() async throws {
+        let running = try await start(); defer { Task { await running.server.stop() } }
+        let mp4 = ServerFixtures.mp4()
+        let header = ServerFixtures.provenanceHeader(collectionId: running.env.collectionID)
+
+        let (data, response) = try await URLSession.shared.data(
+            for: videoRequest(running, body: mp4, header: header))
+        let http = try #require(response as? HTTPURLResponse)
+
+        #expect(http.statusCode == 200)
+        let decoded = try JSONDecoder().decode(CaptureResponse.self, from: data)
+        #expect(decoded.status == "ingested")
+        let items = try await running.env.items()
+        #expect(items.count == 1)
+        #expect(items.first?.asset.kind == .video)
+    }
+
+    @Test("POST /ingest-video without the provenance header → 400")
+    func videoNoHeader() async throws {
+        let running = try await start(); defer { Task { await running.server.stop() } }
+
+        let (_, response) = try await URLSession.shared.data(
+            for: videoRequest(running, body: ServerFixtures.mp4(), header: nil))
+        #expect((response as? HTTPURLResponse)?.statusCode == 400)
+    }
+
+    @Test("POST /ingest-video over the video cap → 413, nothing persisted")
+    func videoTooLarge() async throws {
+        // A 1 KB video cap makes a real mp4 exceed it; the stream aborts at 413.
+        let running = try await start(maxVideoBodyBytes: 1024)
+        defer { Task { await running.server.stop() } }
+        let header = ServerFixtures.provenanceHeader(collectionId: running.env.collectionID)
+
+        let (_, response) = try await URLSession.shared.data(
+            for: videoRequest(running, body: ServerFixtures.mp4(), header: header))
+        #expect((response as? HTTPURLResponse)?.statusCode == 413)
+        #expect(try await running.env.items().isEmpty)
     }
 
     @Test("valid POST /ingest over the socket → 200 + asset persisted")

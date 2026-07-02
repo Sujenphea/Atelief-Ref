@@ -33,6 +33,54 @@ struct CaptureDecoderTests {
         #expect(p.capturedAt == Self.now)
     }
 
+    // MARK: - Video provenance header (base64 JSON, no body)
+
+    @Test("valid provenance header → SourceDraft + collectionId, server-owned time")
+    func videoHeaderValid() throws {
+        let collection = UUID()
+        let header = ServerFixtures.provenanceHeader(collectionId: collection)
+        let decoded = try CaptureDecoder.decodeVideoHeader(header, now: Self.now)
+
+        #expect(decoded.collectionID == collection)
+        #expect(decoded.provenance.platform == .twitter)
+        #expect(decoded.provenance.authorHandle == "@designer")
+        #expect(decoded.provenance.rawMetadata == .object(["tweetId": .string("42")]))
+        #expect(decoded.provenance.capturedAt == Self.now)
+    }
+
+    @Test("absent provenance header → missingProvenanceHeader")
+    func videoHeaderMissing() {
+        #expect(throws: CaptureDecodeError.missingProvenanceHeader) {
+            try CaptureDecoder.decodeVideoHeader(nil, now: Self.now)
+        }
+        #expect(throws: CaptureDecodeError.missingProvenanceHeader) {
+            try CaptureDecoder.decodeVideoHeader("", now: Self.now)
+        }
+    }
+
+    @Test("non-base64 header → malformedProvenanceHeader")
+    func videoHeaderNotBase64() {
+        #expect(throws: CaptureDecodeError.malformedProvenanceHeader) {
+            try CaptureDecoder.decodeVideoHeader("!!!not base64!!!", now: Self.now)
+        }
+    }
+
+    @Test("base64 of non-VideoCaptureHeader JSON → malformedProvenanceHeader")
+    func videoHeaderWrongJSON() {
+        let junk = Data(#"{"nope":true}"#.utf8).base64EncodedString()
+        #expect(throws: CaptureDecodeError.malformedProvenanceHeader) {
+            try CaptureDecoder.decodeVideoHeader(junk, now: Self.now)
+        }
+    }
+
+    @Test("unknown platform in header → unknownPlatform")
+    func videoHeaderUnknownPlatform() {
+        let header = ServerFixtures.provenanceHeader(platform: "myspace")
+        #expect(throws: CaptureDecodeError.unknownPlatform("myspace")) {
+            try CaptureDecoder.decodeVideoHeader(header, now: Self.now)
+        }
+    }
+
     @Test("absent optional fields → nil author/title, rawMetadata defaults to {}")
     func minimalMapping() throws {
         let request = CaptureRequest(
