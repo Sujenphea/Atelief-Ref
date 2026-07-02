@@ -208,10 +208,20 @@ struct LibraryView: View {
                             isSelected: model.selectedItemID == detail.item.id)
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        Button("Remove from Folder") {
+                            model.removeFromFolder(assetIDs: [detail.asset.id])
+                        }
+                        Button("Delete", role: .destructive) {
+                            model.requestDelete(assetIDs: [detail.asset.id])
+                        }
+                    }
                 }
             }
             .padding(.top, 4)
         }
+        // ⌫ / Delete removes the selected thumbnail (destructive → confirmed).
+        .onDeleteCommand { model.requestDeleteSelected() }
         .overlay {
             if model.items.isEmpty {
                 Text("No items in this folder yet.")

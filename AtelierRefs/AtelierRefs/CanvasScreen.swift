@@ -8,6 +8,7 @@
 //  rebuilt (via `.id`) whenever the folder's contents change.
 //
 
+import AtelierCore
 import CanvasRenderer
 import SwiftUI
 
@@ -41,12 +42,30 @@ struct CanvasScreen: View {
         if let content = model.canvasContent() {
             // Rebuild the host when the folder's contents change (new import or
             // folder switch); this reframes to fit and resets pan/zoom.
-            CanvasView(provider: content, images: content) { tileID in
-                // Double-click a video tile → play it inline in QuickLook.
-                if let url = content.videoURL(forTileID: tileID) {
-                    quickLook.present(url: url, title: url.lastPathComponent)
-                }
-            }
+            CanvasView(
+                provider: content, images: content,
+                selectedTileID: selectedTileID(in: content),
+                onActivateTile: { tileID in
+                    // Double-click a video tile → play it inline in QuickLook.
+                    if let url = content.videoURL(forTileID: tileID) {
+                        quickLook.present(url: url, title: url.lastPathComponent)
+                    }
+                },
+                onSelectTile: { tileID in
+                    // Single-click selects (shared with the Library's selection);
+                    // empty space clears it.
+                    model.select(tileID.flatMap { content.detail(forTileID: $0) })
+                },
+                onRemoveTile: { tileID in
+                    if let detail = content.detail(forTileID: tileID) {
+                        model.removeFromFolder(assetIDs: [detail.asset.id])
+                    }
+                },
+                onDeleteTile: { tileID in
+                    if let detail = content.detail(forTileID: tileID) {
+                        model.requestDelete(assetIDs: [detail.asset.id])
+                    }
+                })
             .id(model.contentsVersion)
         } else {
             ContentUnavailableView {
@@ -57,5 +76,12 @@ struct CanvasScreen: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// The tile id matching the shared selection, so the canvas highlights the
+    /// same item the inspector shows (or nothing when it isn't on this board).
+    private func selectedTileID(in content: CanvasContent) -> Int? {
+        guard let id = model.selectedItemID else { return nil }
+        return content.tileID(forItemID: id)
     }
 }

@@ -353,6 +353,73 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// Delete assets ENTIRELY from the library (not just one folder membership),
+    /// IN ONE transaction. Idempotent — an unknown / already-deleted id is
+    /// skipped, not an error (so concurrent or repeated deletes are safe).
+    ///
+    /// For each existing target the `asset` row is removed, which CASCADEs its
+    /// memberships (17A) and tag links, and clears any folder cover
+    /// (`cover_asset_id` → NULL) at the DB level. Then two GC passes run in the
+    /// same transaction:
+    /// - **Sources** — a `source` is kept by `asset.source_id`'s `ON DELETE
+    ///   RESTRICT`, so we delete each touched source whose last asset is now
+    ///   gone (an orphaned source would otherwise linger and defeat 18A dedup).
+    /// - **Blobs** — a blob hash is reported reclaimable ONLY when no remaining
+    ///   asset shares it (dedup-safe: content-identical assets keep the file).
+    ///
+    /// Returns the reclaimable blobs as ``OrphanedBlob`` so the caller (which
+    /// owns the `MediaStore`) can trash the on-disk blob + thumbnail files; Core
+    /// itself never touches the filesystem. Tag rows survive (only the
+    /// `asset_tag` join cascades), matching ``removeTag(_:from:source:)``.
+    @discardableResult
+    public func deleteAssets(_ assetIDs: [UUID]) async throws -> [OrphanedBlob] {
+        try await write { db in
+            // Resolve the targets that actually exist and remove them. Track a
+            // representative mime per distinct hash (for extension round-trip)
+            // and the set of sources touched, both in stable first-seen order.
+            var mimeByHash: [String: String] = [:]
+            var orderedHashes: [String] = []
+            var orderedSourceKeys: [String] = []
+            var seenSourceKeys: Set<String> = []
+            for assetID in assetIDs {
+                guard let asset = try Asset.fetchOne(db, key: Self.key(assetID)) else {
+                    continue // idempotent: unknown / already-deleted id.
+                }
+                if mimeByHash[asset.blobHash] == nil {
+                    mimeByHash[asset.blobHash] = asset.mimeType
+                    orderedHashes.append(asset.blobHash)
+                }
+                let sourceKey = Self.key(asset.sourceId)
+                if seenSourceKeys.insert(sourceKey).inserted {
+                    orderedSourceKeys.append(sourceKey)
+                }
+                try asset.delete(db)
+            }
+
+            // GC sources whose last asset is gone (RESTRICT keeps them otherwise).
+            for sourceKey in orderedSourceKeys {
+                let stillReferenced = try Asset
+                    .filter(Column("source_id") == sourceKey)
+                    .fetchCount(db) > 0
+                if !stillReferenced {
+                    try Source.deleteOne(db, key: sourceKey)
+                }
+            }
+
+            // A blob is reclaimable only when no remaining asset shares its hash.
+            var orphans: [OrphanedBlob] = []
+            for hash in orderedHashes {
+                let stillReferenced = try Asset
+                    .filter(Column("blob_hash") == hash)
+                    .fetchCount(db) > 0
+                if !stillReferenced {
+                    orphans.append(OrphanedBlob(blobHash: hash, mimeType: mimeByHash[hash]!))
+                }
+            }
+            return orphans
+        }
+    }
+
     // MARK: - Reads (P16 — collection-scoped reads return full arrays)
 
     /// Every collection, ordered by `name` then `id` (stable). The library's

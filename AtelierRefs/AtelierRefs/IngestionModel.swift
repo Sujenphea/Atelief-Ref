@@ -125,6 +125,18 @@ final class IngestionModel: ObservableObject {
         return items.first { $0.item.id == selectedItemID }
     }
 
+    /// A pending destructive delete awaiting the user's confirmation. Set by the
+    /// three delete surfaces (inspector / grid / canvas); drives one shared
+    /// confirmation dialog in ``ContentView``.
+    @Published var pendingDeletion: PendingDeletion?
+
+    /// The assets a confirmed delete will remove entirely from the library.
+    struct PendingDeletion {
+        let assetIDs: [UUID]
+        /// How many items — for the confirmation copy.
+        var count: Int { assetIDs.count }
+    }
+
     init() {
         Task { await bootstrap() }
     }
@@ -382,6 +394,85 @@ final class IngestionModel: ObservableObject {
             hash: detail.asset.blobHash, size: ThumbnailTier.medium.rawValue,
             fileExtension: "jpg")
         return NSImage(contentsOf: url)
+    }
+
+    // MARK: - Remove / delete assets
+
+    /// Remove assets from the CURRENT folder only (membership drop) — the asset,
+    /// its bytes, and its memberships elsewhere are untouched. Non-destructive and
+    /// reversible, so it runs immediately without confirmation.
+    func removeFromFolder(assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty else { return }
+        let folder = selectedFolderID
+        mutateContents { services in
+            try await services.removeAssets(assetIDs, from: folder)
+            return "Removed \(Self.itemCount(assetIDs.count)) from “\(self.name(for: folder))”."
+        }
+    }
+
+    /// Remove the inspector's currently-selected item from the current folder.
+    func removeSelectedFromFolder() {
+        guard let detail = selectedItem else { return }
+        removeFromFolder(assetIDs: [detail.asset.id])
+    }
+
+    /// Stage a destructive delete for confirmation (see ``confirmPendingDeletion``).
+    /// A no-op for an empty set.
+    func requestDelete(assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty else { return }
+        pendingDeletion = PendingDeletion(assetIDs: assetIDs)
+    }
+
+    /// Stage a delete of the inspector's currently-selected item.
+    func requestDeleteSelected() {
+        guard let detail = selectedItem else { return }
+        requestDelete(assetIDs: [detail.asset.id])
+    }
+
+    /// Dismiss the pending delete without acting.
+    func cancelPendingDeletion() {
+        pendingDeletion = nil
+    }
+
+    /// Carry out the confirmed delete: remove the assets from the library, move
+    /// any now-orphaned blob/thumbnail files to the Trash (off-main), then refresh
+    /// the tree + current folder. Clears the pending state first so the dialog
+    /// dismisses immediately.
+    func confirmPendingDeletion() {
+        guard let store, let pending = pendingDeletion else { return }
+        pendingDeletion = nil
+        let assetIDs = pending.assetIDs
+        mutateContents { services in
+            let orphans = try await services.deleteAssets(assetIDs)
+            // File IO off the main actor; the DB delete is already committed, so
+            // this is best-effort cleanup (MediaReaper swallows per-file errors).
+            let reaper = MediaReaper(store: store)
+            _ = await Task.detached { reaper.reap(orphans) }.value
+            return "Deleted \(Self.itemCount(assetIDs.count))."
+        }
+    }
+
+    /// Run an asset mutation that changes the current folder's contents, then
+    /// refresh the tree + reload the folder and publish `body`'s status line.
+    /// Thrown `AtelierError`s land in ``lastError``. (The folder-scoped `perform`
+    /// also resets the selected folder; asset mutations never need that.)
+    private func mutateContents(_ body: @escaping (AppServices) async throws -> String) {
+        guard let services else { return }
+        Task {
+            do {
+                let message = try await body(services)
+                await refreshFolders()
+                loadContents(of: selectedFolderID)
+                status = message
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
+    /// "1 item" / "N items" for status + confirmation copy.
+    private static func itemCount(_ n: Int) -> String {
+        "\(n) item\(n == 1 ? "" : "s")"
     }
 
     // MARK: - Canvas content

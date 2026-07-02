@@ -91,6 +91,19 @@ final class CanvasContent: TileProvider, TileImageSource {
 
     // MARK: - Lookups
 
+    /// The item a tile draws, or `nil` if the id is out of range. Exposed for the
+    /// canvas host to resolve a clicked / right-clicked tile to its asset.
+    func detail(forTileID id: Int) -> CollectionItemDetail? {
+        detail(for: id)
+    }
+
+    /// The tile id showing the membership `id`, or `nil` if it isn't on this
+    /// board. Lets the screen reflect the shared selection into the highlight.
+    /// (`tile.id` is the index into `details`, so the index IS the tile id.)
+    func tileID(forItemID id: UUID) -> Int? {
+        details.firstIndex { $0.item.id == id }
+    }
+
     /// The item a tile draws, or `nil` if the id is out of range.
     private func detail(for id: Int) -> CollectionItemDetail? {
         details.indices.contains(id) ? details[id] : nil
