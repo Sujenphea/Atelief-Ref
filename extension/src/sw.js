@@ -53,7 +53,9 @@ async function capture(tab) {
     return flash("KEY", "#e08c00", "Set your Atelier token in the extension options.");
   }
 
-  const imageBase64 = await fetchImageBase64(provenance.mediaUrl);
+  const imageBase64 = await fetchImageBase64(
+    [provenance.mediaUrl, provenance.mediaUrlFallback].filter(Boolean)
+  );
   const request = buildCaptureRequest(provenance, imageBase64);
 
   try {
@@ -77,14 +79,29 @@ async function getToken() {
   return stored[TOKEN_KEY] || "";
 }
 
-/** Fetch `url` in the authenticated session and base64-encode the bytes. */
-async function fetchImageBase64(url) {
-  const response = await fetch(url);
-  const buffer = await response.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
+/**
+ * Fetch the first working URL (in the authenticated session) and base64-encode
+ * the bytes. Tries each candidate in order so a full-res URL that 404s falls back
+ * to the rendered one. Throws if none succeed.
+ */
+async function fetchImageBase64(urls) {
+  let lastError = new Error("No media URL to fetch.");
+  for (const url of urls) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        lastError = new Error(`HTTP ${response.status} for ${url}`);
+        continue;
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 /** Brief action-badge feedback (title carries the full message). */

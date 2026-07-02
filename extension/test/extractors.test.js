@@ -2,91 +2,135 @@
 //
 // The per-site extractors are the most breakage-prone part of the feature, so
 // they are tested against saved harvest fixtures (the object harvestSignals
-// produces). Pure functions over plain objects → no DOM / jsdom needed.
+// produces: { url, title, canonical, metas, media }). Pure functions over plain
+// objects → no DOM / jsdom needed.
+//
+// The fixtures encode what real pages actually do: SPA meta tags + canonical are
+// stale/generic, and the reliable signals are the live url + DOM media.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractProvenance, findExtractor } from "../src/extractors/registry.js";
+import { extractProvenance, findExtractor, web } from "../src/extractors/registry.js";
 import { twitter } from "../src/extractors/twitter.js";
 import { pinterest } from "../src/extractors/pinterest.js";
 import { instagram } from "../src/extractors/instagram.js";
 import { cosmos } from "../src/extractors/cosmos.js";
-import { web } from "../src/extractors/registry.js";
 
 /** Build a harvest fixture. */
-function harvest(url, metas = {}, extra = {}) {
-  return { url, title: "Fallback Title", canonical: null, metas, ...extra };
+function harvest({ url, title = "Fallback", canonical = null, metas = {}, media = [] }) {
+  return { url, title, canonical, metas, media };
 }
+const img = (src, width = 0, height = 0) => ({ kind: "image", src, width, height, alt: null });
 
-test("twitter: handle + tweetId from URL, media from og:image", () => {
-  const h = harvest("https://x.com/designer/status/1780000000000000000", {
-    "og:image": "https://pbs.twimg.com/media/abc.jpg",
-    "og:description": "a great reference",
+test("twitter: picks the real DOM media (pbs.twimg/media), not og:image, at full res", () => {
+  const h = harvest({
+    url: "https://x.com/designer/status/1780000000000000000",
+    metas: {
+      "og:image": "https://pbs.twimg.com/profile_images/generic_card.jpg",
+      "og:description": "a great reference",
+    },
+    media: [
+      img("https://pbs.twimg.com/profile_images/avatar.jpg", 48, 48), // avatar — ignored
+      img("https://pbs.twimg.com/media/REAL?format=jpg&name=small", 1200, 800), // the post
+    ],
   });
   const p = extractProvenance(h);
   assert.equal(p.platform, "twitter");
-  assert.equal(p.mediaUrl, "https://pbs.twimg.com/media/abc.jpg");
+  assert.equal(p.mediaUrl, "https://pbs.twimg.com/media/REAL?format=jpg&name=orig");
   assert.equal(p.authorHandle, "@designer");
   assert.equal(p.originalURL, "https://x.com/designer/status/1780000000000000000");
-  assert.equal(p.title, "a great reference");
   assert.deepEqual(p.rawMetadata, { tweetId: "1780000000000000000" });
 });
 
-test("twitter: twitter.com host also matches", () => {
-  assert.equal(twitter.match("https://twitter.com/a/status/1"), true);
-  assert.equal(twitter.match("https://mobile.twitter.com/a"), true);
+test("twitter: prefers the LIVE url over a stale canonical", () => {
+  const h = harvest({
+    url: "https://x.com/designer/status/42?s=20&t=abc",
+    canonical: "https://x.com/", // stale SPA canonical
+    media: [img("https://pbs.twimg.com/media/X?format=jpg&name=large", 900, 900)],
+  });
+  const p = twitter.extract(h);
+  assert.equal(p.originalURL, "https://x.com/designer/status/42"); // live url, query stripped
 });
 
-test("pinterest: pinId from URL, media from og:image", () => {
-  const h = harvest("https://www.pinterest.com/pin/12345/", {
-    "og:image": "https://i.pinimg.com/originals/xx.jpg",
-    "og:title": "A Pin",
+test("twitter: video tweet → uses the video poster", () => {
+  const h = harvest({
+    url: "https://x.com/a/status/1",
+    media: [
+      { kind: "video-poster", src: "https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/x.jpg", width: 1280, height: 720, alt: null },
+    ],
+  });
+  assert.equal(
+    twitter.extract(h).mediaUrl,
+    "https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/x.jpg"
+  );
+});
+
+test("twitter: no DOM media → falls back to og:image", () => {
+  const h = harvest({
+    url: "https://x.com/a/status/1",
+    metas: { "og:image": "https://pbs.twimg.com/media/FALLBACK.jpg" },
+    media: [],
+  });
+  assert.equal(twitter.extract(h).mediaUrl, "https://pbs.twimg.com/media/FALLBACK.jpg");
+});
+
+test("pinterest: largest i.pinimg image, rewritten to originals; ignores generic og logo + stale canonical", () => {
+  const h = harvest({
+    url: "https://www.pinterest.com/pin/12345/",
+    canonical: "https://www.pinterest.com/", // the reported bug: stale root
+    metas: { "og:image": "https://s.pinimg.com/images/facebook_share_image.png" }, // generic logo
+    media: [
+      img("https://i.pinimg.com/236x/aa/bb/cc/related.jpg", 236, 300), // related pin thumb
+      img("https://i.pinimg.com/736x/dd/ee/ff/closeup.jpg", 736, 980), // the closeup pin
+    ],
   });
   const p = extractProvenance(h);
   assert.equal(p.platform, "pinterest");
-  assert.equal(p.mediaUrl, "https://i.pinimg.com/originals/xx.jpg");
+  // NOT pinterest.com, NOT the s.pinimg logo:
+  assert.equal(p.originalURL, "https://www.pinterest.com/pin/12345/");
+  assert.equal(p.mediaUrl, "https://i.pinimg.com/originals/dd/ee/ff/closeup.jpg");
+  // rendered size is kept as a fetch fallback in case /originals/ 404s
+  assert.equal(p.mediaUrlFallback, "https://i.pinimg.com/736x/dd/ee/ff/closeup.jpg");
   assert.deepEqual(p.rawMetadata, { pinId: "12345" });
-  assert.equal(p.title, "A Pin");
 });
 
-test("instagram: handle parsed from og:title, shortcode from URL", () => {
-  const h = harvest("https://www.instagram.com/p/CxYz123/", {
-    "og:image": "https://scontent.cdninstagram.com/v/pic.jpg",
-    "og:title": "Jane Doe (@jane.doe) on Instagram: \"caption\"",
-    "og:description": "a caption",
+test("instagram: handle from og:title, largest cdn image, shortcode from live url", () => {
+  const h = harvest({
+    url: "https://www.instagram.com/p/CxYz123/",
+    metas: {
+      "og:title": "Jane Doe (@jane.doe) on Instagram",
+      "og:description": "a caption",
+      "og:image": "https://scontent.cdninstagram.com/low.jpg",
+    },
+    media: [img("https://scontent.cdninstagram.com/v/hi-res.jpg", 1080, 1080)],
   });
   const p = extractProvenance(h);
   assert.equal(p.platform, "instagram");
   assert.equal(p.authorHandle, "@jane.doe");
+  assert.equal(p.mediaUrl, "https://scontent.cdninstagram.com/v/hi-res.jpg");
   assert.deepEqual(p.rawMetadata, { shortcode: "CxYz123" });
-  assert.equal(p.mediaUrl, "https://scontent.cdninstagram.com/v/pic.jpg");
 });
 
-test("cosmos: elementId from /e/{id}", () => {
-  const h = harvest("https://www.cosmos.so/e/el-42", {
-    "og:image": "https://images.cosmos.so/el.jpg",
-    "og:title": "An Element",
+test("cosmos: elementId from /e/{id}, media from cosmos cdn", () => {
+  const h = harvest({
+    url: "https://www.cosmos.so/e/el-42",
+    media: [img("https://images.cosmos.so/el.jpg", 1000, 1000)],
   });
   const p = extractProvenance(h);
   assert.equal(p.platform, "cosmos");
+  assert.equal(p.mediaUrl, "https://images.cosmos.so/el.jpg");
   assert.deepEqual(p.rawMetadata, { elementId: "el-42" });
 });
 
-test("canonical link is preferred over the raw url", () => {
-  const h = harvest("https://x.com/designer/status/1?s=20&t=track", {
-    "og:image": "https://pbs.twimg.com/media/abc.jpg",
-  });
-  h.canonical = "https://x.com/designer/status/1";
-  const p = extractProvenance(h);
-  assert.equal(p.originalURL, "https://x.com/designer/status/1");
-});
-
-test("unknown site with og:image → web fallback", () => {
-  const h = harvest("https://blog.example.com/post", {
-    "og:image": "https://cdn.example.com/hero.png",
-    "og:title": "A Post",
-    "og:site_name": "Example Blog",
+test("web fallback: og:image preferred (reliable on non-SPA articles)", () => {
+  const h = harvest({
+    url: "https://blog.example.com/post",
+    metas: {
+      "og:image": "https://cdn.example.com/hero.png",
+      "og:site_name": "Example Blog",
+    },
+    media: [img("https://cdn.example.com/tiny-logo.png", 32, 32)],
   });
   const p = extractProvenance(h);
   assert.equal(p.platform, "web");
@@ -94,8 +138,8 @@ test("unknown site with og:image → web fallback", () => {
   assert.equal(p.authorName, "Example Blog");
 });
 
-test("no og:image anywhere → mediaUrl is null (SW will report 'no image')", () => {
-  const p = extractProvenance(harvest("https://x.com/designer/status/1", {}));
+test("no media and no og:image → mediaUrl null (SW reports 'no image')", () => {
+  const p = extractProvenance(harvest({ url: "https://x.com/a/status/1" }));
   assert.equal(p.mediaUrl, null);
 });
 
