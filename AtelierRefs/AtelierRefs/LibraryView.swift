@@ -15,7 +15,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct LibraryView: View {
-    @StateObject private var model = IngestionModel()
+    @ObservedObject var model: IngestionModel
     @State private var isTargeted = false
     @State private var showInspector = true
 

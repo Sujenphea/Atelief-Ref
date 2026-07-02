@@ -15,8 +15,9 @@
 > its source → it appears in a collection → view it in **grid and canvas** → and
 > from anywhere **open the original source**. Fast, no spinners.
 
-Loop status: capture ✅ · store ✅ · organize ✅ · **view** 🟡 (grid partial,
-canvas not on real data, no per-image open) · **open source** ⬜.
+Loop status: capture ✅ · store ✅ · organize ✅ · **view** ✅ (grid + inspector +
+canvas all on real data) · **open source** ✅ (inspector: Open Original Source).
+Remaining MVP gap: **#6 Chrome extension** (the primary platform capture path).
 
 ## Build order (004 §recommended build order)
 
@@ -65,14 +66,18 @@ A `LazyVGrid` thumbnail grid of a folder's direct items exists in `LibraryView`
 - [ ] Selection + keyboard navigation
 - [ ] Open an item from the grid (→ ties into #7 inspector/preview)
 
-### 5. Infinite canvas on real data — ⬜ not started
-The renderer is built and benchmarked (#1) but still drives **dummy tiles**.
-Productionizing = swapping the `TileProvider` seam for a `CollectionItem`-backed
-provider and hosting it in the app.
-- [ ] `CollectionItem`-backed `TileProvider` (map `canvas_x/y/w/h/z` → `Tile`)
-- [ ] Host `CanvasView` in the app against a real collection
+### 5. Infinite canvas on real data — 🟡 mostly done
+The Canvas tab now renders the selected folder's real images through the spike's
+seams (see [010](./010-canvas-realdata-overview.md), `.change-log/025`). Viewing
+works; editing/persistence and real-data profiling remain.
+- [x] `CollectionItem`-backed provider (`CanvasContent` — both renderer seams)
+- [x] New image-content seam `TileImageSource` (renderer no longer fixture-bound)
+- [x] Host `CanvasView` in the app against the selected folder (shared model)
+- [x] Justified-rows auto-layout; honours explicit `canvas_*` when present
 - [ ] Persist tile placement (canvas coordinates) back through App Services
-- [ ] Re-profile with real, variable-size assets (005 caveat)
+      (needs a drag-to-place canvas editor — later, Phase 4)
+- [ ] Re-profile with real, variable-size assets (005 caveat); move thumbnail
+      reads off-main if panning janks
 
 ### 6. Chrome extension + localhost endpoint — ⬜ not started
 The primary platform-ingestion path (Twitter / Pinterest / Instagram / Cosmos)
@@ -140,8 +145,10 @@ Concrete issues hit in use, parked for later (not being worked now).
 - ⏸️ **Phase 5** — sync / backup; export; collection sharing.
 
 ## Suggested next priority
-Per the loop status, the missing tail is **viewing**: build-order **#7
-(Inspector + preview + open-source)** completes the "view a ref and open its
-source" promise for the least effort, then **#5 (canvas on real data)** — the
-app's signature view — then **#6 (Chrome extension)**, the largest and most
-self-contained.
+With viewing complete (grid, inspector, canvas), the one remaining MVP gap is
+**#6 — Chrome extension + localhost endpoint**, the primary platform capture path
+(Twitter/Pinterest/etc.) and the seam the future agent reuses. It's the largest
+and most self-contained piece: a localhost HTTP endpoint over App Services plus a
+browser extension with per-site content scripts. After that, MVP is functionally
+complete; then polish (grid virtualization/reorder, canvas editing + placement
+persistence, backlog B1 URL download).

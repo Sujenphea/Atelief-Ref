@@ -10,7 +10,7 @@ public final class CanvasHostView: NSView {
 
     public init(
         provider: TileProvider,
-        images: FixtureImageSet,
+        images: any TileImageSource,
         frame: CGRect = CGRect(x: 0, y: 0, width: 1280, height: 800)
     ) {
         self.engine = CanvasEngine(provider: provider, images: images, viewportSize: frame.size)

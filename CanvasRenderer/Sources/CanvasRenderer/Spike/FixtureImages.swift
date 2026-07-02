@@ -49,6 +49,20 @@ public struct FixtureImageSet: Sendable {
         let i = ((id % encoded.count) + encoded.count) % encoded.count
         return encoded[i]
     }
+}
+
+// The spike's image source: tiles map onto the fixed set by `id` (decision C8),
+// so `imageKey` is that wrapped index and `imageData` is tier-independent — a
+// single source decoded down to each tier's pixel size. Behaviour matches the
+// pre-seam engine exactly (it did `id % count` + `data(forTileID:)` inline).
+extension FixtureImageSet: TileImageSource {
+    public func imageKey(for tile: Tile) -> Int {
+        ((tile.id % encoded.count) + encoded.count) % encoded.count
+    }
+
+    public func imageData(for tile: Tile, tier: LODTier) -> Data? {
+        data(forTileID: tile.id)
+    }
 
     // MARK: - Procedural bitmap
 
