@@ -143,6 +143,37 @@ test("no media and no og:image → mediaUrl null (SW reports 'no image')", () =>
   assert.equal(p.mediaUrl, null);
 });
 
+test("pinterest FROM THE FEED: right-clicked pin link+image → pin URL + that image", () => {
+  // The reported scenario: user is on the feed (location.href = pinterest.com),
+  // right-clicks a specific pin. context carries the pin's link + image.
+  const h = harvest({
+    url: "https://www.pinterest.com/", // the feed, NOT a pin
+    canonical: "https://www.pinterest.com/",
+    media: [img("https://i.pinimg.com/474x/aa/bb/cc/other.jpg", 474, 600)],
+  });
+  const context = {
+    linkUrl: "https://www.pinterest.com/pin/999/",
+    srcUrl: "https://i.pinimg.com/474x/dd/ee/ff/clicked.jpg",
+  };
+  const p = extractProvenance(h, context);
+  assert.equal(p.originalURL, "https://www.pinterest.com/pin/999/"); // not pinterest.com
+  assert.equal(p.mediaUrl, "https://i.pinimg.com/originals/dd/ee/ff/clicked.jpg"); // the clicked image
+  assert.equal(p.mediaUrlFallback, "https://i.pinimg.com/474x/dd/ee/ff/clicked.jpg");
+  assert.deepEqual(p.rawMetadata, { pinId: "999" });
+});
+
+test("twitter: right-clicked image (context.srcUrl) wins, at full res", () => {
+  const h = harvest({
+    url: "https://x.com/designer/status/42",
+    media: [img("https://pbs.twimg.com/media/OTHER?format=jpg&name=small", 100, 100)],
+  });
+  const context = { srcUrl: "https://pbs.twimg.com/media/CLICKED?format=jpg&name=360x360" };
+  const p = extractProvenance(h, context);
+  assert.equal(p.mediaUrl, "https://pbs.twimg.com/media/CLICKED?format=jpg&name=orig");
+  assert.equal(p.mediaUrlFallback, "https://pbs.twimg.com/media/CLICKED?format=jpg&name=360x360");
+  assert.equal(p.originalURL, "https://x.com/designer/status/42");
+});
+
 test("findExtractor routes each host to its extractor", () => {
   assert.equal(findExtractor("https://x.com/a/status/1"), twitter);
   assert.equal(findExtractor("https://www.pinterest.com/pin/1/"), pinterest);

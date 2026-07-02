@@ -6,11 +6,14 @@ localhost endpoint (`http://127.0.0.1:47321/ingest`).
 
 ## How it works
 
-1. You click the toolbar button (or right-click → **Save to Atelier**).
+1. **Right-click the image/pin/post → "Save to Atelier"** (recommended — this
+   captures the exact image you point at and its post link). The toolbar button
+   also works, but only reliably on a single-post page (a pin page, a tweet page),
+   not the feed.
 2. The service worker injects a tiny signal harvester into the active tab
-   (`src/harvest.js`) — meta tags, canonical link, title, URL.
-3. A pure per-site extractor (`src/extractors/*`) turns those signals into
-   provenance (platform, author, title, media URL, ids).
+   (`src/harvest.js`) — meta tags, canonical link, title, URL, and the DOM media.
+3. A pure per-site extractor (`src/extractors/*`) turns those signals (plus the
+   right-clicked element) into provenance (platform, author, title, media URL, ids).
 4. The service worker fetches the image bytes **in your session** (so auth-walled
    media works), base64-encodes them, and POSTs to the app with your token.
 5. The app ingests through the same pipeline as paste/drag; a badge shows the

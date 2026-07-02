@@ -1,10 +1,11 @@
 // Atelier Capture — Cosmos extractor.
 //
-// Client-rendered: prefer the live URL + the largest element image from the DOM
-// (images.cosmos.so / cosmos CDN); og:image is a fallback.
+// Client-rendered: prefer the right-clicked link/image, else the live URL + the
+// largest element image from the DOM (images.cosmos.so / cosmos CDN); og:image is
+// a fallback.
 
 import {
-  hostname, hostIs, firstMeta, pathSegments, liveURL, largestMedia, ogImage,
+  hostname, hostIs, firstMeta, pathSegments, liveURL, firstPostURL, largestMedia, ogImage,
 } from "./base.js";
 
 export const cosmos = {
@@ -14,14 +15,16 @@ export const cosmos = {
     return hostIs(hostname(url), "cosmos.so");
   },
 
-  extract(harvest) {
-    const url = liveURL(harvest);
+  extract(harvest, context = {}) {
+    const isElement = (u) => pathSegments(u)[0] === "e";
+    const url =
+      firstPostURL([context.linkUrl, harvest.url, harvest.canonical], isElement) ||
+      liveURL(harvest);
     const segments = pathSegments(url);
-    // /e/{id} (element) or /{cluster}
     const elementId = segments[0] === "e" ? segments[1] || null : null;
 
-    const photo = largestMedia(harvest, /cosmos\.so/);
-    const mediaUrl = photo?.src || ogImage(harvest);
+    const clicked = /cosmos\.so/.test(context.srcUrl || "") ? context.srcUrl : null;
+    const mediaUrl = clicked || largestMedia(harvest, /cosmos\.so/)?.src || ogImage(harvest);
 
     return {
       platform: "cosmos",

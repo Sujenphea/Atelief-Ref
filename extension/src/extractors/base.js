@@ -49,6 +49,20 @@ export function pathSegments(url) {
   }
 }
 
+/**
+ * The first candidate URL that is a real post (per the `isPost` predicate),
+ * cleaned. Used to prefer the right-clicked link (context.linkUrl) over the page
+ * url — so capturing a pin from the feed still yields the pin's URL, not the feed.
+ */
+export function firstPostURL(candidates, isPost) {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const clean = cleanURL(candidate);
+    if (clean && isPost(clean)) return clean;
+  }
+  return null;
+}
+
 /** `url` reduced to origin + pathname (drops query/hash), or `url` if unparseable. */
 export function cleanURL(url) {
   try {

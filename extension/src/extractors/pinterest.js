@@ -1,12 +1,13 @@
 // Atelier Capture — Pinterest extractor.
 //
-// Pinterest is client-rendered: canonical is frequently the site root and
-// og:image is the generic Pinterest share logo (s.pinimg.com), so we take the
-// live URL for the pin and the largest `i.pinimg.com` image from the DOM (the
-// closeup pin is the biggest), rewritten to `/originals/` for full resolution.
+// Pinterest is client-rendered and often captured from the FEED (location.href =
+// pinterest.com, not the pin). So the pin URL comes from the right-clicked link
+// (context.linkUrl → /pin/{id}/) when present, and the image from the right-
+// clicked src (or the largest i.pinimg image on a pin page), rewritten to
+// `/originals/` with the rendered size kept as a fetch fallback.
 
 import {
-  hostname, hostIs, firstMeta, pathSegments, liveURL, largestMedia, ogImage,
+  hostname, hostIs, firstMeta, pathSegments, liveURL, firstPostURL, largestMedia, ogImage,
 } from "./base.js";
 
 /** Rewrite an i.pinimg sized path (…/474x/…) to full resolution (…/originals/…). */
@@ -25,21 +26,22 @@ export const pinterest = {
       hostIs(host, "pin.it");
   },
 
-  extract(harvest) {
-    const url = liveURL(harvest);
+  extract(harvest, context = {}) {
+    const isPin = (u) => pathSegments(u)[0] === "pin";
+    const url =
+      firstPostURL([context.linkUrl, harvest.url, harvest.canonical], isPin) ||
+      liveURL(harvest);
     const segments = pathSegments(url);
-    // /pin/{id}/
     const pinId = segments[0] === "pin" ? segments[1] || null : null;
 
-    // The closeup pin is the biggest i.pinimg.com image; related-pin thumbnails
-    // are smaller. (s.pinimg.com share logos are excluded by the host pattern.)
-    const pin = largestMedia(harvest, /i\.pinimg\.com/);
-    const rendered = pin?.src || null;
+    // Exact clicked pin image, else the biggest i.pinimg image on the page.
+    // (s.pinimg.com share logos are excluded by the host pattern.)
+    const clicked = /i\.pinimg\.com/.test(context.srcUrl || "") ? context.srcUrl : null;
+    const rendered = clicked || largestMedia(harvest, /i\.pinimg\.com/)?.src || null;
     const mediaUrl = fullResolution(rendered) || ogImage(harvest);
     // `/originals/` can 404 (Pinterest doesn't always keep an original); the
     // rendered size is guaranteed loadable, so hand it back as a fetch fallback.
-    const mediaUrlFallback =
-      rendered && mediaUrl !== rendered ? rendered : null;
+    const mediaUrlFallback = rendered && mediaUrl !== rendered ? rendered : null;
 
     return {
       platform: "pinterest",

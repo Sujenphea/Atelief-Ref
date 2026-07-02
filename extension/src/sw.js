@@ -17,7 +17,7 @@ import { buildCaptureRequest, postCapture, DEFAULT_ENDPOINT } from "./endpoint.j
 const TOKEN_KEY = "atelierToken";
 
 chrome.action.onClicked.addListener((tab) => {
-  capture(tab).catch((error) => flash("ERR", "#cc3333", String(error)));
+  capture(tab, {}).catch((error) => flash("ERR", "#cc3333", String(error)));
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -28,12 +28,19 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-chrome.contextMenus.onClicked.addListener((_info, tab) => {
-  if (tab) capture(tab).catch((error) => flash("ERR", "#cc3333", String(error)));
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  // The right-clicked element: exact image + its link — far more reliable than
+  // guessing from the page (esp. capturing a pin from the feed).
+  const context = {
+    srcUrl: info.srcUrl || null,
+    linkUrl: info.linkUrl || null,
+    pageUrl: info.pageUrl || null,
+  };
+  if (tab) capture(tab, context).catch((error) => flash("ERR", "#cc3333", String(error)));
 });
 
-/** Full capture flow for one tab. */
-async function capture(tab) {
+/** Full capture flow for one tab, given the right-clicked `context` (or {}). */
+async function capture(tab, context) {
   if (!tab?.id) return;
 
   const [injection] = await chrome.scripting.executeScript({
@@ -43,7 +50,8 @@ async function capture(tab) {
   const harvest = injection?.result;
   if (!harvest) return flash("ERR", "#cc3333", "Could not read the page.");
 
-  const provenance = extractProvenance(harvest);
+  const provenance = extractProvenance(harvest, context);
+  console.log("[Atelier] capture", { context, provenance });
   if (!provenance.mediaUrl) {
     return flash("?", "#e08c00", "No image found on this page.");
   }
@@ -53,16 +61,22 @@ async function capture(tab) {
     return flash("KEY", "#e08c00", "Set your Atelier token in the extension options.");
   }
 
-  const imageBase64 = await fetchImageBase64(
+  const fetched = await fetchImage(
     [provenance.mediaUrl, provenance.mediaUrlFallback].filter(Boolean)
   );
-  const request = buildCaptureRequest(provenance, imageBase64);
+  console.log("[Atelier] fetched image", {
+    url: fetched.url,
+    contentType: fetched.contentType,
+    bytes: fetched.byteLength,
+  });
+  const request = buildCaptureRequest(provenance, fetched.base64);
 
   try {
     const { status, body } = await postCapture(request, {
       endpoint: DEFAULT_ENDPOINT,
       token,
     });
+    console.log("[Atelier] ingest response", { status, body });
     if (status === 200) {
       flash("✓", "#2e8b57", body.deduplicated ? "Already saved." : "Saved to Atelier.");
     } else {
@@ -82,9 +96,11 @@ async function getToken() {
 /**
  * Fetch the first working URL (in the authenticated session) and base64-encode
  * the bytes. Tries each candidate in order so a full-res URL that 404s falls back
- * to the rendered one. Throws if none succeed.
+ * to the rendered one. Rejects non-image content-types (an error/HTML page would
+ * otherwise be "successfully" ingested as garbage). Throws if none succeed.
+ * Returns `{ base64, url, contentType, byteLength }`.
  */
-async function fetchImageBase64(urls) {
+async function fetchImage(urls) {
   let lastError = new Error("No media URL to fetch.");
   for (const url of urls) {
     try {
@@ -93,10 +109,20 @@ async function fetchImageBase64(urls) {
         lastError = new Error(`HTTP ${response.status} for ${url}`);
         continue;
       }
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType && !contentType.startsWith("image/")) {
+        lastError = new Error(`Non-image response (${contentType}) for ${url}`);
+        continue;
+      }
       const bytes = new Uint8Array(await response.arrayBuffer());
       let binary = "";
       for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-      return btoa(binary);
+      return {
+        base64: btoa(binary),
+        url,
+        contentType: contentType || null,
+        byteLength: bytes.length,
+      };
     } catch (error) {
       lastError = error;
     }

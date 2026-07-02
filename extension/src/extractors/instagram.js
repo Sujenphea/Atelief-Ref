@@ -1,10 +1,11 @@
 // Atelier Capture — Instagram extractor.
 //
-// Client-rendered: prefer the live URL + the largest post image from the DOM
-// (scontent.cdninstagram.com / fbcdn.net); og:image is a fallback.
+// Client-rendered: prefer the right-clicked link/image, else the live URL + the
+// largest post image from the DOM (scontent.cdninstagram.com / fbcdn.net);
+// og:image is a fallback.
 
 import {
-  hostname, hostIs, meta, firstMeta, pathSegments, liveURL, largestMedia, ogImage,
+  hostname, hostIs, meta, firstMeta, pathSegments, liveURL, firstPostURL, largestMedia, ogImage,
 } from "./base.js";
 
 export const instagram = {
@@ -14,10 +15,12 @@ export const instagram = {
     return hostIs(hostname(url), "instagram.com");
   },
 
-  extract(harvest) {
-    const url = liveURL(harvest);
+  extract(harvest, context = {}) {
+    const isPost = (u) => ["p", "reel"].includes(pathSegments(u)[0]);
+    const url =
+      firstPostURL([context.linkUrl, harvest.url, harvest.canonical], isPost) ||
+      liveURL(harvest);
     const segments = pathSegments(url);
-    // /p/{shortcode}/ or /reel/{shortcode}/
     const shortcode =
       segments[0] === "p" || segments[0] === "reel" ? segments[1] || null : null;
 
@@ -25,8 +28,9 @@ export const instagram = {
     const ogTitle = meta(harvest, "og:title") || "";
     const handleMatch = ogTitle.match(/\(@([A-Za-z0-9._]+)\)/);
 
-    const photo = largestMedia(harvest, /(cdninstagram\.com|fbcdn\.net)/);
-    const mediaUrl = photo?.src || ogImage(harvest);
+    const clicked = /(cdninstagram\.com|fbcdn\.net)/.test(context.srcUrl || "") ? context.srcUrl : null;
+    const mediaUrl =
+      clicked || largestMedia(harvest, /(cdninstagram\.com|fbcdn\.net)/)?.src || ogImage(harvest);
 
     return {
       platform: "instagram",
