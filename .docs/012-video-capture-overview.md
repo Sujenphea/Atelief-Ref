@@ -1,5 +1,19 @@
 # 012 — Video capture (store the actual video, poster tile, open-to-play)
 
+## Status: complete (all checkpoints shipped)
+A ✅ `/ingest-video` streaming route · B ✅ `remoteVideo` factory · C ✅ pipeline
+video metadata + poster · D ✅ canvas ▶ badge + double-click QuickLook · E ✅
+extension MP4 download. Changelogs 033–037.
+
+**Key deviation from the plan:** the pipeline did NOT already ingest video (the
+`.video` `AssetKind` existed but was unreachable — `CGImageSource` can't open a
+movie container, verified). So checkpoint C grew to add a real AVFoundation
+metadata path in addition to the poster. See [034](/.change-log/034-ingestion-video-pipeline.md).
+
+**Unverified (needs a live manual run):** the extension's syndication MP4
+resolution (E) can't be tested offline; it falls back to the poster/frame on any
+failure. See [036](/.change-log/036-extension-video-capture.md).
+
 ## Context
 
 The Chrome capture extension (build-order #6, [011](/.docs/011-capture-extension-overview.md))
