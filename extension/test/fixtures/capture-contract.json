@@ -1,0 +1,35 @@
+{
+  "_comment": "Cross-language wire contract (decision 1A). The JS side asserts it PRODUCES `expected.captureRequest` / `expected.videoHeader`; the Swift side asserts it DECODES them into the matching SourceDraft. A field rename on either side breaks a test. `image` is a valid non-empty base64 (content is irrelevant to the decoder).",
+  "provenance": {
+    "platform": "twitter",
+    "originalURL": "https://x.com/designer/status/42",
+    "authorHandle": "@designer",
+    "authorName": "A Designer",
+    "title": "a reference",
+    "rawMetadata": { "tweetId": "42" }
+  },
+  "image": "iVBORw0KGgoAAAANSUhEUg==",
+  "expected": {
+    "captureRequest": {
+      "image": "iVBORw0KGgoAAAANSUhEUg==",
+      "provenance": {
+        "platform": "twitter",
+        "originalURL": "https://x.com/designer/status/42",
+        "authorHandle": "@designer",
+        "authorName": "A Designer",
+        "title": "a reference",
+        "rawMetadata": { "tweetId": "42" }
+      }
+    },
+    "videoHeader": {
+      "provenance": {
+        "platform": "twitter",
+        "originalURL": "https://x.com/designer/status/42",
+        "authorHandle": "@designer",
+        "authorName": "A Designer",
+        "title": "a reference",
+        "rawMetadata": { "tweetId": "42" }
+      }
+    }
+  }
+}

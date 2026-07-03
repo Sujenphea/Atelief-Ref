@@ -216,6 +216,39 @@ test("twitter: right-clicked image (context.srcUrl) wins, at full res", () => {
   assert.equal(p.originalURL, "https://x.com/designer/status/42");
 });
 
+test("instagram FROM THE FEED: right-clicked post link + image → post URL + that image", () => {
+  const h = harvest({
+    url: "https://www.instagram.com/", // the feed, NOT a post
+    canonical: "https://www.instagram.com/",
+    media: [img("https://scontent.cdninstagram.com/other.jpg", 500, 500)],
+  });
+  const context = {
+    linkUrl: "https://www.instagram.com/p/CxYz123/",
+    srcUrl: "https://scontent.cdninstagram.com/v/clicked.jpg",
+  };
+  const p = extractProvenance(h, context);
+  assert.equal(p.platform, "instagram");
+  assert.equal(p.originalURL, "https://www.instagram.com/p/CxYz123/"); // not the feed
+  assert.equal(p.mediaUrl, "https://scontent.cdninstagram.com/v/clicked.jpg"); // the clicked image
+  assert.deepEqual(p.rawMetadata, { shortcode: "CxYz123" });
+});
+
+test("cosmos: right-clicked element link + image → element URL + that image", () => {
+  const h = harvest({
+    url: "https://www.cosmos.so/", // a listing page, NOT the element
+    media: [img("https://images.cosmos.so/other.jpg", 800, 800)],
+  });
+  const context = {
+    linkUrl: "https://www.cosmos.so/e/el-99",
+    srcUrl: "https://images.cosmos.so/clicked.jpg",
+  };
+  const p = extractProvenance(h, context);
+  assert.equal(p.platform, "cosmos");
+  assert.equal(p.originalURL, "https://www.cosmos.so/e/el-99");
+  assert.equal(p.mediaUrl, "https://images.cosmos.so/clicked.jpg");
+  assert.deepEqual(p.rawMetadata, { elementId: "el-99" });
+});
+
 test("findExtractor routes each host to its extractor", () => {
   assert.equal(findExtractor("https://x.com/a/status/1"), twitter);
   assert.equal(findExtractor("https://www.pinterest.com/pin/1/"), pinterest);

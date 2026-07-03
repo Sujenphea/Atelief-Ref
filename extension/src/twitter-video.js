@@ -10,13 +10,28 @@
 // the endpoint derives from the id — the formula is Twitter's and may change; if
 // it does, resolution fails cleanly and the SW falls back to the poster frame.
 
+import { fetchWithTimeout } from "./net.js";
+
 const SYNDICATION_BASE = "https://cdn.syndication.twimg.com/tweet-result";
+
+/**
+ * The `token` query param the syndication endpoint derives from the tweet id.
+ * This mirrors Twitter's own front-end formula EXACTLY, including its `Number(id)`
+ * coercion: a 19-digit snowflake id exceeds Number.MAX_SAFE_INTEGER so precision
+ * is lost, but the endpoint applies the same lossy math, so the two agree. The
+ * radix is 36 (digits 0-9a-z); the `.replace` strips the leading "0." and any
+ * run of zeros, matching their output. If Twitter changes this, resolution fails
+ * cleanly and the SW falls back to the poster frame.
+ */
+export function deriveSyndicationToken(tweetId) {
+  return ((Number(tweetId) / 1e15) * Math.PI)
+    .toString(36)
+    .replace(/(0+|\.)/g, "");
+}
 
 /** The syndication request URL for `tweetId` (incl. the derived `token`). */
 export function syndicationURL(tweetId) {
-  const token = ((Number(tweetId) / 1e15) * Math.PI)
-    .toString(6 ** 2) // base 36
-    .replace(/(0+|\.)/g, "");
+  const token = deriveSyndicationToken(tweetId);
   return `${SYNDICATION_BASE}?id=${encodeURIComponent(tweetId)}&lang=en&token=${token}`;
 }
 
@@ -60,10 +75,12 @@ export function shouldResolveVideo(provenance, context = {}) {
 
 /** Resolve `tweetId` to a downloadable MP4 URL via the syndication API. Throws if
  * the request fails or the payload carries no MP4 variant. */
-export async function resolveTwitterVideo(tweetId, { fetchImpl = fetch } = {}) {
-  const response = await fetchImpl(syndicationURL(tweetId), {
-    headers: { Accept: "application/json" },
-  });
+export async function resolveTwitterVideo(tweetId, { fetchImpl = fetch, timeoutMs } = {}) {
+  const response = await fetchWithTimeout(
+    syndicationURL(tweetId),
+    { headers: { Accept: "application/json" } },
+    { fetchImpl, timeoutMs }
+  );
   if (!response.ok) throw new Error(`syndication HTTP ${response.status}`);
   const url = selectBestVideo(await response.json());
   if (!url) throw new Error("no MP4 variant in syndication response");

@@ -1,86 +1,82 @@
-// Atelier Capture — generic page-signal harvester.
+// Atelier Capture — page-signal harvester, split into an in-page reader and a
+// pure shaper.
 //
-// This is the ONLY code that runs in the page's context (injected via
-// chrome.scripting.executeScript on a user gesture). It is deliberately
-// site-AGNOSTIC: it serializes the stable, cross-site signals (meta tags,
-// canonical link, title, url) AND the real media elements actually in the DOM.
+// `harvestSignals()` runs in the PAGE (injected via chrome.scripting.executeScript
+// on a user gesture) and MUST be self-contained — no imports, no closure over the
+// SW — because it is serialized into the page. So it does only what needs the live
+// DOM: enumerate <meta>/<img>/<video> and rasterize the FIRST eligible video frame
+// to a data-URL (canvas is DOM-only). It returns a RAW snapshot of plain values.
+//
+// `buildHarvest(raw)` is a pure module function (imported by the SW, unit-tested):
+// it classifies that raw snapshot into the { url, title, canonical, metas, media }
+// object the extractors consume — the meta-dedup, media `kind` tagging and skip
+// rules that used to be tangled into the page code. Splitting here keeps the
+// DOM/canvas part minimal + manual, while the breakable classification is tested
+// with plain objects (no jsdom, zero deps).
 //
 // Why the DOM media matters: Twitter/X, Pinterest, Instagram and Cosmos are
-// client-rendered SPAs whose <meta og:image> and <link canonical> are frequently
-// STALE (left over from the first page load) or GENERIC (a site logo / share
-// card), not the post you're looking at. The real media is in the rendered DOM
-// (pbs.twimg.com/media/…, i.pinimg.com/…). So we harvest the actual <img>/<video>
-// elements and let the pure extractors pick; og:image is only a last resort.
-//
-// Must be self-contained (no imports / no closure over the SW) so it survives
-// serialization into the page.
+// client-rendered SPAs whose <meta og:image> / <link canonical> are frequently
+// STALE or GENERIC. The real media is in the rendered DOM, so we harvest the
+// actual <img>/<video> elements and let the pure extractors pick; og:image is a
+// last resort.
 
+/**
+ * Runs in the page. Returns a raw snapshot — deduped later — of the signals the
+ * extractors need: meta pairs, raw <img>/<video> reads, and the first eligible
+ * video's frame data-URL. Does NO classification (that's `buildHarvest`), so it
+ * stays a thin, self-contained DOM reader.
+ */
 export function harvestSignals() {
-  const metas = {};
+  const metas = [];
   for (const el of document.querySelectorAll("meta[property], meta[name]")) {
-    const key = el.getAttribute("property") || el.getAttribute("name");
-    const content = el.getAttribute("content");
-    if (key && content && !(key in metas)) metas[key] = content;
+    metas.push({
+      key: el.getAttribute("property") || el.getAttribute("name"),
+      content: el.getAttribute("content"),
+    });
   }
 
-  const media = [];
+  const images = [];
   for (const img of document.querySelectorAll("img")) {
-    const src = img.currentSrc || img.src;
-    if (!src || src.startsWith("data:")) continue;
-    media.push({
-      kind: "image",
-      src,
+    images.push({
+      src: img.currentSrc || img.src || "",
       width: img.naturalWidth || img.width || 0,
       height: img.naturalHeight || img.height || 0,
       alt: img.alt || null,
     });
   }
+
+  const videos = [];
+  let framedOne = false; // 14A: rasterize ONLY the first eligible video, not all.
   for (const video of document.querySelectorAll("video")) {
-    // A video tweet has no still image on the server — Twitter only exposes the
-    // poster (a keyframe it chose). To capture the frame the user is actually
-    // looking at, draw the video's CURRENT frame to a canvas and read it as a
-    // data-URL. Only possible when a frame is decoded (readyState >=
-    // HAVE_CURRENT_DATA) and the pixels aren't cross-origin-tainted; on either
-    // failure we skip it and the poster below is used instead.
-    if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+    // A video tweet has no still on the server — only a poster. To capture the
+    // frame the user is actually looking at, draw the video's CURRENT frame to a
+    // canvas. Possible only when a frame is decoded (readyState >= HAVE_CURRENT_DATA)
+    // and the pixels aren't cross-origin-tainted; on either failure we skip it and
+    // the poster is used instead. Only the FIRST such video is rasterized — the
+    // extractors use just one frame, and a busy feed can hold several videos.
+    let frame = null;
+    if (!framedOne && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
       try {
         const canvas = document.createElement("canvas");
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         canvas.getContext("2d").drawImage(video, 0, 0);
-        media.push({
-          kind: "video-frame",
-          src: canvas.toDataURL("image/png"), // throws SecurityError if tainted
-          width: video.videoWidth,
-          height: video.videoHeight,
-          alt: null,
-        });
+        // JPEG, not PNG: far smaller for a photographic frame (less CPU to encode,
+        // less to serialize back), and it's a still either way. Throws
+        // SecurityError if the pixels are cross-origin-tainted.
+        frame = canvas.toDataURL("image/jpeg", 0.9);
+        framedOne = true;
       } catch {
-        // Tainted or unavailable — fall through to the poster.
+        frame = null; // tainted or unavailable — fall through to the poster
       }
     }
-    if (video.poster && !video.poster.startsWith("data:")) {
-      media.push({
-        kind: "video-poster",
-        src: video.poster,
-        width: video.videoWidth || 0,
-        height: video.videoHeight || 0,
-        alt: null,
-      });
-    }
-    // A real (non-blob) video source is a strong "this is a video" signal — even
-    // when it's an HLS manifest we can't ingest directly, it tells the SW to
-    // resolve the downloadable MP4 (e.g. a Pinterest video pin).
-    const videoSrc = video.currentSrc || video.getAttribute("src") || "";
-    if (videoSrc && !videoSrc.startsWith("blob:") && !videoSrc.startsWith("data:")) {
-      media.push({
-        kind: "video-src",
-        src: videoSrc,
-        width: video.videoWidth || 0,
-        height: video.videoHeight || 0,
-        alt: null,
-      });
-    }
+    videos.push({
+      frame,
+      poster: video.poster || null,
+      src: video.currentSrc || video.getAttribute("src") || "",
+      width: video.videoWidth || 0,
+      height: video.videoHeight || 0,
+    });
   }
 
   const canonicalEl = document.querySelector('link[rel="canonical"]');
@@ -88,6 +84,63 @@ export function harvestSignals() {
     url: location.href,
     title: document.title || null,
     canonical: canonicalEl ? canonicalEl.getAttribute("href") : null,
+    metas,
+    images,
+    videos,
+  };
+}
+
+/**
+ * Pure: classify a raw snapshot (from `harvestSignals`) into the harvest object
+ * the extractors consume: `{ url, title, canonical, metas, media }`. Metas dedup
+ * first-wins; media are tagged by `kind` in a stable order (images in DOM order,
+ * then per video: frame, poster, src) with data:/blob: sources skipped.
+ */
+export function buildHarvest(raw) {
+  const metas = {};
+  for (const { key, content } of raw.metas || []) {
+    if (key && content && !(key in metas)) metas[key] = content;
+  }
+
+  const media = [];
+  for (const img of raw.images || []) {
+    if (!img.src || img.src.startsWith("data:")) continue;
+    media.push({
+      kind: "image",
+      src: img.src,
+      width: img.width || 0,
+      height: img.height || 0,
+      alt: img.alt || null,
+    });
+  }
+  for (const video of raw.videos || []) {
+    if (video.frame) {
+      media.push({
+        kind: "video-frame", src: video.frame,
+        width: video.width || 0, height: video.height || 0, alt: null,
+      });
+    }
+    if (video.poster && !video.poster.startsWith("data:")) {
+      media.push({
+        kind: "video-poster", src: video.poster,
+        width: video.width || 0, height: video.height || 0, alt: null,
+      });
+    }
+    // A real (non-blob/data) video src is a strong "this is a video" signal even
+    // when it's an HLS manifest we can't ingest directly — it tells the SW to
+    // resolve the downloadable MP4 (e.g. a Pinterest video pin).
+    if (video.src && !video.src.startsWith("blob:") && !video.src.startsWith("data:")) {
+      media.push({
+        kind: "video-src", src: video.src,
+        width: video.width || 0, height: video.height || 0, alt: null,
+      });
+    }
+  }
+
+  return {
+    url: raw.url,
+    title: raw.title || null,
+    canonical: raw.canonical || null,
     metas,
     media,
   };

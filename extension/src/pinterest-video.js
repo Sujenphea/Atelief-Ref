@@ -9,6 +9,8 @@
 //
 // Selection is pure (tested against a real payload); the fetch is a thin wrapper.
 
+import { fetchWithTimeout } from "./net.js";
+
 const PIN_BASE = "https://www.pinterest.com/pin";
 
 /** Every video URL on the pin's video CDN, embedded in the pin page's server HTML.
@@ -65,11 +67,12 @@ export function shouldResolveVideo(provenance, harvest) {
  * a client-rendered shell WITHOUT `videoUrls` (verified); only the logged-OUT SEO
  * HTML carries them. The SW's cross-origin fetch is cookie-less by default, but we
  * force it so a stray cookie can never flip us to the empty shell. */
-export async function resolvePinterestVideo(pinId, { fetchImpl = fetch } = {}) {
-  const response = await fetchImpl(`${PIN_BASE}/${encodeURIComponent(pinId)}/`, {
-    credentials: "omit",
-    headers: { Accept: "text/html" },
-  });
+export async function resolvePinterestVideo(pinId, { fetchImpl = fetch, timeoutMs } = {}) {
+  const response = await fetchWithTimeout(
+    `${PIN_BASE}/${encodeURIComponent(pinId)}/`,
+    { credentials: "omit", headers: { Accept: "text/html" } },
+    { fetchImpl, timeoutMs }
+  );
   if (!response.ok) throw new Error(`pinterest HTTP ${response.status}`);
   const url = selectBestVideo(extractVideoUrls(await response.text()));
   if (!url) throw new Error("no MP4 variant on the pin");

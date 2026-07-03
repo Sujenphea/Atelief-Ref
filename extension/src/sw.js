@@ -1,20 +1,26 @@
 // Atelier Capture — the service worker (the ONLY code that talks to localhost).
 //
 // On a user gesture (toolbar click or context-menu "Save to Atelier"), it:
-//   1. injects harvestSignals into the active tab (page context) to read signals,
-//   2. computes provenance off-page via the pure extractors,
-//   3. fetches the media bytes in the authenticated session and base64-encodes,
+//   1. injects harvestSignals into the active tab to read a raw page snapshot,
+//   2. shapes it (buildHarvest) and computes provenance off-page via the pure
+//      extractors,
+//   3. fetches the media bytes in the authenticated session (base64 image, or a
+//      streamed video Blob),
 //   4. POSTs to the app's loopback endpoint with the shared-secret token,
 //   5. flashes a result badge.
 //
 // Doing the fetch + POST here (not in a content script) is required by MV3: only
 // the SW, with host_permissions, may reach http://127.0.0.1 without CORS trouble.
+//
+// STRUCTURE: the decision-making core (`captureCore`, `fetchImage`,
+// `presentation`) is pure/injectable and unit-tested (sw.test.js). The `chrome.*`
+// event wiring at the bottom is thin glue, registered only in a real extension
+// (guarded so this module imports cleanly under `node --test`).
 
-import { harvestSignals } from "./harvest.js";
+import { harvestSignals, buildHarvest } from "./harvest.js";
 import { extractProvenance } from "./extractors/registry.js";
 import {
-  buildCaptureRequest, postCapture, DEFAULT_ENDPOINT,
-  buildProvenanceHeader, postVideoCapture,
+  buildCaptureRequest, postCapture, buildProvenanceHeader, postVideoCapture,
 } from "./endpoint.js";
 import {
   resolveTwitterVideo, shouldResolveVideo as twitterHasVideo,
@@ -22,129 +28,24 @@ import {
 import {
   resolvePinterestVideo, shouldResolveVideo as pinterestHasVideo,
 } from "./pinterest-video.js";
+import { fetchWithTimeout } from "./net.js";
 
 const TOKEN_KEY = "atelierToken";
+const B64_CHUNK = 0x8000; // 32 KB per String.fromCharCode.apply — see bytesToBase64
 
-chrome.action.onClicked.addListener((tab) => {
-  capture(tab, {}).catch((error) => flash("ERR", "#cc3333", String(error)));
-});
+// ---------------------------------------------------------------------------
+// Core (pure / injectable — no chrome.*), unit-tested.
+// ---------------------------------------------------------------------------
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: "atelier-save",
-    title: "Save to Atelier",
-    contexts: ["page", "image", "link"],
-  });
-});
-
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  // The right-clicked element: exact image + its link — far more reliable than
-  // guessing from the page (esp. capturing a pin from the feed).
-  const context = {
-    srcUrl: info.srcUrl || null,
-    linkUrl: info.linkUrl || null,
-    pageUrl: info.pageUrl || null,
-  };
-  if (tab) capture(tab, context).catch((error) => flash("ERR", "#cc3333", String(error)));
-});
-
-/** Full capture flow for one tab, given the right-clicked `context` (or {}). */
-async function capture(tab, context) {
-  if (!tab?.id) return;
-
-  const [injection] = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: harvestSignals,
-  });
-  const harvest = injection?.result;
-  if (!harvest) return flash("ERR", "#cc3333", "Could not read the page.");
-
-  const provenance = extractProvenance(harvest, context);
-  console.log("[Atelier] capture", { context, provenance: logSafe(provenance) });
-  if (!provenance.mediaUrl) {
-    return flash("?", "#e08c00", "No image found on this page.");
+/** Base64 of a byte array, chunked so a large image doesn't do millions of
+ * single-char string concatenations (which janked the SW on big captures).
+ * `endpoint.js`'s `base64Utf8` stays separate — it only encodes small strings. */
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += B64_CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + B64_CHUNK));
   }
-
-  const token = await getToken();
-  if (!token) {
-    return flash("KEY", "#e08c00", "Set your Atelier token in the extension options.");
-  }
-
-  // The post may be a video. Resolve the actual MP4 per platform, download it,
-  // and POST to /ingest-video. ANY failure (not a video, resolution/fetch/ingest
-  // error) falls through to the image path below, so a capture is never worse
-  // than before.
-  //   • Twitter — syndication API by tweet id (cheap), unless a /media/ photo was
-  //     explicitly right-clicked.
-  //   • Pinterest — fetch the pin page by id and parse its MP4 variants, only when
-  //     the harvested page actually shows a video (so image pins skip the fetch).
-  try {
-    let mp4Url = null;
-    if (twitterHasVideo(provenance, context)) {
-      mp4Url = await resolveTwitterVideo(provenance.rawMetadata.tweetId);
-    } else if (pinterestHasVideo(provenance, harvest)) {
-      mp4Url = await resolvePinterestVideo(provenance.rawMetadata.pinId);
-    }
-    if (mp4Url) {
-      await downloadAndIngestVideo(provenance, mp4Url, token);
-      return;
-    }
-  } catch (error) {
-    console.log("[Atelier] no video / capture failed → image fallback", String(error));
-  }
-
-  const fetched = await fetchImage(
-    [provenance.mediaUrl, provenance.mediaUrlFallback].filter(Boolean)
-  );
-  console.log("[Atelier] fetched image", {
-    url: fetched.url,
-    contentType: fetched.contentType,
-    bytes: fetched.byteLength,
-  });
-  const request = buildCaptureRequest(provenance, fetched.base64);
-
-  try {
-    const { status, body } = await postCapture(request, {
-      endpoint: DEFAULT_ENDPOINT,
-      token,
-    });
-    console.log("[Atelier] ingest response", { status, body });
-    if (status === 200) {
-      flash("✓", "#2e8b57", body.deduplicated ? "Already saved." : "Saved to Atelier.");
-    } else {
-      flash("ERR", "#cc3333", body.error || `HTTP ${status}`);
-    }
-  } catch {
-    flash("ERR", "#cc3333", "Could not reach Atelier — is the app running?");
-  }
-}
-
-/** Download the resolved MP4 and POST it to the video endpoint. Flashes success;
- * THROWS on any failure so the caller can fall back to the poster image. A non-200
- * ingest also throws (the poster path may still succeed). */
-async function downloadAndIngestVideo(provenance, mp4Url, token) {
-  const response = await fetch(mp4Url);
-  if (!response.ok) throw new Error(`video HTTP ${response.status} for ${mp4Url}`);
-  const contentType = response.headers.get("content-type") || "";
-  if (contentType && !contentType.startsWith("video/")) {
-    throw new Error(`non-video response (${contentType})`);
-  }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  console.log("[Atelier] fetched video", { url: mp4Url, contentType, bytes: bytes.length });
-
-  const { status, body } = await postVideoCapture(bytes, {
-    token,
-    provenanceHeader: buildProvenanceHeader(provenance),
-  });
-  console.log("[Atelier] ingest-video response", { status, body });
-  if (status !== 200) throw new Error(body.error || `ingest HTTP ${status}`);
-  flash("✓", "#2e8b57", body.deduplicated ? "Already saved." : "Saved video to Atelier.");
-}
-
-/** The saved shared-secret token, or "" if unset. */
-async function getToken() {
-  const stored = await chrome.storage.local.get(TOKEN_KEY);
-  return stored[TOKEN_KEY] || "";
+  return btoa(binary);
 }
 
 /**
@@ -152,13 +53,13 @@ async function getToken() {
  * the bytes. Tries each candidate in order so a full-res URL that 404s falls back
  * to the rendered one. Rejects non-image content-types (an error/HTML page would
  * otherwise be "successfully" ingested as garbage). Throws if none succeed.
- * Returns `{ base64, url, contentType, byteLength }`.
+ * Returns `{ base64, url, contentType, byteLength }`. `fetchImpl` is injectable.
  */
-async function fetchImage(urls) {
+export async function fetchImage(urls, { fetchImpl = fetch } = {}) {
   let lastError = new Error("No media URL to fetch.");
   for (const url of urls) {
     try {
-      const response = await fetch(url);
+      const response = await fetchWithTimeout(url, {}, { fetchImpl });
       if (!response.ok) {
         lastError = new Error(`HTTP ${response.status} for ${url}`);
         continue;
@@ -169,10 +70,8 @@ async function fetchImage(urls) {
         continue;
       }
       const bytes = new Uint8Array(await response.arrayBuffer());
-      let binary = "";
-      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
       return {
-        base64: btoa(binary),
+        base64: bytesToBase64(bytes),
         url,
         contentType: contentType || null,
         byteLength: bytes.length,
@@ -184,14 +83,152 @@ async function fetchImage(urls) {
   throw lastError;
 }
 
-/** A log-friendly copy of provenance: a captured video frame is a multi-MB
- * data-URL, so summarize any data-URL field rather than dumping it. */
-function logSafe(provenance) {
-  const shorten = (v) =>
-    typeof v === "string" && v.startsWith("data:")
-      ? `${v.slice(0, v.indexOf(",") + 1)}…(${v.length} chars)`
-      : v;
-  return { ...provenance, mediaUrl: shorten(provenance.mediaUrl) };
+/** Download the resolved MP4 and POST it to the video endpoint. Returns
+ * `{ deduplicated }`; THROWS on any failure so the caller can fall back to the
+ * poster image. The body is a `Blob` (browser-backed, streamed on send) so the
+ * whole clip never sits in the JS heap. A non-200 ingest also throws. */
+export async function downloadAndIngestVideo(provenance, mp4Url, token, { fetchImpl = fetch } = {}) {
+  const response = await fetchWithTimeout(mp4Url, {}, { fetchImpl });
+  if (!response.ok) throw new Error(`video HTTP ${response.status} for ${mp4Url}`);
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType && !contentType.startsWith("video/")) {
+    throw new Error(`non-video response (${contentType})`);
+  }
+  const blob = await response.blob();
+  const { status, body } = await postVideoCapture(blob, {
+    token,
+    provenanceHeader: buildProvenanceHeader(provenance),
+  });
+  if (status !== 200) throw new Error(body.error || `ingest HTTP ${status}`);
+  return { deduplicated: !!body.deduplicated };
+}
+
+/** Real implementations the core uses; overridden wholesale in tests. */
+const defaultDeps = {
+  extractProvenance,
+  twitterHasVideo,
+  resolveTwitterVideo,
+  pinterestHasVideo,
+  resolvePinterestVideo,
+  fetchImage,
+  downloadAndIngestVideo,
+  buildCaptureRequest,
+  postCapture,
+  log: (...args) => console.log("[Atelier]", ...args),
+  logError: (...args) => console.error("[Atelier]", ...args),
+};
+
+/**
+ * The full capture decision, as a pure function returning a semantic result (the
+ * glue maps it to a badge via `presentation`). Fail-OPEN on video: a resolution
+ * failure is EXPECTED (not a video / the platform API changed) → quiet log; a
+ * RESOLVED video that then fails to download/ingest is UNEXPECTED → loud log; both
+ * fall back to the still image, so a capture is never worse than before.
+ */
+export async function captureCore(harvest, context, token, deps = defaultDeps) {
+  const provenance = deps.extractProvenance(harvest, context);
+  if (!provenance.mediaUrl) return { status: "no-image" };
+  if (!token) return { status: "no-token" };
+
+  let mp4Url = null;
+  try {
+    if (deps.twitterHasVideo(provenance, context)) {
+      mp4Url = await deps.resolveTwitterVideo(provenance.rawMetadata.tweetId);
+    } else if (deps.pinterestHasVideo(provenance, harvest)) {
+      mp4Url = await deps.resolvePinterestVideo(provenance.rawMetadata.pinId);
+    }
+  } catch (error) {
+    deps.log("no video / resolution failed → image fallback:", String(error));
+    mp4Url = null;
+  }
+  if (mp4Url) {
+    try {
+      const { deduplicated } = await deps.downloadAndIngestVideo(provenance, mp4Url, token);
+      return { status: "saved", kind: "video", deduplicated };
+    } catch (error) {
+      // A resolved video should normally ingest — log loudly, but still fall back.
+      deps.logError("resolved video failed to download/ingest → image fallback:", error);
+    }
+  }
+
+  let fetched;
+  try {
+    fetched = await deps.fetchImage(
+      [provenance.mediaUrl, provenance.mediaUrlFallback].filter(Boolean)
+    );
+  } catch (error) {
+    return { status: "fetch-error", message: `Could not fetch the image (${String(error)}).` };
+  }
+
+  const request = deps.buildCaptureRequest(provenance, fetched.base64);
+  try {
+    const { status, body } = await deps.postCapture(request, { token });
+    if (status === 200) {
+      return { status: "saved", kind: "image", deduplicated: !!body.deduplicated };
+    }
+    return { status: "ingest-error", message: body.error || `HTTP ${status}` };
+  } catch {
+    return { status: "unreachable" };
+  }
+}
+
+/** Map a capture result to a badge `{ text, color, title }`. */
+export function presentation(result) {
+  switch (result.status) {
+    case "no-image":
+      return { text: "?", color: "#e08c00", title: "No image found on this page." };
+    case "no-token":
+      return { text: "KEY", color: "#e08c00", title: "Set your Atelier token in the extension options." };
+    case "saved":
+      return {
+        text: "✓", color: "#2e8b57",
+        title: result.deduplicated
+          ? "Already saved."
+          : result.kind === "video" ? "Saved video to Atelier." : "Saved to Atelier.",
+      };
+    case "ingest-error":
+      return { text: "ERR", color: "#cc3333", title: result.message || "Ingest failed." };
+    case "fetch-error":
+      return { text: "ERR", color: "#cc3333", title: result.message || "Could not fetch the image." };
+    case "unreachable":
+      return { text: "ERR", color: "#cc3333", title: "Could not reach Atelier — is the app running?" };
+    default:
+      return { text: "ERR", color: "#cc3333", title: String(result.message || "Capture failed.") };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Glue (chrome.*) — thin, registered only in a real extension.
+// ---------------------------------------------------------------------------
+
+/** The saved shared-secret token, or "" if unset. */
+async function getToken() {
+  const stored = await chrome.storage.local.get(TOKEN_KEY);
+  return stored[TOKEN_KEY] || "";
+}
+
+/** Full capture flow for one tab, given the right-clicked `context` (or {}). */
+async function capture(tab, context) {
+  if (!tab?.id) return;
+  clearBadge(); // 8A: drop any stale badge from a prior capture up front
+
+  let raw;
+  try {
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: harvestSignals,
+    });
+    raw = injection?.result;
+  } catch {
+    return flash("ERR", "#cc3333", "Could not read the page.");
+  }
+  if (!raw) return flash("ERR", "#cc3333", "Could not read the page.");
+
+  const harvest = buildHarvest(raw);
+  const token = await getToken();
+  const result = await captureCore(harvest, context, token);
+  const { text, color, title } = presentation(result);
+  flash(text, color, title);
 }
 
 /** Brief action-badge feedback (title carries the full message). */
@@ -199,5 +236,40 @@ function flash(text, color, title) {
   chrome.action.setBadgeBackgroundColor({ color });
   chrome.action.setBadgeText({ text });
   if (title) chrome.action.setTitle({ title: `Atelier — ${title}` });
+  // Best-effort auto-clear; an MV3 SW may be torn down before it fires, so the
+  // next capture also clears the badge up front (see capture()).
   setTimeout(() => chrome.action.setBadgeText({ text: "" }), 4000);
+}
+
+/** Clear the badge immediately (no title change). */
+function clearBadge() {
+  chrome.action.setBadgeText({ text: "" });
+}
+
+if (typeof chrome !== "undefined" && chrome.action) {
+  chrome.action.onClicked.addListener((tab) => {
+    capture(tab, {}).catch((error) => flash("ERR", "#cc3333", String(error)));
+  });
+
+  chrome.runtime.onInstalled.addListener(() => {
+    // removeAll first so a re-install/update can't throw "duplicate id".
+    chrome.contextMenus.removeAll(() => {
+      chrome.contextMenus.create({
+        id: "atelier-save",
+        title: "Save to Atelier",
+        contexts: ["page", "image", "link"],
+      });
+    });
+  });
+
+  chrome.contextMenus.onClicked.addListener((info, tab) => {
+    // The right-clicked element: exact image + its link — far more reliable than
+    // guessing from the page (esp. capturing a pin from the feed).
+    const context = {
+      srcUrl: info.srcUrl || null,
+      linkUrl: info.linkUrl || null,
+      pageUrl: info.pageUrl || null,
+    };
+    if (tab) capture(tab, context).catch((error) => flash("ERR", "#cc3333", String(error)));
+  });
 }

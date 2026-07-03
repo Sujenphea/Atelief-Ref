@@ -10,6 +10,7 @@
 import Foundation
 import FlyingFox
 import FlyingSocks
+import os
 
 /// A random URL-safe secret the app hands to the extension (A2).
 public enum CaptureToken {
@@ -102,36 +103,47 @@ struct CaptureHTTPHandler: HTTPHandler {
     let maxBodyBytes: Int
     let maxVideoBodyBytes: Int
 
+    /// Request/outcome observability (decision 4A). Method/path/status are logged
+    /// `.public`; the token, image bytes and provenance are NEVER logged.
+    private static let log = Logger(subsystem: "so.atelier.capture", category: "endpoint")
+
     /// Raised while streaming a body when it exceeds the cap — distinguishes a
     /// too-large upload (→ 413) from an I/O failure (→ 500).
     private struct BodyTooLarge: Error {}
 
     func handleRequest(_ request: HTTPRequest) async throws -> HTTPResponse {
+        let method = request.method.rawValue
+        let path = request.path
         let origin = request.headers[HTTPHeader("Origin")]
         let token = request.headers[HTTPHeader(CaptureAuth.tokenHeaderName)]
         let cors = auth.corsHeaders(origin: origin)
-        let ctx = RequestContext(
-            method: request.method.rawValue, origin: origin, token: token)
+        let ctx = RequestContext(method: method, origin: origin, token: token)
 
         switch auth.evaluate(ctx) {
         case .preflight:
             return makeResponse(.noContent, cors: cors, body: nil)
         case .rejected(let reason):
+            Self.log.warning(
+                "rejected \(method, privacy: .public) \(path, privacy: .public): \(reason, privacy: .public)")
             return makeResponse(.forbidden, cors: cors, body: .error(reason))
         case .authorized:
             break
         }
 
+        let response: HTTPResponse
         switch (request.method, request.path) {
         case (.GET, "/health"):
-            return makeResponse(.ok, cors: cors, body: CaptureResponse(status: "ok"))
+            response = makeResponse(.ok, cors: cors, body: CaptureResponse(status: "ok"))
         case (.POST, "/ingest"):
-            return try await handleImageIngest(request, cors: cors)
+            response = try await handleImageIngest(request, cors: cors)
         case (.POST, "/ingest-video"):
-            return await handleVideoIngest(request, cors: cors)
+            response = await handleVideoIngest(request, cors: cors)
         default:
-            return makeResponse(.notFound, cors: cors, body: .error("Not found."))
+            response = makeResponse(.notFound, cors: cors, body: .error("Not found."))
         }
+        Self.log.info(
+            "\(method, privacy: .public) \(path, privacy: .public) → \(response.statusCode.code, privacy: .public)")
+        return response
     }
 
     /// The base64-image-in-JSON path: buffer the whole (modest) body, cap it,

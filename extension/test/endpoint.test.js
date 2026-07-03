@@ -6,12 +6,20 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   buildCaptureRequest, postCapture, TOKEN_HEADER, DEFAULT_ENDPOINT,
   buildProvenanceHeader, postVideoCapture, base64Utf8,
   PROVENANCE_HEADER, DEFAULT_VIDEO_ENDPOINT,
 } from "../src/endpoint.js";
+
+// The shared cross-language contract fixture (decision 1A). The Swift side
+// (CaptureDecoderTests) decodes the SAME file, so a field rename on either side
+// breaks a test here or there.
+const contract = JSON.parse(
+  readFileSync(new URL("./fixtures/capture-contract.json", import.meta.url))
+);
 
 const fullProvenance = {
   platform: "twitter",
@@ -65,6 +73,41 @@ test("postCapture sends token + content-type headers and returns status/body", a
   assert.deepEqual(JSON.parse(seen.init.body), request);
   assert.equal(result.status, 200);
   assert.equal(result.body.deduplicated, false);
+});
+
+test("contract (1A): buildCaptureRequest produces the canonical wire shape", () => {
+  const request = buildCaptureRequest(contract.provenance, contract.image);
+  assert.deepEqual(request, contract.expected.captureRequest);
+});
+
+test("contract (1A): buildProvenanceHeader decodes to the canonical video header", () => {
+  const decoded = JSON.parse(
+    Buffer.from(buildProvenanceHeader(contract.provenance), "base64").toString("utf8")
+  );
+  assert.deepEqual(decoded, contract.expected.videoHeader);
+});
+
+test("postCapture propagates a rejected fetch (network error) to the caller", async () => {
+  const failing = async () => {
+    throw new Error("network down");
+  };
+  // The SW relies on this throwing so it can fall back / flash "can't reach app".
+  await assert.rejects(
+    () => postCapture({}, { token: "t", fetchImpl: failing }),
+    /network down/
+  );
+});
+
+test("postVideoCapture propagates a rejected fetch (network error) to the caller", async () => {
+  const failing = async () => {
+    throw new Error("network down");
+  };
+  await assert.rejects(
+    () => postVideoCapture(new Uint8Array([1]), {
+      token: "t", provenanceHeader: "H", fetchImpl: failing,
+    }),
+    /network down/
+  );
 });
 
 test("postCapture tolerates a non-JSON body", async () => {

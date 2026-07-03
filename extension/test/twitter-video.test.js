@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 
 import {
   selectBestVideo, syndicationURL, resolveTwitterVideo, shouldResolveVideo,
+  deriveSyndicationToken,
 } from "../src/twitter-video.js";
 
 // A representative tweet-result payload for a video tweet (mediaDetails shape).
@@ -52,6 +53,14 @@ test("selectBestVideo: a photo-only / HLS-only payload → null", () => {
       { content_type: "application/x-mpegURL", url: "https://video.twimg.com/only.m3u8" },
     ] } }],
   }), null);
+});
+
+test("deriveSyndicationToken: pins the exact (lossy) derivation for known ids", () => {
+  // Mirrors Twitter's own Number()-coercing formula; pinned so a future refactor
+  // can't silently change the output. Values captured from the implementation.
+  assert.equal(deriveSyndicationToken("1780000000000000000"), "4bc199dvu3j");
+  assert.equal(deriveSyndicationToken("1234567890123456789"), "2zqic77uqyk");
+  assert.equal(deriveSyndicationToken("42"), "def2orrzkm");
 });
 
 test("syndicationURL: targets the tweet-result endpoint with the id + a token", () => {

@@ -10,18 +10,29 @@ export const DEFAULT_VIDEO_ENDPOINT = "http://127.0.0.1:47321/ingest-video";
 export const TOKEN_HEADER = "X-Atelier-Token";
 export const PROVENANCE_HEADER = "X-Atelier-Provenance";
 
+/**
+ * The wire `provenance` object shared by the image and video requests: the
+ * per-site fields with optionals defaulted (null / empty rawMetadata) and client
+ * hints (mediaUrl/mediaKind) intentionally dropped. This is the single JS-side
+ * authority for the provenance shape the Swift `ProvenanceDTO` decodes — the
+ * contract fixture (`test/fixtures/`) pins it against the server.
+ */
+export function normalizeProvenance(provenance) {
+  return {
+    platform: provenance.platform,
+    originalURL: provenance.originalURL ?? null,
+    authorHandle: provenance.authorHandle ?? null,
+    authorName: provenance.authorName ?? null,
+    title: provenance.title ?? null,
+    rawMetadata: provenance.rawMetadata ?? {},
+  };
+}
+
 /** Build the JSON body for `POST /ingest` from provenance + a base64 image. */
 export function buildCaptureRequest(provenance, imageBase64) {
   return {
     image: imageBase64,
-    provenance: {
-      platform: provenance.platform,
-      originalURL: provenance.originalURL ?? null,
-      authorHandle: provenance.authorHandle ?? null,
-      authorName: provenance.authorName ?? null,
-      title: provenance.title ?? null,
-      rawMetadata: provenance.rawMetadata ?? {},
-    },
+    provenance: normalizeProvenance(provenance),
   };
 }
 
@@ -41,6 +52,12 @@ export async function postCapture(
     },
     body: JSON.stringify(request),
   });
+  return parseJsonResponse(response);
+}
+
+/** Read a JSON response body, tolerating an empty/non-JSON body (→ `{}`).
+ * Returns `{ status, body }` — the shape both POST helpers surface. */
+async function parseJsonResponse(response) {
   let body = {};
   try {
     body = await response.json();
@@ -65,26 +82,19 @@ export function base64Utf8(str) {
  * app routes to its default (Unsorted) folder, and `mediaUrl`/`mediaKind` (client
  * hints) are not sent — only the wire provenance the server expects. */
 export function buildProvenanceHeader(provenance) {
-  const header = {
-    provenance: {
-      platform: provenance.platform,
-      originalURL: provenance.originalURL ?? null,
-      authorHandle: provenance.authorHandle ?? null,
-      authorName: provenance.authorName ?? null,
-      title: provenance.title ?? null,
-      rawMetadata: provenance.rawMetadata ?? {},
-    },
-  };
+  const header = { provenance: normalizeProvenance(provenance) };
   return base64Utf8(JSON.stringify(header));
 }
 
 /**
- * POST raw video `bytes` (a Uint8Array/ArrayBuffer) to the video endpoint, with
- * provenance in the `X-Atelier-Provenance` header (not the body). Returns
+ * POST raw video `body` (a `Blob`, or a `Uint8Array`/`ArrayBuffer`) to the video
+ * endpoint, with provenance in the `X-Atelier-Provenance` header (not the body).
+ * A `Blob` lets the browser back the payload with a temp file and stream it on
+ * send, so the service worker never holds the whole clip in the JS heap. Returns
  * `{ status, body }`.
  */
 export async function postVideoCapture(
-  bytes,
+  body,
   { endpoint = DEFAULT_VIDEO_ENDPOINT, token, provenanceHeader, fetchImpl = fetch } = {}
 ) {
   const response = await fetchImpl(endpoint, {
@@ -94,13 +104,7 @@ export async function postVideoCapture(
       [TOKEN_HEADER]: token ?? "",
       [PROVENANCE_HEADER]: provenanceHeader,
     },
-    body: bytes,
+    body,
   });
-  let body = {};
-  try {
-    body = await response.json();
-  } catch {
-    body = {};
-  }
-  return { status: response.status, body };
+  return parseJsonResponse(response);
 }

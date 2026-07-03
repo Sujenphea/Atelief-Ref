@@ -15,6 +15,57 @@ struct CaptureDecoderTests {
     static let now = Date(timeIntervalSince1970: 1_700_000_000)
     static let collectionID = UUID()
 
+    // MARK: - Cross-language wire contract (decision 1A)
+
+    /// The shared fixture the extension's `endpoint.test.js` also asserts against.
+    /// The extension proves it PRODUCES these shapes; this proves the server
+    /// DECODES them into the matching `SourceDraft` — a field rename on either side
+    /// breaks a test. One file is the single source of truth for the wire shape.
+    struct Contract: Decodable {
+        struct Expected: Decodable {
+            let captureRequest: CaptureRequest
+            let videoHeader: VideoCaptureHeader
+        }
+        let expected: Expected
+    }
+
+    /// Load the fixture relative to THIS source file (repo root is 4 levels up),
+    /// so the JS and Swift suites read the exact same bytes.
+    static func loadContract() throws -> Contract {
+        var dir = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 { dir.deleteLastPathComponent() }
+        let url = dir.appendingPathComponent("extension/test/fixtures/capture-contract.json")
+        return try JSONDecoder().decode(Contract.self, from: Data(contentsOf: url))
+    }
+
+    @Test("contract fixture: the canonical CaptureRequest decodes to the expected SourceDraft")
+    func contractImage() throws {
+        let fixture = try Self.loadContract()
+        let body = try JSONEncoder().encode(fixture.expected.captureRequest)
+        let decoded = try CaptureDecoder.decode(body: body, now: Self.now)
+
+        #expect(!decoded.imageData.isEmpty)
+        let p = decoded.provenance
+        #expect(p.platform == .twitter)
+        #expect(p.originalURL == "https://x.com/designer/status/42")
+        #expect(p.authorHandle == "@designer")
+        #expect(p.authorName == "A Designer")
+        #expect(p.title == "a reference")
+        #expect(p.rawMetadata == .object(["tweetId": .string("42")]))
+    }
+
+    @Test("contract fixture: the canonical video header decodes to the expected SourceDraft")
+    func contractVideo() throws {
+        let fixture = try Self.loadContract()
+        let headerB64 = try JSONEncoder().encode(fixture.expected.videoHeader).base64EncodedString()
+        let decoded = try CaptureDecoder.decodeVideoHeader(headerB64, now: Self.now)
+
+        #expect(decoded.provenance.platform == .twitter)
+        #expect(decoded.provenance.authorHandle == "@designer")
+        #expect(decoded.provenance.title == "a reference")
+        #expect(decoded.provenance.rawMetadata == .object(["tweetId": .string("42")]))
+    }
+
     @Test("valid request → SourceDraft with every provenance field mapped")
     func validFullMapping() throws {
         let request = CaptureRequest.sample(collectionId: Self.collectionID)
