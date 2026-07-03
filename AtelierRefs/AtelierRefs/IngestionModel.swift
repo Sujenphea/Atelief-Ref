@@ -105,6 +105,10 @@ final class IngestionModel: ObservableObject {
     private var services: AppServices?
     private var captureServer: CaptureServer?
 
+    /// Monotonic id for ``loadContents(of:)`` so a slow read can never clobber a
+    /// newer one (fast folder switch, or a mutation-triggered reload).
+    private var contentsLoadID = 0
+
     /// Downloads a bare image URL (drag/paste with no bytes) off-main. Stateless +
     /// injectable; the default uses the shared session (tests inject a stub one).
     private let remoteFetcher = RemoteImageFetcher()
@@ -310,10 +314,18 @@ final class IngestionModel: ObservableObject {
     /// Load the DIRECT items + immediate subfolders of `id` (decision F5).
     func loadContents(of id: UUID) {
         guard let services else { return }
+        contentsLoadID &+= 1
+        let loadID = contentsLoadID
         Task {
             do {
-                items = try await services.collectionItems(in: id)
-                subfolders = try await services.childCollections(of: id)
+                let loadedItems = try await services.collectionItems(in: id)
+                let loadedSubfolders = try await services.childCollections(of: id)
+                // A newer load has superseded this one — the two DB reads can
+                // finish out of order, so a stale read must NOT overwrite the
+                // current folder's content. Bail before publishing anything.
+                guard loadID == contentsLoadID else { return }
+                items = loadedItems
+                subfolders = loadedSubfolders
                 // Drop a selection that no longer exists in the reloaded set
                 // (folder switch, or the item was removed).
                 if let selectedItemID,
@@ -322,6 +334,7 @@ final class IngestionModel: ObservableObject {
                 }
                 contentsVersion &+= 1
             } catch {
+                guard loadID == contentsLoadID else { return }
                 lastError = Self.message(for: error)
             }
         }
@@ -462,14 +475,14 @@ final class IngestionModel: ObservableObject {
         NSPasteboard.general.setString(string, forType: .string)
     }
 
-    /// Load the 512-tier thumbnail for a folder item from the `MediaStore`,
-    /// or `nil` if it hasn't been generated / can't be decoded.
-    func thumbnail(for detail: CollectionItemDetail) -> NSImage? {
+    /// The on-disk URL of a folder item's 512-tier thumbnail (pure — no decode).
+    /// The grid loads + caches it off the main thread via `ThumbnailCache`, so the
+    /// render path never blocks on disk I/O.
+    func thumbnailURL(for detail: CollectionItemDetail) -> URL? {
         guard let store else { return nil }
-        let url = store.thumbnailURL(
+        return store.thumbnailURL(
             hash: detail.asset.blobHash, size: ThumbnailTier.medium.rawValue,
             fileExtension: "jpg")
-        return NSImage(contentsOf: url)
     }
 
     // MARK: - Remove / delete assets

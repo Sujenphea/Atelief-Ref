@@ -212,8 +212,9 @@ struct LibraryView: View {
                             Button {
                                 model.select(detail)
                             } label: {
-                                FolderThumbnail(
-                                    image: model.thumbnail(for: detail),
+                                AsyncFolderThumbnail(
+                                    hash: detail.asset.blobHash,
+                                    url: model.thumbnailURL(for: detail),
                                     isSelected: model.selectedItemID == detail.item.id)
                             }
                             .buttonStyle(.plain)
@@ -427,6 +428,56 @@ struct LibraryView: View {
 
 /// One thumbnail cell — shows the loaded image, or a placeholder tile. A
 /// selection ring marks the item currently shown in the inspector.
+/// A process-wide, thread-safe cache of decoded folder thumbnails, keyed by blob
+/// hash. The synchronous `cached(_:)` hit is read on the main render path; the
+/// disk read + decode in `load(hash:url:)` run OFF the main thread and populate the
+/// cache — so scrolling a large folder never blocks the UI on `NSImage(contentsOf:)`
+/// I/O (the previous per-cell, main-actor decode). Returning nothing from `load`
+/// keeps any non-Sendable `NSImage` from crossing an isolation boundary; the caller
+/// re-reads via `cached`.
+final class ThumbnailCache: @unchecked Sendable {
+    static let shared = ThumbnailCache()
+    private let cache = NSCache<NSString, NSImage>()
+
+    init() { cache.countLimit = 512 }
+
+    /// A synchronous cache hit (NSCache is thread-safe), or nil if not yet loaded.
+    func cached(_ hash: String) -> NSImage? { cache.object(forKey: hash as NSString) }
+
+    /// Read + decode the thumbnail off the main thread and store it under `hash`.
+    func load(hash: String, url: URL) async {
+        if cache.object(forKey: hash as NSString) != nil { return }
+        let data = await Task.detached(priority: .utility) { try? Data(contentsOf: url) }.value
+        guard let data, let image = NSImage(data: data) else { return }
+        cache.setObject(image, forKey: hash as NSString)
+    }
+}
+
+/// Loads a ``FolderThumbnail``'s image asynchronously via ``ThumbnailCache``, so the
+/// grid never decodes on the main render path. Shows a cached image immediately;
+/// otherwise a placeholder while it loads off-main, keyed by `hash` so cell reuse
+/// (scrolling) reloads for the new item.
+private struct AsyncFolderThumbnail: View {
+    let hash: String
+    let url: URL?
+    var isSelected: Bool = false
+    @State private var image: NSImage?
+
+    var body: some View {
+        FolderThumbnail(image: image, isSelected: isSelected)
+            .task(id: hash) {
+                if let hit = ThumbnailCache.shared.cached(hash) {
+                    image = hit
+                    return
+                }
+                image = nil
+                guard let url else { return }
+                await ThumbnailCache.shared.load(hash: hash, url: url)
+                image = ThumbnailCache.shared.cached(hash)
+            }
+    }
+}
+
 private struct FolderThumbnail: View {
     let image: NSImage?
     var isSelected: Bool = false

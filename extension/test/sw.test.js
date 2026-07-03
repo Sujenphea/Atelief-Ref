@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { captureCore, fetchImage, presentation } from "../src/sw.js";
+import { captureCore, fetchImage, presentation, downloadAndIngestVideo } from "../src/sw.js";
 
 const PROV = {
   platform: "twitter",
@@ -186,4 +186,25 @@ test("fetchImage: throws when every candidate fails", async () => {
     () => fetchImage(["https://cdn/a"], { fetchImpl: imageFetch({ ok: false, status: 500 }) }),
     /HTTP 500/
   );
+});
+
+// MARK: - downloadAndIngestVideo (client-side size cap)
+
+test("downloadAndIngestVideo: rejects an over-cap clip by Content-Length before reading the body", async () => {
+  let blobRead = false;
+  const headers = {
+    get: (h) =>
+      h === "content-length" ? String(600 * 1024 * 1024) // > 512 MB cap
+        : h === "content-type" ? "video/mp4" : "",
+  };
+  const fetchImpl = async () => ({
+    ok: true,
+    headers,
+    blob: async () => { blobRead = true; return {}; },
+  });
+  await assert.rejects(
+    () => downloadAndIngestVideo({}, "https://v/x.mp4", "tok", { fetchImpl }),
+    /too large/
+  );
+  assert.equal(blobRead, false); // aborted before downloading the body
 });

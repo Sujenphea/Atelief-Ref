@@ -32,6 +32,10 @@ import { fetchWithTimeout } from "./net.js";
 
 const TOKEN_KEY = "atelierToken";
 const B64_CHUNK = 0x8000; // 32 KB per String.fromCharCode.apply — see bytesToBase64
+// Mirror of the server's video cap (CaptureServer.defaultMaxVideoBodyBytes). A
+// client-side early-out via Content-Length so a doomed huge MP4 isn't downloaded
+// in full before the server's 413. Kept in sync with AtelierServer by hand.
+const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Core (pure / injectable — no chrome.*), unit-tested.
@@ -93,6 +97,13 @@ export async function downloadAndIngestVideo(provenance, mp4Url, token, { fetchI
   const contentType = response.headers.get("content-type") || "";
   if (contentType && !contentType.startsWith("video/")) {
     throw new Error(`non-video response (${contentType})`);
+  }
+  // Reject an over-cap clip from its declared size BEFORE reading the body, so a
+  // huge MP4 isn't fully downloaded only for the server to 413 it. (Absent on a
+  // chunked response — then we proceed and the server's cap is the backstop.)
+  const declaredBytes = Number(response.headers.get("content-length") || 0);
+  if (declaredBytes > MAX_VIDEO_BYTES) {
+    throw new Error(`video too large (${declaredBytes} > ${MAX_VIDEO_BYTES} bytes)`);
   }
   const blob = await response.blob();
   const { status, body } = await postVideoCapture(blob, {
