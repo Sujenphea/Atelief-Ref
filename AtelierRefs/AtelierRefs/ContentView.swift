@@ -19,6 +19,8 @@ struct ContentView: View {
                 .tabItem { Label("Canvas", systemImage: "square.grid.2x2") }
             LibraryView(model: model)
                 .tabItem { Label("Library", systemImage: "folder") }
+            BulkSweepsView(model: model)
+                .tabItem { Label("Sweeps", systemImage: "square.and.arrow.down.on.square") }
         }
         .frame(minWidth: 800, minHeight: 600)
         // One confirmation for the destructive delete, shared by all three

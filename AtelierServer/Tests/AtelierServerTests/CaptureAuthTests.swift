@@ -81,7 +81,8 @@ struct CaptureAuthTests {
     func corsAllowedOrigin() {
         let headers = auth.corsHeaders(origin: Self.extOrigin)
         #expect(headers["Access-Control-Allow-Origin"] == Self.extOrigin)
-        #expect(headers["Access-Control-Allow-Methods"] == "POST, OPTIONS")
+        // GET was added for the bulk-import `known-sources` route (015 · 3A).
+        #expect(headers["Access-Control-Allow-Methods"] == "GET, POST, OPTIONS")
         #expect(headers["Access-Control-Allow-Headers"]?.contains(CaptureAuth.tokenHeaderName) == true)
     }
 

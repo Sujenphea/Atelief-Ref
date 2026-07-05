@@ -45,12 +45,13 @@ public actor CaptureServer {
         port: UInt16 = CaptureServer.defaultPort,
         auth: CaptureAuth,
         routes: CaptureRoutes,
+        jobRoutes: JobRoutes? = nil,
         maxBodyBytes: Int = CaptureServer.defaultMaxBodyBytes,
         maxVideoBodyBytes: Int = CaptureServer.defaultMaxVideoBodyBytes
     ) {
         self.port = port
         self.handler = CaptureHTTPHandler(
-            auth: auth, routes: routes,
+            auth: auth, routes: routes, jobRoutes: jobRoutes,
             maxBodyBytes: maxBodyBytes, maxVideoBodyBytes: maxVideoBodyBytes)
     }
 
@@ -100,6 +101,9 @@ public actor CaptureServer {
 struct CaptureHTTPHandler: HTTPHandler {
     let auth: CaptureAuth
     let routes: CaptureRoutes
+    /// The bulk-import `/jobs` handshake routes (015 · 3A), or `nil` in a build
+    /// without bulk import (every `/jobs` path then 404s).
+    let jobRoutes: JobRoutes?
     let maxBodyBytes: Int
     let maxVideoBodyBytes: Int
 
@@ -131,15 +135,19 @@ struct CaptureHTTPHandler: HTTPHandler {
         }
 
         let response: HTTPResponse
-        switch (request.method, request.path) {
-        case (.GET, "/health"):
-            response = makeResponse(.ok, cors: cors, body: CaptureResponse(status: "ok"))
-        case (.POST, "/ingest"):
-            response = try await handleImageIngest(request, cors: cors)
-        case (.POST, "/ingest-video"):
-            response = await handleVideoIngest(request, cors: cors)
-        default:
-            response = makeResponse(.notFound, cors: cors, body: .error("Not found."))
+        if path == "/jobs" || path.hasPrefix("/jobs/") {
+            response = await handleJobRequest(request, cors: cors)
+        } else {
+            switch (request.method, request.path) {
+            case (.GET, "/health"):
+                response = makeResponse(.ok, cors: cors, body: CaptureResponse(status: "ok"))
+            case (.POST, "/ingest"):
+                response = try await handleImageIngest(request, cors: cors)
+            case (.POST, "/ingest-video"):
+                response = await handleVideoIngest(request, cors: cors)
+            default:
+                response = makeResponse(.notFound, cors: cors, body: .error("Not found."))
+            }
         }
         Self.log.info(
             "\(method, privacy: .public) \(path, privacy: .public) → \(response.statusCode.code, privacy: .public)")
@@ -231,6 +239,41 @@ struct CaptureHTTPHandler: HTTPHandler {
         return url
     }
 
+    /// Dispatch a `/jobs…` request (015 · 3A). Parses the parametrized paths
+    /// (`/jobs`, `/jobs/{id}/known-sources`, `/jobs/{id}/complete`) and hands off
+    /// to the pure `JobRoutes`. Every unmatched shape (or a build without bulk
+    /// import) is a 404. Job bodies are tiny JSON, so they are buffered whole.
+    private func handleJobRequest(
+        _ request: HTTPRequest, cors: [String: String]
+    ) async -> HTTPResponse {
+        guard let jobRoutes else {
+            return makeResponse(.notFound, cors: cors, body: .error("Not found."))
+        }
+        let path = request.path
+
+        if request.method == .POST, path == "/jobs" {
+            let body = (try? await request.bodyData) ?? Data()
+            let result = await jobRoutes.handleCreateJob(body: body)
+            return makeResponse(statusCode(result.statusCode), cors: cors, job: result.response)
+        }
+
+        // /jobs/{id}/known-sources | /jobs/{id}/complete
+        let segments = path.split(separator: "/").map(String.init)
+        if segments.count == 3, segments[0] == "jobs",
+           let jobID = UUID(uuidString: segments[1]) {
+            if request.method == .GET, segments[2] == "known-sources" {
+                let result = await jobRoutes.handleKnownSources(jobID: jobID)
+                return makeResponse(statusCode(result.statusCode), cors: cors, job: result.response)
+            }
+            if request.method == .POST, segments[2] == "complete" {
+                let body = (try? await request.bodyData) ?? Data()
+                let result = await jobRoutes.handleComplete(jobID: jobID, body: body)
+                return makeResponse(statusCode(result.statusCode), cors: cors, job: result.response)
+            }
+        }
+        return makeResponse(.notFound, cors: cors, body: .error("Not found."))
+    }
+
     private func makeResponse(
         _ status: HTTPStatusCode, cors: [String: String], body: CaptureResponse?
     ) -> HTTPResponse {
@@ -245,12 +288,27 @@ struct CaptureHTTPHandler: HTTPHandler {
             statusCode: status, headers: HTTPHeaders(headers), body: data)
     }
 
+    /// Encode a bulk-import ``JobResponse`` (always present) with CORS headers —
+    /// the `/jobs` counterpart of the `CaptureResponse` `makeResponse` above.
+    private func makeResponse(
+        _ status: HTTPStatusCode, cors: [String: String], job: JobResponse
+    ) -> HTTPResponse {
+        var headers: [HTTPHeader: String] = [:]
+        for (key, value) in cors { headers[HTTPHeader(key)] = value }
+        headers[.contentType] = "application/json"
+        let data = (try? JSONEncoder().encode(job)) ?? Data()
+        return HTTPResponse(
+            statusCode: status, headers: HTTPHeaders(headers), body: data)
+    }
+
     /// Map the routes' plain Int status to a FlyingFox status code (routes stay
     /// FlyingFox-free so they're unit-testable without the transport).
     private func statusCode(_ code: Int) -> HTTPStatusCode {
         switch code {
         case 200: return .ok
+        case 201: return .created
         case 400: return .badRequest
+        case 404: return .notFound
         case 413: return .payloadTooLarge
         case 422: return .unprocessableContent
         case 500: return .internalServerError

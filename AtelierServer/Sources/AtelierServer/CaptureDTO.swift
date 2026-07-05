@@ -45,17 +45,31 @@ public struct ProvenanceDTO: Codable, Equatable, Sendable {
 
 /// The capture POST body: a base64 image, its provenance, and an optional target
 /// collection (absent ⇒ the app's default import folder).
+///
+/// `jobId` + `sourceId` are the OPTIONAL bulk-import tags (015 · 3A): when the
+/// capture is one item of a sweep, they let the server record a `job_item` in the
+/// ledger. Absent on ordinary single-item captures, so the wire is unchanged for
+/// the existing path.
 public struct CaptureRequest: Codable, Equatable, Sendable {
     /// Base64-encoded image bytes the extension already fetched in-browser.
     public var image: String
     public var provenance: ProvenanceDTO
     /// Target collection; when omitted the server routes to the default folder.
     public var collectionId: UUID?
+    /// The owning bulk-import job, when this capture is part of a sweep.
+    public var jobId: UUID?
+    /// The platform's stable item id (tweet id / pin id), for the ledger row.
+    public var sourceId: String?
 
-    public init(image: String, provenance: ProvenanceDTO, collectionId: UUID? = nil) {
+    public init(
+        image: String, provenance: ProvenanceDTO, collectionId: UUID? = nil,
+        jobId: UUID? = nil, sourceId: String? = nil
+    ) {
         self.image = image
         self.provenance = provenance
         self.collectionId = collectionId
+        self.jobId = jobId
+        self.sourceId = sourceId
     }
 }
 
@@ -67,20 +81,30 @@ public struct CaptureResponse: Codable, Equatable, Sendable {
     public var assetId: UUID?
     public var deduplicated: Bool?
     public var error: String?
+    /// The owning job's current lifecycle status, stamped ONLY on a bulk-tagged
+    /// capture's reply (7A relay feedback): when the user pauses/cancels in the app,
+    /// the next item's response carries `paused`/`halted` and the extension halts the
+    /// sweep. Absent (nil, unencoded) on ordinary single-item captures — the wire is
+    /// unchanged for the existing path.
+    public var jobStatus: String?
 
     public init(
         status: String, assetId: UUID? = nil,
-        deduplicated: Bool? = nil, error: String? = nil
+        deduplicated: Bool? = nil, error: String? = nil, jobStatus: String? = nil
     ) {
         self.status = status
         self.assetId = assetId
         self.deduplicated = deduplicated
         self.error = error
+        self.jobStatus = jobStatus
     }
 
-    public static func ingested(assetId: UUID, deduplicated: Bool) -> CaptureResponse {
+    public static func ingested(
+        assetId: UUID, deduplicated: Bool, jobStatus: String? = nil
+    ) -> CaptureResponse {
         CaptureResponse(
-            status: "ingested", assetId: assetId, deduplicated: deduplicated)
+            status: "ingested", assetId: assetId, deduplicated: deduplicated,
+            jobStatus: jobStatus)
     }
 
     public static func error(_ message: String) -> CaptureResponse {
@@ -96,19 +120,31 @@ public struct CaptureResponse: Codable, Equatable, Sendable {
 public struct VideoCaptureHeader: Codable, Equatable, Sendable {
     public var provenance: ProvenanceDTO
     public var collectionId: UUID?
+    /// The owning bulk-import job, when this capture is part of a sweep (3A).
+    public var jobId: UUID?
+    /// The platform's stable item id (tweet id / pin id), for the ledger row.
+    public var sourceId: String?
 
-    public init(provenance: ProvenanceDTO, collectionId: UUID? = nil) {
+    public init(
+        provenance: ProvenanceDTO, collectionId: UUID? = nil,
+        jobId: UUID? = nil, sourceId: String? = nil
+    ) {
         self.provenance = provenance
         self.collectionId = collectionId
+        self.jobId = jobId
+        self.sourceId = sourceId
     }
 }
 
 /// A validated capture, ready to become an ``IngestInput`` — the output of the
-/// pure `decode` step.
+/// pure `decode` step. `jobID`/`sourceID` are the optional bulk-import ledger
+/// tags (3A), carried through so the route can record a `job_item`.
 public struct DecodedCapture: Equatable, Sendable {
     public let imageData: Data
     public let provenance: SourceDraft
     public let collectionID: UUID?
+    public let jobID: UUID?
+    public let sourceID: String?
 }
 
 /// A validated **video** capture: its provenance (from the header) + target
@@ -117,6 +153,8 @@ public struct DecodedCapture: Equatable, Sendable {
 public struct DecodedVideoCapture: Equatable, Sendable {
     public let provenance: SourceDraft
     public let collectionID: UUID?
+    public let jobID: UUID?
+    public let sourceID: String?
 }
 
 /// Why a raw capture body could not be turned into a `DecodedCapture`. Each maps
@@ -175,7 +213,9 @@ public enum CaptureDecoder {
         return DecodedCapture(
             imageData: imageData,
             provenance: try makeSourceDraft(request.provenance, now: now),
-            collectionID: request.collectionId)
+            collectionID: request.collectionId,
+            jobID: request.jobId,
+            sourceID: request.sourceId)
     }
 
     /// Turn the base64-JSON provenance header of a **video** upload into a
@@ -199,7 +239,9 @@ public enum CaptureDecoder {
         }
         return DecodedVideoCapture(
             provenance: try makeSourceDraft(header.provenance, now: now),
-            collectionID: header.collectionId)
+            collectionID: header.collectionId,
+            jobID: header.jobId,
+            sourceID: header.sourceId)
     }
 
     /// Validate a wire ``ProvenanceDTO`` into a ``SourceDraft`` (shared by the

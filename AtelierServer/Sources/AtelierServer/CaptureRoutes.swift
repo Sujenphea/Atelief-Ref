@@ -38,15 +38,22 @@ public struct CaptureRoutes: Sendable {
     /// app can refresh the live UI (CQ1). Never called on the main actor by this
     /// type — the app hops as needed.
     private let onCapture: (@Sendable (UUID, [IngestOutcome]) -> Void)?
+    /// The bulk-import ledger (015 · 3A). When a capture is tagged with a `jobId`
+    /// + `sourceId`, its outcome is recorded as a `job_item`. `nil` for a build
+    /// without bulk import; recording is best-effort (a failed ledger write never
+    /// fails an already-completed ingest — the item is just re-downloadable later).
+    private let jobLedger: JobLedger?
 
     public init(
         coordinator: IngestCoordinator,
         defaultCollectionID: @escaping @Sendable () -> UUID,
-        onCapture: (@Sendable (UUID, [IngestOutcome]) -> Void)? = nil
+        onCapture: (@Sendable (UUID, [IngestOutcome]) -> Void)? = nil,
+        jobLedger: JobLedger? = nil
     ) {
         self.coordinator = coordinator
         self.defaultCollectionID = defaultCollectionID
         self.onCapture = onCapture
+        self.jobLedger = jobLedger
     }
 
     /// Ingest one captured image from a raw JSON body. `now` is the server-owned
@@ -66,7 +73,10 @@ public struct CaptureRoutes: Sendable {
             imageData: decoded.imageData,
             provenance: decoded.provenance,
             into: collectionID)
-        return await ingest(input, into: collectionID)
+        return await ingest(
+            input, into: collectionID,
+            jobID: decoded.jobID, sourceID: decoded.sourceID,
+            sourceURL: decoded.provenance.originalURL)
     }
 
     /// Ingest one captured **video** from a temp file the transport already
@@ -88,12 +98,19 @@ public struct CaptureRoutes: Sendable {
         let collectionID = decoded.collectionID ?? defaultCollectionID()
         let input = DirectInputReader.remoteVideo(
             fileURL: fileURL, provenance: decoded.provenance, into: collectionID)
-        return await ingest(input, into: collectionID)
+        return await ingest(
+            input, into: collectionID,
+            jobID: decoded.jobID, sourceID: decoded.sourceID,
+            sourceURL: decoded.provenance.originalURL)
     }
 
-    /// Run one input through the shared coordinator, fire `onCapture`, and map the
-    /// single outcome to a `HandlerResult` (image + video paths share this — DRY).
-    private func ingest(_ input: IngestInput, into collectionID: UUID) async -> HandlerResult {
+    /// Run one input through the shared coordinator, fire `onCapture`, record the
+    /// bulk ledger row (when tagged), and map the single outcome to a
+    /// `HandlerResult` (image + video paths share this — DRY).
+    private func ingest(
+        _ input: IngestInput, into collectionID: UUID,
+        jobID: UUID?, sourceID: String?, sourceURL: String?
+    ) async -> HandlerResult {
         let outcomes = await coordinator.ingest([input])
         onCapture?(collectionID, outcomes)
 
@@ -104,14 +121,56 @@ public struct CaptureRoutes: Sendable {
                 statusCode: 500, response: .error("Ingest produced no outcome."))
         }
 
+        await recordJobItem(outcome, jobID: jobID, sourceID: sourceID, sourceURL: sourceURL)
+
         switch outcome {
         case .ingested(let asset, let deduplicated):
+            // Stamp the owning job's current status so the extension halts the sweep
+            // when the user paused/cancelled in the app (7A relay feedback). Nil (and
+            // unencoded) for an untagged single-item capture.
+            let jobStatus = await currentJobStatus(jobID: jobID)
             return HandlerResult(
                 statusCode: 200,
-                response: .ingested(assetId: asset.id, deduplicated: deduplicated))
+                response: .ingested(
+                    assetId: asset.id, deduplicated: deduplicated, jobStatus: jobStatus))
         case .failed(let error):
             return HandlerResult(
                 statusCode: 422, response: .error(String(describing: error)))
         }
+    }
+
+    /// The owning job's current status string for the relay feedback (7A), or nil
+    /// for an untagged capture / when the ledger read fails (never blocks an ingest
+    /// that already happened — a missed pause just takes effect on the next item).
+    private func currentJobStatus(jobID: UUID?) async -> String? {
+        guard let jobLedger, let jobID else { return nil }
+        return try? await jobLedger.jobStatus(forJob: jobID).rawValue
+    }
+
+    /// Record one capture's outcome into the bulk ledger, when it is tagged with a
+    /// `jobID` + `sourceID` and a ledger is wired (3A). Maps the ingest outcome to
+    /// the 7A item taxonomy: a dedup → `.deduped`, a fresh ingest → `.ingested`, a
+    /// server-side ingest failure → `.permanentFailed` (the bytes were already in
+    /// hand, so this is a decode/persistence failure, not a transient fetch blip —
+    /// those are classified and retried extension-side before the POST). Best-effort:
+    /// a failed ledger write is swallowed so it can never fail an ingest that
+    /// already happened (the item just stays re-downloadable on the next sweep).
+    private func recordJobItem(
+        _ outcome: IngestOutcome, jobID: UUID?, sourceID: String?, sourceURL: String?
+    ) async {
+        guard let jobLedger, let jobID, let sourceID else { return }
+        let status: JobItemStatus
+        let blobHash: String?
+        switch outcome {
+        case .ingested(let asset, let deduplicated):
+            status = deduplicated ? .deduped : .ingested
+            blobHash = asset.blobHash
+        case .failed:
+            status = .permanentFailed
+            blobHash = nil
+        }
+        _ = try? await jobLedger.recordJobItem(
+            jobID: jobID, sourceID: sourceID, sourceURL: sourceURL,
+            status: status, blobHash: blobHash)
     }
 }

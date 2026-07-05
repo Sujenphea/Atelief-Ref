@@ -98,7 +98,9 @@ public struct CaptureAuth: Sendable {
     /// methods, so the preflight authorizes the real POST.
     public func corsHeaders(origin: String?) -> [String: String] {
         var headers = [
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            // GET covers the bulk-import `known-sources` route; its custom token
+            // header makes it a preflighted request, so GET must be allow-listed.
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers":
                 "Content-Type, \(Self.tokenHeaderName), \(CaptureDecoder.provenanceHeaderName)",
             "Access-Control-Max-Age": "600",

@@ -16,6 +16,7 @@ import AtelierIngestion
 import AtelierServer
 import CanvasRenderer
 import Combine
+import OSLog
 import SwiftUI
 
 /// A node in the display folder tree, computed from the flat `[Collection]`.
@@ -116,6 +117,24 @@ final class IngestionModel: ObservableObject {
     /// UserDefaults key persisting the capture token across launches.
     private static let captureTokenKey = "AtelierCaptureToken"
 
+    /// Ingest-timing log (16A). A stall means generating the eager thumbnail tiers
+    /// dominated the ingest — the signal to make the largest tier lazy (P16).
+    private static let ingestLog = Logger(subsystem: "so.atelier.refs", category: "ingest-timing")
+    /// Above this thumbnail-phase time (ms) we log a stall. Tuned to catch the
+    /// decode-heavy large tier without noise on ordinary small images.
+    private static let thumbnailStallMs = 250.0
+
+    /// The pipeline's timing sink: log only a thumbnail STALL (keeps the log quiet
+    /// on the common fast path + the P14 short-circuit). `@Sendable` static — no
+    /// captured state, so it's safe to hand to the off-main pipeline.
+    @Sendable private static func logIngestTiming(_ timing: IngestTiming) {
+        guard timing.thumbnailMillis >= thumbnailStallMs else { return }
+        let thumbMs = Int(timing.thumbnailMillis)
+        let totalMs = Int(timing.totalMillis)
+        let tiers = timing.tiersGenerated
+        ingestLog.notice("thumbnail stall: \(thumbMs)ms for \(tiers) tiers (total \(totalMs)ms)")
+    }
+
     /// The protected default import target (available before the Library opens).
     var unsortedFolderID: UUID { Collection.unsortedID }
 
@@ -163,7 +182,10 @@ final class IngestionModel: ObservableObject {
             let dbPath = layout.root.appendingPathComponent("library.sqlite").path
             let services = try AppServices(databasePath: dbPath)
 
-            let pipeline = IngestPipeline(store: store, services: services)
+            // Phase 8 (16A): log a thumbnail stall — the measured trigger for the
+            // P16 lazy-tier lever (added only IF a real bulk sweep shows the stall).
+            let pipeline = IngestPipeline(
+                store: store, services: services, timing: Self.logIngestTiming)
             let coordinator = IngestCoordinator(pipeline: pipeline)
             self.store = store
             self.services = services
@@ -174,7 +196,7 @@ final class IngestionModel: ObservableObject {
 
             await refreshFolders()
             loadContents(of: selectedFolderID)
-            await startCaptureEndpoint(coordinator: coordinator)
+            await startCaptureEndpoint(coordinator: coordinator, services: services)
         } catch {
             self.lastError = "Failed to open library: \(error)"
             self.status = "Failed to open library."
@@ -190,7 +212,13 @@ final class IngestionModel: ObservableObject {
     /// Captures ingest through the SAME bounded coordinator as paste/drag (no new
     /// queue), defaulting to the protected Unsorted folder when the request omits
     /// a target. `onCapture` hops to the main actor to refresh the live UI (CQ1).
-    private func startCaptureEndpoint(coordinator: IngestCoordinator) async {
+    ///
+    /// `services` doubles as the bulk-import `JobLedger` (015 · 3A): it backs the
+    /// `/jobs` handshake and records a `job_item` for every capture tagged with a
+    /// `jobId`+`sourceId`. Untagged single-item captures are unaffected.
+    private func startCaptureEndpoint(
+        coordinator: IngestCoordinator, services: AppServices
+    ) async {
         let token = loadOrCreateCaptureToken()
         self.captureToken = token
 
@@ -201,8 +229,20 @@ final class IngestionModel: ObservableObject {
                 Task { @MainActor in
                     self?.handleRemoteCapture(collectionID: collectionID, outcomes: outcomes)
                 }
-            })
-        let server = CaptureServer(auth: CaptureAuth(token: token), routes: routes)
+            },
+            jobLedger: services)
+        // The extension reads these caps at job-open instead of hardcoding (8A).
+        // `consentGranted` gates the first sweep (7A) — it reads the SAME persisted
+        // flag the in-app consent toggle writes, so the server refuses `/jobs` until
+        // the user accepts. Reads UserDefaults directly (thread-safe, no actor hop).
+        let jobRoutes = JobRoutes(
+            ledger: services,
+            caps: CapsDTO(
+                maxBodyBytes: CaptureServer.defaultMaxBodyBytes,
+                maxVideoBodyBytes: CaptureServer.defaultMaxVideoBodyBytes),
+            consentGranted: { UserDefaults.standard.bool(forKey: Self.bulkConsentKey) })
+        let server = CaptureServer(
+            auth: CaptureAuth(token: token), routes: routes, jobRoutes: jobRoutes)
         self.captureServer = server
 
         do {
@@ -248,6 +288,92 @@ final class IngestionModel: ObservableObject {
         guard !captureToken.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(captureToken, forType: .string)
+    }
+
+    // MARK: - Bulk import (sweeps) — 015 · Phase 7
+
+    /// UserDefaults key for the bulk-import consent (7A / legal framing). The
+    /// server's `/jobs` open gate reads this SAME flag, so a sweep can't start until
+    /// the user accepts in-app.
+    static let bulkConsentKey = "AtelierBulkConsentGranted"
+
+    /// Whether the user has accepted the bulk-import notice. Gates the first sweep
+    /// server-side (the `JobRoutes` consent closure reads the persisted flag).
+    @Published private(set) var bulkConsentGranted =
+        UserDefaults.standard.bool(forKey: "AtelierBulkConsentGranted")
+
+    /// The ledger's sweeps with their live per-outcome tallies (progress UI).
+    @Published private(set) var sweeps: [SweepProgress] = []
+
+    /// One sweep's progress, computed from its `Job` + `job_item` tally.
+    struct SweepProgress: Identifiable {
+        let job: Job
+        let counts: [JobItemStatus: Int]
+        var id: UUID { job.id }
+
+        /// Items whose bytes landed (fresh + dedup).
+        var ingested: Int { (counts[.ingested] ?? 0) + (counts[.deduped] ?? 0) }
+        /// Items skipped as already-known (P14).
+        var skipped: Int { counts[.skipped] ?? 0 }
+        /// Items that failed (retryable + permanent).
+        var failed: Int { (counts[.retryableFailed] ?? 0) + (counts[.permanentFailed] ?? 0) }
+        /// The extension's up-front estimate, if any.
+        var total: Int? { job.totalEstimate }
+        /// Progress fraction against the estimate, clamped — nil when unknown.
+        var fraction: Double? {
+            guard let total, total > 0 else { return nil }
+            return min(1, Double(ingested + skipped) / Double(total))
+        }
+    }
+
+    /// Accept the bulk-import notice — persist it (the server reads the same flag)
+    /// and unblock sweeps. Idempotent.
+    func grantBulkConsent() {
+        UserDefaults.standard.set(true, forKey: Self.bulkConsentKey)
+        bulkConsentGranted = true
+    }
+
+    /// Withdraw consent — the next `/jobs` open is gated again.
+    func revokeBulkConsent() {
+        UserDefaults.standard.set(false, forKey: Self.bulkConsentKey)
+        bulkConsentGranted = false
+    }
+
+    /// Reload every sweep + its per-outcome counts (the progress view polls this,
+    /// since a sweep runs in the browser and lands rows here out of band).
+    func refreshSweeps() async {
+        guard let services else { return }
+        do {
+            let jobs = try await services.listJobs()
+            var loaded: [SweepProgress] = []
+            for job in jobs {
+                let counts = (try? await services.jobItemCounts(forJob: job.id)) ?? [:]
+                loaded.append(SweepProgress(job: job, counts: counts))
+            }
+            sweeps = loaded
+        } catch {
+            lastError = Self.message(for: error)
+        }
+    }
+
+    /// Pause a running sweep. The browser loop halts on the NEXT item (it reads the
+    /// job status the ingest reply stamps — 7A relay feedback), then checkpoints.
+    func pauseSweep(_ id: UUID) { setSweepStatus(id, .paused) }
+    /// Re-open a paused sweep so a fresh browser run resumes it from its checkpoint.
+    func resumeSweep(_ id: UUID) { setSweepStatus(id, .open) }
+    /// Cancel a sweep for good (halted — the browser loop stops on the next item).
+    func cancelSweep(_ id: UUID) { setSweepStatus(id, .halted) }
+
+    private func setSweepStatus(_ id: UUID, _ status: JobStatus) {
+        guard let services else { return }
+        Task {
+            do {
+                try await services.setJobStatus(jobID: id, to: status)
+                await refreshSweeps()
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
     }
 
     // MARK: - Folder actions
