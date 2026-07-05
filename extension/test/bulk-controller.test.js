@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { runBulkSweep } from "../src/bulk-controller.js";
+import { runBulkSweep, sweepCheckpointKey } from "../src/bulk-controller.js";
 import { BULK } from "../src/bulk-messages.js";
 
 function item(sourceId, videoUrl = null) {
@@ -116,4 +116,86 @@ test("runBulkSweep: relays a resolved MP4 only when resolveVideo is opt-in", asy
   await runBulkSweep(
     { platform: "twitter", input: {} }, { transport, driver: driver2, ...engineOpts }); // resolveVideo false
   assert.deepEqual(seen, [null]); // poster only
+});
+
+// MARK: - Stable checkpoint key (cross-run resume)
+
+/** A `{ load, save, remove }` store that records every call, seeded with `initial`. */
+function fakeStorage(initial = {}) {
+  const store = { ...initial };
+  const calls = { load: [], save: [], remove: [] };
+  return {
+    store, calls,
+    async load(key) { calls.load.push(key); return store[key] ?? null; },
+    async save(key, value) { calls.save.push({ key, value }); store[key] = value; },
+    async remove(key) { calls.remove.push(key); delete store[key]; },
+  };
+}
+
+/** A driver that records the resume cursor its `enumerate` was invoked with. */
+function recordingDriver(items) {
+  const seen = {};
+  return {
+    seen,
+    enumerate: (_input, opts) => {
+      seen.cursor = opts ? opts.cursor : undefined;
+      return (async function* () { for (const it of items) yield it; })();
+    },
+  };
+}
+
+test("sweepCheckpointKey: boardId wins, then scope, then a platform default", () => {
+  assert.equal(
+    sweepCheckpointKey({ platform: "pinterest", input: { boardId: "B" }, scope: "s" }),
+    "atelier:bulk:pinterest:B");
+  assert.equal(
+    sweepCheckpointKey({ platform: "twitter", scope: "bookmarks" }),
+    "atelier:bulk:twitter:bookmarks");
+  assert.equal(sweepCheckpointKey({ platform: "pinterest" }), "atelier:bulk:pinterest:default");
+});
+
+test("runBulkSweep: checkpoints under the STABLE key (not jobId), cleared on complete", async () => {
+  const { transport } = fakeTransport();
+  const driver = driverOf([item("a"), item("b")]);
+  const storage = fakeStorage();
+
+  const result = await runBulkSweep(
+    { platform: "pinterest", input: { boardId: "B7" }, scope: "board:x" },
+    { transport, driver, storage, ...engineOpts });
+
+  assert.equal(result.status, "complete");
+  const key = "atelier:bulk:pinterest:B7";                  // boardId, not "JOB-9"
+  assert.ok(storage.calls.save.length > 0);
+  assert.ok(storage.calls.save.every((c) => c.key === key));
+  assert.ok(!storage.calls.save.some((c) => c.key.includes("JOB-9")));
+  assert.deepEqual(storage.calls.remove, [key]);            // cleared on clean finish
+  assert.equal(storage.store[key], undefined);
+});
+
+test("runBulkSweep: resumes enumeration from the saved cursor under the stable key", async () => {
+  const { transport } = fakeTransport();
+  const driver = recordingDriver([item("a")]);
+  const key = "atelier:bulk:pinterest:B7";
+  const storage = fakeStorage({ [key]: { cursor: "CUR-9", counts: {} } });
+
+  await runBulkSweep(
+    { platform: "pinterest", input: { boardId: "B7" }, scope: "board:x" },
+    { transport, driver, storage, ...engineOpts });
+
+  assert.equal(driver.seen.cursor, "CUR-9");                // read back, not stranded
+});
+
+test("runBulkSweep: a halt KEEPS the checkpoint so the next run resumes", async () => {
+  const { transport } = fakeTransport({ relayFor: () => ({ status: "unreachable" }) });
+  const driver = driverOf([item("a")]);
+  const key = "atelier:bulk:pinterest:B7";
+  const storage = fakeStorage({ [key]: { cursor: "CUR-prev" } });
+
+  const result = await runBulkSweep(
+    { platform: "pinterest", input: { boardId: "B7" } },
+    { transport, driver, storage, ...engineOpts });
+
+  assert.equal(result.status, "halted");
+  assert.deepEqual(storage.calls.remove, []);               // NOT cleared — resumable
+  assert.ok(storage.store[key] != null);                    // a checkpoint remains
 });

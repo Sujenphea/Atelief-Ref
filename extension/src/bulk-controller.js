@@ -36,6 +36,12 @@ export async function runBulkSweep(spec, {
   const { jobId, caps } = await transport({ type: BULK.open, platform, scope, totalEstimate });
   const knownSet = new Set(await transport({ type: BULK.known, jobId }));
 
+  // Checkpoint under a STABLE per-target key (the board / bookmarks-set), NOT the
+  // jobId — every run opens a fresh job, so a jobId-scoped key would strand the
+  // saved cursor and force a full re-enumeration on resume. Keyed this way, a
+  // killed run's cursor is exactly what the next run reads back.
+  const checkpointKey = sweepCheckpointKey({ platform, scope, input });
+
   // Relay each item to the SW (only it can reach localhost); classify its result
   // into the engine's outcome taxonomy. Video is opt-in — the resolved MP4 lives in
   // the mapped provenance, so no extra network call is needed to find it.
@@ -51,7 +57,7 @@ export async function runBulkSweep(spec, {
   };
 
   const result = await runSweep(driver, input, {
-    relay, knownSet, storage, checkpointKey: `atelier:bulk:${jobId}`,
+    relay, knownSet, storage, checkpointKey,
     config, onProgress, sleep, random, log,
   });
 
@@ -62,7 +68,20 @@ export async function runBulkSweep(spec, {
     status: result.status === "halted" ? "halted" : "complete",
   });
 
+  // A clean finish clears the checkpoint so a later re-sweep starts fresh (and picks
+  // up items added since); a halt KEEPS it so the next run resumes from the cursor.
+  if (result.status !== "halted" && storage && storage.remove) {
+    await storage.remove(checkpointKey);
+  }
+
   return { jobId, caps, ...result };
+}
+
+/** A stable per-target checkpoint key: the same board / bookmarks-set resumes across
+ * runs. Prefers the concrete board id, falls back to the scope, then the platform. */
+export function sweepCheckpointKey({ platform, scope = null, input = null }) {
+  const target = (input && input.boardId) || scope || "default";
+  return `atelier:bulk:${platform}:${target}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,11 +98,12 @@ export function makeRuntimeTransport(sendMessage) {
   };
 }
 
-/** A `{ load, save }` checkpoint store over `chrome.storage.local`. */
+/** A `{ load, save, remove }` checkpoint store over `chrome.storage.local`. */
 export function makeChromeStorage(area) {
   return {
     async load(key) { return (await area.get(key))[key] ?? null; },
     async save(key, value) { await area.set({ [key]: value }); },
+    async remove(key) { await area.remove(key); },
   };
 }
 
