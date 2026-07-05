@@ -73,11 +73,16 @@ export function classifyIngestResult(result) {
   switch (result && result.status) {
     case "saved": {
       // The item ingested — but if the app reports the job paused/cancelled (7A
-      // relay feedback), record it and then HALT the sweep after this item.
-      const paused = result.jobStatus === "paused" || result.jobStatus === "halted";
+      // relay feedback), record it and then HALT the sweep after this item. Surface
+      // WHICH status the app set (paused vs halted/cancel) so the caller can close the
+      // ledger correctly: a Pause must stay resumable, an explicit Cancel terminal.
+      const app =
+        result.jobStatus === "paused" || result.jobStatus === "halted"
+          ? result.jobStatus : null;
       return {
         outcome: result.deduplicated ? OUTCOMES.deduped : OUTCOMES.ingested,
-        signal: paused ? "halt" : "continue",
+        signal: app ? "halt" : "continue",
+        appStatus: app,
       };
     }
     case "unreachable":
@@ -156,6 +161,7 @@ export async function runSweep(driver, input, {
   let committedCursor = startCursor;
   let lastSavedSeq = -1;
   let halting = false;
+  let appHaltStatus = null;      // "paused" | "halted" if the app (7A) halted us
   let nextSeq = 0;
   let iterDone = false;
   let enumerationError = null;
@@ -230,9 +236,9 @@ export async function runSweep(driver, input, {
                                                  // resume re-enumerates it.
       await pace();
 
-      let outcome, signal;
+      let outcome, signal, appStatus;
       try {
-        ({ outcome, signal = "continue" } = await relay(item, { attempt }));
+        ({ outcome, signal = "continue", appStatus = null } = await relay(item, { attempt }));
       } catch (error) {
         // A relay that THROWS (rather than returning an outcome) is treated as a
         // transient fault — requeue with backoff like any retryableFailed.
@@ -253,7 +259,10 @@ export async function runSweep(driver, input, {
         knownSet.add(item.sourceId);               // dedup a repeat later this sweep
       }
       await record(outcome, seq, item.cursor);
-      if (signal === "halt") halting = true;       // [C7] fatal wall → pause sweep
+      if (signal === "halt") {                      // [C7] fatal wall / [7A] app halt
+        halting = true;
+        if (appStatus) appHaltStatus = appStatus;   // remember Pause vs Cancel intent
+      }
       return;
     }
   }
@@ -273,6 +282,10 @@ export async function runSweep(driver, input, {
 
   return {
     status: halting ? "halted" : "complete",
+    // Why it halted, so the caller closes the ledger correctly: "halted" (app Cancel)
+    // is terminal; "paused" (app Pause) and null (a wall/unreachable self-halt) are
+    // both resumable. Only meaningful when status === "halted".
+    haltStatus: appHaltStatus,
     cursor: committedCursor,
     counts: { ...counts },
     error: enumerationError ? String(enumerationError) : null,

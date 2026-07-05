@@ -61,16 +61,22 @@ export async function runBulkSweep(spec, {
     config, onProgress, sleep, random, log,
   });
 
-  // Map the engine's terminal state to the ledger close status (7A): a halt pauses
-  // the job (resumable); a clean finish completes it.
-  await transport({
-    type: BULK.complete, jobId,
-    status: result.status === "halted" ? "halted" : "complete",
-  });
+  // Map the engine's terminal state to the ledger close status (7A). A clean finish
+  // completes. A halt is RESUMABLE (→ paused) — a user Pause or a wall/unreachable
+  // self-halt — UNLESS the app explicitly Cancelled the job (haltStatus "halted"),
+  // which stays terminal. (The old code always sent "halted", clobbering a Pause into
+  // a non-resumable "Stopped" job; the server's /complete accepts "paused" for exactly
+  // this.)
+  const cancelled = result.haltStatus === "halted";
+  const closeStatus =
+    result.status !== "halted" ? "complete" : (cancelled ? "halted" : "paused");
+  await transport({ type: BULK.complete, jobId, status: closeStatus });
 
-  // A clean finish clears the checkpoint so a later re-sweep starts fresh (and picks
-  // up items added since); a halt KEEPS it so the next run resumes from the cursor.
-  if (result.status !== "halted" && storage && storage.remove) {
+  // Clear the checkpoint on a TERMINAL close — a clean finish or an explicit Cancel —
+  // so a later re-sweep starts fresh (page 1, picking up items added since). Keep it
+  // only for a RESUMABLE halt (Pause / wall) so the next run continues from the cursor.
+  const resumable = result.status === "halted" && !cancelled;
+  if (!resumable && storage && storage.remove) {
     await storage.remove(checkpointKey);
   }
 

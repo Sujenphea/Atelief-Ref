@@ -70,18 +70,20 @@ test("runBulkSweep: opens, skips known, relays the rest, completes", async () =>
   assert.equal(complete.status, "complete");
 });
 
-test("runBulkSweep: an unreachable relay halts and closes the job as halted", async () => {
+test("runBulkSweep: an unreachable (wall) self-halt closes the job as PAUSED (resumable)", async () => {
   const { transport, messages } = fakeTransport({ relayFor: () => ({ status: "unreachable" }) });
   const driver = driverOf([item("a"), item("b")]);
 
   const result = await runBulkSweep(
     { platform: "pinterest", input: {} }, { transport, driver, ...engineOpts });
 
-  assert.equal(result.status, "halted");
-  assert.equal(messages.find((m) => m.type === BULK.complete).status, "halted");
+  assert.equal(result.status, "halted");            // engine terminal state
+  assert.equal(result.haltStatus, null);            // self-halt, not an app Cancel
+  // No app Cancel → the ledger closes resumable, not "Stopped".
+  assert.equal(messages.find((m) => m.type === BULK.complete).status, "paused");
 });
 
-test("runBulkSweep: an app-side pause (jobStatus on the relay reply) halts the sweep", async () => {
+test("runBulkSweep: an app-side PAUSE closes the job as paused (resumable), not halted", async () => {
   const relayed = [];
   const { transport, messages } = fakeTransport({
     relayFor: (id) => {
@@ -96,8 +98,30 @@ test("runBulkSweep: an app-side pause (jobStatus on the relay reply) halts the s
     { platform: "pinterest", input: {} }, { transport, driver, ...engineOpts });
 
   assert.equal(result.status, "halted");           // honored the pause
+  assert.equal(result.haltStatus, "paused");       // the app's Pause intent surfaced
   assert.deepEqual(relayed, ["a"]);                // stopped after the first item
-  assert.equal(messages.find((m) => m.type === BULK.complete).status, "halted");
+  // The load-bearing fix: a Pause must close RESUMABLE, or the UI shows a dead
+  // "Stopped" job with no Resume button.
+  assert.equal(messages.find((m) => m.type === BULK.complete).status, "paused");
+});
+
+test("runBulkSweep: an app-side CANCEL closes the job as halted (terminal)", async () => {
+  const relayed = [];
+  const { transport, messages } = fakeTransport({
+    relayFor: (id) => {
+      relayed.push(id);
+      // The app CANCELLED after the first item: its reply carries jobStatus "halted".
+      return { status: "saved", deduplicated: false, jobStatus: relayed.length >= 1 ? "halted" : "open" };
+    },
+  });
+  const driver = driverOf([item("a"), item("b"), item("c")]);
+
+  const result = await runBulkSweep(
+    { platform: "pinterest", input: {} }, { transport, driver, ...engineOpts });
+
+  assert.equal(result.status, "halted");
+  assert.equal(result.haltStatus, "halted");       // explicit Cancel intent
+  assert.equal(messages.find((m) => m.type === BULK.complete).status, "halted"); // stays terminal
 });
 
 test("runBulkSweep: relays a resolved MP4 only when resolveVideo is opt-in", async () => {
@@ -185,7 +209,7 @@ test("runBulkSweep: resumes enumeration from the saved cursor under the stable k
   assert.equal(driver.seen.cursor, "CUR-9");                // read back, not stranded
 });
 
-test("runBulkSweep: a halt KEEPS the checkpoint so the next run resumes", async () => {
+test("runBulkSweep: a RESUMABLE halt (wall/pause) KEEPS the checkpoint so the next run resumes", async () => {
   const { transport } = fakeTransport({ relayFor: () => ({ status: "unreachable" }) });
   const driver = driverOf([item("a")]);
   const key = "atelier:bulk:pinterest:B7";
@@ -196,6 +220,29 @@ test("runBulkSweep: a halt KEEPS the checkpoint so the next run resumes", async 
     { transport, driver, storage, ...engineOpts });
 
   assert.equal(result.status, "halted");
+  assert.equal(result.haltStatus, null);                    // self-halt → resumable
   assert.deepEqual(storage.calls.remove, []);               // NOT cleared — resumable
   assert.ok(storage.store[key] != null);                    // a checkpoint remains
+});
+
+test("runBulkSweep: an app CANCEL CLEARS the checkpoint (terminal — a re-sweep starts fresh)", async () => {
+  const relayed = [];
+  const { transport } = fakeTransport({
+    relayFor: (id) => {
+      relayed.push(id);
+      return { status: "saved", deduplicated: false, jobStatus: relayed.length >= 1 ? "halted" : "open" };
+    },
+  });
+  const driver = driverOf([item("a"), item("b")]);
+  const key = "atelier:bulk:pinterest:B7";
+  const storage = fakeStorage({ [key]: { cursor: "CUR-prev" } });
+
+  const result = await runBulkSweep(
+    { platform: "pinterest", input: { boardId: "B7" } },
+    { transport, driver, storage, ...engineOpts });
+
+  assert.equal(result.status, "halted");
+  assert.equal(result.haltStatus, "halted");                // explicit Cancel
+  assert.deepEqual(storage.calls.remove, [key]);            // cleared — terminal
+  assert.equal(storage.store[key], undefined);
 });

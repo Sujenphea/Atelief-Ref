@@ -250,10 +250,26 @@ test("fatal halt: a halt signal pauses the sweep; later items are not relayed", 
   const result = await runSweep(driver, "in", opts);
 
   assert.equal(result.status, "halted");
+  assert.equal(result.haltStatus, null);           // a self-halt, not an app intent
   assert.deepEqual(relayed, ["a", "b"]);           // "c" never reached
   assert.equal(result.counts.ingested, 1);
   assert.equal(result.counts.retryableFailed, 1);  // the halting item is recorded
   assert.equal(result.cursor, "cur-b");
+});
+
+test("app halt: runSweep surfaces the relay's appStatus (paused vs cancel) as haltStatus", async () => {
+  const { driver } = driverFrom([item("a"), item("b")]);
+  // The relay reports the app PAUSED after the first item (7A feedback).
+  const relay = async (it) =>
+    it.sourceId === "a"
+      ? { outcome: OUTCOMES.ingested, signal: "halt", appStatus: "paused" }
+      : { outcome: OUTCOMES.ingested };
+  const { opts } = serialOpts({ relay });
+
+  const result = await runSweep(driver, "in", opts);
+
+  assert.equal(result.status, "halted");
+  assert.equal(result.haltStatus, "paused");       // surfaced for a resumable close
 });
 
 test("fatal halt: a halt outcome is NOT retried even with retry budget left", async () => {
@@ -352,9 +368,9 @@ test("onProgress reports cumulative counts after each terminal item", async () =
 
 test("classifyIngestResult maps every ingestOne status", () => {
   assert.deepEqual(classifyIngestResult({ status: "saved", deduplicated: false }),
-    { outcome: OUTCOMES.ingested, signal: "continue" });
+    { outcome: OUTCOMES.ingested, signal: "continue", appStatus: null });
   assert.deepEqual(classifyIngestResult({ status: "saved", deduplicated: true }),
-    { outcome: OUTCOMES.deduped, signal: "continue" });
+    { outcome: OUTCOMES.deduped, signal: "continue", appStatus: null });
   assert.deepEqual(classifyIngestResult({ status: "unreachable" }),
     { outcome: OUTCOMES.retryableFailed, signal: "halt" });
   assert.deepEqual(classifyIngestResult({ status: "fetch-error" }),
@@ -367,11 +383,12 @@ test("classifyIngestResult maps every ingestOne status", () => {
 });
 
 test("classifyIngestResult halts on an app-side pause/cancel (jobStatus relay feedback)", () => {
-  // The item still ingests, but the sweep halts after it.
+  // The item still ingests, but the sweep halts after it — and surfaces WHICH app
+  // intent (paused vs halted/cancel) so the controller closes the ledger correctly.
   assert.deepEqual(classifyIngestResult({ status: "saved", deduplicated: false, jobStatus: "paused" }),
-    { outcome: OUTCOMES.ingested, signal: "halt" });
+    { outcome: OUTCOMES.ingested, signal: "halt", appStatus: "paused" });
   assert.deepEqual(classifyIngestResult({ status: "saved", deduplicated: true, jobStatus: "halted" }),
-    { outcome: OUTCOMES.deduped, signal: "halt" });
+    { outcome: OUTCOMES.deduped, signal: "halt", appStatus: "halted" });
   // An open/complete job (or no status) keeps going.
   assert.equal(classifyIngestResult({ status: "saved", deduplicated: false, jobStatus: "open" }).signal, "continue");
   assert.equal(classifyIngestResult({ status: "saved", deduplicated: false }).signal, "continue");
