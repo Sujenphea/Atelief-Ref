@@ -7,21 +7,8 @@
 
 import {
   hostname, hostIs, firstMeta, pathSegments, liveURL, firstPostURL, firstMedia,
-  firstMediaOfKind, ogImage,
+  firstMediaOfKind, ogImage, toOrigName,
 } from "./base.js";
-
-/** Rewrite a pbs.twimg media URL to original resolution (`name=orig`). */
-function fullResolution(src) {
-  if (!src) return null;
-  if (src.startsWith("data:")) return src; // a captured video frame — already full res
-  try {
-    const url = new URL(src);
-    if (url.searchParams.has("name")) url.searchParams.set("name", "orig");
-    return url.toString();
-  } catch {
-    return src;
-  }
-}
 
 export const twitter = {
   platform: "twitter",
@@ -51,7 +38,7 @@ export const twitter = {
     const videoPoster =
       firstMedia(harvest, /pbs\.twimg\.com\/(ext_tw_video_thumb|amplify_video_thumb|tweet_video_thumb)/)?.src || null;
     const rendered = clicked || domPhoto || videoFrame || videoPoster;
-    const mediaUrl = fullResolution(rendered) || ogImage(harvest);
+    const mediaUrl = toOrigName(rendered) || ogImage(harvest);
     // When the frame won: the poster is the network fallback. Otherwise: the
     // un-rewritten original (in case `name=orig` is rejected).
     const mediaUrlFallback =

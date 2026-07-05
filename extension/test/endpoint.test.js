@@ -151,6 +151,34 @@ test("buildProvenanceHeader → base64 of VideoCaptureHeader JSON ({ provenance 
   assert.equal("mediaKind" in decoded.provenance, false);
 });
 
+// MARK: - bulk-import tags (3A)
+
+test("buildCaptureRequest omits jobId/sourceId when not part of a sweep", async () => {
+  const request = buildCaptureRequest({ platform: "web" }, "B64");
+  assert.equal("jobId" in request, false);
+  assert.equal("sourceId" in request, false);
+});
+
+test("buildCaptureRequest includes jobId/sourceId when tagged (bulk)", async () => {
+  const request = buildCaptureRequest({ platform: "pinterest" }, "B64", {
+    jobId: "11111111-1111-1111-1111-111111111111", sourceId: "pin-7",
+  });
+  assert.equal(request.jobId, "11111111-1111-1111-1111-111111111111");
+  assert.equal(request.sourceId, "pin-7");
+  assert.equal(request.image, "B64");
+});
+
+test("buildProvenanceHeader carries jobId/sourceId when tagged (video, bulk)", async () => {
+  const header = buildProvenanceHeader({ platform: "twitter" }, { jobId: "job-1", sourceId: "t-9" });
+  const decoded = JSON.parse(Buffer.from(header, "base64").toString("utf8"));
+  assert.equal(decoded.jobId, "job-1");
+  assert.equal(decoded.sourceId, "t-9");
+  // Untagged → neither key present.
+  const plain = JSON.parse(Buffer.from(buildProvenanceHeader({ platform: "twitter" }), "base64").toString("utf8"));
+  assert.equal("jobId" in plain, false);
+  assert.equal("sourceId" in plain, false);
+});
+
 test("postVideoCapture sends octet-stream body + token + provenance headers", async () => {
   let seen;
   const fakeFetch = async (url, init) => {

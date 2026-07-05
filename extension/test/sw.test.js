@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { captureCore, fetchImage, presentation, downloadAndIngestVideo } from "../src/sw.js";
+import { captureCore, ingestOne, fetchImage, presentation, downloadAndIngestVideo } from "../src/sw.js";
 
 const PROV = {
   platform: "twitter",
@@ -125,6 +125,51 @@ test("fetchImage throws (all candidates fail) → fetch-error", async () => {
   const r = await captureCore({}, {}, "tok", deps);
   assert.equal(r.status, "fetch-error");
   assert.match(r.message, /HTTP 404/);
+});
+
+// MARK: - ingestOne (the shared tail, 5A) — the bulk engine reuses this directly
+
+test("ingestOne: image path posts and returns saved", async () => {
+  const { deps } = makeDeps();
+  const r = await ingestOne(PROV, { token: "tok" }, deps);
+  assert.deepEqual(r, { status: "saved", kind: "image", deduplicated: false });
+});
+
+test("ingestOne: a given mp4Url ingests as video (no harvest/context needed)", async () => {
+  const { deps } = makeDeps({
+    downloadAndIngestVideo: async () => ({ deduplicated: true }),
+  });
+  const r = await ingestOne(PROV, { token: "tok", mp4Url: "https://v/x.mp4" }, deps);
+  assert.deepEqual(r, { status: "saved", kind: "video", deduplicated: true });
+});
+
+test("ingestOne: forwards jobId/sourceId to buildCaptureRequest (bulk tagging)", async () => {
+  let seen = null;
+  const { deps } = makeDeps({
+    buildCaptureRequest: (p, b, opts) => { seen = opts; return { image: b, provenance: p }; },
+  });
+  await ingestOne(PROV, { token: "tok", jobId: "job-1", sourceId: "pin-7" }, deps);
+  assert.deepEqual(seen, { jobId: "job-1", sourceId: "pin-7" });
+});
+
+test("ingestOne: surfaces the reply's jobStatus (bulk relay feedback), omits it otherwise", async () => {
+  const withStatus = makeDeps({
+    postCapture: async () => ({ status: 200, body: { deduplicated: false, jobStatus: "paused" } }),
+  });
+  const paused = await ingestOne(PROV, { token: "tok", jobId: "j", sourceId: "s" }, withStatus.deps);
+  assert.equal(paused.jobStatus, "paused");
+  // An untagged/open capture carries no jobStatus key.
+  const plain = await ingestOne(PROV, { token: "tok" }, makeDeps().deps);
+  assert.equal("jobStatus" in plain, false);
+});
+
+test("ingestOne: a resolved video that fails to ingest falls back to the image (loud log)", async () => {
+  const { deps, calls } = makeDeps({
+    downloadAndIngestVideo: async () => { throw new Error("ingest 500"); },
+  });
+  const r = await ingestOne(PROV, { token: "tok", mp4Url: "https://v/x.mp4" }, deps);
+  assert.equal(r.kind, "image");
+  assert.equal(calls.logError.length, 1);
 });
 
 // MARK: - presentation

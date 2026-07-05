@@ -7,14 +7,9 @@
 // `/originals/` with the rendered size kept as a fetch fallback.
 
 import {
-  hostname, hostIs, firstMeta, pathSegments, liveURL, firstPostURL, largestMedia, ogImage,
+  hostname, hostIs, firstMeta, pathSegments, liveURL, firstPostURL, largestMedia,
+  ogImage, toOriginals,
 } from "./base.js";
-
-/** Rewrite an i.pinimg sized path (…/474x/…) to full resolution (…/originals/…). */
-function fullResolution(src) {
-  if (!src) return null;
-  return src.replace(/i\.pinimg\.com\/\d+x(?:\d+)?\//, "i.pinimg.com/originals/");
-}
 
 export const pinterest = {
   platform: "pinterest",
@@ -38,7 +33,7 @@ export const pinterest = {
     // (s.pinimg.com share logos are excluded by the host pattern.)
     const clicked = /i\.pinimg\.com/.test(context.srcUrl || "") ? context.srcUrl : null;
     const rendered = clicked || largestMedia(harvest, /i\.pinimg\.com/)?.src || null;
-    const mediaUrl = fullResolution(rendered) || ogImage(harvest);
+    const mediaUrl = toOriginals(rendered) || ogImage(harvest);
     // `/originals/` can 404 (Pinterest doesn't always keep an original); the
     // rendered size is guaranteed loadable, so hand it back as a fetch fallback.
     const mediaUrlFallback = rendered && mediaUrl !== rendered ? rendered : null;

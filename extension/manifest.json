@@ -6,8 +6,11 @@
   "permissions": ["activeTab", "scripting", "storage", "contextMenus"],
   "host_permissions": [
     "http://127.0.0.1/*",
+    "*://*.x.com/*",
+    "*://*.twitter.com/*",
     "*://*.twimg.com/*",
     "*://*.pinterest.com/*",
+    "*://*.pinterest.co.uk/*",
     "*://*.pinimg.com/*",
     "*://*.cdninstagram.com/*",
     "*://*.fbcdn.net/*",
@@ -17,6 +20,26 @@
     "service_worker": "src/sw.js",
     "type": "module"
   },
+  "content_scripts": [
+    {
+      "matches": ["*://*.x.com/*", "*://*.twitter.com/*"],
+      "js": ["src/twitter-hook.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["*://*.x.com/*", "*://*.twitter.com/*", "*://*.pinterest.com/*", "*://*.pinterest.co.uk/*"],
+      "js": ["src/bulk-loader.js"],
+      "world": "ISOLATED",
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["src/*.js"],
+      "matches": ["*://*.x.com/*", "*://*.twitter.com/*", "*://*.pinterest.com/*", "*://*.pinterest.co.uk/*"]
+    }
+  ],
   "action": {
     "default_title": "Save to Atelier"
   },

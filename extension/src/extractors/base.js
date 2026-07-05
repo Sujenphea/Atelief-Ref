@@ -87,6 +87,64 @@ export function ogImage(harvest) {
   return firstMeta(harvest, ["og:image", "og:image:url", "twitter:image"]);
 }
 
+/** Rewrite a pbs.twimg media URL to original resolution (`name=orig`). Shared by
+ * the Twitter DOM extractor AND the bulk tweet→provenance mapper (decision 6A) —
+ * the resolution rule lives once. A `data:` src (a captured video frame) is
+ * already full-res, so it's returned unchanged; an unparseable src is passed back.
+ *
+ * The DOM extractor (default) only rewrites a URL that ALREADY carries a `name=`
+ * param — a bare URL is left alone. The bulk mapper passes `{ addIfAbsent: true }`
+ * because X's timeline JSON gives a BARE `media_url_https` (no query) and we still
+ * want to request the original, so `name=orig` is ADDED. */
+export function toOrigName(src, { addIfAbsent = false } = {}) {
+  if (!src) return null;
+  if (src.startsWith("data:")) return src;
+  try {
+    const url = new URL(src);
+    if (url.searchParams.has("name") || addIfAbsent) url.searchParams.set("name", "orig");
+    return url.toString();
+  } catch {
+    return src;
+  }
+}
+
+/** Rewrite an i.pinimg sized path (…/474x/…) to full resolution (…/originals/…).
+ * Shared by the Pinterest DOM extractor AND the bulk pin→provenance mapper (6A). */
+export function toOriginals(src) {
+  if (!src) return null;
+  return src.replace(/i\.pinimg\.com\/\d+x(?:\d+)?\//, "i.pinimg.com/originals/");
+}
+
+/**
+ * Build a normalized `Provenance` (decision 6A) — the one shape both the single-
+ * item DOM extractors and the bulk JSON mappers emit, so the app decodes an
+ * identical `SourceDraft` no matter the capture path. Every optional field
+ * defaults to `null` (and `rawMetadata` to `{}`), so a caller passes only what it
+ * has and the wire shape is always complete. `platform` + `mediaUrl` are the load-
+ * bearing fields; the rest is provenance the app stores but doesn't require.
+ */
+export function makeProvenance({
+  platform,
+  originalURL = null,
+  mediaUrl = null,
+  mediaUrlFallback = null,
+  authorHandle = null,
+  authorName = null,
+  title = null,
+  rawMetadata = {},
+} = {}) {
+  return {
+    platform,
+    originalURL,
+    mediaUrl,
+    mediaUrlFallback,
+    authorHandle,
+    authorName,
+    title,
+    rawMetadata: rawMetadata || {},
+  };
+}
+
 /** Harvested DOM media (always an array). */
 export function mediaList(harvest) {
   return Array.isArray(harvest.media) ? harvest.media : [];

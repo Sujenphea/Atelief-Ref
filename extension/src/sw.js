@@ -29,13 +29,13 @@ import {
   resolvePinterestVideo, shouldResolveVideo as pinterestHasVideo,
 } from "./pinterest-video.js";
 import { fetchWithTimeout } from "./net.js";
+import { MAX_VIDEO_BYTES } from "./config.js";
+import { isBulkMessage } from "./bulk-messages.js";
+import { handleBulkMessage } from "./bulk-sw.js";
+import { openJob, fetchKnownSources, completeJob } from "./bulk-endpoint.js";
 
 const TOKEN_KEY = "atelierToken";
 const B64_CHUNK = 0x8000; // 32 KB per String.fromCharCode.apply — see bytesToBase64
-// Mirror of the server's video cap (CaptureServer.defaultMaxVideoBodyBytes). A
-// client-side early-out via Content-Length so a doomed huge MP4 isn't downloaded
-// in full before the server's 413. Kept in sync with AtelierServer by hand.
-const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Core (pure / injectable — no chrome.*), unit-tested.
@@ -91,7 +91,9 @@ export async function fetchImage(urls, { fetchImpl = fetch } = {}) {
  * `{ deduplicated }`; THROWS on any failure so the caller can fall back to the
  * poster image. The body is a `Blob` (browser-backed, streamed on send) so the
  * whole clip never sits in the JS heap. A non-200 ingest also throws. */
-export async function downloadAndIngestVideo(provenance, mp4Url, token, { fetchImpl = fetch } = {}) {
+export async function downloadAndIngestVideo(
+  provenance, mp4Url, token, { fetchImpl = fetch, jobId = null, sourceId = null } = {}
+) {
   const response = await fetchWithTimeout(mp4Url, {}, { fetchImpl });
   if (!response.ok) throw new Error(`video HTTP ${response.status} for ${mp4Url}`);
   const contentType = response.headers.get("content-type") || "";
@@ -108,7 +110,7 @@ export async function downloadAndIngestVideo(provenance, mp4Url, token, { fetchI
   const blob = await response.blob();
   const { status, body } = await postVideoCapture(blob, {
     token,
-    provenanceHeader: buildProvenanceHeader(provenance),
+    provenanceHeader: buildProvenanceHeader(provenance, { jobId, sourceId }),
   });
   if (status !== 200) throw new Error(body.error || `ingest HTTP ${status}`);
   return { deduplicated: !!body.deduplicated };
@@ -141,6 +143,10 @@ export async function captureCore(harvest, context, token, deps = defaultDeps) {
   if (!provenance.mediaUrl) return { status: "no-image" };
   if (!token) return { status: "no-token" };
 
+  // Video DETECTION + resolution is single-item-specific: it reads harvest/context
+  // (the bulk engine resolves video from structured JSON instead). A failure here
+  // is EXPECTED (not a video / the platform API changed) → quiet log, fall through.
+  // The resolved mp4Url (or null) is handed to the shared ingestOne tail.
   let mp4Url = null;
   try {
     if (deps.twitterHasVideo(provenance, context)) {
@@ -152,9 +158,28 @@ export async function captureCore(harvest, context, token, deps = defaultDeps) {
     deps.log("no video / resolution failed → image fallback:", String(error));
     mp4Url = null;
   }
+
+  return ingestOne(provenance, { token, mp4Url }, deps);
+}
+
+/**
+ * The shared ingest TAIL (decision 5A): given a `provenance` and an already-
+ * resolved optional `mp4Url`, fetch the media bytes in the authenticated session
+ * and POST to the app — the SAME path single-item capture and the bulk engine both
+ * use. `jobId`+`sourceId` (bulk, 3A) tag the POST so the app records a job_item;
+ * single-item capture omits them. Fail-OPEN on video: a RESOLVED video that then
+ * fails to download/ingest is UNEXPECTED → loud log, then falls back to the still
+ * image, so a capture is never worse than before. Pure/injectable — no chrome.*.
+ */
+export async function ingestOne(
+  provenance,
+  { token, mp4Url = null, jobId = null, sourceId = null } = {},
+  deps = defaultDeps
+) {
   if (mp4Url) {
     try {
-      const { deduplicated } = await deps.downloadAndIngestVideo(provenance, mp4Url, token);
+      const { deduplicated } = await deps.downloadAndIngestVideo(
+        provenance, mp4Url, token, { jobId, sourceId });
       return { status: "saved", kind: "video", deduplicated };
     } catch (error) {
       // A resolved video should normally ingest — log loudly, but still fall back.
@@ -171,11 +196,15 @@ export async function captureCore(harvest, context, token, deps = defaultDeps) {
     return { status: "fetch-error", message: `Could not fetch the image (${String(error)}).` };
   }
 
-  const request = deps.buildCaptureRequest(provenance, fetched.base64);
+  const request = deps.buildCaptureRequest(provenance, fetched.base64, { jobId, sourceId });
   try {
     const { status, body } = await deps.postCapture(request, { token });
     if (status === 200) {
-      return { status: "saved", kind: "image", deduplicated: !!body.deduplicated };
+      const result = { status: "saved", kind: "image", deduplicated: !!body.deduplicated };
+      // Bulk relay feedback (7A): the app stamps the job's status on a tagged reply
+      // so a user pause/cancel halts the sweep. Absent on single-item captures.
+      if (body.jobStatus) result.jobStatus = body.jobStatus;
+      return result;
     }
     return { status: "ingest-error", message: body.error || `HTTP ${status}` };
   } catch {
@@ -255,6 +284,23 @@ function flash(text, color, title) {
 /** Clear the badge immediately (no title change). */
 function clearBadge() {
   chrome.action.setBadgeText({ text: "" });
+}
+
+if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
+  // Thin bulk relay: the content-script controller messages the SW for every
+  // localhost op (only the SW reaches 127.0.0.1). Each message resets the SW idle
+  // timer, which is what keeps it alive across a long sweep. An error is returned as
+  // an `{ __error }` envelope the controller's transport rethrows (→ engine halt).
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (!isBulkMessage(message)) return false;
+    getToken()
+      .then((token) => handleBulkMessage(message, {
+        token, fetchImpl: fetch, ingestOne, openJob, fetchKnownSources, completeJob,
+      }))
+      .then((payload) => sendResponse(payload))
+      .catch((error) => sendResponse({ __error: String(error) }));
+    return true; // keep the message channel open for the async sendResponse
+  });
 }
 
 if (typeof chrome !== "undefined" && chrome.action) {

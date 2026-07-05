@@ -12,3 +12,8 @@ DerivedData/
 .build/
 .swiftpm/
 # Package.resolved is committed (pins GRDB) for reproducible app/CI builds.
+
+# Raw platform captures (real personal data) used to derive sanitized test
+# fixtures. Never commit these — the sanitized versions live in
+# extension/test/fixtures/. See extension/test/fixtures/README.md.
+/resources/

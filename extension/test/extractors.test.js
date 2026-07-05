@@ -11,6 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { toOrigName, toOriginals } from "../src/extractors/base.js";
 import { extractProvenance, findExtractor, web } from "../src/extractors/registry.js";
 import { twitter } from "../src/extractors/twitter.js";
 import { pinterest } from "../src/extractors/pinterest.js";
@@ -255,4 +256,44 @@ test("findExtractor routes each host to its extractor", () => {
   assert.equal(findExtractor("https://www.instagram.com/p/x/"), instagram);
   assert.equal(findExtractor("https://cosmos.so/e/1"), cosmos);
   assert.equal(findExtractor("https://other.example/"), web);
+});
+
+// MARK: - shared full-resolution rewrites (base.js, 6A)
+// The exact rules the DOM extractors AND the future bulk JSON mappers reuse.
+
+test("toOrigName rewrites name= to orig; passes through data: and unparseable", () => {
+  assert.equal(
+    toOrigName("https://pbs.twimg.com/media/A?format=jpg&name=small"),
+    "https://pbs.twimg.com/media/A?format=jpg&name=orig");
+  // No name param → unchanged host/path (still a valid URL round-trip).
+  assert.equal(
+    toOrigName("https://pbs.twimg.com/media/B.jpg"),
+    "https://pbs.twimg.com/media/B.jpg");
+  assert.equal(toOrigName("data:image/jpeg;base64,AAAA"), "data:image/jpeg;base64,AAAA");
+  assert.equal(toOrigName(null), null);
+  assert.equal(toOrigName("not a url"), "not a url");
+});
+
+test("toOrigName { addIfAbsent } adds name=orig to a bare URL (bulk X mapper path)", () => {
+  // Default: a bare URL is left alone (the DOM extractor's contract).
+  assert.equal(toOrigName("https://pbs.twimg.com/media/B.jpg"), "https://pbs.twimg.com/media/B.jpg");
+  // addIfAbsent: X's timeline JSON gives a bare media_url_https → request orig.
+  assert.equal(
+    toOrigName("https://pbs.twimg.com/media/B.jpg", { addIfAbsent: true }),
+    "https://pbs.twimg.com/media/B.jpg?name=orig");
+  assert.equal(toOrigName("data:image/png;base64,AA", { addIfAbsent: true }), "data:image/png;base64,AA");
+});
+
+test("toOriginals rewrites an i.pinimg sized segment to /originals/", () => {
+  assert.equal(
+    toOriginals("https://i.pinimg.com/474x/ab/cd/ef.jpg"),
+    "https://i.pinimg.com/originals/ab/cd/ef.jpg");
+  assert.equal(
+    toOriginals("https://i.pinimg.com/236x/ab/cd/ef.jpg"),
+    "https://i.pinimg.com/originals/ab/cd/ef.jpg");
+  // Already-original / non-pinimg → unchanged.
+  assert.equal(
+    toOriginals("https://i.pinimg.com/originals/ab/cd/ef.jpg"),
+    "https://i.pinimg.com/originals/ab/cd/ef.jpg");
+  assert.equal(toOriginals(null), null);
 });

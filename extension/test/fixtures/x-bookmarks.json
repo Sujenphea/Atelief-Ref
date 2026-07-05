@@ -1,0 +1,2814 @@
+{
+  "data": {
+    "bookmark_timeline_v2": {
+      "timeline": {
+        "instructions": [
+          {
+            "type": "TimelineAddEntries",
+            "entries": [
+              {
+                "content": {
+                  "__typename": "TimelineTimelineItem",
+                  "entryType": "TimelineTimelineItem",
+                  "itemContent": {
+                    "__typename": "TimelineTweet",
+                    "itemType": "TimelineTweet",
+                    "tweetDisplayType": "Tweet",
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "Tweet",
+                        "cashtag_attachments": [],
+                        "core": {
+                          "user_results": {
+                            "result": {
+                              "__typename": "User",
+                              "affiliates_highlighted_label": {},
+                              "avatar": {
+                                "image_url": "https://pbs.twimg.com/profile_images/1001/SAMPLE1.jpg"
+                              },
+                              "core": {
+                                "created_at": "REDACTED",
+                                "name": "Sample text",
+                                "screen_name": "sampleuser"
+                              },
+                              "dm_permissions": {
+                                "can_dm": true
+                              },
+                              "follow_request_sent": false,
+                              "has_graduated_access": true,
+                              "id": "REDACTED",
+                              "is_blue_verified": true,
+                              "legacy": {
+                                "default_profile": true,
+                                "default_profile_image": false,
+                                "description": "Sample text",
+                                "entities": {
+                                  "description": {
+                                    "urls": [
+                                      {
+                                        "display_url": "Sample text",
+                                        "expanded_url": "https://example.com/asset/2",
+                                        "indices": [
+                                          29,
+                                          52
+                                        ],
+                                        "url": "https://example.com/post/3"
+                                      }
+                                    ]
+                                  },
+                                  "url": {
+                                    "urls": [
+                                      {
+                                        "display_url": "Sample text",
+                                        "expanded_url": "https://example.com/asset/4",
+                                        "indices": [
+                                          0,
+                                          23
+                                        ],
+                                        "url": "https://example.com/post/5"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "fast_followers_count": 0,
+                                "favourites_count": 1664,
+                                "follow_request_sent": false,
+                                "followers_count": 59747,
+                                "friends_count": 92,
+                                "has_custom_timelines": false,
+                                "is_translator": false,
+                                "listed_count": 403,
+                                "media_count": 610,
+                                "needs_phone_verification": false,
+                                "normal_followers_count": 59747,
+                                "notifications": false,
+                                "possibly_sensitive": false,
+                                "profile_banner_url": "https://pbs.twimg.com/profile_images/1006/SAMPLE6.jpg",
+                                "profile_interstitial_type": "",
+                                "statuses_count": 1430,
+                                "time_zone": "",
+                                "translator_type": "none",
+                                "url": "https://example.com/post/7",
+                                "utc_offset": 0,
+                                "want_retweets": false,
+                                "withheld_description": "",
+                                "withheld_scope": ""
+                              },
+                              "location": {
+                                "location": "Sample text"
+                              },
+                              "media_permissions": {
+                                "can_media_tag": true
+                              },
+                              "parody_commentary_fan_label": "None",
+                              "privacy": {
+                                "protected": false
+                              },
+                              "professional": {
+                                "category": [
+                                  {
+                                    "icon_name": "IconBriefcaseStroke",
+                                    "id": 1000000000000000008,
+                                    "name": "Sample text"
+                                  }
+                                ],
+                                "professional_type": "Creator",
+                                "rest_id": "1000000000000000009"
+                              },
+                              "profile_bio": {
+                                "description": "Sample text"
+                              },
+                              "profile_description_language": "Sample text",
+                              "profile_image_shape": "Circle",
+                              "relationship_perspectives": {
+                                "blocked_by": false,
+                                "blocking": false,
+                                "followed_by": false,
+                                "following": false,
+                                "live_following": false,
+                                "muting": false
+                              },
+                              "rest_id": "1000000000000000010",
+                              "super_follow_eligible": true,
+                              "super_followed_by": false,
+                              "super_following": false,
+                              "verification": {
+                                "verified": false
+                              }
+                            }
+                          }
+                        },
+                        "edit_control": {
+                          "edit_tweet_ids": [
+                            "REDACTED"
+                          ],
+                          "editable_until_msecs": "REDACTED",
+                          "edits_remaining": "5",
+                          "is_edit_eligible": false
+                        },
+                        "grok_analysis_button": true,
+                        "grok_annotations": {
+                          "is_image_editable_by_grok": false
+                        },
+                        "grok_translated_post_with_availability": {
+                          "is_available": false
+                        },
+                        "is_translatable": false,
+                        "legacy": {
+                          "bookmark_count": 7857,
+                          "bookmarked": true,
+                          "conversation_id_str": "1000000000000000011",
+                          "created_at": "REDACTED",
+                          "display_text_range": [
+                            0,
+                            155
+                          ],
+                          "entities": {
+                            "media": [
+                              {
+                                "additional_media_info": {
+                                  "monetizable": false
+                                },
+                                "allow_download_status": {
+                                  "allow_download": true
+                                },
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/post/12",
+                                "ext_media_availability": {
+                                  "status": "Available"
+                                },
+                                "id_str": "1000000000000000013",
+                                "indices": [
+                                  156,
+                                  179
+                                ],
+                                "media_key": "REDACTED",
+                                "media_results": {
+                                  "result": {
+                                    "media_key": "REDACTED"
+                                  }
+                                },
+                                "media_url_https": "https://pbs.twimg.com/media/SAMPLE14.jpg",
+                                "original_info": {
+                                  "focus_rects": [],
+                                  "height": 2160,
+                                  "width": 3324
+                                },
+                                "sizes": {
+                                  "large": {
+                                    "h": 1331,
+                                    "resize": "fit",
+                                    "w": 2048
+                                  },
+                                  "medium": {
+                                    "h": 780,
+                                    "resize": "fit",
+                                    "w": 1200
+                                  },
+                                  "small": {
+                                    "h": 442,
+                                    "resize": "fit",
+                                    "w": 680
+                                  },
+                                  "thumb": {
+                                    "h": 150,
+                                    "resize": "crop",
+                                    "w": 150
+                                  }
+                                },
+                                "type": "video",
+                                "url": "https://example.com/post/15",
+                                "video_info": {
+                                  "aspect_ratio": [
+                                    277,
+                                    180
+                                  ],
+                                  "duration_millis": 1133666,
+                                  "variants": [
+                                    {
+                                      "content_type": "application/x-mpegURL",
+                                      "url": "https://video.twimg.com/amplify_video/1016/vid/720x1280/SAMPLE16.m3u8?tag=12"
+                                    },
+                                    {
+                                      "bitrate": 256000,
+                                      "content_type": "video/mp4",
+                                      "url": "https://video.twimg.com/amplify_video/1017/vid/720x1280/SAMPLE17.mp4?tag=12"
+                                    },
+                                    {
+                                      "bitrate": 832000,
+                                      "content_type": "video/mp4",
+                                      "url": "https://video.twimg.com/amplify_video/1018/vid/720x1280/SAMPLE18.mp4?tag=12"
+                                    },
+                                    {
+                                      "bitrate": 2176000,
+                                      "content_type": "video/mp4",
+                                      "url": "https://video.twimg.com/amplify_video/1019/vid/720x1280/SAMPLE19.mp4?tag=12"
+                                    },
+                                    {
+                                      "bitrate": 10368000,
+                                      "content_type": "video/mp4",
+                                      "url": "https://video.twimg.com/amplify_video/1020/vid/720x1280/SAMPLE20.mp4?tag=12"
+                                    },
+                                    {
+                                      "bitrate": 25128000,
+                                      "content_type": "video/mp4",
+                                      "url": "https://video.twimg.com/amplify_video/1021/vid/720x1280/SAMPLE21.mp4?tag=12"
+                                    }
+                                  ]
+                                }
+                              }
+                            ]
+                          },
+                          "extended_entities": {
+                            "media": [
+                              {
+                                "additional_media_info": {
+                                  "monetizable": false
+                                },
+                                "allow_download_status": {
+                                  "allow_download": true
+                                },
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/post/22",
+                                "ext_media_availability": {
+                                  "status": "Available"
+                                },
+                                "id_str": "1000000000000000023",
+                                "indices": [
+                                  156,
+                                  179
+                                ],
+                                "media_key": "REDACTED",
+                                "media_results": {
+                                  "result": {
+                                    "media_key": "REDACTED"
+                                  }
+                                },
+                                "media_url_https": "https://pbs.twimg.com/media/SAMPLE24.jpg",
+                                "original_info": {
+                                  "focus_rects": [],
+                                  "height": 2160,
+                                  "width": 3324
+                                },
+                                "sizes": {
+                                  "large": {
+                                    "h": 1331,
+                                    "resize": "fit",
+                                    "w": 2048
+                                  },
+                                  "medium": {
+                                    "h": 780,
+                                    "resize": "fit",
+                                    "w": 1200
+                                  },
+                                  "small": {
+                                    "h": 442,
+                                    "resize": "fit",
+                                    "w": 680
+                                  },
+                                  "thumb": {
+                                    "h": 150,
+                                    "resize": "crop",
+                                    "w": 150
+                                  }
+                                },
+                                "type": "video",
+                                "url": "https://example.com/post/25",
+                                "video_info": {
+                                  "aspect_ratio": [
+                                    277,
+                                    180
+                                  ],
+                                  "duration_millis": 1133666,
+                                  "variants": [
+                                    {
+                                      "content_type": "application/x-mpegURL",
+                                      "url": "https://video.twimg.com/amplify_video/1026/vid/720x1280/SAMPLE26.m3u8?tag=12"
+                                    },
+                                    {
+                                      "bitrate": 256000,
+                                      "content_type": "video/mp4",
+                                      "url": "https://video.twimg.com/amplify_video/1027/vid/720x1280/SAMPLE27.mp4?tag=12"
+                                    },
+                                    {
+                                      "bitrate": 832000,
+                                      "content_type": "video/mp4",
+                                      "url": "https://video.twimg.com/amplify_video/1028/vid/720x1280/SAMPLE28.mp4?tag=12"
+                                    },
+                                    {
+                                      "bitrate": 2176000,
+                                      "content_type": "video/mp4",
+                                      "url": "https://video.twimg.com/amplify_video/1029/vid/720x1280/SAMPLE29.mp4?tag=12"
+                                    },
+                                    {
+                                      "bitrate": 10368000,
+                                      "content_type": "video/mp4",
+                                      "url": "https://video.twimg.com/amplify_video/1030/vid/720x1280/SAMPLE30.mp4?tag=12"
+                                    },
+                                    {
+                                      "bitrate": 25128000,
+                                      "content_type": "video/mp4",
+                                      "url": "https://video.twimg.com/amplify_video/1031/vid/720x1280/SAMPLE31.mp4?tag=12"
+                                    }
+                                  ]
+                                }
+                              }
+                            ]
+                          },
+                          "favorite_count": 5100,
+                          "favorited": false,
+                          "full_text": "Sample text",
+                          "id_str": "1000000000000000032",
+                          "is_quote_status": false,
+                          "lang": "en",
+                          "possibly_sensitive": false,
+                          "possibly_sensitive_editable": true,
+                          "quote_count": 15,
+                          "reply_count": 82,
+                          "retweet_count": 481,
+                          "retweeted": false,
+                          "user_id_str": "1000000000000000033"
+                        },
+                        "rest_id": "1000000000000000034",
+                        "source": "Sample text",
+                        "unmention_data": {},
+                        "views": {
+                          "count": "663015",
+                          "state": "EnabledWithCount"
+                        }
+                      }
+                    }
+                  }
+                },
+                "entryId": "tweet-1000000000000000035",
+                "sortIndex": "1000000000000000036"
+              },
+              {
+                "content": {
+                  "__typename": "TimelineTimelineItem",
+                  "entryType": "TimelineTimelineItem",
+                  "itemContent": {
+                    "__typename": "TimelineTweet",
+                    "itemType": "TimelineTweet",
+                    "tweetDisplayType": "Tweet",
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "Tweet",
+                        "cashtag_attachments": [],
+                        "core": {
+                          "user_results": {
+                            "result": {
+                              "__typename": "User",
+                              "affiliates_highlighted_label": {},
+                              "avatar": {
+                                "image_url": "https://pbs.twimg.com/profile_images/1037/SAMPLE37.jpg"
+                              },
+                              "core": {
+                                "created_at": "REDACTED",
+                                "name": "Sample text",
+                                "screen_name": "sampleuser"
+                              },
+                              "dm_permissions": {
+                                "can_dm": true
+                              },
+                              "follow_request_sent": false,
+                              "has_graduated_access": true,
+                              "id": "REDACTED",
+                              "is_blue_verified": true,
+                              "legacy": {
+                                "default_profile": true,
+                                "default_profile_image": false,
+                                "description": "Sample text",
+                                "entities": {
+                                  "description": {},
+                                  "url": {
+                                    "urls": [
+                                      {
+                                        "display_url": "Sample text",
+                                        "expanded_url": "https://example.com/asset/38",
+                                        "indices": [
+                                          0,
+                                          23
+                                        ],
+                                        "url": "https://example.com/post/39"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "fast_followers_count": 0,
+                                "favourites_count": 8567,
+                                "follow_request_sent": false,
+                                "followers_count": 5537,
+                                "friends_count": 762,
+                                "has_custom_timelines": false,
+                                "is_translator": false,
+                                "listed_count": 24,
+                                "media_count": 142,
+                                "needs_phone_verification": false,
+                                "normal_followers_count": 5537,
+                                "notifications": false,
+                                "pinned_tweet_ids_str": [
+                                  "REDACTED"
+                                ],
+                                "possibly_sensitive": false,
+                                "profile_banner_url": "https://pbs.twimg.com/profile_images/1040/SAMPLE40.jpg",
+                                "profile_interstitial_type": "",
+                                "statuses_count": 2898,
+                                "time_zone": "",
+                                "translator_type": "none",
+                                "url": "https://example.com/post/41",
+                                "utc_offset": 0,
+                                "want_retweets": false,
+                                "withheld_description": "",
+                                "withheld_scope": ""
+                              },
+                              "location": {
+                                "location": "Sample text"
+                              },
+                              "media_permissions": {
+                                "can_media_tag": false
+                              },
+                              "parody_commentary_fan_label": "None",
+                              "privacy": {
+                                "protected": false
+                              },
+                              "profile_bio": {
+                                "description": "Sample text"
+                              },
+                              "profile_description_language": "Sample text",
+                              "profile_image_shape": "Circle",
+                              "relationship_perspectives": {
+                                "blocked_by": false,
+                                "blocking": false,
+                                "followed_by": false,
+                                "following": false,
+                                "live_following": false,
+                                "muting": false
+                              },
+                              "rest_id": "1000000000000000042",
+                              "super_follow_eligible": false,
+                              "super_followed_by": false,
+                              "super_following": false,
+                              "verification": {
+                                "verified": false
+                              }
+                            }
+                          }
+                        },
+                        "edit_control": {
+                          "edit_tweet_ids": [
+                            "REDACTED"
+                          ],
+                          "editable_until_msecs": "REDACTED",
+                          "edits_remaining": "5",
+                          "is_edit_eligible": true
+                        },
+                        "grok_analysis_button": true,
+                        "grok_annotations": {
+                          "is_image_editable_by_grok": true
+                        },
+                        "grok_translated_post_with_availability": {
+                          "is_available": false
+                        },
+                        "is_translatable": false,
+                        "legacy": {
+                          "bookmark_count": 3146,
+                          "bookmarked": true,
+                          "conversation_id_str": "1000000000000000043",
+                          "created_at": "REDACTED",
+                          "display_text_range": [
+                            0,
+                            279
+                          ],
+                          "entities": {
+                            "media": [
+                              {
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/post/44",
+                                "ext_media_availability": {
+                                  "status": "Available"
+                                },
+                                "features": {
+                                  "large": {
+                                    "faces": []
+                                  },
+                                  "medium": {
+                                    "faces": []
+                                  },
+                                  "orig": {
+                                    "faces": []
+                                  },
+                                  "small": {
+                                    "faces": []
+                                  }
+                                },
+                                "id_str": "1000000000000000045",
+                                "indices": [
+                                  280,
+                                  303
+                                ],
+                                "media_key": "REDACTED",
+                                "media_results": {
+                                  "result": {
+                                    "media_key": "REDACTED"
+                                  }
+                                },
+                                "media_url_https": "https://pbs.twimg.com/media/SAMPLE46.jpg",
+                                "original_info": {
+                                  "focus_rects": [
+                                    {
+                                      "h": 1642,
+                                      "w": 2932,
+                                      "x": 0,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 1642,
+                                      "x": 613,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 1440,
+                                      "x": 714,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 821,
+                                      "x": 1024,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 3022,
+                                      "x": 0,
+                                      "y": 0
+                                    }
+                                  ],
+                                  "height": 1642,
+                                  "width": 3022
+                                },
+                                "sizes": {
+                                  "large": {
+                                    "h": 1113,
+                                    "resize": "fit",
+                                    "w": 2048
+                                  },
+                                  "medium": {
+                                    "h": 652,
+                                    "resize": "fit",
+                                    "w": 1200
+                                  },
+                                  "small": {
+                                    "h": 369,
+                                    "resize": "fit",
+                                    "w": 680
+                                  },
+                                  "thumb": {
+                                    "h": 150,
+                                    "resize": "crop",
+                                    "w": 150
+                                  }
+                                },
+                                "type": "photo",
+                                "url": "https://example.com/post/47"
+                              },
+                              {
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/post/48",
+                                "ext_media_availability": {
+                                  "status": "Available"
+                                },
+                                "features": {
+                                  "large": {
+                                    "faces": []
+                                  },
+                                  "medium": {
+                                    "faces": []
+                                  },
+                                  "orig": {
+                                    "faces": []
+                                  },
+                                  "small": {
+                                    "faces": []
+                                  }
+                                },
+                                "id_str": "1000000000000000049",
+                                "indices": [
+                                  280,
+                                  303
+                                ],
+                                "media_key": "REDACTED",
+                                "media_results": {
+                                  "result": {
+                                    "media_key": "REDACTED"
+                                  }
+                                },
+                                "media_url_https": "https://pbs.twimg.com/media/SAMPLE50.jpg",
+                                "original_info": {
+                                  "focus_rects": [
+                                    {
+                                      "h": 1642,
+                                      "w": 2932,
+                                      "x": 0,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 1642,
+                                      "x": 613,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 1440,
+                                      "x": 714,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 821,
+                                      "x": 1024,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 3022,
+                                      "x": 0,
+                                      "y": 0
+                                    }
+                                  ],
+                                  "height": 1642,
+                                  "width": 3022
+                                },
+                                "sizes": {
+                                  "large": {
+                                    "h": 1113,
+                                    "resize": "fit",
+                                    "w": 2048
+                                  },
+                                  "medium": {
+                                    "h": 652,
+                                    "resize": "fit",
+                                    "w": 1200
+                                  },
+                                  "small": {
+                                    "h": 369,
+                                    "resize": "fit",
+                                    "w": 680
+                                  },
+                                  "thumb": {
+                                    "h": 150,
+                                    "resize": "crop",
+                                    "w": 150
+                                  }
+                                },
+                                "type": "photo",
+                                "url": "https://example.com/post/51"
+                              },
+                              {
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/post/52",
+                                "ext_media_availability": {
+                                  "status": "Available"
+                                },
+                                "features": {
+                                  "large": {
+                                    "faces": []
+                                  },
+                                  "medium": {
+                                    "faces": []
+                                  },
+                                  "orig": {
+                                    "faces": []
+                                  },
+                                  "small": {
+                                    "faces": []
+                                  }
+                                },
+                                "id_str": "1000000000000000053",
+                                "indices": [
+                                  280,
+                                  303
+                                ],
+                                "media_key": "REDACTED",
+                                "media_results": {
+                                  "result": {
+                                    "media_key": "REDACTED"
+                                  }
+                                },
+                                "media_url_https": "https://pbs.twimg.com/media/SAMPLE54.jpg",
+                                "original_info": {
+                                  "focus_rects": [
+                                    {
+                                      "h": 1618,
+                                      "w": 2889,
+                                      "x": 0,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1618,
+                                      "w": 1618,
+                                      "x": 626,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1618,
+                                      "w": 1419,
+                                      "x": 726,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1618,
+                                      "w": 809,
+                                      "x": 1031,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1618,
+                                      "w": 3022,
+                                      "x": 0,
+                                      "y": 0
+                                    }
+                                  ],
+                                  "height": 1618,
+                                  "width": 3022
+                                },
+                                "sizes": {
+                                  "large": {
+                                    "h": 1097,
+                                    "resize": "fit",
+                                    "w": 2048
+                                  },
+                                  "medium": {
+                                    "h": 642,
+                                    "resize": "fit",
+                                    "w": 1200
+                                  },
+                                  "small": {
+                                    "h": 364,
+                                    "resize": "fit",
+                                    "w": 680
+                                  },
+                                  "thumb": {
+                                    "h": 150,
+                                    "resize": "crop",
+                                    "w": 150
+                                  }
+                                },
+                                "type": "photo",
+                                "url": "https://example.com/post/55"
+                              }
+                            ],
+                            "urls": [
+                              {
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/asset/56",
+                                "indices": [
+                                  28,
+                                  51
+                                ],
+                                "url": "https://example.com/post/57"
+                              },
+                              {
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/asset/58",
+                                "indices": [
+                                  75,
+                                  98
+                                ],
+                                "url": "https://example.com/post/59"
+                              },
+                              {
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/asset/60",
+                                "indices": [
+                                  125,
+                                  148
+                                ],
+                                "url": "https://example.com/post/61"
+                              },
+                              {
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/asset/62",
+                                "indices": [
+                                  173,
+                                  196
+                                ],
+                                "url": "https://example.com/post/63"
+                              },
+                              {
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/asset/64",
+                                "indices": [
+                                  223,
+                                  246
+                                ],
+                                "url": "https://example.com/post/65"
+                              }
+                            ]
+                          },
+                          "extended_entities": {
+                            "media": [
+                              {
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/post/66",
+                                "ext_media_availability": {
+                                  "status": "Available"
+                                },
+                                "features": {
+                                  "large": {
+                                    "faces": []
+                                  },
+                                  "medium": {
+                                    "faces": []
+                                  },
+                                  "orig": {
+                                    "faces": []
+                                  },
+                                  "small": {
+                                    "faces": []
+                                  }
+                                },
+                                "id_str": "1000000000000000067",
+                                "indices": [
+                                  280,
+                                  303
+                                ],
+                                "media_key": "REDACTED",
+                                "media_results": {
+                                  "result": {
+                                    "media_key": "REDACTED"
+                                  }
+                                },
+                                "media_url_https": "https://pbs.twimg.com/media/SAMPLE68.jpg",
+                                "original_info": {
+                                  "focus_rects": [
+                                    {
+                                      "h": 1642,
+                                      "w": 2932,
+                                      "x": 0,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 1642,
+                                      "x": 613,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 1440,
+                                      "x": 714,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 821,
+                                      "x": 1024,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 3022,
+                                      "x": 0,
+                                      "y": 0
+                                    }
+                                  ],
+                                  "height": 1642,
+                                  "width": 3022
+                                },
+                                "sizes": {
+                                  "large": {
+                                    "h": 1113,
+                                    "resize": "fit",
+                                    "w": 2048
+                                  },
+                                  "medium": {
+                                    "h": 652,
+                                    "resize": "fit",
+                                    "w": 1200
+                                  },
+                                  "small": {
+                                    "h": 369,
+                                    "resize": "fit",
+                                    "w": 680
+                                  },
+                                  "thumb": {
+                                    "h": 150,
+                                    "resize": "crop",
+                                    "w": 150
+                                  }
+                                },
+                                "type": "photo",
+                                "url": "https://example.com/post/69"
+                              },
+                              {
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/post/70",
+                                "ext_media_availability": {
+                                  "status": "Available"
+                                },
+                                "features": {
+                                  "large": {
+                                    "faces": []
+                                  },
+                                  "medium": {
+                                    "faces": []
+                                  },
+                                  "orig": {
+                                    "faces": []
+                                  },
+                                  "small": {
+                                    "faces": []
+                                  }
+                                },
+                                "id_str": "1000000000000000071",
+                                "indices": [
+                                  280,
+                                  303
+                                ],
+                                "media_key": "REDACTED",
+                                "media_results": {
+                                  "result": {
+                                    "media_key": "REDACTED"
+                                  }
+                                },
+                                "media_url_https": "https://pbs.twimg.com/media/SAMPLE72.jpg",
+                                "original_info": {
+                                  "focus_rects": [
+                                    {
+                                      "h": 1642,
+                                      "w": 2932,
+                                      "x": 0,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 1642,
+                                      "x": 613,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 1440,
+                                      "x": 714,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 821,
+                                      "x": 1024,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1642,
+                                      "w": 3022,
+                                      "x": 0,
+                                      "y": 0
+                                    }
+                                  ],
+                                  "height": 1642,
+                                  "width": 3022
+                                },
+                                "sizes": {
+                                  "large": {
+                                    "h": 1113,
+                                    "resize": "fit",
+                                    "w": 2048
+                                  },
+                                  "medium": {
+                                    "h": 652,
+                                    "resize": "fit",
+                                    "w": 1200
+                                  },
+                                  "small": {
+                                    "h": 369,
+                                    "resize": "fit",
+                                    "w": 680
+                                  },
+                                  "thumb": {
+                                    "h": 150,
+                                    "resize": "crop",
+                                    "w": 150
+                                  }
+                                },
+                                "type": "photo",
+                                "url": "https://example.com/post/73"
+                              },
+                              {
+                                "display_url": "Sample text",
+                                "expanded_url": "https://example.com/post/74",
+                                "ext_media_availability": {
+                                  "status": "Available"
+                                },
+                                "features": {
+                                  "large": {
+                                    "faces": []
+                                  },
+                                  "medium": {
+                                    "faces": []
+                                  },
+                                  "orig": {
+                                    "faces": []
+                                  },
+                                  "small": {
+                                    "faces": []
+                                  }
+                                },
+                                "id_str": "1000000000000000075",
+                                "indices": [
+                                  280,
+                                  303
+                                ],
+                                "media_key": "REDACTED",
+                                "media_results": {
+                                  "result": {
+                                    "media_key": "REDACTED"
+                                  }
+                                },
+                                "media_url_https": "https://pbs.twimg.com/media/SAMPLE76.jpg",
+                                "original_info": {
+                                  "focus_rects": [
+                                    {
+                                      "h": 1618,
+                                      "w": 2889,
+                                      "x": 0,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1618,
+                                      "w": 1618,
+                                      "x": 626,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1618,
+                                      "w": 1419,
+                                      "x": 726,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1618,
+                                      "w": 809,
+                                      "x": 1031,
+                                      "y": 0
+                                    },
+                                    {
+                                      "h": 1618,
+                                      "w": 3022,
+                                      "x": 0,
+                                      "y": 0
+                                    }
+                                  ],
+                                  "height": 1618,
+                                  "width": 3022
+                                },
+                                "sizes": {
+                                  "large": {
+                                    "h": 1097,
+                                    "resize": "fit",
+                                    "w": 2048
+                                  },
+                                  "medium": {
+                                    "h": 642,
+                                    "resize": "fit",
+                                    "w": 1200
+                                  },
+                                  "small": {
+                                    "h": 364,
+                                    "resize": "fit",
+                                    "w": 680
+                                  },
+                                  "thumb": {
+                                    "h": 150,
+                                    "resize": "crop",
+                                    "w": 150
+                                  }
+                                },
+                                "type": "photo",
+                                "url": "https://example.com/post/77"
+                              }
+                            ]
+                          },
+                          "favorite_count": 2871,
+                          "favorited": false,
+                          "full_text": "Sample text",
+                          "id_str": "1000000000000000078",
+                          "is_quote_status": true,
+                          "lang": "en",
+                          "possibly_sensitive": false,
+                          "possibly_sensitive_editable": true,
+                          "quote_count": 6,
+                          "quoted_status_id_str": "REDACTED",
+                          "quoted_status_permalink": {
+                            "display": "x.com/jonaasw1/statu\u2026",
+                            "expanded": "https://example.com/post/79",
+                            "url": "https://example.com/post/80"
+                          },
+                          "reply_count": 20,
+                          "retweet_count": 416,
+                          "retweeted": false,
+                          "user_id_str": "1000000000000000081"
+                        },
+                        "note_tweet": {
+                          "is_expandable": true,
+                          "note_tweet_results": {
+                            "result": {
+                              "entity_set": {
+                                "hashtags": [],
+                                "smarttags": [],
+                                "symbols": [],
+                                "urls": [
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/asset/82",
+                                    "indices": [
+                                      28,
+                                      51
+                                    ],
+                                    "url": "https://example.com/post/83"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/asset/84",
+                                    "indices": [
+                                      75,
+                                      98
+                                    ],
+                                    "url": "https://example.com/post/85"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/asset/86",
+                                    "indices": [
+                                      125,
+                                      148
+                                    ],
+                                    "url": "https://example.com/post/87"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/asset/88",
+                                    "indices": [
+                                      173,
+                                      196
+                                    ],
+                                    "url": "https://example.com/post/89"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/asset/90",
+                                    "indices": [
+                                      223,
+                                      246
+                                    ],
+                                    "url": "https://example.com/post/91"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/asset/92",
+                                    "indices": [
+                                      280,
+                                      303
+                                    ],
+                                    "url": "https://example.com/post/93"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/asset/94",
+                                    "indices": [
+                                      326,
+                                      349
+                                    ],
+                                    "url": "https://example.com/post/95"
+                                  }
+                                ],
+                                "user_mentions": [
+                                  {
+                                    "id_str": "1000000000000000096",
+                                    "indices": [
+                                      426,
+                                      437
+                                    ],
+                                    "name": "Sample text",
+                                    "screen_name": "sampleuser"
+                                  },
+                                  {
+                                    "id_str": "1000000000000000097",
+                                    "indices": [
+                                      449,
+                                      465
+                                    ],
+                                    "name": "Sample text",
+                                    "screen_name": "sampleuser"
+                                  },
+                                  {
+                                    "id_str": "1000000000000000098",
+                                    "indices": [
+                                      467,
+                                      479
+                                    ],
+                                    "name": "Sample text",
+                                    "screen_name": "sampleuser"
+                                  },
+                                  {
+                                    "id_str": "1000000000000000099",
+                                    "indices": [
+                                      481,
+                                      495
+                                    ],
+                                    "name": "Sample text",
+                                    "screen_name": "sampleuser"
+                                  },
+                                  {
+                                    "id_str": "1000000000000000100",
+                                    "indices": [
+                                      497,
+                                      503
+                                    ],
+                                    "name": "Sample text",
+                                    "screen_name": "sampleuser"
+                                  },
+                                  {
+                                    "id_str": "1000000000000000101",
+                                    "indices": [
+                                      505,
+                                      516
+                                    ],
+                                    "name": "Sample text",
+                                    "screen_name": "sampleuser"
+                                  },
+                                  {
+                                    "id_str": "1000000000000000102",
+                                    "indices": [
+                                      518,
+                                      531
+                                    ],
+                                    "name": "Sample text",
+                                    "screen_name": "sampleuser"
+                                  }
+                                ]
+                              },
+                              "id": "REDACTED",
+                              "richtext": {
+                                "richtext_tags": []
+                              },
+                              "text": "Sample text"
+                            }
+                          }
+                        },
+                        "quoted_status_result": {
+                          "result": {
+                            "__typename": "Tweet",
+                            "core": {
+                              "user_results": {
+                                "result": {
+                                  "__typename": "User",
+                                  "affiliates_highlighted_label": {},
+                                  "avatar": {
+                                    "image_url": "https://pbs.twimg.com/profile_images/1103/SAMPLE103.jpg"
+                                  },
+                                  "core": {
+                                    "created_at": "REDACTED",
+                                    "name": "Sample text",
+                                    "screen_name": "sampleuser"
+                                  },
+                                  "dm_permissions": {
+                                    "can_dm": true
+                                  },
+                                  "follow_request_sent": false,
+                                  "has_graduated_access": true,
+                                  "id": "REDACTED",
+                                  "is_blue_verified": true,
+                                  "legacy": {
+                                    "default_profile": true,
+                                    "default_profile_image": false,
+                                    "description": "Sample text",
+                                    "entities": {
+                                      "description": {},
+                                      "url": {
+                                        "urls": [
+                                          {
+                                            "display_url": "Sample text",
+                                            "expanded_url": "https://example.com/asset/104",
+                                            "indices": [
+                                              0,
+                                              23
+                                            ],
+                                            "url": "https://example.com/post/105"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "fast_followers_count": 0,
+                                    "favourites_count": 8567,
+                                    "follow_request_sent": false,
+                                    "followers_count": 5537,
+                                    "friends_count": 762,
+                                    "has_custom_timelines": false,
+                                    "is_translator": false,
+                                    "listed_count": 24,
+                                    "media_count": 142,
+                                    "needs_phone_verification": false,
+                                    "normal_followers_count": 5537,
+                                    "notifications": false,
+                                    "pinned_tweet_ids_str": [
+                                      "REDACTED"
+                                    ],
+                                    "possibly_sensitive": false,
+                                    "profile_banner_url": "https://pbs.twimg.com/profile_images/1106/SAMPLE106.jpg",
+                                    "profile_interstitial_type": "",
+                                    "statuses_count": 2898,
+                                    "time_zone": "",
+                                    "translator_type": "none",
+                                    "url": "https://example.com/post/107",
+                                    "utc_offset": 0,
+                                    "want_retweets": false,
+                                    "withheld_description": "",
+                                    "withheld_scope": ""
+                                  },
+                                  "location": {
+                                    "location": "Sample text"
+                                  },
+                                  "media_permissions": {
+                                    "can_media_tag": false
+                                  },
+                                  "parody_commentary_fan_label": "None",
+                                  "privacy": {
+                                    "protected": false
+                                  },
+                                  "profile_bio": {
+                                    "description": "Sample text"
+                                  },
+                                  "profile_description_language": "Sample text",
+                                  "profile_image_shape": "Circle",
+                                  "relationship_perspectives": {
+                                    "blocked_by": false,
+                                    "blocking": false,
+                                    "followed_by": false,
+                                    "following": false,
+                                    "live_following": false,
+                                    "muting": false
+                                  },
+                                  "rest_id": "1000000000000000108",
+                                  "super_follow_eligible": false,
+                                  "super_followed_by": false,
+                                  "super_following": false,
+                                  "verification": {
+                                    "verified": false
+                                  }
+                                }
+                              }
+                            },
+                            "edit_control": {
+                              "edit_tweet_ids": [
+                                "REDACTED"
+                              ],
+                              "editable_until_msecs": "REDACTED",
+                              "edits_remaining": "5",
+                              "is_edit_eligible": true
+                            },
+                            "grok_analysis_button": true,
+                            "grok_translated_post_with_availability": {
+                              "is_available": false
+                            },
+                            "is_translatable": false,
+                            "legacy": {
+                              "bookmark_count": 2583,
+                              "bookmarked": false,
+                              "conversation_id_str": "1000000000000000109",
+                              "created_at": "REDACTED",
+                              "display_text_range": [
+                                0,
+                                259
+                              ],
+                              "entities": {
+                                "media": [
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/post/110",
+                                    "ext_media_availability": {
+                                      "status": "Available"
+                                    },
+                                    "features": {
+                                      "large": {
+                                        "faces": []
+                                      },
+                                      "medium": {
+                                        "faces": []
+                                      },
+                                      "orig": {
+                                        "faces": []
+                                      },
+                                      "small": {
+                                        "faces": []
+                                      }
+                                    },
+                                    "id_str": "1000000000000000111",
+                                    "indices": [
+                                      260,
+                                      283
+                                    ],
+                                    "media_key": "REDACTED",
+                                    "media_results": {
+                                      "result": {
+                                        "media_key": "REDACTED"
+                                      }
+                                    },
+                                    "media_url_https": "https://pbs.twimg.com/media/SAMPLE112.jpg",
+                                    "original_info": {
+                                      "focus_rects": [
+                                        {
+                                          "h": 1594,
+                                          "w": 2846,
+                                          "x": 10,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 1594,
+                                          "x": 636,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 1398,
+                                          "x": 734,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 797,
+                                          "x": 1035,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 3024,
+                                          "x": 0,
+                                          "y": 0
+                                        }
+                                      ],
+                                      "height": 1594,
+                                      "width": 3024
+                                    },
+                                    "sizes": {
+                                      "large": {
+                                        "h": 1080,
+                                        "resize": "fit",
+                                        "w": 2048
+                                      },
+                                      "medium": {
+                                        "h": 633,
+                                        "resize": "fit",
+                                        "w": 1200
+                                      },
+                                      "small": {
+                                        "h": 358,
+                                        "resize": "fit",
+                                        "w": 680
+                                      },
+                                      "thumb": {
+                                        "h": 150,
+                                        "resize": "crop",
+                                        "w": 150
+                                      }
+                                    },
+                                    "type": "photo",
+                                    "url": "https://example.com/post/113"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/post/114",
+                                    "ext_media_availability": {
+                                      "status": "Available"
+                                    },
+                                    "features": {
+                                      "large": {
+                                        "faces": []
+                                      },
+                                      "medium": {
+                                        "faces": []
+                                      },
+                                      "orig": {
+                                        "faces": []
+                                      },
+                                      "small": {
+                                        "faces": []
+                                      }
+                                    },
+                                    "id_str": "1000000000000000115",
+                                    "indices": [
+                                      260,
+                                      283
+                                    ],
+                                    "media_key": "REDACTED",
+                                    "media_results": {
+                                      "result": {
+                                        "media_key": "REDACTED"
+                                      }
+                                    },
+                                    "media_url_https": "https://pbs.twimg.com/media/SAMPLE116.jpg",
+                                    "original_info": {
+                                      "focus_rects": [
+                                        {
+                                          "h": 1596,
+                                          "w": 2850,
+                                          "x": 174,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1596,
+                                          "w": 1596,
+                                          "x": 1241,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1596,
+                                          "w": 1400,
+                                          "x": 1339,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1596,
+                                          "w": 798,
+                                          "x": 1640,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1596,
+                                          "w": 3024,
+                                          "x": 0,
+                                          "y": 0
+                                        }
+                                      ],
+                                      "height": 1596,
+                                      "width": 3024
+                                    },
+                                    "sizes": {
+                                      "large": {
+                                        "h": 1081,
+                                        "resize": "fit",
+                                        "w": 2048
+                                      },
+                                      "medium": {
+                                        "h": 633,
+                                        "resize": "fit",
+                                        "w": 1200
+                                      },
+                                      "small": {
+                                        "h": 359,
+                                        "resize": "fit",
+                                        "w": 680
+                                      },
+                                      "thumb": {
+                                        "h": 150,
+                                        "resize": "crop",
+                                        "w": 150
+                                      }
+                                    },
+                                    "type": "photo",
+                                    "url": "https://example.com/post/117"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/post/118",
+                                    "ext_media_availability": {
+                                      "status": "Available"
+                                    },
+                                    "features": {
+                                      "large": {
+                                        "faces": [
+                                          {
+                                            "h": 85,
+                                            "w": 85,
+                                            "x": 493,
+                                            "y": 575
+                                          }
+                                        ]
+                                      },
+                                      "medium": {
+                                        "faces": [
+                                          {
+                                            "h": 50,
+                                            "w": 50,
+                                            "x": 289,
+                                            "y": 337
+                                          }
+                                        ]
+                                      },
+                                      "orig": {
+                                        "faces": [
+                                          {
+                                            "h": 126,
+                                            "w": 126,
+                                            "x": 729,
+                                            "y": 850
+                                          }
+                                        ]
+                                      },
+                                      "small": {
+                                        "faces": [
+                                          {
+                                            "h": 28,
+                                            "w": 28,
+                                            "x": 163,
+                                            "y": 191
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "id_str": "1000000000000000119",
+                                    "indices": [
+                                      260,
+                                      283
+                                    ],
+                                    "media_key": "REDACTED",
+                                    "media_results": {
+                                      "result": {
+                                        "media_key": "REDACTED"
+                                      }
+                                    },
+                                    "media_url_https": "https://pbs.twimg.com/media/SAMPLE120.jpg",
+                                    "original_info": {
+                                      "focus_rects": [
+                                        {
+                                          "h": 1594,
+                                          "w": 2846,
+                                          "x": 0,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 1594,
+                                          "x": 334,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 1398,
+                                          "x": 432,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 797,
+                                          "x": 733,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 3024,
+                                          "x": 0,
+                                          "y": 0
+                                        }
+                                      ],
+                                      "height": 1594,
+                                      "width": 3024
+                                    },
+                                    "sizes": {
+                                      "large": {
+                                        "h": 1080,
+                                        "resize": "fit",
+                                        "w": 2048
+                                      },
+                                      "medium": {
+                                        "h": 633,
+                                        "resize": "fit",
+                                        "w": 1200
+                                      },
+                                      "small": {
+                                        "h": 358,
+                                        "resize": "fit",
+                                        "w": 680
+                                      },
+                                      "thumb": {
+                                        "h": 150,
+                                        "resize": "crop",
+                                        "w": 150
+                                      }
+                                    },
+                                    "type": "photo",
+                                    "url": "https://example.com/post/121"
+                                  }
+                                ],
+                                "urls": [
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/asset/122",
+                                    "indices": [
+                                      28,
+                                      51
+                                    ],
+                                    "url": "https://example.com/post/123"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/asset/124",
+                                    "indices": [
+                                      69,
+                                      92
+                                    ],
+                                    "url": "https://example.com/post/125"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/asset/126",
+                                    "indices": [
+                                      119,
+                                      142
+                                    ],
+                                    "url": "https://example.com/post/127"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/asset/128",
+                                    "indices": [
+                                      162,
+                                      185
+                                    ],
+                                    "url": "https://example.com/post/129"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/asset/130",
+                                    "indices": [
+                                      211,
+                                      234
+                                    ],
+                                    "url": "https://example.com/post/131"
+                                  }
+                                ]
+                              },
+                              "extended_entities": {
+                                "media": [
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/post/132",
+                                    "ext_media_availability": {
+                                      "status": "Available"
+                                    },
+                                    "features": {
+                                      "large": {
+                                        "faces": []
+                                      },
+                                      "medium": {
+                                        "faces": []
+                                      },
+                                      "orig": {
+                                        "faces": []
+                                      },
+                                      "small": {
+                                        "faces": []
+                                      }
+                                    },
+                                    "id_str": "1000000000000000133",
+                                    "indices": [
+                                      260,
+                                      283
+                                    ],
+                                    "media_key": "REDACTED",
+                                    "media_results": {
+                                      "result": {
+                                        "media_key": "REDACTED"
+                                      }
+                                    },
+                                    "media_url_https": "https://pbs.twimg.com/media/SAMPLE134.jpg",
+                                    "original_info": {
+                                      "focus_rects": [
+                                        {
+                                          "h": 1594,
+                                          "w": 2846,
+                                          "x": 10,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 1594,
+                                          "x": 636,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 1398,
+                                          "x": 734,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 797,
+                                          "x": 1035,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 3024,
+                                          "x": 0,
+                                          "y": 0
+                                        }
+                                      ],
+                                      "height": 1594,
+                                      "width": 3024
+                                    },
+                                    "sizes": {
+                                      "large": {
+                                        "h": 1080,
+                                        "resize": "fit",
+                                        "w": 2048
+                                      },
+                                      "medium": {
+                                        "h": 633,
+                                        "resize": "fit",
+                                        "w": 1200
+                                      },
+                                      "small": {
+                                        "h": 358,
+                                        "resize": "fit",
+                                        "w": 680
+                                      },
+                                      "thumb": {
+                                        "h": 150,
+                                        "resize": "crop",
+                                        "w": 150
+                                      }
+                                    },
+                                    "type": "photo",
+                                    "url": "https://example.com/post/135"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/post/136",
+                                    "ext_media_availability": {
+                                      "status": "Available"
+                                    },
+                                    "features": {
+                                      "large": {
+                                        "faces": []
+                                      },
+                                      "medium": {
+                                        "faces": []
+                                      },
+                                      "orig": {
+                                        "faces": []
+                                      },
+                                      "small": {
+                                        "faces": []
+                                      }
+                                    },
+                                    "id_str": "1000000000000000137",
+                                    "indices": [
+                                      260,
+                                      283
+                                    ],
+                                    "media_key": "REDACTED",
+                                    "media_results": {
+                                      "result": {
+                                        "media_key": "REDACTED"
+                                      }
+                                    },
+                                    "media_url_https": "https://pbs.twimg.com/media/SAMPLE138.jpg",
+                                    "original_info": {
+                                      "focus_rects": [
+                                        {
+                                          "h": 1596,
+                                          "w": 2850,
+                                          "x": 174,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1596,
+                                          "w": 1596,
+                                          "x": 1241,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1596,
+                                          "w": 1400,
+                                          "x": 1339,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1596,
+                                          "w": 798,
+                                          "x": 1640,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1596,
+                                          "w": 3024,
+                                          "x": 0,
+                                          "y": 0
+                                        }
+                                      ],
+                                      "height": 1596,
+                                      "width": 3024
+                                    },
+                                    "sizes": {
+                                      "large": {
+                                        "h": 1081,
+                                        "resize": "fit",
+                                        "w": 2048
+                                      },
+                                      "medium": {
+                                        "h": 633,
+                                        "resize": "fit",
+                                        "w": 1200
+                                      },
+                                      "small": {
+                                        "h": 359,
+                                        "resize": "fit",
+                                        "w": 680
+                                      },
+                                      "thumb": {
+                                        "h": 150,
+                                        "resize": "crop",
+                                        "w": 150
+                                      }
+                                    },
+                                    "type": "photo",
+                                    "url": "https://example.com/post/139"
+                                  },
+                                  {
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/post/140",
+                                    "ext_media_availability": {
+                                      "status": "Available"
+                                    },
+                                    "features": {
+                                      "large": {
+                                        "faces": [
+                                          {
+                                            "h": 85,
+                                            "w": 85,
+                                            "x": 493,
+                                            "y": 575
+                                          }
+                                        ]
+                                      },
+                                      "medium": {
+                                        "faces": [
+                                          {
+                                            "h": 50,
+                                            "w": 50,
+                                            "x": 289,
+                                            "y": 337
+                                          }
+                                        ]
+                                      },
+                                      "orig": {
+                                        "faces": [
+                                          {
+                                            "h": 126,
+                                            "w": 126,
+                                            "x": 729,
+                                            "y": 850
+                                          }
+                                        ]
+                                      },
+                                      "small": {
+                                        "faces": [
+                                          {
+                                            "h": 28,
+                                            "w": 28,
+                                            "x": 163,
+                                            "y": 191
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "id_str": "1000000000000000141",
+                                    "indices": [
+                                      260,
+                                      283
+                                    ],
+                                    "media_key": "REDACTED",
+                                    "media_results": {
+                                      "result": {
+                                        "media_key": "REDACTED"
+                                      }
+                                    },
+                                    "media_url_https": "https://pbs.twimg.com/media/SAMPLE142.jpg",
+                                    "original_info": {
+                                      "focus_rects": [
+                                        {
+                                          "h": 1594,
+                                          "w": 2846,
+                                          "x": 0,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 1594,
+                                          "x": 334,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 1398,
+                                          "x": 432,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 797,
+                                          "x": 733,
+                                          "y": 0
+                                        },
+                                        {
+                                          "h": 1594,
+                                          "w": 3024,
+                                          "x": 0,
+                                          "y": 0
+                                        }
+                                      ],
+                                      "height": 1594,
+                                      "width": 3024
+                                    },
+                                    "sizes": {
+                                      "large": {
+                                        "h": 1080,
+                                        "resize": "fit",
+                                        "w": 2048
+                                      },
+                                      "medium": {
+                                        "h": 633,
+                                        "resize": "fit",
+                                        "w": 1200
+                                      },
+                                      "small": {
+                                        "h": 358,
+                                        "resize": "fit",
+                                        "w": 680
+                                      },
+                                      "thumb": {
+                                        "h": 150,
+                                        "resize": "crop",
+                                        "w": 150
+                                      }
+                                    },
+                                    "type": "photo",
+                                    "url": "https://example.com/post/143"
+                                  }
+                                ]
+                              },
+                              "favorite_count": 2555,
+                              "favorited": false,
+                              "full_text": "Sample text",
+                              "id_str": "1000000000000000144",
+                              "is_quote_status": true,
+                              "lang": "en",
+                              "possibly_sensitive": false,
+                              "possibly_sensitive_editable": true,
+                              "quote_count": 9,
+                              "quoted_status_id_str": "REDACTED",
+                              "quoted_status_permalink": {
+                                "display": "x.com/jonaasw1/statu\u2026",
+                                "expanded": "https://example.com/post/145",
+                                "url": "https://example.com/post/146"
+                              },
+                              "reply_count": 19,
+                              "retweet_count": 415,
+                              "retweeted": false,
+                              "user_id_str": "1000000000000000147"
+                            },
+                            "note_tweet": {
+                              "is_expandable": true,
+                              "note_tweet_results": {
+                                "result": {
+                                  "entity_set": {
+                                    "hashtags": [],
+                                    "smarttags": [],
+                                    "symbols": [],
+                                    "urls": [
+                                      {
+                                        "display_url": "Sample text",
+                                        "expanded_url": "https://example.com/asset/148",
+                                        "indices": [
+                                          28,
+                                          51
+                                        ],
+                                        "url": "https://example.com/post/149"
+                                      },
+                                      {
+                                        "display_url": "Sample text",
+                                        "expanded_url": "https://example.com/asset/150",
+                                        "indices": [
+                                          69,
+                                          92
+                                        ],
+                                        "url": "https://example.com/post/151"
+                                      },
+                                      {
+                                        "display_url": "Sample text",
+                                        "expanded_url": "https://example.com/asset/152",
+                                        "indices": [
+                                          119,
+                                          142
+                                        ],
+                                        "url": "https://example.com/post/153"
+                                      },
+                                      {
+                                        "display_url": "Sample text",
+                                        "expanded_url": "https://example.com/asset/154",
+                                        "indices": [
+                                          162,
+                                          185
+                                        ],
+                                        "url": "https://example.com/post/155"
+                                      },
+                                      {
+                                        "display_url": "Sample text",
+                                        "expanded_url": "https://example.com/asset/156",
+                                        "indices": [
+                                          211,
+                                          234
+                                        ],
+                                        "url": "https://example.com/post/157"
+                                      },
+                                      {
+                                        "display_url": "Sample text",
+                                        "expanded_url": "https://example.com/asset/158",
+                                        "indices": [
+                                          260,
+                                          283
+                                        ],
+                                        "url": "https://example.com/post/159"
+                                      },
+                                      {
+                                        "display_url": "Sample text",
+                                        "expanded_url": "https://example.com/asset/160",
+                                        "indices": [
+                                          322,
+                                          345
+                                        ],
+                                        "url": "https://example.com/post/161"
+                                      }
+                                    ],
+                                    "user_mentions": [
+                                      {
+                                        "id_str": "1000000000000000162",
+                                        "indices": [
+                                          417,
+                                          423
+                                        ],
+                                        "name": "Sample text",
+                                        "screen_name": "sampleuser"
+                                      },
+                                      {
+                                        "id_str": "1000000000000000163",
+                                        "indices": [
+                                          425,
+                                          433
+                                        ],
+                                        "name": "Sample text",
+                                        "screen_name": "sampleuser"
+                                      },
+                                      {
+                                        "id_str": "1000000000000000164",
+                                        "indices": [
+                                          435,
+                                          446
+                                        ],
+                                        "name": "Sample text",
+                                        "screen_name": "sampleuser"
+                                      },
+                                      {
+                                        "id_str": "1000000000000000165",
+                                        "indices": [
+                                          448,
+                                          457
+                                        ],
+                                        "name": "Sample text",
+                                        "screen_name": "sampleuser"
+                                      },
+                                      {
+                                        "id_str": "1000000000000000166",
+                                        "indices": [
+                                          459,
+                                          470
+                                        ],
+                                        "name": "Sample text",
+                                        "screen_name": "sampleuser"
+                                      },
+                                      {
+                                        "id_str": "1000000000000000167",
+                                        "indices": [
+                                          472,
+                                          483
+                                        ],
+                                        "name": "Sample text",
+                                        "screen_name": "sampleuser"
+                                      },
+                                      {
+                                        "id_str": "1000000000000000168",
+                                        "indices": [
+                                          485,
+                                          493
+                                        ],
+                                        "name": "Sample text",
+                                        "screen_name": "sampleuser"
+                                      }
+                                    ]
+                                  },
+                                  "id": "REDACTED",
+                                  "richtext": {
+                                    "richtext_tags": []
+                                  },
+                                  "text": "Sample text"
+                                }
+                              }
+                            },
+                            "quotedRefResult": {
+                              "result": {
+                                "__typename": "Tweet",
+                                "rest_id": "1000000000000000169"
+                              }
+                            },
+                            "rest_id": "1000000000000000170",
+                            "source": "Sample text",
+                            "unmention_data": {},
+                            "views": {
+                              "count": "270177",
+                              "state": "EnabledWithCount"
+                            }
+                          }
+                        },
+                        "rest_id": "1000000000000000171",
+                        "source": "Sample text",
+                        "unmention_data": {},
+                        "views": {
+                          "count": "250687",
+                          "state": "EnabledWithCount"
+                        }
+                      }
+                    }
+                  }
+                },
+                "entryId": "tweet-1000000000000000172",
+                "sortIndex": "1000000000000000173"
+              },
+              {
+                "content": {
+                  "__typename": "TimelineTimelineItem",
+                  "entryType": "TimelineTimelineItem",
+                  "itemContent": {
+                    "__typename": "TimelineTweet",
+                    "itemType": "TimelineTweet",
+                    "tweetDisplayType": "Tweet",
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "Tweet",
+                        "cashtag_attachments": [],
+                        "core": {
+                          "user_results": {
+                            "result": {
+                              "__typename": "User",
+                              "affiliates_highlighted_label": {},
+                              "avatar": {
+                                "image_url": "https://pbs.twimg.com/profile_images/1174/SAMPLE174.jpg"
+                              },
+                              "core": {
+                                "created_at": "REDACTED",
+                                "name": "Sample text",
+                                "screen_name": "sampleuser"
+                              },
+                              "dm_permissions": {
+                                "can_dm": false
+                              },
+                              "follow_request_sent": false,
+                              "has_graduated_access": true,
+                              "id": "REDACTED",
+                              "is_blue_verified": false,
+                              "legacy": {
+                                "default_profile": false,
+                                "default_profile_image": false,
+                                "description": "Sample text",
+                                "entities": {
+                                  "description": {},
+                                  "url": {
+                                    "urls": [
+                                      {
+                                        "display_url": "Sample text",
+                                        "expanded_url": "https://example.com/asset/175",
+                                        "indices": [
+                                          0,
+                                          23
+                                        ],
+                                        "url": "https://example.com/post/176"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "fast_followers_count": 0,
+                                "favourites_count": 979,
+                                "follow_request_sent": false,
+                                "followers_count": 70,
+                                "friends_count": 228,
+                                "has_custom_timelines": true,
+                                "is_translator": false,
+                                "listed_count": 2,
+                                "media_count": 30,
+                                "needs_phone_verification": false,
+                                "normal_followers_count": 70,
+                                "notifications": false,
+                                "possibly_sensitive": false,
+                                "profile_banner_url": "https://pbs.twimg.com/profile_images/1177/SAMPLE177.jpg",
+                                "profile_interstitial_type": "",
+                                "statuses_count": 164,
+                                "time_zone": "",
+                                "translator_type": "none",
+                                "url": "https://example.com/post/178",
+                                "utc_offset": 0,
+                                "want_retweets": false,
+                                "withheld_description": "",
+                                "withheld_scope": ""
+                              },
+                              "location": {
+                                "location": "Sample text"
+                              },
+                              "media_permissions": {
+                                "can_media_tag": true
+                              },
+                              "parody_commentary_fan_label": "None",
+                              "privacy": {
+                                "protected": false
+                              },
+                              "profile_bio": {
+                                "description": "Sample text"
+                              },
+                              "profile_image_shape": "Circle",
+                              "relationship_perspectives": {
+                                "blocked_by": false,
+                                "blocking": false,
+                                "followed_by": false,
+                                "following": false,
+                                "live_following": false,
+                                "muting": false
+                              },
+                              "rest_id": "1000000000000000179",
+                              "super_follow_eligible": false,
+                              "super_followed_by": false,
+                              "super_following": false,
+                              "verification": {
+                                "verified": false
+                              }
+                            }
+                          }
+                        },
+                        "edit_control": {
+                          "edit_tweet_ids": [
+                            "REDACTED"
+                          ],
+                          "editable_until_msecs": "REDACTED",
+                          "edits_remaining": "5",
+                          "is_edit_eligible": true
+                        },
+                        "grok_analysis_button": true,
+                        "grok_annotations": {
+                          "is_image_editable_by_grok": false
+                        },
+                        "grok_translated_post_with_availability": {
+                          "is_available": false
+                        },
+                        "is_translatable": false,
+                        "legacy": {
+                          "bookmark_count": 7,
+                          "bookmarked": true,
+                          "conversation_id_str": "1000000000000000180",
+                          "created_at": "REDACTED",
+                          "display_text_range": [
+                            0,
+                            101
+                          ],
+                          "entities": {
+                            "user_mentions": [
+                              {
+                                "id_str": "1000000000000000181",
+                                "indices": [
+                                  7,
+                                  15
+                                ],
+                                "name": "Sample text",
+                                "screen_name": "sampleuser"
+                              }
+                            ]
+                          },
+                          "favorite_count": 9,
+                          "favorited": false,
+                          "full_text": "Sample text",
+                          "id_str": "1000000000000000182",
+                          "is_quote_status": true,
+                          "lang": "en",
+                          "quote_count": 0,
+                          "quoted_status_id_str": "REDACTED",
+                          "quoted_status_permalink": {
+                            "display": "x.com/SergioBasurco/\u2026",
+                            "expanded": "https://example.com/post/183",
+                            "url": "https://example.com/post/184"
+                          },
+                          "reply_count": 0,
+                          "retweet_count": 0,
+                          "retweeted": false,
+                          "user_id_str": "1000000000000000185"
+                        },
+                        "quoted_status_result": {
+                          "result": {
+                            "__typename": "Tweet",
+                            "core": {
+                              "user_results": {
+                                "result": {
+                                  "__typename": "User",
+                                  "affiliates_highlighted_label": {},
+                                  "avatar": {
+                                    "image_url": "https://pbs.twimg.com/profile_images/1186/SAMPLE186.jpg"
+                                  },
+                                  "core": {
+                                    "created_at": "REDACTED",
+                                    "name": "Sample text",
+                                    "screen_name": "sampleuser"
+                                  },
+                                  "dm_permissions": {
+                                    "can_dm": false
+                                  },
+                                  "follow_request_sent": false,
+                                  "has_graduated_access": true,
+                                  "id": "REDACTED",
+                                  "is_blue_verified": false,
+                                  "legacy": {
+                                    "default_profile": false,
+                                    "default_profile_image": false,
+                                    "description": "Sample text",
+                                    "entities": {
+                                      "description": {},
+                                      "url": {
+                                        "urls": [
+                                          {
+                                            "display_url": "Sample text",
+                                            "expanded_url": "https://example.com/asset/187",
+                                            "indices": [
+                                              0,
+                                              23
+                                            ],
+                                            "url": "https://example.com/post/188"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "fast_followers_count": 0,
+                                    "favourites_count": 979,
+                                    "follow_request_sent": false,
+                                    "followers_count": 70,
+                                    "friends_count": 228,
+                                    "has_custom_timelines": true,
+                                    "is_translator": false,
+                                    "listed_count": 2,
+                                    "media_count": 30,
+                                    "needs_phone_verification": false,
+                                    "normal_followers_count": 70,
+                                    "notifications": false,
+                                    "possibly_sensitive": false,
+                                    "profile_banner_url": "https://pbs.twimg.com/profile_images/1189/SAMPLE189.jpg",
+                                    "profile_interstitial_type": "",
+                                    "statuses_count": 164,
+                                    "time_zone": "",
+                                    "translator_type": "none",
+                                    "url": "https://example.com/post/190",
+                                    "utc_offset": 0,
+                                    "want_retweets": false,
+                                    "withheld_description": "",
+                                    "withheld_scope": ""
+                                  },
+                                  "location": {
+                                    "location": "Sample text"
+                                  },
+                                  "media_permissions": {
+                                    "can_media_tag": true
+                                  },
+                                  "parody_commentary_fan_label": "None",
+                                  "privacy": {
+                                    "protected": false
+                                  },
+                                  "profile_bio": {
+                                    "description": "Sample text"
+                                  },
+                                  "profile_image_shape": "Circle",
+                                  "relationship_perspectives": {
+                                    "blocked_by": false,
+                                    "blocking": false,
+                                    "followed_by": false,
+                                    "following": false,
+                                    "live_following": false,
+                                    "muting": false
+                                  },
+                                  "rest_id": "1000000000000000191",
+                                  "super_follow_eligible": false,
+                                  "super_followed_by": false,
+                                  "super_following": false,
+                                  "verification": {
+                                    "verified": false
+                                  }
+                                }
+                              }
+                            },
+                            "edit_control": {
+                              "edit_tweet_ids": [
+                                "REDACTED"
+                              ],
+                              "editable_until_msecs": "REDACTED",
+                              "edits_remaining": "5",
+                              "is_edit_eligible": false
+                            },
+                            "grok_analysis_button": true,
+                            "grok_translated_post_with_availability": {
+                              "is_available": false
+                            },
+                            "is_translatable": false,
+                            "legacy": {
+                              "bookmark_count": 233,
+                              "bookmarked": false,
+                              "conversation_id_str": "1000000000000000192",
+                              "created_at": "REDACTED",
+                              "display_text_range": [
+                                0,
+                                81
+                              ],
+                              "entities": {
+                                "media": [
+                                  {
+                                    "additional_media_info": {
+                                      "monetizable": false
+                                    },
+                                    "allow_download_status": {
+                                      "allow_download": true
+                                    },
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/post/193",
+                                    "ext_media_availability": {
+                                      "status": "Available"
+                                    },
+                                    "id_str": "1000000000000000194",
+                                    "indices": [
+                                      82,
+                                      105
+                                    ],
+                                    "media_key": "REDACTED",
+                                    "media_results": {
+                                      "result": {
+                                        "media_key": "REDACTED"
+                                      }
+                                    },
+                                    "media_url_https": "https://pbs.twimg.com/media/SAMPLE195.jpg",
+                                    "original_info": {
+                                      "focus_rects": [],
+                                      "height": 1978,
+                                      "width": 1978
+                                    },
+                                    "sizes": {
+                                      "large": {
+                                        "h": 1978,
+                                        "resize": "fit",
+                                        "w": 1978
+                                      },
+                                      "medium": {
+                                        "h": 1200,
+                                        "resize": "fit",
+                                        "w": 1200
+                                      },
+                                      "small": {
+                                        "h": 680,
+                                        "resize": "fit",
+                                        "w": 680
+                                      },
+                                      "thumb": {
+                                        "h": 150,
+                                        "resize": "crop",
+                                        "w": 150
+                                      }
+                                    },
+                                    "type": "video",
+                                    "url": "https://example.com/post/196",
+                                    "video_info": {
+                                      "aspect_ratio": [
+                                        1,
+                                        1
+                                      ],
+                                      "duration_millis": 13485,
+                                      "variants": [
+                                        {
+                                          "content_type": "application/x-mpegURL",
+                                          "url": "https://video.twimg.com/amplify_video/1197/vid/720x1280/SAMPLE197.m3u8?tag=12"
+                                        },
+                                        {
+                                          "bitrate": 432000,
+                                          "content_type": "video/mp4",
+                                          "url": "https://video.twimg.com/amplify_video/1198/vid/720x1280/SAMPLE198.mp4?tag=12"
+                                        },
+                                        {
+                                          "bitrate": 832000,
+                                          "content_type": "video/mp4",
+                                          "url": "https://video.twimg.com/amplify_video/1199/vid/720x1280/SAMPLE199.mp4?tag=12"
+                                        },
+                                        {
+                                          "bitrate": 1280000,
+                                          "content_type": "video/mp4",
+                                          "url": "https://video.twimg.com/amplify_video/1200/vid/720x1280/SAMPLE200.mp4?tag=12"
+                                        }
+                                      ]
+                                    }
+                                  }
+                                ]
+                              },
+                              "extended_entities": {
+                                "media": [
+                                  {
+                                    "additional_media_info": {
+                                      "monetizable": false
+                                    },
+                                    "allow_download_status": {
+                                      "allow_download": true
+                                    },
+                                    "display_url": "Sample text",
+                                    "expanded_url": "https://example.com/post/201",
+                                    "ext_media_availability": {
+                                      "status": "Available"
+                                    },
+                                    "id_str": "1000000000000000202",
+                                    "indices": [
+                                      82,
+                                      105
+                                    ],
+                                    "media_key": "REDACTED",
+                                    "media_results": {
+                                      "result": {
+                                        "media_key": "REDACTED"
+                                      }
+                                    },
+                                    "media_url_https": "https://pbs.twimg.com/media/SAMPLE203.jpg",
+                                    "original_info": {
+                                      "focus_rects": [],
+                                      "height": 1978,
+                                      "width": 1978
+                                    },
+                                    "sizes": {
+                                      "large": {
+                                        "h": 1978,
+                                        "resize": "fit",
+                                        "w": 1978
+                                      },
+                                      "medium": {
+                                        "h": 1200,
+                                        "resize": "fit",
+                                        "w": 1200
+                                      },
+                                      "small": {
+                                        "h": 680,
+                                        "resize": "fit",
+                                        "w": 680
+                                      },
+                                      "thumb": {
+                                        "h": 150,
+                                        "resize": "crop",
+                                        "w": 150
+                                      }
+                                    },
+                                    "type": "video",
+                                    "url": "https://example.com/post/204",
+                                    "video_info": {
+                                      "aspect_ratio": [
+                                        1,
+                                        1
+                                      ],
+                                      "duration_millis": 13485,
+                                      "variants": [
+                                        {
+                                          "content_type": "application/x-mpegURL",
+                                          "url": "https://video.twimg.com/amplify_video/1205/vid/720x1280/SAMPLE205.m3u8?tag=12"
+                                        },
+                                        {
+                                          "bitrate": 432000,
+                                          "content_type": "video/mp4",
+                                          "url": "https://video.twimg.com/amplify_video/1206/vid/720x1280/SAMPLE206.mp4?tag=12"
+                                        },
+                                        {
+                                          "bitrate": 832000,
+                                          "content_type": "video/mp4",
+                                          "url": "https://video.twimg.com/amplify_video/1207/vid/720x1280/SAMPLE207.mp4?tag=12"
+                                        },
+                                        {
+                                          "bitrate": 1280000,
+                                          "content_type": "video/mp4",
+                                          "url": "https://video.twimg.com/amplify_video/1208/vid/720x1280/SAMPLE208.mp4?tag=12"
+                                        }
+                                      ]
+                                    }
+                                  }
+                                ]
+                              },
+                              "favorite_count": 243,
+                              "favorited": false,
+                              "full_text": "Sample text",
+                              "id_str": "1000000000000000209",
+                              "is_quote_status": false,
+                              "lang": "en",
+                              "possibly_sensitive": false,
+                              "possibly_sensitive_editable": true,
+                              "quote_count": 2,
+                              "reply_count": 11,
+                              "retweet_count": 15,
+                              "retweeted": false,
+                              "user_id_str": "1000000000000000210"
+                            },
+                            "rest_id": "1000000000000000211",
+                            "source": "Sample text",
+                            "unmention_data": {},
+                            "views": {
+                              "count": "27897",
+                              "state": "EnabledWithCount"
+                            }
+                          }
+                        },
+                        "rest_id": "1000000000000000212",
+                        "source": "Sample text",
+                        "unmention_data": {},
+                        "views": {
+                          "count": "810",
+                          "state": "EnabledWithCount"
+                        }
+                      }
+                    }
+                  }
+                },
+                "entryId": "tweet-1000000000000000213",
+                "sortIndex": "1000000000000000214"
+              },
+              {
+                "content": {
+                  "__typename": "TimelineTimelineCursor",
+                  "cursorType": "Top",
+                  "entryType": "TimelineTimelineCursor",
+                  "value": "Sample text"
+                },
+                "entryId": "cursor-top-2215",
+                "sortIndex": "1000000000000000216"
+              },
+              {
+                "content": {
+                  "__typename": "TimelineTimelineCursor",
+                  "cursorType": "Bottom",
+                  "entryType": "TimelineTimelineCursor",
+                  "stopOnEmptyResponse": true,
+                  "value": "Sample text"
+                },
+                "entryId": "cursor-bottom-2217",
+                "sortIndex": "1000000000000000218"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

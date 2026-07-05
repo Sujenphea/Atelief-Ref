@@ -5,8 +5,9 @@
 // (platform/originalURL/authorHandle/authorName/title/rawMetadata); collectionId
 // is omitted so the app routes to its default (Unsorted) folder.
 
-export const DEFAULT_ENDPOINT = "http://127.0.0.1:47321/ingest";
-export const DEFAULT_VIDEO_ENDPOINT = "http://127.0.0.1:47321/ingest-video";
+export const DEFAULT_BASE = "http://127.0.0.1:47321";
+export const DEFAULT_ENDPOINT = `${DEFAULT_BASE}/ingest`;
+export const DEFAULT_VIDEO_ENDPOINT = `${DEFAULT_BASE}/ingest-video`;
 export const TOKEN_HEADER = "X-Atelier-Token";
 export const PROVENANCE_HEADER = "X-Atelier-Provenance";
 
@@ -28,12 +29,17 @@ export function normalizeProvenance(provenance) {
   };
 }
 
-/** Build the JSON body for `POST /ingest` from provenance + a base64 image. */
-export function buildCaptureRequest(provenance, imageBase64) {
-  return {
+/** Build the JSON body for `POST /ingest` from provenance + a base64 image.
+ * `jobId`+`sourceId` (bulk import, 3A) are included ONLY when present, so a
+ * single-item capture sends the exact same body it always did. */
+export function buildCaptureRequest(provenance, imageBase64, { jobId = null, sourceId = null } = {}) {
+  const request = {
     image: imageBase64,
     provenance: normalizeProvenance(provenance),
   };
+  if (jobId) request.jobId = jobId;
+  if (sourceId) request.sourceId = sourceId;
+  return request;
 }
 
 /**
@@ -81,8 +87,10 @@ export function base64Utf8(str) {
  * server's `VideoCaptureHeader` ({ provenance }). collectionId is omitted so the
  * app routes to its default (Unsorted) folder, and `mediaUrl`/`mediaKind` (client
  * hints) are not sent — only the wire provenance the server expects. */
-export function buildProvenanceHeader(provenance) {
+export function buildProvenanceHeader(provenance, { jobId = null, sourceId = null } = {}) {
   const header = { provenance: normalizeProvenance(provenance) };
+  if (jobId) header.jobId = jobId;
+  if (sourceId) header.sourceId = sourceId;
   return base64Utf8(JSON.stringify(header));
 }
 

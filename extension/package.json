@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Chrome MV3 extension that captures the current post/pin to ref-atelier.",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "drift-check": "node scripts/drift-check.js"
   }
 }

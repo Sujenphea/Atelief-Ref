@@ -1,0 +1,15 @@
+{
+  "capturedAt": "2026-07-03",
+  "staleAfterDays": 30,
+  "markers": {
+    "x": {
+      "likesQueryId": "tl9f_I0xyREhFd5KMzuO7w",
+      "note": "queryIds rotate ~2-4 weeks; Bookmarks has its own. features blob is inherited via MAIN-world interception, never hardcoded."
+    },
+    "pinterest": {
+      "appVersion": "1df0da9",
+      "pwsHandler": "www/[username]/[slug].js",
+      "note": "The SOLE 403 gatekeeper on /resource/ is x-pinterest-pws-handler (verified live 019 T10); its value is a literal board-page route constant (brackets not interpolated). X-APP-VERSION is app-identifying but NOT the 403 trigger. Both scraped/hardcoded per resource; re-verify if a live sweep starts 403ing."
+    }
+  }
+}
