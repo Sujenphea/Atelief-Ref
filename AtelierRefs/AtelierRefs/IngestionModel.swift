@@ -194,6 +194,11 @@ final class IngestionModel: ObservableObject {
             self.isReady = true
             self.status = "Library ready — paste an image or drop a file."
 
+            // Any sweep still "open" at launch is abandoned (nothing is running yet),
+            // so reconcile it to paused — otherwise a tab closed mid-sweep last session
+            // would show as a phantom "running" job forever.
+            try? await services.pauseStaleOpenJobs(olderThan: 0, now: Date())
+
             await refreshFolders()
             loadContents(of: selectedFolderID)
             await startCaptureEndpoint(coordinator: coordinator, services: services)
@@ -297,6 +302,11 @@ final class IngestionModel: ObservableObject {
     /// the user accepts in-app.
     static let bulkConsentKey = "AtelierBulkConsentGranted"
 
+    /// An `open` sweep idle this long (seconds) is treated as interrupted and paused.
+    /// Set safely past the engine's 30s max item backoff so a live-but-throttled sweep
+    /// isn't falsely reconciled; if it is, the browser loop halts cleanly and resumes.
+    static let staleSweepSeconds: TimeInterval = 90
+
     /// Whether the user has accepted the bulk-import notice. Gates the first sweep
     /// server-side (the `JobRoutes` consent closure reads the persisted flag).
     @Published private(set) var bulkConsentGranted =
@@ -344,6 +354,11 @@ final class IngestionModel: ObservableObject {
     func refreshSweeps() async {
         guard let services else { return }
         do {
+            // A sweep whose browser tab/worker died can't close its own job. Treat one
+            // that hasn't advanced in `staleSweepSeconds` (safely past the 30s max item
+            // backoff) as interrupted → paused, so it stops reading as "running". A
+            // still-alive sweep halts cleanly on its next relay (7A jobStatus feedback).
+            try? await services.pauseStaleOpenJobs(olderThan: Self.staleSweepSeconds, now: Date())
             let jobs = try await services.listJobs()
             var loaded: [SweepProgress] = []
             for job in jobs {

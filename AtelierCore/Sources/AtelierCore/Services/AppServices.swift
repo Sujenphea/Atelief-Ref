@@ -744,6 +744,35 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// Pause every `open` sweep whose last activity (`updatedAt`) is older than
+    /// `seconds` before `now`. A browser sweep whose tab/worker dies can no longer
+    /// send its own close, so its job would otherwise linger forever as a phantom
+    /// "running" entry; this reconciles it to `paused` (resumable). `seconds == 0`
+    /// pauses ALL open jobs — used at launch, when no sweep can possibly be running.
+    /// Reads first and only opens a write when something is actually stale (the
+    /// progress poll calls this each tick). `now` is injected for deterministic tests.
+    @discardableResult
+    public func pauseStaleOpenJobs(olderThan seconds: TimeInterval, now: Date) async throws -> [UUID] {
+        let cutoff = now.addingTimeInterval(-seconds)
+        let staleIDs: [UUID] = try await read { db in
+            try Job
+                .filter(Column("status") == JobStatus.open.rawValue)
+                .fetchAll(db)
+                .filter { $0.updatedAt <= cutoff }
+                .map(\.id)
+        }
+        guard !staleIDs.isEmpty else { return [] }
+        try await write { db in
+            for id in staleIDs {
+                guard var job = try Job.fetchOne(db, key: Self.key(id)) else { continue }
+                job.status = .paused
+                job.updatedAt = now
+                try job.update(db)
+            }
+        }
+        return staleIDs
+    }
+
     /// One job by id (progress UI). `.notFound` if absent. Read.
     public func getJob(id: UUID) async throws -> Job {
         try await read { db in

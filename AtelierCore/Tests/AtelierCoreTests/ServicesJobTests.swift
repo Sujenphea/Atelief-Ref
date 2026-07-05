@@ -210,6 +210,56 @@ struct ServicesJobTests {
         #expect(try await services.jobStatus(forJob: job.id) == .paused)
     }
 
+    // MARK: pauseStaleOpenJobs (abandoned-sweep reconcile)
+
+    @Test("pauseStaleOpenJobs(olderThan: 0) pauses every open sweep, sparing closed ones")
+    func reconcileAllOpenAtLaunch() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let open1 = try await services.createJob(platform: .pinterest, scope: "board:1")
+        let open2 = try await services.createJob(platform: .twitter)
+        let done = try await services.createJob(platform: .pinterest)
+        try await services.setJobStatus(jobID: done.id, to: .complete)
+
+        // At launch nothing can be running → every open job is abandoned.
+        let changed = try await services.pauseStaleOpenJobs(olderThan: 0, now: Date())
+        #expect(Set(changed) == Set([open1.id, open2.id]))
+
+        let byID = Dictionary(uniqueKeysWithValues: try await services.listJobs().map { ($0.id, $0) })
+        #expect(byID[open1.id]?.status == .paused)
+        #expect(byID[open2.id]?.status == .paused)
+        #expect(byID[done.id]?.status == .complete)   // a closed job is never touched
+    }
+
+    @Test("pauseStaleOpenJobs spares a recently-active open sweep, pauses a stalled one")
+    func reconcileByAge() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let job = try await services.createJob(platform: .pinterest)
+        let t0 = try #require(try await services.listJobs().first { $0.id == job.id }).updatedAt
+
+        // 10s of inactivity, threshold 90 → still active, spared (no write).
+        let spared = try await services.pauseStaleOpenJobs(olderThan: 90, now: t0.addingTimeInterval(10))
+        #expect(spared.isEmpty)
+        #expect(try await services.jobStatus(forJob: job.id) == .open)
+
+        // 200s of inactivity → past the threshold → paused (resumable).
+        let paused = try await services.pauseStaleOpenJobs(olderThan: 90, now: t0.addingTimeInterval(200))
+        #expect(paused == [job.id])
+        #expect(try await services.jobStatus(forJob: job.id) == .paused)
+    }
+
+    @Test("pauseStaleOpenJobs is a no-op (no rows changed) when nothing is open")
+    func reconcileNoop() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let job = try await services.createJob(platform: .pinterest)
+        try await services.setJobStatus(jobID: job.id, to: .complete)
+        let changed = try await services.pauseStaleOpenJobs(olderThan: 0, now: Date())
+        #expect(changed.isEmpty)
+        #expect(try await services.jobStatus(forJob: job.id) == .complete)
+    }
+
     // MARK: not-found paths
 
     @Test("job operations on an absent job throw notFound")

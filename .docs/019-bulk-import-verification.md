@@ -154,7 +154,13 @@ sqlite3 "$LIB/library.sqlite" '.tables'
 - **On failure:** if blobs grew, dedup broke — capture the two blob counts and the
   known-sources response body.
 
-### T4 — Resumability: kill the tab mid-sweep
+### T4 — Resumability: kill the tab mid-sweep — ✅ DONE ([changelog 066](../.change-log/066-bulk-checkpoint-stable-key.md))
+**Result (2026-07-06):** first pass exposed that the checkpoint was keyed by `jobId`,
+so a re-run (new job) never read the saved cursor — it re-enumerated + dedup-skipped
+(correct, wasteful) and leaked a checkpoint per run. Fixed to a **stable per-board
+key** (`atelier:bulk:${platform}:${boardId}`), cleared on clean completion. Re-verified
+on test3: kill → exactly the stable key present → re-run resumed → completed → key
+removed.
 **Goal:** interrupting the page, then re-sweeping, resumes without duplicates.
 - [ ] Start a sweep on a **larger** board; ~⅓ through, **close the tab**.
 - [ ] Note the checkpoint (`chrome.storage.local.get`) — cursor + watermark present.
