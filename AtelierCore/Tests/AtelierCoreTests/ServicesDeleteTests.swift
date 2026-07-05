@@ -202,6 +202,112 @@ struct ServicesDeleteTests {
         #expect(try await jobIngestedCount(services, job.id) == 1)
     }
 
+    // MARK: reconcileOrphanedKnownItems — proactive known ⟺ blob-present GC
+    //
+    // deleteAssets forgets a blob's ledger rows the instant it orphans. But an asset
+    // removed by ANY other path (a delete predating the forget feature, a future
+    // non-deleteAssets caller) strands its job_item as stale-"known" — and a re-sweep
+    // would dedup-skip that source forever despite the bytes being gone. The reconcile
+    // sweep repairs that; these prove it forgets exactly the orphans, spares the live,
+    // recomputes counts, and no-ops when clean.
+
+    @Test("reconcile forgets a known item whose blob has no backing asset")
+    func reconcileForgetsOrphan() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        // A ledger row marked known, but no asset ever carried its blob — exactly the
+        // stale state a pre-forget delete would leave behind.
+        let job = try await services.createJob(platform: .pinterest, scope: "board:1")
+        try await services.recordJobItem(
+            jobID: job.id, sourceID: "pin-A", status: .ingested, blobHash: "dead01")
+        #expect(try await services.knownSourceIDs(forJob: job.id).contains("pin-A"))
+        #expect(try await jobIngestedCount(services, job.id) == 1)
+
+        let reconciled = try await services.reconcileOrphanedKnownItems()
+        #expect(reconciled == [job.id])
+        #expect(try await services.knownSourceIDs(forJob: job.id).isEmpty) // re-sweep re-ingests
+        #expect(try await jobIngestedCount(services, job.id) == 0)         // count recomputed
+    }
+
+    @Test("reconcile spares a known item still backed by a live asset")
+    func reconcileSparesLiveBacked() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let r = try await services.ingest(
+            assetDraft(hash: "11ee"),
+            from: sourceDraft(url: "https://pinterest.com/pin/A", platform: .pinterest),
+            into: c.id)
+        let job = try await services.createJob(platform: .pinterest)
+        try await services.recordJobItem(
+            jobID: job.id, sourceID: "pin-A", status: .ingested, blobHash: "11ee")
+
+        let reconciled = try await services.reconcileOrphanedKnownItems()
+        #expect(reconciled.isEmpty)                                   // nothing orphaned
+        #expect(try await services.knownSourceIDs(forJob: job.id).contains("pin-A"))
+        #expect(try await jobIngestedCount(services, job.id) == 1)
+        #expect(try assetCount(temp) == 1)
+        _ = r
+    }
+
+    @Test("reconcile repairs an asset removed OUTSIDE deleteAssets, per-job scoped")
+    func reconcileAfterExternalRemoval() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        // One job with a LIVE item and an ORPHAN item; a second job fully live.
+        let gone = try await services.ingest(
+            assetDraft(hash: "9a9a"),
+            from: sourceDraft(url: "https://pinterest.com/pin/G", platform: .pinterest),
+            into: c.id)
+        _ = try await services.ingest(
+            assetDraft(hash: "7b7b"),
+            from: sourceDraft(url: "https://pinterest.com/pin/L", platform: .pinterest),
+            into: c.id)
+        let job1 = try await services.createJob(platform: .pinterest, scope: "board:1")
+        try await services.recordJobItem(
+            jobID: job1.id, sourceID: "pin-G", status: .ingested, blobHash: "9a9a")
+        try await services.recordJobItem(
+            jobID: job1.id, sourceID: "pin-L", status: .ingested, blobHash: "7b7b")
+        let job2 = try await services.createJob(platform: .pinterest, scope: "board:2")
+        try await services.recordJobItem(
+            jobID: job2.id, sourceID: "pin-L", status: .deduped, blobHash: "7b7b")
+
+        // Remove one asset WITHOUT going through deleteAssets → its blob orphans, but
+        // its ledger rows are left stranded (the exact gap the reconcile closes).
+        try await temp.database.write { db in
+            _ = try Asset
+                .filter(Column("blob_hash") == "9a9a")
+                .deleteAll(db)
+        }
+
+        let reconciled = try await services.reconcileOrphanedKnownItems()
+        #expect(reconciled == [job1.id])                              // only job1 lost a row
+        #expect(try await services.knownSourceIDs(forJob: job1.id) == ["pin-L"]) // orphan gone
+        #expect(try await jobIngestedCount(services, job1.id) == 1)   // recomputed 2 → 1
+        #expect(try await services.knownSourceIDs(forJob: job2.id) == ["pin-L"]) // untouched
+        #expect(try await jobIngestedCount(services, job2.id) == 1)
+        _ = gone
+    }
+
+    @Test("reconcile is a no-op when every known item is backed (empty result)")
+    func reconcileNoOpWhenClean() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let r = try await services.ingest(
+            assetDraft(hash: "c0c0"),
+            from: sourceDraft(url: "https://pinterest.com/pin/A", platform: .pinterest),
+            into: c.id)
+        let job = try await services.createJob(platform: .pinterest)
+        try await services.recordJobItem(
+            jobID: job.id, sourceID: "pin-A", status: .ingested, blobHash: "c0c0")
+
+        #expect(try await services.reconcileOrphanedKnownItems().isEmpty)
+        #expect(try await jobIngestedCount(services, job.id) == 1)
+        _ = r
+    }
+
     @Test("shared source: a source kept by another asset is NOT garbage-collected")
     func sharedSourceKept() async throws {
         let (services, temp) = try makeServices()

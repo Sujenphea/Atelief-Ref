@@ -408,45 +408,56 @@ public final class AppServices: Sendable {
 
             // A blob is reclaimable only when no remaining asset shares its hash.
             var orphans: [OrphanedBlob] = []
-            var forgottenJobKeys: Set<String> = []
             for hash in orderedHashes {
                 let stillReferenced = try Asset
                     .filter(Column("blob_hash") == hash)
                     .fetchCount(db) > 0
                 if !stillReferenced {
                     orphans.append(OrphanedBlob(blobHash: hash, mimeType: mimeByHash[hash]!))
-                    // "Delete is forgotten": the bytes are leaving the store, so drop
-                    // the bulk-import ledger rows that marked this content known — a
-                    // future sweep then re-ingests it. Forgetting is keyed on blob
-                    // ORPHANING (not per-asset) precisely because known-sources means
-                    // "the bytes are in the store": while any asset still shares the
-                    // blob, the content is present and legitimately known.
-                    let touched = try String.fetchAll(
-                        db, sql: "SELECT DISTINCT job_id FROM job_item WHERE blob_hash = ?",
-                        arguments: [hash])
-                    if !touched.isEmpty {
-                        try db.execute(
-                            sql: "DELETE FROM job_item WHERE blob_hash = ?", arguments: [hash])
-                        forgottenJobKeys.formUnion(touched)
-                    }
                 }
             }
-
-            // Keep each touched job's denormalized `ingested_count` drift-free — the
-            // same in-transaction recompute invariant `recordJobItem` maintains.
-            for jobKey in forgottenJobKeys {
-                let landed = try Int.fetchOne(db, sql: """
-                    SELECT count(*) FROM job_item WHERE job_id = ? AND status IN (?, ?)
-                    """, arguments: [
-                        jobKey,
-                        JobItemStatus.ingested.rawValue, JobItemStatus.deduped.rawValue,
-                    ]) ?? 0
-                try db.execute(
-                    sql: "UPDATE job SET ingested_count = ? WHERE id = ?",
-                    arguments: [landed, jobKey])
-            }
+            // "Delete is forgotten": the orphaned bytes are leaving the store, so drop
+            // the bulk-import ledger rows that marked this content known — a future
+            // sweep then re-ingests it. Keyed on blob ORPHANING (not per-asset): while
+            // any asset still shares the blob, the content is present and legitimately
+            // known.
+            try Self.forgetOrphanedKnownItems(orphans.map(\.blobHash), in: db)
             return orphans
         }
+    }
+
+    /// Forget every `job_item` whose blob is among `orphanedHashes` and recompute the
+    /// `ingested_count` of each job that loses rows — keeping the denormalized count
+    /// drift-free, the same in-transaction invariant `recordJobItem` maintains. Shared
+    /// by `deleteAssets` (reactive, on orphaning) and `reconcileOrphanedKnownItems`
+    /// (proactive GC). Returns the distinct job keys touched. Must run inside a write.
+    @discardableResult
+    private static func forgetOrphanedKnownItems(
+        _ orphanedHashes: [String], in db: Database
+    ) throws -> Set<String> {
+        var forgottenJobKeys: Set<String> = []
+        for hash in orphanedHashes {
+            let touched = try String.fetchAll(
+                db, sql: "SELECT DISTINCT job_id FROM job_item WHERE blob_hash = ?",
+                arguments: [hash])
+            if !touched.isEmpty {
+                try db.execute(
+                    sql: "DELETE FROM job_item WHERE blob_hash = ?", arguments: [hash])
+                forgottenJobKeys.formUnion(touched)
+            }
+        }
+        for jobKey in forgottenJobKeys {
+            let landed = try Int.fetchOne(db, sql: """
+                SELECT count(*) FROM job_item WHERE job_id = ? AND status IN (?, ?)
+                """, arguments: [
+                    jobKey,
+                    JobItemStatus.ingested.rawValue, JobItemStatus.deduped.rawValue,
+                ]) ?? 0
+            try db.execute(
+                sql: "UPDATE job SET ingested_count = ? WHERE id = ?",
+                arguments: [landed, jobKey])
+        }
+        return forgottenJobKeys
     }
 
     // MARK: - Reads (P16 — collection-scoped reads return full arrays)
@@ -771,6 +782,32 @@ public final class AppServices: Sendable {
             }
         }
         return staleIDs
+    }
+
+    /// Proactive GC of the `known ⟺ blob present` invariant. `deleteAssets` forgets a
+    /// blob's ledger rows the instant it orphans, but an asset removed by any OTHER
+    /// path (a delete predating the forget feature, a future non-`deleteAssets` caller)
+    /// strands its `job_item` as stale-"known" — and a later sweep would then
+    /// dedup-skip that source forever despite the bytes being gone, so it never
+    /// re-imports. This sweeps every `job_item` whose blob has no backing asset,
+    /// forgets it, and recomputes the affected jobs' counts. Reads first and only
+    /// writes when something is actually stale (called at launch). Returns the job ids
+    /// reconciled.
+    @discardableResult
+    public func reconcileOrphanedKnownItems() async throws -> [UUID] {
+        let orphanedHashes: [String] = try await read { db in
+            try String.fetchAll(db, sql: """
+                SELECT DISTINCT blob_hash FROM job_item
+                 WHERE blob_hash IS NOT NULL
+                   AND NOT EXISTS (
+                     SELECT 1 FROM asset WHERE asset.blob_hash = job_item.blob_hash)
+                """)
+        }
+        guard !orphanedHashes.isEmpty else { return [] }
+        let touched = try await write { db in
+            try Self.forgetOrphanedKnownItems(orphanedHashes, in: db)
+        }
+        return touched.compactMap { UUID(uuidString: $0) }
     }
 
     /// One job by id (progress UI). `.notFound` if absent. Read.

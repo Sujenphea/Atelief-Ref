@@ -199,6 +199,11 @@ final class IngestionModel: ObservableObject {
             // would show as a phantom "running" job forever.
             try? await services.pauseStaleOpenJobs(olderThan: 0, now: Date())
 
+            // Enforce known ⟺ blob present: forget any ledger row whose blob was
+            // removed outside deleteAssets, so a future sweep re-imports that source
+            // instead of dedup-skipping bytes that are gone.
+            try? await services.reconcileOrphanedKnownItems()
+
             await refreshFolders()
             loadContents(of: selectedFolderID)
             await startCaptureEndpoint(coordinator: coordinator, services: services)
