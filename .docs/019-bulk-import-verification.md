@@ -122,12 +122,13 @@ sqlite3 "$LIB/library.sqlite" '.tables'
 
 ## Test cases
 
-### T1 — Happy path: small Pinterest board *(the load-bearing case)*
+### T1 — Happy path: small Pinterest board *(the load-bearing case)* — ✅ DONE (2026-07-06)
 **Goal:** a whole small board (≈10–30 pins) ingests once, cleanly.
-> **Partial (2026-07-05):** ran green against a **single-pin** board →
-> `complete`, `ingested: 1`. That proves the item happy-path but NOT pagination /
-> cross-page dedup / resume (T3/T4). **Re-run on a ≥2-page board** (>25 pins) to cover
-> the paginator before ticking this.
+**Result:** closed during the T5 run — a **76-pin board** (spans ~3 BoardFeedResource
+pages, so the paginator is exercised) ingested **76/76 → `complete`**, 76 assets = 76
+distinct blobs = 76 sources, 0 partials. The full multi-page happy path is proven.
+> **Superseded partial (2026-07-05):** first pass was a single-pin board (`ingested: 1`),
+> which proved only the item happy-path, not pagination. The 76-pin run covers it.
 - [ ] Launch the Pinterest sweep (Gap 0). Watch the Sweeps tab count climb.
 - [ ] **Expect:** every pin lands; `job.status` ends `complete`; ingested count ==
   board's pin count; `sweep result: { ok: true, result: { status: "complete" … } }`.
@@ -135,14 +136,17 @@ sqlite3 "$LIB/library.sqlite" '.tables'
 - **On failure capture:** the `sweep result` object, page-console `log()` tail, SW
   console errors, and `SELECT status,COUNT(*) … GROUP BY status`.
 
-### T2 — Provenance correctness
+### T2 — Provenance correctness — ✅ DONE (2026-07-06, data-verified)
 **Goal:** ingested assets carry the right origin metadata.
-- [ ] After T1, pick 3 assets in the app inspector (one multi-image pin, one plain).
-- [ ] **Expect** each: platform=pinterest, correct `originalURL` (the pin URL),
-  author handle/name, and media URL pointing at the `/originals/` rewrite (not a
-  thumbnail size segment).
-- **On failure:** note which field is wrong vs the live pin; that isolates
-  `mapPinterestPin` / `toOriginals` / `makeProvenance`.
+**Result:** 76 ingested Pinterest sources checked. Each carries `platform=pinterest`,
+`original_url` = the canonical pin URL (`https://REDACTED/pin/{id}/`), and
+`author_handle`/`author_name` (`sujenphea0843` / `sujen`). The media URL isn't
+persisted (transient download detail — the `toOriginals` rewrite is extension-unit
+covered), so verified indirectly via **dimensions**: widths span 300–7500px (avg 1260),
+many >736 — Pinterest's thumbnail ladder caps at 736 (236/474/736), so anything wider
+must be the `/originals/` fetch; the small ones aren't ladder values either → true
+originals. No thumbnail-size assets present.
+- [x] platform / `original_url` / author fields correct; media = originals.
 
 ### T3 — Dedup-skip (re-run → zero re-downloads)
 **Goal:** re-sweeping the same board downloads nothing new.
@@ -170,15 +174,21 @@ removed.
 - **On failure:** capture the checkpoint before/after and the final blob count vs
   board size.
 
-### T5 — SW-death resilience: kill the SW mid-sweep *(the Phase-6 verify criterion)*
+### T5 — SW-death resilience: kill the SW mid-sweep *(the Phase-6 verify criterion)* — ✅ DONE (2026-07-06)
 **Goal:** the durable content-script loop survives the ephemeral SW.
-- [ ] Start a board sweep. Mid-run, on `chrome://extensions`, click **service worker →
-  terminate** (or just wait for its ~30s idle death between items).
-- [ ] **Expect:** the loop keeps going — the next item's relay call transparently
-  re-wakes the SW; the sweep still finishes `complete`. Page console `log()` keeps
-  advancing across the termination.
-- **On failure:** if the loop stalls, capture the page console at the stall and
-  whether the SW re-spawned on the next relay.
+**Result:** swept a 76-pin board; killed the SW mid-run via `chrome://serviceworker-internals`
+**Stop** (Chrome immediately re-spawns it on the next relay — the "keeps restarting"
+is the pass signal, and the SW console clearing on each respawn is just the fresh
+worker context, not a reset). The loop ran to completion regardless: job `complete`,
+`ingested_count = 76`, `job_item` = **76 ingested / 0 skipped / 0 failed**, 76 assets =
+76 distinct blobs (no dupes) = 76 sources, **0 not-fully-downloaded** (no partials).
+- [x] Loop survives SW termination; full board lands `complete`, no partial/dupe.
+> **Note (kill *once*):** repeatedly Stopping just re-clears the SW console and proves
+> nothing new — one kill establishes the resilience.
+> **Incidental T3 signal:** two re-launches after the 76 landed produced `complete`
+> jobs with `ingested_count = 0` and zero `job_item` rows — the whole board was already
+> known, so every source was download-skipped. (Formal T3 still wants the
+> known-sources call captured, but the dedup outcome is confirmed.)
 
 ### T6 — App-side pause / resume / cancel *(the "full working controls" decision)*
 **Goal:** the app buttons actually halt/resume a *running* browser sweep via the
@@ -201,12 +211,14 @@ per-item relay reply (`CaptureResponse.jobStatus` → `classifyIngestResult` hal
 - **On failure:** capture the failing network response and the engine's `counts`
   (retryableFailed vs permanentFailed) from the `sweep result`.
 
-### T8 — Progress accuracy
+### T8 — Progress accuracy — ✅ DONE (2026-07-06, data-verified)
 **Goal:** the Sweeps tab numbers match reality.
-- [ ] After any completed sweep, compare the tab's ingested / skipped / failed against
-  `job_item` GROUP BY and the on-disk blob delta.
-- [ ] **Expect:** ingested == new blobs; ingested+skipped+failed == items enumerated;
-  no drift between the polled view and the ledger.
+**Result:** on the healthy completed job (7aaf6d4c), all four counts coincide:
+`ingested_count` = 56 == known `job_item`s (56) == distinct `blob_hash`es (56) ==
+present `asset` rows (56). No drift. Bonus: jobs whose assets were later deleted read
+`ingested_count = 0` with zero `job_item` rows — the delete-forget recompute (065)
+keeps the polled count column truthful rather than leaving a stale high-water mark.
+- [x] ingested == blobs == assets; count column stays consistent post-delete.
 
 ### T9 — X bookmarks sweep (interception path)
 **Goal:** the MAIN-world fetch hook + push→pull source ingest a small bookmarks set.
