@@ -24,6 +24,7 @@ private func makeMigratedQueue() throws -> DatabaseQueue {
 /// The set of base (non-FTS, non-shadow) tables the schema must contain.
 private let expectedTables = [
     "source", "asset", "collection", "collection_item", "tag", "asset_tag",
+    "job", "job_item",
 ]
 
 /// `PRAGMA table_info` → column name ⇒ notnull flag (1 = NOT NULL).
@@ -86,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2"]
+    static let committedIdentifiers = ["v1", "v2", "v3"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -709,5 +710,188 @@ struct FolderRoundTripTests {
         }
         #expect(fetched == root)
         #expect(fetched?.parentCollectionID == nil)
+    }
+}
+
+// MARK: - v3 · bulk-import job ledger (3A)
+
+@Suite("Migration v3: job / job_item schema shape")
+struct JobSchemaShapeTests {
+
+    @Test("job columns: names present, required NOT NULL, optionals nullable")
+    func jobColumns() throws {
+        let dbQueue = try makeMigratedQueue()
+        let nn = try dbQueue.read { try columnNotNull($0, table: "job") }
+        let expected = ["id", "platform", "scope", "status", "total_estimate",
+                        "ingested_count", "created_at", "updated_at"]
+        for c in expected { #expect(nn[c] != nil, "job missing \(c)") }
+        // Required.
+        #expect(nn["id"] == 1)
+        #expect(nn["platform"] == 1)
+        #expect(nn["status"] == 1)
+        #expect(nn["ingested_count"] == 1)
+        #expect(nn["created_at"] == 1)
+        #expect(nn["updated_at"] == 1)
+        // Optional.
+        #expect(nn["scope"] == 0)
+        #expect(nn["total_estimate"] == 0)
+    }
+
+    @Test("job_item columns: FK + status + updated_at NOT NULL, url/blob nullable")
+    func jobItemColumns() throws {
+        let dbQueue = try makeMigratedQueue()
+        let nn = try dbQueue.read { try columnNotNull($0, table: "job_item") }
+        let expected = ["job_id", "source_id", "source_url", "status",
+                        "blob_hash", "updated_at"]
+        for c in expected { #expect(nn[c] != nil, "job_item missing \(c)") }
+        #expect(nn["job_id"] == 1)
+        #expect(nn["source_id"] == 1)
+        #expect(nn["status"] == 1)
+        #expect(nn["updated_at"] == 1)
+        #expect(nn["source_url"] == 0)
+        #expect(nn["blob_hash"] == 0)
+    }
+
+    @Test("job_item has a composite PK over (job_id, source_id) and no own id")
+    func jobItemCompositePK() throws {
+        let dbQueue = try makeMigratedQueue()
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(job_item)")
+            let pkCols = Set(rows.filter { ($0["pk"] as Int) > 0 }.map { $0["name"] as String })
+            #expect(pkCols == ["job_id", "source_id"])
+            #expect(!rows.contains { ($0["name"] as String) == "id" })
+        }
+    }
+
+    @Test("v3 indices exist (source_id skip lookup + platform filter)")
+    func indicesExist() throws {
+        let dbQueue = try makeMigratedQueue()
+        let names = try dbQueue.read { db in
+            try String.fetchSet(db, sql: "SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        #expect(names.contains("index_job_item_on_source_id"))
+        #expect(names.contains("index_job_on_platform"))
+    }
+}
+
+@Suite("Migration v3: job_item FK behaviour")
+struct JobItemForeignKeyTests {
+
+    private func count(_ db: Database, _ sql: String, _ args: StatementArguments) throws -> Int {
+        try Int.fetchOne(db, sql: sql, arguments: args) ?? -1
+    }
+
+    private func seedJob(_ db: Database) throws -> String {
+        let jobID = newID()
+        try db.execute(sql: """
+            INSERT INTO job (id, platform, scope, status, total_estimate, ingested_count, created_at, updated_at)
+            VALUES (?, 'pinterest', 'board:1', 'open', NULL, 0, ?, ?)
+            """, arguments: [jobID, ts, ts])
+        return jobID
+    }
+
+    @Test("inserting a job_item with a non-existent job_id is rejected")
+    func danglingJobIDRejected() throws {
+        let dbQueue = try makeMigratedQueue()
+        #expect(throws: DatabaseError.self) {
+            try dbQueue.write { db in
+                try db.execute(sql: """
+                    INSERT INTO job_item (job_id, source_id, status, updated_at)
+                    VALUES ('no-such-job', 'pin-1', 'ingested', ?)
+                    """, arguments: [ts])
+            }
+        }
+    }
+
+    @Test("deleting a job cascades its items (F4-style)")
+    func deleteJobCascadesItems() throws {
+        let dbQueue = try makeMigratedQueue()
+        let jobID = try dbQueue.write { db -> String in
+            let id = try seedJob(db)
+            try db.execute(sql: """
+                INSERT INTO job_item (job_id, source_id, status, updated_at)
+                VALUES (?, 'pin-1', 'ingested', ?), (?, 'pin-2', 'skipped', ?)
+                """, arguments: [id, ts, id, ts])
+            return id
+        }
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM job WHERE id = ?", arguments: [jobID])
+        }
+        try dbQueue.read { db in
+            let items = try count(db, "SELECT count(*) FROM job_item WHERE job_id = ?", [jobID])
+            #expect(items == 0)
+        }
+    }
+
+    @Test("the composite PK rejects a duplicate (job_id, source_id)")
+    func duplicateItemRejected() throws {
+        let dbQueue = try makeMigratedQueue()
+        let jobID = try dbQueue.write { db in try seedJob(db) }
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO job_item (job_id, source_id, status, updated_at)
+                VALUES (?, 'pin-1', 'ingested', ?)
+                """, arguments: [jobID, ts])
+        }
+        #expect(throws: DatabaseError.self) {
+            try dbQueue.write { db in
+                try db.execute(sql: """
+                    INSERT INTO job_item (job_id, source_id, status, updated_at)
+                    VALUES (?, 'pin-1', 'deduped', ?)
+                    """, arguments: [jobID, ts])
+            }
+        }
+    }
+}
+
+@Suite("Migration v3: Job / JobItem records round-trip")
+struct JobRoundTripTests {
+
+    private let createdAt = Date(timeIntervalSince1970: 1_700_000_100.250)
+    private let updatedAt = Date(timeIntervalSince1970: 1_700_000_200.500)
+
+    @Test("a Job with optionals set round-trips insert + fetch equal")
+    func jobRoundTrips() throws {
+        let dbQueue = try makeMigratedQueue()
+        let job = Job(
+            id: UUID(), platform: .twitter, scope: "bookmarks", status: .paused,
+            totalEstimate: 42, ingestedCount: 7,
+            createdAt: createdAt, updatedAt: updatedAt)
+        try dbQueue.write { try job.insert($0) }
+        let fetched = try dbQueue.read { db in try Job.fetchOne(db, key: job.id.uuidString.lowercased()) }
+        #expect(fetched == job)
+    }
+
+    @Test("a Job with nil optionals round-trips")
+    func jobNilOptionalsRoundTrips() throws {
+        let dbQueue = try makeMigratedQueue()
+        let job = Job(
+            id: UUID(), platform: .pinterest, status: .open,
+            createdAt: createdAt, updatedAt: updatedAt)
+        try dbQueue.write { try job.insert($0) }
+        let fetched = try dbQueue.read { db in try Job.fetchOne(db, key: job.id.uuidString.lowercased()) }
+        #expect(fetched == job)
+        #expect(fetched?.scope == nil)
+        #expect(fetched?.totalEstimate == nil)
+    }
+
+    @Test("a JobItem round-trips including the composite key and nil optionals")
+    func jobItemRoundTrips() throws {
+        let dbQueue = try makeMigratedQueue()
+        let job = Job(id: UUID(), platform: .pinterest, createdAt: createdAt, updatedAt: updatedAt)
+        let item = JobItem(
+            jobID: job.id, sourceID: "pin-99", sourceURL: "/sampleuser/sample/",
+            status: .ingested, blobHash: "abc123", updatedAt: updatedAt)
+        try dbQueue.write { db in
+            try job.insert(db)
+            try item.insert(db)
+        }
+        let fetched = try dbQueue.read { db in
+            try JobItem
+                .filter(Column("job_id") == job.id.uuidString.lowercased())
+                .filter(Column("source_id") == "pin-99")
+                .fetchOne(db)
+        }
+        #expect(fetched == item)
     }
 }

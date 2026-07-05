@@ -127,6 +127,81 @@ struct ServicesDeleteTests {
         #expect(try sourceCount(temp) == 0)
     }
 
+    // MARK: "Delete is forgotten" — bulk-import ledger (known-sources == bytes in store)
+
+    private func jobIngestedCount(_ services: AppServices, _ jobID: UUID) async throws -> Int {
+        let jobs = try await services.listJobs()
+        return jobs.first { $0.id == jobID }?.ingestedCount ?? -1
+    }
+
+    @Test("deleting a bulk-ingested asset forgets its job_item so a re-sweep re-ingests")
+    func deleteForgetsLedger() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+
+        // A pin ingested through a sweep: an asset + a ledger row sharing the blob hash.
+        let r = try await services.ingest(
+            assetDraft(hash: "a1b2"),
+            from: sourceDraft(url: "https://pinterest.com/pin/A", platform: .pinterest),
+            into: c.id)
+        let job = try await services.createJob(platform: .pinterest, scope: "board:1")
+        try await services.recordJobItem(
+            jobID: job.id, sourceID: "pin-A", status: .ingested, blobHash: "a1b2")
+
+        // Before delete: the source is "known" (a re-sweep would skip it).
+        #expect(try await services.knownSourceIDs(forJob: job.id).contains("pin-A"))
+        #expect(try await jobIngestedCount(services, job.id) == 1)
+
+        // Delete the asset → its blob orphans → the ledger row is forgotten.
+        let orphans = try await services.deleteAssets([r.asset.id])
+        #expect(orphans == [OrphanedBlob(blobHash: "a1b2", mimeType: "image/png")])
+        #expect(try await services.knownSourceIDs(forJob: job.id).isEmpty)   // re-sweep re-ingests
+        // The denormalized counter stays drift-free (recomputed in the same txn).
+        #expect(try await jobIngestedCount(services, job.id) == 0)
+    }
+
+    @Test("forgetting is per-blob: a source_id sharing a still-referenced blob stays known")
+    func sharedBlobStaysKnown() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        // Two assets, same bytes, different provenance — one blob, two references.
+        let a = try await services.ingest(
+            assetDraft(hash: "5ade5f"),
+            from: sourceDraft(url: "https://pinterest.com/x", platform: .pinterest), into: c.id)
+        _ = try await services.ingest(
+            assetDraft(hash: "5ade5f"),
+            from: sourceDraft(url: "https://twitter.com/y", platform: .twitter), into: c.id)
+        let job = try await services.createJob(platform: .pinterest)
+        try await services.recordJobItem(
+            jobID: job.id, sourceID: "pin-X", status: .ingested, blobHash: "5ade5f")
+
+        // Deleting only the first leaves the blob referenced → NOT orphaned → still known.
+        let orphans = try await services.deleteAssets([a.asset.id])
+        #expect(orphans.isEmpty)
+        #expect(try await services.knownSourceIDs(forJob: job.id).contains("pin-X"))
+        #expect(try await jobIngestedCount(services, job.id) == 1)
+    }
+
+    @Test("deleting a non-bulk asset (no ledger row) leaves job_item untouched")
+    func deleteWithoutLedgerIsInert() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let job = try await services.createJob(platform: .pinterest)
+        try await services.recordJobItem(
+            jobID: job.id, sourceID: "pin-keep", status: .ingested, blobHash: "b0b0")
+        // An unrelated asset (different blob), captured outside any sweep.
+        let r = try await services.ingest(
+            assetDraft(hash: "c0ffee"), from: sourceDraft(), into: c.id)
+
+        _ = try await services.deleteAssets([r.asset.id])
+        // The ledger row for a DIFFERENT blob is untouched.
+        #expect(try await services.knownSourceIDs(forJob: job.id).contains("pin-keep"))
+        #expect(try await jobIngestedCount(services, job.id) == 1)
+    }
+
     @Test("shared source: a source kept by another asset is NOT garbage-collected")
     func sharedSourceKept() async throws {
         let (services, temp) = try makeServices()

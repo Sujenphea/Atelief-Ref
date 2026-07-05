@@ -32,15 +32,21 @@ public struct IngestPipeline: Sendable {
     /// The thumbnail tiers generated eagerly at ingest (A4). Defaults to every
     /// defined tier (128 / 512 / 1280).
     public let tiers: [ThumbnailTier]
+    /// Optional per-ingest phase-timing sink (Phase 8, 16A) — the app logs slow
+    /// thumbnail phases here to reveal a stall. Nil ⇒ timing is measured but not
+    /// emitted (a handful of cheap clock reads, no behaviour change).
+    private let timing: (@Sendable (IngestTiming) -> Void)?
 
     public init(
         store: MediaStore,
         services: AppServices,
-        tiers: [ThumbnailTier] = ThumbnailTier.allCases
+        tiers: [ThumbnailTier] = ThumbnailTier.allCases,
+        timing: (@Sendable (IngestTiming) -> Void)? = nil
     ) {
         self.store = store
         self.services = services
         self.tiers = tiers
+        self.timing = timing
     }
 
     /// The JPEG extension all thumbnail tiers are stored under (matching
@@ -76,6 +82,10 @@ public struct IngestPipeline: Sendable {
     /// 5. persist the asset + provenance + membership in one transaction (P15);
     /// 6. return `.ingested` with the resolved asset + dedup flag.
     public func ingest(_ input: IngestInput) async -> IngestOutcome {
+        // Phase 8 (16A): monotonic marks around each stage — negligible when the
+        // timing sink is nil, and the signal that reveals a thumbnail stall (P16).
+        let clock = ContinuousClock()
+        let started = clock.now
         do {
             // 1. Bytes: in-memory as-is; a file URL is read now (a read failure
             //    — missing/unreadable file — maps to `.unreadableSource`).
@@ -98,11 +108,13 @@ public struct IngestPipeline: Sendable {
             //    unreadable via IngestError(mapping:)). A movie container can't be
             //    read by CGImageSource, so it falls back to the AVFoundation path.
             let meta = try await Self.extractMetadata(from: bytes)
+            let afterMetadata = clock.now
 
             // 4. Blob-first (A2) + hash-first short-circuit (P14).
             //    Store the blob only if it is not already present; a blob that
             //    exists is complete (MediaStore atomicity), so this is free dedup.
-            if !store.hasBlob(hash: hash, fileExtension: meta.fileExtension) {
+            let blobExisted = store.hasBlob(hash: hash, fileExtension: meta.fileExtension)
+            if !blobExisted {
                 do {
                     try store.storeBlob(bytes, hash: hash, fileExtension: meta.fileExtension)
                 } catch {
@@ -135,6 +147,7 @@ public struct IngestPipeline: Sendable {
                     }
                 }
             }
+            let afterThumbnails = clock.now
 
             // 5. Persist in ONE transaction (P15). Only now — the blob is durable
             //    (A2), so the row can never reference a missing blob.
@@ -150,6 +163,17 @@ public struct IngestPipeline: Sendable {
             let result = try await services.ingest(
                 draft, from: input.provenance,
                 into: input.collectionID, placement: input.placement)
+            let finished = clock.now
+
+            // Emit the phase timing (16A) — reveals a thumbnail stall (P16 trigger).
+            timing?(IngestTiming(
+                hash: hash,
+                blobExisted: blobExisted,
+                tiersGenerated: missingTiers.count,
+                metadata: started.duration(to: afterMetadata),
+                thumbnails: afterMetadata.duration(to: afterThumbnails),
+                persist: afterThumbnails.duration(to: finished),
+                total: started.duration(to: finished)))
 
             // 6. Success — the asset (new or deduped) with the dedup flag.
             return .ingested(asset: result.asset, deduplicated: result.wasDeduplicated)

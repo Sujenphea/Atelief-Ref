@@ -408,13 +408,42 @@ public final class AppServices: Sendable {
 
             // A blob is reclaimable only when no remaining asset shares its hash.
             var orphans: [OrphanedBlob] = []
+            var forgottenJobKeys: Set<String> = []
             for hash in orderedHashes {
                 let stillReferenced = try Asset
                     .filter(Column("blob_hash") == hash)
                     .fetchCount(db) > 0
                 if !stillReferenced {
                     orphans.append(OrphanedBlob(blobHash: hash, mimeType: mimeByHash[hash]!))
+                    // "Delete is forgotten": the bytes are leaving the store, so drop
+                    // the bulk-import ledger rows that marked this content known — a
+                    // future sweep then re-ingests it. Forgetting is keyed on blob
+                    // ORPHANING (not per-asset) precisely because known-sources means
+                    // "the bytes are in the store": while any asset still shares the
+                    // blob, the content is present and legitimately known.
+                    let touched = try String.fetchAll(
+                        db, sql: "SELECT DISTINCT job_id FROM job_item WHERE blob_hash = ?",
+                        arguments: [hash])
+                    if !touched.isEmpty {
+                        try db.execute(
+                            sql: "DELETE FROM job_item WHERE blob_hash = ?", arguments: [hash])
+                        forgottenJobKeys.formUnion(touched)
+                    }
                 }
+            }
+
+            // Keep each touched job's denormalized `ingested_count` drift-free — the
+            // same in-transaction recompute invariant `recordJobItem` maintains.
+            for jobKey in forgottenJobKeys {
+                let landed = try Int.fetchOne(db, sql: """
+                    SELECT count(*) FROM job_item WHERE job_id = ? AND status IN (?, ?)
+                    """, arguments: [
+                        jobKey,
+                        JobItemStatus.ingested.rawValue, JobItemStatus.deduped.rawValue,
+                    ]) ?? 0
+                try db.execute(
+                    sql: "UPDATE job SET ingested_count = ? WHERE id = ?",
+                    arguments: [landed, jobKey])
             }
             return orphans
         }
@@ -608,6 +637,177 @@ public final class AppServices: Sendable {
                         arguments: [Self.key(assetID)])
                 .order(Column("name"), Column("id"))
                 .fetchAll(db)
+        }
+    }
+
+    // MARK: - Bulk-import jobs (015 · decision 3A ledger)
+
+    /// Open a new bulk-import sweep. The service owns `id` / `createdAt` /
+    /// `updatedAt` and starts the sweep `open` with a zero `ingestedCount`. The
+    /// extension tags each subsequent item POST with the returned id.
+    @discardableResult
+    public func createJob(
+        platform: Platform, scope: String? = nil, totalEstimate: Int? = nil
+    ) async throws -> Job {
+        let now = Date()
+        let job = Job(
+            id: UUID(), platform: platform, scope: scope, status: .open,
+            totalEstimate: totalEstimate, ingestedCount: 0,
+            createdAt: now, updatedAt: now)
+        return try await write { db in
+            try job.insert(db)
+            return job
+        }
+    }
+
+    /// Record (or re-record) one enumerated item's outcome, in ONE transaction
+    /// (P15). Upsert on the `(job_id, source_id)` PK makes a retried record
+    /// idempotent — the resumable-sweep invariant. In the SAME transaction the
+    /// job's `ingested_count` is RECOMPUTED from the `job_item` rows (not
+    /// incremented), so a crash between items leaves the counter exactly
+    /// consistent with the committed items — no drift, ever (7A/11A). `.notFound`
+    /// if the job is absent.
+    @discardableResult
+    public func recordJobItem(
+        jobID: UUID, sourceID: String, sourceURL: String? = nil,
+        status: JobItemStatus, blobHash: String? = nil
+    ) async throws -> JobItem {
+        let now = Date()
+        let item = JobItem(
+            jobID: jobID, sourceID: sourceID, sourceURL: sourceURL,
+            status: status, blobHash: blobHash, updatedAt: now)
+        return try await write { db in
+            guard try Job.exists(db, key: Self.key(jobID)) else {
+                throw AtelierError.notFound(entity: "job", id: jobID)
+            }
+            // Upsert by composite PK (explicit over clever — matches the codebase's
+            // fetch-then-insert/update idiom rather than relying on save() semantics).
+            let exists = try JobItem
+                .filter(Column("job_id") == Self.key(jobID))
+                .filter(Column("source_id") == sourceID)
+                .fetchCount(db) > 0
+            if exists { try item.update(db) } else { try item.insert(db) }
+
+            // Recompute the denormalized progress counter from the source of truth
+            // in the same transaction (no drift on crash / re-record).
+            let landed = try Int.fetchOne(db, sql: """
+                SELECT count(*) FROM job_item WHERE job_id = ? AND status IN (?, ?)
+                """, arguments: [
+                    Self.key(jobID),
+                    JobItemStatus.ingested.rawValue, JobItemStatus.deduped.rawValue,
+                ]) ?? 0
+            try db.execute(
+                sql: "UPDATE job SET ingested_count = ?, updated_at = ? WHERE id = ?",
+                arguments: [landed, now, Self.key(jobID)])
+            return item
+        }
+    }
+
+    /// The set of platform source ids already ingested for this job's platform,
+    /// across ALL jobs (P14 download-skip). A source is "known" (its bytes are in
+    /// the store, so the extension must NOT re-download it) only when some
+    /// `job_item` for the SAME platform reached `ingested` or `deduped` — a
+    /// `retryableFailed`/`permanentFailed`/`skipped` item is not itself proof the
+    /// bytes exist. Scoped by platform so a tweet id can never mask a pin id.
+    /// `.notFound` if the job is absent. Content-addressing remains the
+    /// authoritative dedup backstop; this only avoids the costly re-download.
+    public func knownSourceIDs(forJob jobID: UUID) async throws -> Set<String> {
+        try await read { db in
+            guard let platform = try String.fetchOne(
+                db, sql: "SELECT platform FROM job WHERE id = ?",
+                arguments: [Self.key(jobID)]) else {
+                throw AtelierError.notFound(entity: "job", id: jobID)
+            }
+            return try String.fetchSet(db, sql: """
+                SELECT DISTINCT job_item.source_id
+                FROM job_item
+                JOIN job ON job.id = job_item.job_id
+                WHERE job.platform = ? AND job_item.status IN (?, ?)
+                """, arguments: [
+                    platform,
+                    JobItemStatus.ingested.rawValue, JobItemStatus.deduped.rawValue,
+                ])
+        }
+    }
+
+    /// Transition a job's lifecycle (7A) — e.g. `.complete` at the cursor
+    /// terminator, `.paused` on a user pause, `.halted` on a fatal auth /
+    /// rate-limit wall. Bumps `updatedAt`. `.notFound` if the job is absent.
+    public func setJobStatus(jobID: UUID, to status: JobStatus) async throws {
+        try await write { db in
+            guard var job = try Job.fetchOne(db, key: Self.key(jobID)) else {
+                throw AtelierError.notFound(entity: "job", id: jobID)
+            }
+            job.status = status
+            job.updatedAt = Date()
+            try job.update(db)
+        }
+    }
+
+    /// One job by id (progress UI). `.notFound` if absent. Read.
+    public func getJob(id: UUID) async throws -> Job {
+        try await read { db in
+            guard let job = try Job.fetchOne(db, key: Self.key(id)) else {
+                throw AtelierError.notFound(entity: "job", id: id)
+            }
+            return job
+        }
+    }
+
+    /// A job's items, ordered by `source_id` (stable). `.notFound` if the job is
+    /// absent. Read — for progress detail (skipped/failed/dedup breakdown).
+    public func jobItems(forJob jobID: UUID) async throws -> [JobItem] {
+        try await read { db in
+            guard try Job.exists(db, key: Self.key(jobID)) else {
+                throw AtelierError.notFound(entity: "job", id: jobID)
+            }
+            return try JobItem
+                .filter(Column("job_id") == Self.key(jobID))
+                .order(Column("source_id"))
+                .fetchAll(db)
+        }
+    }
+
+    /// All jobs, newest first (the progress UI's list). Read.
+    public func listJobs() async throws -> [Job] {
+        try await read { db in
+            try Job.order(Column("created_at").desc, Column("id")).fetchAll(db)
+        }
+    }
+
+    /// A job's per-outcome item tally (the progress breakdown: ingested / deduped /
+    /// skipped / retryable / permanent). Aggregated in SQL (a `GROUP BY`, not by
+    /// loading every row) so a large sweep's progress reads stay cheap. A status
+    /// with no items is absent from the map (callers default to 0). `.notFound` if
+    /// the job is absent. Read.
+    public func jobItemCounts(forJob jobID: UUID) async throws -> [JobItemStatus: Int] {
+        try await read { db in
+            guard try Job.exists(db, key: Self.key(jobID)) else {
+                throw AtelierError.notFound(entity: "job", id: jobID)
+            }
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT status, count(*) AS n FROM job_item WHERE job_id = ? GROUP BY status
+                """, arguments: [Self.key(jobID)])
+            var counts: [JobItemStatus: Int] = [:]
+            for row in rows {
+                if let status = JobItemStatus(rawValue: row["status"]) {
+                    counts[status] = row["n"]
+                }
+            }
+            return counts
+        }
+    }
+
+    /// A job's current lifecycle status (the relay feedback the extension polls per
+    /// item to honour an app-side pause/cancel — 7A). `.notFound` if absent. Read.
+    public func jobStatus(forJob jobID: UUID) async throws -> JobStatus {
+        try await read { db in
+            guard let raw = try String.fetchOne(
+                db, sql: "SELECT status FROM job WHERE id = ?", arguments: [Self.key(jobID)]),
+                let status = JobStatus(rawValue: raw) else {
+                throw AtelierError.notFound(entity: "job", id: jobID)
+            }
+            return status
         }
     }
 

@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2"]
+    static let registeredIdentifiers = ["v1", "v2", "v3"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -50,6 +50,11 @@ enum Migrator {
         // v2 — nested folders. SHIPPED: never edit this body (see file header).
         migrator.registerMigration("v2") { db in
             try createV2Schema(db)
+        }
+
+        // v3 — bulk-import job ledger. SHIPPED: never edit this body.
+        migrator.registerMigration("v3") { db in
+            try createV3Schema(db)
         }
 
         return migrator
@@ -213,6 +218,57 @@ enum Migrator {
             VALUES
                 ('00000000-0000-0000-0000-000000000001', 'Unsorted', NULL, NULL,
                  '2024-01-01 00:00:00.000', '2024-01-01 00:00:00.000', NULL);
+            """)
+    }
+
+    // MARK: - v3
+
+    /// Bulk-import job ledger (015 · decision 3A). Two tables, independent of the
+    /// v1/v2 library schema: `job` (one sweep) and `job_item` (one enumerated
+    /// item, composite-PK'd by `(job_id, source_id)` — no id of its own, like
+    /// `asset_tag`). `job_item.job_id` CASCADEs, so deleting a job drops its
+    /// items. All `id`/`*_id`/`*_at`/enum columns are TEXT (C5); counters/estimates
+    /// are INTEGER.
+    private static func createV3Schema(_ db: Database) throws {
+        // job — one bulk-import sweep. No outbound FKs.
+        try db.execute(sql: """
+            CREATE TABLE job (
+                id             TEXT    NOT NULL PRIMARY KEY,
+                platform       TEXT    NOT NULL,
+                scope          TEXT,
+                status         TEXT    NOT NULL,
+                total_estimate INTEGER,
+                ingested_count INTEGER NOT NULL,
+                created_at     TEXT    NOT NULL,
+                updated_at     TEXT    NOT NULL
+            );
+            """)
+
+        // job_item — one enumerated item. Composite PK (job_id, source_id) makes
+        // re-recording the same item idempotent (upsert), which is exactly the
+        // resumable-sweep invariant. job_id CASCADEs (F4-style subtree delete).
+        try db.execute(sql: """
+            CREATE TABLE job_item (
+                job_id     TEXT NOT NULL
+                    REFERENCES job(id) ON DELETE CASCADE,
+                source_id  TEXT NOT NULL,
+                source_url TEXT,
+                status     TEXT NOT NULL,
+                blob_hash  TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (job_id, source_id)
+            );
+            """)
+
+        // Indices (P14) — the known access paths.
+        //   • source_id: the download-skip lookup ("have we ingested this pin/
+        //     tweet in ANY sweep of this platform?") must be O(1), not a scan.
+        //   • job.platform: known-sources filters jobs by platform first.
+        try db.execute(sql: """
+            CREATE INDEX index_job_item_on_source_id
+                ON job_item(source_id);
+            CREATE INDEX index_job_on_platform
+                ON job(platform);
             """)
     }
 }

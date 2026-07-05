@@ -216,6 +216,41 @@ struct IngestPipelineTests {
         #expect(env.store.hasBlob(hash: asset.blobHash, fileExtension: "jpeg"))
     }
 
+    // MARK: - Phase timing (16A)
+
+    /// A thread-safe collector for the pipeline's timing sink.
+    final class TimingCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _timings: [IngestTiming] = []
+        func record(_ t: IngestTiming) { lock.lock(); _timings.append(t); lock.unlock() }
+        var timings: [IngestTiming] { lock.lock(); defer { lock.unlock() }; return _timings }
+    }
+
+    @Test("timing sink reports tiers generated once, then 0 on the P14 short-circuit")
+    func timingSink() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let collector = TimingCollector()
+        let pipeline = IngestPipeline(
+            store: env.store, services: env.services,
+            timing: { collector.record($0) })
+        let bytes = try FixtureImages.solidImage(width: 120, height: 120, format: .png)
+
+        _ = await pipeline.ingest(Self.input(bytes, into: env))
+        let first = try #require(collector.timings.first)
+        #expect(first.blobExisted == false)
+        #expect(first.tiersGenerated == ThumbnailTier.allCases.count) // all tiers made
+        #expect(first.totalMillis >= 0)
+        #expect(first.thumbnailMillis >= 0)
+
+        // Re-ingest the SAME bytes: blob + every tier already on disk → no thumbnail
+        // work at all (P14). This is the fast path the timing log confirms is cheap.
+        _ = await pipeline.ingest(Self.input(bytes, into: env))
+        let second = try #require(collector.timings.last)
+        #expect(second.blobExisted == true)
+        #expect(second.tiersGenerated == 0)
+    }
+
     // MARK: - Helpers
 
     /// The canonical file extension the store used for a blob of `mime`, matching
