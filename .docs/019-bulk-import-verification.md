@@ -203,9 +203,11 @@ per-item relay reply (`CaptureResponse.jobStatus` → `classifyIngestResult` hal
 - [x] Pause → `sweep result status:"halted"`, Sweeps tab shows **Paused** + Resume.
 - [x] Resume + re-run → resumes from checkpoint, **one job** `a03d1f4a` ends `complete`
   with `ingested_count = 76` (15 paused + 61 resumed), 76 assets = 76 blobs, no dupes.
-- [ ] **Part C — Cancel:** on a fresh sweep hit **Cancel** → `sweep result … haltStatus:"halted"`,
-  `job.status` = halted (terminal, "Stopped"), and the checkpoint is **cleared** (a later
-  re-sweep of that board starts fresh from page 1, not the cancel cursor).
+- [x] **Part C — Cancel ✅ (2026-07-06):** hit **Cancel** mid-sweep → `sweep result`
+  `status:"halted"`, `haltStatus:"halted"`; job `18f0b8eb` = **halted** (terminal,
+  "Stopped"), `ingested_count = 10` (the pre-cancel items stayed — Cancel stops future
+  work, doesn't roll back). Checkpoint-clear on cancel is unit-covered (069) — a later
+  re-sweep starts fresh from page 1.
 - **On failure:** capture the `jobStatus` on the last relay reply and the `job.status`
   the app wrote — the halt rides that one field.
 
