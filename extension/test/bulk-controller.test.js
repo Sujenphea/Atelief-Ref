@@ -192,6 +192,8 @@ test("runBulkSweep: checkpoints under the STABLE key (not jobId), cleared on com
   assert.ok(storage.calls.save.length > 0);
   assert.ok(storage.calls.save.every((c) => c.key === key));
   assert.ok(!storage.calls.save.some((c) => c.key.includes("JOB-9")));
+  // Each checkpoint carries the jobId (task 8) so a later run can reopen this job.
+  assert.ok(storage.calls.save.every((c) => c.value.jobId === "JOB-9"));
   assert.deepEqual(storage.calls.remove, [key]);            // cleared on clean finish
   assert.equal(storage.store[key], undefined);
 });
@@ -207,6 +209,34 @@ test("runBulkSweep: resumes enumeration from the saved cursor under the stable k
     { transport, driver, storage, ...engineOpts });
 
   assert.equal(driver.seen.cursor, "CUR-9");                // read back, not stranded
+});
+
+test("runBulkSweep: resumes the SAME job — passes the checkpoint's jobId as resumeJobId (task 8)", async () => {
+  const { transport, messages } = fakeTransport();
+  const driver = driverOf([item("a")]);
+  const key = "atelier:bulk:pinterest:B7";
+  // A prior resumable halt left the jobId in the checkpoint.
+  const storage = fakeStorage({ [key]: { cursor: "CUR-9", counts: {}, jobId: "JOB-prev" } });
+
+  await runBulkSweep(
+    { platform: "pinterest", input: { boardId: "B7" } },
+    { transport, driver, storage, ...engineOpts });
+
+  const open = messages.find((m) => m.type === BULK.open);
+  assert.equal(open.resumeJobId, "JOB-prev");              // reopen, don't mint a new job
+});
+
+test("runBulkSweep: a FRESH sweep (no prior checkpoint) opens with no resumeJobId", async () => {
+  const { transport, messages } = fakeTransport();
+  const driver = driverOf([item("a")]);
+  const storage = fakeStorage();   // empty — nothing to resume
+
+  await runBulkSweep(
+    { platform: "pinterest", input: { boardId: "B7" } },
+    { transport, driver, storage, ...engineOpts });
+
+  const open = messages.find((m) => m.type === BULK.open);
+  assert.equal(open.resumeJobId, null);
 });
 
 test("runBulkSweep: a RESUMABLE halt (wall/pause) KEEPS the checkpoint so the next run resumes", async () => {

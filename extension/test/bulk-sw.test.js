@@ -28,8 +28,16 @@ test("open: forwards platform + token to openJob", async () => {
   const result = await handleBulkMessage(
     { type: BULK.open, platform: "pinterest", scope: "b", totalEstimate: 5 }, d);
   assert.deepEqual(result, { jobId: "J", caps: null });
-  assert.deepEqual(d.calls.open.spec, { platform: "pinterest", scope: "b", totalEstimate: 5 });
+  assert.deepEqual(d.calls.open.spec,
+    { platform: "pinterest", scope: "b", totalEstimate: 5, resumeJobId: undefined });
   assert.equal(d.calls.open.opts.token, "TOK");
+});
+
+test("open: forwards resumeJobId when present (task-8 same-job resume)", async () => {
+  const d = deps();
+  await handleBulkMessage(
+    { type: BULK.open, platform: "pinterest", scope: "b", totalEstimate: 5, resumeJobId: "JOB-prev" }, d);
+  assert.equal(d.calls.open.spec.resumeJobId, "JOB-prev");
 });
 
 test("known: returns the sourceIds from fetchKnownSources", async () => {

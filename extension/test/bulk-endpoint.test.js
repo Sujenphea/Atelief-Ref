@@ -33,6 +33,14 @@ test("openJob: POSTs platform + token, returns { jobId, caps }", async () => {
   assert.deepEqual(JSON.parse(calls[0].init.body), { platform: "pinterest", scope: "board:7", totalEstimate: null });
 });
 
+test("openJob: includes resumeJobId in the body only when provided (task-8 resume)", async () => {
+  const { fetchImpl, calls } = fakeFetch(201, { status: "created", jobId: "JOB-2", caps: null });
+  await openJob(
+    { platform: "pinterest", scope: "b", resumeJobId: "JOB-prev" }, { token: "T", fetchImpl });
+  assert.deepEqual(JSON.parse(calls[0].init.body),
+    { platform: "pinterest", scope: "b", totalEstimate: null, resumeJobId: "JOB-prev" });
+});
+
 test("openJob: a non-created response throws with the server error", async () => {
   const { fetchImpl } = fakeFetch(400, { status: "error", error: "Unknown platform 'x'." });
   await assert.rejects(() => openJob({ platform: "x" }, { token: "T", fetchImpl }), /Unknown platform/);

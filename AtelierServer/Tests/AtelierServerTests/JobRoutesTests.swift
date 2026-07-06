@@ -60,7 +60,15 @@ final class FakeJobLedger: JobLedger, @unchecked Sendable {
     }
 
     func jobStatus(forJob jobID: UUID) async throws -> JobStatus {
-        currentStatus
+        try requireKnown(jobID)   // realistic: the real ledger throws .notFound
+        return currentStatus
+    }
+
+    /// Register an already-existing job (task-8 reopen tests) without a `createJob`
+    /// call, so a test can distinguish "reopened an existing job" from "minted a new
+    /// one" (the latter shows up in `createdPlatforms`).
+    func seedExisting(_ id: UUID) {
+        lock.lock(); _known.insert(id); lock.unlock()
     }
 
     // Synchronous locked mutators — NSLock's lock/unlock are unavailable from an
@@ -117,6 +125,51 @@ struct JobRoutesFakeTests {
         #expect(result.statusCode == 403)
         #expect(result.response.status == "consent_required")
         #expect(fake.createdPlatforms.isEmpty) // gated before the ledger is touched
+    }
+
+    // MARK: task 8 — resume the same job
+
+    @Test("POST /jobs with resumeJobId for a RESUMABLE job reopens it (no new job)")
+    func resumeReopensResumable() async throws {
+        let fake = FakeJobLedger()
+        let resumeID = UUID()
+        fake.seedExisting(resumeID)
+        fake.currentStatus = .paused          // paused by a user Pause / wall — resumable
+        let result = await routes(fake).handleCreateJob(
+            body: body(CreateJobRequest(platform: "pinterest", resumeJobId: resumeID)))
+
+        #expect(result.statusCode == 201)
+        #expect(result.response.jobId == resumeID)        // SAME job, not a fresh id
+        #expect(fake.createdPlatforms.isEmpty)            // no new job minted
+        #expect(fake.statusUpdates.map(\.jobID) == [resumeID])   // reopened…
+        #expect(fake.statusUpdates.map(\.status) == [.open])     // …to open
+    }
+
+    @Test("POST /jobs with resumeJobId for a TERMINAL job mints a fresh job")
+    func resumeTerminalStartsFresh() async throws {
+        let fake = FakeJobLedger()
+        let resumeID = UUID()
+        fake.seedExisting(resumeID)
+        fake.currentStatus = .complete        // finished — a stale checkpoint must not revive it
+        let result = await routes(fake).handleCreateJob(
+            body: body(CreateJobRequest(platform: "pinterest", resumeJobId: resumeID)))
+
+        #expect(result.statusCode == 201)
+        #expect(result.response.jobId == fake.createdID)  // a NEW job
+        #expect(fake.createdPlatforms == [.pinterest])
+        #expect(fake.statusUpdates.isEmpty)               // the terminal job untouched
+    }
+
+    @Test("POST /jobs with an ABSENT resumeJobId mints a fresh job (safe stale id)")
+    func resumeAbsentStartsFresh() async throws {
+        let fake = FakeJobLedger()
+        let result = await routes(fake).handleCreateJob(
+            body: body(CreateJobRequest(platform: "pinterest", resumeJobId: UUID())))
+
+        #expect(result.statusCode == 201)
+        #expect(result.response.jobId == fake.createdID)  // fell through to a new job
+        #expect(fake.createdPlatforms == [.pinterest])
+        #expect(fake.statusUpdates.isEmpty)
     }
 
     @Test("POST /jobs unknown platform → 400")
@@ -266,13 +319,15 @@ struct CaptureRoutesLedgerTests {
     func taggedReplyCarriesJobStatus() async throws {
         let env = try await makeServerTestEnv(); defer { env.cleanup() }
         let fake = FakeJobLedger()
+        let jobID = UUID()
+        fake.seedExisting(jobID)     // the job the capture is tagged with exists
         fake.currentStatus = .paused // the user paused mid-sweep in the app
         let routes = CaptureRoutes(
             coordinator: env.coordinator, defaultCollectionID: { env.collectionID },
             jobLedger: fake)
 
         let result = await routes.handleIngest(
-            body: taggedRequest(env, image: ServerFixtures.pngBase64(), sourceId: "pin-1", jobId: UUID()),
+            body: taggedRequest(env, image: ServerFixtures.pngBase64(), sourceId: "pin-1", jobId: jobID),
             now: Self.now)
 
         #expect(result.statusCode == 200)

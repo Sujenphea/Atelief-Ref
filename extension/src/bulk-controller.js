@@ -33,14 +33,32 @@ export async function runBulkSweep(spec, {
 }) {
   const { platform, input, scope = null, totalEstimate = null, resolveVideo = false } = spec;
 
-  const { jobId, caps } = await transport({ type: BULK.open, platform, scope, totalEstimate });
-  const knownSet = new Set(await transport({ type: BULK.known, jobId }));
-
   // Checkpoint under a STABLE per-target key (the board / bookmarks-set), NOT the
   // jobId — every run opens a fresh job, so a jobId-scoped key would strand the
   // saved cursor and force a full re-enumeration on resume. Keyed this way, a
   // killed run's cursor is exactly what the next run reads back.
   const checkpointKey = sweepCheckpointKey({ platform, scope, input });
+
+  // Task 8 — RESUME THE SAME JOB. A resumable halt leaves the prior run's jobId in the
+  // checkpoint; hand it to the app so it reopens THAT job instead of minting a new one
+  // (one logical sweep → one ledger row). The app falls back to a fresh job if it's no
+  // longer resumable, so a stale id is safe.
+  const prior = storage && storage.load ? await storage.load(checkpointKey) : null;
+  const resumeJobId = prior && prior.jobId ? prior.jobId : null;
+
+  const { jobId, caps } = await transport({
+    type: BULK.open, platform, scope, totalEstimate, resumeJobId,
+  });
+  const knownSet = new Set(await transport({ type: BULK.known, jobId }));
+
+  // Stamp the (possibly reopened) jobId into every checkpoint the engine writes, so a
+  // later resume can reopen this same job. The engine stays jobId-agnostic — it just
+  // persists { cursor, counts } and this wrapper folds in the id.
+  const checkpointStorage = storage ? {
+    load: (key) => storage.load(key),
+    save: (key, value) => storage.save(key, { ...value, jobId }),
+    remove: (key) => storage.remove(key),
+  } : storage;
 
   // Relay each item to the SW (only it can reach localhost); classify its result
   // into the engine's outcome taxonomy. Video is opt-in — the resolved MP4 lives in
@@ -57,7 +75,7 @@ export async function runBulkSweep(spec, {
   };
 
   const result = await runSweep(driver, input, {
-    relay, knownSet, storage, checkpointKey,
+    relay, knownSet, storage: checkpointStorage, checkpointKey,
     config, onProgress, sleep, random, log,
   });
 

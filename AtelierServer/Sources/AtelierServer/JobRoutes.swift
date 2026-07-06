@@ -51,7 +51,7 @@ public struct JobRoutes: Sendable {
         guard consentGranted() else {
             return JobHandlerResult(statusCode: 403, response: .consentRequired())
         }
-        let decoded: (platform: Platform, scope: String?, totalEstimate: Int?)
+        let decoded: (platform: Platform, scope: String?, totalEstimate: Int?, resumeJobId: UUID?)
         do {
             decoded = try JobDecoder.decodeCreate(body: body)
         } catch let error as JobDecodeError {
@@ -60,13 +60,31 @@ public struct JobRoutes: Sendable {
             return JobHandlerResult(statusCode: 400, response: .error("Bad request."))
         }
         do {
-            let job = try await ledger.createJob(
-                platform: decoded.platform, scope: decoded.scope,
-                totalEstimate: decoded.totalEstimate)
-            return JobHandlerResult(statusCode: 201, response: .created(jobId: job.id, caps: caps))
+            let jobId = try await openOrReopen(decoded)
+            return JobHandlerResult(statusCode: 201, response: .created(jobId: jobId, caps: caps))
         } catch {
             return Self.mapLedgerError(error)
         }
+    }
+
+    /// Reopen `resumeJobId` when it names a still-RESUMABLE job (task 8) — a sweep
+    /// paused (by a user Pause or a wall) or left open — so a resumed run continues
+    /// ONE ledger row instead of minting a fresh job every time. Anything else (no
+    /// id, a terminal `complete`/`halted`, or an absent job) falls through to a new
+    /// job, so a stale checkpoint can never revive a finished or cancelled sweep.
+    private func openOrReopen(
+        _ decoded: (platform: Platform, scope: String?, totalEstimate: Int?, resumeJobId: UUID?)
+    ) async throws -> UUID {
+        if let resumeID = decoded.resumeJobId,
+           let status = try? await ledger.jobStatus(forJob: resumeID),
+           status == .open || status == .paused {
+            try await ledger.setJobStatus(jobID: resumeID, to: .open)
+            return resumeID
+        }
+        let job = try await ledger.createJob(
+            platform: decoded.platform, scope: decoded.scope,
+            totalEstimate: decoded.totalEstimate)
+        return job.id
     }
 
     /// `GET /jobs/{id}/known-sources` — the already-landed source ids for this

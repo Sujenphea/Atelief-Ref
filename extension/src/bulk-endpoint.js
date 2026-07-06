@@ -28,10 +28,16 @@ async function jobFetch(path, { method = "GET", payload = null, token, fetchImpl
 /** `POST /jobs` — open a sweep. Returns `{ jobId, caps }` (caps = the server's
  * authoritative byte limits, 8A). Throws on any non-`created` response. */
 export async function openJob(
-  { platform, scope = null, totalEstimate = null }, { token, fetchImpl } = {}
+  { platform, scope = null, totalEstimate = null, resumeJobId = null },
+  { token, fetchImpl } = {}
 ) {
+  // `resumeJobId` (task 8) asks the app to REOPEN a still-resumable job so a resumed
+  // sweep stays one ledger row; omitted for a fresh sweep. The app falls back to a new
+  // job if it isn't resumable, so sending a stale id is always safe.
+  const payload = { platform, scope, totalEstimate };
+  if (resumeJobId) payload.resumeJobId = resumeJobId;
   const { status, body } = await jobFetch("/jobs", {
-    method: "POST", payload: { platform, scope, totalEstimate }, token, fetchImpl,
+    method: "POST", payload, token, fetchImpl,
   });
   if (status !== 201 || body.status !== "created" || !body.jobId) {
     throw new Error(body.error || `open job failed (HTTP ${status})`);

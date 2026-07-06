@@ -41,16 +41,23 @@ extension AppServices: JobLedger {}
 // MARK: - Request DTOs
 
 /// `POST /jobs` body — open a sweep. `platform` is validated against ``Platform``
-/// during decode; `scope`/`totalEstimate` are optional hints.
+/// during decode; `scope`/`totalEstimate` are optional hints. `resumeJobId` (task 8)
+/// asks the server to REOPEN that job — so a resumed sweep continues one ledger row
+/// instead of minting a fresh job each run — when it's still resumable.
 public struct CreateJobRequest: Codable, Equatable, Sendable {
     public var platform: String
     public var scope: String?
     public var totalEstimate: Int?
+    public var resumeJobId: UUID?
 
-    public init(platform: String, scope: String? = nil, totalEstimate: Int? = nil) {
+    public init(
+        platform: String, scope: String? = nil, totalEstimate: Int? = nil,
+        resumeJobId: UUID? = nil
+    ) {
         self.platform = platform
         self.scope = scope
         self.totalEstimate = totalEstimate
+        self.resumeJobId = resumeJobId
     }
 }
 
@@ -140,10 +147,11 @@ public enum JobDecodeError: Error, Equatable {
 }
 
 public enum JobDecoder {
-    /// Validate a `POST /jobs` body into a platform + hints.
+    /// Validate a `POST /jobs` body into a platform + hints (+ an optional
+    /// `resumeJobId` for task-8 same-job resume).
     public static func decodeCreate(
         body: Data
-    ) throws -> (platform: Platform, scope: String?, totalEstimate: Int?) {
+    ) throws -> (platform: Platform, scope: String?, totalEstimate: Int?, resumeJobId: UUID?) {
         let request: CreateJobRequest
         do {
             request = try JSONDecoder().decode(CreateJobRequest.self, from: body)
@@ -153,7 +161,7 @@ public enum JobDecoder {
         guard let platform = Platform(rawValue: request.platform) else {
             throw JobDecodeError.unknownPlatform(request.platform)
         }
-        return (platform, request.scope, request.totalEstimate)
+        return (platform, request.scope, request.totalEstimate, request.resumeJobId)
     }
 
     /// Validate a `POST /jobs/{id}/complete` body into a target status. An empty

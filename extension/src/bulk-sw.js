@@ -24,7 +24,10 @@ export async function handleBulkMessage(message, {
   switch (message.type) {
     case BULK.open:
       return await openJob(
-        { platform: message.platform, scope: message.scope, totalEstimate: message.totalEstimate },
+        {
+          platform: message.platform, scope: message.scope,
+          totalEstimate: message.totalEstimate, resumeJobId: message.resumeJobId,
+        },
         { token, fetchImpl });
 
     case BULK.known:
