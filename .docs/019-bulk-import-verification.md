@@ -193,12 +193,19 @@ worker context, not a reset). The loop ran to completion regardless: job `comple
 ### T6 — App-side pause / resume / cancel *(the "full working controls" decision)*
 **Goal:** the app buttons actually halt/resume a *running* browser sweep via the
 per-item relay reply (`CaptureResponse.jobStatus` → `classifyIngestResult` halt).
-- [ ] Start a board sweep. Mid-run, hit **Pause** in the Sweeps tab.
-- [ ] **Expect:** within one item the loop halts (`sweep result … status:"halted"`);
-  blob count stops climbing; `job.status` = paused.
-- [ ] Hit **Resume**, relaunch the sweep → it continues from checkpoint to `complete`.
-- [ ] Repeat with **Cancel** → sweep halts and `job.status` reflects the cancel; a
-  relaunch does *not* silently re-ingest a cancelled job's remainder unless intended.
+**Parts A + B ✅ DONE (2026-07-06)** — exposed and fixed two bugs before passing:
+- **Pause closed a dead "Stopped" job** (no Resume button): the controller always sent
+  `/complete status=halted`, clobbering the app's `paused`. Fixed [069](../.change-log/069-pause-closes-resumable.md)
+  — Pause now closes `paused` (resumable), Cancel stays `halted`, wall self-halts `paused`.
+- **Resume minted a NEW job** → two ledger rows + a transient zombie `open`. Fixed
+  [070](../.change-log/070-resume-continues-same-job.md) — the checkpoint carries the
+  jobId and the server reopens that job.
+- [x] Pause → `sweep result status:"halted"`, Sweeps tab shows **Paused** + Resume.
+- [x] Resume + re-run → resumes from checkpoint, **one job** `a03d1f4a` ends `complete`
+  with `ingested_count = 76` (15 paused + 61 resumed), 76 assets = 76 blobs, no dupes.
+- [ ] **Part C — Cancel:** on a fresh sweep hit **Cancel** → `sweep result … haltStatus:"halted"`,
+  `job.status` = halted (terminal, "Stopped"), and the checkpoint is **cleared** (a later
+  re-sweep of that board starts fresh from page 1, not the cancel cursor).
 - **On failure:** capture the `jobStatus` on the last relay reply and the `job.status`
   the app wrote — the halt rides that one field.
 
