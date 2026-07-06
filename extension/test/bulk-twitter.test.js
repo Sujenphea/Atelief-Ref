@@ -13,9 +13,19 @@ import { readFileSync } from "node:fs";
 import {
   unwrapTweet, findInstructions, mapTweet, parseTimelinePage,
 } from "../src/bulk-twitter.js";
-import {
-  installTimelineHook, isTimelineRequest, TIMELINE_MESSAGE_SOURCE,
-} from "../src/twitter-hook.js";
+
+// twitter-hook.js ships as a CLASSIC MAIN-world content script (NO export — that would
+// SyntaxError on injection and silently kill the hook). So load + evaluate the REAL file
+// the way Chrome injects it and lift out its functions — this test then verifies the
+// exact injected artifact, not an ESM-only shim. A fake `window` (no `.location`) skips
+// the auto-install tail so only the explicit calls below run it.
+const { installTimelineHook, isTimelineRequest, TIMELINE_MESSAGE_SOURCE } = (() => {
+  const src = readFileSync(new URL("../src/twitter-hook.js", import.meta.url), "utf8");
+  return new Function(
+    "window",
+    `${src}\nreturn { installTimelineHook, isTimelineRequest, TIMELINE_MESSAGE_SOURCE };`,
+  )({});
+})();
 
 const bookmarks = JSON.parse(
   readFileSync(new URL("./fixtures/x-bookmarks.json", import.meta.url)));
@@ -127,6 +137,14 @@ test("findInstructions: falls back to a deep search when the wrapper key differs
 });
 
 // MARK: - installTimelineHook (MAIN-world fetch wrapper)
+
+test("twitter-hook.js is a valid CLASSIC script (no static export/import → injectable)", () => {
+  // The T9 bug: a static `export`/`import` SyntaxErrors when Chrome injects the file as
+  // a classic MAIN-world script, silently killing the hook. new Function throws on that
+  // exact syntax, so this guards the regression at its true failure point.
+  const src = readFileSync(new URL("../src/twitter-hook.js", import.meta.url), "utf8");
+  assert.doesNotThrow(() => new Function("window", src));
+});
 
 /** A fake window scope with an injectable `fetch` returning a cloneable response. */
 function fakeScope(responseJson) {

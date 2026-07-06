@@ -8,17 +8,20 @@
 // `postMessage`. Read-only, best-effort: it must NEVER throw into the page or alter a
 // response — a capture miss is acceptable, breaking x.com is not.
 //
-// SELF-CONTAINED (no imports): a MAIN-world content script is a classic script and
-// must run synchronously at document_start, before X's own fetches. The constant +
-// predicate are therefore duplicated from bulk-messages.js / bulk-twitter.js — small,
-// and kept in sync by the comments below. Only these two are unit-imported.
+// SELF-CONTAINED — a CLASSIC script (NO import/export): a MAIN-world content script is
+// injected as a classic script and must run synchronously at document_start, before X's
+// own fetches. `export` is a SyntaxError in a classic script (it would silently fail the
+// WHOLE file → no hook), so the declarations below stay plain top-level. The constant +
+// predicate are duplicated from bulk-messages.js / bulk-twitter.js — small, kept in sync
+// by the comments. The unit test loads THIS file as a classic script (readFileSync + new
+// Function) and exercises these functions, so there's a single source of truth.
 
 /** postMessage envelope tag. KEEP IN SYNC with bulk-messages.js `TIMELINE_MESSAGE_SOURCE`. */
-export const TIMELINE_MESSAGE_SOURCE = "atelier-x-timeline";
+const TIMELINE_MESSAGE_SOURCE = "atelier-x-timeline";
 
 /** True for a timeline GraphQL request URL (`…/i/api/graphql/{queryId}/{Op}`,
  * Op ∈ Bookmarks | Likes). KEEP IN SYNC with any parser-side copy. */
-export function isTimelineRequest(url) {
+function isTimelineRequest(url) {
   return typeof url === "string" &&
     /\/i\/api\/graphql\/[^/]+\/(Bookmarks|Likes)(?:$|[/?])/.test(url);
 }
@@ -30,7 +33,7 @@ export function isTimelineRequest(url) {
  * `fetch`. The clone + parse is fire-and-forget so the page's response is returned
  * untouched and on its original timing.
  */
-export function installTimelineHook({ target, post } = {}) {
+function installTimelineHook({ target, post } = {}) {
   const scope = target || (typeof globalThis !== "undefined" ? globalThis : null);
   if (!scope || typeof scope.fetch !== "function") return false;
   if (scope.__atelierTimelineHookInstalled) return false;
