@@ -242,10 +242,13 @@ cleanly (`haltStatus:"paused"`, resumable) with a real bookmarks `cursor`.
 - [x] Provenance correct: `platform=twitter`, canonical `x.com/{handle}/status/{id}`
   URLs, `@handle`, tweet text; a 3-photo tweet → **3 assets** (one per `mediaKey`);
   quoted media excluded.
-- [x] **Video path verified live:** 57 of the 64 were videos → correctly parsed
-  (`kind:"video"`), best MP4 variant resolved into `raw_metadata.videoUrl`
-  (`video.twimg.com/amplify_video/…/avc1/{res}`), and ingested as **posters** (the
-  `resolveVideo:false` default). A `resolveVideo:true` sweep downloads the MP4 instead.
+- [x] **Video path verified live, BOTH modes:** in the default sweep 57 of 64 were
+  videos → correctly parsed (`kind:"video"`), best MP4 variant resolved into
+  `raw_metadata.videoUrl` (`video.twimg.com/amplify_video/…/avc1/{res}`), ingested as
+  **posters** (`resolveVideo:false`). A follow-up **`resolveVideo:true`** sweep
+  downloaded real **`video/mp4`** assets — duration metadata (77s/41s/…), true dims,
+  sizes up to 24.9 MB (under the 512 MB cap). (That run also re-confirmed task-8
+  same-job resume: it continued job `3af9c2ba` from its cursor across a library clear.)
 > **Diagnosis note:** the fetch hook installing (`__atelierTimelineHookInstalled`) was a
 > red herring — the real transport was XHR. Root-caused by probing
 > `XMLHttpRequest.prototype.open` on the live page, not by guessing.
