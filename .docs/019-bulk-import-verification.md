@@ -264,15 +264,33 @@ derives `pws-handler` per resource; re-sweep → `complete`, `error: null`, no 4
 ### T11 — Drift canary against a live capture *(keeps the fixtures honest)*
 - [ ] Save a fresh live `Bookmarks` response and a `BoardFeedResource` response into
   the gitignored `resources/` (via DevTools "Copy response" or Claude-in-Chrome).
-- [ ] Run:
+- [ ] Run (note the flags — `--x`, `--pinterest-board`, `--pinterest-boards`):
   ```bash
   cd extension
-  node scripts/drift-check.js --x ../resources/live-bookmarks.json
-  node scripts/drift-check.js --pinterest ../resources/live-boardfeed.json
+  node scripts/drift-check.js --x ../resources/x-timeline.json
+  node scripts/drift-check.js --pinterest-board ../resources/pin-boardfeed.json
+  node scripts/drift-check.js --pinterest-boards ../resources/pin-boards.json
   ```
 - [ ] **Expect:** exit 0, no drift. If it flags drift, the live shape moved — update
   the parser + `drift-baseline.json` markers (X queryId, Pinterest app-version) and
   the committed fixtures.
+
+**Partial close (2026-07-06) — green, re-run at queryId rotation (~2 wks):**
+- [x] **Fixture mode** (`node scripts/drift-check.js`) — exit 0, all three checks pass;
+  baseline 3 d old, not stale.
+- [x] **Live-path CLI** against the real `resources/` captures (X `x-timeline.json`,
+  Pinterest `pin-boardfeed.json` + `pin-boards.json`) — exit 0: X 20 tweets / 20 media /
+  cursor ✓, board feed 1 pin mapped + bookmark ✓, boards list ✓. Real parsers run
+  against real live-shaped data.
+- [x] **Live hook still installs on today's x.com** — `window.__atelierTimelineHookInstalled
+  === true` confirmed in-browser; the interception path is not broken against the current
+  site.
+- [ ] **Brand-new same-day capture** — deferred. A fresh body couldn't be grabbed via
+  automation (late page-injection can't wrap X's already-closed-over `fetch`/`XHR`; the
+  network log carries no bodies; the extension hook needs deep scroll to fire pagination
+  and the tab closed first). Drift risk is ~nil at 3 d — the volatile markers (X queryId,
+  Pinterest `X-APP-VERSION`) rotate on a ~2–4 wk cadence. **Next meaningful re-run: when
+  the queryId rotation window opens (~2 wks), via the DevTools "Copy response" path above.**
 
 ---
 
