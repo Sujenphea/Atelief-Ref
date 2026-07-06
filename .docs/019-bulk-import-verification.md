@@ -242,7 +242,10 @@ cleanly (`haltStatus:"paused"`, resumable) with a real bookmarks `cursor`.
 - [x] Provenance correct: `platform=twitter`, canonical `x.com/{handle}/status/{id}`
   URLs, `@handle`, tweet text; a 3-photo tweet → **3 assets** (one per `mediaKey`);
   quoted media excluded.
-- Video→poster path not hit live (recent bookmarks were all photos) — stays unit-covered.
+- [x] **Video path verified live:** 57 of the 64 were videos → correctly parsed
+  (`kind:"video"`), best MP4 variant resolved into `raw_metadata.videoUrl`
+  (`video.twimg.com/amplify_video/…/avc1/{res}`), and ingested as **posters** (the
+  `resolveVideo:false` default). A `resolveVideo:true` sweep downloads the MP4 instead.
 > **Diagnosis note:** the fetch hook installing (`__atelierTimelineHookInstalled`) was a
 > red herring — the real transport was XHR. Root-caused by probing
 > `XMLHttpRequest.prototype.open` on the live page, not by guessing.
