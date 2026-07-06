@@ -229,16 +229,23 @@ present `asset` rows (56). No drift. Bonus: jobs whose assets were later deleted
 keeps the polled count column truthful rather than leaving a stale high-water mark.
 - [x] ingested == blobs == assets; count column stays consistent post-delete.
 
-### T9 — X bookmarks sweep (interception path)
-**Goal:** the MAIN-world fetch hook + push→pull source ingest a small bookmarks set.
-- [ ] Go to `x.com/i/bookmarks`, launch the twitter sweep (Gap 0). Let the page
-  auto-scroll.
-- [ ] **Expect:** one asset per top-level media (quoted-tweet media excluded); videos
-  land as poster (or MP4 if `resolveVideo`); ends on a 0-tweet page; `complete`.
-- [ ] Spot-check provenance (T2-style) on 2–3 X assets: handle, tweet URL, media host
-  (`pbs.twimg` image vs `video.twimg`).
-- **On failure:** capture a `read_network_requests`/DevTools view of the intercepted
-  `Bookmarks` GraphQL response and the mapped `sweep result` counts.
+### T9 — X bookmarks sweep (interception path) — ✅ DONE (2026-07-06)
+**Goal:** the MAIN-world hook + push→pull source ingest a bookmarks set.
+**Result:** worked only after **three fixes flushed out live** (the X path had never run
+end-to-end): [071](../.change-log/071-twitter-hook-classic-script.md) — the hook file
+had top-level `export`, a SyntaxError that killed the classic MAIN-world injection;
+[072](../.change-log/072-twitter-hook-xhr-transport.md) — X pulls the timeline over
+**`XMLHttpRequest`, not `fetch`** (confirmed live via an XHR probe), so the fetch-only
+hook captured nothing. After both, a bookmarks sweep ingested **64** assets, paused
+cleanly (`haltStatus:"paused"`, resumable) with a real bookmarks `cursor`.
+- [x] Enumerates + ingests; `job.status` transitions correctly (069/070 hold on X too).
+- [x] Provenance correct: `platform=twitter`, canonical `x.com/{handle}/status/{id}`
+  URLs, `@handle`, tweet text; a 3-photo tweet → **3 assets** (one per `mediaKey`);
+  quoted media excluded.
+- Video→poster path not hit live (recent bookmarks were all photos) — stays unit-covered.
+> **Diagnosis note:** the fetch hook installing (`__atelierTimelineHookInstalled`) was a
+> red herring — the real transport was XHR. Root-caused by probing
+> `XMLHttpRequest.prototype.open` on the live page, not by guessing.
 
 ### T10 — Pinterest live header sufficiency *(deferred Phase-0 recon)* — ✅ DONE ([changelog 064](../.change-log/064-pinterest-pws-handler-403-fix.md))
 **Result (2026-07-05):** the driver's original header set **403'd live** (as Phase-0
