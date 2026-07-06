@@ -172,11 +172,11 @@ test("installTimelineHook: forwards a timeline response, passes others through",
   assert.equal(posted.length, 1);                  // non-timeline request ignored
 });
 
-test("installTimelineHook: is idempotent (no double-wrap) and needs a fetch", () => {
+test("installTimelineHook: is idempotent (no double-wrap) and needs a transport", () => {
   const scope = fakeScope({});
   assert.equal(installTimelineHook({ target: scope, post: () => {} }), true);
   assert.equal(installTimelineHook({ target: scope, post: () => {} }), false);
-  assert.equal(installTimelineHook({ target: {}, post: () => {} }), false); // no fetch
+  assert.equal(installTimelineHook({ target: {}, post: () => {} }), false); // no fetch, no XHR
   assert.equal(typeof TIMELINE_MESSAGE_SOURCE, "string");
 });
 
@@ -188,4 +188,61 @@ test("installTimelineHook: a post/parse failure never breaks the page's fetch", 
   })();
   await tick();
   assert.equal(returned, scope.__response);        // still returns cleanly
+});
+
+// MARK: - XHR path (X's live transport for the timeline — the T9 root cause)
+
+/** A fake scope whose XMLHttpRequest fires a synchronous `load` on send(), with a
+ * settable responseText / responseType — mirrors how X actually pulls the timeline. */
+function fakeXHRScope() {
+  class FakeXHR {
+    constructor() { this._load = []; this.responseType = ""; }
+    open(method, url) { this._method = method; this._url = url; }
+    addEventListener(type, fn) { if (type === "load") this._load.push(fn); }
+    send() { for (const fn of this._load) fn.call(this); } // synchronous load
+  }
+  return { XMLHttpRequest: FakeXHR };
+}
+
+test("installTimelineHook: forwards a timeline XHR response, ignores non-timeline XHRs", () => {
+  const scope = fakeXHRScope();
+  const posted = [];
+  assert.equal(installTimelineHook({ target: scope, post: (m) => posted.push(m) }), true);
+
+  const xhr = new scope.XMLHttpRequest();
+  xhr.open("GET", "https://x.com/i/api/graphql/Q/Bookmarks?variables=%7B%7D");
+  xhr.responseText = JSON.stringify({ ok: 2 });
+  xhr.send();
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].url, "https://x.com/i/api/graphql/Q/Bookmarks?variables=%7B%7D");
+  assert.deepEqual(posted[0].json, { ok: 2 });
+
+  const other = new scope.XMLHttpRequest();
+  other.open("GET", "https://x.com/i/api/graphql/Q/HomeTimeline");
+  other.responseText = JSON.stringify({ ok: 3 });
+  other.send();
+  assert.equal(posted.length, 1);                  // non-timeline XHR ignored
+});
+
+test("installTimelineHook: XHR responseType 'json' reads the parsed response object", () => {
+  const scope = fakeXHRScope();
+  const posted = [];
+  installTimelineHook({ target: scope, post: (m) => posted.push(m) });
+
+  const xhr = new scope.XMLHttpRequest();
+  xhr.open("GET", "https://x.com/i/api/graphql/Q/Bookmarks");
+  xhr.responseType = "json";
+  xhr.response = { already: "parsed" };
+  xhr.send();
+  assert.deepEqual(posted[0].json, { already: "parsed" });
+});
+
+test("installTimelineHook: an unparseable XHR body is swallowed (page unaffected)", () => {
+  const scope = fakeXHRScope();
+  installTimelineHook({ target: scope, post: () => { throw new Error("boom"); } });
+
+  const xhr = new scope.XMLHttpRequest();
+  xhr.open("GET", "https://x.com/i/api/graphql/Q/Bookmarks");
+  xhr.responseText = "<html>not json</html>";
+  assert.doesNotThrow(() => xhr.send());           // load handler never throws into send
 });
