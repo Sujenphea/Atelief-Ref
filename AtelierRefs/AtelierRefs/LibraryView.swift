@@ -17,7 +17,7 @@ import UniformTypeIdentifiers
 struct LibraryView: View {
     @ObservedObject var model: IngestionModel
     @State private var isTargeted = false
-    @State private var showInspector = true
+    @State private var showDetail = false
     @State private var showCaptureInfo = false
 
     private static let gridItemMinWidth: CGFloat = 112
@@ -27,33 +27,34 @@ struct LibraryView: View {
     ]
 
     var body: some View {
-        NavigationSplitView {
-            FolderTreeView(model: model)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240)
-        } detail: {
-            detail
-        }
-        .inspector(isPresented: $showInspector) {
-            InspectorView(model: model)
-                .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
-        }
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    showCaptureInfo.toggle()
-                } label: {
-                    Label("Browser Capture", systemImage: "puzzlepiece.extension")
-                }
-                .popover(isPresented: $showCaptureInfo, arrowEdge: .bottom) {
-                    captureInfo
+        ZStack {
+            NavigationSplitView {
+                FolderTreeView(model: model)
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 240)
+            } detail: {
+                detail
+            }
+            .toolbar {
+                ToolbarItem {
+                    Button {
+                        showCaptureInfo.toggle()
+                    } label: {
+                        Label("Browser Capture", systemImage: "puzzlepiece.extension")
+                    }
+                    .popover(isPresented: $showCaptureInfo, arrowEdge: .bottom) {
+                        captureInfo
+                    }
                 }
             }
-            ToolbarItem {
-                Button {
-                    showInspector.toggle()
-                } label: {
-                    Label("Toggle Inspector", systemImage: "sidebar.right")
+
+            // Full-window detail page for the selected item. Guarding on
+            // `selectedItem != nil` auto-dismisses back to the grid when the item
+            // is removed/deleted from inside the page (selection clears on reload).
+            if showDetail, model.selectedItem != nil {
+                ItemDetailView(model: model) {
+                    withAnimation { showDetail = false }
                 }
+                .transition(.opacity)
             }
         }
     }
@@ -201,6 +202,7 @@ struct LibraryView: View {
                         ForEach(model.items, id: \.item.id) { detail in
                             Button {
                                 model.select(detail)
+                                withAnimation { showDetail = true }
                             } label: {
                                 AsyncFolderThumbnail(
                                     hash: detail.asset.blobHash,
