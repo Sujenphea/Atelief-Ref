@@ -7,10 +7,10 @@
 > ingestion [007](./007-ingestion-overview.md), folders [008](./008-folders-overview.md).
 >
 > Legend: ✅ done · 🟡 partial · ⬜ not started · ⏸️ deferred (designed-for).
-> Status as of the latest `.change-log/` entry (`049-decodescheduler-test-await`).
-> **Reconciled + verified 2026-07-03** against real source (this doc was previously
-> frozen at `022` and understated progress — inspector, canvas-real-data, grid
-> selection, the extension, delete, and the B1 URL download had all landed since).
+> Status as of the latest `.change-log/` entry (`081-production-p1-hardening`).
+> **Reconciled 2026-07-13** against docs [020](./020-production-readiness-overview.md) /
+> [021](./021-production-readiness-plan.md) and Phases 1–2 of the production-readiness
+> fix roadmap (changelogs `079`–`081`). Previously frozen at `049`.
 
 ## MVP definition of done (the target)
 
@@ -19,11 +19,11 @@
 > from anywhere **open the original source**. Fast, no spinners.
 
 Loop status: capture ✅ (paste/drag + bare-URL download #B1 + **Chrome extension**
-#6) · store ✅ · organize ✅ · **view** ✅ (grid + inspector + canvas on real data) ·
-**open source** ✅ (inspector: Open Original Source). **All MVP build-order items
-complete and verified in code** (282 package tests green, `AtelierRefs` BUILD
-SUCCEEDED under Xcode 26). The remaining gates are **manual/runtime** (a hands-on
-end-to-end pass, an Instruments profile) — no automated coverage of the GUI yet.
+#6 + **bulk sweep** popup/engine) · store ✅ · organize ✅ · **view** ✅ (grid +
+inspector + canvas on real data) · **open source** ✅. Core MVP is code-complete
+(~710 unit tests). Production-readiness Phases 1–2 (P0/P1 gaps G1–G10) landed in
+`.change-log/080`–`081`. Remaining: finish manual E2E (019), XCUITest smoke (G11
+in progress), distribution edge deferred (Phase 4 / G12–G14).
 
 ## Verification pass (2026-07-03)
 
@@ -49,9 +49,10 @@ documented fallback. See [005](./005-canvas-overview.md), `.change-log/001`–`0
 - [x] `TileProvider` seam (the swap point for real data at step 5)
 - [x] CA host: `CanvasEngine`, `LayerPool`, `ThumbnailCache`, `DecodeScheduler`
 - [x] Swift Testing cases + layer-pool invariants + `measure {}` benchmark gate
-- [x] Test determinism hardened — T12 asserts decoded pixels not encoder bytes;
+- [x] Test determinism hardened — T12 asserts seed-governed dimensions (exact
+      decoded pixels are not a reliable CI gate under parallel CG load);
       the async `DecodeScheduler` test awaits `onDecoded` instead of a fixed sleep
-      (`.change-log/048`, `049`)
+      (`.change-log/048`, `049`, `080`)
 - [ ] Manual Instruments pass (Core Animation + Allocations) before ship — *pending*
 
 ### 2. Data core + GRDB store — ✅ done
@@ -110,10 +111,11 @@ works; editing/persistence and real-data profiling remain.
       mutation keeps pan/zoom (no rebuild) and `canvas_x/y/w/h/z` persist via
       `setCanvasPlacement`, so the layout survives folder switch + relaunch
       (`.change-log/050`)
-- [ ] ⏸️ Re-profile with real, variable-size assets (005 caveat): the thumbnail
-      `Data(contentsOf:)` read is still **on the main thread** before the off-main
-      decode (`CanvasContent.swift:89`). **Profile with Instruments first** — do
-      not move it off-main speculatively; only if panning janks.
+- [x] Main-thread thumbnail file I/O removed from the pan/zoom sync path — disk
+      URLs load via `DecodeScheduler` off-main (`.change-log/081`, G7). Manual
+      Instruments confirmation still recommended before ship.
+- [ ] Manual Instruments pass (Core Animation + Allocations) on real variable-size
+      assets — *pending*
 
 ### 6. Chrome extension + localhost endpoint — ✅ done
 The primary platform-ingestion path (Twitter / Pinterest / Instagram / Cosmos),
@@ -162,38 +164,25 @@ See `.change-log/041`–`044`.
 - [x] Delete/remove wiring across inspector, grid, canvas
 
 ## Cross-cutting / not yet verified
-- [ ] **Runtime UI verification** — all SwiftUI is compile-verified only; no GUI
-      auto-tests. A manual run-through of the app is pending. This is now the
-      single largest gap between "green in CI" and "known to work."
-- [ ] XCUITest UI flows (drag-drop reorder, keyboard nav, inspector) — 004 §testing.
+- [x] **XCUITest smoke** — launch + tab switch + Library Unsorted chrome
+      (`.change-log/082`, G11). Deeper drag/inspector flows still manual.
+- [ ] Full manual E2E — remaining unticked cases in [019](./019-bulk-import-verification.md).
 - [ ] Instruments profiling pass (canvas pan/zoom on real assets; allocations).
+- [ ] Distribution edge deferred — extension icons/package (G12), notarization /
+      deployment target (G13), privacy/listing (G14), extension-id pin (G17).
 
-## Backlog (reported gaps)
+## Production readiness (020/021)
 
-- [x] **B1 — Drag/paste an image *URL*.** ✅ Done (`.change-log/045`). A dragged or
-      pasted bare image URL now downloads the bytes (`RemoteImageFetcher`) and
-      ingests with the URL as `.web` provenance; an unreadable drop reports via the
-      status line instead of a silent no-op. Scope: **direct image URLs only** — a
-      *page* URL needing HTML scraping stays with the extension / deferred
-      link-resolution (#3).
-
-## Deferred to later phases (designed-for, not MVP)
-- ⏸️ **Phase 2** — bulk import / backfill per platform; extension breadth
-  (Safari/Firefox); auth + rate-limit robustness; video polish; dedup review UI;
-  page-URL link resolution (HTML scraping).
-- ⏸️ **Phase 3** — Tags UI + filtering (schema reserved); external agent
-  interface (localhost API → CLI/HTTP → MCP); new-ingest inbox / triage.
-- ⏸️ **Phase 4** — canvas richness (grouping, snapping, connections, LOD tuning);
-  ~~canvas placement persistence + drag-to-place editor~~ ✅ done (`.change-log/050`);
-  more views (timeline, source-grouped, graph); smart / nested
-  collections; quick-capture (global hotkey, share/menu-bar).
-- ⏸️ **Phase 5** — sync / backup; export; collection sharing.
+| Phase | Status | Changelog |
+|---|---|---|
+| 5a WIP land (G15) | ✅ | `079` |
+| 1 P0 bugs (G1–G5) | ✅ | `080` |
+| 2 P1 hardening (G6–G10) | ✅ | `081` |
+| 3 Runtime validation (G11 + 019) | 🟡 | `082` (UI smoke); manual E2E remaining |
+| 4 Distribution (G12–G14, G17) | ⏸️ deferred | — |
+| 5b Process (G16, G18) | 🟡 | follows `082` |
 
 ## Suggested next priority
-All MVP build-order items are code-complete and CI-green. The remaining MVP work is
-**runtime validation, not features**: a manual end-to-end pass (signed app + unpacked
-extension → real Twitter/Pinterest capture; drag/paste incl. bare image URL; grid
-select/nav/reorder; inspector open-source; canvas pan/zoom) plus an Instruments
-profile of canvas on real assets (which also settles the #5 main-thread-read
-question with data rather than a guess). After that, polish: canvas placement
-persistence (Phase 4) and the deferred page-URL link resolution.
+Finish remaining [019](./019-bulk-import-verification.md) live cases (T3, T7, T13–T16
+unticked items) and an Instruments canvas pass. Then distribution (Phase 4) when
+ready to hand the app to another user.

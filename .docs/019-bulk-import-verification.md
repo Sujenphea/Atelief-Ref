@@ -389,6 +389,16 @@ With Canvas as the frontmost tab, force `bootstrap()` to fail (e.g. point the
 library dir at an unwritable path) → an alert **"Something went wrong"** must
 appear. The alert lives on the app shell (`ContentView`), not only Library.
 
+### Automated validation snapshot (2026-07-13)
+Recorded during production-readiness Phases 1–3 (changelogs `080`–`082`):
+- Extension `node --test` — 270 pass
+- AtelierCore / Ingestion / Server / CanvasRenderer package suites green;
+  CanvasRenderer ×10 (G5 flake gate)
+- XCUITest smoke — launch + tab switch + Library Unsorted (G11)
+- G7 code path: canvas thumbnail file I/O moved off-main; Instruments still open
+- Live browser cases below remain the source of truth for unticked boxes — do not
+  treat this section as closing T3/T7/T13–T16
+
 ## If something fails
 Per the standing rule: **verify the real root cause on real data before fixing** —
 capture the concrete failing response / ledger row / console tail named in each case,

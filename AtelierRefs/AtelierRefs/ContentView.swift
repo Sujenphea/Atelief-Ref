@@ -17,11 +17,15 @@ struct ContentView: View {
         TabView {
             CanvasScreen(model: model)
                 .tabItem { Label("Canvas", systemImage: "square.grid.2x2") }
+                .accessibilityIdentifier("tab.canvas")
             LibraryView(model: model)
                 .tabItem { Label("Library", systemImage: "folder") }
+                .accessibilityIdentifier("tab.library")
             BulkSweepsView(model: model)
                 .tabItem { Label("Sweeps", systemImage: "square.and.arrow.down.on.square") }
+                .accessibilityIdentifier("tab.sweeps")
         }
+        .accessibilityIdentifier("app.tabView")
         // 960 fits the Library's three panes at their minimums (sidebar 200 +
         // detail 480 + inspector 260) — at 800 the split view broke its
         // constraints and squeezed/clipped the panes.
