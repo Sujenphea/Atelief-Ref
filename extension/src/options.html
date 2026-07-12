@@ -19,6 +19,11 @@
       Paste the token shown in the ref-atelier app (toolbar → Browser Capture).
       Captures POST to <code>http://127.0.0.1:47321</code>.
     </p>
+    <p class="hint">
+      Before a bulk sweep after ~2 weeks idle, refresh the platform drift canary:
+      <code>cd extension && npm run drift-check</code> (and pass a fresh live capture
+      under <code>--x</code> / <code>--pinterest-board</code> when fixtures age out).
+    </p>
     <label for="token">Extension token</label>
     <input id="token" type="text" autocomplete="off" spellcheck="false" placeholder="paste token…" />
     <button id="save">Save</button>

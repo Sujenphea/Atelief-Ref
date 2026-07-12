@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { checkTimeline, checkBoardFeed, checkBoards, CHECKS } from "../src/drift.js";
+import { checkTimeline, checkBoardFeed, checkBoards, CHECKS, fixtureStaleReminder } from "../src/drift.js";
 
 const load = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url)));
 const bookmarks = load("x-bookmarks.json");
@@ -84,4 +84,18 @@ test("a completely foreign payload is flagged, not thrown", () => {
 test("CHECKS registry wires each check to a --flag", () => {
   assert.deepEqual(Object.keys(CHECKS).sort(), ["pinterest-board", "pinterest-boards", "x"]);
   assert.equal(CHECKS.x.run, checkTimeline);
+});
+
+test("fixtureStaleReminder is null inside the window (G18)", () => {
+  const baseline = { capturedAt: "2026-07-01", staleAfterDays: 30 };
+  const now = Date.parse("2026-07-10T00:00:00Z");
+  assert.equal(fixtureStaleReminder(baseline, now), null);
+});
+
+test("fixtureStaleReminder returns operator copy when past staleAfterDays", () => {
+  const baseline = { capturedAt: "2026-07-01", staleAfterDays: 7 };
+  const now = Date.parse("2026-07-20T00:00:00Z");
+  const msg = fixtureStaleReminder(baseline, now);
+  assert.match(msg, /19d old/);
+  assert.match(msg, /npm run drift-check/);
 });

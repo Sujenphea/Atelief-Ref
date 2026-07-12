@@ -85,3 +85,25 @@ export const CHECKS = {
   "pinterest-board": { label: "Pinterest board feed", run: checkBoardFeed },
   "pinterest-boards": { label: "Pinterest boards list", run: checkBoards },
 };
+
+/**
+ * Whether the committed drift fixtures are past their refresh window (G18).
+ * Pure — `nowMs` is injectable for tests. Returns a short operator message when
+ * stale, otherwise `null`.
+ */
+export function fixtureStaleReminder(baseline, nowMs = Date.now()) {
+  if (!baseline || !baseline.capturedAt || baseline.staleAfterDays == null) {
+    return "drift baseline missing capturedAt/staleAfterDays — re-seed fixtures.";
+  }
+  const then = new Date(baseline.capturedAt).getTime();
+  if (Number.isNaN(then)) {
+    return `drift baseline capturedAt is unparseable (${baseline.capturedAt}).`;
+  }
+  const ageDays = Math.floor((nowMs - then) / 86_400_000);
+  if (ageDays <= baseline.staleAfterDays) return null;
+  return (
+    `Drift fixtures are ${ageDays}d old (limit ${baseline.staleAfterDays}d). ` +
+    `Run \`npm run drift-check\` with a fresh live capture before the ~2-week ` +
+    `X queryId rotation window.`
+  );
+}

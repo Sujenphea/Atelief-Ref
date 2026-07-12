@@ -7,10 +7,10 @@
 > ingestion [007](./007-ingestion-overview.md), folders [008](./008-folders-overview.md).
 >
 > Legend: ✅ done · 🟡 partial · ⬜ not started · ⏸️ deferred (designed-for).
-> Status as of the latest `.change-log/` entry (`081-production-p1-hardening`).
+> Status as of the latest `.change-log/` entry (`083-production-process-cleanup`).
 > **Reconciled 2026-07-13** against docs [020](./020-production-readiness-overview.md) /
-> [021](./021-production-readiness-plan.md) and Phases 1–2 of the production-readiness
-> fix roadmap (changelogs `079`–`081`). Previously frozen at `049`.
+> [021](./021-production-readiness-plan.md) and Phases 1–3 + 5 of the production-readiness
+> fix roadmap (changelogs `079`–`083`). Phase 4 (distribution) is deferred.
 
 ## MVP definition of done (the target)
 
@@ -180,7 +180,7 @@ See `.change-log/041`–`044`.
 | 2 P1 hardening (G6–G10) | ✅ | `081` |
 | 3 Runtime validation (G11 + 019) | 🟡 | `082` (UI smoke); manual E2E remaining |
 | 4 Distribution (G12–G14, G17) | ⏸️ deferred | — |
-| 5b Process (G16, G18) | 🟡 | follows `082` |
+| 5b Process (G16, G18) | ✅ | `083` |
 
 ## Suggested next priority
 Finish remaining [019](./019-bulk-import-verification.md) live cases (T3, T7, T13–T16

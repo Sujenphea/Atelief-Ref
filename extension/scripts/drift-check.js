@@ -16,7 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { CHECKS } from "../src/drift.js";
+import { CHECKS, fixtureStaleReminder } from "../src/drift.js";
 
 const FIXTURE = {
   x: "../test/fixtures/x-bookmarks.json",
@@ -47,9 +47,10 @@ function main() {
 
   console.log("Atelier drift canary\n====================");
   const age = ageInDays(baseline.capturedAt);
-  const stale = age > baseline.staleAfterDays;
+  const reminder = fixtureStaleReminder(baseline);
   console.log(`Fixtures captured ${baseline.capturedAt} (${age}d ago)`
-    + (stale ? `  ⚠️  STALE (> ${baseline.staleAfterDays}d) — re-capture live responses.` : ""));
+    + (reminder ? `  ⚠️  STALE` : ""));
+  if (reminder) console.log(`  ${reminder}`);
   console.log(`Drift markers to re-verify live:`);
   console.log(`  X app queryId (Likes ${baseline.markers.x.likesQueryId}) — rotates ~2-4 weeks`);
   console.log(`  Pinterest X-APP-VERSION (${baseline.markers.pinterest.appVersion}) — required\n`);
@@ -79,7 +80,10 @@ function main() {
 
   console.log(failed ? "\nDrift detected — update the parsers + re-capture fixtures."
     : "\nNo drift — every check satisfied its invariants.");
-  process.exit(failed || stale ? 1 : 0);
+  if (reminder && !failed) {
+    console.log("\nReminder: fixtures are past staleAfterDays — re-capture before relying on live sweeps.");
+  }
+  process.exit(failed || reminder ? 1 : 0);
 }
 
 main();
