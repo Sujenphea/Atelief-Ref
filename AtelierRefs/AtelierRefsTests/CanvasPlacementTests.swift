@@ -92,6 +92,41 @@ struct CanvasPlacementTests {
         #expect(content.tiles == snapshot)
     }
 
+    /// A detail with an explicit persisted canvas placement.
+    private func placedDetail(order: Int, x: Double, y: Double, w: Double, h: Double)
+        -> CollectionItemDetail
+    {
+        let d = detail(order: order, dim: 100)
+        var item = d.item
+        item.canvasX = x
+        item.canvasY = y
+        item.canvasW = w
+        item.canvasH = h
+        return CollectionItemDetail(item: item, asset: d.asset, source: d.source)
+    }
+
+    @Test("auto-flow starts below explicitly placed tiles (no overlap on rebuild)")
+    func flowStartsBelowPlacedTiles() {
+        let placed = placedDetail(order: 0, x: 40, y: 100, w: 300, h: 200)
+        let flowed = (1..<3).map { detail(order: $0, dim: 100 + $0 * 40) }
+        let content = makeContent([placed] + flowed)
+
+        #expect(content.tiles[0].x == 40)
+        #expect(content.tiles[0].y == 100)
+        // Every auto-laid tile sits below the placed tile's bottom edge (300).
+        for tile in content.tiles.dropFirst() {
+            #expect(tile.y > 300)
+        }
+    }
+
+    @Test("with no placed tiles the flow still starts at the origin")
+    func flowUnchangedWithoutPlacement() {
+        let details = (0..<2).map { detail(order: $0, dim: 100) }
+        let content = makeContent(details)
+        #expect(content.tiles[0].x == 0)
+        #expect(content.tiles[0].y == 0)
+    }
+
     @Test("the moved tile still resolves to its own asset (persist targets it)")
     func mappingStaysCorrect() {
         let details = (0..<3).map { detail(order: $0, dim: 100 + $0 * 40) }

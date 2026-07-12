@@ -9,10 +9,10 @@
 //  Swapping the spike's dummy generator for this — with no renderer change — is
 //  exactly what the Phase-1 spike's seams (decision A2) were built for.
 //
-//  Layout: items with an explicit canvas placement (`canvas_x/y/w/h`) keep it;
-//  the rest flow into a justified-rows gallery sized by each image's aspect
-//  ratio. (Imports don't set placement yet, so today every item is auto-laid;
-//  persisting a user-arranged layout is later canvas-editor work.)
+//  Layout: items with an explicit canvas placement (`canvas_x/y/w/h`) keep it
+//  (drag-to-place persists one via `setCanvasPlacement`); the rest flow into a
+//  justified-rows gallery sized by each image's aspect ratio, starting BELOW
+//  the placed tiles so a rebuild never reflows the gallery over them.
 //
 
 import AtelierCore
@@ -138,13 +138,24 @@ final class CanvasContent: TileProvider, TileImageSource {
 
     /// One ``Tile`` per item (id = index, so it indexes back into `details`).
     /// Explicit placement is honoured; otherwise items pack left→right at a fixed
-    /// row height, wrapping when the row would exceed ``maxRowWidth``.
+    /// row height, wrapping when the row would exceed ``maxRowWidth``. The flow
+    /// starts below the bounding box of all explicitly placed tiles — flowing
+    /// from (0,0) regardless overlapped a dragged tile with whatever reflowed
+    /// into its old slot on the next rebuild.
     private static func layout(_ items: [CollectionItemDetail]) -> [Tile] {
         var tiles: [Tile] = []
         tiles.reserveCapacity(items.count)
 
+        var flowStartY: Double = 0
+        for detail in items {
+            if detail.item.canvasX != nil, detail.item.canvasW != nil,
+               let y = detail.item.canvasY, let h = detail.item.canvasH {
+                flowStartY = max(flowStartY, y + h + spacing)
+            }
+        }
+
         var penX: Double = 0
-        var penY: Double = 0
+        var penY: Double = flowStartY
         var rowStart = true
 
         for (index, detail) in items.enumerated() {

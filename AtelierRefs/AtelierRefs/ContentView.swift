@@ -22,7 +22,10 @@ struct ContentView: View {
             BulkSweepsView(model: model)
                 .tabItem { Label("Sweeps", systemImage: "square.and.arrow.down.on.square") }
         }
-        .frame(minWidth: 800, minHeight: 600)
+        // 960 fits the Library's three panes at their minimums (sidebar 200 +
+        // detail 480 + inspector 260) — at 800 the split view broke its
+        // constraints and squeezed/clipped the panes.
+        .frame(minWidth: 960, minHeight: 600)
         // One confirmation for the destructive delete, shared by all three
         // surfaces (inspector / grid / canvas).
         .confirmationDialog(

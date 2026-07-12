@@ -483,27 +483,33 @@ private struct FolderThumbnail: View {
     var isSelected: Bool = false
 
     var body: some View {
-        Group {
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.quaternary)
-                    .overlay {
-                        Image(systemName: "photo")
-                            .foregroundStyle(.tertiary)
-                    }
+        // A square cell sized by the adaptive column (112–140), not a fixed
+        // frame — a fixed 128 overflowed narrow columns and overlapped
+        // neighbors. `Color.clear` adopts the column width; the overlay fills
+        // and is clipped to it.
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    Rectangle()
+                        .fill(.quaternary)
+                        .overlay {
+                            Image(systemName: "photo")
+                                .foregroundStyle(.tertiary)
+                        }
+                }
             }
-        }
-        .frame(width: 128, height: 128)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(
-                    isSelected ? Color.accentColor : .clear,
-                    lineWidth: 3)
-        }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(
+                        isSelected ? Color.accentColor : .clear,
+                        lineWidth: 3)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 }

@@ -6,10 +6,9 @@ localhost endpoint (`http://127.0.0.1:47321/ingest`).
 
 ## How it works
 
-1. **Right-click the image/pin/post → "Save to Atelier"** (recommended — this
-   captures the exact image you point at and its post link). The toolbar button
-   also works, but only reliably on a single-post page (a pin page, a tweet page),
-   not the feed.
+1. **Right-click the image/pin/post → "Save to Atelier"** — this captures the
+   exact image you point at and its post link. (The toolbar button no longer
+   single-captures; it opens the **bulk-sweep popup** — see below.)
 2. The service worker injects a tiny signal harvester into the active tab
    (`src/harvest.js`) — meta tags, canonical link, title, URL, and the DOM media.
 3. A pure per-site extractor (`src/extractors/*`) turns those signals (plus the
@@ -21,6 +20,16 @@ localhost endpoint (`http://127.0.0.1:47321/ingest`).
 
 Supported sites: Twitter/X, Pinterest, Instagram, Cosmos, plus a generic
 Open-Graph fallback for any other page.
+
+## Bulk sweeps (toolbar popup)
+
+Clicking the **toolbar button** opens a popup that sweeps the whole feed you're
+looking at — X bookmarks (incl. bookmark folders), X likes, or one of your own
+Pinterest boards — into the app. The sweep runs in the page (it survives the
+service worker being torn down), paces itself, skips already-known items, and
+checkpoints so it can resume. Progress, pause/resume, and cancel live in the
+app's **Sweeps** tab. Pages that aren't a sweepable feed show a refusal with
+the reason.
 
 **Video posts are saved as the actual video** (the app renders a poster tile you
 can open to play). The service worker resolves the downloadable MP4 per platform,
