@@ -62,8 +62,9 @@ export async function postCapture(
 }
 
 /** Read a JSON response body, tolerating an empty/non-JSON body (→ `{}`).
- * Returns `{ status, body }` — the shape both POST helpers surface. */
-async function parseJsonResponse(response) {
+ * Returns `{ status, body }` — the shape every loopback POST/GET helper surfaces
+ * (shared by bulk-endpoint.js's job-ledger calls too, decision 6A). */
+export async function parseJsonResponse(response) {
   let body = {};
   try {
     body = await response.json();

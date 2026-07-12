@@ -18,7 +18,7 @@ import {
   buildBoardFeedURL, buildBoardsURL, boardFeedHeaders,
   makeResourceFetch, resourceNameFromURL,
   enumerateBoardFeed, enumerateBoards, pinterestBoardDriver,
-  scrapePinterestAppVersion, readCookie, END_BOOKMARK,
+  scrapePinterestAppVersion, scrapePinterestAppVersionFromDoc, readCookie, END_BOOKMARK,
 } from "../src/bulk-pinterest.js";
 import { runSweep, OUTCOMES } from "../src/bulk-engine.js";
 
@@ -297,6 +297,35 @@ test("scrapePinterestAppVersion: pulls the app_version hash from page bootstrap"
   assert.equal(scrapePinterestAppVersion('"app_version" : "abcdef12"'), "abcdef12");
   assert.equal(scrapePinterestAppVersion("no version here"), null);
   assert.equal(scrapePinterestAppVersion(null), null);
+});
+
+test("scrapePinterestAppVersionFromDoc: finds it in a <script> body without serializing the DOM (14A)", () => {
+  // The bootstrap lives in an inline script; scanning script bodies must find it WITHOUT
+  // touching documentElement.innerHTML (which, on a real board, is megabytes to serialize).
+  let innerHTMLReads = 0;
+  const doc = {
+    scripts: [
+      { textContent: "console.log('noise')" },
+      { textContent: 'window.__PWS_DATA__={"app_version":"beadf1","other":1}' },
+    ],
+    documentElement: { get innerHTML() { innerHTMLReads += 1; return ""; } },
+  };
+  assert.equal(scrapePinterestAppVersionFromDoc(doc), "beadf1");
+  assert.equal(innerHTMLReads, 0, "the whole-DOM serialize was avoided");
+});
+
+test("scrapePinterestAppVersionFromDoc: falls back to the full page when no script carries it (14A)", () => {
+  const doc = {
+    scripts: [{ textContent: "nothing useful here" }],
+    documentElement: { innerHTML: 'meta app_version":"cafe99" somewhere in the page' },
+  };
+  assert.equal(scrapePinterestAppVersionFromDoc(doc), "cafe99");
+});
+
+test("scrapePinterestAppVersionFromDoc: no scripts / empty page → null (never throws)", () => {
+  assert.equal(scrapePinterestAppVersionFromDoc({ documentElement: { innerHTML: "" } }), null);
+  assert.equal(scrapePinterestAppVersionFromDoc({}), null);
+  assert.equal(scrapePinterestAppVersionFromDoc(null), null);
 });
 
 test("readCookie: extracts a named cookie value, trimming whitespace", () => {

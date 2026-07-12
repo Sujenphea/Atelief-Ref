@@ -9,6 +9,7 @@
 // sw.js.
 
 import { BULK } from "./bulk-messages.js";
+import { isAllowedMediaHost } from "./media-hosts.js";
 
 /**
  * Dispatch one bulk message to its app-side effect and return the reply payload.
@@ -33,13 +34,28 @@ export async function handleBulkMessage(message, {
     case BULK.known:
       return await fetchKnownSources(message.jobId, { token, fetchImpl });
 
-    case BULK.relay:
-      return await ingestOne(message.provenance, {
+    case BULK.relay: {
+      // SSRF guard (3A): the media URLs rode in on a page-supplied response, and the SW
+      // is about to fetch them with host_permissions in the authenticated session. Refuse
+      // any URL that isn't on the platform's media CDN allowlist BEFORE fetching — a
+      // blocked item is a permanent per-item failure (classified via the default arm),
+      // never a network call to an arbitrary host.
+      const provenance = message.provenance || {};
+      const mp4Url = message.mp4Url || null;
+      const platform = provenance.platform;
+      const candidates = [provenance.mediaUrl, provenance.mediaUrlFallback, mp4Url].filter(Boolean);
+      const blocked = candidates.find((url) => !isAllowedMediaHost(platform, url));
+      if (blocked) {
+        return { status: "blocked-host", message: `refused non-CDN media host: ${blocked}` };
+      }
+      return await ingestOne(provenance, {
         token,
-        mp4Url: message.mp4Url || null,
+        mp4Url,
         jobId: message.jobId,
         sourceId: message.sourceId,
+        caps: message.caps || null, // server byte caps (13A) — enforced pre-download
       });
+    }
 
     case BULK.complete:
       return await completeJob(message.jobId, message.status || "complete", { token, fetchImpl });

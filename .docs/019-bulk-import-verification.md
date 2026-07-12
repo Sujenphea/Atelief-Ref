@@ -13,13 +13,15 @@
 
 ---
 
-## Gap 0 — there is no "Start sweep" button *(read first)*
+## Gap 0 — there is no "Start sweep" button *(read first)* — ✅ CLOSED (2026-07-06, [changelog 073](../.change-log/073-bulk-sweep-trigger-popup.md))
 
-`src/bulk-controller.js` runs the engine when it receives a runtime message
-`{ type: "atelier-bulk-start", … }`, but **nothing in the extension sends that
-message** — `chrome.action.onClicked` is bound to single-item capture, and there is
-no popup. Until a trigger UI exists, every sweep below is launched by hand from the
-**service-worker console**.
+**A toolbar popup now launches sweeps** — see [Phase 10](#phase-10--sweep-trigger-popup)
+below for the runbook. The console-launch recipe in this section is retained as the
+low-level fallback (and the exact message a bulk-start still sends). Historical context:
+`src/bulk-controller.js` runs the engine on a runtime message `{ type:
+"atelier-bulk-start", … }`; originally **nothing sent it** — `chrome.action.onClicked`
+was single-item capture and there was no popup, so every sweep was launched by hand
+from the **service-worker console**.
 
 **Decision (2026-07-05): (a) — run this pass console-driven.** A `sendMessage` from
 the SW console delivers the byte-identical message a button would, so (a) leaves
@@ -72,9 +74,10 @@ chrome.tabs.query({}, (tabs) => {
 > does not exist"*, the content script isn't on that tab — it was open before the
 > extension (re)loaded. **Reload the tab**, then re-run.
 
-> `boardId`: open the board, DevTools console on the page →
-> `__NEXT_DATA__` or the network `BoardFeedResource` request's `data` param shows the
-> board id; or just read it off any pin's `board.id` in a `BoardFeedResource` response.
+> `boardId`: on the board page, the **"Collage" button** links to
+> `/collage-creation-tool/?boardId=<digits>` — that's the id (Pinterest has no
+> `__NEXT_DATA__`). Or read it off any pin's `board.id` in a `BoardFeedResource`
+> response. (The popup does this automatically now — this is only for a console launch.)
 
 ---
 
@@ -211,7 +214,7 @@ per-item relay reply (`CaptureResponse.jobStatus` → `classifyIngestResult` hal
 - **On failure:** capture the `jobStatus` on the last relay reply and the `job.status`
   the app wrote — the halt rides that one field.
 
-### T7 — Pause-on-wall (429 / DOM wall)
+### T7 — Pause-on-wall (429 / DOM wall / auth wall / X stall)
 **Goal:** a real rate-limit or an interstitial pauses gracefully, and is resumable.
 - [ ] Provoke or wait for a 429 / login-wall / empty-guard during a sweep (a large
   board or fast re-runs). If hard to provoke naturally, note it as *observed if seen*.
@@ -219,6 +222,16 @@ per-item relay reply (`CaptureResponse.jobStatus` → `classifyIngestResult` hal
   asset); state is checkpointed; a later relaunch resumes.
 - **On failure:** capture the failing network response and the engine's `counts`
   (retryableFailed vs permanentFailed) from the `sweep result`.
+- **078 update (unit-verified, live-pending):** two new resumable-halt paths ship in
+  [changelog 078](../.change-log/078-bulk-import-review-hardening.md):
+  - **Auth wall (5A)** — a media-CDN 401/403 (expired session) or app 401/403 (bad token)
+    now HALTS resumable instead of burning the rest of the board as `permanentFailed`.
+    Live check: let an X session expire mid-sweep (or corrupt the token) → expect the job
+    to close `paused` with the remaining items untouched, resumable after re-auth.
+  - **X scroll stall (2A)** — when auto-scroll stops yielding pages before a 0-tweet end
+    page, the job closes `paused` (checkpoint kept), NOT `complete`. Live check: sweep a
+    long bookmarks set on a throttled connection → a stall must be resumable, and only a
+    genuine 0-tweet end page reads as complete.
 
 ### T8 — Progress accuracy — ✅ DONE (2026-07-06, data-verified)
 **Goal:** the Sweeps tab numbers match reality.
@@ -291,6 +304,74 @@ derives `pws-handler` per resource; re-sweep → `complete`, `error: null`, no 4
   and the tab closed first). Drift risk is ~nil at 3 d — the volatile markers (X queryId,
   Pinterest `X-APP-VERSION`) rotate on a ~2–4 wk cadence. **Next meaningful re-run: when
   the queryId rotation window opens (~2 wks), via the DevTools "Copy response" path above.**
+
+---
+
+## Phase 10 — sweep-trigger popup
+
+> The follow-up chunk deferred at Gap 0: a real UI so a sweep no longer needs the SW
+> console. The pipeline is unchanged — the popup only resolves the active tab into a
+> `{ platform, input, scope }` spec and sends the same `atelier-bulk-start` message.
+> Pure logic (`bulk-context.js` resolver, `bulk-dispatch.js` send+recovery) is
+> unit-covered; these cases prove the chrome.* glue. Reload the unpacked extension
+> first (`chrome://extensions` → Atelier → Reload) so the new `default_popup` + the
+> removed `action.onClicked` take effect.
+>
+> **Pinterest board id source:** the popup reads it from the board page's **"Collage"
+> button** href (`/collage-creation-tool/?boardId=<digits>`) — Pinterest has no
+> `__NEXT_DATA__`. That button only renders on **your own** boards; on someone else's
+> board (or before it loads) the popup shows `board-id-missing`.
+
+### T12 — Happy launch (Pinterest board) — ✅ DONE (2026-07-07)
+**Goal:** the popup resolves a board and starts a sweep end-to-end.
+**Result:** after the board-id source was corrected to the **"Collage" button href**
+([changelog 073](../.change-log/073-bulk-sweep-trigger-popup.md)), the popup resolved
+the board and the sweep ran. (One transient "Failed to fetch" on the first attempt was
+a browser-side localhost hiccup, not the feature — server verified up on
+`127.0.0.1:47321` with CORS preflight passing; a retry worked.)
+- [x] Popup shows **"Sweep board: `<slug>`"**, Start enabled; click launches and sweeps.
+- **On failure capture:** the popup status text, the SW console, and `job` row.
+
+### T13 — Happy launch (X bookmarks)
+- [ ] On `x.com/i/bookmarks`, open the popup → **"Sweep your X bookmarks"**, Start
+  enabled. Click → same running/terminal behaviour as T12; ledger climbs (as T9).
+- [ ] **Bookmark folder** (`x.com/i/bookmarks/<id>`) → popup shows **"Sweep this X
+  bookmark folder"**, scope `bookmarks:<id>`. Recognition + launch (073) + two hook fixes:
+  [074](../.change-log/074-twitter-hook-bookmark-folder.md) (forward the
+  `BookmarkFolderTimeline` op) and [075](../.change-log/075-twitter-hook-replay-buffer.md)
+  (replay pages fetched before the sweep subscribes — the folder's first page was being
+  missed). **Re-sweep after reloading the extension AND the x.com tab → expect ingested
+  > 0.** Proven in a Node sim against the real captured response (15 items); awaiting the
+  live confirm.
+
+### T14 — Ineligible pages show the right reason (no launch)
+**Goal:** the resolver's typed refusals surface as guidance, and nothing sweeps the
+wrong feed.
+- [ ] Pinterest home / a pin page / a profile → **"This isn't a Pinterest board page…"**;
+  Start disabled.
+- [ ] `x.com/home` or `x.com/i/likes` → **"Open x.com/i/bookmarks…"**; Start disabled
+  (proves 7A — the home feed is never sweepable).
+- [ ] A non-supported site (e.g. `example.com`) or a `chrome://` page → **"Open a
+  Pinterest board or x.com/i/bookmarks…"**.
+- [ ] A board page whose id can't be read (rare; DOM drift) → **"Couldn't read this
+  board's id — reload…"** (if you can't provoke it, note as *observed if seen*).
+
+### T15 — Cold-tab recovery (the fresh-install case)
+**Goal:** the injection fallback launches on a tab that predates the extension load.
+- [ ] Open a Pinterest board, THEN reload the unpacked extension (so the tab's content
+  script is now stale/absent — do **not** reload the tab).
+- [ ] Open the popup → Start → **it still launches** (dispatch injects `bulk-loader.js`
+  and retries). Confirm exactly **one** job opens (the `__atelierBulkController` guard —
+  no double-sweep).
+- **078 update (1A):** a per-tab in-flight guard now also refuses a SECOND `START` while a
+  sweep runs with `sweep-already-running` (the popup re-enables Start on that failure, 7A).
+  Live check: click Start twice fast (or Start on two popups) → still exactly one job.
+- **On failure capture:** the popup error text and whether 0/1/2 `job` rows appeared.
+
+### T16 — Single-item capture regression
+**Goal:** moving the toolbar click to a popup didn't break one-shot capture.
+- [ ] **Right-click** any image/post → "Save to Atelier" → it ingests (context-menu
+  path is unchanged; the toolbar click now opens the popup instead of capturing).
 
 ---
 

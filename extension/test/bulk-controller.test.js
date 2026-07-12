@@ -276,3 +276,41 @@ test("runBulkSweep: an app CANCEL CLEARS the checkpoint (terminal — a re-sweep
   assert.deepEqual(storage.calls.remove, [key]);            // cleared — terminal
   assert.equal(storage.store[key], undefined);
 });
+
+// MARK: - close-tail robustness (12A)
+
+test("runBulkSweep: a checkpoint-cleanup (remove) failure LOGS but does not mask sweep success", async () => {
+  const { transport } = fakeTransport();
+  const driver = driverOf([item("a"), item("b")]);
+  const storage = fakeStorage();
+  storage.remove = async () => { throw new Error("storage quota exceeded"); };
+  const logs = [];
+
+  // The sweep completed on the server; only the LOCAL checkpoint delete failed. That's
+  // cosmetic (a resume just re-skips via dedup), so runBulkSweep must still resolve.
+  const result = await runBulkSweep(
+    { platform: "pinterest", input: { boardId: "B7" } },
+    { transport, driver, storage, log: (...a) => logs.push(a.join(" ")), ...engineOpts });
+
+  assert.equal(result.status, "complete");
+  assert.ok(logs.some((l) => /cleanup failed/.test(l)), "the failure is logged, not swallowed silently");
+});
+
+test("runBulkSweep: a failing job-close (complete) PROPAGATES — the ledger close is load-bearing", async () => {
+  const driver = driverOf([item("a")]);
+  // Unlike local cleanup, a failed server /complete must surface: leaving the ledger row
+  // open is a real error the caller (and its retry/report path) needs to see.
+  const transport = async (message) => {
+    switch (message.type) {
+      case BULK.open: return { jobId: "J", caps: null };
+      case BULK.known: return [];
+      case BULK.relay: return { status: "saved", deduplicated: false };
+      case BULK.complete: throw new Error("complete failed (HTTP 500)");
+      default: throw new Error(`unexpected ${message.type}`);
+    }
+  };
+
+  await assert.rejects(
+    () => runBulkSweep({ platform: "pinterest", input: {} }, { transport, driver, ...engineOpts }),
+    /complete failed/);
+});

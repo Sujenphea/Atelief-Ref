@@ -41,7 +41,8 @@
     }
   ],
   "action": {
-    "default_title": "Save to Atelier"
+    "default_title": "Atelier Capture",
+    "default_popup": "src/popup.html"
   },
   "options_page": "src/options.html"
 }

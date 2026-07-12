@@ -12,9 +12,11 @@
 // exercised by manual E2E (Phase 9), not node --test.
 
 import { runSweep, classifyIngestResult } from "./bulk-engine.js";
-import { BULK, TIMELINE_MESSAGE_SOURCE } from "./bulk-messages.js";
 import {
-  pinterestBoardDriver, makeResourceFetch, scrapePinterestAppVersion, readCookie,
+  BULK, START, TIMELINE_MESSAGE_SOURCE, TIMELINE_REPLAY_SOURCE, readStartMessage,
+} from "./bulk-messages.js";
+import {
+  pinterestBoardDriver, makeResourceFetch, scrapePinterestAppVersionFromDoc, readCookie,
 } from "./bulk-pinterest.js";
 import { createTwitterSource } from "./twitter-source.js";
 
@@ -70,6 +72,10 @@ export async function runBulkSweep(spec, {
       sourceId: item.sourceId,
       provenance: item.provenance,
       mp4Url: resolveVideo ? (item.provenance?.rawMetadata?.videoUrl || null) : null,
+      // Thread the server's authoritative byte caps (from job open, 13A) so the SW can
+      // reject an over-cap image/video from its declared size BEFORE downloading it,
+      // instead of streaming a doomed file only for the app to 413 it.
+      caps,
     });
     return classifyIngestResult(result);
   };
@@ -93,9 +99,17 @@ export async function runBulkSweep(spec, {
   // Clear the checkpoint on a TERMINAL close — a clean finish or an explicit Cancel —
   // so a later re-sweep starts fresh (page 1, picking up items added since). Keep it
   // only for a RESUMABLE halt (Pause / wall) so the next run continues from the cursor.
+  // The sweep already completed on the server by here; a local checkpoint-cleanup
+  // failure is cosmetic (a resume just re-skips via dedup), so it must LOG, never
+  // reject and mask an otherwise-successful sweep (12A). A stale checkpoint is at worst
+  // a redundant re-enumeration next run, which the known-set makes idempotent.
   const resumable = result.status === "halted" && !cancelled;
   if (!resumable && storage && storage.remove) {
-    await storage.remove(checkpointKey);
+    try {
+      await storage.remove(checkpointKey);
+    } catch (error) {
+      log("checkpoint cleanup failed (non-fatal — a resume re-skips via dedup):", String(error));
+    }
   }
 
   return { jobId, caps, ...result };
@@ -132,45 +146,90 @@ export function makeChromeStorage(area) {
 }
 
 /** Build the Pinterest board driver from the live page: same-origin credentialled
- * `/resource/` fetch, app-version scraped from the bootstrap, csrftoken from cookie. */
+ * `/resource/` fetch, app-version scraped from the bootstrap, csrftoken from cookie.
+ * Returns `{ driver, dispose }` — Pinterest holds no page listener, so `dispose` is a
+ * no-op (the shape matches buildTwitterDriver so the caller tears down uniformly). */
 function buildPinterestDriver({ doc, loc, fetchImpl }) {
-  const appVersion = scrapePinterestAppVersion(doc.documentElement.innerHTML);
+  const appVersion = scrapePinterestAppVersionFromDoc(doc);
   const csrfToken = readCookie(doc.cookie, "csrftoken");
   const fetchJson = makeResourceFetch({ appVersion, csrfToken, fetchImpl });
-  return pinterestBoardDriver({ fetchJson, host: loc.host });
+  return { driver: pinterestBoardDriver({ fetchJson, host: loc.host }), dispose: () => {} };
 }
 
-/** Build the X driver: subscribe to the MAIN-world hook's timeline messages and
- * feed them to the push→pull source, which auto-scrolls to page. */
-function buildTwitterDriver({ win, host }) {
+/** Build the X driver: subscribe to the MAIN-world hook's timeline messages and feed
+ * them to the push→pull source, which auto-scrolls to page. Returns `{ driver, dispose }`
+ * — `dispose` REMOVES the `message` listener (1A): without it every launch leaks another
+ * live listener feeding a now-dead source, and a stale one could push pages into the
+ * wrong sweep. The caller runs `dispose` when the sweep settles. */
+function buildTwitterDriver({ win, host, scope }) {
   const source = createTwitterSource({
     host,
+    scope,
     scroll: () => win.scrollTo(0, win.document.body.scrollHeight),
   });
-  win.addEventListener("message", (event) => {
+  const onMessage = (event) => {
     if (event.source === win && event.data && event.data.source === TIMELINE_MESSAGE_SOURCE) {
-      source.onResponse(event.data.json);
+      source.onResponse(event.data.json, event.data.url);
     }
-  });
-  return source;
+  };
+  win.addEventListener("message", onMessage);
+  // Replay the pages X already fetched BEFORE this listener existed — above all the
+  // FIRST page, loaded on navigation. Without it a short timeline (a small bookmark
+  // folder whose items fit on page 1, or an already-scrolled one) captures nothing: the
+  // auto-scroll only triggers the empty tail page. The MAIN-world hook (installed at
+  // document_start) buffers recent responses and re-posts them on this request; dedup
+  // makes any overlap with the live pages idempotent.
+  win.postMessage({ source: TIMELINE_REPLAY_SOURCE }, win.location.origin);
+  return { driver: source, dispose: () => win.removeEventListener("message", onMessage) };
 }
 
-// Guarded so a `node --test` import (no chrome / window) is inert. The real
-// bootstrap is triggered by a "start sweep" runtime message from the app-driven UI.
-if (typeof chrome !== "undefined" && chrome.runtime && typeof window !== "undefined") {
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message || message.type !== "atelier-bulk-start") return false;
-    const transport = makeRuntimeTransport((m) => chrome.runtime.sendMessage(m));
-    const storage = makeChromeStorage(chrome.storage.local);
-    const host = window.location.host;
-    const driver = message.platform === "twitter"
-      ? buildTwitterDriver({ win: window, host })
-      : buildPinterestDriver({ doc: document, loc: window.location, fetchImpl: window.fetch.bind(window) });
-    runBulkSweep(
-      { platform: message.platform, input: message.input, scope: message.scope, resolveVideo: message.resolveVideo },
-      { transport, driver, storage })
+/** Register the START-message listener on a page. Extracted so the guard + wiring are
+ * one place; idempotent via a window flag so a re-injection (the cold-tab recovery in
+ * bulk-dispatch.js) can't leave two listeners → two sweeps for one click. */
+export function registerBulkController(win, chromeApi) {
+  if (win.__atelierBulkController) return; // already wired on this page
+  win.__atelierBulkController = true;
+
+  chromeApi.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (!message || message.type !== START) return false;
+
+    // Per-tab guard (1A): one sweep at a time on a page. A second START — a double-click,
+    // or the cold-tab re-injection racing the popup — is refused, not run concurrently:
+    // two sweeps would double the request rate (a scraper tell) and, for X, two message
+    // listeners would cross-feed each other's pages. The flag lives on `win`, so it's
+    // per-tab and survives the SW being torn down mid-sweep.
+    if (win.__atelierSweepInFlight) {
+      sendResponse({ ok: false, error: "sweep-already-running" });
+      return true;
+    }
+
+    const spec = readStartMessage(message);
+    // Reject an unknown platform with a TYPED error (7A) instead of silently falling
+    // through to the Pinterest driver — which, on an X page, would scrape the wrong
+    // bootstrap and open a job that ingests nothing. Validated before the guard is set,
+    // so a bad message never blocks a subsequent good one.
+    if (spec.platform !== "twitter" && spec.platform !== "pinterest") {
+      sendResponse({ ok: false, error: `unsupported-platform: ${spec.platform}` });
+      return true;
+    }
+    win.__atelierSweepInFlight = true;
+
+    const transport = makeRuntimeTransport((m) => chromeApi.runtime.sendMessage(m));
+    const storage = makeChromeStorage(chromeApi.storage.local);
+    const host = win.location.host;
+    const { driver, dispose } = spec.platform === "twitter"
+      ? buildTwitterDriver({ win, host, scope: spec.scope })
+      : buildPinterestDriver({ doc: win.document, loc: win.location, fetchImpl: win.fetch.bind(win) });
+    runBulkSweep(spec, { transport, driver, storage })
       .then((result) => sendResponse({ ok: true, result }))
-      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+      .catch((error) => sendResponse({ ok: false, error: String(error) }))
+      .finally(() => { win.__atelierSweepInFlight = false; dispose(); }); // release guard + tear down listener
     return true; // async sendResponse
   });
+}
+
+// Guarded so a `node --test` import (no chrome / window) is inert. The real bootstrap
+// is triggered by a START runtime message from the popup (or the injection recovery).
+if (typeof chrome !== "undefined" && chrome.runtime && typeof window !== "undefined") {
+  registerBulkController(window, chrome);
 }

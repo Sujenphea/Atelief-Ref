@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createTwitterSource } from "../src/twitter-source.js";
+import { createTwitterSource, TimelineStallError } from "../src/twitter-source.js";
 
 /** A minimal timeline response: `mediaKeys` tweet entries + a Bottom cursor. */
 function timeline(mediaKeys, cursor = "C") {
@@ -52,16 +52,64 @@ test("yields items across scroll-loaded pages, ends on an empty (0-tweet) page",
   assert.deepEqual(keys, ["k1a", "k1b", "k2"]); // empty page yields nothing, then ends
 });
 
-test("terminates after maxIdleRounds when scrolling yields no new response", async () => {
+test("STALLS (throws) after maxIdleRounds when scrolling yields no new response", async () => {
+  // A wall (rate-limit / DOM stall) is NOT a confirmed end — only a 0-tweet page is. So
+  // idle exhaustion throws a typed stall; the engine turns that into a RESUMABLE pause
+  // that keeps the checkpoint, rather than a false "complete" that deletes it (2A).
   let scrolls = 0;
   const source = createTwitterSource({
     sleep: () => Promise.resolve(),
     maxIdleRounds: 2,
     scroll: () => { scrolls += 1; }, // never feeds a response → the bottom / a wall
   });
-  const items = await collect(source);
-  assert.equal(items.length, 0);
+  await assert.rejects(() => collect(source), TimelineStallError);
   assert.equal(scrolls, 2); // gave up after 2 idle rounds
+});
+
+test("a stall that follows real items still throws — the items already yielded are kept", async () => {
+  // First page yields, then the page walls. The consumer (engine) has recorded the real
+  // items before the throw, so a resumable pause loses nothing already ingested.
+  const source = createTwitterSource({
+    sleep: () => Promise.resolve(), maxIdleRounds: 1, scroll: () => {},
+  });
+  source.onResponse(timeline(["k1"])); // one real page, cursor "C" (not an end page)
+  const yielded = [];
+  await assert.rejects(async () => {
+    for await (const item of source.enumerate()) yielded.push(item.sourceId);
+  }, TimelineStallError);
+  assert.deepEqual(yielded, ["k1"]); // the real item came through before the wall
+});
+
+test("with a folder scope, drops responses from OTHER feeds (replay-buffer contamination)", async () => {
+  // The hook forwards — and 075 replays — every timeline the page fetched: main
+  // bookmarks, Likes, other folders. A folder sweep must ingest ONLY its own folder,
+  // or it pulls in tweets from outside it. onResponse now takes the response's url.
+  const FID = "2005398616131952777";
+  const folderUrl = `https://x.com/i/api/graphql/q/BookmarkFolderTimeline?variables=${
+    encodeURIComponent(JSON.stringify({ bookmark_collection_id: FID }))}`;
+  const mainUrl = "https://x.com/i/api/graphql/q/Bookmarks?variables=%7B%7D";
+
+  const source = createTwitterSource({
+    sleep: () => Promise.resolve(), maxIdleRounds: 1,
+    // The next scroll delivers this folder's empty (0-tweet) end page → clean finish.
+    scroll: (() => { let fed = false; return () => { if (!fed) { fed = true; source.onResponse(timeline([], "END"), folderUrl); } }; })(),
+    scope: `bookmarks:${FID}`,
+  });
+  source.onResponse(timeline(["main1", "main2"]), mainUrl);       // WRONG feed → dropped
+  source.onResponse(timeline(["fA", "fB"]), folderUrl);          // this folder → kept
+
+  const keys = (await collect(source)).map((i) => i.sourceId);
+  assert.deepEqual(keys, ["fA", "fB"]); // only the folder's own tweets
+});
+
+test("with no scope set, accepts every response (unchanged legacy behaviour)", async () => {
+  const source = createTwitterSource({
+    sleep: () => Promise.resolve(), maxIdleRounds: 1,
+    scroll: (() => { let fed = false; return () => { if (!fed) { fed = true; source.onResponse(timeline([], "END")); } }; })(),
+  });
+  source.onResponse(timeline(["a"])); // no url, no scope → still queued
+  const keys = (await collect(source)).map((i) => i.sourceId);
+  assert.deepEqual(keys, ["a"]);
 });
 
 test("an unparseable captured response is ignored, not fatal", async () => {

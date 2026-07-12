@@ -1,0 +1,44 @@
+// Atelier Capture — media-host allowlist tests (SSRF guard, decision 3A).
+//
+// The allowlist is the last line before the SW fetches page-supplied media in the
+// authenticated session, so its acceptance AND rejection sets are pinned here: real CDN
+// hosts pass, everything else (loopback, arbitrary hosts, suffix-spoofs, garbage URLs,
+// unknown platforms) is denied by default.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import { isAllowedMediaHost } from "../src/media-hosts.js";
+
+test("allows the real Twitter media CDNs", () => {
+  assert.equal(isAllowedMediaHost("twitter", "https://pbs.twimg.com/media/x.jpg?name=orig"), true);
+  assert.equal(isAllowedMediaHost("twitter", "https://video.twimg.com/amplify_video/1/x.mp4"), true);
+  assert.equal(isAllowedMediaHost("twitter", "https://twimg.com/x"), true); // apex too
+});
+
+test("allows the real Pinterest media CDNs", () => {
+  assert.equal(isAllowedMediaHost("pinterest", "https://i.pinimg.com/originals/x.jpg"), true);
+  assert.equal(isAllowedMediaHost("pinterest", "https://v.pinimg.com/videos/x.mp4"), true);
+});
+
+test("denies loopback, arbitrary hosts, and cross-platform hosts", () => {
+  assert.equal(isAllowedMediaHost("pinterest", "http://127.0.0.1:47321/secret"), false);
+  assert.equal(isAllowedMediaHost("twitter", "https://evil.example/x.jpg"), false);
+  // A Pinterest sweep must not fetch a twimg URL, and vice-versa.
+  assert.equal(isAllowedMediaHost("pinterest", "https://pbs.twimg.com/media/x.jpg"), false);
+  assert.equal(isAllowedMediaHost("twitter", "https://i.pinimg.com/originals/x.jpg"), false);
+});
+
+test("denies suffix-spoofed look-alike hosts", () => {
+  assert.equal(isAllowedMediaHost("twitter", "https://pbs.twimg.com.evil.com/x.jpg"), false);
+  assert.equal(isAllowedMediaHost("twitter", "https://eviltwimg.com/x.jpg"), false);
+  assert.equal(isAllowedMediaHost("pinterest", "https://notpinimg.com/x.jpg"), false);
+});
+
+test("denies a garbage URL, an empty host, and an unknown platform (deny-by-default)", () => {
+  assert.equal(isAllowedMediaHost("twitter", "not a url"), false);
+  assert.equal(isAllowedMediaHost("twitter", ""), false);
+  assert.equal(isAllowedMediaHost("twitter", "data:image/png;base64,AAAA"), false); // no host
+  assert.equal(isAllowedMediaHost("instagram", "https://scontent.cdninstagram.com/x.jpg"), false);
+  assert.equal(isAllowedMediaHost(undefined, "https://pbs.twimg.com/x.jpg"), false);
+});

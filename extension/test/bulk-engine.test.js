@@ -170,6 +170,27 @@ test("checkpoint: cursor advances contiguously and persists progress", async () 
   assert.deepEqual(storage.saves.map((s) => s.value.cursor), ["c0", "c1", "c2"]);
 });
 
+test("checkpoint: a storage.save failure is non-fatal — the sweep still completes (8A)", async () => {
+  const { driver } = driverFrom([item("a"), item("b")]);
+  const relay = async () => ({ outcome: OUTCOMES.ingested });
+  const logs = [];
+  const storage = {
+    async load() { return null; },
+    async save() { throw new Error("quota exceeded"); }, // every checkpoint write fails
+  };
+  const { sleep } = recordingSleep();
+
+  const result = await runSweep(driver, "in", {
+    relay, storage, checkpointKey: "job:x",
+    sleep, random: () => 0, log: (...a) => logs.push(a.join(" ")),
+    config: { MAX_CONCURRENCY: 1, PACING_MS: 0, PACING_JITTER_MS: 0 },
+  });
+
+  assert.equal(result.status, "complete");         // NOT aborted by the failing save
+  assert.equal(result.counts.ingested, 2);         // both items still relayed + recorded
+  assert.ok(logs.some((l) => /checkpoint save failed/.test(l)), "the failure is logged");
+});
+
 // MARK: - retry requeue + backoff timing [P13][C7]
 
 test("retry requeue: two transient fails then success → item ingested, 3 relay calls", async () => {
@@ -346,6 +367,72 @@ test("concurrency: a later item finishing first never checkpoints past an unfini
   assert.deepEqual(storage.saves.map((s) => s.value.cursor), ["c1"]);
 });
 
+test("concurrency: never more than MAX_CONCURRENCY relays in flight at once", async () => {
+  const { driver } = driverFrom(Array.from({ length: 9 }, (_, i) => item(`i${i}`)));
+  let inFlight = 0;
+  let peak = 0;
+  const relay = async () => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((r) => setTimeout(r, 0)); // hold so overlap is observable
+    inFlight -= 1;
+    return { outcome: OUTCOMES.ingested };
+  };
+  const { sleep } = recordingSleep();
+
+  const result = await runSweep(driver, "in", {
+    relay, sleep, random: () => 0,
+    config: { MAX_CONCURRENCY: 3, PACING_MS: 0, PACING_JITTER_MS: 0 },
+  });
+
+  assert.equal(result.counts.ingested, 9);
+  assert.equal(peak, 3);                           // exactly the worker cap, never more
+});
+
+test("concurrency + halt: a later item's halt never strands an unfinished earlier item", async () => {
+  const { driver } = driverFrom([item("a", "c0"), item("b", "c1"), item("c", "c2")]);
+  const gateA = deferred();
+  const relay = async (it) => {
+    if (it.sourceId === "a") { await gateA.promise; return { outcome: OUTCOMES.ingested }; }
+    if (it.sourceId === "b") return { outcome: OUTCOMES.retryableFailed, signal: "halt" };
+    return { outcome: OUTCOMES.ingested };         // "c" must never be reached
+  };
+  const storage = memStorage();
+  const { sleep } = recordingSleep();
+
+  const done = runSweep(driver, "in", {
+    relay, storage, checkpointKey: "job:h",
+    sleep, random: () => 0,
+    config: { MAX_CONCURRENCY: 2, PACING_MS: 0, PACING_JITTER_MS: 0 },
+  });
+
+  // Both "a" (seq 0, gated) and "b" (seq 1, halts) dispatch. b records its halt, but
+  // seq 0 is still in flight → the watermark must NOT advance over it.
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(storage.saves.length, 0, "b's cursor must not checkpoint over unfinished a");
+
+  gateA.resolve();
+  const result = await done;
+
+  assert.equal(result.status, "halted");
+  assert.equal(result.cursor, "c1");               // watermark jumps a→b once a lands
+  assert.deepEqual(storage.saves.map((s) => s.value.cursor), ["c1"]); // one save, no strand
+});
+
+test("pacing jitter: the per-item gap includes the random()-scaled jitter", async () => {
+  const { driver } = driverFrom([item("a")]);
+  const relay = async () => ({ outcome: OUTCOMES.ingested });
+  const { sleep, durations } = recordingSleep();
+
+  await runSweep(driver, "in", {
+    relay, sleep, random: () => 0.5,               // mid-range jitter, deterministic
+    config: { MAX_CONCURRENCY: 1, PACING_MS: 800, PACING_JITTER_MS: 700 },
+  });
+
+  // pace = PACING_MS + floor(random() * PACING_JITTER_MS) = 800 + floor(0.5·700) = 1150.
+  assert.deepEqual(durations, [1150]);
+});
+
 // MARK: - progress reporting
 
 test("onProgress reports cumulative counts after each terminal item", async () => {
@@ -380,6 +467,9 @@ test("classifyIngestResult maps every ingestOne status", () => {
   // no-image / no-token never reach the relay → recorded defensively as permanent.
   assert.deepEqual(classifyIngestResult({ status: "no-image" }),
     { outcome: OUTCOMES.permanentFailed, signal: "continue" });
+  // blocked-host (3A SSRF refusal) is a permanent per-item skip — never retried, never a halt.
+  assert.deepEqual(classifyIngestResult({ status: "blocked-host" }),
+    { outcome: OUTCOMES.permanentFailed, signal: "continue" });
 });
 
 test("classifyIngestResult halts on an app-side pause/cancel (jobStatus relay feedback)", () => {
@@ -407,6 +497,41 @@ test("classifyIngestResult refines with httpStatus when present (forward-compati
   // A 422 stays permanent.
   assert.equal(classifyIngestResult({ status: "ingest-error", httpStatus: 422 }).outcome,
     OUTCOMES.permanentFailed);
+});
+
+test("classifyIngestResult: a 401/403 auth wall HALTS resumable, not a per-item fail (5A)", async () => {
+  // A media-CDN 403 (session expired) or app 401 (bad token) is session-wide: recording
+  // it per-item permanent would silently lose the rest of the sweep. Both HALT resumable.
+  for (const httpStatus of [401, 403]) {
+    const fromFetch = classifyIngestResult({ status: "fetch-error", httpStatus });
+    assert.equal(fromFetch.signal, "halt", `fetch-error ${httpStatus} halts`);
+    assert.equal(fromFetch.outcome, OUTCOMES.retryableFailed); // re-attempted on resume
+    const fromIngest = classifyIngestResult({ status: "ingest-error", httpStatus });
+    assert.equal(fromIngest.signal, "halt", `ingest-error ${httpStatus} halts`);
+  }
+  // Neither surfaces an appStatus, so the controller closes the job "paused" (resumable),
+  // not "halted" (a terminal Cancel).
+  assert.equal(classifyIngestResult({ status: "fetch-error", httpStatus: 403 }).appStatus, undefined);
+});
+
+test("auth wall halts the sweep resumable, sparing the rest of the board (5A)", async () => {
+  const { driver } = driverFrom([item("a"), item("b"), item("c")]);
+  const relayed = [];
+  // The CDN cookie expired: every media fetch now 403s. The FIRST one must halt the
+  // whole sweep, not fail-and-continue burning b and c as permanentFailed.
+  const relay = async (it) => {
+    relayed.push(it.sourceId);
+    return classifyIngestResult({ status: "fetch-error", httpStatus: 403 });
+  };
+  const { opts } = serialOpts({ relay });
+
+  const result = await runSweep(driver, "in", opts);
+
+  assert.equal(result.status, "halted");
+  assert.equal(result.haltStatus, null);           // self-halt → controller closes "paused"
+  assert.deepEqual(relayed, ["a"]);                // stopped at the first wall, b/c untouched
+  assert.equal(result.counts.retryableFailed, 1);  // "a" re-attempted on resume
+  assert.equal(result.counts.permanentFailed, 0);  // NOTHING wrongly burned as permanent
 });
 
 // MARK: - guardrails

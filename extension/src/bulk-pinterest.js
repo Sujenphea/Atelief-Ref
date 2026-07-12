@@ -53,6 +53,20 @@ export function scrapePinterestAppVersion(text) {
   return match ? match[1] : null;
 }
 
+/** Scrape the app_version from a live document, scanning inline `<script>` bodies FIRST
+ * (14A) — the bootstrap JSON lives in one, and each script's `textContent` is far smaller
+ * than serializing the ENTIRE DOM via `documentElement.innerHTML` (which on a big board
+ * page is megabytes). Falls back to the full-page innerHTML only if no script carries it,
+ * so a markup change that relocates the value still resolves. `doc` needs `.scripts`
+ * (array-like of elements with `.textContent`) and `.documentElement.innerHTML`. */
+export function scrapePinterestAppVersionFromDoc(doc) {
+  for (const script of (doc && doc.scripts) || []) {
+    const found = scrapePinterestAppVersion(script.textContent || "");
+    if (found) return found;
+  }
+  return scrapePinterestAppVersion(doc && doc.documentElement ? doc.documentElement.innerHTML : "");
+}
+
 /** The value of cookie `name` from a `document.cookie` string, or null. Used to
  * read the non-HttpOnly `csrftoken` for `X-CSRFToken` (no `cookies` permission). */
 export function readCookie(cookieString, name) {

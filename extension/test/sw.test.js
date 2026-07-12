@@ -102,13 +102,31 @@ test("8A: RESOLVED video fails to download/ingest → loud logError, still falls
   assert.equal(calls.logError.length, 1); // unexpected path → logError
 });
 
-test("non-200 ingest → ingest-error with the server message", async () => {
+test("non-200 ingest → ingest-error with the server message + httpStatus (5A)", async () => {
   const { deps } = makeDeps({
     postCapture: async () => ({ status: 422, body: { error: "unsupported type" } }),
   });
   assert.deepEqual(await captureCore({}, {}, "tok", deps), {
-    status: "ingest-error", message: "unsupported type",
+    status: "ingest-error", httpStatus: 422, message: "unsupported type",
   });
+});
+
+test("ingestOne: a 401/403 ingest surfaces httpStatus so the engine can auth-halt (5A)", async () => {
+  const { deps } = makeDeps({
+    postCapture: async () => ({ status: 403, body: { error: "forbidden" } }),
+  });
+  const r = await ingestOne(PROV, { token: "bad" }, deps);
+  assert.equal(r.status, "ingest-error");
+  assert.equal(r.httpStatus, 403); // classifyIngestResult turns this into a resumable halt
+});
+
+test("ingestOne: a failed image fetch threads the CDN httpStatus through (5A)", async () => {
+  const { deps } = makeDeps({
+    fetchImage: async () => { throw Object.assign(new Error("HTTP 401 for u"), { httpStatus: 401 }); },
+  });
+  const r = await ingestOne(PROV, { token: "tok" }, deps);
+  assert.equal(r.status, "fetch-error");
+  assert.equal(r.httpStatus, 401);
 });
 
 test("postCapture throws (app down) → unreachable", async () => {
@@ -215,6 +233,27 @@ test("fetchImage: skips a non-image response, falls through to the next candidat
   assert.equal(call, 2);
 });
 
+test("fetchImage: a MISSING content-type is refused too (3B), not ingested as garbage", async () => {
+  // An error / login / HTML interstitial often omits content-type entirely. The old
+  // guard only rejected a PRESENT non-image type, so a blank one slipped through and the
+  // body was ingested as bogus bytes. Now a blank type falls through like any non-image.
+  let call = 0;
+  const fetchImpl = async () => {
+    call += 1;
+    if (call === 1) return { ok: true, status: 200, headers: { get: () => "" }, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    return { ok: true, status: 200, headers: { get: () => "image/jpeg" }, arrayBuffer: async () => new Uint8Array([9]).buffer };
+  };
+  const result = await fetchImage(["https://cdn/no-type", "https://cdn/real.jpg"], { fetchImpl });
+  assert.equal(result.url, "https://cdn/real.jpg");
+  assert.equal(call, 2);
+});
+
+test("fetchImage: when the ONLY candidate has no content-type, it throws (no garbage ingest)", async () => {
+  await assert.rejects(
+    () => fetchImage(["https://cdn/no-type"], { fetchImpl: imageFetch({ contentType: "" }) }),
+    /no content-type/);
+});
+
 test("fetchImage: an HTTP error skips to the next candidate", async () => {
   let call = 0;
   const fetchImpl = async () => {
@@ -252,4 +291,94 @@ test("downloadAndIngestVideo: rejects an over-cap clip by Content-Length before 
     /too large/
   );
   assert.equal(blobRead, false); // aborted before downloading the body
+});
+
+test("downloadAndIngestVideo: a server cap overrides the local MAX_VIDEO_BYTES default (13A)", async () => {
+  let blobRead = false;
+  const headers = {
+    get: (h) => h === "content-length" ? String(2 * 1024 * 1024)   // 2 MB
+      : h === "content-type" ? "video/mp4" : "",
+  };
+  const fetchImpl = async () => ({ ok: true, headers, blob: async () => { blobRead = true; return {}; } });
+  // 2 MB is far under the 512 MB default but OVER a 1 MB server cap → rejected early.
+  await assert.rejects(
+    () => downloadAndIngestVideo({}, "https://v/x.mp4", "tok", { fetchImpl, maxBytes: 1024 * 1024 }),
+    /too large/
+  );
+  assert.equal(blobRead, false);
+});
+
+// MARK: - fetchImage / ingestOne server caps (13A)
+
+/** An image fetch with an explicit Content-Length + content-type (for the size check). */
+function sizedImageFetch(contentLength, bytes = [1, 2]) {
+  return async () => ({
+    ok: true, status: 200,
+    headers: { get: (h) => h === "content-length" ? String(contentLength) : h === "content-type" ? "image/jpeg" : "" },
+    arrayBuffer: async () => new Uint8Array(bytes).buffer,
+  });
+}
+
+test("fetchImage: rejects an over-cap image by Content-Length before reading the body (13A)", async () => {
+  let bodyRead = false;
+  const fetchImpl = async () => ({
+    ok: true, status: 200,
+    headers: { get: (h) => h === "content-length" ? "5000" : h === "content-type" ? "image/jpeg" : "" },
+    arrayBuffer: async () => { bodyRead = true; return new Uint8Array([1]).buffer; },
+  });
+  await assert.rejects(
+    () => fetchImage(["https://cdn/big.jpg"], { fetchImpl, maxBytes: 1000 }),
+    /image too large/);
+  assert.equal(bodyRead, false); // aborted before downloading the body
+});
+
+test("fetchImage: an over-cap candidate falls through to a within-cap fallback (13A)", async () => {
+  let call = 0;
+  const fetchImpl = async () => {
+    call += 1;
+    return (call === 1 ? sizedImageFetch(5000) : sizedImageFetch(500, [9]))();
+  };
+  const result = await fetchImage(["https://cdn/orig", "https://cdn/rendered"], { fetchImpl, maxBytes: 1000 });
+  assert.equal(result.url, "https://cdn/rendered"); // the smaller variant fit under the cap
+  assert.equal(call, 2);
+});
+
+test("fetchImage: no maxBytes (single-item capture) skips the size pre-check (13A)", async () => {
+  const result = await fetchImage(["https://cdn/x.jpg"], { fetchImpl: sizedImageFetch(9_999_999) });
+  assert.equal(result.byteLength, 2); // ingested despite a large declared size — no cap applied
+});
+
+test("ingestOne: threads the job's server caps into the image + video size checks (13A)", async () => {
+  const seen = {};
+  const { deps } = makeDeps({
+    fetchImage: async (_urls, opts) => {
+      seen.imageMax = opts && opts.maxBytes;
+      return { base64: "B", url: "u", contentType: "image/jpeg", byteLength: 1 };
+    },
+  });
+  await ingestOne(PROV, { token: "tok", caps: { maxBodyBytes: 111, maxVideoBodyBytes: 222 } }, deps);
+  assert.equal(seen.imageMax, 111);
+
+  const seenV = {};
+  const { deps: vdeps } = makeDeps({
+    downloadAndIngestVideo: async (_p, _u, _t, opts) => {
+      seenV.videoMax = opts && opts.maxBytes;
+      return { deduplicated: false };
+    },
+  });
+  await ingestOne(PROV, { token: "tok", mp4Url: "https://v/x.mp4",
+    caps: { maxBodyBytes: 111, maxVideoBodyBytes: 222 } }, vdeps);
+  assert.equal(seenV.videoMax, 222);
+});
+
+test("ingestOne: no caps (single-item capture) passes null limits — the server backstops (13A)", async () => {
+  const seen = {};
+  const { deps } = makeDeps({
+    fetchImage: async (_urls, opts) => {
+      seen.imageMax = opts && opts.maxBytes;
+      return { base64: "B", url: "u", contentType: "image/jpeg", byteLength: 1 };
+    },
+  });
+  await ingestOne(PROV, { token: "tok" }, deps);
+  assert.equal(seen.imageMax, null);
 });

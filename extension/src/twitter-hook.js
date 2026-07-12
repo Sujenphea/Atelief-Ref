@@ -21,20 +21,36 @@
 /** postMessage envelope tag. KEEP IN SYNC with bulk-messages.js `TIMELINE_MESSAGE_SOURCE`. */
 const TIMELINE_MESSAGE_SOURCE = "atelier-x-timeline";
 
+/** The controller posts this to ask the hook to re-emit the responses it buffered
+ * before the sweep's listener existed. KEEP IN SYNC with bulk-messages.js
+ * `TIMELINE_REPLAY_SOURCE`. */
+const REPLAY_REQUEST_SOURCE = "atelier-x-timeline-replay";
+
+/** How many recent timeline responses to retain for replay. A sweep only subscribes
+ * once the user starts it, so pages X already fetched (page 1 on navigation, plus
+ * anything scrolled through) would be lost; buffering the last N lets the controller
+ * replay them at sweep start. Bounded so a long browse can't grow it without limit. */
+const REPLAY_BUFFER_LIMIT = 25;
+
 /** True for a timeline GraphQL request URL (`…/i/api/graphql/{queryId}/{Op}`,
- * Op ∈ Bookmarks | Likes). KEEP IN SYNC with any parser-side copy. */
+ * Op ∈ Bookmarks | BookmarkFolderTimeline | Likes). A bookmark FOLDER loads via the
+ * distinct `BookmarkFolderTimeline` op (verified live) — without it, folder sweeps see
+ * no responses and ingest nothing. KEEP IN SYNC with any parser-side copy. */
 function isTimelineRequest(url) {
   return typeof url === "string" &&
-    /\/i\/api\/graphql\/[^/]+\/(Bookmarks|Likes)(?:$|[/?])/.test(url);
+    /\/i\/api\/graphql\/[^/]+\/(Bookmarks|BookmarkFolderTimeline|Likes)(?:$|[/?])/.test(url);
 }
 
 /**
  * Wrap `scope.fetch` AND `scope.XMLHttpRequest` so a timeline response is parsed and
- * handed to `post({ url, json })`. Idempotent (a flag on `scope` prevents double-
- * wrapping across repeated injections). Returns true if it installed either
- * interceptor, false if already installed or neither transport exists. Both paths are
- * fire-and-forget and fully guarded — the page's own request is returned untouched, on
- * its original timing, and a parse failure is swallowed.
+ * handed to `post({ url, json })`. Each forwarded response is also BUFFERED (bounded)
+ * and re-emitted when the controller posts a `REPLAY_REQUEST_SOURCE` message, so a
+ * sweep that subscribes late still gets the pages fetched before it started.
+ * Idempotent (a flag on `scope` prevents double-wrapping across repeated injections).
+ * Returns true if it installed either interceptor, false if already installed or
+ * neither transport exists. Both paths are fire-and-forget and fully guarded — the
+ * page's own request is returned untouched, on its original timing, and a parse
+ * failure is swallowed.
  */
 function installTimelineHook({ target, post } = {}) {
   const scope = target || (typeof globalThis !== "undefined" ? globalThis : null);
@@ -42,6 +58,30 @@ function installTimelineHook({ target, post } = {}) {
   if (scope.__atelierTimelineHookInstalled) return false;
 
   let installed = false;
+
+  // Buffer every forwarded response (bounded) so the controller can REPLAY the pages
+  // X fetched before its sweep listener existed — otherwise a short/already-loaded
+  // timeline (e.g. a small bookmark folder) yields nothing. `forward` = remember + post.
+  const recent = [];
+  const forward = (entry) => {
+    recent.push(entry);
+    if (recent.length > REPLAY_BUFFER_LIMIT) recent.shift();
+    post(entry);
+  };
+
+  // Replay on request: re-emit the buffer (via `post`, not `forward`, so replaying
+  // can't grow the buffer). Best-effort + guarded — never break the page.
+  if (typeof scope.addEventListener === "function") {
+    scope.addEventListener("message", (event) => {
+      try {
+        if (event && event.data && event.data.source === REPLAY_REQUEST_SOURCE) {
+          for (const entry of recent) post(entry);
+        }
+      } catch {
+        /* never break the page */
+      }
+    });
+  }
 
   // fetch path — a clone is parsed so the page still reads the original body.
   if (typeof scope.fetch === "function") {
@@ -52,7 +92,7 @@ function installTimelineHook({ target, post } = {}) {
         const input = args[0];
         const url = typeof input === "string" ? input : (input && input.url) || "";
         if (isTimelineRequest(url) && response && typeof response.clone === "function") {
-          response.clone().json().then((json) => post({ url, json })).catch(() => {});
+          response.clone().json().then((json) => forward({ url, json })).catch(() => {});
         }
       } catch {
         /* never break the page */
@@ -83,7 +123,7 @@ function installTimelineHook({ target, post } = {}) {
               let json = null;
               if (type === "" || type === "text") json = JSON.parse(this.responseText);
               else if (type === "json") json = this.response;
-              if (json) post({ url, json });
+              if (json) forward({ url, json });
             } catch {
               /* ignore a non-JSON / unreadable body */
             }

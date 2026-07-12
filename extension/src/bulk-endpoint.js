@@ -7,11 +7,12 @@
 // the SW calls these (a content script can't reach 127.0.0.1 without CORS); the
 // content-script controller reaches them by messaging the SW.
 
-import { DEFAULT_BASE, TOKEN_HEADER } from "./endpoint.js";
+import { DEFAULT_BASE, TOKEN_HEADER, parseJsonResponse } from "./endpoint.js";
 import { fetchWithTimeout } from "./net.js";
 
 /** One authenticated JSON call to a /jobs route. Returns `{ status, body }`,
- * tolerating an empty/non-JSON body (→ `{}`). */
+ * tolerating an empty/non-JSON body (→ `{}`) via the shared `parseJsonResponse` (6A —
+ * the same tolerant parser the /ingest helpers use, so the two can't drift). */
 async function jobFetch(path, { method = "GET", payload = null, token, fetchImpl = fetch } = {}) {
   const headers = { [TOKEN_HEADER]: token ?? "" };
   if (payload) headers["Content-Type"] = "application/json";
@@ -20,9 +21,7 @@ async function jobFetch(path, { method = "GET", payload = null, token, fetchImpl
     { method, headers, ...(payload ? { body: JSON.stringify(payload) } : {}) },
     { fetchImpl }
   );
-  let body = {};
-  try { body = await response.json(); } catch { body = {}; }
-  return { status: response.status, body };
+  return parseJsonResponse(response);
 }
 
 /** `POST /jobs` — open a sweep. Returns `{ jobId, caps }` (caps = the server's

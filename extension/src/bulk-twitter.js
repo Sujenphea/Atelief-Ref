@@ -2,7 +2,8 @@
 //
 // Unlike Pinterest (which we paginate ourselves), X's timeline requests are made BY
 // THE PAGE as it auto-scrolls; a MAIN-world hook (twitter-hook.js) captures the
-// `Bookmarks` / `Likes` GraphQL RESPONSES and forwards them to the content script.
+// `Bookmarks` / `BookmarkFolderTimeline` / `Likes` GraphQL RESPONSES and forwards them
+// to the content script.
 // This module is the PURE half: parse an intercepted timeline response into
 // `BulkItem`s + the bottom cursor. The push→pull adapter that feeds these into the
 // engine lives with the content-script loop (Phase 6); the parsers here are what
@@ -28,13 +29,15 @@ export function unwrapTweet(result) {
 }
 
 /** Find the timeline `instructions` array across the operation shapes (Bookmarks
- * nests under `bookmark_timeline_v2`, Likes under `user.result.timeline_v2`), with a
+ * nests under `bookmark_timeline_v2`, a bookmark FOLDER under
+ * `bookmark_collection_timeline`, Likes under `user.result.timeline_v2`), with a
  * bounded deep-search fallback so a wrapper rename doesn't silently yield nothing. */
 export function findInstructions(json) {
   const data = json && json.data;
   const known =
     data?.bookmark_timeline_v2?.timeline ||
     data?.bookmark_timeline?.timeline ||
+    data?.bookmark_collection_timeline?.timeline ||
     data?.user?.result?.timeline_v2?.timeline ||
     data?.user?.result?.timeline?.timeline ||
     null;
@@ -168,4 +171,58 @@ export function parseTimelinePage(json, { host = "x.com" } = {}) {
   for (const item of items) item.cursor = bottomCursor;
 
   return { items, bottomCursor, tweetCount };
+}
+
+/**
+ * Parse a Twitter GraphQL request URL into `{ op, variables }`, or null if it isn't a
+ * GraphQL request. `op` is the operation name (`…/graphql/{queryId}/{Op}`); `variables`
+ * is the `variables` query param JSON-PARSED (decision 6A) — `{}` when absent or
+ * malformed. Parsing the structured params (rather than substring-matching the raw URL)
+ * is robust to key ordering, whitespace and re-encoding.
+ */
+export function graphqlOp(url) {
+  if (typeof url !== "string") return null;
+  let parsed;
+  try { parsed = new URL(url); } catch { return null; }
+  const match = /\/graphql\/[^/]+\/([^/?]+)/.exec(parsed.pathname);
+  if (!match) return null;
+  let variables = {};
+  const raw = parsed.searchParams.get("variables"); // URLSearchParams already decodes it
+  if (raw) {
+    try { variables = JSON.parse(raw); } catch { variables = {}; }
+  }
+  return { op: match[1], variables };
+}
+
+/**
+ * Does an intercepted timeline response's request URL belong to THIS sweep's scope?
+ *
+ * Both the live stream and the replay buffer (075) carry EVERY timeline the page has
+ * fetched — main bookmarks, Likes, and any OTHER bookmark folder you browsed before
+ * starting. The hook is scope-blind by design (it forwards all three ops). Without
+ * this gate a folder sweep would ingest the buffered pre-sweep pages of unrelated
+ * timelines — tweets from OUTSIDE the folder. `scope` is exactly what
+ * `resolveSweepSpec` emits: `"bookmarks"` (the main list) or `"bookmarks:<folderId>"`.
+ *
+ * A folder request is the `BookmarkFolderTimeline` op whose `variables` carry
+ * `bookmark_collection_id: "<folderId>"`; the main list is the distinct `Bookmarks` op
+ * (NOT `BookmarkFolderTimeline`, NOT `Likes`). Matched via `graphqlOp` (JSON-parsed
+ * variables, 6A). An unknown / missing scope matches nothing — better to drop a page
+ * than cross-contaminate.
+ */
+export function matchesScope(url, scope) {
+  const request = graphqlOp(url);
+  if (!request) return false;
+
+  const folder = /^bookmarks:(\d+)$/.exec(scope || "");
+  if (folder) {
+    return request.op === "BookmarkFolderTimeline" &&
+      String(request.variables.bookmark_collection_id) === folder[1];
+  }
+
+  if (scope === "bookmarks") {
+    return request.op === "Bookmarks"; // the main list's own op only
+  }
+
+  return false; // unknown scope → drop rather than risk pulling the wrong feed
 }

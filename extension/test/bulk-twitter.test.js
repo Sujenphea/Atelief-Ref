@@ -11,19 +11,22 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
-  unwrapTweet, findInstructions, mapTweet, parseTimelinePage,
+  unwrapTweet, findInstructions, mapTweet, parseTimelinePage, matchesScope, graphqlOp,
 } from "../src/bulk-twitter.js";
+import {
+  TIMELINE_MESSAGE_SOURCE as MSG_SRC, TIMELINE_REPLAY_SOURCE as REPLAY_SRC,
+} from "../src/bulk-messages.js";
 
 // twitter-hook.js ships as a CLASSIC MAIN-world content script (NO export — that would
 // SyntaxError on injection and silently kill the hook). So load + evaluate the REAL file
 // the way Chrome injects it and lift out its functions — this test then verifies the
 // exact injected artifact, not an ESM-only shim. A fake `window` (no `.location`) skips
 // the auto-install tail so only the explicit calls below run it.
-const { installTimelineHook, isTimelineRequest, TIMELINE_MESSAGE_SOURCE } = (() => {
+const { installTimelineHook, isTimelineRequest, TIMELINE_MESSAGE_SOURCE, REPLAY_REQUEST_SOURCE } = (() => {
   const src = readFileSync(new URL("../src/twitter-hook.js", import.meta.url), "utf8");
   return new Function(
     "window",
-    `${src}\nreturn { installTimelineHook, isTimelineRequest, TIMELINE_MESSAGE_SOURCE };`,
+    `${src}\nreturn { installTimelineHook, isTimelineRequest, TIMELINE_MESSAGE_SOURCE, REPLAY_REQUEST_SOURCE };`,
   )({});
 })();
 
@@ -39,11 +42,14 @@ const [videoTweet, photoTweet] = entries;
 
 // MARK: - isTimelineRequest
 
-test("isTimelineRequest: matches Bookmarks/Likes graphql ops, rejects others", () => {
+test("isTimelineRequest: matches Bookmarks/BookmarkFolderTimeline/Likes ops, rejects others", () => {
   assert.equal(isTimelineRequest("https://x.com/i/api/graphql/AbC123/Bookmarks"), true);
   assert.equal(isTimelineRequest("https://x.com/i/api/graphql/XyZ/Likes?variables=%7B%7D"), true);
+  // The real bookmark-folder op (verified live) — the folder-sweep enabler.
+  assert.equal(isTimelineRequest(
+    "https://x.com/i/api/graphql/oKopHt25pa6yhDn1ek7Qng/BookmarkFolderTimeline?variables=%7B%7D"), true);
   assert.equal(isTimelineRequest("https://x.com/i/api/graphql/AbC/HomeTimeline"), false);
-  assert.equal(isTimelineRequest("https://x.com/i/api/graphql/AbC/BookmarksFolder"), false);
+  assert.equal(isTimelineRequest("https://x.com/i/api/graphql/AbC/CreateBookmark"), false);
   assert.equal(isTimelineRequest("https://pbs.twimg.com/media/x.jpg"), false);
   assert.equal(isTimelineRequest(null), false);
 });
@@ -136,6 +142,76 @@ test("findInstructions: falls back to a deep search when the wrapper key differs
   assert.deepEqual(findInstructions({ data: {} }), []);
 });
 
+test("findInstructions: resolves the bookmark FOLDER wrapper (bookmark_collection_timeline)", () => {
+  const folder = { data: { bookmark_collection_timeline: { timeline: { instructions: [{ entries: [] }] } } } };
+  assert.equal(findInstructions(folder).length, 1);
+});
+
+test("parseTimelinePage: parses a bookmark-FOLDER response the same as the main tab", () => {
+  // A folder response nests the SAME TimelineTimelineItem tweets under
+  // `bookmark_collection_timeline` (verified against a live capture). Rewrap the real
+  // fixture's instructions under the folder wrapper → it must yield the same items,
+  // proving folder sweeps ingest once the hook forwards the response.
+  const folderPage = {
+    data: { bookmark_collection_timeline: { timeline: { instructions: findInstructions(bookmarks) } } },
+  };
+  const fromMain = parseTimelinePage(bookmarks, { host: "x.com" });
+  const fromFolder = parseTimelinePage(folderPage, { host: "x.com" });
+  assert.equal(fromFolder.items.length, fromMain.items.length);
+  assert.ok(fromFolder.items.length > 0, "the folder page must yield media items");
+  assert.equal(fromFolder.tweetCount, fromMain.tweetCount);
+  assert.deepEqual(fromFolder.items.map((i) => i.sourceId), fromMain.items.map((i) => i.sourceId));
+});
+
+// MARK: - matchesScope (route intercepted responses to the right sweep)
+
+const MAIN_URL = "https://x.com/i/api/graphql/q1/Bookmarks?variables=%7B%22count%22%3A20%7D";
+const FOLDER_ID = "2005398616131952777";
+const OTHER_FOLDER_ID = "1111111111111111111";
+// A real folder URL: `bookmark_collection_id` rides (percent-encoded) in `variables`.
+const folderUrl = (id) =>
+  `https://x.com/i/api/graphql/q2/BookmarkFolderTimeline?variables=${
+    encodeURIComponent(JSON.stringify({ bookmark_collection_id: id, count: 20 }))}`;
+const LIKES_URL = "https://x.com/i/api/graphql/q3/Likes?variables=%7B%22count%22%3A20%7D";
+
+test("matchesScope: main 'bookmarks' accepts only the Bookmarks op, not folders/Likes", () => {
+  assert.equal(matchesScope(MAIN_URL, "bookmarks"), true);
+  assert.equal(matchesScope(folderUrl(FOLDER_ID), "bookmarks"), false); // BookmarkFolderTimeline ≠ Bookmarks
+  assert.equal(matchesScope(LIKES_URL, "bookmarks"), false);
+});
+
+test("matchesScope: a folder scope accepts only its own folder id", () => {
+  assert.equal(matchesScope(folderUrl(FOLDER_ID), `bookmarks:${FOLDER_ID}`), true);
+  assert.equal(matchesScope(folderUrl(OTHER_FOLDER_ID), `bookmarks:${FOLDER_ID}`), false); // another folder
+  assert.equal(matchesScope(MAIN_URL, `bookmarks:${FOLDER_ID}`), false); // the main list
+  assert.equal(matchesScope(LIKES_URL, `bookmarks:${FOLDER_ID}`), false);
+});
+
+test("matchesScope: a missing/unknown scope or non-string url matches nothing", () => {
+  assert.equal(matchesScope(MAIN_URL, null), false);
+  assert.equal(matchesScope(MAIN_URL, "likes"), false);
+  assert.equal(matchesScope(undefined, "bookmarks"), false);
+  assert.equal(matchesScope(folderUrl(FOLDER_ID), "bookmarks:notanid"), false);
+});
+
+test("graphqlOp: extracts the op name and JSON-parses the variables blob (6A)", () => {
+  const parsed = graphqlOp(folderUrl(FOLDER_ID));
+  assert.equal(parsed.op, "BookmarkFolderTimeline");
+  assert.equal(parsed.variables.bookmark_collection_id, FOLDER_ID); // decoded + parsed, not substring
+  assert.equal(parsed.variables.count, 20);
+
+  assert.equal(graphqlOp(MAIN_URL).op, "Bookmarks");
+  assert.deepEqual(graphqlOp("https://x.com/i/api/graphql/q/Bookmarks").variables, {}); // no variables → {}
+});
+
+test("graphqlOp: a non-GraphQL / malformed url → null; a bad variables blob → {} (never throws)", () => {
+  assert.equal(graphqlOp("https://pbs.twimg.com/media/x.jpg"), null);
+  assert.equal(graphqlOp("not a url"), null);
+  assert.equal(graphqlOp(null), null);
+  // A corrupt variables param degrades to {} rather than throwing into the sweep.
+  assert.deepEqual(graphqlOp("https://x.com/i/api/graphql/q/Bookmarks?variables=%7Bnope").variables, {});
+});
+
 // MARK: - installTimelineHook (MAIN-world fetch wrapper)
 
 test("twitter-hook.js is a valid CLASSIC script (no static export/import → injectable)", () => {
@@ -188,6 +264,63 @@ test("installTimelineHook: a post/parse failure never breaks the page's fetch", 
   })();
   await tick();
   assert.equal(returned, scope.__response);        // still returns cleanly
+});
+
+test("hook wire constants stay in sync with bulk-messages (the KEEP IN SYNC duplication)", () => {
+  assert.equal(TIMELINE_MESSAGE_SOURCE, MSG_SRC);
+  assert.equal(REPLAY_REQUEST_SOURCE, REPLAY_SRC);
+});
+
+// MARK: - buffer + replay (the small-folder / already-scrolled fix)
+
+/** A fake scope with an injectable fetch (settable json) AND a message-listener sink,
+ * so we can drive both the interception and a replay request. */
+function fakeReplayScope() {
+  const messageListeners = [];
+  let nextJson = null;
+  return {
+    fetch: async () => ({ clone: () => ({ json: async () => nextJson }) }),
+    setJson: (j) => { nextJson = j; },
+    addEventListener: (type, fn) => { if (type === "message") messageListeners.push(fn); },
+    dispatch: (data) => { for (const fn of messageListeners) fn({ data }); },
+  };
+}
+
+const FOLDER_URL = "https://x.com/i/api/graphql/Q/BookmarkFolderTimeline?variables=%7B%7D";
+
+test("installTimelineHook: buffers forwarded responses and replays them on request", async () => {
+  const scope = fakeReplayScope();
+  const posted = [];
+  installTimelineHook({ target: scope, post: (m) => posted.push(m) });
+
+  scope.setJson({ page: 1 }); await scope.fetch(FOLDER_URL); await tick();
+  scope.setJson({ page: 2 }); await scope.fetch(FOLDER_URL); await tick();
+  assert.equal(posted.length, 2, "two live forwards");
+
+  // The controller (late subscriber) asks for a replay → both buffered pages re-emit,
+  // in order, so the pages fetched before the sweep started aren't lost.
+  scope.dispatch({ source: REPLAY_REQUEST_SOURCE });
+  assert.deepEqual(posted.slice(2).map((p) => p.json), [{ page: 1 }, { page: 2 }]);
+
+  // An unrelated message triggers no replay.
+  scope.dispatch({ source: "something-else" });
+  assert.equal(posted.length, 4);
+});
+
+test("installTimelineHook: the replay buffer is bounded (keeps only the most recent)", async () => {
+  const scope = fakeReplayScope();
+  const posted = [];
+  installTimelineHook({ target: scope, post: (m) => posted.push(m) });
+
+  const N = 30; // exceeds REPLAY_BUFFER_LIMIT (25)
+  for (let i = 0; i < N; i += 1) { scope.setJson({ page: i }); await scope.fetch(FOLDER_URL); await tick(); }
+
+  const before = posted.length;
+  scope.dispatch({ source: REPLAY_REQUEST_SOURCE });
+  const replayed = posted.slice(before).map((p) => p.json.page);
+  assert.ok(replayed.length < N, "buffer is bounded, not unbounded");
+  assert.equal(replayed[replayed.length - 1], N - 1, "keeps the most recent page");
+  assert.equal(replayed[0], N - replayed.length, "drops the oldest pages");
 });
 
 // MARK: - XHR path (X's live transport for the timeline — the T9 root cause)

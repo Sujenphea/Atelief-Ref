@@ -17,3 +17,6 @@ DerivedData/
 # fixtures. Never commit these — the sanitized versions live in
 # extension/test/fixtures/. See extension/test/fixtures/README.md.
 /resources/
+# A stray raw capture at the repo root (belongs in /resources/) — ignored so real
+# bookmark data can't be committed by accident.
+/twitter-bookmark-folder-response.json

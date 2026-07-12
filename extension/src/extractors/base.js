@@ -40,10 +40,16 @@ export function firstMeta(harvest, keys) {
   return null;
 }
 
-/** Non-empty path segments of `url` (e.g. "/a/b/" -> ["a","b"]). */
+/** Non-empty segments of a PATHNAME string (e.g. "/a/b/" -> ["a","b"]). The shared
+ * primitive (6A) — bulk-context.js reuses it so the "split a path" rule lives once. */
+export function splitPathname(pathname) {
+  return (pathname || "").split("/").filter(Boolean);
+}
+
+/** Non-empty path segments of a URL string (e.g. "https://x/a/b/" -> ["a","b"]). */
 export function pathSegments(url) {
   try {
-    return new URL(url).pathname.split("/").filter(Boolean);
+    return splitPathname(new URL(url).pathname);
   } catch {
     return [];
   }

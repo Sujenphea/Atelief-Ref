@@ -42,8 +42,16 @@ export function computeBackoff(
   return Math.min(base * Math.pow(2, attempt - 1), max);
 }
 
+function isAuthWall(status) {
+  // A hard auth failure means the SESSION is unauthorized, not just this item — the CDN
+  // cookie expired or the app token is wrong. Continuing would burn the whole remaining
+  // sweep as permanentFailed, so this HALTS the sweep RESUMABLE (5A): the user re-auths /
+  // fixes the token and resumes from the checkpoint, re-attempting the walled items.
+  return status === 401 || status === 403;
+}
 function isPermanentHttp(status) {
-  // A hard client error the CDN/app won't recover from — except 429 (throttling).
+  // A hard client error the CDN/app won't recover from — except 429 (throttling) and the
+  // auth-wall codes (handled above as a resumable halt, not a per-item permanent fail).
   return typeof status === "number" && status >= 400 && status < 500 && status !== 429;
 }
 function isRetryableHttp(status) {
@@ -66,8 +74,12 @@ function isRetryableHttp(status) {
  *                      4xx (media gone) is permanent only when httpStatus says so;
  *                      otherwise it exhausts the retry budget and is recorded
  *                      retryableFailed — bounded, never lost, never a false halt.
+ *                      A 401/403 is an AUTH WALL → HALT resumable (5A), not a per-item
+ *                      fail — the session is unauthorized, so the rest would all fail.
  *   ingest-error     → permanentFailed (our own loopback app rejected it:
- *                      unsupported type / bad request). A 5xx is transient.
+ *                      unsupported type / bad request). A 5xx is transient; a 401/403
+ *                      (bad/expired token) is an auth wall → HALT resumable.
+ *   blocked-host     → (default arm) permanentFailed — a 3A SSRF refusal, never fetched.
  */
 export function classifyIngestResult(result) {
   switch (result && result.status) {
@@ -88,10 +100,16 @@ export function classifyIngestResult(result) {
     case "unreachable":
       return { outcome: OUTCOMES.retryableFailed, signal: "halt" };
     case "fetch-error":
+      // An auth wall (401/403) from the media CDN halts the whole sweep resumable — a
+      // per-item permanent fail would silently discard the rest of the board (5A).
+      if (isAuthWall(result.httpStatus)) return { outcome: OUTCOMES.retryableFailed, signal: "halt" };
       return isPermanentHttp(result.httpStatus)
         ? { outcome: OUTCOMES.permanentFailed, signal: "continue" }
         : { outcome: OUTCOMES.retryableFailed, signal: "continue" };
     case "ingest-error":
+      // A 401/403 from our own app (a bad/expired token) is likewise session-wide → halt
+      // resumable so the user fixes the token and continues, not lose the remaining items.
+      if (isAuthWall(result.httpStatus)) return { outcome: OUTCOMES.retryableFailed, signal: "halt" };
       return isRetryableHttp(result.httpStatus)
         ? { outcome: OUTCOMES.retryableFailed, signal: "continue" }
         : { outcome: OUTCOMES.permanentFailed, signal: "continue" };
@@ -210,8 +228,16 @@ export async function runSweep(driver, input, {
       advanced = true;
     }
     if (advanced && storage && checkpointKey && committedSeq > lastSavedSeq) {
-      lastSavedSeq = committedSeq;
-      await storage.save(checkpointKey, { cursor: committedCursor, counts: { ...counts } });
+      try {
+        await storage.save(checkpointKey, { cursor: committedCursor, counts: { ...counts } });
+        lastSavedSeq = committedSeq; // mark saved ONLY on success
+      } catch (error) {
+        // A checkpoint write failure must NOT abort the sweep (8A) — it's a resume
+        // optimisation, not correctness. Log and continue; because lastSavedSeq is left
+        // un-advanced, the NEXT checkpoint retries the save with a fresher cursor, and a
+        // resume from the last successfully-saved cursor only re-skips via dedup.
+        log("checkpoint save failed (non-fatal — resume re-skips via dedup):", String(error));
+      }
     }
   }
 
