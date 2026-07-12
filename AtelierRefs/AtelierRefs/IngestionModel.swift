@@ -114,9 +114,6 @@ final class IngestionModel: ObservableObject {
     /// injectable; the default uses the shared session (tests inject a stub one).
     private let remoteFetcher = RemoteImageFetcher()
 
-    /// UserDefaults key persisting the capture token across launches.
-    private static let captureTokenKey = "AtelierCaptureToken"
-
     /// Ingest-timing log (16A). A stall means generating the eager thumbnail tiers
     /// dominated the ingest — the signal to make the largest tier lazy (P16).
     private static let ingestLog = Logger(subsystem: "so.atelier.refs", category: "ingest-timing")
@@ -281,15 +278,14 @@ final class IngestionModel: ObservableObject {
             : "A browser capture failed."
     }
 
-    /// Load the persisted capture token, generating and storing one on first run.
+    /// Load the persisted capture token from the Keychain, generating and storing
+    /// one on first run. Migrates any legacy UserDefaults token once (G6).
     private func loadOrCreateCaptureToken() -> String {
-        let defaults = UserDefaults.standard
-        if let existing = defaults.string(forKey: Self.captureTokenKey),
-           !existing.isEmpty {
+        if let existing = CaptureTokenStore.load() {
             return existing
         }
         let token = CaptureToken.generate()
-        defaults.set(token, forKey: Self.captureTokenKey)
+        _ = CaptureTokenStore.save(token)
         return token
     }
 
@@ -367,8 +363,13 @@ final class IngestionModel: ObservableObject {
             let jobs = try await services.listJobs()
             var loaded: [SweepProgress] = []
             for job in jobs {
-                let counts = (try? await services.jobItemCounts(forJob: job.id)) ?? [:]
-                loaded.append(SweepProgress(job: job, counts: counts))
+                do {
+                    let counts = try await services.jobItemCounts(forJob: job.id)
+                    loaded.append(SweepProgress(job: job, counts: counts))
+                } catch {
+                    // Don't render a failed sweep as fake-healthy 0/0 (G10).
+                    throw error
+                }
             }
             sweeps = loaded
         } catch {
@@ -827,6 +828,11 @@ final class IngestionModel: ObservableObject {
             return "That name isn't valid. Enter a non-empty folder name."
         case .notFound:
             return "That folder no longer exists."
+        case .persistenceFailure(let detail):
+            if let detail, !detail.isEmpty {
+                return "Library storage failed: \(detail)"
+            }
+            return "Library storage failed."
         default:
             return "\(error)"
         }

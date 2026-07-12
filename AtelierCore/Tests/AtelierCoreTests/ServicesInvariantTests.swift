@@ -242,6 +242,22 @@ struct ServicesInvariantTests {
         let fk = DatabaseError(resultCode: .SQLITE_CONSTRAINT_FOREIGNKEY)
         #expect(AtelierError(mapping: fk) == .constraintViolation)
         struct Other: Error {}
-        #expect(AtelierError(mapping: Other()) == .persistenceFailure)
+        let mapped = AtelierError(mapping: Other())
+        guard case .persistenceFailure(let detail) = mapped else {
+            Issue.record("expected persistenceFailure, got \(mapped)")
+            return
+        }
+        #expect(detail?.contains("Other") == true)
+    }
+
+    @Test("GRDB non-constraint errors carry SQLite detail in persistenceFailure (G10)")
+    func persistenceFailureCarriesDetail() {
+        let err = DatabaseError(resultCode: .SQLITE_FULL, message: "database or disk is full")
+        let mapped = AtelierError(mapping: err)
+        guard case .persistenceFailure(let detail) = mapped else {
+            Issue.record("expected persistenceFailure, got \(mapped)")
+            return
+        }
+        #expect(detail?.contains("FULL") == true || detail?.contains("disk is full") == true)
     }
 }

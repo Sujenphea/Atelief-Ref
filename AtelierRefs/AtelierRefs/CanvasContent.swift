@@ -81,15 +81,17 @@ final class CanvasContent: TileProvider, TileImageSource {
         return keyByHash[detail.asset.blobHash] ?? tile.id
     }
 
-    func imageData(for tile: Tile, tier: LODTier) -> Data? {
+    /// On-disk thumbnail URL — ``CanvasEngine`` loads bytes off-main (G7).
+    func imageFileURL(for tile: Tile, tier: LODTier) -> URL? {
         guard let detail = detail(for: tile.id) else { return nil }
-        let url = store.thumbnailURL(
+        return store.thumbnailURL(
             hash: detail.asset.blobHash,
             size: Self.thumbnailSize(for: tier),
             fileExtension: "jpg")
-        // Small pre-sized JPEG; missing tier ⇒ nil (tile stays blank this frame).
-        return try? Data(contentsOf: url)
     }
+
+    /// In-memory path unused for disk-backed library tiles (see ``imageFileURL``).
+    func imageData(for tile: Tile, tier: LODTier) -> Data? { nil }
 
     // MARK: - Placement mutation (canvas drag)
 

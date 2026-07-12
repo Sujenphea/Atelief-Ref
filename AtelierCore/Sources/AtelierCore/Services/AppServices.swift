@@ -760,28 +760,28 @@ public final class AppServices: Sendable {
     /// send its own close, so its job would otherwise linger forever as a phantom
     /// "running" entry; this reconciles it to `paused` (resumable). `seconds == 0`
     /// pauses ALL open jobs — used at launch, when no sweep can possibly be running.
-    /// Reads first and only opens a write when something is actually stale (the
-    /// progress poll calls this each tick). `now` is injected for deterministic tests.
+    /// Staleness check and pause run in one write transaction (G9). `now` is
+    /// injected for deterministic tests.
     @discardableResult
     public func pauseStaleOpenJobs(olderThan seconds: TimeInterval, now: Date) async throws -> [UUID] {
         let cutoff = now.addingTimeInterval(-seconds)
-        let staleIDs: [UUID] = try await read { db in
-            try Job
+        // Single write transaction: filter + mutate together so a job touched in
+        // the gap between a prior read and write is not wrongly paused (G9).
+        return try await write { db in
+            let stale = try Job
                 .filter(Column("status") == JobStatus.open.rawValue)
+                .filter(Column("updated_at") <= cutoff)
                 .fetchAll(db)
-                .filter { $0.updatedAt <= cutoff }
-                .map(\.id)
-        }
-        guard !staleIDs.isEmpty else { return [] }
-        try await write { db in
-            for id in staleIDs {
-                guard var job = try Job.fetchOne(db, key: Self.key(id)) else { continue }
+            guard !stale.isEmpty else { return [] }
+            var paused: [UUID] = []
+            for var job in stale {
                 job.status = .paused
                 job.updatedAt = now
                 try job.update(db)
+                paused.append(job.id)
             }
+            return paused
         }
-        return staleIDs
     }
 
     /// Proactive GC of the `known ⟺ blob present` invariant. `deleteAssets` forgets a
@@ -790,24 +790,22 @@ public final class AppServices: Sendable {
     /// strands its `job_item` as stale-"known" — and a later sweep would then
     /// dedup-skip that source forever despite the bytes being gone, so it never
     /// re-imports. This sweeps every `job_item` whose blob has no backing asset,
-    /// forgets it, and recomputes the affected jobs' counts. Reads first and only
-    /// writes when something is actually stale (called at launch). Returns the job ids
-    /// reconciled.
+    /// forgets it, and recomputes the affected jobs' counts. Check + delete run in
+    /// ONE write transaction so a concurrent ingest can't be wrongly pruned (G9).
+    /// Returns the job ids reconciled.
     @discardableResult
     public func reconcileOrphanedKnownItems() async throws -> [UUID] {
-        let orphanedHashes: [String] = try await read { db in
-            try String.fetchAll(db, sql: """
+        try await write { db in
+            let orphanedHashes = try String.fetchAll(db, sql: """
                 SELECT DISTINCT blob_hash FROM job_item
                  WHERE blob_hash IS NOT NULL
                    AND NOT EXISTS (
                      SELECT 1 FROM asset WHERE asset.blob_hash = job_item.blob_hash)
                 """)
+            guard !orphanedHashes.isEmpty else { return [] }
+            let touched = try Self.forgetOrphanedKnownItems(orphanedHashes, in: db)
+            return touched.compactMap { UUID(uuidString: $0) }
         }
-        guard !orphanedHashes.isEmpty else { return [] }
-        let touched = try await write { db in
-            try Self.forgetOrphanedKnownItems(orphanedHashes, in: db)
-        }
-        return touched.compactMap { UUID(uuidString: $0) }
     }
 
     /// One job by id (progress UI). `.notFound` if absent. Read.

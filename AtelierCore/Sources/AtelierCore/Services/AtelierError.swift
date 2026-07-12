@@ -41,8 +41,9 @@ public enum AtelierError: Error, Equatable {
     /// A database constraint (FK / NOT NULL / UNIQUE) was violated — mapped from
     /// GRDB so the raw `DatabaseError` never leaks (A2/C7).
     case constraintViolation
-    /// Any other persistence failure, mapped from a non-constraint GRDB error.
-    case persistenceFailure
+    /// Any other persistence failure. `detail` carries the SQLite result code +
+    /// message when mapped from GRDB so disk-full / corruption aren't opaque (G10).
+    case persistenceFailure(detail: String? = nil)
 }
 
 extension AtelierError {
@@ -53,7 +54,7 @@ extension AtelierError {
     ///   `.notFound` thrown inside the funnel survive intact);
     /// - a GRDB `DatabaseError` whose primary result code is a constraint
     ///   violation (FK / NOT NULL / UNIQUE) becomes `.constraintViolation`;
-    /// - everything else becomes `.persistenceFailure`.
+    /// - everything else becomes `.persistenceFailure` with the SQLite detail.
     init(mapping error: Error) {
         if let atelierError = error as? AtelierError {
             self = atelierError
@@ -62,8 +63,12 @@ extension AtelierError {
         if let dbError = error as? DatabaseError,
            dbError.resultCode.primaryResultCode == .SQLITE_CONSTRAINT {
             self = .constraintViolation
+        } else if let dbError = error as? DatabaseError {
+            let code = dbError.resultCode.rawValue
+            let message = dbError.message ?? dbError.expandedDescription
+            self = .persistenceFailure(detail: "SQLite \(code): \(message)")
         } else {
-            self = .persistenceFailure
+            self = .persistenceFailure(detail: String(describing: error))
         }
     }
 }

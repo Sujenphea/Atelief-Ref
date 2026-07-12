@@ -76,23 +76,39 @@ public struct RemoteImageFetcher: Sendable {
             throw RemoteImageFetchError.invalidURL
         }
 
-        let data: Data
+        let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
-            (data, response) = try await session.data(from: url)
+            (bytes, response) = try await session.bytes(from: url)
         } catch {
             throw RemoteImageFetchError.requestFailed
         }
 
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw RemoteImageFetchError.httpStatus(http.statusCode)
+        if let http = response as? HTTPURLResponse {
+            if !(200...299).contains(http.statusCode) {
+                throw RemoteImageFetchError.httpStatus(http.statusCode)
+            }
+            // Reject early when the server advertises an over-cap length.
+            if let raw = http.value(forHTTPHeaderField: "Content-Length"),
+               let length = Int(raw), length > maxByteCount {
+                throw RemoteImageFetchError.tooLarge(bytes: length)
+            }
         }
 
-        // `session.data` buffers the whole body, so this caps memory after the
-        // fact rather than aborting mid-stream — fine for the modest images this
-        // path handles, and it still rejects an over-cap payload before ingest.
-        guard data.count <= maxByteCount else {
-            throw RemoteImageFetchError.tooLarge(bytes: data.count)
+        // Stream into a buffer and abort as soon as the cap is exceeded — never
+        // land a giant body in RAM first (G8).
+        var data = Data()
+        do {
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count > maxByteCount {
+                    throw RemoteImageFetchError.tooLarge(bytes: data.count)
+                }
+            }
+        } catch let error as RemoteImageFetchError {
+            throw error
+        } catch {
+            throw RemoteImageFetchError.requestFailed
         }
 
         // Authoritative "is it an image?" — sniff the bytes via ImageIO (the same

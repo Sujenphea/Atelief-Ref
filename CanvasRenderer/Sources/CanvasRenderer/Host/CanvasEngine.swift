@@ -269,6 +269,11 @@ public final class CanvasEngine {
 
             if let image = cache.image(for: key) {
                 layer.contents = image
+            } else if let url = images.imageFileURL(for: tile, tier: tier) {
+                // Disk-backed: file read + decode both leave the main thread (G7).
+                scheduler.request(key: key, maxPixelSize: Self.pixelSize(for: tier)) {
+                    try? Data(contentsOf: url)
+                }
             } else if let data = images.imageData(for: tile, tier: tier) {
                 scheduler.request(
                     key: key,
@@ -293,7 +298,13 @@ public final class CanvasEngine {
             let tier = lod.tier(forOnScreenLongestEdge: onScreenEdge, previous: keyByTile[tile.id]?.tier)
             let key = ThumbnailCache.Key(imageID: images.imageKey(for: tile), tier: tier)
             guard cache.image(for: key) == nil else { continue }
-            guard let data = images.imageData(for: tile, tier: tier) else { continue }
+            let data: Data?
+            if let url = images.imageFileURL(for: tile, tier: tier) {
+                data = try? Data(contentsOf: url)
+            } else {
+                data = images.imageData(for: tile, tier: tier)
+            }
+            guard let data else { continue }
             if let image = DecodeScheduler.decodeBlocking(
                 data: data,
                 maxPixelSize: Self.pixelSize(for: tier)

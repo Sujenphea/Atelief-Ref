@@ -110,12 +110,29 @@ struct RemoteImageFetcherTests {
 
     @Test("a body over the byte cap → .tooLarge")
     func rejectsOverCap() async throws {
-        let png = try FixtureImages.solidImage(width: 64, height: 64, format: .png)
-        StubURLProtocol.respond(status: 200, contentType: "image/png", body: png)
-        // A cap far below the real body size.
+        // Body larger than the cap — streaming must abort without treating it as
+        // a successful download (G8).
+        let oversize = Data(repeating: 0xAB, count: 64)
+        StubURLProtocol.respond(
+            status: 200, contentType: "application/octet-stream", body: oversize)
         let fetcher = RemoteImageFetcher(session: makeSession(), maxByteCount: 8)
 
-        await #expect(throws: RemoteImageFetchError.tooLarge(bytes: png.count)) {
+        await #expect(throws: RemoteImageFetchError.tooLarge(bytes: 9)) {
+            _ = try await fetcher.fetch(Self.imageURL)
+        }
+    }
+
+    @Test("Content-Length over the cap → .tooLarge before buffering (G8)")
+    func rejectsOverCapContentLength() async throws {
+        let tiny = Data([0x00])
+        StubURLProtocol.respond(
+            status: 200,
+            contentType: "application/octet-stream",
+            body: tiny,
+            contentLength: 64 * 1024 * 1024)
+        let fetcher = RemoteImageFetcher(session: makeSession(), maxByteCount: 1024)
+
+        await #expect(throws: RemoteImageFetchError.tooLarge(bytes: 64 * 1024 * 1024)) {
             _ = try await fetcher.fetch(Self.imageURL)
         }
     }
@@ -157,13 +174,16 @@ final class StubURLProtocol: URLProtocol {
     /// `URLProtocol` reads it on URLSession's own threads; the `.serialized` suite
     /// guarantees no two tests set/read it concurrently.
     enum Outcome {
-        case response(status: Int, contentType: String, body: Data)
+        case response(status: Int, contentType: String, body: Data, contentLength: Int?)
         case failure(Error)
     }
     nonisolated(unsafe) static var outcome: Outcome?
 
-    static func respond(status: Int, contentType: String, body: Data) {
-        outcome = .response(status: status, contentType: contentType, body: body)
+    static func respond(
+        status: Int, contentType: String, body: Data, contentLength: Int? = nil
+    ) {
+        outcome = .response(
+            status: status, contentType: contentType, body: body, contentLength: contentLength)
     }
     static func fail(with error: Error) {
         outcome = .failure(error)
@@ -176,10 +196,16 @@ final class StubURLProtocol: URLProtocol {
     override func startLoading() {
         guard let client = client else { return }
         switch StubURLProtocol.outcome {
-        case .response(let status, let contentType, let body):
+        case .response(let status, let contentType, let body, let contentLength):
+            var headers = ["Content-Type": contentType]
+            // Only advertise Content-Length when the test asks — omit it to
+            // exercise mid-stream capping (G8) without an early reject.
+            if let contentLength {
+                headers["Content-Length"] = String(contentLength)
+            }
             let response = HTTPURLResponse(
                 url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": contentType])!
+                headerFields: headers)!
             client.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client.urlProtocol(self, didLoad: body)
             client.urlProtocolDidFinishLoading(self)
