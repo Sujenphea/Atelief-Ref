@@ -503,7 +503,9 @@ final class IngestionModel: ObservableObject {
         else { return }
 
         // Optimistic local reorder — rebuild `items` in the new order.
-        let byAssetID = Dictionary(uniqueKeysWithValues: items.map { ($0.asset.id, $0) })
+        // uniquingKeysWith (not uniqueKeysWithValues) so a duplicate asset id in
+        // a folder degrades instead of trapping (G3).
+        let byAssetID = keyedByAssetID(items) { $0.asset.id }
         items = newOrder.compactMap { byAssetID[$0] }
         contentsVersion &+= 1
 
@@ -756,6 +758,7 @@ final class IngestionModel: ObservableObject {
                 switch outcome {
                 case .ingested: imported += 1
                 case .failed: failures += 1
+                case .cancelled: break
                 }
             }
 

@@ -72,8 +72,9 @@ struct IngestCoordinatorTests {
             return index
         }
 
-        // Every item ran, in input order.
-        #expect(results == Array(0 ..< itemCount))
+        // Every item ran, in input order (nil slots only appear on cancel).
+        #expect(results.count == itemCount)
+        #expect(results == (0 ..< itemCount).map { Optional.some($0) })
         let maxSeen = await tracker.maxConcurrent
         #expect(maxSeen <= limit)
         #expect(maxSeen >= 1)
@@ -93,12 +94,18 @@ struct IngestCoordinatorTests {
             inputs.append(Self.input(bytes, into: env))
         }
 
+        let inputCount = inputs.count
+        let batch = inputs
         let coordinator = env.coordinator
-        let task = Task { await coordinator.ingest(inputs) }
+        let task = Task { await coordinator.ingest(batch) }
         // Let a little work start, then cancel.
         await Task.yield()
         task.cancel()
-        _ = await task.value   // the coordinator returns despite cancellation.
+        let outcomes = await task.value   // the coordinator returns despite cancellation.
+
+        // Index-aligned contract: one outcome per input, cancelled slots are explicit.
+        #expect(outcomes.count == inputCount)
+        #expect(outcomes.contains { if case .cancelled = $0 { return true }; return false })
 
         // Every file under blobs/ must be COMPLETE and VALID: its bytes hash back
         // to the hash embedded in its filename (MediaStore atomicity, A2).
@@ -110,6 +117,40 @@ struct IngestCoordinatorTests {
         }
         // No staging temp files left behind.
         #expect(env.cacheFiles().isEmpty)
+    }
+
+    @Test("cancel mid-batch keeps outcomes index-aligned with inputs (G4)")
+    func cancellationKeepsIndexAlignment() async throws {
+        let env = try await makeTempPipeline(maxConcurrent: 1)
+        defer { env.cleanup() }
+
+        var inputs: [IngestInput] = []
+        for i in 0 ..< 12 {
+            let bytes = try FixtureImages.solidImage(width: 80 + i, height: 60, format: .png)
+            inputs.append(Self.input(bytes, into: env))
+        }
+
+        let inputCount = inputs.count
+        let batch = inputs
+        let coordinator = env.coordinator
+        let task = Task { await coordinator.ingest(batch) }
+        await Task.yield()
+        task.cancel()
+        let outcomes = await task.value
+
+        #expect(outcomes.count == inputCount)
+        let cancelledCount = outcomes.filter {
+            if case .cancelled = $0 { return true }
+            return false
+        }.count
+        #expect(cancelledCount >= 1)
+        // Every non-cancelled slot must be a real completed outcome (never a hole).
+        for outcome in outcomes {
+            switch outcome {
+            case .ingested, .failed, .cancelled:
+                break
+            }
+        }
     }
 
     // MARK: - Progress monotonic

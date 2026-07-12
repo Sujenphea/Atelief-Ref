@@ -136,6 +136,10 @@ public struct CaptureRoutes: Sendable {
         case .failed(let error):
             return HandlerResult(
                 statusCode: 422, response: .error(String(describing: error)))
+        case .cancelled:
+            // Batch-only placeholder; a single-item capture path never produces this.
+            return HandlerResult(
+                statusCode: 499, response: .error("cancelled"))
         }
     }
 
@@ -168,6 +172,8 @@ public struct CaptureRoutes: Sendable {
         case .failed:
             status = .permanentFailed
             blobHash = nil
+        case .cancelled:
+            return
         }
         _ = try? await jobLedger.recordJobItem(
             jobID: jobID, sourceID: sourceID, sourceURL: sourceURL,

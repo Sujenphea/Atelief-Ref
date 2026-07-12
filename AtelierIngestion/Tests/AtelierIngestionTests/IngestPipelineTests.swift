@@ -251,6 +251,62 @@ struct IngestPipelineTests {
         #expect(second.tiersGenerated == 0)
     }
 
+    // MARK: - Orphan-blob reclaim (G2)
+
+    @Test("DB failure after a new blob write reclaims the orphan blob")
+    func reclaimOrphanBlobOnPersistFailure() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+
+        let bytes = try FixtureImages.solidImage(width: 140, height: 100, format: .png)
+        let hash = ContentHasher.hash(bytes)
+        let missingCollection = UUID()
+        let input = IngestInput(
+            source: .data(bytes),
+            provenance: Self.pasteProvenance(),
+            collectionID: missingCollection)
+
+        let outcome = await env.pipeline.ingest(input)
+        guard case .failed = outcome else {
+            Issue.record("expected .failed for missing collection, got \(outcome)")
+            return
+        }
+        #expect(!env.store.hasBlob(hash: hash, fileExtension: "png"))
+        #expect(env.blobFiles().isEmpty)
+        let all = try await env.services.searchAssets(text: nil)
+        #expect(all.isEmpty)
+    }
+
+    @Test("DB failure on a shared (dedup) blob does not delete it")
+    func sharedBlobSurvivesPersistFailure() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+
+        let bytes = try FixtureImages.solidImage(width: 160, height: 110, format: .png)
+        let first = await env.pipeline.ingest(Self.input(bytes, into: env))
+        guard case .ingested(let asset, _) = first else {
+            Issue.record("expected first ingest to succeed")
+            return
+        }
+        #expect(env.store.hasBlob(hash: asset.blobHash, fileExtension: "png"))
+
+        // Same bytes into a nonexistent collection → persist fails after P14 sees
+        // the existing blob; must NOT removeBlob the shared content.
+        let bad = IngestInput(
+            source: .data(bytes),
+            provenance: Self.pasteProvenance(),
+            collectionID: UUID())
+        let second = await env.pipeline.ingest(bad)
+        guard case .failed = second else {
+            Issue.record("expected .failed, got \(second)")
+            return
+        }
+        #expect(env.store.hasBlob(hash: asset.blobHash, fileExtension: "png"))
+        #expect(env.blobFiles().count == 1)
+        let all = try await env.services.searchAssets(text: nil)
+        #expect(all.count == 1)
+    }
+
     // MARK: - Helpers
 
     /// The canonical file extension the store used for a blob of `mime`, matching

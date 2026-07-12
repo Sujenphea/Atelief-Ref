@@ -31,3 +31,9 @@ func reorderedIDs(ids: [UUID], movingID: UUID, toIndexOf targetID: UUID) -> [UUI
     result.insert(movingID, at: toIndex)
     return result
 }
+
+/// Build an asset-id → item dictionary that degrades on duplicate ids (keeps the
+/// first) instead of trapping via `Dictionary(uniqueKeysWithValues:)`.
+func keyedByAssetID<Item>(_ items: [Item], id: (Item) -> UUID) -> [UUID: Item] {
+    Dictionary(items.map { (id($0), $0) }, uniquingKeysWith: { first, _ in first })
+}

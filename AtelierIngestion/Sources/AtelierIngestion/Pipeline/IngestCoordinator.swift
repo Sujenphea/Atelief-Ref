@@ -14,7 +14,7 @@
 import Foundation
 
 /// Run `operation` over `items` with AT MOST `maxConcurrent` tasks in flight,
-/// returning results IN INPUT ORDER (decision A3, the bounded-concurrency core).
+/// returning one optional result per input IN INPUT ORDER (decision A3).
 ///
 /// The concurrency cap is structural, not advisory: the task group is PRIMED
 /// with exactly `maxConcurrent` child tasks, then runs strictly one-in-one-out —
@@ -24,9 +24,9 @@ import Foundation
 ///
 /// Cancellation-aware: when the surrounding task is cancelled, no NEW work is
 /// launched (the `Task.isCancelled` guard), while already-launched items run to
-/// completion — MediaStore atomicity means those finish as complete blobs. The
-/// returned array is therefore in input order but may be SHORTER than `items`
-/// when a batch is cancelled partway (only completed items appear).
+/// completion — MediaStore atomicity means those finish as complete blobs.
+/// Indices that never started are `nil` so callers can fill a typed placeholder
+/// (e.g. ``IngestOutcome.cancelled``) and keep `zip(inputs, outcomes)` aligned.
 ///
 /// Generic over a `Sendable` result `T` so a test can pass a probe operation
 /// that records the max concurrency it observes.
@@ -34,14 +34,14 @@ func runBounded<T: Sendable>(
     _ items: [IngestInput],
     maxConcurrent: Int,
     _ operation: @Sendable @escaping (Int, IngestInput) async -> T
-) async -> [T] {
+) async -> [T?] {
     let total = items.count
     guard total > 0 else { return [] }
     // At least one in flight, regardless of a bogus limit.
     let limit = max(1, maxConcurrent)
 
-    // Keyed by input index so results survive out-of-order completion; compacted
-    // back into input order at the end.
+    // Keyed by input index so results survive out-of-order completion; mapped
+    // back into a full-length, input-ordered array at the end.
     var results = [Int: T]()
     results.reserveCapacity(total)
 
@@ -71,9 +71,8 @@ func runBounded<T: Sendable>(
         }
     }
 
-    // Input order; only indices that actually completed (all of them unless the
-    // batch was cancelled partway).
-    return (0 ..< total).compactMap { results[$0] }
+    // Full length, input order — nil slots are indices that never ran.
+    return (0 ..< total).map { results[$0] }
 }
 
 /// The bounded-concurrency batch coordinator (decision A3).
@@ -103,7 +102,8 @@ public actor IngestCoordinator {
     ///
     /// Never throws and never aborts the batch on a single failure (C8): a bad
     /// item is its own `.failed` outcome. Cancelling the surrounding task partway
-    /// stops launching new items and returns the completed ones; MediaStore
+    /// stops launching new items; unstarted slots are ``IngestOutcome.cancelled``
+    /// so the returned array stays index-aligned with `inputs`. MediaStore
     /// atomicity (A2) guarantees no partial blobs are left behind.
     public func ingest(
         _ inputs: [IngestInput],
@@ -117,11 +117,12 @@ public actor IngestCoordinator {
         let reporter = ProgressReporter(total: total, onProgress: onProgress)
         let pipeline = self.pipeline
 
-        return await runBounded(inputs, maxConcurrent: maxConcurrent) { _, input in
+        let slots = await runBounded(inputs, maxConcurrent: maxConcurrent) { _, input in
             let outcome = await pipeline.ingest(input)
             await reporter.report()
             return outcome
         }
+        return slots.map { $0 ?? .cancelled }
     }
 }
 

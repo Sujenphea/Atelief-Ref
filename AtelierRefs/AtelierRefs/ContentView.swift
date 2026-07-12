@@ -26,6 +26,18 @@ struct ContentView: View {
         // detail 480 + inspector 260) — at 800 the split view broke its
         // constraints and squeezed/clipped the panes.
         .frame(minWidth: 960, minHeight: 600)
+        // App-shell alert so bootstrap / Canvas / Sweeps errors surface even when
+        // Library isn't the selected tab (default tab is Canvas).
+        .alert(
+            "Something went wrong",
+            isPresented: Binding(
+                get: { model.lastError != nil },
+                set: { if !$0 { model.lastError = nil } })
+        ) {
+            Button("OK", role: .cancel) { model.lastError = nil }
+        } message: {
+            Text(model.lastError ?? "")
+        }
         // One confirmation for the destructive delete, shared by all three
         // surfaces (inspector / grid / canvas).
         .confirmationDialog(

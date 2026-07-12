@@ -86,6 +86,9 @@ public struct IngestPipeline: Sendable {
         // timing sink is nil, and the signal that reveals a thumbnail stall (P16).
         let clock = ContinuousClock()
         let started = clock.now
+        // Set only when THIS call created the blob; used to reclaim on failure
+        // before a DB row exists (G2). Never set on the P14 dedup short-circuit.
+        var createdBlob: (hash: String, fileExtension: String)? = nil
         do {
             // 1. Bytes: in-memory as-is; a file URL is read now (a read failure
             //    — missing/unreadable file — maps to `.unreadableSource`).
@@ -117,6 +120,7 @@ public struct IngestPipeline: Sendable {
             if !blobExisted {
                 do {
                     try store.storeBlob(bytes, hash: hash, fileExtension: meta.fileExtension)
+                    createdBlob = (hash, meta.fileExtension)
                 } catch {
                     throw IngestError.blobWriteFailed
                 }
@@ -178,6 +182,13 @@ public struct IngestPipeline: Sendable {
             // 6. Success — the asset (new or deduped) with the dedup flag.
             return .ingested(asset: result.asset, deduplicated: result.wasDeduplicated)
         } catch {
+            // G2: if we wrote a brand-new blob and never got a DB row, reclaim it
+            // so MediaReaper isn't left with an unreferenced orphan. Never delete
+            // a blob a prior asset already shares (createdBlob stays nil then).
+            if let created = createdBlob {
+                _ = try? store.removeBlob(
+                    hash: created.hash, fileExtension: created.fileExtension)
+            }
             return .failed(IngestError(mapping: error))
         }
     }

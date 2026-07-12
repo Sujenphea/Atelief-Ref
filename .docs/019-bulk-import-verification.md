@@ -384,6 +384,11 @@ Then:
 - [ ] Update [009-mvp-status-overview](./009-mvp-status-overview.md) — the bulk path
   has landed.
 
+### Manual check — G1 shell error alert (production readiness)
+With Canvas as the frontmost tab, force `bootstrap()` to fail (e.g. point the
+library dir at an unwritable path) → an alert **"Something went wrong"** must
+appear. The alert lives on the app shell (`ContentView`), not only Library.
+
 ## If something fails
 Per the standing rule: **verify the real root cause on real data before fixing** —
 capture the concrete failing response / ledger row / console tail named in each case,

@@ -33,16 +33,6 @@ struct LibraryView: View {
         } detail: {
             detail
         }
-        .alert(
-            "Something went wrong",
-            isPresented: Binding(
-                get: { model.lastError != nil },
-                set: { if !$0 { model.lastError = nil } })
-        ) {
-            Button("OK", role: .cancel) { model.lastError = nil }
-        } message: {
-            Text(model.lastError ?? "")
-        }
         .inspector(isPresented: $showInspector) {
             InspectorView(model: model)
                 .inspectorColumnWidth(min: 260, ideal: 300, max: 420)

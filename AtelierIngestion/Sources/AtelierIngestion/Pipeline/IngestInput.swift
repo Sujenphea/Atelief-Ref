@@ -53,7 +53,9 @@ public struct IngestInput: Sendable {
 ///
 /// `.ingested` carries the resolved ``Asset`` and whether the 18A dedup rule
 /// reused an existing one; `.failed` carries the typed ``IngestError`` naming
-/// the pipeline stage that failed. One bad item never aborts the batch.
+/// the pipeline stage that failed. `.cancelled` fills slots that never ran
+/// because the surrounding batch task was cancelled — so
+/// `zip(inputs, outcomes)` stays aligned. One bad item never aborts the batch.
 public enum IngestOutcome: Sendable {
     /// The item was ingested (or deduped): its blob + thumbnails are on disk and
     /// the asset is persisted. `deduplicated` is `true` when an existing
@@ -61,4 +63,6 @@ public enum IngestOutcome: Sendable {
     case ingested(asset: Asset, deduplicated: Bool)
     /// The item failed at the named pipeline stage; nothing partial persists.
     case failed(IngestError)
+    /// The item was never started because the batch was cancelled partway.
+    case cancelled
 }

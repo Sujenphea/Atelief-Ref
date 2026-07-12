@@ -75,4 +75,26 @@ struct GridReorderTests {
         #expect(reorderedIDs(ids: ids, movingID: Self.a, toIndexOf: Self.b)
                 == [Self.b, Self.a, Self.c, Self.d])
     }
+
+    @Test("keyedByAssetID keeps the first on duplicate ids (G3)")
+    func keyedByAssetIDDedupsGracefully() {
+        struct Item: Equatable {
+            let id: UUID
+            let label: String
+        }
+        let dup = Self.a
+        let items = [
+            Item(id: dup, label: "first"),
+            Item(id: Self.b, label: "b"),
+            Item(id: dup, label: "second"),
+        ]
+        let byID = keyedByAssetID(items) { $0.id }
+        #expect(byID.count == 2)
+        #expect(byID[dup]?.label == "first")
+        #expect(byID[Self.b]?.label == "b")
+        // Rebuilding an order that includes the duplicate id does not trap.
+        let order = [Self.b, dup, Self.b]
+        let rebuilt = order.compactMap { byID[$0] }
+        #expect(rebuilt.map(\.label) == ["b", "first", "b"])
+    }
 }
