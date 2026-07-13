@@ -25,8 +25,25 @@ public final class CanvasHostView: NSView {
 
     /// Called when a tile is dragged to a new position: its id and the FINAL
     /// world-space origin. The host updates the provider in memory (so the tile
-    /// stays put) and persists off-main. `nil` disables drag-to-place.
+    /// stays put) and persists off-main. During a frame group-drag it fires once
+    /// per carried tile. `nil` disables drag-to-place.
     public var onMoveTile: ((Int, CGPoint) -> Void)?
+
+    /// Called when a create tool (``CanvasTool/frame`` / ``CanvasTool/text``)
+    /// finishes rubber-banding: the tool and the new element's WORLD-space rect.
+    /// The host places the element and (typically) flips back to `.select`.
+    public var onCreateElement: ((CanvasTool, CGRect) -> Void)?
+
+    /// The active tool. `.select` pans / selects / drags; `.frame` / `.text`
+    /// rubber-band a new element instead.
+    public var tool: CanvasTool = .select
+
+    // MARK: Element-create tracking (rubber-band)
+
+    /// Screen point of the create `mouseDown`, or `nil` when not creating.
+    private var createStartPoint: CGPoint?
+    /// The dashed preview rect shown while rubber-banding a new element.
+    private var createPreviewLayer: CALayer?
 
     // MARK: Drag tracking (click-vs-drag)
 
@@ -103,6 +120,16 @@ public final class CanvasHostView: NSView {
         // Become first responder so the ⌫ / Delete key reaches ``keyDown``.
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
+
+        // Create tools rubber-band a new element instead of selecting / dragging.
+        if tool != .select {
+            createStartPoint = point
+            dragStartPoint = nil
+            dragCandidateTileID = nil
+            isDragging = false
+            return
+        }
+
         let tileID = engine.tile(atScreenPoint: point)?.id
         selectTile(tileID)
         if event.clickCount == 2, let tileID {
@@ -119,8 +146,15 @@ public final class CanvasHostView: NSView {
     /// the candidate tile. Empty-space presses never drag. The delta is
     /// cumulative from the press point, so the engine can replace its offset.
     public override func mouseDragged(with event: NSEvent) {
-        guard let start = dragStartPoint, let tileID = dragCandidateTileID else { return }
         let point = convert(event.locationInWindow, from: nil)
+
+        // Rubber-band a new element under a create tool.
+        if tool != .select, let start = createStartPoint {
+            updateCreatePreview(from: start, to: point)
+            return
+        }
+
+        guard let start = dragStartPoint, let tileID = dragCandidateTileID else { return }
         let delta = CGSize(width: point.x - start.x, height: point.y - start.y)
         if !isDragging {
             guard Self.exceedsDragThreshold(delta) else { return }
@@ -135,17 +169,96 @@ public final class CanvasHostView: NSView {
     /// flicker and the viewport is untouched. A press with no drag is a plain
     /// click (already handled on down), so it's a no-op here.
     public override func mouseUp(with event: NSEvent) {
+        // Finish a rubber-band create, if one is in progress.
+        if tool != .select, let start = createStartPoint {
+            let end = convert(event.locationInWindow, from: nil)
+            finishCreate(from: start, to: end)
+            createStartPoint = nil
+            return
+        }
+
         defer {
             dragStartPoint = nil
             dragCandidateTileID = nil
             isDragging = false
         }
         guard isDragging else { return }
-        if let result = engine.endDrag() {
-            onMoveTile?(result.tileID, result.worldOrigin)
+        // Persist EVERY tile the drag carried (a frame + its group), then clear
+        // the drag state. `currentDragOrigins()` is non-mutating; `endDrag()`
+        // clears. The provider updates in memory per callback so nothing snaps.
+        for moved in engine.currentDragOrigins() {
+            onMoveTile?(moved.tileID, moved.worldOrigin)
         }
+        _ = engine.endDrag()
         engine.sync()
     }
+
+    // MARK: Element create (rubber-band → world rect)
+
+    /// Draw / update the dashed preview rect while rubber-banding a new element.
+    private func updateCreatePreview(from a: CGPoint, to b: CGPoint) {
+        let rect = Self.normalizedRect(from: a, to: b)
+        let preview = createPreviewLayer ?? makeCreatePreviewLayer()
+        createPreviewLayer = preview
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        preview.frame = rect
+        preview.isHidden = false
+        preview.zPosition = .greatestFiniteMagnitude
+        CATransaction.commit()
+    }
+
+    /// Finalize a create gesture: convert the screen rubber-band to a WORLD rect
+    /// and report it. A frame needs a real drag (below a minimum is cancelled); a
+    /// text box tolerates a click — it falls back to a default-sized box at the
+    /// press point so tapping the text tool just drops a text element.
+    private func finishCreate(from a: CGPoint, to b: CGPoint) {
+        createPreviewLayer?.removeFromSuperlayer()
+        createPreviewLayer = nil
+
+        let screenRect = Self.normalizedRect(from: a, to: b)
+        var worldRect = engine.transform.screenToWorld(screenRect)
+
+        switch tool {
+        case .text:
+            if worldRect.width < Self.minCreateWorldEdge || worldRect.height < Self.minCreateWorldEdge {
+                let origin = engine.transform.screenToWorld(a)
+                worldRect = CGRect(
+                    origin: origin,
+                    size: CGSize(width: Self.defaultTextWorldWidth, height: Self.defaultTextWorldHeight))
+            }
+        case .frame:
+            guard worldRect.width >= Self.minCreateWorldEdge,
+                  worldRect.height >= Self.minCreateWorldEdge else { return }
+        case .select:
+            return
+        }
+        onCreateElement?(tool, worldRect)
+    }
+
+    private func makeCreatePreviewLayer() -> CALayer {
+        let layer = CALayer()
+        layer.borderWidth = 1.5
+        layer.borderColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.9)
+        layer.backgroundColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.08)
+        layer.cornerRadius = 2
+        engine.rootLayer.addSublayer(layer)
+        return layer
+    }
+
+    /// Normalize two corner points into a positive-size rect (order-independent).
+    /// Pure + static so the rubber-band math is unit-testable without a window.
+    static func normalizedRect(from a: CGPoint, to b: CGPoint) -> CGRect {
+        CGRect(
+            x: min(a.x, b.x), y: min(a.y, b.y),
+            width: abs(a.x - b.x), height: abs(a.y - b.y))
+    }
+
+    /// Smallest world edge a rubber-band must reach to count as a deliberate drag.
+    static let minCreateWorldEdge: CGFloat = 12
+    /// Default world size for a click-placed (undragged) text box.
+    static let defaultTextWorldWidth: CGFloat = 260
+    static let defaultTextWorldHeight: CGFloat = 72
 
     /// Right-click: select the tile under the cursor and offer Remove / Delete.
     /// Returns `nil` (no menu) over empty space.

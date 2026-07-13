@@ -67,6 +67,37 @@ final class CanvasBenchmark: XCTestCase {
                           "per-frame cull+layer-sync exceeds the 120fps budget")
     }
 
+    /// E3 regression guard (decision T3): a board of many *vector* elements —
+    /// frames (pooled-layer border/fill) + text (`CATextLayer` siblings) — stays
+    /// well within the per-frame budget while panning. Vector tiles bypass decode
+    /// entirely, so no warming is needed; the cost is cull + layer/overlay sync.
+    @MainActor
+    func testVectorElementsWithinBudget() {
+        let elementCount = 400
+        let provider = VectorBenchProvider(count: elementCount)
+        let engine = CanvasEngine(
+            provider: provider, images: FixtureImageSet(count: 1, seed: 1),
+            transform: CanvasTransform(scale: 0.5, translation: CGPoint(x: 720, y: 450)),
+            viewportSize: Self.viewport)
+        engine.sync()
+        XCTAssertGreaterThan(engine.activeLayerCount, 50, "benchmark must run over real content")
+
+        let frames = 240
+        let clock = ContinuousClock()
+        let elapsed = clock.measure {
+            for i in 0..<frames {
+                let dx: CGFloat = (i % 2 == 0) ? -6 : 6
+                engine.pan(byScreenDelta: CGSize(width: dx, height: 3))
+            }
+        }
+        let perFrameMs = elapsed.milliseconds / Double(frames)
+        print("[canvas-benchmark] vector elements=\(engine.activeLayerCount) "
+              + "textOverlays=\(engine.textOverlayCount) "
+              + "per-frame=\(String(format: "%.3f", perFrameMs))ms budget=\(Self.frameBudgetMs)ms")
+        XCTAssertLessThan(perFrameMs, Self.frameBudgetMs,
+                          "per-frame vector sync exceeds the 120fps budget")
+    }
+
     /// Records clock + memory metrics for regression baselines; also asserts the
     /// cache stays within its ceiling (the bounded memory profile P13 requires).
     @MainActor
@@ -85,6 +116,43 @@ final class CanvasBenchmark: XCTestCase {
         // Cache ceiling default is 256 MB; the working set must stay well under.
         XCTAssertLessThan(engine.cacheResidentBytes, 256 * 1024 * 1024)
         print("[canvas-benchmark] resident cache = \(engine.cacheResidentBytes / (1024 * 1024)) MB")
+    }
+}
+
+/// A deterministic grid of alternating frame + text elements for the E3 vector
+/// benchmark. Every tile is a vector element (no images), laid out so a chunk is
+/// visible in the benchmark viewport.
+private struct VectorBenchProvider: TileProvider {
+    let tiles: [Tile]
+    private let kinds: [TileContent]
+
+    init(count: Int) {
+        let cols = 20
+        var tiles: [Tile] = []
+        var kinds: [TileContent] = []
+        for i in 0..<count {
+            let (r, c) = (i / cols, i % cols)
+            tiles.append(Tile(
+                id: i, x: Double(c) * 320, y: Double(r) * 260, w: 300, h: 220, z: i))
+            if i.isMultiple(of: 2) {
+                kinds.append(.frame(FrameStyle(
+                    fill: RGBAColor(red: 0.9, green: 0.9, blue: 0.95, alpha: 0.3),
+                    stroke: RGBAColor(red: 0.2, green: 0.2, blue: 0.3), strokeWidth: 3,
+                    cornerRadius: 6,
+                    label: TextStyle(string: "Frame \(i)", fontSize: 16,
+                                     color: RGBAColor(red: 0, green: 0, blue: 0)))))
+            } else {
+                kinds.append(.text(TextStyle(
+                    string: "Note \(i)\nsecond line", fontSize: 18,
+                    color: RGBAColor(red: 0.1, green: 0.1, blue: 0.1))))
+            }
+        }
+        self.tiles = tiles
+        self.kinds = kinds
+    }
+
+    func content(for tile: Tile) -> TileContent {
+        kinds.indices.contains(tile.id) ? kinds[tile.id] : .image
     }
 }
 

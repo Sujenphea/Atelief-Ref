@@ -35,6 +35,15 @@ public final class CanvasEngine {
     /// Badge overlay layers (e.g. the ▶ for a video), keyed by tile id — siblings
     /// of the tile layers, so they never entangle with the recycling ``LayerPool``.
     private var badges: [Int: CALayer] = [:]
+    /// Text overlay layers for freeform `.text` tiles and `.frame` labels (E3),
+    /// keyed by tile id — `CATextLayer` siblings OUTSIDE the recycled ``LayerPool``
+    /// (decision T3), created/dropped like ``badges``. A tile has at most one.
+    private var textLayers: [Int: CATextLayer] = [:]
+
+    /// Backing scale (points → pixels) for crisp vector text. The window host sets
+    /// it from `backingScaleFactor`; defaults to 2 so headless/text tests still
+    /// rasterize at Retina density.
+    public var backingScale: CGFloat = 2
     /// The ▶ glyph, rendered once and shared by every badge layer's `contents`.
     private lazy var playBadgeImage: CGImage? = Self.makePlayBadgeImage()
 
@@ -51,6 +60,10 @@ public final class CanvasEngine {
     /// hit-testing) so the tile, its badge, and the highlight follow the cursor
     /// without touching the provider until the drag ends.
     private var dragTileID: Int?
+    /// The **other** tiles carried along with ``dragTileID`` this drag (E3 —
+    /// frame-as-group: a dragged frame moves the tiles it contains). Snapshotted
+    /// once at ``beginDrag(tileID:)`` from the provider, offset by the same delta.
+    private var dragGroupIDs: Set<Int> = []
     /// The live-drag's world-space offset from the dragged tile's stored origin.
     private var dragWorldOffset: CGSize = .zero
 
@@ -132,10 +145,14 @@ public final class CanvasEngine {
 
     // MARK: Live drag (transient placement, no provider mutation)
 
-    /// Begin live-dragging `tileID`. Records the tile and resets the offset; the
-    /// tile doesn't move until ``updateDrag(byScreenDelta:)`` reports movement.
+    /// Begin live-dragging `tileID`. Records the tile, snapshots the tiles it
+    /// carries along (``TileProvider/groupMembers(forDraggedTileID:)`` — a frame
+    /// moves its contents), and resets the offset; nothing moves until
+    /// ``updateDrag(byScreenDelta:)`` reports movement.
     public func beginDrag(tileID: Int) {
         dragTileID = tileID
+        dragGroupIDs = Set(provider.groupMembers(forDraggedTileID: tileID))
+        dragGroupIDs.remove(tileID) // the dragged tile is implicit, never doubled
         dragWorldOffset = .zero
     }
 
@@ -164,6 +181,7 @@ public final class CanvasEngine {
         guard let id = dragTileID,
               let tile = provider.tiles.first(where: { $0.id == id }) else {
             dragTileID = nil
+            dragGroupIDs = []
             dragWorldOffset = .zero
             return nil
         }
@@ -171,14 +189,32 @@ public final class CanvasEngine {
             x: tile.worldFrame.origin.x + dragWorldOffset.width,
             y: tile.worldFrame.origin.y + dragWorldOffset.height)
         dragTileID = nil
+        dragGroupIDs = []
         dragWorldOffset = .zero
         return (id, origin)
     }
 
+    /// Every tile carried by the current drag (the primary tile + its group), with
+    /// its FINAL world origin under the live offset. **Non-mutating** — the host
+    /// calls this to persist all moved placements, then calls ``endDrag()`` to
+    /// clear the drag state. Empty when nothing is being dragged.
+    public func currentDragOrigins() -> [(tileID: Int, worldOrigin: CGPoint)] {
+        guard let primary = dragTileID else { return [] }
+        var ids = [primary]
+        ids.append(contentsOf: dragGroupIDs.sorted())
+        return ids.compactMap { id in
+            guard let tile = provider.tiles.first(where: { $0.id == id }) else { return nil }
+            let origin = CGPoint(
+                x: tile.worldFrame.origin.x + dragWorldOffset.width,
+                y: tile.worldFrame.origin.y + dragWorldOffset.height)
+            return (id, origin)
+        }
+    }
+
     /// The world frame a tile is drawn at this frame — its stored frame, offset
-    /// by the live-drag delta when it's the tile under the drag.
+    /// by the live-drag delta when it's the dragged tile or one of its group.
     private func displayWorldFrame(for tile: Tile) -> CGRect {
-        guard tile.id == dragTileID else { return tile.worldFrame }
+        guard tile.id == dragTileID || dragGroupIDs.contains(tile.id) else { return tile.worldFrame }
         return tile.worldFrame.offsetBy(dx: dragWorldOffset.width, dy: dragWorldOffset.height)
     }
 
@@ -233,13 +269,16 @@ public final class CanvasEngine {
         let visible = currentVisibleTiles()
         let visibleIDs = Set(visible.map(\.id))
 
-        // Recycle layers for tiles that left the viewport (+ drop their badges).
+        // Recycle layers for tiles that left the viewport (+ drop their badges
+        // and any vector text overlay — both live outside the recycled pool).
         for (id, layer) in active where !visibleIDs.contains(id) {
             pool.recycle(layer)
             active[id] = nil
             keyByTile[id] = nil
             badges[id]?.removeFromSuperlayer()
             badges[id] = nil
+            textLayers[id]?.removeFromSuperlayer()
+            textLayers[id] = nil
         }
 
         // Place / update layers for visible tiles.
@@ -261,25 +300,23 @@ public final class CanvasEngine {
             updateBadge(for: tile, screenFrame: screenFrame)
             if tile.id == selectedTileID { selectedFrame = screenFrame }
 
-            let onScreenEdge = CGFloat(tile.longestWorldEdge) * transform.scale
-            let tier = lod.tier(forOnScreenLongestEdge: onScreenEdge, previous: keyByTile[tile.id]?.tier)
-            let key = ThumbnailCache.Key(imageID: images.imageKey(for: tile), tier: tier)
-            keyByTile[tile.id] = key
-            neededKeys.insert(key)
-
-            if let image = cache.image(for: key) {
-                layer.contents = image
-            } else if let url = images.imageFileURL(for: tile, tier: tier) {
-                // Disk-backed: file read + decode both leave the main thread (G7).
-                scheduler.request(key: key, maxPixelSize: Self.pixelSize(for: tier)) {
-                    try? Data(contentsOf: url)
-                }
-            } else if let data = images.imageData(for: tile, tier: tier) {
-                scheduler.request(
-                    key: key,
-                    data: data,
-                    maxPixelSize: Self.pixelSize(for: tier)
-                )
+            switch provider.content(for: tile) {
+            case .image:
+                clearVectorStyling(layer)
+                setTextOverlay(nil, for: tile, screenFrame: screenFrame)
+                paintImage(tile: tile, layer: layer, neededKeys: &neededKeys)
+            case .frame(let style):
+                // A frame draws directly on its (non-recycled-content) pooled
+                // layer — no decode, no cache key (so applyDecoded/retain skip it).
+                keyByTile[tile.id] = nil
+                layer.contents = nil
+                applyFrameStyling(layer, style: style)
+                setTextOverlay(style.label, for: tile, screenFrame: screenFrame)
+            case .text(let style):
+                keyByTile[tile.id] = nil
+                layer.contents = nil
+                clearVectorStyling(layer) // transparent base; glyphs ride the overlay
+                setTextOverlay(style, for: tile, screenFrame: screenFrame)
             }
         }
 
@@ -326,6 +363,91 @@ public final class CanvasEngine {
         }
         CATransaction.commit()
     }
+
+    // MARK: Content painting (image path + vector elements)
+
+    /// The image path (decision T3, untouched): pick an LOD tier, paint from the
+    /// cache, and request an off-main decode on a miss. Records the tile's cache
+    /// key so ``applyDecoded(_:)`` can back-fill it and ``sync()`` can retain it.
+    private func paintImage(tile: Tile, layer: CALayer, neededKeys: inout Set<ThumbnailCache.Key>) {
+        let onScreenEdge = CGFloat(tile.longestWorldEdge) * transform.scale
+        let tier = lod.tier(forOnScreenLongestEdge: onScreenEdge, previous: keyByTile[tile.id]?.tier)
+        let key = ThumbnailCache.Key(imageID: images.imageKey(for: tile), tier: tier)
+        keyByTile[tile.id] = key
+        neededKeys.insert(key)
+
+        if let image = cache.image(for: key) {
+            layer.contents = image
+        } else if let url = images.imageFileURL(for: tile, tier: tier) {
+            // Disk-backed: file read + decode both leave the main thread (G7).
+            scheduler.request(key: key, maxPixelSize: Self.pixelSize(for: tier)) {
+                try? Data(contentsOf: url)
+            }
+        } else if let data = images.imageData(for: tile, tier: tier) {
+            scheduler.request(
+                key: key,
+                data: data,
+                maxPixelSize: Self.pixelSize(for: tier)
+            )
+        }
+    }
+
+    /// Reset a pooled layer's vector styling so a layer reused from a frame (or
+    /// carrying stale border/fill) draws a clean image / transparent text base.
+    private func clearVectorStyling(_ layer: CALayer) {
+        layer.borderWidth = 0
+        layer.borderColor = nil
+        layer.backgroundColor = nil
+        layer.cornerRadius = 0
+    }
+
+    /// Draw a `.frame` element on its pooled layer: fill + a world-thickness border
+    /// (scaled to screen) + rounded corners. No decode — it's pure CA compositing.
+    private func applyFrameStyling(_ layer: CALayer, style: FrameStyle) {
+        layer.backgroundColor = style.fill?.cgColor
+        if let stroke = style.stroke, style.strokeWidth > 0 {
+            layer.borderColor = stroke.cgColor
+            layer.borderWidth = CGFloat(style.strokeWidth) * transform.scale
+        } else {
+            layer.borderColor = nil
+            layer.borderWidth = 0
+        }
+        layer.cornerRadius = CGFloat(max(0, style.cornerRadius)) * transform.scale
+    }
+
+    /// Show / update / hide a tile's `CATextLayer` overlay (a `.text` element's
+    /// glyphs or a frame's label). Sized in on-screen points from a world font
+    /// size, so it stays crisp at any zoom. `nil` / empty removes the overlay.
+    private func setTextOverlay(_ style: TextStyle?, for tile: Tile, screenFrame: CGRect) {
+        guard let style, !style.string.isEmpty else {
+            textLayers[tile.id]?.removeFromSuperlayer()
+            textLayers[tile.id] = nil
+            return
+        }
+        let text: CATextLayer
+        if let existing = textLayers[tile.id] {
+            text = existing
+        } else {
+            text = CATextLayer()
+            text.isWrapped = true
+            text.truncationMode = .end
+            text.alignmentMode = .left
+            textLayers[tile.id] = text
+            rootLayer.addSublayer(text)
+        }
+        text.contentsScale = max(1, backingScale)
+        text.string = style.string
+        text.fontSize = CGFloat(max(1, style.fontSize)) * transform.scale
+        text.foregroundColor = style.color.cgColor
+        // Inset a touch so glyphs don't kiss a frame's border edge.
+        let pad = min(6, screenFrame.width * 0.04)
+        text.frame = screenFrame.insetBy(dx: pad, dy: pad)
+        text.zPosition = CGFloat(tile.z) + 0.25 // above its own tile, below its badge
+    }
+
+    /// Number of text overlays currently attached (introspection for E3 tests —
+    /// mirrors the badge-count checks the video tests use).
+    public var textOverlayCount: Int { textLayers.count }
 
     // MARK: Badges + hit-testing
 
