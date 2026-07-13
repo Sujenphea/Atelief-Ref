@@ -44,6 +44,26 @@ public struct MediaStore: Sendable {
         self.init(layout: LibraryLayout(root: root))
     }
 
+    // MARK: - Backup hygiene (008 H2)
+
+    /// Mark the derived directories (`thumbnails/`, `cache/`) excluded from
+    /// backups — fulfilling the layout's long-standing doc-comment promise. They
+    /// hold only regenerable data, so Time Machine / iCloud shouldn't copy them
+    /// (smaller footprint, faster backups). The originals in `blobs/`, the
+    /// database, and `snapshots/` are deliberately NOT excluded. Each directory
+    /// is created first (the flag needs an existing URL); a per-directory failure
+    /// is swallowed — this is hygiene, not correctness.
+    public func excludeDerivedFromBackup() {
+        for directory in [layout.thumbnails, layout.cache] {
+            try? FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true)
+            var url = directory
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? url.setResourceValues(values)
+        }
+    }
+
     // MARK: - Errors
 
     /// A failure raised by the store itself (as opposed to an underlying

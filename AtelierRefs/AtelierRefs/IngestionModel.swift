@@ -197,6 +197,10 @@ final class IngestionModel: ObservableObject {
             self.isReady = true
             self.status = "Library ready — paste an image or drop a file."
 
+            // Backup hygiene (008 H2): keep regenerable thumbnails/cache out of
+            // Time Machine / iCloud. Idempotent, cheap; safe to run every launch.
+            store.excludeDerivedFromBackup()
+
             // Any sweep still "open" at launch is abandoned (nothing is running yet),
             // so reconcile it to paused — otherwise a tab closed mid-sweep last session
             // would show as a phantom "running" job forever.

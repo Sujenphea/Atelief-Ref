@@ -40,6 +40,28 @@ struct MediaStoreTests {
         #expect(url.pathExtension == "")
     }
 
+    // MARK: - Backup hygiene (008 H2)
+
+    @Test("excludeDerivedFromBackup marks thumbnails/cache, leaves blobs included")
+    func excludeDerived() throws {
+        let lib = try makeTempLibrary()
+        defer { lib.cleanup() }
+
+        lib.store.excludeDerivedFromBackup()
+
+        func isExcluded(_ url: URL) throws -> Bool {
+            try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
+                .isExcludedFromBackup ?? false
+        }
+        #expect(try isExcluded(lib.layout.thumbnails))
+        #expect(try isExcluded(lib.layout.cache))
+
+        // blobs holds the irreplaceable originals — it must NOT be excluded.
+        try FileManager.default.createDirectory(
+            at: lib.layout.blobs, withIntermediateDirectories: true)
+        #expect(try isExcluded(lib.layout.blobs) == false)
+    }
+
     @Test("thumbnailURL shards ab/cd and encodes the size tier")
     func thumbnailPathDeterministic() throws {
         let lib = try makeTempLibrary()
