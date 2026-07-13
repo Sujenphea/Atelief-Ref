@@ -155,10 +155,23 @@ roadmap and is the strongest argument for shipping 008's snapshot early.
 
 ## Open questions
 
-1. **Tweet media children** (the key modeling decision for C3): media URLs inside
-   `payload.media[]` (simple, DRY, but the tweet's images aren't first-class assets), or
-   real asset children linked to the tweet (richer — images dedupe/tag/place
-   independently — but reintroduces O2's supertype locally)? Leaning: real asset
-   children via a lightweight `parent_asset_id` on asset, decided when C3 starts.
-2. URL canonicalization aggressiveness for link dedup.
-3. Color: single hex v1 (recommended) or palettes (0..n swatches) from the start?
+1. **Tweet media children** — RESOLVED (C3, changelog 112): media live in
+   `payload.media[]` as URL references (DRY, one row per tweet, zero schema
+   change). The "real asset children via `parent_asset_id`" model was rejected for
+   v1 (reintroduces a local supertype); revisit only if per-image tag/place/dedup
+   is wanted.
+2. URL canonicalization aggressiveness for link dedup — RESOLVED (C2a, changelog
+   111): "moderate" (scheme/host/fragment/port/trailing-slash + fixed tracking-
+   param strip; other query params & path case untouched).
+3. Color: single hex v1 (recommended) or palettes — RESOLVED (C1): single hex v1;
+   palettes are a later additive `swatches: [String]?` on `ColorPayload`.
+
+## Status (2026-07)
+
+- ✅ **C0** core seam · **C1** color · **C2a** link (structural) · **C3** tweet
+  (structural) — all shipped (changelogs 109–112). Plan record: `.docs/025`.
+- ⏳ **C2b** link resolver enrichment (= 001 `PageResolver`, SSRF-hardened) —
+  deferred; the security-sensitive piece.
+- ⏳ **C3 extension wiring** — `CaptureDTO.kind`/`payload` + `CaptureRoutes`
+  content branch, so the extension's `web` captures become links and single/bulk
+  X captures become tweets. The structural kinds are ready to receive them.

@@ -54,6 +54,9 @@ public enum AtelierError: Error, Equatable {
     case invalidColor
     /// A `.link` content draft's URL was not a usable http(s) URL (003 · C2).
     case invalidLinkURL
+    /// A `.tweet` content draft had no usable tweet id, or no substance at all
+    /// (neither text nor media) — not a usable tweet (003 · C3).
+    case emptyTweet
     /// A database constraint (FK / NOT NULL / UNIQUE) was violated — mapped from
     /// GRDB so the raw `DatabaseError` never leaks (A2/C7).
     case constraintViolation

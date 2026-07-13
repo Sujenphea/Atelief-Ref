@@ -88,8 +88,8 @@ enum Validation {
     /// checks.
     static func contentDraft(_ draft: AssetContentDraft) throws -> AssetContentDraft {
         switch draft.kind {
-        case .image, .video, .tweet:
-            // Byte kinds use the blob `ingest` path; tweet arrives in C3.
+        case .image, .video:
+            // Byte kinds use the blob `ingest` path, not the content path.
             throw AtelierError.invalidContentKind
         case .color:
             guard let color = draft.payload.color else { throw AtelierError.missingPayload }
@@ -117,6 +117,36 @@ enum Validation {
                     url: url, title: link.title, description: link.description)),
                 dedupKey: url,
                 searchText: searchText.isEmpty ? nil : searchText)
+        case .tweet:
+            guard let tweet = draft.payload.tweet else { throw AtelierError.missingPayload }
+            // The numeric tweet id is the identity + dedup key.
+            let id = try tweetID(tweet.tweetID)
+            let text = tweet.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let media = tweet.media.filter {
+                !$0.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            // A usable tweet has substance: text OR at least one media reference.
+            guard text?.isEmpty == false || !media.isEmpty else {
+                throw AtelierError.emptyTweet
+            }
+            let handle = tweet.authorHandle?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = tweet.authorName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            // FTS text is the tweet text + author, so a tweet is findable by
+            // content or by who wrote it (003 · C3).
+            let searchText = [text, handle, name]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            return AssetContentDraft(
+                kind: .tweet,
+                payload: AssetPayload(tweet: TweetPayload(
+                    tweetID: id,
+                    text: text?.isEmpty == false ? text : nil,
+                    authorHandle: handle?.isEmpty == false ? handle : nil,
+                    authorName: name?.isEmpty == false ? name : nil,
+                    media: media)),
+                dedupKey: id,
+                searchText: searchText.isEmpty ? nil : searchText)
         }
     }
 
@@ -139,6 +169,17 @@ enum Validation {
             throw AtelierError.invalidLinkURL
         }
         return canonical
+    }
+
+    /// Extract the numeric tweet id from a raw id or status URL (003 · C3), or
+    /// throw `.emptyTweet`. The id is the identity + dedup key, so a tweet
+    /// captured via `x.com` or `twitter.com` collapses to one asset.
+    @discardableResult
+    static func tweetID(_ raw: String) throws -> String {
+        guard let id = TweetPayload.canonicalTweetID(raw) else {
+            throw AtelierError.emptyTweet
+        }
+        return id
     }
 
     /// Reject a canvas placement with any non-finite (NaN/inf) coordinate, or a

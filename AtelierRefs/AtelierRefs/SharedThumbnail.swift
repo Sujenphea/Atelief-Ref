@@ -87,6 +87,13 @@ struct AssetContentThumbnail: View {
             } else {
                 LinkCardTile(link: link, isSelected: isSelected, cornerRadius: cornerRadius)
             }
+        case let .tweet(tweet):
+            // With a captured card image (blob) show it; otherwise a text card.
+            if let hash = tweet.cardImageBlobHash {
+                AsyncThumbnail(hash: hash, url: url, isSelected: isSelected, cornerRadius: cornerRadius)
+            } else {
+                TweetCardTile(tweet: tweet, isSelected: isSelected, cornerRadius: cornerRadius)
+            }
         case .unknown:
             ThumbnailTile(image: nil, isSelected: isSelected, cornerRadius: cornerRadius)
         }
@@ -123,6 +130,65 @@ struct LinkCardTile: View {
                         .multilineTextAlignment(.center)
                 }
                 .padding(10)
+            }
+            .background(Color(.controlBackgroundColor).opacity(0.6))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .strokeBorder(
+                        isSelected ? Color.accentColor : Color.primary.opacity(0.1),
+                        lineWidth: isSelected ? 3 : 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
+    }
+}
+
+/// A square grid card for a media-less `tweet` asset (003 · C3) with no captured
+/// card image yet: a speech-bubble glyph over the author `@handle` and a text
+/// snippet, with a small media-count badge when the tweet carries images / video.
+/// Replaced by the card image once one is captured.
+struct TweetCardTile: View {
+    let tweet: TweetContent
+    var isSelected: Bool = false
+    var cornerRadius: CGFloat = 8
+
+    /// `@handle` when known, else the author name, else a generic label.
+    private var byline: String {
+        if let handle = tweet.authorHandle, !handle.isEmpty { return "@\(handle)" }
+        if let name = tweet.authorName, !name.isEmpty { return name }
+        return "Tweet"
+    }
+
+    var body: some View {
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                VStack(spacing: 6) {
+                    Image(systemName: "bubble.left.and.text.bubble.right")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.secondary)
+                    Text(byline)
+                        .font(.caption).fontWeight(.medium)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    if let text = tweet.text, !text.isEmpty {
+                        Text(text)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .padding(10)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if !tweet.media.isEmpty {
+                    Label("\(tweet.media.count)", systemImage: "photo.on.rectangle")
+                        .font(.caption2)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(6)
+                }
             }
             .background(Color(.controlBackgroundColor).opacity(0.6))
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))

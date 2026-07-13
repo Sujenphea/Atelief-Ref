@@ -92,6 +92,22 @@ public struct AssetContentDraft: Sendable, Equatable {
             kind: .link,
             payload: AssetPayload(link: LinkPayload(url: url, title: title, description: description)))
     }
+
+    /// A `tweet` content draft (003 · C3). `tweetID` may be a bare id or a status
+    /// URL — the funnel's ``Validation`` extracts the numeric id (the dedup key),
+    /// rejects a tweet with no id / no substance (`.emptyTweet`), and derives the
+    /// canonical provenance URL. This only shapes the payload.
+    public static func tweet(
+        tweetID: String, text: String? = nil,
+        authorHandle: String? = nil, authorName: String? = nil,
+        media: [TweetMedia] = []
+    ) -> AssetContentDraft {
+        AssetContentDraft(
+            kind: .tweet,
+            payload: AssetPayload(tweet: TweetPayload(
+                tweetID: tweetID, text: text, authorHandle: authorHandle,
+                authorName: authorName, media: media)))
+    }
 }
 
 /// The caller-supplied provenance of an asset. Carries `capturedAt` (a

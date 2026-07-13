@@ -1,9 +1,10 @@
-# 025 — Multi-Kind Items · Plan (003 · C0 + C1 shipped)
+# 025 — Multi-Kind Items · Plan (003 · C0 + C1 + C2a + C3 shipped)
 
 Implementation record for feature 003 (multi-kind items). The roadmap +
 option analysis lives in `.docs/feature-todo/003-multi-kind-items.md` (still
-live — C2/C3 remain); this captures the kickoff decisions and what shipped in
-C0 (core seam) + C1 (color).
+live — C2b resolver + C3 extension wiring remain); this captures the kickoff
+decisions and what shipped in C0 (core seam) → C1 (color) → C2a (link) → C3
+(tweet).
 
 ## Kickoff decisions (confirmed at implementation)
 
@@ -59,6 +60,27 @@ fixed tracking-param set; leave other query params and path case untouched.
 Rationale: aggressive stripping (path case, all query) risks merging distinct
 pages; this catches the common share-link duplicates without that risk.
 
+## C3 — tweet, structural (shipped, changelog 112)
+
+- `TweetPayload` (tweetID / text / author / `media: [TweetMedia]`) +
+  `canonicalTweetID` (numeric id from a bare id or status URL — `x.com` /
+  `twitter.com` / query / `/photo/1` collapse to one key) + `canonicalTweetURL`
+  (deterministic permalink for provenance alignment). `AssetContent.tweet` carries
+  the asset's blob as an optional card image.
+- `ingestContent` for tweets: numeric id is the dedup key; the funnel aligns
+  provenance `original_url` to the permalink (the C2a alignment generalized over
+  link + tweet). `searchText` = text + author. New error `.emptyTweet` (no usable
+  id, or no substance — neither text nor media). A media-only tweet is accepted.
+- UI: grid `TweetCardTile`, detail `TweetDetailView` (Open on X).
+- **No network** — media are URL references; a card image fills in later (C2b).
+
+### Open Q1 resolved (tweet media children)
+
+**`payload.media[]` URL references**, NOT first-class asset children — one row per
+tweet, media carried as references. DRY, zero schema change; the richer "real
+asset children via `parent_asset_id`" model was rejected for v1 (reintroduces a
+local supertype). Revisit only if per-image tag/place/dedup is wanted.
+
 ## Deviations from the roadmap doc
 
 - **No `thumbnail_hash` column** (as the doc's v1 recommendation): a color has no
@@ -71,9 +93,13 @@ pages; this catches the common share-link duplicates without that risk.
 ## Remaining
 
 - **C2b — link resolver enrichment** (= 001's `PageResolver`, not yet built): a
-  SSRF-hardened page fetch fills title / description / og:image, upgrading the
-  bare link card to a rich one. Extension `web` captures become links.
-- **C3 — tweet.** Richest payload. Resolve the media-children modeling question
-  first (payload `media[]` vs real asset children via `parent_asset_id`).
+  SSRF-hardened page fetch fills a link's title / description / og:image (and
+  could fill a tweet's card image / media dims), upgrading the bare card to a
+  rich one. The security-sensitive piece; deferred.
+- **C3 extension wiring** — the tweet KIND is complete + rendered, but nothing
+  in-app *creates* a tweet yet (a tweet isn't typed by hand). The producer is the
+  extension's single + bulk X capture: `CaptureDTO` gains `kind` / `payload`,
+  `CaptureRoutes` branches content-only captures into `ingestContent`. That
+  wire-level work lands real tweets (and links from `web` captures).
 - Board (canvas/space) rendering of media-less kinds is a defensive placeholder
   today; a first-class swatch/link/tweet tile is later polish.

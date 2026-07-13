@@ -338,16 +338,23 @@ public final class AppServices: Sendable {
     ) async throws -> IngestResult {
         // 1. validate + normalize (fail fast, before opening the write).
         let normalized = try Validation.contentDraft(draft)
-        // For a link, provenance IS the canonical URL — align the source's
-        // `original_url` with the dedup key so two pastes of the same page
-        // (differing only by trailing slash / tracking params) dedup (003 · C2).
+        // Align the source's `original_url` with the kind's canonical identity so
+        // two captures of the same thing dedup even when written differently: a
+        // link's `original_url` becomes its canonical URL (003 · C2); a tweet's
+        // becomes the deterministic permalink for its id, so `x.com` /
+        // `twitter.com` / tracking-param variants share one source (003 · C3).
         // A `let` so the @Sendable write closure can capture it.
         let effectiveSource: SourceDraft = {
-            guard normalized.kind == .link, let canonical = normalized.dedupKey else {
+            guard let canonical = normalized.dedupKey else { return source }
+            var s = source
+            switch normalized.kind {
+            case .link:
+                s.originalURL = canonical
+            case .tweet:
+                s.originalURL = TweetPayload.canonicalTweetURL(id: canonical)
+            default:
                 return source
             }
-            var s = source
-            s.originalURL = canonical
             return s
         }()
         try Validation.originalURL(effectiveSource.originalURL, platform: effectiveSource.platform)

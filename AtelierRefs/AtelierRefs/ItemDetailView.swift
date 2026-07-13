@@ -166,6 +166,9 @@ struct ItemDetailView: View {
             case let .link(link):
                 // With a resolved og:image, show it above the card; else just the card.
                 LinkDetailView(link: link, image: fullImage ?? previewImage)
+            case let .tweet(tweet):
+                // With a captured card image, show it above the card; else the card.
+                TweetDetailView(tweet: tweet, image: fullImage ?? previewImage)
             case .unknown:
                 ContentUnavailableView(
                     "No preview", systemImage: "questionmark.square.dashed",
@@ -187,17 +190,18 @@ struct ItemDetailView: View {
         switch asset.kind {
         case .video:
             player = AVPlayer(url: url)
-        case .image, .link:
-            // A link may carry a resolved og:image blob; decode it like an image
-            // (a bare link has no blobURL, so this arm is simply skipped).
+        case .image, .link, .tweet:
+            // A link's resolved og:image / a tweet's captured card image is the
+            // asset's own blob; decode it like an image (a bare link or tweet has
+            // no blobURL, so this arm is simply skipped).
             let decoded = await Task.detached(priority: .userInitiated) {
                 NSImage(contentsOf: url)
             }.value
             // `.task(id:)` cancels this on navigation — don't publish a stale
             // decode over the item the user moved to.
             if !Task.isCancelled { fullImage = decoded }
-        case .tweet, .color:
-            break  // media-less: the media area draws these from content.
+        case .color:
+            break  // media-less: the media area draws this from content.
         }
     }
 }
@@ -255,6 +259,83 @@ private struct LinkDetailView: View {
                 .textSelection(.enabled)
                 .lineLimit(2)
                 .truncationMode(.middle)
+        }
+        .padding(40)
+        .frame(maxWidth: 520)
+    }
+}
+
+/// The detail-page media view for a media-less `tweet` asset (003 · C3): an
+/// optional captured card image over the author line, the tweet text, the media
+/// references (URLs — no local bytes, so shown as openable rows), and a prominent
+/// Open on X action to the canonical permalink.
+private struct TweetDetailView: View {
+    let tweet: TweetContent
+    /// The captured card image, if the tweet has one decoded; nil otherwise.
+    var image: NSImage?
+
+    /// `@handle` when known, else the author name, else a generic label.
+    private var byline: String {
+        if let handle = tweet.authorHandle, !handle.isEmpty { return "@\(handle)" }
+        if let name = tweet.authorName, !name.isEmpty { return name }
+        return "Tweet"
+    }
+
+    private var permalink: URL? {
+        URL(string: TweetPayload.canonicalTweetURL(id: tweet.tweetID))
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxHeight: 320)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else {
+                Image(systemName: "bubble.left.and.text.bubble.right")
+                    .font(.system(size: 48))
+                    .foregroundStyle(.secondary)
+            }
+
+            if let name = tweet.authorName, !name.isEmpty {
+                Text(name).font(.title3).bold()
+            }
+            Text(byline).font(.callout).foregroundStyle(.secondary)
+
+            if let text = tweet.text, !text.isEmpty {
+                Text(text)
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+            }
+
+            if !tweet.media.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("^[\(tweet.media.count) media](inflect: true)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(tweet.media, id: \.url) { media in
+                        if let mediaURL = URL(string: media.url) {
+                            Link(destination: mediaURL) {
+                                Label(media.url, systemImage: "photo")
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let permalink {
+                Link(destination: permalink) {
+                    Label("Open on X", systemImage: "safari")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
         }
         .padding(40)
         .frame(maxWidth: 520)

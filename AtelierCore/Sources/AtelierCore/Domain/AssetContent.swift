@@ -24,6 +24,9 @@ public enum AssetContent: Sendable, Equatable, Hashable {
     /// A media-less saved link (003 · C2); carries its URL + best-effort
     /// metadata, plus an optional og:image blob hash (nil until resolved).
     case link(LinkContent)
+    /// A media-less saved tweet (003 · C3); carries its text / author / media
+    /// references, plus an optional card-image blob hash (nil until captured).
+    case tweet(TweetContent)
     /// The kind's backing data is missing/malformed, or the kind isn't rendered
     /// yet — a view shows a neutral placeholder rather than crashing.
     case unknown
@@ -45,6 +48,34 @@ public struct LinkContent: Sendable, Equatable, Hashable {
         self.title = title
         self.description = description
         self.imageBlobHash = imageBlobHash
+    }
+}
+
+/// The render-ready projection of a `tweet` asset (003 · C3): the payload's text /
+/// author / media references plus the asset's own `blobHash` as the optional card
+/// image (present once captured; nil for a bare tweet → the grid draws a text
+/// card). Media are URL references (the C3 model), not first-class assets.
+public struct TweetContent: Sendable, Equatable, Hashable {
+    public let tweetID: String
+    public let text: String?
+    public let authorHandle: String?
+    public let authorName: String?
+    /// The tweet's image / video URLs (references, not blobs — no local bytes).
+    public let media: [TweetMedia]
+    /// The card-image blob hash (the asset's own bytes), or nil when the tweet
+    /// has none — the grid then draws a text card instead.
+    public let cardImageBlobHash: String?
+
+    public init(
+        tweetID: String, text: String?, authorHandle: String?, authorName: String?,
+        media: [TweetMedia], cardImageBlobHash: String?
+    ) {
+        self.tweetID = tweetID
+        self.text = text
+        self.authorHandle = authorHandle
+        self.authorName = authorName
+        self.media = media
+        self.cardImageBlobHash = cardImageBlobHash
     }
 }
 
@@ -71,8 +102,12 @@ extension Asset {
                     imageBlobHash: blobHash))
             } ?? .unknown
         case .tweet:
-            // Modelled in C3; until then it has no render branch.
-            .unknown
+            payloadValue?.tweet.map {
+                AssetContent.tweet(TweetContent(
+                    tweetID: $0.tweetID, text: $0.text,
+                    authorHandle: $0.authorHandle, authorName: $0.authorName,
+                    media: $0.media, cardImageBlobHash: blobHash))
+            } ?? .unknown
         }
     }
 }

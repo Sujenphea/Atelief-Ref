@@ -62,9 +62,24 @@ struct AssetContentTests {
         #expect(asset(kind: .link, payload: "{}").content == .unknown)
     }
 
-    @Test("the tweet kind resolves to .unknown until C3")
-    func futureKindsUnknown() {
-        #expect(asset(kind: .tweet).content == .unknown)
+    @Test("tweet with a payload → .tweet (carrying the asset's blob as the card image)")
+    func tweetMapping() {
+        let payload = AssetPayload(tweet: TweetPayload(
+            tweetID: "123", text: "hi", authorHandle: "ava", authorName: "Ava",
+            media: [TweetMedia(url: "https://pbs.example/a.jpg", width: 4, height: 3)])).jsonString()
+        // Bare tweet: no blob → cardImageBlobHash nil.
+        #expect(asset(kind: .tweet, payload: payload).content == .tweet(TweetContent(
+            tweetID: "123", text: "hi", authorHandle: "ava", authorName: "Ava",
+            media: [TweetMedia(url: "https://pbs.example/a.jpg", width: 4, height: 3)],
+            cardImageBlobHash: nil)))
+        // Captured card image: the asset's own blob is the card.
+        #expect(asset(kind: .tweet, blobHash: "card", payload: payload).content == .tweet(TweetContent(
+            tweetID: "123", text: "hi", authorHandle: "ava", authorName: "Ava",
+            media: [TweetMedia(url: "https://pbs.example/a.jpg", width: 4, height: 3)],
+            cardImageBlobHash: "card")))
+        // No / malformed payload → unknown.
+        #expect(asset(kind: .tweet, payload: nil).content == .unknown)
+        #expect(asset(kind: .tweet, payload: "{}").content == .unknown)
     }
 
     @Test("payloadValue decodes the color; nil for a byte-backed asset")
@@ -112,6 +127,51 @@ struct ColorPayloadTests {
         let payload = AssetPayload(link: LinkPayload(
             url: "https://a.test/p", title: "T", description: "D"))
         #expect(AssetPayload(jsonString: payload.jsonString()) == payload)
+    }
+
+    @Test("a tweet AssetPayload round-trips (incl. media)")
+    func tweetPayloadRoundTrips() {
+        let payload = AssetPayload(tweet: TweetPayload(
+            tweetID: "42", text: "hello", authorHandle: "ava", authorName: "Ava",
+            media: [TweetMedia(url: "https://m.test/1.jpg", width: 8, height: 6)]))
+        #expect(AssetPayload(jsonString: payload.jsonString()) == payload)
+    }
+}
+
+@Suite("Domain: TweetPayload canonicalization (003 · C3)")
+struct TweetPayloadTests {
+
+    @Test("canonicalTweetID extracts the numeric id from a bare id or status URL", arguments: [
+        ("123456", "123456"),
+        ("  789  ", "789"),
+        ("https://x.com/ava/status/123456", "123456"),
+        ("https://twitter.com/ava/statuses/123456", "123456"),
+        ("x.com/ava/status/123456?s=20", "123456"),
+        ("https://x.com/ava/status/123456/photo/1", "123456"),
+    ])
+    func canonicalizes(input: String, expected: String) {
+        #expect(TweetPayload.canonicalTweetID(input) == expected)
+    }
+
+    @Test("canonicalTweetID rejects input with no usable id", arguments: [
+        "", "   ", "https://x.com/ava", "not a url", "https://x.com/ava/status/",
+    ])
+    func rejects(input: String) {
+        #expect(TweetPayload.canonicalTweetID(input) == nil)
+    }
+
+    @Test("the same tweet captured via x.com / twitter.com collapses to one id")
+    func equalTweetsCollapse() {
+        let a = TweetPayload.canonicalTweetID("https://x.com/ava/status/999")
+        let b = TweetPayload.canonicalTweetID("https://twitter.com/ava/statuses/999?s=20")
+        let c = TweetPayload.canonicalTweetID("999")
+        #expect(a == b)
+        #expect(b == c)
+    }
+
+    @Test("canonicalTweetURL is a deterministic permalink for the id")
+    func canonicalURLFromID() {
+        #expect(TweetPayload.canonicalTweetURL(id: "999") == "https://x.com/i/status/999")
     }
 }
 

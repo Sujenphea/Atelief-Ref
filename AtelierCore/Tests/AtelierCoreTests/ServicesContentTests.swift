@@ -208,6 +208,109 @@ struct ServicesContentTests {
         #expect(try await services.searchAssets(text: "dribbble").map(\.asset.id) == [link.id])
     }
 
+    // MARK: tweet ingest (C3)
+
+    private func twitterSource(_ url: String, handle: String? = nil) -> SourceDraft {
+        SourceDraft(platform: .twitter, originalURL: url, authorHandle: handle, capturedAt: Date())
+    }
+
+    @Test("ingesting a tweet lands a media-less asset: nil bytes, tweet-id payload + dedup_key")
+    func tweetIngest() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Threads")
+
+        let result = try await services.ingestContent(
+            .tweet(
+                tweetID: "https://x.com/ava/status/123", text: "a brass lamp",
+                authorHandle: "ava", authorName: "Ava",
+                media: [TweetMedia(url: "https://pbs.example/a.jpg", width: 4, height: 3)]),
+            from: twitterSource("https://x.com/ava/status/123", handle: "ava"), into: c.id)
+        let asset = result.asset
+
+        #expect(result.wasDeduplicated == false)
+        #expect(asset.kind == .tweet)
+        #expect(asset.blobHash == nil)
+        #expect(asset.dedupKey == "123")                // numeric id extracted
+        #expect(asset.content == .tweet(TweetContent(
+            tweetID: "123", text: "a brass lamp", authorHandle: "ava", authorName: "Ava",
+            media: [TweetMedia(url: "https://pbs.example/a.jpg", width: 4, height: 3)],
+            cardImageBlobHash: nil)))
+
+        // Provenance URL was aligned to the deterministic permalink.
+        #expect(try await services.getAsset(id: asset.id).source.originalURL
+                == "https://x.com/i/status/123")
+    }
+
+    @Test("the same tweet captured via x.com / twitter.com dedups to one asset")
+    func tweetDedup() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Threads")
+
+        let a = try await services.ingestContent(
+            .tweet(tweetID: "555", text: "one"),
+            from: twitterSource("https://x.com/ava/status/555"), into: c.id)
+        // Different URL host + tracking param, same tweet id → dedup.
+        let b = try await services.ingestContent(
+            .tweet(tweetID: "https://twitter.com/ava/statuses/555?s=20", text: "one"),
+            from: twitterSource("https://twitter.com/ava/statuses/555?s=20"), into: c.id)
+
+        #expect(b.wasDeduplicated == true)
+        #expect(a.asset.id == b.asset.id)
+        #expect(try await services.collectionItems(in: c.id).count == 1)
+    }
+
+    @Test("a tweet with no usable id is rejected (.emptyTweet)")
+    func invalidTweetIDRejected() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Threads")
+        await #expect(throws: AtelierError.emptyTweet) {
+            try await services.ingestContent(
+                .tweet(tweetID: "https://x.com/ava", text: "no id here"),
+                from: twitterSource("https://x.com/ava"), into: c.id)
+        }
+    }
+
+    @Test("a tweet with an id but no substance (no text, no media) is rejected (.emptyTweet)")
+    func emptyTweetRejected() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Threads")
+        await #expect(throws: AtelierError.emptyTweet) {
+            try await services.ingestContent(
+                .tweet(tweetID: "777", text: "   "),
+                from: twitterSource("https://x.com/ava/status/777"), into: c.id)
+        }
+    }
+
+    @Test("a media-only tweet (no text) is accepted")
+    func mediaOnlyTweetAccepted() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Threads")
+        let result = try await services.ingestContent(
+            .tweet(tweetID: "888", media: [TweetMedia(url: "https://pbs.example/x.jpg")]),
+            from: twitterSource("https://x.com/ava/status/888"), into: c.id)
+        #expect(result.asset.kind == .tweet)
+        #expect(result.asset.payloadValue?.tweet?.text == nil)
+        #expect(result.asset.payloadValue?.tweet?.media.count == 1)
+    }
+
+    @Test("a tweet is findable through searchAssets by text and by author")
+    func tweetSearch() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Threads")
+        let tweet = try await services.ingestContent(
+            .tweet(tweetID: "321", text: "an ornate brass lamp", authorHandle: "lampist"),
+            from: twitterSource("https://x.com/lampist/status/321"), into: c.id).asset
+
+        #expect(try await services.searchAssets(text: "ornate").map(\.asset.id) == [tweet.id])
+        #expect(try await services.searchAssets(text: "lampist").map(\.asset.id) == [tweet.id])
+    }
+
     @Test("deleting a media-less asset reclaims no blob (nil hash) and is clean")
     func deleteMediaLess() async throws {
         let (services, temp) = try makeServices()
