@@ -19,7 +19,23 @@ struct AtelierRefsApp: App {
             CommandGroup(after: .sidebar) {
                 BackCommand()
             }
+            CommandGroup(after: .saveItem) {
+                SnapshotCommands()
+            }
         }
+    }
+}
+
+/// File-menu backup commands (008 H3) — reach the shared model via the focused
+/// scene value the shell publishes.
+private struct SnapshotCommands: View {
+    @FocusedValue(\.ingestionModel) private var model
+
+    var body: some View {
+        Button("Snapshot Now") { model?.snapshotNow() }
+            .disabled(model?.snapshotManager == nil)
+        Button("Restore from Snapshot…") { model?.showSnapshots = true }
+            .disabled(model?.snapshotManager == nil)
     }
 }
 

@@ -114,6 +114,10 @@ final class IngestionModel: ObservableObject {
     /// Library snapshot orchestration (008 H3): daily-on-launch, pre-destructive,
     /// manual, and retention. `nil` until `bootstrap()` opens the library.
     private(set) var snapshotManager: SnapshotManager?
+    /// Presents the snapshots sheet (manual snapshot + restore).
+    @Published var showSnapshots = false
+    /// Set after a restore is staged — an alert asks the user to relaunch.
+    @Published var restoreStagedMessage: String?
 
     /// Monotonic id for ``loadContents(of:)`` so a slow read can never clobber a
     /// newer one (fast folder switch, or a mutation-triggered reload).
@@ -185,7 +189,12 @@ final class IngestionModel: ObservableObject {
             let root = try LibraryLocation.defaultRoot()
             let layout = LibraryLayout(root: root)
             let store = MediaStore(layout: layout)
-            let dbPath = layout.root.appendingPathComponent("library.sqlite").path
+            let dbURL = layout.root.appendingPathComponent("library.sqlite")
+            // A staged restore (008 H3) is applied here — before any connection
+            // opens — the only safe time to swap the live database file.
+            SnapshotManager.applyPendingRestore(
+                snapshotsDir: layout.snapshots, livePath: dbURL)
+            let dbPath = dbURL.path
             let services = try AppServices(databasePath: dbPath)
 
             // Phase 8 (16A): log a thumbnail stall — the measured trigger for the
@@ -759,6 +768,41 @@ final class IngestionModel: ObservableObject {
             let reaper = MediaReaper(store: store)
             _ = await Task.detached { reaper.reap(orphans) }.value
             return "Deleted \(Self.itemCount(assetIDs.count))."
+        }
+    }
+
+    // MARK: - Snapshots (008 H3)
+
+    /// Every snapshot on disk (newest first), for the snapshots sheet.
+    func availableSnapshots() -> [SnapshotFile] {
+        snapshotManager?.list() ?? []
+    }
+
+    /// Take a manual snapshot now; report success/failure on the shared surfaces.
+    func snapshotNow() {
+        guard let manager = snapshotManager else { return }
+        Task {
+            do {
+                _ = try await manager.snapshot(reason: .manual)
+                status = "Snapshot saved."
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
+    /// Stage `snapshot` to be restored on the next launch, then prompt the user to
+    /// relaunch. The swap itself happens at bootstrap, before the DB opens.
+    func stageRestore(_ snapshot: SnapshotFile) {
+        guard let manager = snapshotManager else { return }
+        do {
+            try manager.stageRestore(snapshot)
+            showSnapshots = false
+            restoreStagedMessage = "The snapshot will be restored the next time you "
+                + "open AtelierRefs. Quit and reopen to complete the restore — your "
+                + "current library is set aside, not deleted."
+        } catch {
+            lastError = "Couldn’t stage the restore: \(Self.message(for: error))"
         }
     }
 

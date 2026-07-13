@@ -78,4 +78,39 @@ struct SnapshotManagerTests {
         await manager.snapshotIfStale() // a fresh daily exists → no second one
         #expect(manager.list().filter { $0.reason == .daily }.count == 1)
     }
+
+    @Test("stageRestore + applyPendingRestore reverts the live DB to the snapshot")
+    func restoreRoundTrip() async throws {
+        let dbDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("restore-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dbDir) }
+        let dbURL = dbDir.appendingPathComponent("library.sqlite")
+        let snapDir = dbDir.appendingPathComponent("snapshots", isDirectory: true)
+
+        // Phase 1: "Before" → snapshot → add "After" → stage restore. Scope the
+        // services + manager so the pool closes before the file swap.
+        do {
+            let services = try AppServices(databasePath: dbURL.path)
+            _ = try await services.createCollection(name: "Before")
+            let manager = SnapshotManager(services: services, directory: snapDir)
+            let snapURL = try await manager.snapshot(reason: .manual)
+            _ = try await services.createCollection(name: "After")
+            try manager.stageRestore(SnapshotFile(url: snapURL)!)
+            #expect(manager.hasPendingRestore())
+        }
+
+        // Phase 2 (simulated relaunch): apply the staged restore before reopening.
+        SnapshotManager.applyPendingRestore(snapshotsDir: snapDir, livePath: dbURL)
+
+        let reopened = try AppServices(databasePath: dbURL.path)
+        let names = Set(try await reopened.listCollections().map(\.name))
+        #expect(names.contains("Before"))
+        #expect(!names.contains("After")) // reverted to the pre-mutation snapshot
+        // The marker is consumed, and the displaced live DB is preserved aside.
+        #expect(!FileManager.default.fileExists(
+            atPath: snapDir.appendingPathComponent(".pending-restore").path))
+        let aside = (try? FileManager.default.contentsOfDirectory(atPath: dbDir.path)) ?? []
+        #expect(aside.contains { $0.hasPrefix("library.corrupt-") })
+    }
 }

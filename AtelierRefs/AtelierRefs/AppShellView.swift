@@ -30,8 +30,22 @@ struct AppShellView: View {
         }
         .toolbar { appToolbar }
         .focusedSceneValue(\.navModel, nav)
+        .focusedSceneValue(\.ingestionModel, model)
         .sheet(isPresented: $showSweeps) {
             sweepsSheet
+        }
+        .sheet(isPresented: $model.showSnapshots) {
+            SnapshotsSheet(model: model)
+        }
+        .alert(
+            "Restore staged",
+            isPresented: Binding(
+                get: { model.restoreStagedMessage != nil },
+                set: { if !$0 { model.restoreStagedMessage = nil } })
+        ) {
+            Button("OK", role: .cancel) { model.restoreStagedMessage = nil }
+        } message: {
+            Text(model.restoreStagedMessage ?? "")
         }
         .task { await model.refreshSweeps() }
     }
@@ -147,9 +161,19 @@ private struct NavModelFocusedKey: FocusedValueKey {
     typealias Value = NavModel
 }
 
+private struct IngestionModelFocusedKey: FocusedValueKey {
+    typealias Value = IngestionModel
+}
+
 extension FocusedValues {
     var navModel: NavModel? {
         get { self[NavModelFocusedKey.self] }
         set { self[NavModelFocusedKey.self] = newValue }
+    }
+
+    /// The shared model, so menu commands (Snapshot Now / Restore…) reach it.
+    var ingestionModel: IngestionModel? {
+        get { self[IngestionModelFocusedKey.self] }
+        set { self[IngestionModelFocusedKey.self] = newValue }
     }
 }

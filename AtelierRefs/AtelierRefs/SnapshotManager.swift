@@ -101,4 +101,80 @@ final class SnapshotManager {
             }
         }
     }
+
+    // MARK: - Restore (008 H3)
+
+    /// The marker file that requests a restore on the next launch.
+    private var restoreMarker: URL { directory.appendingPathComponent(".pending-restore") }
+
+    /// Whether a restore is staged for the next launch.
+    func hasPendingRestore() -> Bool {
+        FileManager.default.fileExists(atPath: restoreMarker.path)
+    }
+
+    /// Validate `snapshot` and stage it to be restored on the next launch (writes
+    /// a marker naming it). Throws `.unhealthySnapshot` if it fails integrity. The
+    /// actual file swap happens at bootstrap, before the pool opens — the only
+    /// safe time to move the live database (no writer yet), which is why restore
+    /// is deferred to relaunch rather than torn down live.
+    func stageRestore(_ snapshot: SnapshotFile) throws {
+        guard try AppServices.isHealthy(databaseFileAt: snapshot.url) else {
+            throw SnapshotError.unhealthySnapshot
+        }
+        try snapshot.url.lastPathComponent.write(
+            to: restoreMarker, atomically: true, encoding: .utf8)
+    }
+
+    /// At bootstrap, BEFORE `AppServices` opens: if a restore is staged, install
+    /// the named snapshot as the live database. The live DB (+ sidecars) is moved
+    /// aside as `library.corrupt-<epoch>.sqlite` — **never destroyed** — then the
+    /// snapshot (+ any sidecars) is copied into place. Best-effort and safe: a
+    /// bad/missing marker is cleared, and a failure mid-swap rolls the live DB
+    /// back so the app still opens.
+    static func applyPendingRestore(snapshotsDir: URL, livePath: URL) {
+        let fm = FileManager.default
+        let marker = snapshotsDir.appendingPathComponent(".pending-restore")
+        guard let raw = try? String(contentsOf: marker, encoding: .utf8) else { return }
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let snapshot = snapshotsDir.appendingPathComponent(name)
+        guard !name.isEmpty, fm.fileExists(atPath: snapshot.path),
+              (try? AppServices.isHealthy(databaseFileAt: snapshot)) == true
+        else {
+            try? fm.removeItem(at: marker)
+            return
+        }
+
+        let stamp = String(Int(Date().timeIntervalSince1970))
+        let aside = livePath.deletingLastPathComponent()
+            .appendingPathComponent("library.corrupt-\(stamp).sqlite")
+        do {
+            if fm.fileExists(atPath: livePath.path) {
+                try fm.moveItem(at: livePath, to: aside)
+            }
+            for s in ["-wal", "-shm"] {
+                if fm.fileExists(atPath: livePath.path + s) {
+                    try? fm.moveItem(atPath: livePath.path + s, toPath: aside.path + s)
+                }
+            }
+            try fm.copyItem(at: snapshot, to: livePath)
+            for s in ["-wal", "-shm"] { // a pre-migration snapshot may carry these
+                if fm.fileExists(atPath: snapshot.path + s) {
+                    try? fm.copyItem(atPath: snapshot.path + s, toPath: livePath.path + s)
+                }
+            }
+            try? fm.removeItem(at: marker)
+        } catch {
+            // Roll the live DB back if we moved it aside but couldn't install.
+            if !fm.fileExists(atPath: livePath.path), fm.fileExists(atPath: aside.path) {
+                try? fm.moveItem(at: aside, to: livePath)
+            }
+            try? fm.removeItem(at: marker)
+        }
+    }
+}
+
+/// A snapshot-manager failure surfaced to the user.
+enum SnapshotError: Error, Equatable {
+    /// The chosen snapshot failed its integrity check and won't be restored.
+    case unhealthySnapshot
 }
