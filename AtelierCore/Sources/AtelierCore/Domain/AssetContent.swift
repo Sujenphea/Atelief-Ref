@@ -21,9 +21,31 @@ public enum AssetContent: Sendable, Equatable, Hashable {
     case video(blobHash: String)
     /// A media-less color swatch; carries its canonical `#rrggbb` hex.
     case color(hex: String)
+    /// A media-less saved link (003 · C2); carries its URL + best-effort
+    /// metadata, plus an optional og:image blob hash (nil until resolved).
+    case link(LinkContent)
     /// The kind's backing data is missing/malformed, or the kind isn't rendered
     /// yet — a view shows a neutral placeholder rather than crashing.
     case unknown
+}
+
+/// The render-ready projection of a `link` asset (003 · C2): the payload's URL /
+/// title / description plus the asset's own `blobHash` as the optional og:image
+/// thumbnail (present once a resolver stores one; nil for a bare paste).
+public struct LinkContent: Sendable, Equatable, Hashable {
+    public let url: String
+    public let title: String?
+    public let description: String?
+    /// The og:image blob hash (the asset's own bytes), or nil when the link has
+    /// no thumbnail — the grid then draws a link card instead.
+    public let imageBlobHash: String?
+
+    public init(url: String, title: String?, description: String?, imageBlobHash: String?) {
+        self.url = url
+        self.title = title
+        self.description = description
+        self.imageBlobHash = imageBlobHash
+    }
 }
 
 extension Asset {
@@ -42,8 +64,14 @@ extension Asset {
             blobHash.map(AssetContent.video) ?? .unknown
         case .color:
             payloadValue?.color.map { AssetContent.color(hex: $0.hex) } ?? .unknown
-        case .link, .tweet:
-            // Modelled in C2 / C3; until then they have no render branch.
+        case .link:
+            payloadValue?.link.map {
+                AssetContent.link(LinkContent(
+                    url: $0.url, title: $0.title, description: $0.description,
+                    imageBlobHash: blobHash))
+            } ?? .unknown
+        case .tweet:
+            // Modelled in C3; until then it has no render branch.
             .unknown
         }
     }

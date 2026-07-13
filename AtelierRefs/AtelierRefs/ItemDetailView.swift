@@ -163,6 +163,9 @@ struct ItemDetailView: View {
                 }
             case let .color(hex):
                 ColorDetailView(hex: hex)
+            case let .link(link):
+                // With a resolved og:image, show it above the card; else just the card.
+                LinkDetailView(link: link, image: fullImage ?? previewImage)
             case .unknown:
                 ContentUnavailableView(
                     "No preview", systemImage: "questionmark.square.dashed",
@@ -184,16 +187,77 @@ struct ItemDetailView: View {
         switch asset.kind {
         case .video:
             player = AVPlayer(url: url)
-        case .image:
+        case .image, .link:
+            // A link may carry a resolved og:image blob; decode it like an image
+            // (a bare link has no blobURL, so this arm is simply skipped).
             let decoded = await Task.detached(priority: .userInitiated) {
                 NSImage(contentsOf: url)
             }.value
             // `.task(id:)` cancels this on navigation — don't publish a stale
             // decode over the item the user moved to.
             if !Task.isCancelled { fullImage = decoded }
-        case .tweet, .link, .color:
+        case .tweet, .color:
             break  // media-less: the media area draws these from content.
         }
+    }
+}
+
+/// The detail-page media view for a media-less `link` asset (003 · C2): an
+/// optional og:image (once resolved) over a card of title / host / description,
+/// with a prominent Open Link action (SwiftUI `Link`, no closure plumbing) and
+/// the full URL selectable beneath.
+private struct LinkDetailView: View {
+    let link: LinkContent
+    /// The resolved og:image, if the link has one decoded; nil for a bare link.
+    var image: NSImage?
+
+    private var host: String? { URL(string: link.url)?.host }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxHeight: 320)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else {
+                Image(systemName: "link")
+                    .font(.system(size: 48))
+                    .foregroundStyle(.secondary)
+            }
+
+            if let title = link.title, !title.isEmpty {
+                Text(title)
+                    .font(.title2).bold()
+                    .multilineTextAlignment(.center)
+            }
+            if let host {
+                Text(host).font(.callout).foregroundStyle(.secondary)
+            }
+            if let description = link.description, !description.isEmpty {
+                Text(description)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+            }
+            if let url = URL(string: link.url) {
+                Link(destination: url) {
+                    Label("Open Link", systemImage: "safari")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+            Text(link.url)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .textSelection(.enabled)
+                .lineLimit(2)
+                .truncationMode(.middle)
+        }
+        .padding(40)
+        .frame(maxWidth: 520)
     }
 }
 

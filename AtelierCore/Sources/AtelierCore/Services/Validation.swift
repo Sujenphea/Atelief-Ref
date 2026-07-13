@@ -88,8 +88,8 @@ enum Validation {
     /// checks.
     static func contentDraft(_ draft: AssetContentDraft) throws -> AssetContentDraft {
         switch draft.kind {
-        case .image, .video, .link, .tweet:
-            // Byte kinds use the blob `ingest` path; link/tweet arrive in C2/C3.
+        case .image, .video, .tweet:
+            // Byte kinds use the blob `ingest` path; tweet arrives in C3.
             throw AtelierError.invalidContentKind
         case .color:
             guard let color = draft.payload.color else { throw AtelierError.missingPayload }
@@ -101,6 +101,22 @@ enum Validation {
                 payload: AssetPayload(color: ColorPayload(hex: hex)),
                 dedupKey: hex,
                 searchText: hex)
+        case .link:
+            guard let link = draft.payload.link else { throw AtelierError.missingPayload }
+            let url = try linkURL(link.url)
+            // Canonical URL is the dedup key; the FTS text is title + description
+            // + host so a link is findable by name or domain (003 · C2).
+            let host = URLComponents(string: url)?.host ?? ""
+            let searchText = [link.title, link.description, host]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            return AssetContentDraft(
+                kind: .link,
+                payload: AssetPayload(link: LinkPayload(
+                    url: url, title: link.title, description: link.description)),
+                dedupKey: url,
+                searchText: searchText.isEmpty ? nil : searchText)
         }
     }
 
@@ -111,6 +127,16 @@ enum Validation {
     static func colorHex(_ raw: String) throws -> String {
         guard let canonical = ColorPayload.canonicalHex(raw) else {
             throw AtelierError.invalidColor
+        }
+        return canonical
+    }
+
+    /// Canonicalize a user-typed URL (003 · C2), or throw `.invalidLinkURL`.
+    /// Prepends `https://` when scheme-less; the canonical form is the dedup key.
+    @discardableResult
+    static func linkURL(_ raw: String) throws -> String {
+        guard let canonical = LinkPayload.canonicalURL(raw) else {
+            throw AtelierError.invalidLinkURL
         }
         return canonical
     }

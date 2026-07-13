@@ -137,6 +137,77 @@ struct ServicesContentTests {
         #expect(hits == [color.id])
     }
 
+    // MARK: link ingest (C2)
+
+    private func webSource(_ url: String) -> SourceDraft {
+        SourceDraft(platform: .web, originalURL: url, capturedAt: Date())
+    }
+
+    @Test("ingesting a link lands a media-less asset: nil bytes, canonical URL payload + dedup_key")
+    func linkIngest() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Reading")
+
+        let result = try await services.ingestContent(
+            .link(url: "Example.com/Post/", title: "A Post"),
+            from: webSource("Example.com/Post/"), into: c.id)
+        let asset = result.asset
+
+        #expect(asset.kind == .link)
+        #expect(asset.blobHash == nil)
+        #expect(asset.dedupKey == "https://example.com/Post")   // canonicalized
+        #expect(asset.content == .link(LinkContent(
+            url: "https://example.com/Post", title: "A Post",
+            description: nil, imageBlobHash: nil)))
+
+        // Provenance URL was aligned to the canonical form.
+        #expect(try await services.getAsset(id: asset.id).source.originalURL
+                == "https://example.com/Post")
+    }
+
+    @Test("the same page written differently dedups to one link (canonical URL)")
+    func linkDedup() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Reading")
+
+        let a = try await services.ingestContent(
+            .link(url: "https://example.com/x"), from: webSource("https://example.com/x"), into: c.id)
+        // Trailing slash + tracking param → same canonical URL.
+        let b = try await services.ingestContent(
+            .link(url: "https://example.com/x/?utm_source=tw"),
+            from: webSource("https://example.com/x/?utm_source=tw"), into: c.id)
+
+        #expect(b.wasDeduplicated == true)
+        #expect(a.asset.id == b.asset.id)
+        #expect(try await services.collectionItems(in: c.id).count == 1)
+    }
+
+    @Test("a non-http(s) link URL is rejected (.invalidLinkURL)")
+    func invalidLinkRejected() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Reading")
+        await #expect(throws: AtelierError.invalidLinkURL) {
+            try await services.ingestContent(
+                .link(url: "ftp://nope"), from: webSource("ftp://nope"), into: c.id)
+        }
+    }
+
+    @Test("a link is findable through searchAssets by title and host")
+    func linkSearch() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Reading")
+        let link = try await services.ingestContent(
+            .link(url: "https://dribbble.com/shots/xyz", title: "Brass lamp study"),
+            from: webSource("https://dribbble.com/shots/xyz"), into: c.id).asset
+
+        #expect(try await services.searchAssets(text: "brass").map(\.asset.id) == [link.id])
+        #expect(try await services.searchAssets(text: "dribbble").map(\.asset.id) == [link.id])
+    }
+
     @Test("deleting a media-less asset reclaims no blob (nil hash) and is clean")
     func deleteMediaLess() async throws {
         let (services, temp) = try makeServices()

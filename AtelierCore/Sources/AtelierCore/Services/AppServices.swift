@@ -338,7 +338,19 @@ public final class AppServices: Sendable {
     ) async throws -> IngestResult {
         // 1. validate + normalize (fail fast, before opening the write).
         let normalized = try Validation.contentDraft(draft)
-        try Validation.originalURL(source.originalURL, platform: source.platform)
+        // For a link, provenance IS the canonical URL — align the source's
+        // `original_url` with the dedup key so two pastes of the same page
+        // (differing only by trailing slash / tracking params) dedup (003 · C2).
+        // A `let` so the @Sendable write closure can capture it.
+        let effectiveSource: SourceDraft = {
+            guard normalized.kind == .link, let canonical = normalized.dedupKey else {
+                return source
+            }
+            var s = source
+            s.originalURL = canonical
+            return s
+        }()
+        try Validation.originalURL(effectiveSource.originalURL, platform: effectiveSource.platform)
         if let placement {
             try Validation.canvasPlacement(
                 x: placement.x, y: placement.y, w: placement.w, h: placement.h)
@@ -354,15 +366,15 @@ public final class AppServices: Sendable {
             let resolvedAsset: Asset
             let wasDeduplicated: Bool
             if let existing = try Self.findDuplicateContent(
-                db, kind: normalized.kind, dedupKey: normalized.dedupKey, source: source) {
+                db, kind: normalized.kind, dedupKey: normalized.dedupKey, source: effectiveSource) {
                 resolvedAsset = existing
                 wasDeduplicated = true
             } else {
                 let newSource = Source(
-                    id: UUID(), platform: source.platform,
-                    originalURL: source.originalURL, authorHandle: source.authorHandle,
-                    authorName: source.authorName, title: source.title,
-                    capturedAt: source.capturedAt, rawMetadata: source.rawMetadata)
+                    id: UUID(), platform: effectiveSource.platform,
+                    originalURL: effectiveSource.originalURL, authorHandle: effectiveSource.authorHandle,
+                    authorName: effectiveSource.authorName, title: effectiveSource.title,
+                    capturedAt: effectiveSource.capturedAt, rawMetadata: effectiveSource.rawMetadata)
                 try newSource.insert(db)
                 // Media-less: byte columns nil; content in `payload`; born
                 // `.downloaded` (its substance is fully present).

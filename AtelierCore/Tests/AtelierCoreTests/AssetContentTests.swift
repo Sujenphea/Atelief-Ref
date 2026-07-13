@@ -45,9 +45,25 @@ struct AssetContentTests {
         #expect(asset(kind: .color, payload: "not json").content == .unknown)
     }
 
-    @Test("not-yet-modelled kinds (link/tweet) resolve to .unknown until C2/C3")
+    @Test("link with a URL payload → .link (carrying the asset's blob as og:image)")
+    func linkMapping() {
+        let payload = AssetPayload(link: LinkPayload(
+            url: "https://example.com/x", title: "Ex", description: "d")).jsonString()
+        // Bare link: no blob → imageBlobHash nil.
+        let bare = asset(kind: .link, payload: payload).content
+        #expect(bare == .link(LinkContent(
+            url: "https://example.com/x", title: "Ex", description: "d", imageBlobHash: nil)))
+        // Resolved link: the asset's own blob is the og:image.
+        let resolved = asset(kind: .link, blobHash: "ogimg", payload: payload).content
+        #expect(resolved == .link(LinkContent(
+            url: "https://example.com/x", title: "Ex", description: "d", imageBlobHash: "ogimg")))
+        // No payload → unknown.
+        #expect(asset(kind: .link, payload: nil).content == .unknown)
+        #expect(asset(kind: .link, payload: "{}").content == .unknown)
+    }
+
+    @Test("the tweet kind resolves to .unknown until C3")
     func futureKindsUnknown() {
-        #expect(asset(kind: .link).content == .unknown)
         #expect(asset(kind: .tweet).content == .unknown)
     }
 
@@ -89,5 +105,52 @@ struct ColorPayloadTests {
         // A nil / malformed string decodes to nil.
         #expect(AssetPayload(jsonString: nil) == nil)
         #expect(AssetPayload(jsonString: "{{{") == nil)
+    }
+
+    @Test("a link AssetPayload round-trips")
+    func linkPayloadRoundTrips() {
+        let payload = AssetPayload(link: LinkPayload(
+            url: "https://a.test/p", title: "T", description: "D"))
+        #expect(AssetPayload(jsonString: payload.jsonString()) == payload)
+    }
+}
+
+@Suite("Domain: LinkPayload canonicalization (003 · C2)")
+struct LinkPayloadTests {
+
+    @Test("canonicalURL normalizes scheme, host case, fragment, default port, trailing slash", arguments: [
+        ("example.com", "https://example.com"),
+        ("HTTP://Example.COM/Path/", "http://example.com/Path"),
+        ("https://example.com:443/x", "https://example.com/x"),
+        ("http://example.com:80/x", "http://example.com/x"),
+        ("https://example.com/a#section", "https://example.com/a"),
+        ("https://example.com/", "https://example.com"),
+    ])
+    func canonicalizes(input: String, expected: String) {
+        #expect(LinkPayload.canonicalURL(input) == expected)
+    }
+
+    @Test("canonicalURL strips tracking params but keeps meaningful ones")
+    func stripsTracking() {
+        #expect(LinkPayload.canonicalURL("https://x.test/p?utm_source=tw&utm_medium=x")
+                == "https://x.test/p")
+        #expect(LinkPayload.canonicalURL("https://x.test/p?id=7&fbclid=abc")
+                == "https://x.test/p?id=7")
+    }
+
+    @Test("canonicalURL rejects non-http(s) and junk", arguments: [
+        "", "   ", "ftp://x.test/a", "file:///etc/passwd", "https://", "not a url with spaces",
+    ])
+    func rejects(input: String) {
+        #expect(LinkPayload.canonicalURL(input) == nil)
+    }
+
+    @Test("equal pages written differently canonicalize identically (dedup key)")
+    func equalPagesCollapse() {
+        let a = LinkPayload.canonicalURL("example.com/post/")
+        let b = LinkPayload.canonicalURL("https://example.com/post")
+        let c = LinkPayload.canonicalURL("https://EXAMPLE.com/post?utm_campaign=z#top")
+        #expect(a == b)
+        #expect(b == c)
     }
 }

@@ -52,6 +52,8 @@ public enum AtelierError: Error, Equatable {
     /// A `.color` content draft's hex was not a valid 3- or 6-digit hex color
     /// (003 · C1).
     case invalidColor
+    /// A `.link` content draft's URL was not a usable http(s) URL (003 · C2).
+    case invalidLinkURL
     /// A database constraint (FK / NOT NULL / UNIQUE) was violated — mapped from
     /// GRDB so the raw `DatabaseError` never leaks (A2/C7).
     case constraintViolation

@@ -37,6 +37,28 @@ C0 (core seam) + C1 (color).
   disabled for media-less.
 - Dedup by canonical hex.
 
+## C2a — link, structural (shipped, changelog 111)
+
+- `LinkPayload` (url / title / description) + `canonicalURL` (moderate
+  normalization: scheme/host lowercase, drop fragment/default-port/trailing-slash,
+  strip `utm_*`/`fbclid`/`gclid`). `AssetContent.link(LinkContent)` carries the
+  asset's blob as an optional og:image.
+- `ingestContent` for links: canonical URL is the dedup key **and** the
+  provenance `original_url` (aligned in the funnel); `searchText` = title +
+  description + host. New error `.invalidLinkURL`.
+- UI: grid `LinkCardTile`, detail `LinkDetailView` (Open Link), `AddLinkButton`
+  toolbar → `IngestionModel.addLink`.
+- **No network** — title/description/og:image enrichment is deferred to C2b (=
+  001's `PageResolver`), which doesn't exist yet. A bare paste still saves a
+  link keyed by its URL.
+
+### Open Q2 resolved (link URL canonicalization)
+
+**Moderate**: normalize scheme/host/fragment/port/trailing-slash and strip a
+fixed tracking-param set; leave other query params and path case untouched.
+Rationale: aggressive stripping (path case, all query) risks merging distinct
+pages; this catches the common share-link duplicates without that risk.
+
 ## Deviations from the roadmap doc
 
 - **No `thumbnail_hash` column** (as the doc's v1 recommendation): a color has no
@@ -48,9 +70,9 @@ C0 (core seam) + C1 (color).
 
 ## Remaining
 
-- **C2 — link.** Depends on 001's `PageResolver` (og:image → blob, title /
-  description / favicon → payload). Extension `web` captures become links. URL
-  canonicalization policy for `dedupKey` is an open question.
+- **C2b — link resolver enrichment** (= 001's `PageResolver`, not yet built): a
+  SSRF-hardened page fetch fills title / description / og:image, upgrading the
+  bare link card to a rich one. Extension `web` captures become links.
 - **C3 — tweet.** Richest payload. Resolve the media-children modeling question
   first (payload `media[]` vs real asset children via `parent_asset_id`).
 - Board (canvas/space) rendering of media-less kinds is a defensive placeholder

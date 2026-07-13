@@ -80,9 +80,59 @@ struct AssetContentThumbnail: View {
             AsyncThumbnail(hash: hash, url: url, isSelected: isSelected, cornerRadius: cornerRadius)
         case let .color(hex):
             ColorSwatchTile(hex: hex, isSelected: isSelected, cornerRadius: cornerRadius)
+        case let .link(link):
+            // With a resolved og:image (blob) show the thumbnail; otherwise a card.
+            if let hash = link.imageBlobHash {
+                AsyncThumbnail(hash: hash, url: url, isSelected: isSelected, cornerRadius: cornerRadius)
+            } else {
+                LinkCardTile(link: link, isSelected: isSelected, cornerRadius: cornerRadius)
+            }
         case .unknown:
             ThumbnailTile(image: nil, isSelected: isSelected, cornerRadius: cornerRadius)
         }
+    }
+}
+
+/// A square grid card for a media-less `link` asset (003 · C2) with no og:image
+/// yet: a globe glyph over the link's title (or host), so a saved link reads as
+/// a link. Replaced by the og:image thumbnail once a resolver stores one.
+struct LinkCardTile: View {
+    let link: LinkContent
+    var isSelected: Bool = false
+    var cornerRadius: CGFloat = 8
+
+    /// The card's heading: the title if known, else the host, else the raw URL.
+    private var heading: String {
+        if let title = link.title, !title.isEmpty { return title }
+        if let host = URL(string: link.url)?.host { return host }
+        return link.url
+    }
+
+    var body: some View {
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                VStack(spacing: 8) {
+                    Image(systemName: "link")
+                        .font(.system(size: 26))
+                        .foregroundStyle(.secondary)
+                    Text(heading)
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(10)
+            }
+            .background(Color(.controlBackgroundColor).opacity(0.6))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .strokeBorder(
+                        isSelected ? Color.accentColor : Color.primary.opacity(0.1),
+                        lineWidth: isSelected ? 3 : 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
     }
 }
 

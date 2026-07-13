@@ -47,19 +47,79 @@ public struct ColorPayload: Codable, Sendable, Equatable, Hashable {
     }
 }
 
+/// A `link` asset's substance (003 · C2). The canonical URL is the identity (and
+/// dedup key); `title` / `description` are best-effort metadata — nil until a
+/// page resolver (001) enriches them, so a bare paste still saves a usable link.
+public struct LinkPayload: Codable, Sendable, Equatable, Hashable {
+    /// Canonical URL (see ``LinkPayload/canonicalURL(_:)``) — also the dedup key.
+    public var url: String
+    /// Page title (og:title / `<title>`); nil until resolved.
+    public var title: String?
+    /// Short description (og:description / meta description); nil until resolved.
+    public var description: String?
+
+    public init(url: String, title: String? = nil, description: String? = nil) {
+        self.url = url
+        self.title = title
+        self.description = description
+    }
+
+    /// Normalize a user-typed URL to a canonical form for dedup, or `nil` if it
+    /// isn't a usable http(s) URL. **Moderate** canonicalization (003 · open Q2):
+    /// prepend `https://` when scheme-less, lowercase scheme + host, drop the
+    /// fragment and default port, strip a trailing slash, and remove common
+    /// tracking params (`utm_*`, `fbclid`, `gclid`, …). Deliberately does NOT
+    /// touch other query params or the path case — over-stripping would merge
+    /// genuinely-distinct pages.
+    public static func canonicalURL(_ raw: String) -> String? {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        if !s.contains("://") { s = "https://" + s }
+        guard var comps = URLComponents(string: s),
+              let scheme = comps.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = comps.host, !host.isEmpty
+        else { return nil }
+        comps.scheme = scheme
+        comps.host = host.lowercased()
+        comps.fragment = nil
+        if (scheme == "http" && comps.port == 80) || (scheme == "https" && comps.port == 443) {
+            comps.port = nil
+        }
+        if let items = comps.queryItems {
+            let tracking: Set<String> = [
+                "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+                "fbclid", "gclid", "mc_cid", "mc_eid", "ref_src",
+            ]
+            let kept = items.filter { !tracking.contains($0.name.lowercased()) }
+            comps.queryItems = kept.isEmpty ? nil : kept
+        }
+        // Normalize a trailing slash — incl. the root "/", so `example.com` and
+        // `example.com/` share one dedup key.
+        if comps.path == "/" {
+            comps.path = ""
+        } else if comps.path.hasSuffix("/") {
+            comps.path = String(comps.path.dropLast())
+        }
+        return comps.string
+    }
+}
+
 /// The media-less content carrier for an ``Asset`` (003 · O1). Exactly the
 /// sub-payload for the asset's ``AssetKind`` is populated; the rest are nil.
 /// Stored as compact JSON TEXT in `asset.payload`.
 public struct AssetPayload: Codable, Sendable, Equatable, Hashable {
     /// Set iff `kind == .color`.
     public var color: ColorPayload?
+    /// Set iff `kind == .link` (003 · C2).
+    public var link: LinkPayload?
 
-    // Future kinds (C2/C3) add their sub-payloads here — additive:
-    //   public var link: LinkPayload?
+    // Future kinds (C3) add their sub-payloads here — additive:
     //   public var tweet: TweetPayload?
 
-    public init(color: ColorPayload? = nil) {
+    public init(color: ColorPayload? = nil, link: LinkPayload? = nil) {
         self.color = color
+        self.link = link
     }
 
     /// Encode to a compact JSON string for the `payload` TEXT column, or `nil`

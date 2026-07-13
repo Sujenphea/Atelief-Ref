@@ -1134,6 +1134,22 @@ final class IngestionModel: ObservableObject {
         }
     }
 
+    /// Add a link item (003 · C2) to the current folder from a user-typed URL.
+    /// Media-less, so it skips the blob pipeline and goes straight through
+    /// `ingestContent` with `.web` provenance; the funnel canonicalizes the URL
+    /// (that's the dedup key) and rejects a non-http(s) one (`.invalidLinkURL`)
+    /// into ``lastError``. Title/description stay nil until a page resolver (001)
+    /// enriches them. Reloads the folder on success (`perform`).
+    func addLink(url: String) {
+        let folder = selectedFolderID
+        perform { services in
+            _ = try await services.ingestContent(
+                .link(url: url),
+                from: SourceDraft(platform: .web, originalURL: url, capturedAt: Date()),
+                into: folder)
+        }
+    }
+
     /// Report a drop the app couldn't read at all (no image bytes, no file, no
     /// downloadable image URL) — no more silent no-op (backlog B1).
     func reportUnreadableDrop() {

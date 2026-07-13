@@ -55,6 +55,7 @@ struct CollectionView: View {
         .toolbar {
             ToolbarItem { sortMenu }
             ToolbarItem { AddColorButton { model.addColor(hex: $0) } }
+            ToolbarItem { AddLinkButton { model.addLink(url: $0) } }
             ToolbarItem {
                 Button {
                     Task {

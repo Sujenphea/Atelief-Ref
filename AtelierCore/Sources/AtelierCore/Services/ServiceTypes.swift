@@ -81,6 +81,17 @@ public struct AssetContentDraft: Sendable, Equatable {
     public static func color(hex: String) -> AssetContentDraft {
         AssetContentDraft(kind: .color, payload: AssetPayload(color: ColorPayload(hex: hex)))
     }
+
+    /// A `link` content draft from a user-typed URL (+ optional metadata). Not
+    /// canonicalized here — the funnel's ``Validation`` normalizes the URL and
+    /// rejects a non-http(s) one (`.invalidLinkURL`); this only shapes the payload.
+    public static func link(
+        url: String, title: String? = nil, description: String? = nil
+    ) -> AssetContentDraft {
+        AssetContentDraft(
+            kind: .link,
+            payload: AssetPayload(link: LinkPayload(url: url, title: title, description: description)))
+    }
 }
 
 /// The caller-supplied provenance of an asset. Carries `capturedAt` (a
