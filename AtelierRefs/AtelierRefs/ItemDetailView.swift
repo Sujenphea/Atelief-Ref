@@ -181,6 +181,7 @@ private struct DetailSidebar: View {
             VStack(alignment: .leading, spacing: 16) {
                 MetadataSection(detail: detail)
                 ProvenanceSection(detail: detail)
+                TagsSection(model: model, detail: detail)
                 ActionsSection(model: model, detail: detail)
             }
             .padding()
@@ -298,6 +299,116 @@ private struct ActionsSection: View {
             }
         }
         .controlSize(.large)
+    }
+}
+
+/// The item's tags as removable chips plus an add field — the app's first tags
+/// surface. User vs agent tags are visually distinguished (agent tags carry a
+/// sparkle + tint) so agent-written organization stays reviewable.
+private struct TagsSection: View {
+    @ObservedObject var model: IngestionModel
+    let detail: CollectionItemDetail
+    @State private var draft = ""
+
+    var body: some View {
+        DetailSection("Tags") {
+            if !model.selectedTags.isEmpty {
+                TagFlowLayout(spacing: 6) {
+                    ForEach(model.selectedTags) { tag in
+                        TagChip(tag: tag) { model.removeTag(tag) }
+                    }
+                }
+            }
+            TextField("Add tag…", text: $draft)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(commitDraft)
+        }
+    }
+
+    /// Commit the field on Return; the funnel trims + validates, so we only guard
+    /// the trivially-empty case here and clear on submit.
+    private func commitDraft() {
+        let name = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        model.addTag(name)
+        draft = ""
+    }
+}
+
+/// A single tag pill with a remove button.
+private struct TagChip: View {
+    let tag: Tag
+    let onRemove: () -> Void
+
+    private var isAgent: Bool { tag.source == .agent }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if isAgent {
+                Image(systemName: "sparkles").font(.caption2)
+            }
+            Text(tag.name).font(.callout)
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill").font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Remove tag")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(
+            (isAgent ? Color.purple : Color.secondary).opacity(0.15), in: Capsule())
+    }
+}
+
+/// A minimal left-to-right flow layout that wraps chips onto new rows when they
+/// exceed the available width (the sidebar's fixed 300pt column).
+private struct TagFlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(
+        proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+    ) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var widest: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth, x > 0 {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return CGSize(width: min(widest, maxWidth), height: y + rowHeight)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews,
+        cache: inout ()
+    ) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > bounds.maxX, x > bounds.minX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(
+                at: CGPoint(x: x, y: y), anchor: .topLeading,
+                proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }
 

@@ -71,6 +71,10 @@ final class IngestionModel: ObservableObject {
     /// The selected item's large (1280-tier) preview, loaded OFF-MAIN; `nil`
     /// while loading, when nothing is selected, or if the tier can't be decoded.
     @Published private(set) var previewImage: NSImage?
+    /// The selected item's tags (name-ordered), for the detail page's tags editor.
+    /// Reloaded on selection change and after every add/remove. Empty when nothing
+    /// is selected or the item has no tags.
+    @Published private(set) var selectedTags: [Tag] = []
 
     // MARK: - Import / status
 
@@ -527,12 +531,14 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Selection + inspector
 
-    /// Select `detail` (or clear with `nil`) and load its preview off-main.
+    /// Select `detail` (or clear with `nil`) and load its preview + tags off-main.
     func select(_ detail: CollectionItemDetail?) {
         selectedItemID = detail?.item.id
         previewImage = nil
+        selectedTags = []
         guard let detail else { return }
         loadPreview(for: detail)
+        loadTags(for: detail.asset.id)
     }
 
     /// Load the large (1280-tier) thumbnail for `detail` off-main, then publish
@@ -558,6 +564,62 @@ final class IngestionModel: ObservableObject {
         guard let store else { return nil }
         let ext = ImageMetadata.fileExtension(forMIMEType: detail.asset.mimeType)
         return store.blobURL(hash: detail.asset.blobHash, fileExtension: ext)
+    }
+
+    // MARK: - Tags (detail page)
+
+    /// Load `assetID`'s tags off-main, publishing only if it's still the current
+    /// selection (guards rapid re-selection, mirroring `loadPreview`).
+    private func loadTags(for assetID: UUID) {
+        guard let services else { return }
+        Task {
+            do {
+                let tags = try await services.tags(for: assetID)
+                guard selectedItemID != nil,
+                      selectedItem?.asset.id == assetID else { return }
+                selectedTags = tags
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
+    /// Apply a user tag to the selected item, then refresh the chips. Empty /
+    /// whitespace names are rejected inside the funnel (`Validation.tagName`) and
+    /// surface via ``lastError``; a duplicate is idempotent (no second chip).
+    func addTag(_ name: String) {
+        guard let services, let detail = selectedItem else { return }
+        let assetID = detail.asset.id
+        Task {
+            do {
+                try await services.applyTag(name, to: assetID, source: .user)
+                reloadTagsIfCurrent(assetID)
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
+    /// Remove `tag` from the selected item, then refresh the chips. Idempotent —
+    /// a no-op if the link is already gone.
+    func removeTag(_ tag: Tag) {
+        guard let services, let detail = selectedItem else { return }
+        let assetID = detail.asset.id
+        Task {
+            do {
+                try await services.removeTag(tag.name, from: assetID, source: tag.source)
+                reloadTagsIfCurrent(assetID)
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
+    /// Reload the tag chips if `assetID` is still the selection (a tag edit that
+    /// lands after the user has navigated away must not repopulate a stale item).
+    private func reloadTagsIfCurrent(_ assetID: UUID) {
+        guard selectedItem?.asset.id == assetID else { return }
+        loadTags(for: assetID)
     }
 
     /// Open the selected item's original source URL in the default browser.
