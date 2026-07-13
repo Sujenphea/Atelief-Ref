@@ -75,13 +75,15 @@ final class SpaceModel: ObservableObject {
     // MARK: - Content provider
 
     /// The `SpaceContent` for the current rows — rebuilt only when
-    /// ``contentVersion`` changes. `nil` when the space has no drawable rows.
-    func content() -> SpaceContent? {
-        if cachedVersion == contentVersion { return cachedContent }
+    /// ``contentVersion`` changes. Always non-nil (even for an empty space) so the
+    /// canvas is present to draw the first frame / text onto; the empty-state hint
+    /// is a non-blocking overlay the view adds when ``items`` is empty.
+    func content() -> SpaceContent {
+        if cachedVersion == contentVersion, let cached = cachedContent { return cached }
         cachedVersion = contentVersion
         let content = SpaceContent(items: items, store: store)
-        cachedContent = content.tiles.isEmpty ? nil : content
-        return cachedContent
+        cachedContent = content
+        return content
     }
 
     /// The tile id matching the shared selection, so the canvas highlights the
@@ -162,6 +164,65 @@ final class SpaceModel: ObservableObject {
                         assetID: asset.id, to: spaceID,
                         x: rect.x, y: rect.y, w: rect.w, h: rect.h, z: rect.z)
                 }
+                await load()
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
+    // MARK: - Elements (frames + text, E3)
+
+    /// The selected row IFF it is a freeform element (frame/text) — drives the
+    /// element inspector. `nil` when nothing, or an asset, is selected.
+    var selectedElement: SpaceItemDetail? {
+        guard let selectedItemID,
+              let detail = items.first(where: { $0.item.id == selectedItemID }),
+              detail.item.kind != .asset else { return nil }
+        return detail
+    }
+
+    /// Add a frame element occupying `worldRect`. Frames sit BEHIND the board
+    /// content (lowest z) so the references they group draw on top. Selects it.
+    func addFrame(worldRect: CGRect) {
+        addElement(kind: .frame, style: ElementRendering.defaultFrameStyle(), rect: worldRect, behind: true)
+    }
+
+    /// Add a text element occupying `worldRect`, on TOP of the content. Selects it.
+    func addText(worldRect: CGRect) {
+        addElement(kind: .text, style: ElementRendering.defaultTextStyle(), rect: worldRect, behind: false)
+    }
+
+    private func addElement(kind: SpaceItemKind, style: ElementStyle, rect: CGRect, behind: Bool) {
+        let z = behind
+            ? (items.map(\.item.z).min() ?? 0) - 1
+            : (items.map(\.item.z).max() ?? -1) + 1
+        Task {
+            do {
+                let created = try await services.addElement(
+                    to: spaceID, kind: kind, style: style,
+                    x: Double(rect.minX), y: Double(rect.minY),
+                    w: Double(rect.width), h: Double(rect.height), z: z)
+                selectedItemID = created.id
+                await load()
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
+    /// The current `ElementStyle` for an element row (empty style if unset / not
+    /// found), so the inspector can seed its editors.
+    func style(forItemID id: UUID) -> ElementStyle {
+        guard let detail = items.first(where: { $0.item.id == id }) else { return ElementStyle() }
+        return ElementStyle(jsonString: detail.item.style) ?? ElementStyle()
+    }
+
+    /// Persist an element's restyle (text, colours, stroke, label), then reload.
+    func updateStyle(itemID: UUID, style: ElementStyle) {
+        Task {
+            do {
+                try await services.updateSpaceItemStyle(itemID: itemID, style: style)
                 await load()
             } catch {
                 lastError = Self.message(for: error)

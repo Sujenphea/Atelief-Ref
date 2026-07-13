@@ -20,6 +20,8 @@ struct SpaceView: View {
     @StateObject private var space: SpaceModel
     @State private var quickLook = QuickLookPresenter()
     @State private var showAddSheet = false
+    @State private var tool: CanvasTool = .select
+    @State private var showEditor = false
 
     init(model: IngestionModel, nav: NavModel, spaceID: UUID, services: AppServices, store: MediaStore) {
         self.model = model
@@ -53,26 +55,65 @@ struct SpaceView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 12) {
             Text(space.name).font(.headline)
             Text("\(space.items.count) items")
                 .font(.callout).foregroundStyle(.secondary)
+            toolPicker
+            editButton
             Spacer()
-            Text("Scroll to pan · pinch to zoom")
+            Text("Drag to place · pinch to zoom")
                 .font(.caption).foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
 
+    /// Select / Frame / Text. A create tool rubber-bands a new element, then the
+    /// canvas flips back to Select (see `onCreateElement`).
+    private var toolPicker: some View {
+        Picker("Tool", selection: $tool) {
+            Image(systemName: "cursorarrow").tag(CanvasTool.select)
+            Image(systemName: "rectangle.dashed").tag(CanvasTool.frame)
+            Image(systemName: "textformat").tag(CanvasTool.text)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .help("Select, draw a Frame, or add Text")
+    }
+
+    /// Appears when a freeform element is selected; opens its inspector popover.
+    @ViewBuilder private var editButton: some View {
+        if let element = space.selectedElement {
+            Button { showEditor = true } label: {
+                Label("Edit", systemImage: "slider.horizontal.3")
+            }
+            .popover(isPresented: $showEditor, arrowEdge: .bottom) {
+                ElementInspector(
+                    kind: element.item.kind,
+                    initialStyle: space.style(forItemID: element.item.id),
+                    onCommit: { style in space.updateStyle(itemID: element.item.id, style: style) },
+                    onDelete: { space.removeItem(element.item.id) })
+                .id(element.item.id)
+            }
+        }
+    }
+
     @ViewBuilder private var canvas: some View {
-        if let content = space.content() {
+        let content = space.content()
+        ZStack {
             CanvasView(
                 provider: content, images: content,
                 selectedTileID: space.selectedTileID(in: content),
+                tool: tool,
                 onActivateTile: { tileID in
                     if let url = content.videoURL(forTileID: tileID) {
                         quickLook.present(url: url, title: url.lastPathComponent)
+                    } else if content.detail(forTileID: tileID)?.item.kind != .asset {
+                        // Double-click a frame/text element → open its inspector.
+                        space.select(tileID: tileID, in: content)
+                        showEditor = true
                     }
                 },
                 onSelectTile: { tileID in
@@ -88,17 +129,33 @@ struct SpaceView: View {
                 },
                 onMoveTile: { tileID, worldOrigin in
                     space.moveTile(tileID: tileID, to: worldOrigin, in: content)
+                },
+                onCreateElement: { createdTool, worldRect in
+                    switch createdTool {
+                    case .frame: space.addFrame(worldRect: worldRect)
+                    case .text: space.addText(worldRect: worldRect)
+                    case .select: break
+                    }
+                    tool = .select // one-shot: back to Select after placing
                 })
             .id(space.contentVersion)
-        } else {
-            ContentUnavailableView {
-                Label("This space is empty", systemImage: "square.on.square.dashed")
-            } description: {
-                Text("Add references from your library to arrange them freely.")
-            } actions: {
-                Button("Add from Library") { showAddSheet = true }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if space.items.isEmpty { emptyHint }
         }
+    }
+
+    /// A non-blocking hint over the (empty) canvas — the tools + toolbar stay
+    /// live, so the first frame / text / library add still works.
+    private var emptyHint: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "square.on.square.dashed")
+                .font(.largeTitle).foregroundStyle(.tertiary)
+            Text("This space is empty").font(.headline)
+            Text("Add references from your library, or draw a Frame / Text with the tools above.")
+                .font(.callout).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(24)
+        .allowsHitTesting(false)
     }
 }

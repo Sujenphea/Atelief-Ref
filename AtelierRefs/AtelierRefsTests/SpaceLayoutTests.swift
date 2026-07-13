@@ -82,7 +82,8 @@ struct SpaceLayoutSeedTests {
 @Suite("SpaceContent: tile mapping")
 struct SpaceContentTests {
 
-    private func assetDetail(z: Int, dim: Int) -> SpaceItemDetail {
+    private func assetDetail(z: Int, dim: Int,
+                             x: Double? = nil, y: Double = 0, w: Double = 120, h: Double = 90) -> SpaceItemDetail {
         let sourceID = UUID(), assetID = UUID()
         let source = Source(id: sourceID, platform: .web, capturedAt: Date())
         let asset = Asset(
@@ -91,7 +92,7 @@ struct SpaceContentTests {
             fileSize: 100, downloadState: .downloaded, createdAt: Date(), sourceId: sourceID)
         let item = SpaceItem(
             id: UUID(), spaceID: UUID(), kind: .asset, assetID: assetID,
-            x: Double(z) * 10, y: 0, w: 120, h: 90, z: z, style: nil,
+            x: x ?? Double(z) * 10, y: y, w: w, h: h, z: z, style: nil,
             createdAt: Date(), updatedAt: Date())
         return SpaceItemDetail(item: item, asset: asset, source: source)
     }
@@ -101,6 +102,15 @@ struct SpaceContentTests {
             id: UUID(), spaceID: UUID(), kind: .text, assetID: nil,
             x: 0, y: 0, w: 200, h: 60, z: 99,
             style: ElementStyle(text: "hi").jsonString(), createdAt: Date(), updatedAt: Date())
+        return SpaceItemDetail(item: item, asset: nil, source: nil)
+    }
+
+    private func frameDetail(x: Double, y: Double, w: Double, h: Double) -> SpaceItemDetail {
+        let item = SpaceItem(
+            id: UUID(), spaceID: UUID(), kind: .frame, assetID: nil,
+            x: x, y: y, w: w, h: h, z: -1,
+            style: ElementStyle(strokeColor: "#000000", strokeWidth: 2).jsonString(),
+            createdAt: Date(), updatedAt: Date())
         return SpaceItemDetail(item: item, asset: nil, source: nil)
     }
 
@@ -118,10 +128,34 @@ struct SpaceContentTests {
         #expect(content.spaceItemID(forTileID: 0) == a.item.id)
     }
 
-    @Test("element rows are skipped in v1 (no vector tile path yet)")
-    func skipsElementRows() {
-        let content = makeContent([assetDetail(z: 0, dim: 120), elementDetail()])
-        #expect(content.tiles.count == 1)   // only the asset row draws
+    @Test("element rows now draw as vector tiles (E3), mapped to .text/.frame")
+    func drawsElementRows() {
+        let asset = assetDetail(z: 0, dim: 120)
+        let element = elementDetail()
+        let content = makeContent([asset, element])
+        #expect(content.tiles.count == 2) // asset + text element both draw
+        // The element tile carries text content; the asset tile stays an image.
+        let assetTile = content.tiles[content.tileID(forSpaceItemID: asset.item.id)!]
+        let textTile = content.tiles[content.tileID(forSpaceItemID: element.item.id)!]
+        #expect(content.content(for: assetTile) == .image)
+        if case .text(let style) = content.content(for: textTile) {
+            #expect(style.string == "hi")
+        } else {
+            Issue.record("element row should map to .text content")
+        }
+    }
+
+    @Test("dragging a frame carries the tiles whose centre it contains")
+    func frameGroupsContainedTiles() {
+        // A frame covering the origin region; an asset tile inside it; one outside.
+        let frame = frameDetail(x: 0, y: 0, w: 400, h: 400)
+        let inside = assetDetail(z: 1, dim: 120, x: 50, y: 50, w: 100, h: 100)
+        let outside = assetDetail(z: 2, dim: 120, x: 900, y: 900, w: 100, h: 100)
+        let content = makeContent([frame, inside, outside])
+        let frameTile = content.tileID(forSpaceItemID: frame.item.id)!
+        let insideTile = content.tileID(forSpaceItemID: inside.item.id)!
+        let members = content.groupMembers(forDraggedTileID: frameTile)
+        #expect(members == [insideTile])
     }
 
     @Test("selection round-trips tile id ↔ space_item id")

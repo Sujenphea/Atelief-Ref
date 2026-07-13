@@ -2,36 +2,37 @@
 //  SpaceContent.swift
 //  AtelierRefs
 //
-//  005-E2 — the `SpaceItem`-backed implementation of the renderer's two seams,
-//  the space sibling of `CanvasContent`. It maps a space's ASSET rows to
-//  world-space ``Tile``s (``TileProvider``) reading their persisted placement
-//  directly (a space_item always has a concrete rect — no justified-rows
-//  fallback here; new items are placed at ADD time via `SpaceLayout`), and
-//  serves each tile's pre-generated thumbnail from the ``MediaStore``
-//  (``TileImageSource``). Zero renderer changes (decision T3): images ride the
-//  existing pooled/culled/LOD path.
+//  005-E2/E3 — the `SpaceItem`-backed implementation of the renderer's seams.
+//  Maps a space's rows to world-space ``Tile``s reading their persisted placement
+//  directly (a space_item always has a concrete rect). ASSET rows draw their
+//  pre-generated thumbnail via the pooled/decode path (``TileImageSource``); since
+//  E3, ELEMENT rows (`.frame`/`.text`) draw as vector tiles via
+//  ``TileProvider/content(for:)`` (decision T3 — crisp CA siblings, no decode).
 //
-//  Freeform ELEMENT rows (`kind == .frame/.text`) are intentionally SKIPPED in
-//  v1 — they need a vector tile path that doesn't exist yet (E3). They round-trip
-//  in the store untouched; only their on-canvas rendering is deferred.
+//  Frames are group containers (005 open-Q1, chosen): dragging a frame carries
+//  the tiles it contains — ``groupMembers(forDraggedTileID:)`` returns every tile
+//  whose centre falls inside the frame's current world rect.
 //
 
 import AtelierCore
 import AtelierIngestion
 import CanvasRenderer
+import CoreGraphics
 import Foundation
 
 /// Drives the canvas from a space's ``SpaceItemDetail`` list + the
 /// ``MediaStore``. Built once per content version and handed to `CanvasView`;
 /// used only on the main actor (the renderer calls its seams during sync).
 final class SpaceContent: TileProvider, TileImageSource {
-    /// World-space tiles, index-aligned to ``assetItems`` by ``Tile/id``.
-    /// Mutable so a canvas drag can update a tile's placement in place.
+    /// World-space tiles, index-aligned to ``rows`` by ``Tile/id``. Mutable so a
+    /// canvas drag can update a tile's placement in place.
     private(set) var tiles: [Tile]
 
-    /// The ASSET rows behind the tiles; `tile.id` indexes straight into this.
-    /// (Element rows are filtered out — see the file header.)
-    private let assetItems: [SpaceItemDetail]
+    /// The drawable rows behind the tiles (asset + element); `tile.id` indexes
+    /// straight into this. Asset rows with an unresolved asset are dropped.
+    private let rows: [SpaceItemDetail]
+    /// The renderer content per tile (precomputed: `.image` / `.frame` / `.text`).
+    private let contentByTile: [TileContent]
     /// The on-disk thumbnail store.
     private let store: MediaStore
     /// A dense cache key per distinct blob hash, so two tiles of the same image
@@ -39,28 +40,50 @@ final class SpaceContent: TileProvider, TileImageSource {
     private let keyByHash: [String: Int]
 
     init(items: [SpaceItemDetail], store: MediaStore) {
-        // Only asset rows are drawable in v1; keep their placement + media.
-        let assetOnly = items.filter { $0.item.kind == .asset && $0.asset != nil }
-        self.assetItems = assetOnly
+        // Drawable rows: an asset row needs its resolved asset; element rows
+        // always draw (they carry only style + geometry).
+        let drawable = items.filter { detail in
+            switch detail.item.kind {
+            case .asset: return detail.asset != nil
+            case .frame, .text: return true
+            }
+        }
+        self.rows = drawable
         self.store = store
 
         var keyByHash: [String: Int] = [:]
-        for detail in assetOnly {
+        for detail in drawable {
             guard let hash = detail.asset?.blobHash, keyByHash[hash] == nil else { continue }
             keyByHash[hash] = keyByHash.count
         }
         self.keyByHash = keyByHash
-        self.tiles = assetOnly.enumerated().map { index, detail in
+        self.tiles = drawable.enumerated().map { index, detail in
             let item = detail.item
             return Tile(id: index, x: item.x, y: item.y, w: item.w, h: item.h, z: item.z)
         }
+        self.contentByTile = drawable.map { ElementRendering.tileContent(for: $0.item) }
     }
 
     // MARK: - TileProvider
 
+    /// What a tile draws — `.image` for asset rows, `.frame`/`.text` for elements.
+    func content(for tile: Tile) -> TileContent {
+        contentByTile.indices.contains(tile.id) ? contentByTile[tile.id] : .image
+    }
+
     /// A ▶ badge on video tiles, so a captured video reads as playable.
     func badge(for tile: Tile) -> TileBadge? {
         asset(for: tile.id)?.kind == .video ? .play : nil
+    }
+
+    /// Frame-as-group: dragging a `.frame` carries every OTHER tile whose centre
+    /// is inside the frame's current world rect. Non-frame drags carry nothing.
+    func groupMembers(forDraggedTileID id: Int) -> [Int] {
+        guard rows.indices.contains(id), rows[id].item.kind == .frame else { return [] }
+        let frame = tiles[id].worldFrame
+        return tiles.indices.filter { i in
+            i != id && frame.contains(Self.centre(of: tiles[i]))
+        }
     }
 
     /// The on-disk video file behind a tile, or `nil` if the tile isn't a video.
@@ -100,7 +123,7 @@ final class SpaceContent: TileProvider, TileImageSource {
 
     /// The full detail a tile draws, or `nil` if out of range.
     func detail(forTileID id: Int) -> SpaceItemDetail? {
-        assetItems.indices.contains(id) ? assetItems[id] : nil
+        rows.indices.contains(id) ? rows[id] : nil
     }
 
     /// The space_item id a tile draws (the unit placement / removal write on).
@@ -111,11 +134,15 @@ final class SpaceContent: TileProvider, TileImageSource {
     /// The tile id showing the space_item `id`, or `nil` if it isn't on this
     /// board — lets the screen reflect the shared selection into the highlight.
     func tileID(forSpaceItemID id: UUID) -> Int? {
-        assetItems.firstIndex { $0.item.id == id }
+        rows.firstIndex { $0.item.id == id }
     }
 
     private func asset(for id: Int) -> Asset? {
         detail(forTileID: id)?.asset
+    }
+
+    private static func centre(of tile: Tile) -> CGPoint {
+        CGPoint(x: tile.x + tile.w / 2, y: tile.y + tile.h / 2)
     }
 
     /// Map a renderer LOD tier to the matching pre-generated thumbnail tier.
