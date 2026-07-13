@@ -26,9 +26,78 @@ final class LibraryDatabase: Sendable {
 
     /// Opens (or creates) the database at `path` and migrates it to the latest
     /// schema. WAL is implied by `DatabasePool`; `foreign_keys` is on by default.
+    ///
+    /// Before migrating, takes a **pre-migration snapshot** (008 H3) when the
+    /// on-disk schema is behind: the existing file is copied aside *before the
+    /// pool opens* (safe — no writer yet), and that copy is kept as a snapshot
+    /// only if a migration is actually pending. A recovery point in case a schema
+    /// migration corrupts data; all backup failures are swallowed so a hiccup can
+    /// never block opening the library.
     init(path: String) throws {
+        let migrator = Migrator.makeMigrator()
+        // Stage a copy of the existing file BEFORE any connection opens.
+        let staged = Self.stagePreMigrationCopy(path: path)
         pool = try DatabasePool(path: path)
-        try Migrator.makeMigrator().migrate(pool)
+        // A read-write pool read avoids the readonly-WAL open hazard. Default to
+        // "complete" (discard the staged copy) if the check itself fails.
+        let complete = (try? pool.read { try migrator.hasCompletedMigrations($0) }) ?? true
+        Self.finalizePreMigrationSnapshot(staged: staged, keep: !complete)
+        try migrator.migrate(pool)
+    }
+
+    // MARK: - Pre-migration snapshot (008 H3)
+
+    /// Copy the existing DB (+ `-wal`/`-shm` sidecars) to a staging file next to
+    /// it, before any connection opens. Returns the staging base URL, or `nil`
+    /// when there's nothing to copy (fresh library) or the copy fails.
+    private static func stagePreMigrationCopy(path: String) -> URL? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: path) else { return nil }
+        let fileURL = URL(fileURLWithPath: path)
+        let dir = fileURL.deletingLastPathComponent()
+            .appendingPathComponent("snapshots", isDirectory: true)
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let staging = dir.appendingPathComponent(
+                ".staging-\(UUID().uuidString.prefix(8).lowercased()).sqlite")
+            try fm.copyItem(at: fileURL, to: staging)
+            for sidecar in ["-wal", "-shm"] {
+                let src = URL(fileURLWithPath: path + sidecar)
+                if fm.fileExists(atPath: src.path) {
+                    try? fm.copyItem(
+                        at: src, to: URL(fileURLWithPath: staging.path + sidecar))
+                }
+            }
+            return staging
+        } catch {
+            return nil
+        }
+    }
+
+    /// Promote the staged copy to a `pre-migration-…` snapshot (`keep`), or delete
+    /// it (migration wasn't needed / no staging). Best-effort.
+    private static func finalizePreMigrationSnapshot(staged: URL?, keep: Bool) {
+        guard let staged else { return }
+        let fm = FileManager.default
+        let sidecars = ["", "-wal", "-shm"]
+        guard keep else {
+            for s in sidecars { try? fm.removeItem(atPath: staged.path + s) }
+            return
+        }
+        let dest = SnapshotFile.makeURL(
+            in: staged.deletingLastPathComponent(), reason: .preMigration, date: Date())
+        do {
+            try fm.moveItem(at: staged, to: dest)
+            for s in ["-wal", "-shm"] {
+                let src = staged.path + s
+                if fm.fileExists(atPath: src) {
+                    try? fm.moveItem(atPath: src, toPath: dest.path + s)
+                }
+            }
+        } catch {
+            // Couldn't promote — don't leave staging litter behind.
+            for s in sidecars { try? fm.removeItem(atPath: staged.path + s) }
+        }
     }
 
     // MARK: - Access
