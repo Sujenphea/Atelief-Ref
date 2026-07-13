@@ -826,6 +826,12 @@ public final class AppServices: Sendable {
     ///   sources' assets are returned. When nil/blank, lists all assets
     ///   (optionally platform-filtered) — still bounded.
     /// - `platform`: optional filter on the asset's source.
+    /// - `tagIDs`: optional structured tag filter (007 · S1). Empty → no tag
+    ///   conjunct. `tagMatch` chooses set semantics: `.all` requires EVERY tag
+    ///   (dup-join-safe via `COUNT(DISTINCT tag_id) = N`), `.any` requires one.
+    ///   Tag text never enters FTS — the caller resolves names → ids first.
+    /// - `collectionID`: optional scope — only assets that are members of this
+    ///   collection (a folder-scoped search).
     /// - Ordered `created_at DESC, id DESC` (stable), so the keyset cursor is
     ///   well-defined.
     /// - `limit` is clamped to `1...500`; at most `limit` rows are returned.
@@ -838,11 +844,18 @@ public final class AppServices: Sendable {
     public func searchAssets(
         text: String? = nil,
         platform: Platform? = nil,
+        tagIDs: [UUID] = [],
+        tagMatch: TagMatch = .all,
+        collectionID: UUID? = nil,
         limit: Int = 50,
         after cursor: AssetPageCursor? = nil
     ) async throws -> [AssetDetail] {
         let clampedLimit = min(max(limit, 1), 500)
         let trimmedText = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Distinct ids only — a caller passing the same tag twice must not skew
+        // the `.all` HAVING COUNT (that counts DISTINCT tag_id anyway, but the N
+        // it is compared against must match the distinct set).
+        let distinctTagIDs = Array(Set(tagIDs))
         return try await read { db in
             // The source is required and carries the platform filter when given,
             // so the included join doubles as the filter (inner join).
@@ -864,6 +877,38 @@ public final class AppServices: Sendable {
                         WHERE source_fts MATCH ?
                     )
                     """, arguments: [Self.ftsMatchQuery(trimmedText)])
+            }
+
+            // Collection scope (007 · S3): membership subquery. Composes as a
+            // plain conjunct, so it AND-combines with FTS / tags / platform.
+            if let collectionID {
+                // Qualify `asset.id` — the source join makes a bare `id` ambiguous.
+                request = request.filter(sql: """
+                    asset.id IN (SELECT asset_id FROM collection_item WHERE collection_id = ?)
+                    """, arguments: [Self.key(collectionID)])
+            }
+
+            // Structured tag filter (007 · S1). `.any` — a single IN subquery.
+            // `.all` — GROUP BY … HAVING COUNT(DISTINCT tag_id) = N enforces that
+            // the asset carries every listed tag, dup-join-safe.
+            if !distinctTagIDs.isEmpty {
+                let placeholders = databaseQuestionMarks(count: distinctTagIDs.count)
+                let keys = distinctTagIDs.map(Self.key)
+                switch tagMatch {
+                case .any:
+                    request = request.filter(sql: """
+                        asset.id IN (SELECT asset_id FROM asset_tag WHERE tag_id IN (\(placeholders)))
+                        """, arguments: StatementArguments(keys))
+                case .all:
+                    request = request.filter(sql: """
+                        asset.id IN (
+                            SELECT asset_id FROM asset_tag
+                            WHERE tag_id IN (\(placeholders))
+                            GROUP BY asset_id
+                            HAVING COUNT(DISTINCT tag_id) = ?
+                        )
+                        """, arguments: StatementArguments(keys + [distinctTagIDs.count]))
+                }
             }
 
             // Keyset seek: rows strictly after the cursor in the DESC order.
@@ -946,6 +991,38 @@ public final class AppServices: Sendable {
                 .filter(sql: "id IN (SELECT tag_id FROM asset_tag WHERE asset_id = ?)",
                         arguments: [Self.key(assetID)])
                 .order(Column("name"), Column("id"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Every tag in the library, ordered `name, source, id` (stable). Small,
+    /// bounded inventory (P16) — feeds the search token vocabulary. Includes both
+    /// `.user` and `.agent` tags; the caller distinguishes by ``Tag/source``.
+    public func allTags() async throws -> [Tag] {
+        try await read { db in
+            try Tag.order(Column("name"), Column("source"), Column("id")).fetchAll(db)
+        }
+    }
+
+    /// The search token vocabulary (007 · S3): tags whose `name` case-insensitively
+    /// begins with `prefix`, ordered `name, source, id` and limited. A blank
+    /// prefix returns the first `limit` tags overall (initial suggestions). Both
+    /// sources are included so agent tags remain filterable (distinguished by the
+    /// caller). `limit` is clamped to `1...200`.
+    public func tagVocabulary(prefix: String, limit: Int = 50) async throws -> [Tag] {
+        let clampedLimit = min(max(limit, 1), 200)
+        let trimmed = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await read { db in
+            var request = Tag.all()
+            if !trimmed.isEmpty {
+                // LIKE is case-insensitive for ASCII by default; escape the LIKE
+                // wildcards in the user's prefix so `%`/`_` match literally.
+                let pattern = Self.escapeLikePrefix(trimmed) + "%"
+                request = request.filter(sql: "name LIKE ? ESCAPE '\\'", arguments: [pattern])
+            }
+            return try request
+                .order(Column("name"), Column("source"), Column("id"))
+                .limit(clampedLimit)
                 .fetchAll(db)
         }
     }
@@ -1187,6 +1264,16 @@ public final class AppServices: Sendable {
         text.split(whereSeparator: { $0.isWhitespace })
             .map { term in "\"\(term.replacingOccurrences(of: "\"", with: "\"\""))\"" }
             .joined(separator: " ")
+    }
+
+    /// Escape a user prefix for a `LIKE ? ESCAPE '\'` pattern so its `%`, `_`, and
+    /// `\` are matched literally (the caller appends the trailing `%` wildcard).
+    /// Without this, a tag prefix containing `%` would match everything.
+    static func escapeLikePrefix(_ prefix: String) -> String {
+        prefix
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
     }
 
     /// The on-disk key form of a UUID (lowercased TEXT, C5) — what GRDB's

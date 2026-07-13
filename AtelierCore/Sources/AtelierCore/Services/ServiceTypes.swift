@@ -95,6 +95,19 @@ public struct CanvasPlacement: Sendable, Equatable {
     }
 }
 
+// MARK: - Query inputs (GRDB-free, A2)
+
+/// How a multi-tag filter combines (007 · search). A query-only value (never
+/// persisted, so it lives here rather than in the on-disk `Enums`).
+///
+/// - `.all`: an asset must carry EVERY listed tag (progressive narrowing — the
+///   reference-library default).
+/// - `.any`: an asset carrying ANY listed tag matches (additive).
+public enum TagMatch: Sendable, Equatable {
+    case all
+    case any
+}
+
 // MARK: - Read outputs (GRDB-free, A2)
 
 /// One membership of a collection joined to its full ``Asset`` and that asset's
