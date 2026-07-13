@@ -42,44 +42,61 @@ export function buildCaptureRequest(provenance, imageBase64, { jobId = null, sou
   return request;
 }
 
-/** Build the JSON body for a MEDIA-LESS content capture that ALSO carries a card
- * image (003 · C3, Option 3) — e.g. a tweet POSTed with its picture. Mirrors
- * Swift's `CaptureRequest` with `kind` + `payload` set ALONGSIDE the base64
- * image; the server routes it to the hybrid `contentWithImage` path (an asset
- * that keeps its tweet content identity AND stores the picture as a blob).
- * `jobId`+`sourceId` are included only when present (parity with the image body). */
+/** Build the JSON body for a MEDIA-LESS content capture (003 · C3) — e.g. a tweet
+ * POSTed as `kind` + `payload`. When `imageBase64` is present the bytes ride
+ * ALONGSIDE kind+payload and the server routes to the hybrid `contentWithImage`
+ * path (Option 3: keeps the tweet's content identity AND stores the picture as a
+ * blob card). When it's `null`/absent — a text-only tweet with no card image — the
+ * `image` key is OMITTED and the server takes the pure `.content` (media-less text
+ * card) path. `jobId`+`sourceId` are included only when present (parity with the
+ * image body). */
 export function buildContentCaptureRequest(
   provenance, imageBase64, { kind, payload }, { jobId = null, sourceId = null } = {}
 ) {
   const request = {
-    image: imageBase64,
     provenance: normalizeProvenance(provenance),
     kind,
     payload,
   };
+  if (imageBase64) request.image = imageBase64; // omit for a text-only (media-less) item
   if (jobId) request.jobId = jobId;
   if (sourceId) request.sourceId = sourceId;
   return request;
 }
 
-/** Map a twitter `provenance` to a `tweet` content descriptor
- * (`{ kind: "tweet", payload: { tweet } }`) for `buildContentCaptureRequest`, or
- * `null` when it isn't a usable tweet (no tweet id, or NEITHER text nor media) so
- * the caller falls back to the plain image capture. `media` is ALWAYS an array —
- * Swift's `TweetPayload.media` is non-optional, so the key must always be present.
- * The tweet TEXT is best-effort (`provenance.title` ≈ the og:description X serves);
- * the server extracts the numeric id from `tweetID` and validates the substance. */
-export function tweetContent(provenance) {
-  const tweetId = provenance.rawMetadata?.tweetId;
-  if (!tweetId) return null;
-  const text = provenance.title || null;
-  const media = provenance.mediaUrl ? [{ url: provenance.mediaUrl }] : [];
-  if (!text && media.length === 0) return null;
-  const tweet = { tweetID: String(tweetId), media };
-  if (text) tweet.text = text;
-  if (provenance.authorHandle) tweet.authorHandle = provenance.authorHandle;
-  if (provenance.authorName) tweet.authorName = provenance.authorName;
+/** Build a `tweet` content descriptor (`{ kind: "tweet", payload: { tweet } }`) from
+ * its parts, or `null` when it isn't a usable tweet (no id, or NEITHER text nor
+ * media) so the caller falls back to a plain image / skips. `media` is ALWAYS an
+ * array — Swift's `TweetPayload.media` is non-optional, so the key must always be
+ * present. Shared by single-capture (`tweetContent`, one card url) and the bulk X
+ * sweep (a tweet's whole media list), so the payload shape lives in ONE place. */
+export function buildTweetPayload(
+  { tweetID, mediaUrls = [], text = null, authorHandle = null, authorName = null } = {}
+) {
+  if (!tweetID) return null;
+  const media = mediaUrls.filter(Boolean).map((url) => ({ url }));
+  const cleanText = text || null;
+  if (!cleanText && media.length === 0) return null;
+  const tweet = { tweetID: String(tweetID), media };
+  if (cleanText) tweet.text = cleanText;
+  if (authorHandle) tweet.authorHandle = authorHandle;
+  if (authorName) tweet.authorName = authorName;
   return { kind: "tweet", payload: { tweet } };
+}
+
+/** Map a single-capture twitter `provenance` to a `tweet` content descriptor for
+ * `buildContentCaptureRequest`, or `null` for a non-tweet (→ plain image fallback).
+ * A thin adapter over `buildTweetPayload`: one card image, best-effort text
+ * (`provenance.title` ≈ the og:description X serves). The bulk sweep builds its own
+ * descriptor (all of a tweet's media) directly from the timeline JSON. */
+export function tweetContent(provenance) {
+  return buildTweetPayload({
+    tweetID: provenance.rawMetadata?.tweetId,
+    mediaUrls: provenance.mediaUrl ? [provenance.mediaUrl] : [],
+    text: provenance.title,
+    authorHandle: provenance.authorHandle,
+    authorName: provenance.authorName,
+  });
 }
 
 /**

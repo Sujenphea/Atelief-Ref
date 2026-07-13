@@ -223,27 +223,37 @@ export async function ingestOne(
     }
   }
 
-  let fetched;
-  try {
-    fetched = await deps.fetchImage(
-      [provenance.mediaUrl, provenance.mediaUrlFallback].filter(Boolean),
-      { maxBytes: maxImageBytes }
-    );
-  } catch (error) {
-    // Thread the CDN's HTTP status through (5A) so a 401/403 auth wall halts the sweep
-    // resumable rather than burning through the rest of the board as permanent fails.
-    return {
-      status: "fetch-error",
-      httpStatus: error.httpStatus ?? null,
-      message: `Could not fetch the image (${String(error)}).`,
-    };
+  // Build the POST body. A media-less content item (a text-only tweet has NO card
+  // image) posts kind+payload with no image → the server's `.content` text-card path.
+  // This fires ONLY when there's genuinely no media URL to fetch; a FETCH FAILURE must
+  // still surface as fetch-error (so a 401/403 auth wall halts the sweep, 5A), never
+  // silently downgrade a picture tweet to a text card.
+  let request;
+  if (content && !provenance.mediaUrl) {
+    request = deps.buildContentCaptureRequest(provenance, null, content, { jobId, sourceId });
+  } else {
+    let fetched;
+    try {
+      fetched = await deps.fetchImage(
+        [provenance.mediaUrl, provenance.mediaUrlFallback].filter(Boolean),
+        { maxBytes: maxImageBytes }
+      );
+    } catch (error) {
+      // Thread the CDN's HTTP status through (5A) so a 401/403 auth wall halts the sweep
+      // resumable rather than burning through the rest of the board as permanent fails.
+      return {
+        status: "fetch-error",
+        httpStatus: error.httpStatus ?? null,
+        message: `Could not fetch the image (${String(error)}).`,
+      };
+    }
+    // A tweet content-capture (Option 3) carries the SAME card-image bytes but as a
+    // `tweet` content item (kind + payload); otherwise the plain image body.
+    request = content
+      ? deps.buildContentCaptureRequest(provenance, fetched.base64, content, { jobId, sourceId })
+      : deps.buildCaptureRequest(provenance, fetched.base64, { jobId, sourceId });
   }
 
-  // A tweet content-capture (Option 3) carries the SAME card-image bytes but as a
-  // `tweet` content item (kind + payload); otherwise the plain image body.
-  const request = content
-    ? deps.buildContentCaptureRequest(provenance, fetched.base64, content, { jobId, sourceId })
-    : deps.buildCaptureRequest(provenance, fetched.base64, { jobId, sourceId });
   try {
     const { status, body } = await deps.postCapture(request, { token });
     if (status === 200) {

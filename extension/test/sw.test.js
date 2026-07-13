@@ -183,6 +183,44 @@ test("ingestOne: no content descriptor stays on the plain image body", async () 
   assert.equal("kind" in posted, false);       // plain image request — no kind/payload
 });
 
+test("ingestOne: a text-only tweet (no media url) posts a media-less content capture", async () => {
+  // A bulk text-only tweet: content descriptor present, but NO card image to fetch. It
+  // must post kind+payload with no image (→ the server's `.content` text-card path) and
+  // never touch fetchImage.
+  let posted = null;
+  let fetched = false;
+  const content = { kind: "tweet", payload: { tweet: { tweetID: "7", media: [], text: "just text" } } };
+  const { deps } = makeDeps({
+    fetchImage: async () => { fetched = true; throw new Error("must not fetch"); },
+    buildContentCaptureRequest: (p, b, c) => {
+      const req = { provenance: p, kind: c.kind, payload: c.payload };
+      if (b) req.image = b;                    // omit image when there are no bytes
+      return req;
+    },
+    postCapture: async (req) => { posted = req; return { status: 200, body: { deduplicated: false } }; },
+  });
+  const prov = { platform: "twitter", mediaUrl: null, rawMetadata: { tweetId: "7" } };
+  const r = await ingestOne(prov, { token: "tok", content }, deps);
+
+  assert.deepEqual(r, { status: "saved", kind: "tweet", deduplicated: false });
+  assert.equal(fetched, false);                // no image fetch for a media-less tweet
+  assert.equal("image" in posted, false);      // media-less content body → no image key
+  assert.equal(posted.kind, "tweet");
+});
+
+test("ingestOne: a FETCH FAILURE is never downgraded to a media-less card (auth-wall preserved)", async () => {
+  // A tweet WITH a card image whose fetch 401s must surface fetch-error (so the engine
+  // auth-halts), NOT silently post a text card — the media-less path is only for a tweet
+  // that never had a media URL.
+  const content = { kind: "tweet", payload: { tweet: { tweetID: "7", media: [{ url: "u" }] } } };
+  const { deps } = makeDeps({
+    fetchImage: async () => { throw Object.assign(new Error("HTTP 401 for u"), { httpStatus: 401 }); },
+  });
+  const r = await ingestOne(PROV, { token: "tok", content }, deps);
+  assert.equal(r.status, "fetch-error");
+  assert.equal(r.httpStatus, 401);
+});
+
 test("captureCore: a usable tweet routes through the content capture (still image)", async () => {
   let posted = null;
   const content = { kind: "tweet", payload: { tweet: { tweetID: "42", media: [] } } };

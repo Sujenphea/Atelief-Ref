@@ -51,6 +51,7 @@ export async function handleBulkMessage(message, {
       return await ingestOne(provenance, {
         token,
         mp4Url,
+        content: message.content || null, // tweet content descriptor (003 · C3 bulk)
         jobId: message.jobId,
         sourceId: message.sourceId,
         caps: message.caps || null, // server byte caps (13A) — enforced pre-download

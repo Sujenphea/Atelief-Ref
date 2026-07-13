@@ -54,7 +54,32 @@ test("relay: runs ingestOne with token + jobId/sourceId, defaults mp4Url null", 
   assert.deepEqual(result, { status: "saved", deduplicated: false });
   assert.equal(d.calls.relay.prov, prov);
   assert.deepEqual(d.calls.relay.opts,
-    { token: "TOK", mp4Url: null, jobId: "J", sourceId: "pin-9", caps: null });
+    { token: "TOK", mp4Url: null, content: null, jobId: "J", sourceId: "pin-9", caps: null });
+});
+
+test("relay: threads a tweet content descriptor to ingestOne (003 · C3 bulk)", async () => {
+  const d = deps();
+  const prov = { platform: "twitter", mediaUrl: "https://pbs.twimg.com/media/x.jpg", rawMetadata: { tweetId: "1" } };
+  const content = { kind: "tweet", payload: { tweet: { tweetID: "1", media: [{ url: "https://pbs.twimg.com/media/x.jpg" }] } } };
+  await handleBulkMessage(
+    { type: BULK.relay, provenance: prov, jobId: "J", sourceId: "1", content }, d);
+  assert.deepEqual(d.calls.relay.opts.content, content); // forwarded verbatim
+  // A relay without a descriptor (Pinterest / older client) passes null.
+  await handleBulkMessage(
+    { type: BULK.relay, provenance: prov, jobId: "J", sourceId: "1" }, d);
+  assert.equal(d.calls.relay.opts.content, null);
+});
+
+test("relay: a text-only tweet (no media url) passes the SSRF guard and relays content", async () => {
+  // No media URL to fetch → the host allowlist has nothing to block, so the media-less
+  // tweet still reaches ingestOne with its content descriptor (a text card).
+  const d = deps();
+  const prov = { platform: "twitter", mediaUrl: null, rawMetadata: { tweetId: "9" } };
+  const content = { kind: "tweet", payload: { tweet: { tweetID: "9", media: [], text: "hi" } } };
+  const result = await handleBulkMessage(
+    { type: BULK.relay, provenance: prov, jobId: "J", sourceId: "9", content }, d);
+  assert.deepEqual(result, { status: "saved", deduplicated: false }); // ingestOne ran
+  assert.deepEqual(d.calls.relay.opts.content, content);
 });
 
 test("relay: passes a resolved mp4Url through when present (opt-in video)", async () => {

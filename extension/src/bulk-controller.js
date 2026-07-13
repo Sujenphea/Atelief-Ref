@@ -71,6 +71,9 @@ export async function runBulkSweep(spec, {
       jobId,
       sourceId: item.sourceId,
       provenance: item.provenance,
+      // A tweet content descriptor (003 · C3 bulk) so the item ingests as a first-class
+      // tweet; null for image-only drivers (Pinterest) → the plain image path.
+      content: item.content || null,
       mp4Url: resolveVideo ? (item.provenance?.rawMetadata?.videoUrl || null) : null,
       // Thread the server's authoritative byte caps (from job open, 13A) so the SW can
       // reject an over-cap image/video from its declared size BEFORE downloading it,

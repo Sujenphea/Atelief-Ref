@@ -38,7 +38,7 @@ const entries = findInstructions(bookmarks)
   .flatMap((i) => i.entries || [])
   .filter((e) => e.content?.entryType === "TimelineTimelineItem")
   .map((e) => e.content.itemContent.tweet_results.result);
-const [videoTweet, photoTweet] = entries;
+const [videoTweet, photoTweet, textTweet] = entries;
 
 // MARK: - isTimelineRequest
 
@@ -66,35 +66,53 @@ test("unwrapTweet: unwraps visibility-wrapped tweets, drops tombstones", () => {
 
 // MARK: - mapTweet
 
-test("mapTweet: a video tweet → one poster item with the best MP4 in rawMetadata", () => {
+test("mapTweet: a video tweet → one tweet item, poster card + best MP4 stashed", () => {
   const items = mapTweet(videoTweet, { host: "x.com" });
   assert.equal(items.length, 1);
   const item = items[0];
-  assert.equal(item.sourceId, "REDACTED");        // media_key, not tweet id
-  assert.equal(item.mediaUrl, "https://pbs.twimg.com/media/SAMPLE24.jpg?name=orig");
+  assert.equal(item.sourceId, "1000000000000000034");           // the TWEET id (not a media key)
+  assert.equal(item.provenance.rawMetadata.tweetId, "1000000000000000034");
+  assert.equal(item.mediaUrl, "https://pbs.twimg.com/media/SAMPLE24.jpg?name=orig"); // poster is the card
   assert.equal(item.mediaUrlFallback, "https://pbs.twimg.com/media/SAMPLE24.jpg");
   assert.equal(item.provenance.rawMetadata.kind, "video");
-  assert.equal(item.provenance.rawMetadata.tweetId, "1000000000000000034");
   // highest-bitrate progressive MP4 from the response (no syndication call needed).
   assert.equal(item.provenance.rawMetadata.videoUrl,
     "https://video.twimg.com/amplify_video/1031/vid/720x1280/SAMPLE31.mp4?tag=12");
+  // The content descriptor: a tweet carrying its one media reference.
+  assert.equal(item.content.kind, "tweet");
+  assert.equal(item.content.payload.tweet.tweetID, "1000000000000000034");
+  assert.equal(item.content.payload.tweet.media.length, 1);
   assert.equal(item.provenance.authorHandle, "@sampleuser");
   assert.equal(item.provenance.originalURL, "https://x.com/sampleuser/status/1000000000000000034");
 });
 
-test("mapTweet: a multi-photo tweet → one item per photo, unique media keys", () => {
+test("mapTweet: a multi-photo tweet → ONE item carrying all photos in media[]", () => {
   const items = mapTweet(photoTweet, { host: "x.com" });
-  assert.deepEqual(items.map((i) => i.sourceId), [
-    "REDACTED", "REDACTED", "REDACTED",
-  ]);
-  for (const item of items) {
-    assert.equal(item.provenance.rawMetadata.kind, "photo");
-    assert.equal(item.provenance.rawMetadata.videoUrl, null);
-    assert.match(item.mediaUrl, /\?name=orig$/);
-  }
+  assert.equal(items.length, 1);                                 // one tweet = one item
+  const item = items[0];
+  assert.equal(item.sourceId, "1000000000000000171");            // keyed by the tweet id
+  assert.equal(item.provenance.rawMetadata.kind, "photo");
+  assert.equal(item.provenance.rawMetadata.videoUrl, null);
+  const media = item.content.payload.tweet.media;
+  assert.equal(media.length, 3);                                 // all three photos, as references
+  for (const m of media) assert.match(m.url, /\?name=orig$/);    // each at original resolution
+  assert.equal(item.mediaUrl, media[0].url);                     // the first photo is the card image
 });
 
-test("mapTweet: text-only / no-id / tombstone → no items", () => {
+test("mapTweet: a text-only tweet → one media-less item (a text card)", () => {
+  const items = mapTweet(textTweet, { host: "x.com" });
+  assert.equal(items.length, 1);
+  const item = items[0];
+  assert.equal(item.sourceId, "1000000000000000212");
+  assert.equal(item.mediaUrl, null);                             // no card image to fetch
+  assert.equal(item.mediaUrlFallback, null);
+  assert.equal(item.provenance.rawMetadata.kind, "text");
+  assert.deepEqual(item.content.payload.tweet.media, []);        // media[] present but empty
+  assert.equal(item.content.payload.tweet.text, "Sample text");
+});
+
+test("mapTweet: an empty / no-id / tombstone tweet → no items", () => {
+  // No text AND no media → the app would reject it, so we skip it up front.
   assert.deepEqual(mapTweet({ __typename: "Tweet", rest_id: "1", legacy: {} }, {}), []);
   assert.deepEqual(mapTweet({ __typename: "Tweet", legacy: { full_text: "hi" } }, {}), []); // no id
   assert.deepEqual(mapTweet({ __typename: "TweetTombstone" }, {}), []);
@@ -102,22 +120,21 @@ test("mapTweet: text-only / no-id / tombstone → no items", () => {
 
 // MARK: - parseTimelinePage
 
-test("parseTimelinePage: yields one item per top-level media across the page", () => {
+test("parseTimelinePage: yields ONE item per tweet, keyed by tweet id", () => {
   const { items, bottomCursor, tweetCount } = parseTimelinePage(bookmarks, { host: "x.com" });
 
   assert.equal(tweetCount, 3);                     // three tweet entries
   assert.equal(bottomCursor, "Sample text");       // the Bottom cursor's value
 
-  const keys = items.map((i) => i.sourceId);
-  // tweet 1 (video) + tweet 2 (3 photos) = 4 top-level media.
-  assert.deepEqual(keys, [
-    "REDACTED",
-    "REDACTED", "REDACTED", "REDACTED",
+  // One item per tweet (video · 3-photo · text-only), keyed by the TWEET id.
+  assert.deepEqual(items.map((i) => i.sourceId), [
+    "1000000000000000034", "1000000000000000171", "1000000000000000212",
   ]);
-  // Quoted-tweet media must NOT leak in (tweet 2 quotes a 3-photo tweet; tweet 3
-  // quotes a video tweet) — we only read the TOP-LEVEL tweet's media.
-  assert.equal(keys.includes("REDACTED"), false); // tweet-2 quoted photo
-  assert.equal(keys.includes("REDACTED"), false); // tweet-3 quoted video
+  // Quoted-tweet media must NOT leak (tweet 2 quotes a 3-photo tweet; tweet 3 quotes a
+  // video tweet). The top-level media references total exactly 1 (video poster) + 3
+  // (photos) + 0 (text) = 4; a quoted tweet's photos would inflate this.
+  const totalMedia = items.reduce((n, i) => n + i.content.payload.tweet.media.length, 0);
+  assert.equal(totalMedia, 4);
 
   // Every item is stamped with the page's checkpoint cursor.
   for (const item of items) assert.equal(item.cursor, "Sample text");

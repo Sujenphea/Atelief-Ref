@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
-  buildCaptureRequest, buildContentCaptureRequest, tweetContent,
+  buildCaptureRequest, buildContentCaptureRequest, tweetContent, buildTweetPayload,
   postCapture, TOKEN_HEADER, DEFAULT_ENDPOINT,
   buildProvenanceHeader, postVideoCapture, base64Utf8,
   PROVENANCE_HEADER, DEFAULT_VIDEO_ENDPOINT,
@@ -105,6 +105,44 @@ test("tweetContent always includes a media array (Swift media is non-optional)",
   assert.deepEqual(content.payload.tweet.media, []);
   assert.equal(content.payload.tweet.tweetID, "7");
   assert.equal(content.kind, "tweet");
+});
+
+// MARK: - buildTweetPayload (shared by single-capture + bulk; the DRY core)
+
+test("buildTweetPayload: carries EVERY media url as a reference (multi-photo tweet)", () => {
+  const content = buildTweetPayload({
+    tweetID: 42, mediaUrls: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg"],
+    text: "three photos", authorHandle: "@a", authorName: "A",
+  });
+  assert.equal(content.kind, "tweet");
+  assert.deepEqual(content.payload.tweet, {
+    tweetID: "42", // coerced to string (Swift decodes a String id)
+    media: [{ url: "https://a/1.jpg" }, { url: "https://a/2.jpg" }, { url: "https://a/3.jpg" }],
+    text: "three photos", authorHandle: "@a", authorName: "A",
+  });
+});
+
+test("buildTweetPayload: a text-only tweet → media[] present but empty; author fields optional", () => {
+  const content = buildTweetPayload({ tweetID: "7", text: "just text" });
+  assert.deepEqual(content.payload.tweet, { tweetID: "7", media: [], text: "just text" });
+  assert.equal("authorHandle" in content.payload.tweet, false);
+});
+
+test("buildTweetPayload: null (no id, or NEITHER text nor media) → caller falls back / skips", () => {
+  assert.equal(buildTweetPayload({ mediaUrls: ["u"], text: "t" }), null);          // no id
+  assert.equal(buildTweetPayload({ tweetID: "5" }), null);                          // no text, no media
+  assert.equal(buildTweetPayload({ tweetID: "5", mediaUrls: [null, undefined] }), null); // media all falsy
+  assert.ok(buildTweetPayload({ tweetID: "5", mediaUrls: ["u"] }));                 // media-only is usable
+});
+
+test("buildContentCaptureRequest: OMITS the image key for a media-less (text-only) item", () => {
+  const content = { kind: "tweet", payload: { tweet: { tweetID: "7", media: [] } } };
+  const withImage = buildContentCaptureRequest({ platform: "twitter" }, "B64", content);
+  assert.equal(withImage.image, "B64");
+  const mediaLess = buildContentCaptureRequest({ platform: "twitter" }, null, content);
+  assert.equal("image" in mediaLess, false); // → server takes the pure `.content` text-card path
+  assert.equal(mediaLess.kind, "tweet");
+  assert.deepEqual(mediaLess.payload, content.payload);
 });
 
 test("contract (1A): buildProvenanceHeader decodes to the canonical video header", () => {
