@@ -84,6 +84,9 @@ final class NavModel: ObservableObject {
         // Wait until folders have actually loaded before deciding.
         guard !collections.isEmpty else { return }
         didRestore = true
+        // UI smoke tests launch with a clean, deterministic root (the Collections
+        // gallery) rather than whatever collection was last opened.
+        guard !ProcessInfo.processInfo.arguments.contains("-uitest-fresh-nav") else { return }
         guard
             let stored = UserDefaults.standard.string(forKey: Self.lastCollectionKey),
             let id = UUID(uuidString: stored),

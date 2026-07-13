@@ -3,7 +3,8 @@
 //  AtelierRefsUITests
 //
 //  Load-bearing XCUITest smoke suite (production readiness G11). Keeps coverage
-//  few and high-value: launch, tab switching, and that the shell is interactive.
+//  few and high-value: launch, top-bar navigation (the NavigationStack shell that
+//  replaced the old 3-tab TabView), and that the shell is interactive.
 //
 
 import XCTest
@@ -14,54 +15,53 @@ final class AtelierRefsUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    /// Launch the app and switch Canvas → Library → Sweeps → Canvas.
+    /// Launch with a deterministic root (skip last-collection restore).
     @MainActor
-    func testLaunchAndSwitchTabs() throws {
+    private func launchFreshShell() -> XCUIApplication {
         let app = XCUIApplication()
+        app.launchArguments += ["-uitest-fresh-nav"]
         app.launch()
-
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+        return app
+    }
 
-        // macOS TabView exposes tabs as radio buttons / buttons in the tab bar.
-        let canvas = app.radioButtons["Canvas"].firstMatch
-        let library = app.radioButtons["Library"].firstMatch
-        let sweeps = app.radioButtons["Sweeps"].firstMatch
+    /// Launch and navigate the top-bar shell: the app-level Spaces / Sweeps
+    /// affordances replaced the old Canvas / Library / Sweeps tabs and are
+    /// reachable from every screen. Opening Spaces pushes the Spaces list.
+    @MainActor
+    func testLaunchAndNavigateShell() throws {
+        let app = launchFreshShell()
 
-        // Fallback for environments that surface tabs as buttons.
-        let canvasControl = canvas.exists ? canvas : app.buttons["Canvas"].firstMatch
-        let libraryControl = library.exists ? library : app.buttons["Library"].firstMatch
-        let sweepsControl = sweeps.exists ? sweeps : app.buttons["Sweeps"].firstMatch
+        // The app-level toolbar affordances (former tabs) are present.
+        let spaces = app.buttons["Spaces"].firstMatch
+        let sweeps = app.buttons["Sweeps"].firstMatch
+        XCTAssertTrue(spaces.waitForExistence(timeout: 5), "Spaces toolbar entry missing")
+        XCTAssertTrue(sweeps.exists, "Sweeps toolbar entry missing")
 
-        XCTAssertTrue(canvasControl.waitForExistence(timeout: 5), "Canvas tab missing")
-        XCTAssertTrue(libraryControl.exists, "Library tab missing")
-        XCTAssertTrue(sweepsControl.exists, "Sweeps tab missing")
+        // Opening Spaces pushes the Spaces list (its own New Space affordance).
+        spaces.click()
+        let newSpace = app.buttons["New Space"].firstMatch
+        XCTAssertTrue(
+            newSpace.waitForExistence(timeout: 5),
+            "Expected the Spaces list (New Space) after opening Spaces")
 
-        libraryControl.click()
-        sweepsControl.click()
-        canvasControl.click()
-
-        // Shell still alive after tab churn.
+        // Shell still alive after navigation.
         XCTAssertTrue(app.windows.firstMatch.exists)
     }
 
-    /// Library tab shows the folder chrome (sidebar / Unsorted).
+    /// The Collections gallery (the shell's root, replacing the folder sidebar)
+    /// shows the protected Unsorted collection after bootstrap.
     @MainActor
-    func testLibraryShowsFolderChrome() throws {
-        let app = XCUIApplication()
-        app.launch()
-        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    func testGalleryShowsUnsortedCollection() throws {
+        let app = launchFreshShell()
 
-        let library = app.radioButtons["Library"].firstMatch.exists
-            ? app.radioButtons["Library"].firstMatch
-            : app.buttons["Library"].firstMatch
-        XCTAssertTrue(library.waitForExistence(timeout: 5))
-        library.click()
-
-        // Protected default folder is always present after bootstrap.
-        let unsorted = app.staticTexts["Unsorted"].firstMatch
+        // The Unsorted cover card is always present after bootstrap. It surfaces
+        // as a button labelled by its title (with a static-text fallback).
+        let unsortedButton = app.buttons["Unsorted"].firstMatch
+        let unsortedText = app.staticTexts["Unsorted"].firstMatch
         XCTAssertTrue(
-            unsorted.waitForExistence(timeout: 8),
-            "Expected Unsorted folder in the Library sidebar after bootstrap")
+            unsortedButton.waitForExistence(timeout: 8) || unsortedText.exists,
+            "Expected the Unsorted collection card on the gallery after bootstrap")
     }
 
     @MainActor
