@@ -31,16 +31,18 @@ struct CollectionView: View {
     ]
 
     var body: some View {
-        ZStack {
-            content
-            // Full-window detail page for the presented item. The overlay is
-            // shared route state (`NavModel.presentedItemID`) so the grid, the
-            // Return key, and the Space canvas can all open it; guarding also on
-            // `selectedItem != nil` auto-dismisses back to the grid when the item
-            // is removed/deleted from inside the page.
-            if nav.presentedItemID != nil, let detail = model.selectedItem {
-                detailOverlay(for: detail)
-                    .transition(.opacity)
+        LibrarySearchable(model: model, collectionID: collectionID) {
+            ZStack {
+                content
+                // Full-window detail page for the presented item. The overlay is
+                // shared route state (`NavModel.presentedItemID`) so the grid, the
+                // Return key, and the Space canvas can all open it; guarding also on
+                // `selectedItem != nil` auto-dismisses back to the grid when the item
+                // is removed/deleted from inside the page.
+                if nav.presentedItemID != nil, let detail = model.selectedItem {
+                    detailOverlay(for: detail)
+                        .transition(.opacity)
+                }
             }
         }
         // Bind the shared single-selection model to THIS collection whenever the

@@ -26,25 +26,27 @@ struct CollectionsGalleryView: View {
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16)]
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 16) {
-                ForEach(orderedRoots) { collection in
-                    Button {
-                        nav.openCollection(collection.id)
-                    } label: {
-                        CoverCard(
-                            title: collection.name,
-                            subtitle: nil,
-                            coverHash: model.collectionCovers[collection.id],
-                            coverURL: coverURL(for: collection.id),
-                            placeholderSymbol: "folder",
-                            accent: collection.id == model.unsortedFolderID)
+        LibrarySearchable(model: model, collectionID: nil) {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(orderedRoots) { collection in
+                        Button {
+                            nav.openCollection(collection.id)
+                        } label: {
+                            CoverCard(
+                                title: collection.name,
+                                subtitle: nil,
+                                coverHash: model.collectionCovers[collection.id],
+                                coverURL: coverURL(for: collection.id),
+                                placeholderSymbol: "folder",
+                                accent: collection.id == model.unsortedFolderID)
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu { cardMenu(for: collection) }
                     }
-                    .buttonStyle(.plain)
-                    .contextMenu { cardMenu(for: collection) }
                 }
+                .padding(16)
             }
-            .padding(16)
         }
         .navigationTitle("Collections")
         .toolbar {
