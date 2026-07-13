@@ -9,7 +9,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
-  buildCaptureRequest, postCapture, TOKEN_HEADER, DEFAULT_ENDPOINT,
+  buildCaptureRequest, buildContentCaptureRequest, tweetContent,
+  postCapture, TOKEN_HEADER, DEFAULT_ENDPOINT,
   buildProvenanceHeader, postVideoCapture, base64Utf8,
   PROVENANCE_HEADER, DEFAULT_VIDEO_ENDPOINT,
 } from "../src/endpoint.js";
@@ -78,6 +79,32 @@ test("postCapture sends token + content-type headers and returns status/body", a
 test("contract (1A): buildCaptureRequest produces the canonical wire shape", () => {
   const request = buildCaptureRequest(contract.provenance, contract.image);
   assert.deepEqual(request, contract.expected.captureRequest);
+});
+
+test("contract (1A): a tweet content-capture produces the canonical wire shape", () => {
+  const { provenance } = contract.contentInput;
+  const content = tweetContent(provenance);
+  const request = buildContentCaptureRequest(
+    provenance, contract.contentInput.image, content);
+  assert.deepEqual(request, contract.expected.contentCaptureRequest);
+});
+
+test("tweetContent returns null when there is no tweet id → plain image fallback", () => {
+  assert.equal(tweetContent({ platform: "twitter", title: "hi", mediaUrl: "u" }), null);
+});
+
+test("tweetContent returns null for a tweet with neither text nor media", () => {
+  assert.equal(
+    tweetContent({ platform: "twitter", rawMetadata: { tweetId: "5" } }), null);
+});
+
+test("tweetContent always includes a media array (Swift media is non-optional)", () => {
+  const content = tweetContent({
+    platform: "twitter", title: "just text", rawMetadata: { tweetId: "7" },
+  });
+  assert.deepEqual(content.payload.tweet.media, []);
+  assert.equal(content.payload.tweet.tweetID, "7");
+  assert.equal(content.kind, "tweet");
 });
 
 test("contract (1A): buildProvenanceHeader decodes to the canonical video header", () => {

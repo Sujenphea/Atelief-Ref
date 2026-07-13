@@ -42,6 +42,46 @@ export function buildCaptureRequest(provenance, imageBase64, { jobId = null, sou
   return request;
 }
 
+/** Build the JSON body for a MEDIA-LESS content capture that ALSO carries a card
+ * image (003 · C3, Option 3) — e.g. a tweet POSTed with its picture. Mirrors
+ * Swift's `CaptureRequest` with `kind` + `payload` set ALONGSIDE the base64
+ * image; the server routes it to the hybrid `contentWithImage` path (an asset
+ * that keeps its tweet content identity AND stores the picture as a blob).
+ * `jobId`+`sourceId` are included only when present (parity with the image body). */
+export function buildContentCaptureRequest(
+  provenance, imageBase64, { kind, payload }, { jobId = null, sourceId = null } = {}
+) {
+  const request = {
+    image: imageBase64,
+    provenance: normalizeProvenance(provenance),
+    kind,
+    payload,
+  };
+  if (jobId) request.jobId = jobId;
+  if (sourceId) request.sourceId = sourceId;
+  return request;
+}
+
+/** Map a twitter `provenance` to a `tweet` content descriptor
+ * (`{ kind: "tweet", payload: { tweet } }`) for `buildContentCaptureRequest`, or
+ * `null` when it isn't a usable tweet (no tweet id, or NEITHER text nor media) so
+ * the caller falls back to the plain image capture. `media` is ALWAYS an array —
+ * Swift's `TweetPayload.media` is non-optional, so the key must always be present.
+ * The tweet TEXT is best-effort (`provenance.title` ≈ the og:description X serves);
+ * the server extracts the numeric id from `tweetID` and validates the substance. */
+export function tweetContent(provenance) {
+  const tweetId = provenance.rawMetadata?.tweetId;
+  if (!tweetId) return null;
+  const text = provenance.title || null;
+  const media = provenance.mediaUrl ? [{ url: provenance.mediaUrl }] : [];
+  if (!text && media.length === 0) return null;
+  const tweet = { tweetID: String(tweetId), media };
+  if (text) tweet.text = text;
+  if (provenance.authorHandle) tweet.authorHandle = provenance.authorHandle;
+  if (provenance.authorName) tweet.authorName = provenance.authorName;
+  return { kind: "tweet", payload: { tweet } };
+}
+
 /**
  * POST a built capture request to the endpoint. `fetchImpl` defaults to the
  * global fetch (injectable for tests). Returns `{ status, body }`.

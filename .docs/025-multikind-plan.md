@@ -98,6 +98,38 @@ local supertype). Revisit only if per-image tag/place/dedup is wanted.
 - Remaining for C3: the extension JS that PRODUCES content captures (tweet / link
   payloads, bulk X sweep) — the Swift boundary is ready to receive them.
 
+## C3 card image — Option 3, hybrid ingest (shipped, changelogs 114 + 115)
+
+Resolves "purely tweet cards?": the pure media-less tweet had no blob (a text
+card forever, since nothing was scheduled to backfill it), which defeats a visual
+library. Option 3 makes a tweet a **hybrid** — it keeps its `kind`/`payload`
+content identity AND stores its card image as a real blob.
+
+- **Core** — `ingestContent(_:blob:…)` gains an optional `ContentBlobFacts`; a
+  tweet is `kind=.tweet` + `payload` + a real `blob_hash` (→
+  `TweetContent.cardImageBlobHash`). Dedup is UNCHANGED — `(kind, tweet-id)` — so
+  two captures with different card images resolve to one tweet (first wins; a
+  later image never overwrites). No schema change.
+- **Ingestion** — `IngestSource.contentWithBytes`: the pipeline runs the shared
+  blob-first (A2) + P14 store for the picture, then `ingestContent(_:blob:)`.
+  Because dedup is by tweet-id (not bytes), a card image discarded on dedup is
+  reclaimed (it would otherwise orphan — the byte path never produces this, since
+  there dedup implies the blob already existed). Byte + hybrid share one
+  `storeBytesBlobFirst` helper.
+- **Server** — `decodeInput` routes a media-less kind carrying an `image` →
+  `.contentWithImage`; without an image it stays a text-card `.content`.
+- **Extension (115)** — single X capture POSTs a `tweet` with its card-image
+  bytes; `tweetContent(provenance)` builds the payload (`null` → plain image
+  fallback). Bulk X and web→link are NOT switched (single-capture scope; web
+  keeps its thumbnail until C2b).
+
+### Q1 (tweet media children) → Option 3 for the CARD image
+
+The `payload.media[]` URL-reference model (changelog 112) still stands for the
+tweet's *attached* media. Option 3 is orthogonal: it stores the ASSET's own card
+image as a blob so the grid has a thumbnail now. The two compose — `media[]` are
+references; `blob_hash` is the card picture.
+
 ## Deviations from the roadmap doc
 
 - **No `thumbnail_hash` column** (as the doc's v1 recommendation): a color has no

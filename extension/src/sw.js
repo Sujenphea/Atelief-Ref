@@ -20,7 +20,8 @@
 import { harvestSignals, buildHarvest } from "./harvest.js";
 import { extractProvenance } from "./extractors/registry.js";
 import {
-  buildCaptureRequest, postCapture, buildProvenanceHeader, postVideoCapture,
+  buildCaptureRequest, buildContentCaptureRequest, tweetContent,
+  postCapture, buildProvenanceHeader, postVideoCapture,
 } from "./endpoint.js";
 import {
   resolveTwitterVideo, shouldResolveVideo as twitterHasVideo,
@@ -147,6 +148,8 @@ const defaultDeps = {
   fetchImage,
   downloadAndIngestVideo,
   buildCaptureRequest,
+  buildContentCaptureRequest,
+  tweetContent,
   postCapture,
   log: (...args) => console.log("[Atelier]", ...args),
   logError: (...args) => console.error("[Atelier]", ...args),
@@ -180,7 +183,13 @@ export async function captureCore(harvest, context, token, deps = defaultDeps) {
     mp4Url = null;
   }
 
-  return ingestOne(provenance, { token, mp4Url }, deps);
+  // A single-item tweet capture (003 · C3, Option 3): when this is a usable tweet,
+  // POST it as a `tweet` content item carrying its card image, so it lands as a
+  // first-class tweet (payload + picture) rather than a bare image. `null` for a
+  // non-tweet (or a tweet with no id/substance) → the plain image path. The bulk X
+  // sweep does NOT set this — it stays on the image path for now.
+  const content = deps.tweetContent(provenance);
+  return ingestOne(provenance, { token, mp4Url, content }, deps);
 }
 
 /**
@@ -194,7 +203,7 @@ export async function captureCore(harvest, context, token, deps = defaultDeps) {
  */
 export async function ingestOne(
   provenance,
-  { token, mp4Url = null, jobId = null, sourceId = null, caps = null } = {},
+  { token, mp4Url = null, jobId = null, sourceId = null, caps = null, content = null } = {},
   deps = defaultDeps
 ) {
   // Server byte caps (13A): a bulk relay carries the job's authoritative limits so the
@@ -230,11 +239,18 @@ export async function ingestOne(
     };
   }
 
-  const request = deps.buildCaptureRequest(provenance, fetched.base64, { jobId, sourceId });
+  // A tweet content-capture (Option 3) carries the SAME card-image bytes but as a
+  // `tweet` content item (kind + payload); otherwise the plain image body.
+  const request = content
+    ? deps.buildContentCaptureRequest(provenance, fetched.base64, content, { jobId, sourceId })
+    : deps.buildCaptureRequest(provenance, fetched.base64, { jobId, sourceId });
   try {
     const { status, body } = await deps.postCapture(request, { token });
     if (status === 200) {
-      const result = { status: "saved", kind: "image", deduplicated: !!body.deduplicated };
+      const result = {
+        status: "saved", kind: content ? "tweet" : "image",
+        deduplicated: !!body.deduplicated,
+      };
       // Bulk relay feedback (7A): the app stamps the job's status on a tagged reply
       // so a user pause/cancel halts the sweep. Absent on single-item captures.
       if (body.jobStatus) result.jobStatus = body.jobStatus;

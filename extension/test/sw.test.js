@@ -31,6 +31,11 @@ function makeDeps(over = {}) {
     downloadAndIngestVideo: async () => ({ deduplicated: false }),
     fetchImage: async () => ({ base64: "B64", url: PROV.mediaUrl, contentType: "image/jpeg", byteLength: 3 }),
     buildCaptureRequest: (p, b) => ({ image: b, provenance: p }),
+    // Default OFF: a non-tweet (or bulk) stays on the plain image path. Tweet
+    // routing (003 · C3) is opted into per-test by overriding tweetContent.
+    tweetContent: () => null,
+    buildContentCaptureRequest: (p, b, content) =>
+      ({ image: b, provenance: p, kind: content.kind, payload: content.payload }),
     postCapture: async () => ({ status: 200, body: { deduplicated: false } }),
     log: (...a) => calls.log.push(a),
     logError: (...a) => calls.logError.push(a),
@@ -151,6 +156,56 @@ test("ingestOne: image path posts and returns saved", async () => {
   const { deps } = makeDeps();
   const r = await ingestOne(PROV, { token: "tok" }, deps);
   assert.deepEqual(r, { status: "saved", kind: "image", deduplicated: false });
+});
+
+// MARK: - tweet content capture (003 · C3, Option 3)
+
+test("ingestOne: a content descriptor posts a content capture (card image + payload)", async () => {
+  let posted = null;
+  const content = { kind: "tweet", payload: { tweet: { tweetID: "42", media: [] } } };
+  const { deps } = makeDeps({
+    postCapture: async (req) => { posted = req; return { status: 200, body: { deduplicated: false } }; },
+  });
+  const r = await ingestOne(PROV, { token: "tok", content }, deps);
+
+  assert.deepEqual(r, { status: "saved", kind: "tweet", deduplicated: false });
+  assert.equal(posted.image, "B64");          // the SAME card-image bytes ride in
+  assert.equal(posted.kind, "tweet");
+  assert.deepEqual(posted.payload, content.payload);
+});
+
+test("ingestOne: no content descriptor stays on the plain image body", async () => {
+  let posted = null;
+  const { deps } = makeDeps({
+    postCapture: async (req) => { posted = req; return { status: 200, body: { deduplicated: false } }; },
+  });
+  await ingestOne(PROV, { token: "tok" }, deps);
+  assert.equal("kind" in posted, false);       // plain image request — no kind/payload
+});
+
+test("captureCore: a usable tweet routes through the content capture (still image)", async () => {
+  let posted = null;
+  const content = { kind: "tweet", payload: { tweet: { tweetID: "42", media: [] } } };
+  const { deps } = makeDeps({
+    tweetContent: () => content,
+    postCapture: async (req) => { posted = req; return { status: 200, body: { deduplicated: false } }; },
+  });
+  const r = await captureCore({}, {}, "tok", deps);
+  assert.deepEqual(r, { status: "saved", kind: "tweet", deduplicated: false });
+  assert.equal(posted.kind, "tweet");
+});
+
+test("captureCore: a tweet WITH video still ingests as video (content path not taken)", async () => {
+  // A video tweet resolves + posts a video; the content descriptor is ignored
+  // because the image path never runs.
+  const { deps } = makeDeps({
+    twitterHasVideo: () => true,
+    resolveTwitterVideo: async () => "https://v/x.mp4",
+    tweetContent: () => ({ kind: "tweet", payload: { tweet: { tweetID: "42", media: [] } } }),
+    downloadAndIngestVideo: async () => ({ deduplicated: false }),
+  });
+  const r = await captureCore({}, {}, "tok", deps);
+  assert.deepEqual(r, { status: "saved", kind: "video", deduplicated: false });
 });
 
 test("ingestOne: a given mp4Url ingests as video (no harvest/context needed)", async () => {

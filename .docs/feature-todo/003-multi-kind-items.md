@@ -169,12 +169,16 @@ roadmap and is the strongest argument for shipping 008's snapshot early.
 ## Status (2026-07)
 
 - ✅ **C0** core seam · **C1** color · **C2a** link (structural) · **C3** tweet
-  (structural) · **C3 wire** server + ingestion content-capture path — all shipped
-  (changelogs 109–113). Plan record: `.docs/025`.
-- ⏳ **C3 extension JS** — the browser side that PRODUCES content captures:
-  `twitter.js` → tweet `payload`, `web` extractor → link `payload`, bulk X sweep
-  → tweets. `CaptureDTO.kind`/`payload` + the `CaptureRoutes` content branch are
-  built and unit-tested (113); this is the JS + node-test follow-on, plus a
-  content fixture for `capture-contract.json`.
+  (structural) · **C3 wire** server + ingestion content-capture path · **C3 card
+  image** (Option 3 hybrid ingest, Swift) · **C3 extension JS** (single X → tweet
+  content capture with its card image) — all shipped (changelogs 109–115). Plan
+  record: `.docs/025`.
+- ⏳ **Bulk X sweep → tweets** — the big payoff. Single-capture tweets ship; the
+  bulk engine still posts bare images. `ingestOne` already routes on an optional
+  content descriptor, so the sweep opts in by building one per item.
+- ⏳ **Web → link content capture** — deliberately NOT switched: a link's
+  thumbnail is its og:image (needs C2b), so converting web captures to text-card
+  links now would REGRESS their thumbnails. Waits on C2b.
 - ⏳ **C2b** link resolver enrichment (= 001 `PageResolver`, SSRF-hardened) —
-  deferred; the security-sensitive piece.
+  deferred; the security-sensitive piece. Unblocks web→link and could backfill a
+  tweet's card image from `media[]`.
