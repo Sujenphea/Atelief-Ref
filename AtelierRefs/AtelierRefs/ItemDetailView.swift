@@ -168,9 +168,10 @@ struct ItemDetailView: View {
     }
 }
 
-/// The right-hand details column: metadata, provenance, and source actions for a
-/// single item — ported verbatim from the former `InspectorView` (minus the small
-/// preview, since the media is shown large on the left).
+/// The right-hand details column: a thin stack of the metadata, provenance, and
+/// source-action sections (ported from the former `InspectorView`, minus the
+/// small preview). Each section is its own subview so the column stays a clean
+/// seam — the tags editor slots in between provenance and actions.
 private struct DetailSidebar: View {
     @ObservedObject var model: IngestionModel
     let detail: CollectionItemDetail
@@ -178,44 +179,52 @@ private struct DetailSidebar: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                metadataSection
-                provenanceSection
-                actions
+                MetadataSection(detail: detail)
+                ProvenanceSection(detail: detail)
+                ActionsSection(model: model, detail: detail)
             }
             .padding()
         }
     }
+}
 
-    // MARK: - Metadata
+// MARK: - Sections
 
-    private var metadataSection: some View {
+/// Kind / dimensions / (duration) / size / type / captured-at.
+private struct MetadataSection: View {
+    let detail: CollectionItemDetail
+
+    var body: some View {
         let asset = detail.asset
-        return section("Details") {
-            row("Kind", asset.kind == .image ? "Image" : "Video")
-            row("Dimensions", "\(asset.width) × \(asset.height)")
+        DetailSection("Details") {
+            DetailRow("Kind", asset.kind == .image ? "Image" : "Video")
+            DetailRow("Dimensions", "\(asset.width) × \(asset.height)")
             if asset.kind == .video, let duration = asset.duration {
-                row("Duration", Self.formattedDuration(duration))
+                DetailRow("Duration", DetailFormat.duration(duration))
             }
-            row("Size", Self.formattedSize(asset.fileSize))
-            row("Type", asset.mimeType)
-            row("Captured", Self.formattedDate(asset.createdAt))
+            DetailRow("Size", DetailFormat.size(asset.fileSize))
+            DetailRow("Type", asset.mimeType)
+            DetailRow("Captured", DetailFormat.date(asset.createdAt))
         }
     }
+}
 
-    // MARK: - Provenance
+/// Capture provenance — platform, author, title, and the original URL.
+private struct ProvenanceSection: View {
+    let detail: CollectionItemDetail
 
-    private var provenanceSection: some View {
+    var body: some View {
         let source = detail.source
-        return section("Source") {
-            row("Platform", Self.platformLabel(source.platform))
+        DetailSection("Source") {
+            DetailRow("Platform", DetailFormat.platform(source.platform))
             if let name = source.authorName, !name.isEmpty {
-                row("Author", name)
+                DetailRow("Author", name)
             }
             if let handle = source.authorHandle, !handle.isEmpty {
-                row("Handle", handle)
+                DetailRow("Handle", handle)
             }
             if let title = source.title, !title.isEmpty {
-                row("Title", title)
+                DetailRow("Title", title)
             }
             if let url = source.originalURL, !url.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
@@ -227,16 +236,20 @@ private struct DetailSidebar: View {
                         .truncationMode(.middle)
                 }
             } else {
-                row("Original URL", "—")
+                DetailRow("Original URL", "—")
             }
         }
     }
+}
 
-    // MARK: - Actions
+/// Source actions + the membership-only / library-wide delete pair.
+private struct ActionsSection: View {
+    @ObservedObject var model: IngestionModel
+    let detail: CollectionItemDetail
 
-    private var actions: some View {
+    var body: some View {
         let hasSource = !(detail.source.originalURL ?? "").isEmpty
-        return VStack(spacing: 8) {
+        VStack(spacing: 8) {
             Button {
                 model.openSource(detail)
             } label: {
@@ -286,19 +299,39 @@ private struct DetailSidebar: View {
         }
         .controlSize(.large)
     }
+}
 
-    // MARK: - Building blocks
+// MARK: - Shared building blocks
 
-    private func section(
-        _ title: String, @ViewBuilder _ rows: () -> some View
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.headline)
-            rows()
-        }
+/// A titled group in the detail sidebar.
+private struct DetailSection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
     }
 
-    private func row(_ label: String, _ value: String) -> some View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.headline)
+            content
+        }
+    }
+}
+
+/// A label-on-the-left, selectable-value-on-the-right metadata row.
+private struct DetailRow: View {
+    let label: String
+    let value: String
+
+    init(_ label: String, _ value: String) {
+        self.label = label
+        self.value = value
+    }
+
+    var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text(label).foregroundStyle(.secondary)
             Spacer(minLength: 12)
@@ -308,25 +341,26 @@ private struct DetailSidebar: View {
         }
         .font(.callout)
     }
+}
 
-    // MARK: - Formatting
-
-    private static func formattedSize(_ bytes: Int) -> String {
+/// Value formatting for the detail sidebar.
+private enum DetailFormat {
+    static func size(_ bytes: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
-    private static func formattedDate(_ date: Date) -> String {
+    static func date(_ date: Date) -> String {
         date.formatted(date: .abbreviated, time: .shortened)
     }
 
     /// `m:ss` for a video's playback duration (seconds).
-    private static func formattedDuration(_ seconds: Double) -> String {
+    static func duration(_ seconds: Double) -> String {
         let total = Int(seconds.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     /// A human-facing label for a capture platform.
-    private static func platformLabel(_ platform: Platform) -> String {
+    static func platform(_ platform: Platform) -> String {
         switch platform {
         case .twitter: "Twitter / X"
         case .pinterest: "Pinterest"

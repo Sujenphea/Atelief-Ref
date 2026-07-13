@@ -23,7 +23,6 @@ struct CollectionView: View {
     let collectionID: UUID
 
     @State private var isTargeted = false
-    @State private var showDetail = false
 
     private static let gridItemMinWidth: CGFloat = 112
     private static let gridSpacing: CGFloat = 8
@@ -34,12 +33,14 @@ struct CollectionView: View {
     var body: some View {
         ZStack {
             content
-            // Full-window detail page for the selected item. Guarding on
-            // `selectedItem != nil` auto-dismisses back to the grid when the
-            // item is removed/deleted from inside the page.
-            if showDetail, model.selectedItem != nil {
+            // Full-window detail page for the presented item. The overlay is
+            // shared route state (`NavModel.presentedItemID`) so the grid, the
+            // Return key, and the Space canvas can all open it; guarding also on
+            // `selectedItem != nil` auto-dismisses back to the grid when the item
+            // is removed/deleted from inside the page.
+            if nav.presentedItemID != nil, model.selectedItem != nil {
                 ItemDetailView(model: model) {
-                    withAnimation { showDetail = false }
+                    withAnimation { nav.presentedItemID = nil }
                 }
                 .transition(.opacity)
             }
@@ -155,8 +156,7 @@ struct CollectionView: View {
                     LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
                         ForEach(model.items, id: \.item.id) { detail in
                             Button {
-                                model.select(detail)
-                                withAnimation { showDetail = true }
+                                open(detail)
                             } label: {
                                 AsyncThumbnail(
                                     hash: detail.asset.blobHash,
@@ -199,6 +199,14 @@ struct CollectionView: View {
                     .foregroundStyle(.tertiary)
             }
         }
+    }
+
+    /// Open the full-window detail page for `detail`: bind the shared selection
+    /// and raise the overlay via `NavModel.presentedItemID` (the routing seam the
+    /// grid click, the Return key, and the Space canvas all funnel through).
+    private func open(_ detail: CollectionItemDetail) {
+        model.select(detail)
+        withAnimation { nav.presentedItemID = detail.item.id }
     }
 
     // MARK: - Grid keyboard nav
