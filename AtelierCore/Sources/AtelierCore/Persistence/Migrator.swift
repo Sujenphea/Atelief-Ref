@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -60,6 +60,11 @@ enum Migrator {
         // v4 — first-class spaces. SHIPPED: never edit this body.
         migrator.registerMigration("v4") { db in
             try createV4Schema(db)
+        }
+
+        // v5 — view tracking + per-collection sort mode. SHIPPED: never edit.
+        migrator.registerMigration("v5") { db in
+            try createV5Schema(db)
         }
 
         return migrator
@@ -331,6 +336,33 @@ enum Migrator {
                 ON space_item(space_id);
             CREATE INDEX index_space_item_on_asset_id
                 ON space_item(asset_id);
+            """)
+    }
+
+    // MARK: - v5
+
+    /// View tracking + per-collection sort mode (007 · sort). Three additive
+    /// columns, each with a NOT-NULL default so existing rows migrate cleanly:
+    ///   • `asset.view_count` — a global per-asset counter (one asset, many
+    ///     memberships; a view = an Item Detail open), the "most viewed" key.
+    ///   • `asset.last_viewed_at` — nullable; `NULL` until first viewed. Makes a
+    ///     future "recently viewed" sort free.
+    ///   • `collection.sort_mode` — the ``SortMode`` rawValue, default `'manual'`
+    ///     so every existing collection keeps its drag order.
+    /// An ALTER-added column must be constant-defaulted (SQLite), which all three
+    /// are. The `view_count` index backs the `mostViewed` ORDER BY.
+    private static func createV5Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            ALTER TABLE asset ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0;
+            """)
+        try db.execute(sql: """
+            ALTER TABLE asset ADD COLUMN last_viewed_at TEXT;
+            """)
+        try db.execute(sql: """
+            ALTER TABLE collection ADD COLUMN sort_mode TEXT NOT NULL DEFAULT 'manual';
+            """)
+        try db.execute(sql: """
+            CREATE INDEX index_asset_on_view_count ON asset(view_count);
             """)
     }
 }

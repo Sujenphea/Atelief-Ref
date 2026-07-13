@@ -34,6 +34,13 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
     public var createdAt: Date
     /// FK → ``Source``. **Required** — where the asset came from.
     public var sourceId: UUID
+    /// How many times this asset's detail page has been opened (007 · sort). A
+    /// global per-asset counter (one asset, many memberships) — the "most
+    /// viewed" ranking key. Added by migration v5, `DEFAULT 0`.
+    public var viewCount: Int
+    /// When the detail page was last opened (007 · sort). `nil` until first
+    /// viewed; makes a future "recently viewed" sort free. Added by v5.
+    public var lastViewedAt: Date?
 
     /// Explicit snake_case column/coding names (the persistence layer binds
     /// these as SQLite columns; chosen explicitly so acronym mapping is exact).
@@ -46,6 +53,8 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         case downloadState = "download_state"
         case createdAt = "created_at"
         case sourceId = "source_id"
+        case viewCount = "view_count"
+        case lastViewedAt = "last_viewed_at"
     }
 
     public init(
@@ -59,7 +68,9 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         fileSize: Int,
         downloadState: DownloadState,
         createdAt: Date,
-        sourceId: UUID
+        sourceId: UUID,
+        viewCount: Int = 0,
+        lastViewedAt: Date? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -72,5 +83,7 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         self.downloadState = downloadState
         self.createdAt = createdAt
         self.sourceId = sourceId
+        self.viewCount = viewCount
+        self.lastViewedAt = lastViewedAt
     }
 }

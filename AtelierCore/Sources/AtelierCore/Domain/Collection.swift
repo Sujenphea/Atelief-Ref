@@ -31,6 +31,10 @@ public struct Collection: Sendable, Equatable, Hashable, Codable, Identifiable {
     public var updatedAt: Date
     /// FK → parent ``Collection`` (decision F1). `nil` = a root folder.
     public var parentCollectionID: UUID?
+    /// How this collection's grid is ordered (007 · sort). Persisted so the
+    /// preference is backed up / exported / per-collection. Added by migration
+    /// v5, `DEFAULT 'manual'`.
+    public var sortMode: SortMode
 
     /// Explicit snake_case column/coding names (exact acronym mapping, e.g.
     /// `coverAssetID` ⇄ `cover_asset_id`).
@@ -40,6 +44,7 @@ public struct Collection: Sendable, Equatable, Hashable, Codable, Identifiable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case parentCollectionID = "parent_collection_id"
+        case sortMode = "sort_mode"
     }
 
     public init(
@@ -49,7 +54,8 @@ public struct Collection: Sendable, Equatable, Hashable, Codable, Identifiable {
         coverAssetID: UUID? = nil,
         createdAt: Date,
         updatedAt: Date,
-        parentCollectionID: UUID? = nil
+        parentCollectionID: UUID? = nil,
+        sortMode: SortMode = .manual
     ) {
         self.id = id
         self.name = name
@@ -58,5 +64,6 @@ public struct Collection: Sendable, Equatable, Hashable, Codable, Identifiable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.parentCollectionID = parentCollectionID
+        self.sortMode = sortMode
     }
 }

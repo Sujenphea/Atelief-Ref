@@ -353,6 +353,40 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// Set a collection's grid sort mode (007). Persists `collection.sort_mode`
+    /// and bumps `updatedAt`, IN ONE write. `.notFound` if absent. Non-destructive
+    /// — `manual_order` is untouched, so switching to and from `.manual` restores
+    /// the drag arrangement.
+    public func setCollectionSortMode(_ mode: SortMode, for collectionID: UUID) async throws {
+        try await write { db in
+            guard var collection = try Collection.fetchOne(db, key: Self.key(collectionID)) else {
+                throw AtelierError.notFound(entity: "collection", id: collectionID)
+            }
+            collection.sortMode = mode
+            collection.updatedAt = Date()
+            try collection.update(db)
+        }
+    }
+
+    /// Record a view of each listed asset (007 · a view = an Item Detail open),
+    /// IN ONE transaction (P15). Each DISTINCT id's `view_count` is incremented
+    /// by one and `last_viewed_at` set to `at` — so N opens coalesced by the
+    /// caller land as one bump per asset. Unknown ids are silently skipped
+    /// (idempotent; a since-deleted asset is a harmless no-op). Duplicate ids in
+    /// the batch count once. Negligible against the WAL.
+    public func recordViews(_ assetIDs: [UUID], at date: Date = Date()) async throws {
+        let distinct = Array(Set(assetIDs))
+        guard !distinct.isEmpty else { return }
+        try await write { db in
+            for id in distinct {
+                try db.execute(sql: """
+                    UPDATE asset SET view_count = view_count + 1, last_viewed_at = ?
+                    WHERE id = ?
+                    """, arguments: [date, Self.key(id)])
+            }
+        }
+    }
+
     /// Bulk-add memberships, IN ONE transaction (P15). Idempotent per asset
     /// (skips ones already members). `.notFound` (rolling back) for a missing
     /// collection or asset.
@@ -520,22 +554,43 @@ public final class AppServices: Sendable {
     }
 
     /// The P14 joined read for a collection — every membership with its full
-    /// asset + source, in the store's order (`manual_order` then `id`), mapped
-    /// to the public GRDB-free ``CollectionItemDetail`` (A2). Collection-scoped,
-    /// so the FULL array is returned (P16 — the views need every item).
+    /// asset + source, mapped to the public GRDB-free ``CollectionItemDetail``
+    /// (A2). Collection-scoped, so the FULL array is returned (P16 — the views
+    /// need every item), which is why no keyset cursor is needed here.
+    ///
+    /// `sort` (007) selects the ORDER BY; the default `.manual` preserves the
+    /// prior behaviour (drag order, source-compatible for existing callers):
+    ///   • `.manual` → `collection_item.manual_order, collection_item.id`.
+    ///   • `.newest` → `asset.created_at DESC, asset.id DESC`.
+    ///   • `.mostViewed` → `asset.view_count DESC, asset.created_at DESC,
+    ///     asset.id DESC` (view_count ties are the norm, so the newest/​id
+    ///     tie-breaks keep the order deterministic).
+    /// Switching modes never rewrites `manual_order`, so it is non-destructive.
     /// `.notFound` if the collection is absent.
-    public func collectionItems(in collectionID: UUID) async throws -> [CollectionItemDetail] {
+    public func collectionItems(
+        in collectionID: UUID, sort: SortMode = .manual
+    ) async throws -> [CollectionItemDetail] {
         try await read { db in
             guard try Collection.exists(db, key: Self.key(collectionID)) else {
                 throw AtelierError.notFound(entity: "collection", id: collectionID)
             }
             // CollectionItem ⋈ Asset ⋈ Source, all required (P14): one round-trip,
-            // no N+1. GRDB qualifies the base columns to `collection_item`.
-            let request = CollectionItem
+            // no N+1. GRDB qualifies bare base columns to `collection_item`, so
+            // the asset-keyed orderings reference the joined `asset` table by
+            // name to avoid picking the membership row's columns.
+            var request = CollectionItem
                 .filter(Column("collection_id") == Self.key(collectionID))
                 .including(required: CollectionItem.asset
                     .including(required: Asset.source))
-                .order(Column("manual_order"), Column("id"))
+            switch sort {
+            case .manual:
+                request = request.order(Column("manual_order"), Column("id"))
+            case .newest:
+                request = request.order(sql: "asset.created_at DESC, asset.id DESC")
+            case .mostViewed:
+                request = request.order(
+                    sql: "asset.view_count DESC, asset.created_at DESC, asset.id DESC")
+            }
             return try CollectionItemRow.fetchAll(db, request).map {
                 CollectionItemDetail(item: $0.item, asset: $0.asset, source: $0.source)
             }

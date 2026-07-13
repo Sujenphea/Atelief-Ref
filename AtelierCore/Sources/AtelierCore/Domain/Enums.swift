@@ -46,3 +46,19 @@ public enum TagSource: String, Sendable, Codable, CaseIterable, Hashable {
     case user
     case agent
 }
+
+/// How a collection's grid is ordered (007 · sort). Persisted per collection in
+/// `collection.sort_mode` (C5 TEXT rawValue), default `.manual`.
+///
+/// - `.manual`: the user's drag order (`manual_order`, then `id`).
+/// - `.newest`: capture-time descending (`created_at DESC, id DESC`).
+/// - `.mostViewed`: view counter descending, newest as tie-break
+///   (`view_count DESC, created_at DESC, id DESC`).
+///
+/// Switching modes is non-destructive — `manual_order` is never rewritten, so
+/// returning to `.manual` restores the drag arrangement.
+public enum SortMode: String, Sendable, Codable, CaseIterable, Hashable {
+    case manual
+    case newest
+    case mostViewed = "most_viewed"
+}

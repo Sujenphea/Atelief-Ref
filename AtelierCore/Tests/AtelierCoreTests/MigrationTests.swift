@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -1089,5 +1089,62 @@ struct SpaceRoundTripTests {
         #expect(fetched == item)
         #expect(fetched?.assetID == nil)
         #expect(ElementStyle(jsonString: fetched?.style)?.text == "hello")
+    }
+}
+
+@Suite("Migration v5: view tracking + sort mode")
+struct MigrationV5Tests {
+
+    @Test("v5 adds asset.view_count / last_viewed_at and collection.sort_mode")
+    func columnsExist() throws {
+        let dbQueue = try makeMigratedQueue()
+        try dbQueue.read { db in
+            let assetCols = try columnNotNull(db, table: "asset")
+            #expect(assetCols["view_count"] == 1)        // NOT NULL
+            #expect(assetCols["last_viewed_at"] == 0)     // nullable
+            let collectionCols = try columnNotNull(db, table: "collection")
+            #expect(collectionCols["sort_mode"] == 1)     // NOT NULL
+        }
+    }
+
+    @Test("index_asset_on_view_count exists")
+    func viewCountIndexed() throws {
+        let dbQueue = try makeMigratedQueue()
+        try dbQueue.read { db in
+            let names = try indexNames(db, table: "asset")
+            #expect(names.contains("index_asset_on_view_count"))
+        }
+    }
+
+    @Test("defaults apply to rows inserted without the new columns")
+    func defaultsOnExistingShape() throws {
+        let dbQueue = try makeMigratedQueue()
+        // Insert a source + asset via the pre-v5 column list (no view_count /
+        // last_viewed_at) — the defaults must fill them. And the seeded Unsorted
+        // collection (v2) must have sort_mode 'manual'.
+        try dbQueue.write { db in
+            let sid = newID()
+            try db.execute(sql: """
+                INSERT INTO source (id, platform, captured_at, raw_metadata)
+                VALUES (?, 'web', ?, '{}')
+                """, arguments: [sid, ts])
+            try db.execute(sql: """
+                INSERT INTO asset
+                    (id, kind, blob_hash, mime_type, width, height, file_size,
+                     download_state, created_at, source_id)
+                VALUES (?, 'image', 'h', 'image/png', 1, 1, 1, 'downloaded', ?, ?)
+                """, arguments: [newID(), ts, sid])
+        }
+        try dbQueue.read { db in
+            let vc = try Int.fetchOne(db, sql: "SELECT view_count FROM asset")
+            let lv = try DatabaseValue.fetchOne(db, sql: "SELECT last_viewed_at FROM asset")
+            #expect(vc == 0)
+            #expect(lv?.isNull == true)
+            // The v2-seeded Unsorted folder defaulted to 'manual'.
+            let mode = try String.fetchOne(
+                db, sql: "SELECT sort_mode FROM collection WHERE id = ?",
+                arguments: [Collection.unsortedID.uuidString.lowercased()])
+            #expect(mode == "manual")
+        }
     }
 }
