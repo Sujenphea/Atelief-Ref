@@ -124,6 +124,85 @@ struct IngestPipelineTests {
         #expect(all.isEmpty)
     }
 
+    // MARK: - Media-less + card image (003 · C3, Option 3 — hybrid)
+
+    /// A twitter provenance draft (the tweet permalink is aligned in the funnel).
+    static func twitterProvenance(_ url: String) -> SourceDraft {
+        SourceDraft(
+            platform: .twitter, originalURL: url, authorHandle: "@ava",
+            capturedAt: Date(timeIntervalSince1970: 1_700_000_000))
+    }
+
+    @Test("a tweet WITH a card image → blob + tiers on disk AND tweet content identity")
+    func contentWithBytesIngestsTweetWithBlob() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+
+        let card = try FixtureImages.solidImage(width: 1200, height: 675, format: .png)
+        let input = IngestInput(
+            content: .tweet(tweetID: "https://x.com/ava/status/900", text: "a brass lamp",
+                            authorHandle: "@ava",
+                            media: [TweetMedia(url: "https://pbs.example/a.jpg")]),
+            image: .data(card),
+            provenance: Self.twitterProvenance("https://x.com/ava/status/900"),
+            collectionID: env.collectionID)
+        let outcome = await env.pipeline.ingest(input)
+
+        guard case .ingested(let asset, let deduplicated) = outcome else {
+            Issue.record("expected .ingested, got \(outcome)"); return
+        }
+        #expect(deduplicated == false)
+        #expect(asset.kind == .tweet)
+        #expect(asset.dedupKey == "900")
+        // The card image is a real blob (dims + mime from the bytes).
+        let hash = try #require(asset.blobHash)
+        #expect(asset.width == 1200 && asset.height == 675)
+        #expect(asset.mimeType == "image/png")
+        #expect(env.store.hasBlob(hash: hash, fileExtension: "png"))
+        for tier in ThumbnailTier.allCases {
+            #expect(env.store.hasThumbnail(
+                hash: hash, size: tier.rawValue, fileExtension: "jpg"))
+        }
+        // The projection surfaces the blob AS the tweet's card image.
+        if case .tweet(let t) = asset.content {
+            #expect(t.cardImageBlobHash == hash)
+            #expect(t.text == "a brass lamp")
+        } else {
+            Issue.record("expected .tweet content")
+        }
+    }
+
+    @Test("re-capturing a tweet with a DIFFERENT card image dedups + reclaims the orphan blob")
+    func contentWithBytesDedupReclaimsOrphan() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+
+        let cardA = try FixtureImages.solidImage(width: 4, height: 3, format: .png)
+        let cardB = try FixtureImages.solidImage(width: 8, height: 6, format: .png)
+        func tweetInput(_ card: Data) -> IngestInput {
+            IngestInput(
+                content: .tweet(tweetID: "901", text: "one"),
+                image: .data(card),
+                provenance: Self.twitterProvenance("https://x.com/ava/status/901"),
+                collectionID: env.collectionID)
+        }
+
+        let a = await env.pipeline.ingest(tweetInput(cardA))
+        guard case .ingested(let assetA, _) = a else { Issue.record("A not ingested"); return }
+        #expect(env.blobFiles().count == 1)            // card A stored
+
+        // Same tweet id, different card bytes → dedup to A; card B is unreferenced.
+        let b = await env.pipeline.ingest(tweetInput(cardB))
+        guard case .ingested(let assetB, let dedupB) = b else { Issue.record("B not ingested"); return }
+        #expect(dedupB == true)
+        #expect(assetB.id == assetA.id)
+        #expect(assetB.blobHash == assetA.blobHash)    // first card image retained
+        // The orphan (card B) was reclaimed — only card A remains on disk.
+        #expect(env.blobFiles().count == 1)
+        #expect(env.store.hasBlob(
+            hash: try #require(assetA.blobHash), fileExtension: "png"))
+    }
+
     // MARK: - P14 short-circuit / idempotent retry
 
     @Test("re-ingesting the same bytes+provenance dedups: one blob, one asset")

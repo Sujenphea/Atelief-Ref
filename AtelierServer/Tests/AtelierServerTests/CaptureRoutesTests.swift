@@ -261,6 +261,41 @@ struct CaptureRoutesTests {
         #expect(try await env.items().isEmpty)
     }
 
+    @Test("a tweet content capture WITH a card image → 200 + blob-backed tweet asset")
+    func contentWithImagePersists() async throws {
+        let env = try await makeServerTestEnv(); defer { env.cleanup() }
+        let routes = makeRoutes(env)
+        let request = CaptureRequest(
+            image: ServerFixtures.pngBase64(),
+            provenance: ProvenanceDTO(
+                platform: "twitter", originalURL: "https://x.com/ava/status/900",
+                authorHandle: "@ava"),
+            collectionId: env.collectionID,
+            kind: "tweet",
+            payload: AssetPayload(tweet: TweetPayload(
+                tweetID: "https://x.com/ava/status/900", text: "a brass lamp",
+                authorHandle: "@ava",
+                media: [TweetMedia(url: "https://pbs.example/a.jpg")])))
+
+        let result = await routes.handleIngest(body: request.jsonData(), now: Self.now)
+
+        #expect(result.statusCode == 200)
+        #expect(result.response.status == "ingested")
+        let detail = try #require(try await env.items().first)
+        #expect(detail.asset.kind == .tweet)
+        #expect(detail.asset.dedupKey == "900")
+        // The card image landed as a real blob AND surfaces as the tweet's card.
+        let hash = try #require(detail.asset.blobHash)
+        if case .tweet(let t) = detail.asset.content {
+            #expect(t.cardImageBlobHash == hash)
+            #expect(t.text == "a brass lamp")
+        } else {
+            Issue.record("expected .tweet content")
+        }
+        // Provenance is aligned to the deterministic permalink.
+        #expect(detail.source.originalURL == "https://x.com/i/status/900")
+    }
+
     @Test("an unknown content kind → 400, nothing persisted")
     func unknownContentKindFails() async throws {
         let env = try await makeServerTestEnv(); defer { env.cleanup() }

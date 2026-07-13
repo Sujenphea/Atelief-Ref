@@ -123,6 +123,22 @@ public enum DirectInputReader {
             collectionID: collectionID)
     }
 
+    /// A REMOTE MEDIA-LESS capture that ALSO carries a card image (003 · C3,
+    /// Option 3): a `tweet` whose picture the extension fetched. The draft keeps
+    /// the content identity while the bytes become the asset's card-image blob —
+    /// the pipeline runs the blob-first stages for the image and persists via
+    /// `ingestContent(_:blob:)`. Same coordinator, ledger, and live-refresh.
+    public static func remoteContentWithImage(
+        draft: AssetContentDraft, imageData: Data,
+        provenance: SourceDraft, into collectionID: UUID
+    ) -> IngestInput {
+        IngestInput(
+            content: draft,
+            image: .data(imageData),
+            provenance: provenance,
+            collectionID: collectionID)
+    }
+
     // MARK: - Pasteboard interpretation
 
     /// The image data types we recognize on a pasteboard, in preference order.

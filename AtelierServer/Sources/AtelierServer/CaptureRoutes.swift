@@ -92,6 +92,17 @@ public struct CaptureRoutes: Sendable {
                 input, into: collectionID,
                 jobID: decoded.jobID, sourceID: decoded.sourceID,
                 sourceURL: decoded.provenance.originalURL)
+        case .contentWithImage(let decoded):
+            let collectionID = decoded.collectionID ?? defaultCollectionID()
+            let input = DirectInputReader.remoteContentWithImage(
+                draft: decoded.draft,
+                imageData: decoded.imageData,
+                provenance: decoded.provenance,
+                into: collectionID)
+            return await ingest(
+                input, into: collectionID,
+                jobID: decoded.jobID, sourceID: decoded.sourceID,
+                sourceURL: decoded.provenance.originalURL)
         }
     }
 

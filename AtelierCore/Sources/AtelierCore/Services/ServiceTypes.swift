@@ -110,6 +110,33 @@ public struct AssetContentDraft: Sendable, Equatable {
     }
 }
 
+/// The card-image bytes a MEDIA-LESS asset may ALSO carry (003 · C3, Option 3):
+/// a tweet keeps its `kind`/`payload` content identity AND stores its card image
+/// as a real blob, so the grid shows the picture instead of a text card. The
+/// byte-derived facts the pipeline already extracted (hash / mime / dims / size);
+/// the funnel validates them and fills the asset's blob columns. `nil` ⇒ the pure
+/// media-less path (no bytes). Dedup is UNAFFECTED — a tweet's identity is its
+/// tweet-id, not these bytes, so two captures with different card images still
+/// resolve to one tweet.
+public struct ContentBlobFacts: Sendable, Equatable {
+    public var blobHash: String
+    public var mimeType: String
+    public var width: Int
+    public var height: Int
+    public var fileSize: Int
+
+    public init(
+        blobHash: String, mimeType: String,
+        width: Int, height: Int, fileSize: Int
+    ) {
+        self.blobHash = blobHash
+        self.mimeType = mimeType
+        self.width = width
+        self.height = height
+        self.fileSize = fileSize
+    }
+}
+
 /// The caller-supplied provenance of an asset. Carries `capturedAt` (a
 /// provenance fact the caller owns) but no `id` — the service generates the
 /// source identity. `rawMetadata` defaults to an empty object.

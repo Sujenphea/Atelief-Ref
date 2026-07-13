@@ -24,6 +24,7 @@ struct CaptureDecoderTests {
     struct Contract: Decodable {
         struct Expected: Decodable {
             let captureRequest: CaptureRequest
+            let contentCaptureRequest: CaptureRequest
             let videoHeader: VideoCaptureHeader
         }
         let expected: Expected
@@ -52,6 +53,25 @@ struct CaptureDecoderTests {
         #expect(p.authorName == "A Designer")
         #expect(p.title == "a reference")
         #expect(p.rawMetadata == .object(["tweetId": .string("42")]))
+    }
+
+    @Test("contract fixture: the canonical tweet content-capture routes to .contentWithImage")
+    func contractContent() throws {
+        let fixture = try Self.loadContract()
+        let body = try JSONEncoder().encode(fixture.expected.contentCaptureRequest)
+        guard case .contentWithImage(let c) = try CaptureDecoder.decodeInput(
+            body: body, now: Self.now) else {
+            Issue.record("expected .contentWithImage"); return
+        }
+        #expect(c.draft.kind == .tweet)
+        #expect(!c.imageData.isEmpty)
+        let tweet = try #require(c.draft.payload.tweet)
+        #expect(tweet.tweetID == "42")
+        #expect(tweet.text == "a reference")
+        #expect(tweet.authorHandle == "@designer")
+        #expect(tweet.media == [TweetMedia(url: "https://pbs.twimg.example/a.jpg")])
+        #expect(c.provenance.platform == .twitter)
+        #expect(c.provenance.originalURL == "https://x.com/designer/status/42")
     }
 
     @Test("contract fixture: the canonical video header decodes to the expected SourceDraft")
@@ -247,6 +267,36 @@ struct CaptureDecoderTests {
         guard case .image = try CaptureDecoder.decodeInput(
             body: explicit.jsonData(), now: Self.now) else {
             Issue.record("expected .image for a byte kind"); return
+        }
+    }
+
+    @Test("decodeInput routes a media-less kind WITH an image → .contentWithImage")
+    func decodesContentWithImage() throws {
+        let request = CaptureRequest(
+            image: ServerFixtures.pngBase64(),
+            provenance: ProvenanceDTO(platform: "twitter", originalURL: "https://x.com/a/status/9"),
+            collectionId: Self.collectionID,
+            kind: "tweet",
+            payload: AssetPayload(tweet: TweetPayload(tweetID: "9", text: "hi")))
+        guard case .contentWithImage(let c) = try CaptureDecoder.decodeInput(
+            body: request.jsonData(), now: Self.now) else {
+            Issue.record("expected .contentWithImage"); return
+        }
+        #expect(c.draft.kind == .tweet)
+        #expect(c.draft.payload.tweet?.tweetID == "9")
+        #expect(!c.imageData.isEmpty)
+        #expect(c.collectionID == Self.collectionID)
+    }
+
+    @Test("decodeInput rejects a media-less kind whose image is malformed base64 (.invalidBase64)")
+    func contentWithImageBadBase64() {
+        let request = CaptureRequest(
+            image: "!!! not base64 !!!",
+            provenance: ProvenanceDTO(platform: "twitter", originalURL: "https://x.com/a/status/9"),
+            kind: "tweet",
+            payload: AssetPayload(tweet: TweetPayload(tweetID: "9", text: "hi")))
+        #expect(throws: CaptureDecodeError.invalidBase64) {
+            try CaptureDecoder.decodeInput(body: request.jsonData(), now: Self.now)
         }
     }
 

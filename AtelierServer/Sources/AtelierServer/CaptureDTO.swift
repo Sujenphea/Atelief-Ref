@@ -181,12 +181,28 @@ public struct DecodedContentCapture: Equatable, Sendable {
     public let sourceID: String?
 }
 
-/// What a JSON capture body decoded to (003 · C3): a byte-backed image or a
-/// media-less content item. The route branches on this once — both flow through
-/// the same coordinator (ledger / live-refresh shared).
+/// A validated MEDIA-LESS capture that ALSO carries a card image (003 · C3,
+/// Option 3): the ``AssetContentDraft`` plus the decoded image bytes it renders,
+/// with provenance + target + the optional bulk-ledger tags. A tweet whose
+/// picture rides in with the request — the sibling of ``DecodedContentCapture``
+/// with a real blob.
+public struct DecodedContentImageCapture: Equatable, Sendable {
+    public let draft: AssetContentDraft
+    public let imageData: Data
+    public let provenance: SourceDraft
+    public let collectionID: UUID?
+    public let jobID: UUID?
+    public let sourceID: String?
+}
+
+/// What a JSON capture body decoded to (003 · C3): a byte-backed image, a
+/// media-less content item, or a media-less item WITH a card image (Option 3).
+/// The route branches on this once — all flow through the same coordinator
+/// (ledger / live-refresh shared).
 public enum DecodedInput: Equatable, Sendable {
     case image(DecodedCapture)
     case content(DecodedContentCapture)
+    case contentWithImage(DecodedContentImageCapture)
 }
 
 /// Why a raw capture body could not be turned into a `DecodedCapture`. Each maps
@@ -233,11 +249,14 @@ public enum CaptureDecoder {
     /// result; both share the ingest coordinator downstream.
     ///
     /// Routing: a `kind` naming a MEDIA-LESS ``AssetKind`` (`tweet` / `link` /
-    /// `color`) is a content capture; an absent `kind` or a byte kind
-    /// (`image` / `video`) is the image path. As with the image decode, per-kind
-    /// content requirements (valid hex / URL / tweet id) are NOT checked here —
-    /// `AppServices.ingestContent` is the single content authority; this only
-    /// rejects what is structurally unusable (unknown kind, no payload).
+    /// `color`) is a content capture — and when it ALSO carries an `image` (a
+    /// tweet's card picture, Option 3) it routes to ``contentWithImage`` so the
+    /// asset gets a real blob; without an image it stays a pure text-card
+    /// ``content``. An absent `kind` or a byte kind (`image` / `video`) is the
+    /// image path. As with the image decode, per-kind content requirements (valid
+    /// hex / URL / tweet id) are NOT checked here — `AppServices.ingestContent` is
+    /// the single content authority; this only rejects what is structurally
+    /// unusable (unknown kind, no payload, malformed image base64).
     public static func decodeInput(body: Data, now: Date) throws -> DecodedInput {
         let request = try decodeRequest(body)
         if let rawKind = request.kind {
@@ -245,6 +264,12 @@ public enum CaptureDecoder {
                 throw CaptureDecodeError.unknownKind(rawKind)
             }
             if !kind.isByteBacked {
+                // A media-less kind carrying image bytes → the hybrid card-image
+                // path (Option 3); otherwise a pure text-card content item.
+                if request.image != nil {
+                    return .contentWithImage(
+                        try decodeContentWithImage(request, kind: kind, now: now))
+                }
                 return .content(try decodeContent(request, kind: kind, now: now))
             }
             // A byte kind (image/video) still needs its bytes — image path.
@@ -278,15 +303,8 @@ public enum CaptureDecoder {
     private static func decodeImage(
         _ request: CaptureRequest, now: Date
     ) throws -> DecodedCapture {
-        guard let image = request.image else { throw CaptureDecodeError.emptyImage }
-        guard let imageData = Data(base64Encoded: image) else {
-            throw CaptureDecodeError.invalidBase64
-        }
-        guard !imageData.isEmpty else {
-            throw CaptureDecodeError.emptyImage
-        }
         return DecodedCapture(
-            imageData: imageData,
+            imageData: try decodeImageBytes(request.image),
             provenance: try makeSourceDraft(request.provenance, now: now),
             collectionID: request.collectionId,
             jobID: request.jobId,
@@ -307,6 +325,35 @@ public enum CaptureDecoder {
             collectionID: request.collectionId,
             jobID: request.jobId,
             sourceID: request.sourceId)
+    }
+
+    /// The hybrid content-with-card-image path (003 · C3, Option 3): a media-less
+    /// `payload` AND valid non-empty base64 image bytes. Both must be structurally
+    /// usable; the funnel validates the content per kind downstream.
+    private static func decodeContentWithImage(
+        _ request: CaptureRequest, kind: AssetKind, now: Date
+    ) throws -> DecodedContentImageCapture {
+        guard let payload = request.payload else {
+            throw CaptureDecodeError.missingContentPayload
+        }
+        return DecodedContentImageCapture(
+            draft: AssetContentDraft(kind: kind, payload: payload),
+            imageData: try decodeImageBytes(request.image),
+            provenance: try makeSourceDraft(request.provenance, now: now),
+            collectionID: request.collectionId,
+            jobID: request.jobId,
+            sourceID: request.sourceId)
+    }
+
+    /// Validate a base64 `image` field into non-empty bytes (shared by the image
+    /// and hybrid content-with-image paths — DRY).
+    private static func decodeImageBytes(_ image: String?) throws -> Data {
+        guard let image else { throw CaptureDecodeError.emptyImage }
+        guard let imageData = Data(base64Encoded: image) else {
+            throw CaptureDecodeError.invalidBase64
+        }
+        guard !imageData.isEmpty else { throw CaptureDecodeError.emptyImage }
+        return imageData
     }
 
     /// Turn the base64-JSON provenance header of a **video** upload into a

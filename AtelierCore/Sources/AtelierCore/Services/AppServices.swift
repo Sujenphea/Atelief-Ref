@@ -314,17 +314,24 @@ public final class AppServices: Sendable {
         }
     }
 
-    /// Ingest a MEDIA-LESS asset (003 · O1) — a `color` (C1); `link`/`tweet`
-    /// arrive in C2/C3 — with its REQUIRED provenance into a collection, in ONE
-    /// transaction (C6). The sibling of ``ingest(_:from:into:placement:)`` for
-    /// the content path: no bytes, so no blob hash / dims / file size — the
-    /// asset's substance is its ``AssetPayload`` and it is born `.downloaded`
-    /// (nothing to fetch). Kind-aware dedup reuses an existing asset+source
-    /// sharing the same `(kind, dedup_key)` and provenance.
+    /// Ingest a MEDIA-LESS asset (003 · O1) — a `color` / `link` / `tweet` — with
+    /// its REQUIRED provenance into a collection, in ONE transaction (C6). The
+    /// sibling of ``ingest(_:from:into:placement:)`` for the content path: the
+    /// asset's substance is its ``AssetPayload`` and it is born `.downloaded`.
+    /// Kind-aware dedup reuses an existing asset+source sharing the same
+    /// `(kind, dedup_key)` and provenance.
+    ///
+    /// `blob` (003 · C3, Option 3) is the OPTIONAL card image: when present the
+    /// otherwise media-less asset ALSO stores a real blob (its `blob_hash` / mime
+    /// / dims / size), so a tweet renders its picture rather than a text card. The
+    /// bytes never affect identity — dedup stays keyed on `(kind, dedup_key)` — so
+    /// two captures with different card images resolve to one tweet (first capture
+    /// wins; a later card image does NOT overwrite an existing asset's blob).
     ///
     /// Steps inside the funnel:
-    /// 1. normalize + validate the draft (per-kind payload, canonical dedup key)
-    ///    and the per-platform `originalURL` (+ placement if supplied);
+    /// 1. normalize + validate the draft (per-kind payload, canonical dedup key),
+    ///    the optional blob facts (dims / size / hash), and the per-platform
+    ///    `originalURL` (+ placement if supplied);
     /// 2. assert the target collection exists (`.notFound`);
     /// 3. **kind-aware dedup** — reuse an asset with the same `(kind, dedup_key)`
     ///    whose source matches the incoming provenance;
@@ -332,12 +339,26 @@ public final class AppServices: Sendable {
     @discardableResult
     public func ingestContent(
         _ draft: AssetContentDraft,
+        blob: ContentBlobFacts? = nil,
         from source: SourceDraft,
         into collectionID: UUID,
         placement: CanvasPlacement? = nil
     ) async throws -> IngestResult {
         // 1. validate + normalize (fail fast, before opening the write).
         let normalized = try Validation.contentDraft(draft)
+        // Validate the optional card-image blob facts (Option 3). Held as a plain
+        // tuple so the @Sendable write closure can capture it; the hash is
+        // canonicalized (lowercased-hex) exactly like the byte path.
+        let normalizedBlob: (hash: String, mimeType: String, width: Int, height: Int, fileSize: Int)?
+        if let blob {
+            try Validation.dimensions(width: blob.width, height: blob.height)
+            try Validation.fileSize(blob.fileSize)
+            normalizedBlob = (
+                try Validation.blobHash(blob.blobHash), blob.mimeType,
+                blob.width, blob.height, blob.fileSize)
+        } else {
+            normalizedBlob = nil
+        }
         // Align the source's `original_url` with the kind's canonical identity so
         // two captures of the same thing dedup even when written differently: a
         // link's `original_url` becomes its canonical URL (003 · C2); a tweet's
@@ -383,12 +404,15 @@ public final class AppServices: Sendable {
                     authorName: effectiveSource.authorName, title: effectiveSource.title,
                     capturedAt: effectiveSource.capturedAt, rawMetadata: effectiveSource.rawMetadata)
                 try newSource.insert(db)
-                // Media-less: byte columns nil; content in `payload`; born
-                // `.downloaded` (its substance is fully present).
+                // Content in `payload`; born `.downloaded` (its substance is fully
+                // present). Byte columns are nil UNLESS a card image was supplied
+                // (Option 3) — then the asset also carries a real blob.
                 let newAsset = Asset(
                     id: UUID(), kind: normalized.kind,
-                    blobHash: nil, mimeType: nil, width: nil, height: nil,
-                    duration: nil, fileSize: nil, downloadState: .downloaded,
+                    blobHash: normalizedBlob?.hash, mimeType: normalizedBlob?.mimeType,
+                    width: normalizedBlob?.width, height: normalizedBlob?.height,
+                    duration: nil, fileSize: normalizedBlob?.fileSize,
+                    downloadState: .downloaded,
                     createdAt: Date(), sourceId: newSource.id,
                     payload: normalized.payload.jsonString(),
                     dedupKey: normalized.dedupKey, searchText: normalized.searchText)

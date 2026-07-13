@@ -30,6 +30,13 @@ public enum IngestSource: Sendable {
     case bytes(ByteSource)
     /// A media-less item: skip all byte stages, straight to `ingestContent`.
     case content(AssetContentDraft)
+    /// A media-less item that ALSO carries a card image (003 · C3, Option 3): a
+    /// tweet whose picture is stored as a real blob. The pipeline runs the
+    /// blob-first byte stages (hash / thumbnail / store) for the image AND passes
+    /// the draft to `ingestContent(_:blob:)`, so the asset keeps its `tweet`
+    /// content identity while rendering its picture. Because dedup is by tweet-id
+    /// (not bytes), a card image discarded on dedup is reclaimed (never orphaned).
+    case contentWithBytes(draft: AssetContentDraft, image: ByteSource)
 }
 
 /// One image to ingest: its bytes, its REQUIRED provenance, the target
@@ -85,6 +92,20 @@ public struct IngestInput: Sendable {
         self.init(
             source: .content(content), provenance: provenance,
             collectionID: collectionID, placement: placement)
+    }
+
+    /// A MEDIA-LESS item WITH a card image (003 · C3, Option 3) — a `tweet`
+    /// content draft plus the bytes of its picture, stored as a real blob.
+    public init(
+        content: AssetContentDraft,
+        image: ByteSource,
+        provenance: SourceDraft,
+        collectionID: UUID,
+        placement: CanvasPlacement? = nil
+    ) {
+        self.init(
+            source: .contentWithBytes(draft: content, image: image),
+            provenance: provenance, collectionID: collectionID, placement: placement)
     }
 }
 

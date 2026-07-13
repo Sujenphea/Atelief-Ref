@@ -84,10 +84,14 @@ public struct IngestPipeline: Sendable {
     public func ingest(_ input: IngestInput) async -> IngestOutcome {
         // Branch once on what the item carries (003 · C3): a media-less content
         // draft skips every byte stage and goes straight to `ingestContent`;
-        // bytes take the blob-first pipeline below.
+        // a content draft WITH a card image runs the blob-first stages for the
+        // image AND persists via `ingestContent(_:blob:)` (Option 3); plain bytes
+        // take the blob-first pipeline.
         switch input.source {
         case .content(let draft):
             return await ingestContent(draft, input: input)
+        case .contentWithBytes(let draft, let image):
+            return await ingestContentWithBytes(draft, image, input: input)
         case .bytes(let byteSource):
             return await ingestBytes(byteSource, input: input)
         }
@@ -110,44 +114,60 @@ public struct IngestPipeline: Sendable {
         }
     }
 
-    /// Persist a byte-backed item — the original blob-first (A2) + P14 pipeline.
-    private func ingestBytes(
-        _ byteSource: ByteSource, input: IngestInput
-    ) async -> IngestOutcome {
-        // Phase 8 (16A): monotonic marks around each stage — negligible when the
-        // timing sink is nil, and the signal that reveals a thumbnail stall (P16).
-        let clock = ContinuousClock()
-        let started = clock.now
-        // Set only when THIS call created the blob; used to reclaim on failure
-        // before a DB row exists (G2). Never set on the P14 dedup short-circuit.
+    /// The result of the shared blob-first storage stage (A2 + P14) — everything
+    /// the persist step and the phase-timing need. `createdBlob` is set ONLY when
+    /// THIS call wrote a brand-new blob (so it can be reclaimed before any DB row
+    /// exists, G2); it is `nil` on the P14 short-circuit (the blob already existed).
+    private struct StoredBytes {
+        let hash: String
+        let meta: ImageMetadata
+        let bytesCount: Int
+        let createdBlob: (hash: String, fileExtension: String)?
+        let blobExisted: Bool
+        let tiersGenerated: Int
+        let afterMetadata: ContinuousClock.Instant
+        let afterThumbnails: ContinuousClock.Instant
+    }
+
+    /// The blob-first (A2) + P14 storage stage, shared by the byte path and the
+    /// content-with-card-image path (Option 3): read the bytes, hash them, extract
+    /// byte metadata, then store the blob + any MISSING thumbnail tiers only when
+    /// absent. Reclaims a brand-new blob if a LATER store stage throws (so a
+    /// half-stored item never leaves an orphan); the caller reclaims on a persist
+    /// failure or a dedup-discard, using the returned `createdBlob`.
+    private func storeBytesBlobFirst(
+        _ byteSource: ByteSource, clock: ContinuousClock
+    ) async throws -> StoredBytes {
+        // 1. Bytes: in-memory as-is; a file URL is read now (a read failure —
+        //    missing/unreadable file — maps to `.unreadableSource`).
+        let bytes: Data
+        switch byteSource {
+        case .data(let d):
+            bytes = d
+        case .fileURL(let url):
+            do {
+                bytes = try Data(contentsOf: url)
+            } catch {
+                throw IngestError.unreadableSource
+            }
+        }
+
+        // 2. Content hash (address for the blob + thumbnails).
+        let hash = ContentHasher.hash(bytes)
+
+        // 3. Byte-derived metadata (throws ImageError → decode/unsupported/
+        //    unreadable via IngestError(mapping:)). A movie container can't be
+        //    read by CGImageSource, so it falls back to the AVFoundation path.
+        let meta = try await Self.extractMetadata(from: bytes)
+        let afterMetadata = clock.now
+
+        // Set only when THIS call created the blob; reclaimed here if a later
+        // store stage throws, and returned so the caller can reclaim it too (G2).
         var createdBlob: (hash: String, fileExtension: String)? = nil
         do {
-            // 1. Bytes: in-memory as-is; a file URL is read now (a read failure
-            //    — missing/unreadable file — maps to `.unreadableSource`).
-            let bytes: Data
-            switch byteSource {
-            case .data(let d):
-                bytes = d
-            case .fileURL(let url):
-                do {
-                    bytes = try Data(contentsOf: url)
-                } catch {
-                    throw IngestError.unreadableSource
-                }
-            }
-
-            // 2. Content hash (address for the blob + thumbnails).
-            let hash = ContentHasher.hash(bytes)
-
-            // 3. Byte-derived metadata (throws ImageError → decode/unsupported/
-            //    unreadable via IngestError(mapping:)). A movie container can't be
-            //    read by CGImageSource, so it falls back to the AVFoundation path.
-            let meta = try await Self.extractMetadata(from: bytes)
-            let afterMetadata = clock.now
-
-            // 4. Blob-first (A2) + hash-first short-circuit (P14).
-            //    Store the blob only if it is not already present; a blob that
-            //    exists is complete (MediaStore atomicity), so this is free dedup.
+            // 4. Blob-first (A2) + hash-first short-circuit (P14). Store the blob
+            //    only if not already present; an existing blob is complete
+            //    (MediaStore atomicity), so this is free dedup.
             let blobExisted = store.hasBlob(hash: hash, fileExtension: meta.fileExtension)
             if !blobExisted {
                 do {
@@ -185,42 +205,114 @@ public struct IngestPipeline: Sendable {
             }
             let afterThumbnails = clock.now
 
-            // 5. Persist in ONE transaction (P15). Only now — the blob is durable
-            //    (A2), so the row can never reference a missing blob.
-            let draft = AssetDraft(
-                kind: meta.kind,
-                blobHash: hash,
-                mimeType: meta.mimeType,
-                width: meta.width,
-                height: meta.height,
-                duration: meta.duration,
-                fileSize: bytes.count,
-                downloadState: .downloaded)
-            let result = try await services.ingest(
-                draft, from: input.provenance,
-                into: input.collectionID, placement: input.placement)
-            let finished = clock.now
-
-            // Emit the phase timing (16A) — reveals a thumbnail stall (P16 trigger).
-            timing?(IngestTiming(
-                hash: hash,
-                blobExisted: blobExisted,
+            return StoredBytes(
+                hash: hash, meta: meta, bytesCount: bytes.count,
+                createdBlob: createdBlob, blobExisted: blobExisted,
                 tiersGenerated: missingTiers.count,
-                metadata: started.duration(to: afterMetadata),
-                thumbnails: afterMetadata.duration(to: afterThumbnails),
-                persist: afterThumbnails.duration(to: finished),
-                total: started.duration(to: finished)))
-
-            // 6. Success — the asset (new or deduped) with the dedup flag.
-            return .ingested(asset: result.asset, deduplicated: result.wasDeduplicated)
+                afterMetadata: afterMetadata, afterThumbnails: afterThumbnails)
         } catch {
-            // G2: if we wrote a brand-new blob and never got a DB row, reclaim it
-            // so MediaReaper isn't left with an unreferenced orphan. Never delete
-            // a blob a prior asset already shares (createdBlob stays nil then).
+            // A store stage failed after we wrote a brand-new blob — reclaim it so
+            // MediaReaper isn't left with an orphan, then rethrow.
             if let created = createdBlob {
                 _ = try? store.removeBlob(
                     hash: created.hash, fileExtension: created.fileExtension)
             }
+            throw error
+        }
+    }
+
+    /// Persist a byte-backed item — the original blob-first (A2) + P14 pipeline.
+    private func ingestBytes(
+        _ byteSource: ByteSource, input: IngestInput
+    ) async -> IngestOutcome {
+        // Phase 8 (16A): monotonic marks around each stage — negligible when the
+        // timing sink is nil, and the signal that reveals a thumbnail stall (P16).
+        let clock = ContinuousClock()
+        let started = clock.now
+        do {
+            let stored = try await storeBytesBlobFirst(byteSource, clock: clock)
+
+            // 5. Persist in ONE transaction (P15). Only now — the blob is durable
+            //    (A2), so the row can never reference a missing blob.
+            let draft = AssetDraft(
+                kind: stored.meta.kind,
+                blobHash: stored.hash,
+                mimeType: stored.meta.mimeType,
+                width: stored.meta.width,
+                height: stored.meta.height,
+                duration: stored.meta.duration,
+                fileSize: stored.bytesCount,
+                downloadState: .downloaded)
+            do {
+                let result = try await services.ingest(
+                    draft, from: input.provenance,
+                    into: input.collectionID, placement: input.placement)
+                let finished = clock.now
+
+                // Emit the phase timing (16A) — reveals a thumbnail stall (P16 trigger).
+                timing?(IngestTiming(
+                    hash: stored.hash,
+                    blobExisted: stored.blobExisted,
+                    tiersGenerated: stored.tiersGenerated,
+                    metadata: started.duration(to: stored.afterMetadata),
+                    thumbnails: stored.afterMetadata.duration(to: stored.afterThumbnails),
+                    persist: stored.afterThumbnails.duration(to: finished),
+                    total: started.duration(to: finished)))
+
+                // 6. Success — the asset (new or deduped) with the dedup flag.
+                return .ingested(asset: result.asset, deduplicated: result.wasDeduplicated)
+            } catch {
+                // G2: persist failed after a brand-new blob was written — reclaim it.
+                if let created = stored.createdBlob {
+                    _ = try? store.removeBlob(
+                        hash: created.hash, fileExtension: created.fileExtension)
+                }
+                throw error
+            }
+        } catch {
+            return .failed(IngestError(mapping: error))
+        }
+    }
+
+    /// Persist a MEDIA-LESS item that carries a card image (003 · C3, Option 3):
+    /// run the shared blob-first store for the picture, then persist via
+    /// `ingestContent(_:blob:)` so the asset keeps its `tweet` content identity
+    /// AND renders its picture. Because dedup is by tweet-id (not bytes), a card
+    /// image the funnel discards on dedup is reclaimed here — it would otherwise
+    /// be an orphan the byte path never produces (there dedup implies the blob
+    /// already existed).
+    private func ingestContentWithBytes(
+        _ draft: AssetContentDraft, _ byteSource: ByteSource, input: IngestInput
+    ) async -> IngestOutcome {
+        let clock = ContinuousClock()
+        do {
+            let stored = try await storeBytesBlobFirst(byteSource, clock: clock)
+            let blob = ContentBlobFacts(
+                blobHash: stored.hash, mimeType: stored.meta.mimeType,
+                width: stored.meta.width, height: stored.meta.height,
+                fileSize: stored.bytesCount)
+            do {
+                let result = try await services.ingestContent(
+                    draft, blob: blob, from: input.provenance,
+                    into: input.collectionID, placement: input.placement)
+                // If the funnel deduped to an asset that does NOT reference our
+                // freshly-stored blob, our card image is unreferenced — reclaim it
+                // (compared case-insensitively; the on-disk key is `created.hash`).
+                if let created = stored.createdBlob,
+                   result.asset.blobHash?.lowercased() != created.hash.lowercased() {
+                    _ = try? store.removeBlob(
+                        hash: created.hash, fileExtension: created.fileExtension)
+                }
+                return .ingested(asset: result.asset, deduplicated: result.wasDeduplicated)
+            } catch {
+                // G2: persist failed after a brand-new blob was written — reclaim it.
+                if let created = stored.createdBlob {
+                    _ = try? store.removeBlob(
+                        hash: created.hash, fileExtension: created.fileExtension)
+                }
+                throw error
+            }
+        } catch {
             return .failed(IngestError(mapping: error))
         }
     }

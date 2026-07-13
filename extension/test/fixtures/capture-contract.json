@@ -9,6 +9,19 @@
     "rawMetadata": { "tweetId": "42" }
   },
   "image": "iVBORw0KGgoAAAANSUhEUg==",
+  "_comment_content": "003 · C3 Option 3: a tweet content-capture carrying its card image. `contentInput.provenance` is the PRE-normalize provenance (with client hints mediaUrl/rawMetadata) the JS feeds to tweetContent(); `expected.contentCaptureRequest` is what buildContentCaptureRequest produces AND what Swift decodeInput routes to .contentWithImage.",
+  "contentInput": {
+    "image": "iVBORw0KGgoAAAANSUhEUg==",
+    "provenance": {
+      "platform": "twitter",
+      "originalURL": "https://x.com/designer/status/42",
+      "authorHandle": "@designer",
+      "authorName": "A Designer",
+      "title": "a reference",
+      "mediaUrl": "https://pbs.twimg.example/a.jpg",
+      "rawMetadata": { "tweetId": "42" }
+    }
+  },
   "expected": {
     "captureRequest": {
       "image": "iVBORw0KGgoAAAANSUhEUg==",
@@ -19,6 +32,27 @@
         "authorName": "A Designer",
         "title": "a reference",
         "rawMetadata": { "tweetId": "42" }
+      }
+    },
+    "contentCaptureRequest": {
+      "image": "iVBORw0KGgoAAAANSUhEUg==",
+      "provenance": {
+        "platform": "twitter",
+        "originalURL": "https://x.com/designer/status/42",
+        "authorHandle": "@designer",
+        "authorName": "A Designer",
+        "title": "a reference",
+        "rawMetadata": { "tweetId": "42" }
+      },
+      "kind": "tweet",
+      "payload": {
+        "tweet": {
+          "tweetID": "42",
+          "media": [{ "url": "https://pbs.twimg.example/a.jpg" }],
+          "text": "a reference",
+          "authorHandle": "@designer",
+          "authorName": "A Designer"
+        }
       }
     },
     "videoHeader": {
