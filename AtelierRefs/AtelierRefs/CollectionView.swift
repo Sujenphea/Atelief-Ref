@@ -51,6 +51,7 @@ struct CollectionView: View {
         }
         .navigationTitle(model.name(for: collectionID))
         .toolbar {
+            ToolbarItem { sortMenu }
             ToolbarItem {
                 Button {
                     Task {
@@ -64,6 +65,34 @@ struct CollectionView: View {
                 .help("Create a space seeded from this collection's arrangement")
                 .disabled(model.items.isEmpty)
             }
+        }
+    }
+
+    /// The grid sort control (007 G4). A menu-styled picker bound to the stored
+    /// per-collection mode; picking one persists it and reloads the grid.
+    private var sortMenu: some View {
+        let selection = Binding(
+            get: { model.sortMode(for: collectionID) },
+            set: { model.setSortMode($0, for: collectionID) })
+        return Menu {
+            Picker("Sort", selection: selection) {
+                Label("Manual", systemImage: "hand.draw").tag(SortMode.manual)
+                Label("Newest", systemImage: "clock").tag(SortMode.newest)
+                Label("Most Viewed", systemImage: "eye").tag(SortMode.mostViewed)
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Label("Sort: \(Self.sortLabel(model.sortMode(for: collectionID)))",
+                  systemImage: "arrow.up.arrow.down")
+        }
+        .help("Choose how this collection's grid is ordered")
+    }
+
+    private static func sortLabel(_ mode: SortMode) -> String {
+        switch mode {
+        case .manual: "Manual"
+        case .newest: "Newest"
+        case .mostViewed: "Most Viewed"
         }
     }
 
@@ -230,17 +259,24 @@ struct CollectionView: View {
                     let target = i + delta
                     if model.items.indices.contains(target) {
                         model.select(model.items[target])
+                        // Stepping to a new item in the detail page is a view.
+                        model.recordView(assetID: model.items[target].asset.id)
                     }
                 }
             },
-            onClose: { withAnimation { nav.presentedItemID = nil } })
+            onClose: {
+                model.flushViewBumps()
+                withAnimation { nav.presentedItemID = nil }
+            })
     }
 
     /// Open the full-window detail page for `detail`: bind the shared selection
     /// and raise the overlay via `NavModel.presentedItemID` (the routing seam the
-    /// grid click, the Return key, and the Space canvas all funnel through).
+    /// grid click, the Return key, and the Space canvas all funnel through). The
+    /// open is the deliberate "view" signal (007 G4).
     private func open(_ detail: CollectionItemDetail) {
         model.select(detail)
+        model.recordView(assetID: detail.asset.id)
         withAnimation { nav.presentedItemID = detail.item.id }
     }
 
@@ -270,7 +306,10 @@ struct CollectionView: View {
     }
 
     private func reorder(dropped payloads: [String], onto targetAssetID: UUID) -> Bool {
-        guard let first = payloads.first, let movingAssetID = UUID(uuidString: first)
+        // Reordering only means something in manual mode — reject the drop
+        // otherwise (the model guards too, so this is the visual half).
+        guard model.sortMode(for: collectionID) == .manual,
+              let first = payloads.first, let movingAssetID = UUID(uuidString: first)
         else { return false }
         model.reorderItem(movingAssetID: movingAssetID, toIndexOf: targetAssetID)
         return true

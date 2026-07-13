@@ -187,6 +187,7 @@ struct SpaceView: View {
     /// the asset and raise the overlay.
     private func openAssetDetail(_ detail: SpaceItemDetail) {
         tagStore.bind(to: detail.asset?.id)
+        if let id = detail.asset?.id { model.recordView(assetID: id) }
         withAnimation { detailItem = detail }
     }
 
@@ -216,6 +217,7 @@ struct SpaceView: View {
                     requestDelete: nil),
                 navigator: nil,
                 onClose: {
+                    model.flushViewBumps()
                     withAnimation { detailItem = nil }
                     tagStore.bind(to: nil)
                 })

@@ -123,6 +123,14 @@ final class IngestionModel: ObservableObject {
     /// newer one (fast folder switch, or a mutation-triggered reload).
     private var contentsLoadID = 0
 
+    /// Coalesces detail-open view signals into batched `recordViews` writes
+    /// (007 G4). Flushed by `flushViewBumps()` on detail-close and by a short
+    /// debounce timer.
+    private var viewBumps = ViewBumpCoalescer()
+    private var viewFlushTask: Task<Void, Never>?
+    /// How long a burst of opens is batched before an automatic flush.
+    private let viewFlushDelay: Duration = .seconds(3)
+
     /// Downloads a bare image URL (drag/paste with no bytes) off-main. Stateless +
     /// injectable; the default uses the shared session (tests inject a stub one).
     private let remoteFetcher = RemoteImageFetcher()
@@ -495,9 +503,10 @@ final class IngestionModel: ObservableObject {
         guard let services else { return }
         contentsLoadID &+= 1
         let loadID = contentsLoadID
+        let sort = sortMode(for: id)
         Task {
             do {
-                let loadedItems = try await services.collectionItems(in: id)
+                let loadedItems = try await services.collectionItems(in: id, sort: sort)
                 let loadedSubfolders = try await services.childCollections(of: id)
                 // A newer load has superseded this one — the two DB reads can
                 // finish out of order, so a stale read must NOT overwrite the
@@ -519,6 +528,63 @@ final class IngestionModel: ObservableObject {
         }
     }
 
+    // MARK: - Sort (007 G4)
+
+    /// The stored sort mode for `id`, resolved from the folder cache. `.manual`
+    /// when the folder isn't cached yet (the safe, drag-enabled default).
+    func sortMode(for id: UUID) -> SortMode {
+        folders.first { $0.id == id }?.sortMode ?? .manual
+    }
+
+    /// Change a folder's grid sort mode: persist it, update the folder cache
+    /// optimistically so the toolbar reflects the choice immediately, and reload
+    /// the contents in the new order. Drag-reorder is meaningful only in
+    /// `.manual`, so the grid disables it in the other modes.
+    func setSortMode(_ mode: SortMode, for id: UUID) {
+        guard let services, sortMode(for: id) != mode else { return }
+        if let index = folders.firstIndex(where: { $0.id == id }) {
+            folders[index].sortMode = mode
+        }
+        loadContents(of: id)
+        Task {
+            do {
+                try await services.setCollectionSortMode(mode, for: id)
+            } catch {
+                lastError = Self.message(for: error)
+                await refreshFolders()          // resync the cache to the truth
+                loadContents(of: id)
+            }
+        }
+    }
+
+    // MARK: - View tracking (007 G4)
+
+    /// Record that `assetID`'s detail page was opened (the deliberate view
+    /// signal). Coalesced: repeated opens in the debounce window collapse to one
+    /// bump, flushed after `viewFlushDelay` or on `flushViewBumps()`.
+    func recordView(assetID: UUID) {
+        viewBumps.record(assetID)
+        viewFlushTask?.cancel()
+        viewFlushTask = Task { [viewFlushDelay] in
+            try? await Task.sleep(for: viewFlushDelay)
+            guard !Task.isCancelled else { return }
+            flushViewBumps()
+        }
+    }
+
+    /// Write any pending view bumps now (called on detail-close). One batched
+    /// `recordViews` through the funnel; unknown/deleted ids are skipped by core.
+    func flushViewBumps() {
+        viewFlushTask?.cancel()
+        viewFlushTask = nil
+        guard let services, !viewBumps.isEmpty else { return }
+        let ids = viewBumps.drain()
+        Task {
+            do { try await services.recordViews(ids) }
+            catch { lastError = Self.message(for: error) }
+        }
+    }
+
     // MARK: - Reorder (drag-to-reorder)
 
     /// Move the item with `movingAssetID` to the grid slot currently held by
@@ -527,9 +593,10 @@ final class IngestionModel: ObservableObject {
     /// `setGridOrder` (the write hops OFF the main actor). On failure the message
     /// surfaces via ``lastError`` and the folder reloads to the truth; on success
     /// it reloads too (core sorts by `manual_order`, so state stays consistent).
-    /// A no-op when the ids match or either isn't a current item (foreign drop).
+    /// A no-op when the ids match, either isn't a current item (foreign drop), or
+    /// the folder isn't in `.manual` mode (reordering has no meaning there).
     func reorderItem(movingAssetID: UUID, toIndexOf targetAssetID: UUID) {
-        guard let services else { return }
+        guard let services, sortMode(for: selectedFolderID) == .manual else { return }
         let currentIDs = items.map { $0.asset.id }
         guard let newOrder = reorderedIDs(
             ids: currentIDs, movingID: movingAssetID, toIndexOf: targetAssetID)
