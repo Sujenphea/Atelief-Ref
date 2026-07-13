@@ -152,11 +152,10 @@ struct ItemDetailView: View {
                 }
             case .image:
                 // Show the placeholder preview instantly, then swap to the
-                // full-resolution decode when it lands.
+                // full-resolution decode when it lands. Keyed by `asset.id` so the
+                // zoom/pan resets on navigation but survives the preview→full swap.
                 if let image = fullImage ?? previewImage {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
+                    ZoomableImage(image: image).id(asset.id)
                 } else {
                     ProgressView()
                 }
@@ -184,6 +183,65 @@ struct ItemDetailView: View {
             // decode over the item the user moved to.
             if !Task.isCancelled { fullImage = decoded }
         }
+    }
+}
+
+// MARK: - Zoomable image
+
+/// A fit-to-view image with pinch-to-zoom and (once zoomed) drag-to-pan; a
+/// double-click snaps back to fit. Its zoom/pan is local `@State`, and the
+/// caller keys it by `asset.id` so navigation resets it while the low-res→full-res
+/// swap (same id) keeps the current zoom.
+private struct ZoomableImage: View {
+    let image: NSImage
+
+    @State private var zoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @GestureState private var pinch: CGFloat = 1
+    @GestureState private var dragTranslation: CGSize = .zero
+
+    /// Ceiling so a huge pinch can't lose the image off-screen.
+    private let maxZoom: CGFloat = 6
+
+    var body: some View {
+        Image(nsImage: image)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .scaleEffect(zoom * pinch)
+            .offset(
+                x: pan.width + dragTranslation.width,
+                y: pan.height + dragTranslation.height)
+            .gesture(magnify)
+            .simultaneousGesture(dragToPan)
+            .onTapGesture(count: 2) {
+                withAnimation(.spring(duration: 0.25)) { zoom = 1; pan = .zero }
+            }
+            .animation(.interactiveSpring, value: zoom)
+            .contentShape(Rectangle())
+            .clipped()
+    }
+
+    private var magnify: some Gesture {
+        MagnifyGesture()
+            .updating($pinch) { value, state, _ in state = value.magnification }
+            .onEnded { value in
+                zoom = min(max(zoom * value.magnification, 1), maxZoom)
+                if zoom == 1 { pan = .zero } // snap back to centre at fit
+            }
+    }
+
+    /// Panning only bites once zoomed in — at fit there's nothing to pan, so a
+    /// drag there is ignored (leaving room for other interactions).
+    private var dragToPan: some Gesture {
+        DragGesture()
+            .updating($dragTranslation) { value, state, _ in
+                state = zoom > 1 ? value.translation : .zero
+            }
+            .onEnded { value in
+                guard zoom > 1 else { return }
+                pan.width += value.translation.width
+                pan.height += value.translation.height
+            }
     }
 }
 
