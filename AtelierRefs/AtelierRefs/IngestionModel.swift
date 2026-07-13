@@ -558,12 +558,18 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// The on-disk full-resolution blob URL for `detail`, rebuilt from the
-    /// asset's persisted `mimeType` (round-trips the store-time extension).
+    /// The on-disk full-resolution blob URL for `detail`.
     func blobURL(for detail: CollectionItemDetail) -> URL? {
+        blobURL(forAsset: detail.asset)
+    }
+
+    /// The on-disk full-resolution blob URL for a bare `asset` — the same path as
+    /// `blobURL(for:)` without a folder membership, so a Space board (which places
+    /// assets, not collection items) can open the full-res detail page.
+    func blobURL(forAsset asset: Asset) -> URL? {
         guard let store else { return nil }
-        let ext = ImageMetadata.fileExtension(forMIMEType: detail.asset.mimeType)
-        return store.blobURL(hash: detail.asset.blobHash, fileExtension: ext)
+        let ext = ImageMetadata.fileExtension(forMIMEType: asset.mimeType)
+        return store.blobURL(hash: asset.blobHash, fileExtension: ext)
     }
 
     // MARK: - Tags (detail page)
@@ -625,28 +631,45 @@ final class IngestionModel: ObservableObject {
     /// Open the selected item's original source URL in the default browser.
     /// A no-op when the source has no (valid) `originalURL`.
     func openSource(_ detail: CollectionItemDetail) {
-        guard let string = detail.source.originalURL,
-              let url = URL(string: string) else { return }
+        openSourceURL(detail.source.originalURL)
+    }
+
+    /// Open a source URL string in the default browser (asset/source-based, for
+    /// the Space detail page). A no-op when the string is absent or unparseable.
+    func openSourceURL(_ string: String?) {
+        guard let string, let url = URL(string: string) else { return }
         NSWorkspace.shared.open(url)
     }
 
     /// Open the full-resolution blob in the default image app (e.g. Preview).
-    func openBlob(_ detail: CollectionItemDetail) {
-        guard let url = blobURL(for: detail),
+    func openBlob(_ detail: CollectionItemDetail) { openBlob(asset: detail.asset) }
+
+    /// Open a bare asset's full-resolution blob in the default app (Space detail).
+    func openBlob(asset: Asset) {
+        guard let url = blobURL(forAsset: asset),
               FileManager.default.fileExists(atPath: url.path) else { return }
         NSWorkspace.shared.open(url)
     }
 
     /// Reveal the full-resolution blob in Finder.
-    func revealInFinder(_ detail: CollectionItemDetail) {
-        guard let url = blobURL(for: detail),
+    func revealInFinder(_ detail: CollectionItemDetail) { revealInFinder(asset: detail.asset) }
+
+    /// Reveal a bare asset's blob in Finder (Space detail).
+    func revealInFinder(asset: Asset) {
+        guard let url = blobURL(forAsset: asset),
               FileManager.default.fileExists(atPath: url.path) else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     /// Copy the selected item's original source URL to the general pasteboard.
     func copySourceLink(_ detail: CollectionItemDetail) {
-        guard let string = detail.source.originalURL else { return }
+        copySourceLink(url: detail.source.originalURL)
+    }
+
+    /// Copy a source URL string to the pasteboard (asset/source-based, Space
+    /// detail). A no-op when the string is absent.
+    func copySourceLink(url string: String?) {
+        guard let string else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(string, forType: .string)
     }

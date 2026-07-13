@@ -126,8 +126,7 @@ entry (next indices `094+`). Suggested subjects (≤80, project format):
 - `feat: item-detail - tags editor in the detail sidebar`
 - `feat: item-detail - open the detail page on Return from the grid` (F3;
   canvas split to F3b)
-- `refactor: item-detail - decouple ItemDetailView; open from Space canvas` (F3b,
-  not yet built)
+- `refactor: item-detail - decouple ItemDetailView; open from Space canvas` (F3b ✓)
 
 ## Out of scope
 

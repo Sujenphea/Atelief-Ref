@@ -38,11 +38,9 @@ struct CollectionView: View {
             // Return key, and the Space canvas can all open it; guarding also on
             // `selectedItem != nil` auto-dismisses back to the grid when the item
             // is removed/deleted from inside the page.
-            if nav.presentedItemID != nil, model.selectedItem != nil {
-                ItemDetailView(model: model) {
-                    withAnimation { nav.presentedItemID = nil }
-                }
-                .transition(.opacity)
+            if nav.presentedItemID != nil, let detail = model.selectedItem {
+                detailOverlay(for: detail)
+                    .transition(.opacity)
             }
         }
         // Bind the shared single-selection model to THIS collection whenever the
@@ -204,6 +202,38 @@ struct CollectionView: View {
                     .foregroundStyle(.tertiary)
             }
         }
+    }
+
+    /// Build the full-window detail overlay for `detail`, feeding the
+    /// presentation-only ``ItemDetailView`` from this collection's `IngestionModel`
+    /// context — full folder actions plus prev/next across `model.items`.
+    private func detailOverlay(for detail: CollectionItemDetail) -> some View {
+        let hasSource = !(detail.source.originalURL ?? "").isEmpty
+        let index = model.items.firstIndex { $0.item.id == detail.item.id }
+        return ItemDetailView(
+            asset: detail.asset,
+            source: detail.source,
+            blobURL: model.blobURL(for: detail),
+            previewImage: model.previewImage,
+            tags: model.selectedTags,
+            onAddTag: { model.addTag($0) },
+            onRemoveTag: { model.removeTag($0) },
+            actions: ItemDetailActions(
+                openSource: hasSource ? { model.openSource(detail) } : nil,
+                openBlob: { model.openBlob(detail) },
+                revealInFinder: { model.revealInFinder(detail) },
+                copySourceLink: hasSource ? { model.copySourceLink(detail) } : nil,
+                removeFromFolder: { model.removeFromFolder(assetIDs: [detail.asset.id]) },
+                requestDelete: { model.requestDelete(assetIDs: [detail.asset.id]) }),
+            navigator: index.map { i in
+                ItemDetailNavigator(index: i, count: model.items.count) { delta in
+                    let target = i + delta
+                    if model.items.indices.contains(target) {
+                        model.select(model.items[target])
+                    }
+                }
+            },
+            onClose: { withAnimation { nav.presentedItemID = nil } })
     }
 
     /// Open the full-window detail page for `detail`: bind the shared selection

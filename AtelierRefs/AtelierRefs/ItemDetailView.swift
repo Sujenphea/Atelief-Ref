@@ -2,16 +2,17 @@
 //  ItemDetailView.swift
 //  AtelierRefs
 //
-//  The full-window detail page for a single library item (replaces the old
-//  trailing `.inspector()` panel). Clicking a grid cell in ``LibraryView`` opens
-//  this over the whole Library tab: the media fills most of the width — a
-//  full-resolution image, or an inline `VideoPlayer` for video — with the item's
-//  metadata / provenance / source actions docked on the right (ported from the
-//  former `InspectorView`).
+//  The full-window detail page for a single item (replaces the old trailing
+//  `.inspector()` panel): the media fills most of the width — a full-resolution
+//  image, or an inline `VideoPlayer` for video — with the item's metadata /
+//  provenance / tags / actions docked on the right.
 //
-//  The current item is read from `model.selectedItem`, so ← / → prev-next just
-//  call `model.select` and reuse the app's centralized selection; the media is
-//  (re)loaded off-main whenever `selectedItemID` changes.
+//  A PRESENTATION-ONLY view: it is fed an explicit `asset` + `source` + media
+//  URLs + tags + action closures, and an OPTIONAL ``ItemDetailNavigator`` for
+//  prev/next. So the collection grid drives it from `IngestionModel`'s
+//  folder-scoped selection (with prev/next), while a Space board can open the
+//  same page for a placed asset (no folder context, so no prev/next). The media
+//  is (re)loaded off-main whenever `asset.id` changes.
 //
 
 import AVKit
@@ -19,9 +20,47 @@ import AppKit
 import AtelierCore
 import SwiftUI
 
+/// Prev/next stepping for the detail page. Absent (`nil`) when the item has no
+/// ordered set behind it — e.g. an asset opened from a Space board.
+struct ItemDetailNavigator {
+    /// The current item's 0-based position in its set.
+    let index: Int
+    /// The set's size (for the "N / total" counter).
+    let count: Int
+    /// Step the selection by `delta` (±1), clamped by the caller.
+    let step: (Int) -> Void
+}
+
+/// The detail page's source / lifecycle actions. Each is optional so a caller can
+/// omit the ones that don't apply — a Space board, for instance, has no
+/// folder-membership to remove from.
+struct ItemDetailActions {
+    var openSource: (() -> Void)?
+    var openBlob: (() -> Void)?
+    var revealInFinder: (() -> Void)?
+    var copySourceLink: (() -> Void)?
+    var removeFromFolder: (() -> Void)?
+    var requestDelete: (() -> Void)?
+}
+
 struct ItemDetailView: View {
-    @ObservedObject var model: IngestionModel
-    /// Dismiss the page back to the grid (Back button / Escape).
+    /// The asset being shown (drives the media branch + metadata).
+    let asset: Asset
+    /// The asset's provenance, if known (drives the source section + title).
+    let source: Source?
+    /// Full-resolution blob URL, decoded off-main; `nil` → preview/spinner only.
+    let blobURL: URL?
+    /// An instant placeholder (e.g. the 1280 tier) shown while full-res decodes.
+    let previewImage: NSImage?
+    /// The item's tags + their editors.
+    let tags: [Tag]
+    let onAddTag: (String) -> Void
+    let onRemoveTag: (Tag) -> Void
+    /// Source / lifecycle actions (each optional — omitted ones disable/hide).
+    let actions: ItemDetailActions
+    /// Optional prev/next; `nil` hides the navigator (no ordered set).
+    let navigator: ItemDetailNavigator?
+    /// Dismiss the page (Back button / Escape).
     let onClose: () -> Void
 
     /// The full-resolution decoded image (image assets only), loaded off-main.
@@ -31,22 +70,22 @@ struct ItemDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let detail = model.selectedItem {
-                topBar(for: detail)
+            topBar
+            Divider()
+            HStack(spacing: 0) {
+                mediaArea
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 Divider()
-                HStack(spacing: 0) {
-                    mediaArea(for: detail)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    Divider()
-                    DetailSidebar(model: model, detail: detail)
-                        .frame(width: 300)
-                }
+                DetailSidebar(
+                    asset: asset, source: source, tags: tags,
+                    onAddTag: onAddTag, onRemoveTag: onRemoveTag, actions: actions)
+                    .frame(width: 300)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.background)
-        // Reload media whenever the selected item changes (open + prev/next).
-        .task(id: model.selectedItemID) { await loadMedia() }
+        // Reload media whenever the shown asset changes (open + prev/next).
+        .task(id: asset.id) { await loadMedia() }
         .onDisappear {
             player?.pause()
             player = nil
@@ -55,10 +94,8 @@ struct ItemDetailView: View {
 
     // MARK: - Top bar
 
-    private func topBar(for detail: CollectionItemDetail) -> some View {
-        let index = currentIndex
-        let count = model.items.count
-        return HStack(spacing: 12) {
+    private var topBar: some View {
+        HStack(spacing: 12) {
             Button {
                 onClose()
             } label: {
@@ -68,29 +105,31 @@ struct ItemDetailView: View {
 
             Spacer()
 
-            Button {
-                step(-1)
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .keyboardShortcut(.leftArrow, modifiers: [])
-            .disabled((index ?? 0) <= 0)
+            if let navigator {
+                Button {
+                    navigator.step(-1)
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .disabled(navigator.index <= 0)
 
-            Text(index.map { "\($0 + 1) / \(count)" } ?? "—")
-                .font(.callout).monospacedDigit()
-                .foregroundStyle(.secondary)
+                Text("\(navigator.index + 1) / \(navigator.count)")
+                    .font(.callout).monospacedDigit()
+                    .foregroundStyle(.secondary)
 
-            Button {
-                step(1)
-            } label: {
-                Image(systemName: "chevron.right")
+                Button {
+                    navigator.step(1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .disabled(navigator.index >= navigator.count - 1)
             }
-            .keyboardShortcut(.rightArrow, modifiers: [])
-            .disabled((index ?? 0) >= count - 1)
 
             Spacer()
 
-            Text(detail.source.title ?? "")
+            Text(source?.title ?? "")
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .foregroundStyle(.secondary)
@@ -102,9 +141,9 @@ struct ItemDetailView: View {
     // MARK: - Media
 
     @ViewBuilder
-    private func mediaArea(for detail: CollectionItemDetail) -> some View {
+    private var mediaArea: some View {
         Group {
-            switch detail.asset.kind {
+            switch asset.kind {
             case .video:
                 if let player {
                     VideoPlayer(player: player)
@@ -112,9 +151,9 @@ struct ItemDetailView: View {
                     ProgressView()
                 }
             case .image:
-                // Show the already-loaded 1280 preview instantly, then swap to
-                // the full-resolution decode when it lands.
-                if let image = fullImage ?? model.previewImage {
+                // Show the placeholder preview instantly, then swap to the
+                // full-resolution decode when it lands.
+                if let image = fullImage ?? previewImage {
                     Image(nsImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
@@ -127,44 +166,24 @@ struct ItemDetailView: View {
     }
 
     /// Decode the full-resolution image off-main, or build the video player, for
-    /// the currently-selected item. No caching — full-res images are large, so we
-    /// decode on demand and drop the previous one on navigation.
+    /// the current asset. No caching — full-res images are large, so we decode on
+    /// demand and drop the previous one on navigation.
     private func loadMedia() async {
         fullImage = nil
         player?.pause()
         player = nil
-        guard let detail = model.selectedItem,
-              let url = model.blobURL(for: detail) else { return }
-        switch detail.asset.kind {
+        guard let url = blobURL else { return }
+        switch asset.kind {
         case .video:
             player = AVPlayer(url: url)
         case .image:
-            let targetID = detail.item.id
-            let image = await Task.detached(priority: .userInitiated) {
+            let decoded = await Task.detached(priority: .userInitiated) {
                 NSImage(contentsOf: url)
             }.value
-            // Publish only if this item is still on screen.
-            if model.selectedItemID == targetID {
-                fullImage = image
-            }
+            // `.task(id:)` cancels this on navigation — don't publish a stale
+            // decode over the item the user moved to.
+            if !Task.isCancelled { fullImage = decoded }
         }
-    }
-
-    // MARK: - Prev / next
-
-    /// Index of the selected item within the folder's `items`, or `nil`.
-    private var currentIndex: Int? {
-        guard let id = model.selectedItemID else { return nil }
-        return model.items.firstIndex { $0.item.id == id }
-    }
-
-    /// Step the selection by `delta` (clamped to the folder), reusing the app's
-    /// centralized `select` (which also refreshes the 1280 preview placeholder).
-    private func step(_ delta: Int) {
-        guard let index = currentIndex else { return }
-        let target = index + delta
-        guard model.items.indices.contains(target) else { return }
-        model.select(model.items[target])
     }
 }
 
@@ -173,16 +192,22 @@ struct ItemDetailView: View {
 /// small preview). Each section is its own subview so the column stays a clean
 /// seam — the tags editor slots in between provenance and actions.
 private struct DetailSidebar: View {
-    @ObservedObject var model: IngestionModel
-    let detail: CollectionItemDetail
+    let asset: Asset
+    let source: Source?
+    let tags: [Tag]
+    let onAddTag: (String) -> Void
+    let onRemoveTag: (Tag) -> Void
+    let actions: ItemDetailActions
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                MetadataSection(detail: detail)
-                ProvenanceSection(detail: detail)
-                TagsSection(model: model, detail: detail)
-                ActionsSection(model: model, detail: detail)
+                MetadataSection(asset: asset)
+                if let source {
+                    ProvenanceSection(source: source)
+                }
+                TagsSection(tags: tags, onAddTag: onAddTag, onRemoveTag: onRemoveTag)
+                ActionsSection(actions: actions)
             }
             .padding()
         }
@@ -193,10 +218,9 @@ private struct DetailSidebar: View {
 
 /// Kind / dimensions / (duration) / size / type / captured-at.
 private struct MetadataSection: View {
-    let detail: CollectionItemDetail
+    let asset: Asset
 
     var body: some View {
-        let asset = detail.asset
         DetailSection("Details") {
             DetailRow("Kind", asset.kind == .image ? "Image" : "Video")
             DetailRow("Dimensions", "\(asset.width) × \(asset.height)")
@@ -212,10 +236,9 @@ private struct MetadataSection: View {
 
 /// Capture provenance — platform, author, title, and the original URL.
 private struct ProvenanceSection: View {
-    let detail: CollectionItemDetail
+    let source: Source
 
     var body: some View {
-        let source = detail.source
         DetailSection("Source") {
             DetailRow("Platform", DetailFormat.platform(source.platform))
             if let name = source.authorName, !name.isEmpty {
@@ -243,62 +266,55 @@ private struct ProvenanceSection: View {
     }
 }
 
-/// Source actions + the membership-only / library-wide delete pair.
+/// Source actions + the membership-only / library-wide delete pair. Each button
+/// renders only when its action was supplied — a disabled `openSource` (no URL)
+/// passes `nil`, and a Space board omits the folder-scoped remove/delete pair.
 private struct ActionsSection: View {
-    @ObservedObject var model: IngestionModel
-    let detail: CollectionItemDetail
+    let actions: ItemDetailActions
 
     var body: some View {
-        let hasSource = !(detail.source.originalURL ?? "").isEmpty
         VStack(spacing: 8) {
-            Button {
-                model.openSource(detail)
-            } label: {
-                Label("Open Original Source", systemImage: "safari")
-                    .frame(maxWidth: .infinity)
+            actionButton(actions.openSource, "Open Original Source", "safari")
+            actionButton(actions.openBlob, "Open Full Resolution", "photo")
+            actionButton(actions.revealInFinder, "Reveal in Finder", "folder")
+            actionButton(actions.copySourceLink, "Copy Source Link", "link")
+
+            if actions.removeFromFolder != nil || actions.requestDelete != nil {
+                Divider().padding(.vertical, 2)
             }
-            .disabled(!hasSource)
-
-            Button {
-                model.openBlob(detail)
-            } label: {
-                Label("Open Full Resolution", systemImage: "photo")
-                    .frame(maxWidth: .infinity)
-            }
-
-            Button {
-                model.revealInFinder(detail)
-            } label: {
-                Label("Reveal in Finder", systemImage: "folder")
-                    .frame(maxWidth: .infinity)
-            }
-
-            Button {
-                model.copySourceLink(detail)
-            } label: {
-                Label("Copy Source Link", systemImage: "link")
-                    .frame(maxWidth: .infinity)
-            }
-            .disabled(!hasSource)
-
-            Divider().padding(.vertical, 2)
-
             // Membership-only (reversible) vs library-wide (destructive) delete.
-            Button {
-                model.removeFromFolder(assetIDs: [detail.asset.id])
-            } label: {
-                Label("Remove from Folder", systemImage: "minus.circle")
-                    .frame(maxWidth: .infinity)
+            // Both are hidden (not just disabled) where they don't apply, e.g. on
+            // a Space board where the placement — not a folder membership — is the
+            // unit of removal.
+            if let removeFromFolder = actions.removeFromFolder {
+                Button(action: removeFromFolder) {
+                    Label("Remove from Folder", systemImage: "minus.circle")
+                        .frame(maxWidth: .infinity)
+                }
             }
-
-            Button(role: .destructive) {
-                model.requestDelete(assetIDs: [detail.asset.id])
-            } label: {
-                Label("Delete", systemImage: "trash")
-                    .frame(maxWidth: .infinity)
+            if let requestDelete = actions.requestDelete {
+                Button(role: .destructive, action: requestDelete) {
+                    Label("Delete", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                }
             }
         }
         .controlSize(.large)
+    }
+
+    /// A full-width labelled button, disabled (greyed, still visible) when its
+    /// action is absent — matches the old "no source URL" affordance.
+    @ViewBuilder
+    private func actionButton(
+        _ action: (() -> Void)?, _ title: String, _ symbol: String
+    ) -> some View {
+        Button {
+            action?()
+        } label: {
+            Label(title, systemImage: symbol)
+                .frame(maxWidth: .infinity)
+        }
+        .disabled(action == nil)
     }
 }
 
@@ -306,16 +322,17 @@ private struct ActionsSection: View {
 /// surface. User vs agent tags are visually distinguished (agent tags carry a
 /// sparkle + tint) so agent-written organization stays reviewable.
 private struct TagsSection: View {
-    @ObservedObject var model: IngestionModel
-    let detail: CollectionItemDetail
+    let tags: [Tag]
+    let onAddTag: (String) -> Void
+    let onRemoveTag: (Tag) -> Void
     @State private var draft = ""
 
     var body: some View {
         DetailSection("Tags") {
-            if !model.selectedTags.isEmpty {
+            if !tags.isEmpty {
                 TagFlowLayout(spacing: 6) {
-                    ForEach(model.selectedTags) { tag in
-                        TagChip(tag: tag) { model.removeTag(tag) }
+                    ForEach(tags) { tag in
+                        TagChip(tag: tag) { onRemoveTag(tag) }
                     }
                 }
             }
@@ -330,7 +347,7 @@ private struct TagsSection: View {
     private func commitDraft() {
         let name = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        model.addTag(name)
+        onAddTag(name)
         draft = ""
     }
 }
