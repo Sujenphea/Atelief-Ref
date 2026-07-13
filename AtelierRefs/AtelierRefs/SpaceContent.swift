@@ -88,9 +88,10 @@ final class SpaceContent: TileProvider, TileImageSource {
 
     /// The on-disk video file behind a tile, or `nil` if the tile isn't a video.
     func videoURL(forTileID id: Int) -> URL? {
-        guard let asset = asset(for: id), asset.kind == .video else { return nil }
-        let ext = ImageMetadata.fileExtension(forMIMEType: asset.mimeType)
-        return store.blobURL(hash: asset.blobHash, fileExtension: ext)
+        guard let asset = asset(for: id), asset.kind == .video,
+              let hash = asset.blobHash else { return nil }
+        let ext = ImageMetadata.fileExtension(forMIMEType: asset.mimeType ?? "")
+        return store.blobURL(hash: hash, fileExtension: ext)
     }
 
     // MARK: - TileImageSource

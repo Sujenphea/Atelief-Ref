@@ -54,6 +54,7 @@ struct CollectionView: View {
         .navigationTitle(model.name(for: collectionID))
         .toolbar {
             ToolbarItem { sortMenu }
+            ToolbarItem { AddColorButton { model.addColor(hex: $0) } }
             ToolbarItem {
                 Button {
                     Task {
@@ -193,8 +194,8 @@ struct CollectionView: View {
                             Button {
                                 open(detail)
                             } label: {
-                                AsyncThumbnail(
-                                    hash: detail.asset.blobHash,
+                                AssetContentThumbnail(
+                                    asset: detail.asset,
                                     url: model.thumbnailURL(for: detail),
                                     isSelected: model.selectedItemID == detail.item.id)
                             }
@@ -246,6 +247,9 @@ struct CollectionView: View {
     /// context — full folder actions plus prev/next across `model.items`.
     private func detailOverlay(for detail: CollectionItemDetail) -> some View {
         let hasSource = !(detail.source.originalURL ?? "").isEmpty
+        // A media-less kind (003 · O1) has no blob on disk — disable the blob
+        // actions rather than wiring them to a no-op.
+        let hasBlob = model.blobURL(for: detail) != nil
         let index = model.items.firstIndex { $0.item.id == detail.item.id }
         return ItemDetailView(
             asset: detail.asset,
@@ -257,8 +261,8 @@ struct CollectionView: View {
             onRemoveTag: { model.removeTag($0) },
             actions: ItemDetailActions(
                 openSource: hasSource ? { model.openSource(detail) } : nil,
-                openBlob: { model.openBlob(detail) },
-                revealInFinder: { model.revealInFinder(detail) },
+                openBlob: hasBlob ? { model.openBlob(detail) } : nil,
+                revealInFinder: hasBlob ? { model.revealInFinder(detail) } : nil,
                 copySourceLink: hasSource ? { model.copySourceLink(detail) } : nil,
                 removeFromFolder: { model.removeFromFolder(assetIDs: [detail.asset.id]) },
                 requestDelete: { model.requestDelete(assetIDs: [detail.asset.id]) }),

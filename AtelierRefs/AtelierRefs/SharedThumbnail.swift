@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import AtelierCore
 import SwiftUI
 
 /// A process-wide, thread-safe cache of decoded thumbnails, keyed by blob hash.
@@ -57,6 +58,54 @@ struct AsyncThumbnail: View {
                 await ThumbnailCache.shared.load(hash: hash, url: url)
                 image = ThumbnailCache.shared.cached(hash)
             }
+    }
+}
+
+/// The grid cell for ANY asset kind (003 · O1): the single render seam over
+/// ``AssetContent``. Byte kinds (`image` / `video`) load their thumbnail via
+/// ``AsyncThumbnail``; a `color` draws a swatch; anything with no backing data
+/// falls back to the neutral placeholder tile. Every surface that shows an asset
+/// grid (collection, search results, add-from-library) uses this so a new kind
+/// gets its cell in ONE place.
+struct AssetContentThumbnail: View {
+    let asset: Asset
+    /// The byte kinds' on-disk thumbnail URL; ignored for media-less kinds.
+    var url: URL?
+    var isSelected: Bool = false
+    var cornerRadius: CGFloat = 8
+
+    var body: some View {
+        switch asset.content {
+        case let .image(hash), let .video(hash):
+            AsyncThumbnail(hash: hash, url: url, isSelected: isSelected, cornerRadius: cornerRadius)
+        case let .color(hex):
+            ColorSwatchTile(hex: hex, isSelected: isSelected, cornerRadius: cornerRadius)
+        case .unknown:
+            ThumbnailTile(image: nil, isSelected: isSelected, cornerRadius: cornerRadius)
+        }
+    }
+}
+
+/// A square color swatch cell (003 · C1) — a media-less `color` asset's grid
+/// representation. A hairline border keeps a light swatch (e.g. white) legible
+/// against the grid background; the selection ring matches ``ThumbnailTile``.
+struct ColorSwatchTile: View {
+    let hex: String
+    var isSelected: Bool = false
+    var cornerRadius: CGFloat = 8
+
+    var body: some View {
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay { Color(hexString: hex) ?? Color(.quaternaryLabelColor) }
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .strokeBorder(
+                        isSelected ? Color.accentColor : Color.primary.opacity(0.1),
+                        lineWidth: isSelected ? 3 : 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
     }
 }
 
@@ -139,5 +188,32 @@ struct CoverCard: View {
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 14).fill(Color(.controlBackgroundColor).opacity(0.5)))
         .contentShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+extension Color {
+    /// A SwiftUI `Color` from a canonical `#rrggbb` hex (as produced by
+    /// `ColorPayload.canonicalHex`); `nil` for anything unparseable. Kept in the
+    /// view layer — the domain stores the hex string, the UI renders it.
+    init?(hexString: String) {
+        var s = hexString
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        self.init(
+            .sRGB,
+            red: Double((v >> 16) & 0xff) / 255,
+            green: Double((v >> 8) & 0xff) / 255,
+            blue: Double(v & 0xff) / 255)
+    }
+
+    /// Canonical `#rrggbb` for this color (via sRGB), or `nil` if it can't be
+    /// resolved to RGB — the inverse of ``init(hexString:)``, used to turn a
+    /// `ColorPicker` selection into a storable hex (003 · C1).
+    func toHexString() -> String? {
+        guard let rgb = NSColor(self).usingColorSpace(.sRGB) else { return nil }
+        let r = Int((rgb.redComponent * 255).rounded())
+        let g = Int((rgb.greenComponent * 255).rounded())
+        let b = Int((rgb.blueComponent * 255).rounded())
+        return String(format: "#%02x%02x%02x", r, g, b)
     }
 }

@@ -223,9 +223,9 @@ private struct LibrarySearchResults: View {
                     LazyVGrid(columns: columns, spacing: 8) {
                         ForEach(search.results, id: \.asset.id) { asset in
                             Button { onOpen(asset) } label: {
-                                AsyncThumbnail(
-                                    hash: asset.asset.blobHash,
-                                    url: model.thumbnailURL(forBlobHash: asset.asset.blobHash))
+                                AssetContentThumbnail(
+                                    asset: asset.asset,
+                                    url: model.thumbnailURL(forAsset: asset.asset))
                             }
                             .buttonStyle(.plain)
                         }
@@ -264,6 +264,7 @@ private struct SearchDetailOverlay: View {
             if let asset = current?.asset, let detail = current {
                 let sourceURL = detail.source.originalURL
                 let hasSource = !(sourceURL ?? "").isEmpty
+                let hasBlob = model.blobURL(forAsset: asset) != nil
                 let index = results.firstIndex { $0.asset.id == asset.id }
                 ItemDetailView(
                     asset: asset,
@@ -275,8 +276,8 @@ private struct SearchDetailOverlay: View {
                     onRemoveTag: { tags.remove($0) },
                     actions: ItemDetailActions(
                         openSource: hasSource ? { model.openSourceURL(sourceURL) } : nil,
-                        openBlob: { model.openBlob(asset: asset) },
-                        revealInFinder: { model.revealInFinder(asset: asset) },
+                        openBlob: hasBlob ? { model.openBlob(asset: asset) } : nil,
+                        revealInFinder: hasBlob ? { model.revealInFinder(asset: asset) } : nil,
                         copySourceLink: hasSource ? { model.copySourceLink(url: sourceURL) } : nil,
                         removeFromFolder: nil,
                         requestDelete: nil),

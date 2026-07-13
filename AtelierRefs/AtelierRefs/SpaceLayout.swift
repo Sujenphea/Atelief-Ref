@@ -27,10 +27,11 @@ enum SpaceLayout {
     static let spacing: Double = 16
     static let maxRowWidth: Double = 1600
 
-    /// Display aspect ratio (w/h) of an asset; a safe `1` for missing dimensions.
+    /// Display aspect ratio (w/h) of an asset; a safe square `1` for a media-less
+    /// kind (nil dims, 003 · O1) or missing dimensions.
     static func aspect(_ asset: Asset) -> Double {
-        guard asset.width > 0, asset.height > 0 else { return 1 }
-        return Double(asset.width) / Double(asset.height)
+        guard let w = asset.width, let h = asset.height, w > 0, h > 0 else { return 1 }
+        return Double(w) / Double(h)
     }
 
     /// Flow a batch of NEW items into justified rows starting at `startY`, with

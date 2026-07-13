@@ -79,6 +79,42 @@ enum Validation {
         return normalized
     }
 
+    /// Normalize + validate a media-less content draft (003 · O1), returning a
+    /// draft with a canonical payload and DERIVED `dedupKey` / `searchText`
+    /// (server-authoritative). Rejects a byte-backed or not-yet-modelled kind
+    /// (`.invalidContentKind`), a missing payload (`.missingPayload`), or a
+    /// malformed color (`.invalidColor`). One place, run in the funnel before any
+    /// row is written — the media-less analogue of the `ingest` dimension/blob
+    /// checks.
+    static func contentDraft(_ draft: AssetContentDraft) throws -> AssetContentDraft {
+        switch draft.kind {
+        case .image, .video, .link, .tweet:
+            // Byte kinds use the blob `ingest` path; link/tweet arrive in C2/C3.
+            throw AtelierError.invalidContentKind
+        case .color:
+            guard let color = draft.payload.color else { throw AtelierError.missingPayload }
+            let hex = try colorHex(color.hex)
+            // Canonical hex is the payload, the dedup key, AND the FTS text
+            // (v1 has no color name yet — 003 · C1).
+            return AssetContentDraft(
+                kind: .color,
+                payload: AssetPayload(color: ColorPayload(hex: hex)),
+                dedupKey: hex,
+                searchText: hex)
+        }
+    }
+
+    /// Canonicalize a user-typed color to `#rrggbb` lowercase, or throw
+    /// `.invalidColor` (003 · C1). Accepts an optional `#` and 3-digit shorthand
+    /// so equal colors written differently share one dedup key.
+    @discardableResult
+    static func colorHex(_ raw: String) throws -> String {
+        guard let canonical = ColorPayload.canonicalHex(raw) else {
+            throw AtelierError.invalidColor
+        }
+        return canonical
+    }
+
     /// Reject a canvas placement with any non-finite (NaN/inf) coordinate, or a
     /// non-positive width/height (`.invalidPlacement`). Only supplied (non-nil)
     /// values are checked — a placement may leave any field unset. This closes

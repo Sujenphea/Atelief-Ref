@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -65,6 +65,16 @@ enum Migrator {
         // v5 — view tracking + per-collection sort mode. SHIPPED: never edit.
         migrator.registerMigration("v5") { db in
             try createV5Schema(db)
+        }
+
+        // v6 — multi-kind items (003 · O1): rebuild `asset` with nullable byte
+        // columns + payload/dedup_key/search_text, add `asset_fts`. Registered
+        // with the DEFAULT deferred foreign-key checks, so foreign keys are
+        // disabled for the duration of the table rebuild and a full
+        // `foreign_key_check` runs after — exactly the SQLite table-rebuild
+        // contract. SHIPPED: never edit this body.
+        migrator.registerMigration("v6") { db in
+            try createV6Schema(db)
         }
 
         return migrator
@@ -364,5 +374,86 @@ enum Migrator {
         try db.execute(sql: """
             CREATE INDEX index_asset_on_view_count ON asset(view_count);
             """)
+    }
+
+    // MARK: - v6
+
+    /// Multi-kind items (003 · O1). Makes `asset` byte-columns NULLABLE (a
+    /// media-less `tweet`/`link`/`color` has no blob) and adds three content
+    /// columns: `payload` (kind substance as JSON), `dedup_key` (kind-aware
+    /// dedup), `search_text` (content FTS). SQLite cannot relax a `NOT NULL`
+    /// constraint in place, so this is the canonical 12-step TABLE REBUILD —
+    /// honest nullability over sentinel lies (003 · "rebuild over sentinels").
+    ///
+    /// Runs under the migrator's DEFAULT deferred foreign-key checks: FKs are
+    /// off during the body (so dropping/renaming `asset` while `collection_item`,
+    /// `collection.cover_asset_id`, `space`, `space_item`, and `asset_tag`
+    /// reference it is allowed) and a full `foreign_key_check` runs afterward.
+    ///
+    /// Existing `image`/`video` rows are copied byte-for-byte — every prior
+    /// column value survives; the three new columns default to NULL. All v1/v5
+    /// indices are recreated on the rebuilt table (they were dropped with the old
+    /// one), plus a new `dedup_key` index, plus the `asset_fts` FTS5 table
+    /// synchronized over `search_text`.
+    private static func createV6Schema(_ db: Database) throws {
+        // 1. New table: byte columns nullable, + payload/dedup_key/search_text.
+        //    Same FK to source (RESTRICT, C6) and the v5 view columns.
+        try db.execute(sql: """
+            CREATE TABLE asset_new (
+                id             TEXT    NOT NULL PRIMARY KEY,
+                kind           TEXT    NOT NULL,
+                blob_hash      TEXT,
+                mime_type      TEXT,
+                width          INTEGER,
+                height         INTEGER,
+                duration       REAL,
+                file_size      INTEGER,
+                download_state TEXT    NOT NULL,
+                created_at     TEXT    NOT NULL,
+                source_id      TEXT    NOT NULL
+                    REFERENCES source(id) ON DELETE RESTRICT,
+                view_count     INTEGER NOT NULL DEFAULT 0,
+                last_viewed_at TEXT,
+                payload        TEXT,
+                dedup_key      TEXT,
+                search_text    TEXT
+            );
+            """)
+
+        // 2. Copy every existing row verbatim (byte-identical). The three new
+        //    columns are omitted, so they take their NULL default.
+        try db.execute(sql: """
+            INSERT INTO asset_new
+                (id, kind, blob_hash, mime_type, width, height, duration,
+                 file_size, download_state, created_at, source_id,
+                 view_count, last_viewed_at)
+            SELECT
+                id, kind, blob_hash, mime_type, width, height, duration,
+                file_size, download_state, created_at, source_id,
+                view_count, last_viewed_at
+            FROM asset;
+            """)
+
+        // 3. Swap the old table out (its indices drop with it) and rename in.
+        try db.execute(sql: "DROP TABLE asset;")
+        try db.execute(sql: "ALTER TABLE asset_new RENAME TO asset;")
+
+        // 4. Recreate every v1/v5 index on the rebuilt table, plus dedup_key.
+        try db.execute(sql: """
+            CREATE INDEX index_asset_on_source_id   ON asset(source_id);
+            CREATE INDEX index_asset_on_blob_hash   ON asset(blob_hash);
+            CREATE INDEX index_asset_on_created_at  ON asset(created_at);
+            CREATE INDEX index_asset_on_view_count  ON asset(view_count);
+            CREATE INDEX index_asset_on_dedup_key   ON asset(dedup_key);
+            """)
+
+        // 5. Content FTS (003 · O1): full-text over the media-less `search_text`,
+        //    external-content-synchronized with `asset` (auto INSERT/UPDATE/DELETE
+        //    triggers + back-fill), mirroring `source_fts`. Kept SEPARATE from
+        //    provenance FTS so `searchAssets` can branch/union the two (007).
+        try db.create(virtualTable: "asset_fts", using: FTS5()) { t in
+            t.synchronize(withTable: "asset")
+            t.column("search_text")
+        }
     }
 }

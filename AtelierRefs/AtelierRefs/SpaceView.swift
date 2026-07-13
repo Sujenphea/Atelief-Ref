@@ -200,6 +200,7 @@ struct SpaceView: View {
         if let asset = detail.asset {
             let sourceURL = detail.source?.originalURL
             let hasSource = !(sourceURL ?? "").isEmpty
+            let hasBlob = model.blobURL(forAsset: asset) != nil
             ItemDetailView(
                 asset: asset,
                 source: detail.source,
@@ -210,8 +211,8 @@ struct SpaceView: View {
                 onRemoveTag: { tagStore.remove($0) },
                 actions: ItemDetailActions(
                     openSource: hasSource ? { model.openSourceURL(sourceURL) } : nil,
-                    openBlob: { model.openBlob(asset: asset) },
-                    revealInFinder: { model.revealInFinder(asset: asset) },
+                    openBlob: hasBlob ? { model.openBlob(asset: asset) } : nil,
+                    revealInFinder: hasBlob ? { model.revealInFinder(asset: asset) } : nil,
                     copySourceLink: hasSource ? { model.copySourceLink(url: sourceURL) } : nil,
                     removeFromFolder: nil,
                     requestDelete: nil),

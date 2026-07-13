@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -149,23 +149,32 @@ struct MigrationShapeTests {
         #expect(nn["title"] == 0)
     }
 
-    @Test("asset columns: names present, required NOT NULL, optionals nullable")
+    @Test("asset columns (post-v6): identity/state NOT NULL, byte + content columns nullable")
     func assetColumns() throws {
         let dbQueue = try makeMigratedQueue()
         let nn = try dbQueue.read { try columnNotNull($0, table: "asset") }
         let expected = ["id", "kind", "blob_hash", "mime_type", "width",
                         "height", "duration", "file_size", "download_state",
-                        "created_at", "source_id"]
+                        "created_at", "source_id", "view_count", "last_viewed_at",
+                        "payload", "dedup_key", "search_text"]
         for c in expected { #expect(nn[c] != nil, "asset missing \(c)") }
+        // Identity / provenance / lifecycle stay required.
         #expect(nn["source_id"] == 1)   // provenance required (C6)
-        #expect(nn["blob_hash"] == 1)
         #expect(nn["kind"] == 1)
-        #expect(nn["width"] == 1)
-        #expect(nn["height"] == 1)
-        #expect(nn["file_size"] == 1)
         #expect(nn["download_state"] == 1)
         #expect(nn["created_at"] == 1)
-        #expect(nn["duration"] == 0)    // optional
+        #expect(nn["view_count"] == 1)  // v5, DEFAULT 0
+        // Byte columns are now NULLABLE — a media-less kind has no bytes (003·O1).
+        #expect(nn["blob_hash"] == 0)
+        #expect(nn["mime_type"] == 0)
+        #expect(nn["width"] == 0)
+        #expect(nn["height"] == 0)
+        #expect(nn["file_size"] == 0)
+        #expect(nn["duration"] == 0)
+        // Content columns are nullable (only media-less kinds populate them).
+        #expect(nn["payload"] == 0)
+        #expect(nn["dedup_key"] == 0)
+        #expect(nn["search_text"] == 0)
     }
 
     @Test("collection columns: name & timestamps NOT NULL, optionals nullable")
@@ -1145,6 +1154,199 @@ struct MigrationV5Tests {
                 db, sql: "SELECT sort_mode FROM collection WHERE id = ?",
                 arguments: [Collection.unsortedID.uuidString.lowercased()])
             #expect(mode == "manual")
+        }
+    }
+}
+
+// MARK: - v6 · multi-kind items (003 · O1) — the table rebuild
+
+/// A migrator applied only THROUGH v5 (pre-rebuild), so a test can seed the old
+/// shape and then migrate v6 over it — the upgrade path that matters most.
+private func makeQueueMigratedThroughV5() throws -> DatabaseQueue {
+    let dbQueue = try DatabaseQueue()
+    try Migrator.makeMigrator().migrate(dbQueue, upTo: "v5")
+    return dbQueue
+}
+
+@Suite("Migration v6: rebuilt asset schema shape")
+struct MigrationV6ShapeTests {
+
+    @Test("byte columns are nullable, content columns added, identity/state NOT NULL")
+    func rebuiltColumns() throws {
+        let dbQueue = try makeMigratedQueue()
+        let nn = try dbQueue.read { try columnNotNull($0, table: "asset") }
+        // Newly nullable byte columns (a media-less kind has no bytes).
+        for c in ["blob_hash", "mime_type", "width", "height", "file_size", "duration"] {
+            #expect(nn[c] == 0, "\(c) must be nullable after v6")
+        }
+        // New content columns exist and are nullable.
+        for c in ["payload", "dedup_key", "search_text"] {
+            #expect(nn[c] == 0, "\(c) missing/should be nullable")
+        }
+        // Identity / lifecycle / provenance / v5 counters survive as required.
+        for c in ["id", "kind", "download_state", "created_at", "source_id", "view_count"] {
+            #expect(nn[c] == 1, "\(c) must remain NOT NULL")
+        }
+    }
+
+    @Test("all v1/v5 asset indices are recreated, plus dedup_key")
+    func indicesRecreated() throws {
+        let dbQueue = try makeMigratedQueue()
+        let names = try dbQueue.read { try indexNames($0, table: "asset") }
+        for idx in ["index_asset_on_source_id", "index_asset_on_blob_hash",
+                    "index_asset_on_created_at", "index_asset_on_view_count",
+                    "index_asset_on_dedup_key"] {
+            #expect(names.contains(idx), "missing index after rebuild: \(idx)")
+        }
+    }
+
+    @Test("blob_hash index stays NON-unique after the rebuild (dedup)")
+    func blobHashStillNonUnique() throws {
+        let dbQueue = try makeMigratedQueue()
+        try dbQueue.read { db in
+            let list = try Row.fetchAll(db, sql: "PRAGMA index_list(asset)")
+            let blob = list.first { ($0["name"] as String) == "index_asset_on_blob_hash" }
+            #expect((blob?["unique"] as Int?) == 0)
+        }
+    }
+
+    @Test("asset(source_id) FK is preserved (dangling source_id still rejected)")
+    func fkPreserved() throws {
+        let dbQueue = try makeMigratedQueue()
+        #expect(throws: DatabaseError.self) {
+            try dbQueue.write { db in
+                try db.execute(sql: """
+                    INSERT INTO asset (id, kind, download_state, created_at, source_id)
+                    VALUES (?, 'color', 'downloaded', ?, 'no-such-source')
+                    """, arguments: [newID(), ts])
+            }
+        }
+    }
+}
+
+@Suite("Migration v6: content FTS (asset_fts)")
+struct MigrationV6FTSTests {
+
+    @Test("asset_fts virtual table + sync triggers exist")
+    func ftsExists() throws {
+        let dbQueue = try makeMigratedQueue()
+        try dbQueue.read { db in
+            let exists = try Bool.fetchOne(
+                db, sql: "SELECT count(*) > 0 FROM sqlite_master WHERE type='table' AND name='asset_fts'")
+            #expect(exists == true)
+            let triggers = try Int.fetchOne(
+                db, sql: "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name='asset'")
+            #expect((triggers ?? 0) >= 3, "expected insert/update/delete sync triggers on asset")
+        }
+    }
+
+    @Test("a media-less asset's search_text is indexed and MATCHes")
+    func searchTextIndexed() throws {
+        let dbQueue = try makeMigratedQueue()
+        let sid = newID(), aid = newID()
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO source (id, platform, captured_at, raw_metadata)
+                VALUES (?, 'local_paste', ?, '{}')
+                """, arguments: [sid, ts])
+            try db.execute(sql: """
+                INSERT INTO asset (id, kind, download_state, created_at, source_id, payload, dedup_key, search_text)
+                VALUES (?, 'color', 'downloaded', ?, ?, '{"color":{"hex":"#ff0000"}}', '#ff0000', 'crimson sunset')
+                """, arguments: [aid, ts, sid])
+        }
+        try dbQueue.read { db in
+            let hits = try String.fetchAll(db, sql: """
+                SELECT a.id FROM asset a JOIN asset_fts ON asset_fts.rowid = a.rowid
+                WHERE asset_fts MATCH 'crimson'
+                """)
+            #expect(hits == [aid])
+        }
+    }
+}
+
+@Suite("Migration v6: upgrade path — existing rows survive byte-identical")
+struct MigrationV6UpgradeTests {
+
+    /// The riskiest migration in the roadmap: seed a v5-shape image + video, run
+    /// v6, and assert every column value is preserved verbatim through the
+    /// drop/rename rebuild — and that the new content columns are NULL.
+    @Test("image + video rows are copied byte-for-byte through the rebuild")
+    func existingRowsSurvive() throws {
+        let dbQueue = try makeQueueMigratedThroughV5()
+        let sid = newID(), imageID = newID(), videoID = newID()
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO source (id, platform, original_url, captured_at, raw_metadata)
+                VALUES (?, 'web', 'https://example.com/x', ?, '{}')
+                """, arguments: [sid, ts])
+            // A fully-populated image row (with a view already recorded).
+            try db.execute(sql: """
+                INSERT INTO asset
+                    (id, kind, blob_hash, mime_type, width, height, duration,
+                     file_size, download_state, created_at, source_id,
+                     view_count, last_viewed_at)
+                VALUES (?, 'image', 'abc123', 'image/jpeg', 800, 600, NULL,
+                        204800, 'downloaded', ?, ?, 3, ?)
+                """, arguments: [imageID, ts, sid, ts])
+            // A video row (duration set).
+            try db.execute(sql: """
+                INSERT INTO asset
+                    (id, kind, blob_hash, mime_type, width, height, duration,
+                     file_size, download_state, created_at, source_id,
+                     view_count, last_viewed_at)
+                VALUES (?, 'video', 'def456', 'video/mp4', 1920, 1080, 12.5,
+                        1048576, 'downloaded', ?, ?, 0, NULL)
+                """, arguments: [videoID, ts, sid])
+        }
+
+        // Apply v6 (the rebuild).
+        try Migrator.makeMigrator().migrate(dbQueue)
+
+        try dbQueue.read { db in
+            let image = try Row.fetchOne(db, sql: "SELECT * FROM asset WHERE id = ?", arguments: [imageID])!
+            #expect((image["kind"] as String) == "image")
+            #expect((image["blob_hash"] as String) == "abc123")
+            #expect((image["mime_type"] as String) == "image/jpeg")
+            #expect((image["width"] as Int) == 800)
+            #expect((image["height"] as Int) == 600)
+            #expect((image["file_size"] as Int) == 204800)
+            #expect((image["view_count"] as Int) == 3)
+            #expect((image["last_viewed_at"] as String?) == ts)
+            #expect((image["source_id"] as String) == sid)
+            // New content columns default to NULL for migrated byte assets.
+            #expect((image["payload"] as String?) == nil)
+            #expect((image["dedup_key"] as String?) == nil)
+            #expect((image["search_text"] as String?) == nil)
+
+            let video = try Row.fetchOne(db, sql: "SELECT * FROM asset WHERE id = ?", arguments: [videoID])!
+            #expect((video["duration"] as Double?) == 12.5)
+            #expect((video["blob_hash"] as String) == "def456")
+
+            // Both rows are still present (no loss in the copy).
+            let count = try Int.fetchOne(db, sql: "SELECT count(*) FROM asset") ?? -1
+            #expect(count == 2)
+        }
+    }
+
+    @Test("cascade policy survives the rebuild: deleting a source with assets is RESTRICTed")
+    func restrictSurvivesRebuild() throws {
+        let dbQueue = try makeMigratedQueue()  // fully migrated (through v6)
+        let sid = newID(), aid = newID()
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO source (id, platform, captured_at, raw_metadata)
+                VALUES (?, 'web', ?, '{}')
+                """, arguments: [sid, ts])
+            try db.execute(sql: """
+                INSERT INTO asset (id, kind, blob_hash, mime_type, width, height, file_size, download_state, created_at, source_id)
+                VALUES (?, 'image', 'h', 'image/png', 1, 1, 1, 'downloaded', ?, ?)
+                """, arguments: [aid, ts, sid])
+        }
+        // RESTRICT (17A) still enforced on the rebuilt table's FK.
+        #expect(throws: DatabaseError.self) {
+            try dbQueue.write { db in
+                try db.execute(sql: "DELETE FROM source WHERE id = ?", arguments: [sid])
+            }
         }
     }
 }

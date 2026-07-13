@@ -646,10 +646,11 @@ final class IngestionModel: ObservableObject {
     /// Load the large (1280-tier) thumbnail for `detail` off-main, then publish
     /// it only if that item is still the selection (guards rapid re-selection).
     private func loadPreview(for detail: CollectionItemDetail) {
-        guard let store else { return }
+        // A media-less asset (003 · O1) has no thumbnail to decode.
+        guard let store, let hash = detail.asset.blobHash else { return }
         let targetID = detail.item.id
         let url = store.thumbnailURL(
-            hash: detail.asset.blobHash, size: ThumbnailTier.large.rawValue,
+            hash: hash, size: ThumbnailTier.large.rawValue,
             fileExtension: "jpg")
         Task.detached(priority: .userInitiated) {
             let image = NSImage(contentsOf: url)
@@ -669,9 +670,10 @@ final class IngestionModel: ObservableObject {
     /// `blobURL(for:)` without a folder membership, so a Space board (which places
     /// assets, not collection items) can open the full-res detail page.
     func blobURL(forAsset asset: Asset) -> URL? {
-        guard let store else { return nil }
-        let ext = ImageMetadata.fileExtension(forMIMEType: asset.mimeType)
-        return store.blobURL(hash: asset.blobHash, fileExtension: ext)
+        // Media-less kinds (003 · O1) have no blob on disk.
+        guard let store, let hash = asset.blobHash else { return nil }
+        let ext = ImageMetadata.fileExtension(forMIMEType: asset.mimeType ?? "")
+        return store.blobURL(hash: hash, fileExtension: ext)
     }
 
     // MARK: - Tags (detail page)
@@ -780,10 +782,16 @@ final class IngestionModel: ObservableObject {
     /// The grid loads + caches it off the main thread via `ThumbnailCache`, so the
     /// render path never blocks on disk I/O.
     func thumbnailURL(for detail: CollectionItemDetail) -> URL? {
-        guard let store else { return nil }
+        thumbnailURL(forAsset: detail.asset)
+    }
+
+    /// The on-disk 512-tier thumbnail URL for a bare asset, or `nil` for a
+    /// media-less kind (003 · O1) — which has no thumbnail (the grid draws a
+    /// swatch/placeholder from ``AssetContent`` instead).
+    func thumbnailURL(forAsset asset: Asset) -> URL? {
+        guard let store, let hash = asset.blobHash else { return nil }
         return store.thumbnailURL(
-            hash: detail.asset.blobHash, size: ThumbnailTier.medium.rawValue,
-            fileExtension: "jpg")
+            hash: hash, size: ThumbnailTier.medium.rawValue, fileExtension: "jpg")
     }
 
     // MARK: - Remove / delete assets
@@ -1108,6 +1116,21 @@ final class IngestionModel: ObservableObject {
             } catch {
                 status = Self.remoteFetchStatus(for: error)
             }
+        }
+    }
+
+    /// Add a color item (003 · C1) to the current folder from a user-typed hex or
+    /// color-picker selection. Media-less, so it skips the blob pipeline entirely
+    /// and goes straight through `ingestContent` with local-paste provenance;
+    /// canonicalization + dedup happen in the funnel. A malformed hex surfaces via
+    /// ``lastError``. Reloads the folder on success (`perform`).
+    func addColor(hex: String) {
+        let folder = selectedFolderID
+        perform { services in
+            _ = try await services.ingestContent(
+                .color(hex: hex),
+                from: SourceDraft(platform: .localPaste, capturedAt: Date()),
+                into: folder)
         }
     }
 

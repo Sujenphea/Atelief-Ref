@@ -314,6 +314,86 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// Ingest a MEDIA-LESS asset (003 · O1) — a `color` (C1); `link`/`tweet`
+    /// arrive in C2/C3 — with its REQUIRED provenance into a collection, in ONE
+    /// transaction (C6). The sibling of ``ingest(_:from:into:placement:)`` for
+    /// the content path: no bytes, so no blob hash / dims / file size — the
+    /// asset's substance is its ``AssetPayload`` and it is born `.downloaded`
+    /// (nothing to fetch). Kind-aware dedup reuses an existing asset+source
+    /// sharing the same `(kind, dedup_key)` and provenance.
+    ///
+    /// Steps inside the funnel:
+    /// 1. normalize + validate the draft (per-kind payload, canonical dedup key)
+    ///    and the per-platform `originalURL` (+ placement if supplied);
+    /// 2. assert the target collection exists (`.notFound`);
+    /// 3. **kind-aware dedup** — reuse an asset with the same `(kind, dedup_key)`
+    ///    whose source matches the incoming provenance;
+    /// 4. ensure exactly ONE membership of the resolved asset in the collection.
+    @discardableResult
+    public func ingestContent(
+        _ draft: AssetContentDraft,
+        from source: SourceDraft,
+        into collectionID: UUID,
+        placement: CanvasPlacement? = nil
+    ) async throws -> IngestResult {
+        // 1. validate + normalize (fail fast, before opening the write).
+        let normalized = try Validation.contentDraft(draft)
+        try Validation.originalURL(source.originalURL, platform: source.platform)
+        if let placement {
+            try Validation.canvasPlacement(
+                x: placement.x, y: placement.y, w: placement.w, h: placement.h)
+        }
+
+        return try await write { db in
+            // 2. the collection must exist.
+            guard try Collection.exists(db, key: Self.key(collectionID)) else {
+                throw AtelierError.notFound(entity: "collection", id: collectionID)
+            }
+
+            // 3. kind-aware dedup — reuse an existing content asset+source on match.
+            let resolvedAsset: Asset
+            let wasDeduplicated: Bool
+            if let existing = try Self.findDuplicateContent(
+                db, kind: normalized.kind, dedupKey: normalized.dedupKey, source: source) {
+                resolvedAsset = existing
+                wasDeduplicated = true
+            } else {
+                let newSource = Source(
+                    id: UUID(), platform: source.platform,
+                    originalURL: source.originalURL, authorHandle: source.authorHandle,
+                    authorName: source.authorName, title: source.title,
+                    capturedAt: source.capturedAt, rawMetadata: source.rawMetadata)
+                try newSource.insert(db)
+                // Media-less: byte columns nil; content in `payload`; born
+                // `.downloaded` (its substance is fully present).
+                let newAsset = Asset(
+                    id: UUID(), kind: normalized.kind,
+                    blobHash: nil, mimeType: nil, width: nil, height: nil,
+                    duration: nil, fileSize: nil, downloadState: .downloaded,
+                    createdAt: Date(), sourceId: newSource.id,
+                    payload: normalized.payload.jsonString(),
+                    dedupKey: normalized.dedupKey, searchText: normalized.searchText)
+                try newAsset.insert(db)
+                resolvedAsset = newAsset
+                wasDeduplicated = false
+            }
+
+            // 4. ensure ONE membership (idempotent on membership — matches ingest).
+            let alreadyMember = try Self.membership(
+                db, collectionID: collectionID, assetID: resolvedAsset.id) != nil
+            if !alreadyMember {
+                let item = CollectionItem(
+                    id: UUID(), collectionID: collectionID, assetID: resolvedAsset.id,
+                    addedAt: Date(), manualOrder: nil,
+                    canvasX: placement?.x, canvasY: placement?.y,
+                    canvasW: placement?.w, canvasH: placement?.h, canvasZ: placement?.z)
+                try item.insert(db)
+            }
+
+            return IngestResult(asset: resolvedAsset, wasDeduplicated: wasDeduplicated)
+        }
+    }
+
     // MARK: - Arrange / bulk (P15 — each ONE transaction)
 
     /// Set (or clear) the canvas placement of an asset's membership. Validates
@@ -457,9 +537,11 @@ public final class AppServices: Sendable {
                 guard let asset = try Asset.fetchOne(db, key: Self.key(assetID)) else {
                     continue // idempotent: unknown / already-deleted id.
                 }
-                if mimeByHash[asset.blobHash] == nil {
-                    mimeByHash[asset.blobHash] = asset.mimeType
-                    orderedHashes.append(asset.blobHash)
+                // A media-less asset (003 · O1) has no blob to reclaim — only
+                // byte-backed assets contribute an orphan-candidate hash.
+                if let hash = asset.blobHash, mimeByHash[hash] == nil {
+                    mimeByHash[hash] = asset.mimeType ?? ""
+                    orderedHashes.append(hash)
                 }
                 let sourceKey = Self.key(asset.sourceId)
                 if seenSourceKeys.insert(sourceKey).inserted {
@@ -625,6 +707,7 @@ public final class AppServices: Sendable {
                 FROM collection
                 JOIN asset ON asset.id = collection.cover_asset_id
                 WHERE collection.id IN (\(databaseQuestionMarks(count: keys.count)))
+                  AND asset.blob_hash IS NOT NULL
                 """, arguments: StatementArguments(keys))
             var covers: [UUID: String] = [:]
             for row in rows {
@@ -714,6 +797,7 @@ public final class AppServices: Sendable {
                 FROM space
                 JOIN asset ON asset.id = space.cover_asset_id
                 WHERE space.id IN (\(databaseQuestionMarks(count: keys.count)))
+                  AND asset.blob_hash IS NOT NULL
                 """, arguments: StatementArguments(keys))
             var covers: [UUID: String] = [:]
             for row in rows {
@@ -921,17 +1005,26 @@ public final class AppServices: Sendable {
             }
             var request = Asset.including(required: sourceAssociation)
 
-            // FTS5: restrict to assets whose source MATCHes the sanitized query.
-            // The subquery maps `source_fts.rowid` → `source.rowid` → `source.id`
-            // (external-content FTS), keeping the base asset query unqualified.
+            // FTS5: an asset MATCHes when its PROVENANCE matches `source_fts`
+            // (title/author) OR its own CONTENT matches `asset_fts` (003 · O1 —
+            // a tweet's text, a link's title/description, a color's name/hex).
+            // Two external-content indices, kept separate (provenance vs content)
+            // and OR-combined here so media-less items are findable by substance.
+            // Each subquery maps `*_fts.rowid` → the base table's rowid → id.
             if let trimmedText, !trimmedText.isEmpty {
+                let match = Self.ftsMatchQuery(trimmedText)
                 request = request.filter(sql: """
-                    source_id IN (
+                    (source_id IN (
                         SELECT source.id FROM source
                         JOIN source_fts ON source_fts.rowid = source.rowid
                         WHERE source_fts MATCH ?
-                    )
-                    """, arguments: [Self.ftsMatchQuery(trimmedText)])
+                     )
+                     OR asset.id IN (
+                        SELECT a.id FROM asset a
+                        JOIN asset_fts ON asset_fts.rowid = a.rowid
+                        WHERE asset_fts MATCH ?
+                     ))
+                    """, arguments: [match, match])
             }
 
             // Collection scope (007 · S3): membership subquery. Composes as a
@@ -1368,6 +1461,38 @@ public final class AppServices: Sendable {
         // The first asset sharing the blob hash AND one of those sources.
         return try Asset
             .filter(Column("blob_hash") == blobHash)
+            .filter(sourceIDs.contains(Column("source_id")))
+            .fetchOne(db)
+    }
+
+    /// Kind-aware dedup for a MEDIA-LESS asset (003 · O1): an existing asset with
+    /// the same `(kind, dedup_key)` whose source matches the incoming provenance
+    /// — same `original_url` when one is given, else same `platform` (the local-
+    /// capture case). The blob-based ``findDuplicate`` doesn't apply (no bytes);
+    /// the `dedup_key` (canonical hex / URL / tweet-id) is the identity instead.
+    /// A `nil` key (nothing to match on) is always a miss.
+    private static func findDuplicateContent(
+        _ db: Database, kind: AssetKind, dedupKey: String?, source: SourceDraft
+    ) throws -> Asset? {
+        guard let dedupKey else { return nil }
+        // Candidate sources whose provenance matches the incoming draft (mirrors
+        // findDuplicate's source-match rule).
+        let matchingSources: QueryInterfaceRequest<Source>
+        if let url = source.originalURL,
+           !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            matchingSources = Source.filter(Column("original_url") == url)
+        } else {
+            matchingSources = Source.filter(Column("platform") == source.platform.rawValue)
+        }
+        let sourceIDs = try String.fetchAll(
+            db, matchingSources.select(Column("id")))
+        guard !sourceIDs.isEmpty else { return nil }
+
+        // The first asset of this kind sharing the dedup key AND one of those
+        // sources.
+        return try Asset
+            .filter(Column("kind") == kind.rawValue)
+            .filter(Column("dedup_key") == dedupKey)
             .filter(sourceIDs.contains(Column("source_id")))
             .fetchOne(db)
     }

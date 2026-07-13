@@ -9,6 +9,9 @@ struct EnumRawValueTests {
     @Test("AssetKind rawValues are stable", arguments: [
         (AssetKind.image, "image"),
         (AssetKind.video, "video"),
+        (AssetKind.tweet, "tweet"),
+        (AssetKind.link, "link"),
+        (AssetKind.color, "color"),
     ])
     func assetKind(kind: AssetKind, raw: String) {
         #expect(kind.rawValue == raw)
@@ -51,7 +54,7 @@ struct EnumRawValueTests {
     // CaseIterable counts pin the full set — a removed or sneaked-in case fails.
     @Test("enum case counts are as specified")
     func caseCounts() {
-        #expect(AssetKind.allCases.count == 2)
+        #expect(AssetKind.allCases.count == 5)
         #expect(Platform.allCases.count == 7)
         #expect(DownloadState.allCases.count == 3)
         #expect(TagSource.allCases.count == 2)

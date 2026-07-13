@@ -143,7 +143,9 @@ struct ItemDetailView: View {
     @ViewBuilder
     private var mediaArea: some View {
         Group {
-            switch asset.kind {
+            // Switch on the render seam (003 · O1), so a media-less kind draws its
+            // own view instead of waiting on a blob that will never load.
+            switch asset.content {
             case .video:
                 if let player {
                     VideoPlayer(player: player)
@@ -159,6 +161,12 @@ struct ItemDetailView: View {
                 } else {
                     ProgressView()
                 }
+            case let .color(hex):
+                ColorDetailView(hex: hex)
+            case .unknown:
+                ContentUnavailableView(
+                    "No preview", systemImage: "questionmark.square.dashed",
+                    description: Text("This item has no displayable media."))
             }
         }
         .padding()
@@ -171,6 +179,7 @@ struct ItemDetailView: View {
         fullImage = nil
         player?.pause()
         player = nil
+        // Media-less kinds (003 · O1) have no blob — nothing to load off-disk.
         guard let url = blobURL else { return }
         switch asset.kind {
         case .video:
@@ -182,7 +191,33 @@ struct ItemDetailView: View {
             // `.task(id:)` cancels this on navigation — don't publish a stale
             // decode over the item the user moved to.
             if !Task.isCancelled { fullImage = decoded }
+        case .tweet, .link, .color:
+            break  // media-less: the media area draws these from content.
         }
+    }
+}
+
+/// The detail-page media view for a media-less `color` asset (003 · C1): a large
+/// rounded swatch of the color with its canonical hex beneath, selectable.
+private struct ColorDetailView: View {
+    let hex: String
+
+    var body: some View {
+        VStack(spacing: 20) {
+            RoundedRectangle(cornerRadius: 20)
+                .fill(Color(hexString: hex) ?? Color(.quaternaryLabelColor))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 20)
+                        .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
+                }
+                .aspectRatio(1, contentMode: .fit)
+                .frame(maxWidth: 420, maxHeight: 420)
+            Text(hex.uppercased())
+                .font(.system(.title2, design: .monospaced))
+                .textSelection(.enabled)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -280,13 +315,23 @@ private struct MetadataSection: View {
 
     var body: some View {
         DetailSection("Details") {
-            DetailRow("Kind", asset.kind == .image ? "Image" : "Video")
-            DetailRow("Dimensions", "\(asset.width) × \(asset.height)")
+            DetailRow("Kind", DetailFormat.kind(asset.kind))
+            // Byte-backed metadata is present only for image/video (003 · O1).
+            if let w = asset.width, let h = asset.height {
+                DetailRow("Dimensions", "\(w) × \(h)")
+            }
             if asset.kind == .video, let duration = asset.duration {
                 DetailRow("Duration", DetailFormat.duration(duration))
             }
-            DetailRow("Size", DetailFormat.size(asset.fileSize))
-            DetailRow("Type", asset.mimeType)
+            if case let .color(hex) = asset.content {
+                DetailRow("Hex", hex.uppercased())
+            }
+            if let size = asset.fileSize {
+                DetailRow("Size", DetailFormat.size(size))
+            }
+            if let mime = asset.mimeType {
+                DetailRow("Type", mime)
+            }
             DetailRow("Captured", DetailFormat.date(asset.createdAt))
         }
     }
@@ -543,6 +588,17 @@ private enum DetailFormat {
     static func duration(_ seconds: Double) -> String {
         let total = Int(seconds.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    /// A human-facing label for an asset kind (003 · O1).
+    static func kind(_ kind: AssetKind) -> String {
+        switch kind {
+        case .image: "Image"
+        case .video: "Video"
+        case .tweet: "Tweet"
+        case .link: "Link"
+        case .color: "Color"
+        }
     }
 
     /// A human-facing label for a capture platform.

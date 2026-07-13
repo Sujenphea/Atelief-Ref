@@ -48,8 +48,10 @@ final class CanvasContent: TileProvider, TileImageSource {
         self.store = store
 
         var keyByHash: [String: Int] = [:]
-        for detail in items where keyByHash[detail.asset.blobHash] == nil {
-            keyByHash[detail.asset.blobHash] = keyByHash.count
+        for detail in items {
+            // Media-less kinds (003 · O1) have no blob to key by — skip them.
+            guard let hash = detail.asset.blobHash, keyByHash[hash] == nil else { continue }
+            keyByHash[hash] = keyByHash.count
         }
         self.keyByHash = keyByHash
         self.tiles = Self.layout(items)
@@ -68,24 +70,29 @@ final class CanvasContent: TileProvider, TileImageSource {
     /// (or is out of range). Used to open a video to play. The extension mirrors
     /// ``IngestionModel/blobURL(for:)`` (round-trips the store-time extension).
     func videoURL(forTileID id: Int) -> URL? {
-        guard let detail = detail(for: id), detail.asset.kind == .video else { return nil }
-        let ext = ImageMetadata.fileExtension(forMIMEType: detail.asset.mimeType)
-        return store.blobURL(hash: detail.asset.blobHash, fileExtension: ext)
+        guard let detail = detail(for: id), detail.asset.kind == .video,
+              let hash = detail.asset.blobHash else { return nil }
+        let ext = ImageMetadata.fileExtension(forMIMEType: detail.asset.mimeType ?? "")
+        return store.blobURL(hash: hash, fileExtension: ext)
     }
 
     // MARK: - TileImageSource
 
     func imageKey(for tile: Tile) -> Int {
-        guard let detail = detail(for: tile.id) else { return tile.id }
+        guard let detail = detail(for: tile.id), let hash = detail.asset.blobHash else {
+            return tile.id
+        }
         // Always resolves (tiles align with details); the fallback is defensive.
-        return keyByHash[detail.asset.blobHash] ?? tile.id
+        return keyByHash[hash] ?? tile.id
     }
 
     /// On-disk thumbnail URL — ``CanvasEngine`` loads bytes off-main (G7).
     func imageFileURL(for tile: Tile, tier: LODTier) -> URL? {
-        guard let detail = detail(for: tile.id) else { return nil }
+        guard let detail = detail(for: tile.id), let hash = detail.asset.blobHash else {
+            return nil
+        }
         return store.thumbnailURL(
-            hash: detail.asset.blobHash,
+            hash: hash,
             size: Self.thumbnailSize(for: tier),
             fileExtension: "jpg")
     }
@@ -183,9 +190,10 @@ final class CanvasContent: TileProvider, TileImageSource {
         return tiles
     }
 
-    /// Display aspect ratio (w/h) of an asset; a safe `1` for missing dimensions.
+    /// Display aspect ratio (w/h) of an asset; a safe square `1` for a media-less
+    /// kind (nil dims, 003 · O1) or missing dimensions.
     private static func aspect(_ asset: Asset) -> Double {
-        guard asset.width > 0, asset.height > 0 else { return 1 }
-        return Double(asset.width) / Double(asset.height)
+        guard let w = asset.width, let h = asset.height, w > 0, h > 0 else { return 1 }
+        return Double(w) / Double(h)
     }
 }

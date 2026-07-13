@@ -71,8 +71,8 @@ struct AddFromLibrarySheet: View {
                         Button {
                             toggle(detail.asset.id)
                         } label: {
-                            AsyncThumbnail(
-                                hash: detail.asset.blobHash,
+                            AssetContentThumbnail(
+                                asset: detail.asset,
                                 url: model.thumbnailURL(for: detail),
                                 isSelected: selected.contains(detail.asset.id))
                         }

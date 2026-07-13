@@ -42,6 +42,47 @@ public struct AssetDraft: Sendable, Equatable {
     }
 }
 
+/// The caller-supplied facts about a MEDIA-LESS asset to ingest (003 · O1) — a
+/// `tweet` / `link` / `color`. The sibling of ``AssetDraft`` for the content
+/// path: no `blobHash` / `mimeType` / dims / `fileSize` (there are no bytes),
+/// just the `kind` and its ``AssetPayload``. The service normalizes the payload
+/// and derives `dedupKey` / `searchText` (server-authoritative) — so a caller
+/// supplies intent, not canonical form.
+///
+/// Build one via a kind factory (e.g. ``color(hex:)``) so the shape is always
+/// valid for its kind; the funnel re-validates (C8) regardless.
+public struct AssetContentDraft: Sendable, Equatable {
+    /// A media-less kind (`.tweet` / `.link` / `.color`). A byte-backed kind is
+    /// rejected by validation (`.invalidContentKind`).
+    public var kind: AssetKind
+    /// The kind's substance. The funnel normalizes this (e.g. canonical hex).
+    public var payload: AssetPayload
+    /// Optional caller-supplied dedup key; the funnel derives the canonical one
+    /// per kind when omitted (color → canonical hex).
+    public var dedupKey: String?
+    /// Optional caller-supplied FTS text; the funnel derives a default per kind.
+    public var searchText: String?
+
+    public init(
+        kind: AssetKind,
+        payload: AssetPayload,
+        dedupKey: String? = nil,
+        searchText: String? = nil
+    ) {
+        self.kind = kind
+        self.payload = payload
+        self.dedupKey = dedupKey
+        self.searchText = searchText
+    }
+
+    /// A `color` content draft from a user-typed hex. Not canonicalized here —
+    /// the funnel's ``Validation`` normalizes to `#rrggbb` and rejects a
+    /// malformed color (`.invalidColor`); this only shapes the payload.
+    public static func color(hex: String) -> AssetContentDraft {
+        AssetContentDraft(kind: .color, payload: AssetPayload(color: ColorPayload(hex: hex)))
+    }
+}
+
 /// The caller-supplied provenance of an asset. Carries `capturedAt` (a
 /// provenance fact the caller owns) but no `id` — the service generates the
 /// source identity. `rawMetadata` defaults to an empty object.

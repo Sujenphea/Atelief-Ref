@@ -41,6 +41,17 @@ public enum AtelierError: Error, Equatable {
     /// A ``SpaceItem`` violated its discriminator invariant (005 O1): an
     /// `.asset` row without an `assetID`, or an element row that carried one.
     case invalidSpaceItem
+    /// A content ingest (003 · O1) was handed a kind that isn't media-less — a
+    /// byte-backed `.image`/`.video` must go through the blob ``AppServices/ingest``
+    /// path, and a media-less kind not yet modelled (`.link`/`.tweet` before
+    /// C2/C3) is rejected here too.
+    case invalidContentKind
+    /// A media-less content draft (003 · O1) had no payload for its kind (e.g. a
+    /// `.color` draft with no color).
+    case missingPayload
+    /// A `.color` content draft's hex was not a valid 3- or 6-digit hex color
+    /// (003 · C1).
+    case invalidColor
     /// A database constraint (FK / NOT NULL / UNIQUE) was violated — mapped from
     /// GRDB so the raw `DatabaseError` never leaks (A2/C7).
     case constraintViolation

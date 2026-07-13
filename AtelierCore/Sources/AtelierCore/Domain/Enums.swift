@@ -11,10 +11,29 @@
 
 /// The medium of a captured ``Asset`` (003 §data-model · Asset.kind).
 ///
-/// Extensible later (`gif`, `audio`, …) without a relationship migration.
+/// `image` / `video` are byte-backed (a `blob_hash`); `tweet` / `link` / `color`
+/// are **media-less** kinds (003 · multi-kind) whose substance lives in
+/// ``Asset/payload`` — a media-less asset has `blob_hash IS NULL`. The
+/// byte-vs-content distinction is derived once by ``AssetContent`` so views
+/// switch on content, not on nil bytes. Extensible later (`gif`, `audio`, …)
+/// without a relationship migration.
 public enum AssetKind: String, Sendable, Codable, CaseIterable, Hashable {
     case image
     case video
+    case tweet
+    case link
+    case color
+
+    /// Whether this kind is backed by blob bytes (`blob_hash` required) or is
+    /// media-less (content in ``Asset/payload``, `blob_hash` optional). The
+    /// single place the byte/content split is defined — validation and
+    /// ``AssetContent`` both read it, so a new kind declares its nature here once.
+    public var isByteBacked: Bool {
+        switch self {
+        case .image, .video: true
+        case .tweet, .link, .color: false
+        }
+    }
 }
 
 /// Where a ``Source`` originated (003 §data-model · Source.platform).

@@ -5,29 +5,36 @@
 
 import Foundation
 
-/// A single piece of captured media and its provenance (003 §data-model).
+/// A single captured item and its provenance (003 §data-model · multi-kind).
 ///
 /// Provenance is required: every asset references a ``Source`` — even a pasted
-/// image (`local_paste`) or dragged file (`local_drag`). There is no
-/// asset-with-no-origin (decision C6); the `sourceId` parameter is not optional.
+/// image (`local_paste`), a dragged file (`local_drag`), or a media-less color
+/// (decision C6); `sourceId` is not optional.
+///
+/// **Byte columns are nullable (003 · O1).** `image` / `video` are byte-backed
+/// (a `blobHash` + `mimeType` + dims + `fileSize`); the media-less kinds
+/// (`tweet` / `link` / `color`) leave those nil and carry their substance in
+/// ``payload``. Never nil-check bytes directly — read ``content`` (the
+/// ``AssetContent`` render seam), which is total over every `(kind, blobHash,
+/// payload)` combination.
 public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
     /// Stable identity.
     public var id: UUID
-    /// `image` | `video` (extensible).
+    /// `image` | `video` | `tweet` | `link` | `color` (extensible).
     public var kind: AssetKind
-    /// Content hash → file in `blobs/`. Enables dedup (non-unique: one blob,
-    /// many asset rows).
-    public var blobHash: String
-    /// e.g. `image/jpeg`.
-    public var mimeType: String
-    /// Intrinsic width — layout without decoding.
-    public var width: Int
-    /// Intrinsic height — layout without decoding.
-    public var height: Int
+    /// Content hash → file in `blobs/`. `nil` for a media-less kind (003 · O1).
+    /// Enables dedup (non-unique: one blob, many asset rows).
+    public var blobHash: String?
+    /// e.g. `image/jpeg`. `nil` for a media-less kind.
+    public var mimeType: String?
+    /// Intrinsic width — layout without decoding. `nil` for a media-less kind.
+    public var width: Int?
+    /// Intrinsic height — layout without decoding. `nil` for a media-less kind.
+    public var height: Int?
     /// Playback duration, for video.
     public var duration: Double?
-    /// Bytes on disk.
-    public var fileSize: Int
+    /// Bytes on disk. `nil` for a media-less kind.
+    public var fileSize: Int?
     /// `pending` | `downloaded` | `failed` — lets a failed download resume.
     public var downloadState: DownloadState
     /// When captured.
@@ -41,6 +48,16 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
     /// When the detail page was last opened (007 · sort). `nil` until first
     /// viewed; makes a future "recently viewed" sort free. Added by v5.
     public var lastViewedAt: Date?
+    /// The media-less kind's structured substance as JSON TEXT (003 · O1); `nil`
+    /// for byte-backed kinds. Decode via ``payloadValue`` — do not parse raw.
+    public var payload: String?
+    /// The kind-aware dedup key (003 · O1): canonical hex for `color`, normalized
+    /// URL for `link`, tweet-id for `tweet`; `nil` for byte-backed kinds (which
+    /// dedup on `blobHash` + source). Indexed.
+    public var dedupKey: String?
+    /// Denormalized content text for `asset_fts` (003 · O1): tweet text, a link's
+    /// title+description, a color's name; `nil` when there is nothing to index.
+    public var searchText: String?
 
     /// Explicit snake_case column/coding names (the persistence layer binds
     /// these as SQLite columns; chosen explicitly so acronym mapping is exact).
@@ -55,22 +72,28 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         case sourceId = "source_id"
         case viewCount = "view_count"
         case lastViewedAt = "last_viewed_at"
+        case payload
+        case dedupKey = "dedup_key"
+        case searchText = "search_text"
     }
 
     public init(
         id: UUID,
         kind: AssetKind,
-        blobHash: String,
-        mimeType: String,
-        width: Int,
-        height: Int,
+        blobHash: String?,
+        mimeType: String?,
+        width: Int?,
+        height: Int?,
         duration: Double? = nil,
-        fileSize: Int,
+        fileSize: Int?,
         downloadState: DownloadState,
         createdAt: Date,
         sourceId: UUID,
         viewCount: Int = 0,
-        lastViewedAt: Date? = nil
+        lastViewedAt: Date? = nil,
+        payload: String? = nil,
+        dedupKey: String? = nil,
+        searchText: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -85,5 +108,8 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         self.sourceId = sourceId
         self.viewCount = viewCount
         self.lastViewedAt = lastViewedAt
+        self.payload = payload
+        self.dedupKey = dedupKey
+        self.searchText = searchText
     }
 }
