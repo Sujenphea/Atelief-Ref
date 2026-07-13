@@ -82,6 +82,38 @@ public struct IngestPipeline: Sendable {
     /// 5. persist the asset + provenance + membership in one transaction (P15);
     /// 6. return `.ingested` with the resolved asset + dedup flag.
     public func ingest(_ input: IngestInput) async -> IngestOutcome {
+        // Branch once on what the item carries (003 · C3): a media-less content
+        // draft skips every byte stage and goes straight to `ingestContent`;
+        // bytes take the blob-first pipeline below.
+        switch input.source {
+        case .content(let draft):
+            return await ingestContent(draft, input: input)
+        case .bytes(let byteSource):
+            return await ingestBytes(byteSource, input: input)
+        }
+    }
+
+    /// Persist a MEDIA-LESS item (003 · C3) — no bytes, so no hash / blob /
+    /// thumbnail work: the draft's substance is its ``AssetPayload``. The funnel
+    /// (`AppServices.ingestContent`) validates the draft and dedups by kind; a
+    /// rejected draft folds to `.failed(.persistence(...))` like any other stage.
+    private func ingestContent(
+        _ draft: AssetContentDraft, input: IngestInput
+    ) async -> IngestOutcome {
+        do {
+            let result = try await services.ingestContent(
+                draft, from: input.provenance,
+                into: input.collectionID, placement: input.placement)
+            return .ingested(asset: result.asset, deduplicated: result.wasDeduplicated)
+        } catch {
+            return .failed(IngestError(mapping: error))
+        }
+    }
+
+    /// Persist a byte-backed item — the original blob-first (A2) + P14 pipeline.
+    private func ingestBytes(
+        _ byteSource: ByteSource, input: IngestInput
+    ) async -> IngestOutcome {
         // Phase 8 (16A): monotonic marks around each stage — negligible when the
         // timing sink is nil, and the signal that reveals a thumbnail stall (P16).
         let clock = ContinuousClock()
@@ -93,7 +125,7 @@ public struct IngestPipeline: Sendable {
             // 1. Bytes: in-memory as-is; a file URL is read now (a read failure
             //    — missing/unreadable file — maps to `.unreadableSource`).
             let bytes: Data
-            switch input.source {
+            switch byteSource {
             case .data(let d):
                 bytes = d
             case .fileURL(let url):

@@ -215,7 +215,7 @@ struct IngestCoordinatorTests {
         for asset in assets {
             for tier in ThumbnailTier.allCases {
                 #expect(env.store.hasThumbnail(
-                    hash: asset.blobHash, size: tier.rawValue, fileExtension: "jpg"))
+                    hash: try #require(asset.blobHash), size: tier.rawValue, fileExtension: "jpg"))
             }
         }
 

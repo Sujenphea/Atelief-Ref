@@ -169,9 +169,12 @@ roadmap and is the strongest argument for shipping 008's snapshot early.
 ## Status (2026-07)
 
 - ✅ **C0** core seam · **C1** color · **C2a** link (structural) · **C3** tweet
-  (structural) — all shipped (changelogs 109–112). Plan record: `.docs/025`.
+  (structural) · **C3 wire** server + ingestion content-capture path — all shipped
+  (changelogs 109–113). Plan record: `.docs/025`.
+- ⏳ **C3 extension JS** — the browser side that PRODUCES content captures:
+  `twitter.js` → tweet `payload`, `web` extractor → link `payload`, bulk X sweep
+  → tweets. `CaptureDTO.kind`/`payload` + the `CaptureRoutes` content branch are
+  built and unit-tested (113); this is the JS + node-test follow-on, plus a
+  content fixture for `capture-contract.json`.
 - ⏳ **C2b** link resolver enrichment (= 001 `PageResolver`, SSRF-hardened) —
   deferred; the security-sensitive piece.
-- ⏳ **C3 extension wiring** — `CaptureDTO.kind`/`payload` + `CaptureRoutes`
-  content branch, so the extension's `web` captures become links and single/bulk
-  X captures become tweets. The structural kinds are ready to receive them.

@@ -81,6 +81,23 @@ tweet, media carried as references. DRY, zero schema change; the richer "real
 asset children via `parent_asset_id`" model was rejected for v1 (reintroduces a
 local supertype). Revisit only if per-image tag/place/dedup is wanted.
 
+## C3 wire — content capture path (shipped, changelog 113)
+
+- `IngestInput` carries bytes OR content (`IngestSource` enum); the byte init is
+  kept so all existing call sites are unchanged. `IngestPipeline` branches once —
+  content skips every byte stage and goes to `ingestContent`. Both flow through
+  the SAME coordinator (P2: no second queue), so onCapture / ledger / 7A relay are
+  reused — the bulk-X payoff needs exactly this.
+- Wire: `CaptureRequest.image` optional + new `kind` / `payload`; `decodeInput`
+  routes media-less kinds → `.content` (new errors `.unknownKind` /
+  `.missingContentPayload`, both 400). `CaptureRoutes` branches image vs content
+  through one shared `ingest(_:)`.
+- **Repaired C0 test-bundle drift**: C0 rebuilt only Ingestion/Server *sources*
+  when `blobHash`/`mimeType` went optional; their *test* bundles had silently
+  stopped compiling. Both are green again (byte tests unwrap via `#require`).
+- Remaining for C3: the extension JS that PRODUCES content captures (tweet / link
+  payloads, bulk X sweep) — the Swift boundary is ready to receive them.
+
 ## Deviations from the roadmap doc
 
 - **No `thumbnail_hash` column** (as the doc's v1 recommendation): a color has no

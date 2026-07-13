@@ -192,4 +192,85 @@ struct CaptureRoutesTests {
         #expect(result.statusCode == 422)
         #expect(try await env.items().isEmpty)
     }
+
+    // MARK: - Content route (003 · C3)
+
+    /// A media-less content capture request (no image; a `kind` + `payload`).
+    private func contentRequest(
+        kind: String, payload: AssetPayload, platform: String = "local_paste",
+        originalURL: String? = nil, collectionId: UUID?
+    ) -> CaptureRequest {
+        CaptureRequest(
+            provenance: ProvenanceDTO(platform: platform, originalURL: originalURL),
+            collectionId: collectionId, kind: kind, payload: payload)
+    }
+
+    @Test("a media-less content capture → 200 ingested + persisted asset with nil bytes")
+    func contentCapturePersists() async throws {
+        let env = try await makeServerTestEnv(); defer { env.cleanup() }
+        let routes = makeRoutes(env)
+        let request = contentRequest(
+            kind: "color", payload: AssetPayload(color: ColorPayload(hex: "#FF0000")),
+            collectionId: env.collectionID)
+
+        let result = await routes.handleIngest(body: request.jsonData(), now: Self.now)
+
+        #expect(result.statusCode == 200)
+        #expect(result.response.status == "ingested")
+        let detail = try #require(try await env.items().first)
+        #expect(detail.asset.kind == .color)
+        #expect(detail.asset.blobHash == nil)             // no bytes
+        #expect(detail.asset.content == .color(hex: "#ff0000"))
+        #expect(detail.asset.id == result.response.assetId)
+    }
+
+    @Test("a link content capture dedups on canonical URL through the same coordinator")
+    func contentDedupOnRecapture() async throws {
+        let env = try await makeServerTestEnv(); defer { env.cleanup() }
+        let routes = makeRoutes(env)
+        let payload = AssetPayload(link: LinkPayload(url: "https://ex.com/x"))
+        let a = contentRequest(
+            kind: "link", payload: payload, platform: "web",
+            originalURL: "https://ex.com/x", collectionId: env.collectionID)
+        // Trailing slash + tracking param → same canonical URL.
+        let b = contentRequest(
+            kind: "link",
+            payload: AssetPayload(link: LinkPayload(url: "https://ex.com/x/?utm_source=tw")),
+            platform: "web", originalURL: "https://ex.com/x/?utm_source=tw",
+            collectionId: env.collectionID)
+
+        let first = await routes.handleIngest(body: a.jsonData(), now: Self.now)
+        let second = await routes.handleIngest(body: b.jsonData(), now: Self.now)
+
+        #expect(first.response.deduplicated == false)
+        #expect(second.response.deduplicated == true)
+        #expect(try await env.items().count == 1)
+    }
+
+    @Test("an invalid content payload → 422, nothing persisted")
+    func invalidContentFails() async throws {
+        let env = try await makeServerTestEnv(); defer { env.cleanup() }
+        let routes = makeRoutes(env)
+        let request = contentRequest(
+            kind: "color", payload: AssetPayload(color: ColorPayload(hex: "nope")),
+            collectionId: env.collectionID)
+
+        let result = await routes.handleIngest(body: request.jsonData(), now: Self.now)
+
+        #expect(result.statusCode == 422)
+        #expect(try await env.items().isEmpty)
+    }
+
+    @Test("an unknown content kind → 400, nothing persisted")
+    func unknownContentKindFails() async throws {
+        let env = try await makeServerTestEnv(); defer { env.cleanup() }
+        let routes = makeRoutes(env)
+        let request = contentRequest(
+            kind: "sticker", payload: AssetPayload(), collectionId: env.collectionID)
+
+        let result = await routes.handleIngest(body: request.jsonData(), now: Self.now)
+
+        #expect(result.statusCode == 400)
+        #expect(try await env.items().isEmpty)
+    }
 }

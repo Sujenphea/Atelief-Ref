@@ -153,7 +153,7 @@ struct RemoteImageFetcherTests {
         #expect(input.provenance.capturedAt == Self.capturedAt)
         #expect(input.collectionID == Self.collectionID)
         // The downloaded bytes ride in-memory.
-        if case .data(let d) = input.source {
+        if case .bytes(.data(let d)) = input.source {
             #expect(d == png)
         } else {
             Issue.record("expected .data source carrying the downloaded bytes")

@@ -52,7 +52,9 @@ public struct ProvenanceDTO: Codable, Equatable, Sendable {
 /// the existing path.
 public struct CaptureRequest: Codable, Equatable, Sendable {
     /// Base64-encoded image bytes the extension already fetched in-browser.
-    public var image: String
+    /// Optional (003 · C3): a MEDIA-LESS capture (`kind` + `payload`) carries no
+    /// image, so this is absent for a tweet / link / color.
+    public var image: String?
     public var provenance: ProvenanceDTO
     /// Target collection; when omitted the server routes to the default folder.
     public var collectionId: UUID?
@@ -60,16 +62,27 @@ public struct CaptureRequest: Codable, Equatable, Sendable {
     public var jobId: UUID?
     /// The platform's stable item id (tweet id / pin id), for the ledger row.
     public var sourceId: String?
+    /// The asset kind for a MEDIA-LESS capture (003 · C3): `tweet` / `link` /
+    /// `color`. Absent (or a byte kind) ⇒ the image path. Validated against
+    /// ``AssetKind`` during decode; the funnel is the single content authority.
+    public var kind: String?
+    /// The media-less content's substance (003 · C3) — the ``AssetPayload`` the
+    /// extension extracted (color hex / link URL / tweet id+text+media). The
+    /// funnel canonicalizes + validates it, so the wire carries raw intent.
+    public var payload: AssetPayload?
 
     public init(
-        image: String, provenance: ProvenanceDTO, collectionId: UUID? = nil,
-        jobId: UUID? = nil, sourceId: String? = nil
+        image: String? = nil, provenance: ProvenanceDTO, collectionId: UUID? = nil,
+        jobId: UUID? = nil, sourceId: String? = nil,
+        kind: String? = nil, payload: AssetPayload? = nil
     ) {
         self.image = image
         self.provenance = provenance
         self.collectionId = collectionId
         self.jobId = jobId
         self.sourceId = sourceId
+        self.kind = kind
+        self.payload = payload
     }
 }
 
@@ -157,6 +170,25 @@ public struct DecodedVideoCapture: Equatable, Sendable {
     public let sourceID: String?
 }
 
+/// A validated MEDIA-LESS capture (003 · C3): the ``AssetContentDraft`` the
+/// funnel will ingest, plus provenance + target + the optional bulk-ledger tags.
+/// The sibling of ``DecodedCapture`` for the content path — no image bytes.
+public struct DecodedContentCapture: Equatable, Sendable {
+    public let draft: AssetContentDraft
+    public let provenance: SourceDraft
+    public let collectionID: UUID?
+    public let jobID: UUID?
+    public let sourceID: String?
+}
+
+/// What a JSON capture body decoded to (003 · C3): a byte-backed image or a
+/// media-less content item. The route branches on this once — both flow through
+/// the same coordinator (ledger / live-refresh shared).
+public enum DecodedInput: Equatable, Sendable {
+    case image(DecodedCapture)
+    case content(DecodedContentCapture)
+}
+
 /// Why a raw capture body could not be turned into a `DecodedCapture`. Each maps
 /// to a 4xx (see ``CaptureRoutes``); the `message` is surfaced to the extension.
 public enum CaptureDecodeError: Error, Equatable {
@@ -166,6 +198,11 @@ public enum CaptureDecodeError: Error, Equatable {
     case unknownPlatform(String)
     case missingProvenanceHeader
     case malformedProvenanceHeader
+    /// The `kind` field was present but is not a known ``AssetKind`` (003 · C3).
+    case unknownKind(String)
+    /// A media-less capture (`kind` present + media-less) carried no `payload`
+    /// to ingest (003 · C3).
+    case missingContentPayload
 
     public var message: String {
         switch self {
@@ -178,6 +215,9 @@ public enum CaptureDecodeError: Error, Equatable {
         case .malformedProvenanceHeader:
             return "The \(CaptureDecoder.provenanceHeaderName) header is not valid "
                 + "base64-encoded VideoCaptureHeader JSON."
+        case .unknownKind(let value): return "Unknown asset kind '\(value)'."
+        case .missingContentPayload:
+            return "A media-less capture is missing its `payload`."
         }
     }
 }
@@ -188,7 +228,33 @@ public enum CaptureDecoder {
     /// the POST through (``CaptureAuth/corsHeaders(origin:)``).
     public static let provenanceHeaderName = "X-Atelier-Provenance"
 
-    /// Turn a raw JSON request body into a validated ``DecodedCapture``.
+    /// Turn a raw JSON request body into a validated ``DecodedInput`` (003 · C3) —
+    /// a byte-backed image or a media-less content item. The route branches on the
+    /// result; both share the ingest coordinator downstream.
+    ///
+    /// Routing: a `kind` naming a MEDIA-LESS ``AssetKind`` (`tweet` / `link` /
+    /// `color`) is a content capture; an absent `kind` or a byte kind
+    /// (`image` / `video`) is the image path. As with the image decode, per-kind
+    /// content requirements (valid hex / URL / tweet id) are NOT checked here —
+    /// `AppServices.ingestContent` is the single content authority; this only
+    /// rejects what is structurally unusable (unknown kind, no payload).
+    public static func decodeInput(body: Data, now: Date) throws -> DecodedInput {
+        let request = try decodeRequest(body)
+        if let rawKind = request.kind {
+            guard let kind = AssetKind(rawValue: rawKind) else {
+                throw CaptureDecodeError.unknownKind(rawKind)
+            }
+            if !kind.isByteBacked {
+                return .content(try decodeContent(request, kind: kind, now: now))
+            }
+            // A byte kind (image/video) still needs its bytes — image path.
+        }
+        return .image(try decodeImage(request, now: now))
+    }
+
+    /// Turn a raw JSON request body into a validated ``DecodedCapture`` (the
+    /// byte-backed image path). Kept as the image-only entry point (the content
+    /// router is ``decodeInput(body:now:)``).
     ///
     /// `now` is the server-owned capture timestamp (we do NOT trust a
     /// client-supplied time). Field-level provenance requirements (e.g. a
@@ -196,22 +262,47 @@ public enum CaptureDecoder {
     /// `AppServices.ingest` is the single validation authority for those, so this
     /// step only rejects what makes the request structurally unusable.
     public static func decode(body: Data, now: Date) throws -> DecodedCapture {
-        let request: CaptureRequest
+        try decodeImage(decodeRequest(body), now: now)
+    }
+
+    /// Decode + reject a malformed JSON body once (shared by both entry points).
+    private static func decodeRequest(_ body: Data) throws -> CaptureRequest {
         do {
-            request = try JSONDecoder().decode(CaptureRequest.self, from: body)
+            return try JSONDecoder().decode(CaptureRequest.self, from: body)
         } catch {
             throw CaptureDecodeError.malformedJSON
         }
+    }
 
-        guard let imageData = Data(base64Encoded: request.image) else {
+    /// The image path: require present, valid, non-empty base64 image bytes.
+    private static func decodeImage(
+        _ request: CaptureRequest, now: Date
+    ) throws -> DecodedCapture {
+        guard let image = request.image else { throw CaptureDecodeError.emptyImage }
+        guard let imageData = Data(base64Encoded: image) else {
             throw CaptureDecodeError.invalidBase64
         }
         guard !imageData.isEmpty else {
             throw CaptureDecodeError.emptyImage
         }
-
         return DecodedCapture(
             imageData: imageData,
+            provenance: try makeSourceDraft(request.provenance, now: now),
+            collectionID: request.collectionId,
+            jobID: request.jobId,
+            sourceID: request.sourceId)
+    }
+
+    /// The content path: a media-less capture needs a `payload`; the funnel then
+    /// canonicalizes + validates it per kind (003 · C3).
+    private static func decodeContent(
+        _ request: CaptureRequest, kind: AssetKind, now: Date
+    ) throws -> DecodedContentCapture {
+        guard let payload = request.payload else {
+            throw CaptureDecodeError.missingContentPayload
+        }
+        return DecodedContentCapture(
+            draft: AssetContentDraft(kind: kind, payload: payload),
             provenance: try makeSourceDraft(request.provenance, now: now),
             collectionID: request.collectionId,
             jobID: request.jobId,

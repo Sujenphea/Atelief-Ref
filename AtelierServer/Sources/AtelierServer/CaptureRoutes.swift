@@ -56,27 +56,43 @@ public struct CaptureRoutes: Sendable {
         self.jobLedger = jobLedger
     }
 
-    /// Ingest one captured image from a raw JSON body. `now` is the server-owned
-    /// capture time. Never throws — every failure becomes a `HandlerResult`.
+    /// Ingest one capture from a raw JSON body — a byte-backed image or a
+    /// media-less content item (003 · C3). `now` is the server-owned capture
+    /// time. Never throws — every failure becomes a `HandlerResult`. Both kinds
+    /// run through the SAME coordinator via ``ingest(_:into:jobID:sourceID:sourceURL:)``,
+    /// so ledger recording + live-refresh + the 7A relay are shared.
     public func handleIngest(body: Data, now: Date) async -> HandlerResult {
-        let decoded: DecodedCapture
+        let decoded: DecodedInput
         do {
-            decoded = try CaptureDecoder.decode(body: body, now: now)
+            decoded = try CaptureDecoder.decodeInput(body: body, now: now)
         } catch let error as CaptureDecodeError {
             return HandlerResult(statusCode: 400, response: .error(error.message))
         } catch {
             return HandlerResult(statusCode: 400, response: .error("Bad request."))
         }
 
-        let collectionID = decoded.collectionID ?? defaultCollectionID()
-        let input = DirectInputReader.remoteInput(
-            imageData: decoded.imageData,
-            provenance: decoded.provenance,
-            into: collectionID)
-        return await ingest(
-            input, into: collectionID,
-            jobID: decoded.jobID, sourceID: decoded.sourceID,
-            sourceURL: decoded.provenance.originalURL)
+        switch decoded {
+        case .image(let decoded):
+            let collectionID = decoded.collectionID ?? defaultCollectionID()
+            let input = DirectInputReader.remoteInput(
+                imageData: decoded.imageData,
+                provenance: decoded.provenance,
+                into: collectionID)
+            return await ingest(
+                input, into: collectionID,
+                jobID: decoded.jobID, sourceID: decoded.sourceID,
+                sourceURL: decoded.provenance.originalURL)
+        case .content(let decoded):
+            let collectionID = decoded.collectionID ?? defaultCollectionID()
+            let input = DirectInputReader.remoteContent(
+                draft: decoded.draft,
+                provenance: decoded.provenance,
+                into: collectionID)
+            return await ingest(
+                input, into: collectionID,
+                jobID: decoded.jobID, sourceID: decoded.sourceID,
+                sourceURL: decoded.provenance.originalURL)
+        }
     }
 
     /// Ingest one captured **video** from a temp file the transport already

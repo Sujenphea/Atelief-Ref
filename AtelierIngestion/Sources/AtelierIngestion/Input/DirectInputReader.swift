@@ -108,6 +108,21 @@ public enum DirectInputReader {
             collectionID: collectionID)
     }
 
+    /// A REMOTE MEDIA-LESS capture (003 · C3): a `tweet` / `link` / `color`
+    /// content draft the extension extracted, with the same rich caller-supplied
+    /// provenance as ``remoteInput(imageData:provenance:into:)``. No bytes ride
+    /// in — the substance is the draft's ``AssetContentDraft/payload`` — so the
+    /// pipeline routes it to `ingestContent` instead of the blob path, while it
+    /// still flows through the same coordinator (ledger / live-refresh unchanged).
+    public static func remoteContent(
+        draft: AssetContentDraft, provenance: SourceDraft, into collectionID: UUID
+    ) -> IngestInput {
+        IngestInput(
+            content: draft,
+            provenance: provenance,
+            collectionID: collectionID)
+    }
+
     // MARK: - Pasteboard interpretation
 
     /// The image data types we recognize on a pasteboard, in preference order.

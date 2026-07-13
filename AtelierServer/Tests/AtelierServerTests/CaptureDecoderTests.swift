@@ -212,4 +212,60 @@ struct CaptureDecoderTests {
             #expect(decoded.provenance.platform == expected)
         }
     }
+
+    // MARK: - Content routing (003 · C3)
+
+    @Test("decodeInput routes a media-less kind → .content carrying the built draft")
+    func decodesContent() throws {
+        let request = CaptureRequest(
+            provenance: ProvenanceDTO(platform: "web", originalURL: "https://ex.com/p"),
+            collectionId: Self.collectionID,
+            kind: "link",
+            payload: AssetPayload(link: LinkPayload(url: "https://ex.com/p", title: "P")))
+        guard case .content(let c) = try CaptureDecoder.decodeInput(
+            body: request.jsonData(), now: Self.now) else {
+            Issue.record("expected .content"); return
+        }
+        #expect(c.draft.kind == .link)
+        #expect(c.draft.payload.link?.url == "https://ex.com/p")
+        #expect(c.provenance.platform == .web)
+        #expect(c.collectionID == Self.collectionID)
+    }
+
+    @Test("decodeInput routes an absent or byte kind → .image")
+    func decodesImageByDefault() throws {
+        // No `kind` → image.
+        guard case .image = try CaptureDecoder.decodeInput(
+            body: CaptureRequest.sample().jsonData(), now: Self.now) else {
+            Issue.record("expected .image for an absent kind"); return
+        }
+        // An explicit byte kind still takes the image path (it needs its bytes).
+        let explicit = CaptureRequest(
+            image: ServerFixtures.pngBase64(),
+            provenance: ProvenanceDTO(platform: "twitter", originalURL: "https://x.com/a/status/1"),
+            kind: "image")
+        guard case .image = try CaptureDecoder.decodeInput(
+            body: explicit.jsonData(), now: Self.now) else {
+            Issue.record("expected .image for a byte kind"); return
+        }
+    }
+
+    @Test("decodeInput rejects an unknown kind (.unknownKind)")
+    func unknownKind() {
+        let request = CaptureRequest(
+            provenance: ProvenanceDTO(platform: "web", originalURL: "https://e.com"),
+            kind: "sticker", payload: AssetPayload())
+        #expect(throws: CaptureDecodeError.unknownKind("sticker")) {
+            try CaptureDecoder.decodeInput(body: request.jsonData(), now: Self.now)
+        }
+    }
+
+    @Test("decodeInput rejects a media-less kind with no payload (.missingContentPayload)")
+    func missingContentPayload() {
+        let request = CaptureRequest(
+            provenance: ProvenanceDTO(platform: "local_paste"), kind: "color")
+        #expect(throws: CaptureDecodeError.missingContentPayload) {
+            try CaptureDecoder.decodeInput(body: request.jsonData(), now: Self.now)
+        }
+    }
 }

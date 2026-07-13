@@ -105,10 +105,11 @@ struct VideoIngestTests {
 
         // The VIDEO bytes are the blob (stored under .mp4), and every thumbnail
         // tier exists (rendered from the poster frame).
-        #expect(env.store.hasBlob(hash: asset.blobHash, fileExtension: "mp4"))
+        let hash = try #require(asset.blobHash)
+        #expect(env.store.hasBlob(hash: hash, fileExtension: "mp4"))
         for tier in ThumbnailTier.allCases {
             #expect(env.store.hasThumbnail(
-                hash: asset.blobHash, size: tier.rawValue, fileExtension: "jpg"))
+                hash: hash, size: tier.rawValue, fileExtension: "jpg"))
         }
 
         // Reachable via the read API in the target collection.

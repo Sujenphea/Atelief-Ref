@@ -19,6 +19,19 @@ public enum ByteSource: Sendable {
     case fileURL(URL)
 }
 
+/// What an ``IngestInput`` carries (003 · O1 · C3): either the bytes of a
+/// byte-backed asset (`image` / `video`) or the ``AssetContentDraft`` of a
+/// MEDIA-LESS one (`tweet` / `link` / `color`). Both flow through the SAME
+/// ``IngestCoordinator`` batch — so a bulk capture of media-less items gets the
+/// same bounded concurrency, ledger recording, and live-refresh as an image
+/// sweep (P2: no second queue). The pipeline branches on this once.
+public enum IngestSource: Sendable {
+    /// A byte-backed item: hash / thumbnail / blob-first persistence.
+    case bytes(ByteSource)
+    /// A media-less item: skip all byte stages, straight to `ingestContent`.
+    case content(AssetContentDraft)
+}
+
 /// One image to ingest: its bytes, its REQUIRED provenance, the target
 /// collection, and an optional canvas placement.
 ///
@@ -26,8 +39,8 @@ public enum ByteSource: Sendable {
 /// AtelierCore's C6 "no asset with no origin" rule. Index-aligned with its
 /// ``IngestOutcome`` in a batch.
 public struct IngestInput: Sendable {
-    /// The item's raw bytes (in-memory or a file URL).
-    public let source: ByteSource
+    /// What the item carries — bytes (byte-backed) or a content draft (media-less).
+    public let source: IngestSource
     /// Where the item came from — carried straight through to `AppServices`.
     public let provenance: SourceDraft
     /// The collection the ingested asset is added to.
@@ -35,8 +48,9 @@ public struct IngestInput: Sendable {
     /// An optional canvas placement supplied at ingest time.
     public let placement: CanvasPlacement?
 
+    /// The general initializer — bytes or content.
     public init(
-        source: ByteSource,
+        source: IngestSource,
         provenance: SourceDraft,
         collectionID: UUID,
         placement: CanvasPlacement? = nil
@@ -45,6 +59,32 @@ public struct IngestInput: Sendable {
         self.provenance = provenance
         self.collectionID = collectionID
         self.placement = placement
+    }
+
+    /// A byte-backed item — the original shape, kept so every existing byte
+    /// factory / call site (`.data` / `.fileURL`) stays source-compatible.
+    public init(
+        source: ByteSource,
+        provenance: SourceDraft,
+        collectionID: UUID,
+        placement: CanvasPlacement? = nil
+    ) {
+        self.init(
+            source: .bytes(source), provenance: provenance,
+            collectionID: collectionID, placement: placement)
+    }
+
+    /// A MEDIA-LESS item (003 · C3) — a `tweet` / `link` / `color` content draft
+    /// routed through the same coordinator as bytes.
+    public init(
+        content: AssetContentDraft,
+        provenance: SourceDraft,
+        collectionID: UUID,
+        placement: CanvasPlacement? = nil
+    ) {
+        self.init(
+            source: .content(content), provenance: provenance,
+            collectionID: collectionID, placement: placement)
     }
 }
 

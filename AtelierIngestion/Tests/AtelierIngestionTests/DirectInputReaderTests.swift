@@ -37,7 +37,7 @@ struct DirectInputReaderTests {
         #expect(input.provenance.capturedAt == Self.capturedAt)
         #expect(input.collectionID == Self.collectionID)
         // Bytes carried in-memory.
-        if case .data(let d) = input.source {
+        if case .bytes(.data(let d)) = input.source {
             #expect(d == Data([0x1, 0x2, 0x3]))
         } else {
             Issue.record("expected .data source")
@@ -66,7 +66,7 @@ struct DirectInputReaderTests {
         #expect(input.provenance.rawMetadata
             == .object(["original_path": .string("/Users/someone/Pictures/ref.png")]))
         // Bytes read from the file URL at ingest.
-        if case .fileURL(let u) = input.source {
+        if case .bytes(.fileURL(let u)) = input.source {
             #expect(u == url)
         } else {
             Issue.record("expected .fileURL source")
@@ -82,7 +82,7 @@ struct DirectInputReaderTests {
 
         #expect(input.provenance.platform == .web)
         #expect(input.provenance.originalURL == "https://gallery.example/post/42")
-        if case .data = input.source {} else {
+        if case .bytes(.data) = input.source {} else {
             Issue.record("expected .data source")
         }
     }
@@ -106,7 +106,7 @@ struct DirectInputReaderTests {
         #expect(input.provenance.platform == .twitter)
         #expect(input.provenance.authorHandle == "@designer")
         #expect(input.collectionID == Self.collectionID)
-        if case .data(let d) = input.source {
+        if case .bytes(.data(let d)) = input.source {
             #expect(d == Data([0xDE, 0xAD]))
         } else {
             Issue.record("expected .data source (bytes ride in with the request)")
@@ -128,7 +128,7 @@ struct DirectInputReaderTests {
         #expect(input.provenance == provenance)
         #expect(input.collectionID == Self.collectionID)
         // Bytes stream from disk (a video is too large to hold in memory).
-        if case .fileURL(let u) = input.source {
+        if case .bytes(.fileURL(let u)) = input.source {
             #expect(u == url)
         } else {
             Issue.record("expected .fileURL source (video streamed to a temp file)")
@@ -160,7 +160,7 @@ struct DirectInputReaderTests {
         let input = try #require(inputs.first)
         #expect(input.provenance.platform == .localPaste)
         #expect(input.provenance.originalURL == nil)
-        if case .data(let d) = input.source {
+        if case .bytes(.data(let d)) = input.source {
             #expect(d == png)
         } else {
             Issue.record("expected .data source")
@@ -187,7 +187,7 @@ struct DirectInputReaderTests {
         #expect(inputs.count == 1)
         let input = try #require(inputs.first)
         #expect(input.provenance.platform == .localDrag)
-        if case .fileURL(let u) = input.source {
+        if case .bytes(.fileURL(let u)) = input.source {
             #expect(u.isFileURL)
             #expect(u.lastPathComponent == "ref.png")
         } else {
@@ -220,7 +220,7 @@ struct DirectInputReaderTests {
         let input = try #require(inputs.first)
         #expect(input.provenance.platform == .web)
         #expect(input.provenance.originalURL == "https://gallery.example/post/7")
-        if case .data(let d) = input.source {
+        if case .bytes(.data(let d)) = input.source {
             #expect(d == png)
         } else {
             Issue.record("expected .data source")
@@ -256,7 +256,7 @@ struct DirectInputReaderTests {
         // The file URL won: a .localDrag reading the real file, NOT a paste of
         // the 8×8 preview bytes.
         #expect(input.provenance.platform == .localDrag)
-        if case .fileURL(let u) = input.source {
+        if case .bytes(.fileURL(let u)) = input.source {
             #expect(u.lastPathComponent == "real.png")
         } else {
             Issue.record("expected .fileURL source (the real file), not the inline preview")

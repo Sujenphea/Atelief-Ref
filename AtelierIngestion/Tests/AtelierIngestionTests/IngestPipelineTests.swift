@@ -42,13 +42,15 @@ struct IngestPipelineTests {
             return
         }
         #expect(deduplicated == false)
+        // A byte-backed asset always has a hash (003 · O1 made it optional).
+        let hash = try #require(asset.blobHash)
 
         // Blob on disk (A2) at the content-addressed path.
-        #expect(env.store.hasBlob(hash: asset.blobHash, fileExtension: "png"))
+        #expect(env.store.hasBlob(hash: hash, fileExtension: "png"))
         // All three thumbnail tiers present.
         for tier in ThumbnailTier.allCases {
             #expect(env.store.hasThumbnail(
-                hash: asset.blobHash, size: tier.rawValue, fileExtension: "jpg"))
+                hash: hash, size: tier.rawValue, fileExtension: "jpg"))
         }
 
         // Asset persisted with correct byte-derived facts.
@@ -68,9 +70,58 @@ struct IngestPipelineTests {
         let all = try await env.services.searchAssets(text: nil)
         for detail in all {
             #expect(env.store.hasBlob(
-                hash: detail.asset.blobHash,
-                fileExtension: fileExtension(forMIME: detail.asset.mimeType)))
+                hash: try #require(detail.asset.blobHash),
+                fileExtension: fileExtension(forMIME: try #require(detail.asset.mimeType))))
         }
+    }
+
+    // MARK: - Media-less content path (003 · C3)
+
+    @Test("a media-less content input → ingested asset, NO blob / thumbnail work")
+    func contentInputIngests() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+
+        let input = IngestInput(
+            content: .color(hex: "#4488cc"),
+            provenance: SourceDraft(platform: .localPaste, capturedAt: Date()),
+            collectionID: env.collectionID)
+        let outcome = await env.pipeline.ingest(input)
+
+        guard case .ingested(let asset, let deduplicated) = outcome else {
+            Issue.record("expected .ingested, got \(outcome)")
+            return
+        }
+        #expect(deduplicated == false)
+        #expect(asset.kind == .color)
+        #expect(asset.blobHash == nil)          // no bytes → no blob
+        #expect(asset.content == .color(hex: "#4488cc"))
+        // Nothing written to the blob store — the content path skips it entirely.
+        #expect(env.blobFiles().isEmpty)
+        // Reachable via the read API.
+        let items = try await env.services.collectionItems(in: env.collectionID)
+        #expect(items.map(\.asset.id) == [asset.id])
+    }
+
+    @Test("an invalid content draft folds to .failed(.persistence(...)) — batch-safe")
+    func invalidContentFailsCleanly() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+
+        let input = IngestInput(
+            content: .color(hex: "not a color"),
+            provenance: SourceDraft(platform: .localPaste, capturedAt: Date()),
+            collectionID: env.collectionID)
+        let outcome = await env.pipeline.ingest(input)
+
+        guard case .failed(let error) = outcome else {
+            Issue.record("expected .failed, got \(outcome)")
+            return
+        }
+        #expect(error == .persistence(.invalidColor))
+        // Nothing persisted.
+        let all = try await env.services.searchAssets(text: nil)
+        #expect(all.isEmpty)
     }
 
     // MARK: - P14 short-circuit / idempotent retry
@@ -113,13 +164,14 @@ struct IngestPipelineTests {
             Issue.record("expected .ingested")
             return
         }
+        let hash = try #require(asset.blobHash)
 
         // Delete the medium tier's thumbnail file.
         let mediumURL = env.store.thumbnailURL(
-            hash: asset.blobHash, size: ThumbnailTier.medium.rawValue, fileExtension: "jpg")
+            hash: hash, size: ThumbnailTier.medium.rawValue, fileExtension: "jpg")
         try FileManager.default.removeItem(at: mediumURL)
         #expect(!env.store.hasThumbnail(
-            hash: asset.blobHash, size: ThumbnailTier.medium.rawValue, fileExtension: "jpg"))
+            hash: hash, size: ThumbnailTier.medium.rawValue, fileExtension: "jpg"))
 
         // Re-ingest: the missing tier is regenerated; still one asset (dedup).
         let second = await env.pipeline.ingest(Self.input(bytes, into: env))
@@ -131,7 +183,7 @@ struct IngestPipelineTests {
 
         for tier in ThumbnailTier.allCases {
             #expect(env.store.hasThumbnail(
-                hash: asset.blobHash, size: tier.rawValue, fileExtension: "jpg"))
+                hash: hash, size: tier.rawValue, fileExtension: "jpg"))
         }
         #expect(env.blobFiles().count == 1)
         let all = try await env.services.searchAssets(text: nil)
@@ -213,7 +265,7 @@ struct IngestPipelineTests {
         }
         #expect(asset.width == 200)
         #expect(asset.height == 100)
-        #expect(env.store.hasBlob(hash: asset.blobHash, fileExtension: "jpeg"))
+        #expect(env.store.hasBlob(hash: try #require(asset.blobHash), fileExtension: "jpeg"))
     }
 
     // MARK: - Phase timing (16A)
@@ -288,7 +340,8 @@ struct IngestPipelineTests {
             Issue.record("expected first ingest to succeed")
             return
         }
-        #expect(env.store.hasBlob(hash: asset.blobHash, fileExtension: "png"))
+        let hash = try #require(asset.blobHash)
+        #expect(env.store.hasBlob(hash: hash, fileExtension: "png"))
 
         // Same bytes into a nonexistent collection → persist fails after P14 sees
         // the existing blob; must NOT removeBlob the shared content.
@@ -301,7 +354,7 @@ struct IngestPipelineTests {
             Issue.record("expected .failed, got \(second)")
             return
         }
-        #expect(env.store.hasBlob(hash: asset.blobHash, fileExtension: "png"))
+        #expect(env.store.hasBlob(hash: hash, fileExtension: "png"))
         #expect(env.blobFiles().count == 1)
         let all = try await env.services.searchAssets(text: nil)
         #expect(all.count == 1)
