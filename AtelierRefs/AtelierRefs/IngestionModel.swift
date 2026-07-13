@@ -574,14 +574,23 @@ final class IngestionModel: ObservableObject {
 
     /// Write any pending view bumps now (called on detail-close). One batched
     /// `recordViews` through the funnel; unknown/deleted ids are skipped by core.
+    /// When the current folder ranks by views, the grid is reloaded afterwards so
+    /// the ranking stays live — the just-viewed item visibly rises (manual /
+    /// newest orders are view-independent, so they are left untouched).
     func flushViewBumps() {
         viewFlushTask?.cancel()
         viewFlushTask = nil
         guard let services, !viewBumps.isEmpty else { return }
         let ids = viewBumps.drain()
+        let folder = selectedFolderID
+        let reorders = sortMode(for: folder) == .mostViewed
         Task {
-            do { try await services.recordViews(ids) }
-            catch { lastError = Self.message(for: error) }
+            do {
+                try await services.recordViews(ids)
+                if reorders { loadContents(of: folder) }
+            } catch {
+                lastError = Self.message(for: error)
+            }
         }
     }
 

@@ -70,24 +70,30 @@ struct CollectionView: View {
         }
     }
 
-    /// The grid sort control (007 G4). A menu-styled picker bound to the stored
-    /// per-collection mode; picking one persists it and reloads the grid.
+    /// The grid sort control (007 G4). Explicit checkmarked buttons (clearer +
+    /// more reliable than a picker-in-menu): each persists the mode and reloads
+    /// the grid; a checkmark marks the active one and the label names it.
     private var sortMenu: some View {
-        let selection = Binding(
-            get: { model.sortMode(for: collectionID) },
-            set: { model.setSortMode($0, for: collectionID) })
+        let current = model.sortMode(for: collectionID)
         return Menu {
-            Picker("Sort", selection: selection) {
-                Label("Manual", systemImage: "hand.draw").tag(SortMode.manual)
-                Label("Newest", systemImage: "clock").tag(SortMode.newest)
-                Label("Most Viewed", systemImage: "eye").tag(SortMode.mostViewed)
-            }
-            .pickerStyle(.inline)
+            sortButton(.manual, "Manual", "hand.draw", current)
+            sortButton(.newest, "Newest", "clock", current)
+            sortButton(.mostViewed, "Most Viewed", "eye", current)
         } label: {
-            Label("Sort: \(Self.sortLabel(model.sortMode(for: collectionID)))",
-                  systemImage: "arrow.up.arrow.down")
+            Label("Sort: \(Self.sortLabel(current))", systemImage: "arrow.up.arrow.down")
         }
         .help("Choose how this collection's grid is ordered")
+    }
+
+    @ViewBuilder
+    private func sortButton(
+        _ mode: SortMode, _ title: String, _ symbol: String, _ current: SortMode
+    ) -> some View {
+        Button {
+            model.setSortMode(mode, for: collectionID)
+        } label: {
+            Label(title, systemImage: current == mode ? "checkmark" : symbol)
+        }
     }
 
     private static func sortLabel(_ mode: SortMode) -> String {
