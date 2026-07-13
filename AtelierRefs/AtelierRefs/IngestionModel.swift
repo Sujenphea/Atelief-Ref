@@ -111,6 +111,9 @@ final class IngestionModel: ObservableObject {
     private var coordinator: IngestCoordinator?
     private(set) var services: AppServices?
     private var captureServer: CaptureServer?
+    /// Library snapshot orchestration (008 H3): daily-on-launch, pre-destructive,
+    /// manual, and retention. `nil` until `bootstrap()` opens the library.
+    private(set) var snapshotManager: SnapshotManager?
 
     /// Monotonic id for ``loadContents(of:)`` so a slow read can never clobber a
     /// newer one (fast folder switch, or a mutation-triggered reload).
@@ -201,6 +204,12 @@ final class IngestionModel: ObservableObject {
             // Time Machine / iCloud. Idempotent, cheap; safe to run every launch.
             store.excludeDerivedFromBackup()
 
+            // Snapshot orchestration (008 H3): daily-on-launch + pre-destructive
+            // + manual, over the snapshots/ directory.
+            let snapshots = SnapshotManager(
+                services: services, directory: layout.snapshots)
+            self.snapshotManager = snapshots
+
             // Any sweep still "open" at launch is abandoned (nothing is running yet),
             // so reconcile it to paused — otherwise a tab closed mid-sweep last session
             // would show as a phantom "running" job forever.
@@ -210,6 +219,10 @@ final class IngestionModel: ObservableObject {
             // removed outside deleteAssets, so a future sweep re-imports that source
             // instead of dedup-skipping bytes that are gone.
             try? await services.reconcileOrphanedKnownItems()
+
+            // Daily-on-launch snapshot if the newest daily is >1 day stale (008
+            // H3, confirmed on-by-default). Best-effort; never blocks launch.
+            await snapshots.snapshotIfStale()
 
             await refreshFolders()
             loadContents(of: selectedFolderID)
@@ -734,7 +747,12 @@ final class IngestionModel: ObservableObject {
         guard let store, let pending = pendingDeletion else { return }
         pendingDeletion = nil
         let assetIDs = pending.assetIDs
+        let snapshots = snapshotManager
         mutateContents { services in
+            // Pre-destructive snapshot (008 H3): a recovery point before a
+            // library-wide delete removes bytes. Best-effort — a snapshot hiccup
+            // must not block the delete the user asked for.
+            try? await snapshots?.snapshot(reason: .preDestructive)
             let orphans = try await services.deleteAssets(assetIDs)
             // File IO off the main actor; the DB delete is already committed, so
             // this is best-effort cleanup (MediaReaper swallows per-file errors).

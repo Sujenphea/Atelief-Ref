@@ -41,4 +41,12 @@ public struct LibraryLayout: Sendable {
     public var cache: URL {
         root.appendingPathComponent("cache", isDirectory: true)
     }
+
+    /// Recovery snapshots (008): self-contained `.sqlite` copies of the database.
+    /// A recovery artifact, not user-facing — and deliberately NOT excluded from
+    /// backups (unlike `thumbnails`/`cache`), since these are what protect against
+    /// data loss.
+    public var snapshots: URL {
+        root.appendingPathComponent("snapshots", isDirectory: true)
+    }
 }
