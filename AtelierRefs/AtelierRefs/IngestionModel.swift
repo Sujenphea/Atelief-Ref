@@ -100,10 +100,12 @@ final class IngestionModel: ObservableObject {
     /// use). Drives a hint in the UI.
     @Published private(set) var captureEndpointRunning = false
 
-    // The Library, populated once `bootstrap()` completes.
-    private var store: MediaStore?
+    // The Library, populated once `bootstrap()` completes. `store` / `services`
+    // are read-only outside the model so a per-open-space ``SpaceModel`` can be
+    // built against them (005-E2) without exposing the mutable wiring.
+    private(set) var store: MediaStore?
     private var coordinator: IngestCoordinator?
-    private var services: AppServices?
+    private(set) var services: AppServices?
     private var captureServer: CaptureServer?
 
     /// Monotonic id for ``loadContents(of:)`` so a slow read can never clobber a
@@ -523,43 +525,6 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    // MARK: - Canvas drag-to-place
-
-    /// Move a canvas tile to `worldOrigin` and PERSIST the placement. The tile's
-    /// current `w/h/z` are re-persisted alongside the new `x/y` so the placement
-    /// "pins" the tile at its dropped size — a later provider rebuild (folder
-    /// switch / relaunch) then honours `canvas_*` and reproduces it exactly.
-    ///
-    /// The in-memory `content.setPlacement` runs synchronously (so the tile stays
-    /// put, no snap-back / viewport reset — the renderer reads it next `sync()`);
-    /// the DB write hops OFF the main actor and surfaces failures via `lastError`.
-    /// A no-op if the tile can't be resolved to a current asset.
-    func moveCanvasTile(tileID: Int, to worldOrigin: CGPoint) {
-        guard let services, let content = cachedCanvasContent,
-              let detail = content.detail(forTileID: tileID),
-              content.tiles.indices.contains(tileID) else { return }
-
-        let assetID = detail.asset.id
-        let folder = selectedFolderID
-        let tile = content.tiles[tileID]
-        let (w, h, z) = (tile.w, tile.h, tile.z)
-        let x = Double(worldOrigin.x)
-        let y = Double(worldOrigin.y)
-
-        // In-memory update first — keeps the tile exactly where it was dropped.
-        content.setPlacement(tileID: tileID, x: x, y: y)
-
-        Task {
-            do {
-                try await services.setCanvasPlacement(
-                    collectionID: folder, assetID: assetID,
-                    x: x, y: y, w: w, h: h, z: z)
-            } catch {
-                lastError = Self.message(for: error)
-            }
-        }
-    }
-
     // MARK: - Selection + inspector
 
     /// Select `detail` (or clear with `nil`) and load its preview off-main.
@@ -713,27 +678,153 @@ final class IngestionModel: ObservableObject {
         "\(n) item\(n == 1 ? "" : "s")"
     }
 
-    // MARK: - Canvas content
+    // MARK: - Content version
 
-    /// Bumped whenever the selected folder's ``items`` change, so the Canvas tab
-    /// can rebuild its view (via SwiftUI `.id`) to reflect the new set.
+    /// Bumped whenever the selected folder's ``items`` change, so a dependent
+    /// view can rebuild (via SwiftUI `.id`) to reflect the new set.
     @Published private(set) var contentsVersion = 0
 
-    private var cachedCanvasContent: CanvasContent?
-    private var cachedCanvasVersion = -1
+    /// The direct root collections (drives the Collections gallery, 004-P2).
+    var rootCollections: [Collection] {
+        folders.filter { $0.parentCollectionID == nil }
+    }
 
-    /// Canvas content for the currently loaded folder items — rebuilt only when
-    /// ``contentsVersion`` changes (SwiftUI re-evaluates `body` often, and the
-    /// layout pass is not free). `nil` before the Library opens or when empty.
-    func canvasContent() -> CanvasContent? {
-        if cachedCanvasVersion == contentsVersion { return cachedCanvasContent }
-        cachedCanvasVersion = contentsVersion
-        guard let store, !items.isEmpty else {
-            cachedCanvasContent = nil
+    /// Load a collection's items WITHOUT disturbing the selected-folder state —
+    /// for the "Add from Library" picker (005-E2), which browses arbitrary
+    /// collections while a space is open.
+    func items(in collectionID: UUID) async throws -> [CollectionItemDetail] {
+        guard let services else { return [] }
+        return try await services.collectionItems(in: collectionID)
+    }
+
+    /// The on-disk 512-tier thumbnail URL for a blob hash (pure — no decode).
+    /// Used by the gallery / Spaces-list cover cards.
+    func thumbnailURL(forBlobHash hash: String) -> URL? {
+        guard let store else { return nil }
+        return store.thumbnailURL(hash: hash, size: ThumbnailTier.medium.rawValue, fileExtension: "jpg")
+    }
+
+    // MARK: - Collection covers (004-P2)
+
+    /// Cover blob-hash per collection id, for the gallery cards. Absent id ⇒ no
+    /// (surviving) cover — the card shows a folder placeholder.
+    @Published private(set) var collectionCovers: [UUID: String] = [:]
+
+    /// Reload the gallery's cover map for every known collection.
+    func refreshCollectionCovers() async {
+        guard let services else { return }
+        do {
+            collectionCovers = try await services.collectionCovers(folders.map(\.id))
+        } catch {
+            lastError = Self.message(for: error)
+        }
+    }
+
+    /// Set a collection's cover (gallery "Set as Cover" context action).
+    func setCollectionCover(collectionID: UUID, assetID: UUID) {
+        perform { services in
+            try await services.setCollectionCover(collectionID: collectionID, assetID: assetID)
+        }
+        Task { await refreshCollectionCovers() }
+    }
+
+    // MARK: - Spaces (005-E2)
+
+    /// Every space, newest first (drives the Spaces list).
+    @Published private(set) var spaces: [Space] = []
+    /// Cover blob-hash per space id, for the Spaces-list cards.
+    @Published private(set) var spaceCovers: [UUID: String] = [:]
+
+    /// Reload the spaces list + their cover map.
+    func refreshSpaces() async {
+        guard let services else { return }
+        do {
+            let loaded = try await services.listSpaces()
+            spaces = loaded
+            spaceCovers = try await services.spaceCovers(loaded.map(\.id))
+        } catch {
+            lastError = Self.message(for: error)
+        }
+    }
+
+    /// Create an empty space, refresh the list, and return its id (so the caller
+    /// can open it). Surfaces failures via ``lastError``.
+    @discardableResult
+    func createSpace(name: String) async -> UUID? {
+        guard let services else { return nil }
+        do {
+            let space = try await services.createSpace(name: name)
+            await refreshSpaces()
+            return space.id
+        } catch {
+            lastError = Self.message(for: error)
             return nil
         }
-        cachedCanvasContent = CanvasContent(items: items, store: store)
-        return cachedCanvasContent
+    }
+
+    /// Rename a space, then refresh the list.
+    func renameSpace(id: UUID, to name: String) {
+        guard let services else { return }
+        Task {
+            do {
+                _ = try await services.renameSpace(id: id, to: name)
+                await refreshSpaces()
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
+    /// Delete a space, then refresh the list.
+    func deleteSpace(id: UUID) {
+        guard let services else { return }
+        Task {
+            do {
+                try await services.deleteSpace(id: id)
+                await refreshSpaces()
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
+    /// Seed a NEW space from a collection's current arrangement (005 — "New Space
+    /// from this collection"). Items with an explicit canvas placement keep it;
+    /// the rest flow into justified rows below. The first asset becomes the
+    /// space's cover. Returns the new space id (or `nil` on failure / empty).
+    @discardableResult
+    func newSpaceFromCollection(_ collectionID: UUID) async -> UUID? {
+        guard let services else { return nil }
+        do {
+            let sourceItems = try await services.collectionItems(in: collectionID)
+            guard !sourceItems.isEmpty else {
+                status = "That collection has no items to seed a space."
+                return nil
+            }
+            let name = name(for: collectionID)
+            let space = try await services.createSpace(name: name)
+            let placements = SpaceLayout.placements(seedingFrom: sourceItems)
+            for (detail, rect) in zip(sourceItems, placements) {
+                try await services.addAssetToSpace(
+                    assetID: detail.asset.id, to: space.id,
+                    x: rect.x, y: rect.y, w: rect.w, h: rect.h, z: rect.z)
+            }
+            if let cover = sourceItems.first {
+                try? await services.setSpaceCover(spaceID: space.id, assetID: cover.asset.id)
+            }
+            await refreshSpaces()
+            return space.id
+        } catch {
+            lastError = Self.message(for: error)
+            return nil
+        }
+    }
+
+    /// Build a per-open-space view model against the shared Library (005-E2).
+    /// `nil` before the Library opens.
+    func makeSpaceModel(for spaceID: UUID) -> SpaceModel? {
+        guard let services, let store else { return nil }
+        return SpaceModel(spaceID: spaceID, services: services, store: store)
     }
 
     // MARK: - Import

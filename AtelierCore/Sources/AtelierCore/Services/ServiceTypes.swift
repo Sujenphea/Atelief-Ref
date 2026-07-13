@@ -118,6 +118,26 @@ public struct CollectionItemDetail: Sendable, Equatable {
     }
 }
 
+/// One row of a ``Space`` board joined to its media (005). For an ASSET row the
+/// `asset` + `source` are present; for a freeform ELEMENT row (`kind ==
+/// .frame/.text`) both are `nil` and the row's ``ElementStyle`` lives in
+/// `item.style`. The public, GRDB-free projection of the space read. Metadata
+/// only — never blob bytes (P16).
+public struct SpaceItemDetail: Sendable, Equatable {
+    /// The board row (placement / kind / style live here).
+    public let item: SpaceItem
+    /// The asset an `.asset` row draws; `nil` for element rows.
+    public let asset: Asset?
+    /// The asset's provenance; `nil` for element rows.
+    public let source: Source?
+
+    public init(item: SpaceItem, asset: Asset?, source: Source?) {
+        self.item = item
+        self.asset = asset
+        self.source = source
+    }
+}
+
 /// An ``Asset`` joined to its required ``Source`` — the unit of the read/search
 /// API. Metadata only (P16): provenance facts, never the blob bytes.
 public struct AssetDetail: Sendable, Equatable {

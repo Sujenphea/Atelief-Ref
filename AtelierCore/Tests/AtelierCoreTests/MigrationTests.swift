@@ -24,7 +24,7 @@ private func makeMigratedQueue() throws -> DatabaseQueue {
 /// The set of base (non-FTS, non-shadow) tables the schema must contain.
 private let expectedTables = [
     "source", "asset", "collection", "collection_item", "tag", "asset_tag",
-    "job", "job_item",
+    "job", "job_item", "space", "space_item",
 ]
 
 /// `PRAGMA table_info` → column name ⇒ notnull flag (1 = NOT NULL).
@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -893,5 +893,201 @@ struct JobRoundTripTests {
                 .fetchOne(db)
         }
         #expect(fetched == item)
+    }
+}
+
+// MARK: - v4 · first-class spaces (005 · O1)
+
+@Suite("Migration v4: space / space_item schema shape")
+struct SpaceSchemaShapeTests {
+
+    @Test("space columns: name & timestamps NOT NULL, cover nullable")
+    func spaceColumns() throws {
+        let dbQueue = try makeMigratedQueue()
+        let nn = try dbQueue.read { try columnNotNull($0, table: "space") }
+        let expected = ["id", "name", "cover_asset_id", "created_at", "updated_at"]
+        for c in expected { #expect(nn[c] != nil, "space missing \(c)") }
+        #expect(nn["id"] == 1)
+        #expect(nn["name"] == 1)
+        #expect(nn["created_at"] == 1)
+        #expect(nn["updated_at"] == 1)
+        #expect(nn["cover_asset_id"] == 0)
+    }
+
+    @Test("space_item columns: FK + kind + geometry + timestamps NOT NULL, asset_id/style nullable")
+    func spaceItemColumns() throws {
+        let dbQueue = try makeMigratedQueue()
+        let nn = try dbQueue.read { try columnNotNull($0, table: "space_item") }
+        let expected = ["id", "space_id", "kind", "asset_id", "x", "y", "w", "h",
+                        "z", "style", "created_at", "updated_at"]
+        for c in expected { #expect(nn[c] != nil, "space_item missing \(c)") }
+        // Required — every board row has an owning space, a kind, and a rect.
+        for c in ["space_id", "kind", "x", "y", "w", "h", "z", "created_at", "updated_at"] {
+            #expect(nn[c] == 1, "\(c) should be NOT NULL")
+        }
+        // Optional — element rows have no asset, asset rows have no style.
+        #expect(nn["asset_id"] == 0)
+        #expect(nn["style"] == 0)
+    }
+
+    @Test("v4 indices exist (space_id board read + asset_id cascade lookup)")
+    func indicesExist() throws {
+        let dbQueue = try makeMigratedQueue()
+        let names = try dbQueue.read { db in
+            try String.fetchSet(db, sql: "SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        #expect(names.contains("index_space_item_on_space_id"))
+        #expect(names.contains("index_space_item_on_asset_id"))
+    }
+
+    @Test("foreign keys stay enforced after v4")
+    func foreignKeysStillOn() throws {
+        let dbQueue = try makeMigratedQueue()
+        let on = try dbQueue.read { db in try Int.fetchOne(db, sql: "PRAGMA foreign_keys") }
+        #expect(on == 1)
+    }
+}
+
+@Suite("Migration v4: space_item FK + cascade behaviour (O1)")
+struct SpaceItemForeignKeyTests {
+
+    private func count(_ db: Database, _ sql: String, _ args: StatementArguments) throws -> Int {
+        try Int.fetchOne(db, sql: sql, arguments: args) ?? -1
+    }
+
+    /// source → asset → space → one asset row + one element row (NULL asset_id).
+    private func seed(_ db: Database)
+        throws -> (source: String, asset: String, space: String, assetRow: String, elementRow: String)
+    {
+        let sourceID = newID(), assetID = newID(), spaceID = newID()
+        let assetRow = newID(), elementRow = newID()
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, captured_at, raw_metadata)
+            VALUES (?, 'web', ?, '{}')
+            """, arguments: [sourceID, ts])
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, blob_hash, mime_type, width, height, file_size, download_state, created_at, source_id)
+            VALUES (?, 'image', 'hash1', 'image/jpeg', 100, 100, 2048, 'downloaded', ?, ?)
+            """, arguments: [assetID, ts, sourceID])
+        try db.execute(sql: """
+            INSERT INTO space (id, name, cover_asset_id, created_at, updated_at)
+            VALUES (?, 'Board', ?, ?, ?)
+            """, arguments: [spaceID, assetID, ts, ts])
+        try db.execute(sql: """
+            INSERT INTO space_item (id, space_id, kind, asset_id, x, y, w, h, z, style, created_at, updated_at)
+            VALUES (?, ?, 'asset', ?, 0, 0, 100, 100, 0, NULL, ?, ?)
+            """, arguments: [assetRow, spaceID, assetID, ts, ts])
+        try db.execute(sql: """
+            INSERT INTO space_item (id, space_id, kind, asset_id, x, y, w, h, z, style, created_at, updated_at)
+            VALUES (?, ?, 'text', NULL, 10, 10, 200, 60, 1, '{"text":"hi"}', ?, ?)
+            """, arguments: [elementRow, spaceID, ts, ts])
+        return (sourceID, assetID, spaceID, assetRow, elementRow)
+    }
+
+    @Test("inserting a space_item with a non-existent space_id is rejected")
+    func danglingSpaceIDRejected() throws {
+        let dbQueue = try makeMigratedQueue()
+        #expect(throws: DatabaseError.self) {
+            try dbQueue.write { db in
+                try db.execute(sql: """
+                    INSERT INTO space_item (id, space_id, kind, x, y, w, h, z, created_at, updated_at)
+                    VALUES (?, 'no-such-space', 'asset', 0, 0, 1, 1, 0, ?, ?)
+                    """, arguments: [newID(), ts, ts])
+            }
+        }
+    }
+
+    @Test("deleting a space cascades ALL its rows (asset + element); asset & source survive")
+    func deleteSpaceCascadesRows() throws {
+        let dbQueue = try makeMigratedQueue()
+        let ids = try dbQueue.write { db in try seed(db) }
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM space WHERE id = ?", arguments: [ids.space])
+        }
+        try dbQueue.read { db in
+            let rows = try count(db, "SELECT count(*) FROM space_item WHERE space_id = ?", [ids.space])
+            let assets = try count(db, "SELECT count(*) FROM asset WHERE id = ?", [ids.asset])
+            let sources = try count(db, "SELECT count(*) FROM source WHERE id = ?", [ids.source])
+            #expect(rows == 0)
+            #expect(assets == 1)
+            #expect(sources == 1)
+        }
+    }
+
+    @Test("deleting an asset vacates ONLY its asset rows; element rows untouched; cover SET NULL")
+    func deleteAssetVacatesAssetRowsOnly() throws {
+        let dbQueue = try makeMigratedQueue()
+        let ids = try dbQueue.write { db in try seed(db) }
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM asset WHERE id = ?", arguments: [ids.asset])
+        }
+        try dbQueue.read { db in
+            // The asset row cascaded away…
+            let assetRow = try count(db, "SELECT count(*) FROM space_item WHERE id = ?", [ids.assetRow])
+            #expect(assetRow == 0)
+            // …the element row (NULL asset_id) is untouched…
+            let elementRow = try count(db, "SELECT count(*) FROM space_item WHERE id = ?", [ids.elementRow])
+            #expect(elementRow == 1)
+            // …the space survives with its cover cleared (SET NULL).
+            let spaces = try count(db, "SELECT count(*) FROM space WHERE id = ?", [ids.space])
+            let cover = try String.fetchOne(
+                db, sql: "SELECT cover_asset_id FROM space WHERE id = ?", arguments: [ids.space])
+            #expect(spaces == 1)
+            #expect(cover == nil, "cover_asset_id should be NULL after SET NULL")
+        }
+    }
+}
+
+@Suite("Migration v4: Space / SpaceItem records round-trip")
+struct SpaceRoundTripTests {
+
+    private let createdAt = Date(timeIntervalSince1970: 1_700_000_444.250)
+    private let updatedAt = Date(timeIntervalSince1970: 1_700_000_555.500)
+
+    @Test("a Space round-trips insert + fetch equal (with and without a cover)")
+    func spaceRoundTrips() throws {
+        let dbQueue = try makeMigratedQueue()
+        let space = Space(id: UUID(), name: "Moodboard", createdAt: createdAt, updatedAt: updatedAt)
+        try dbQueue.write { try space.insert($0) }
+        let fetched = try dbQueue.read { db in try Space.fetchOne(db, key: space.id.uuidString.lowercased()) }
+        #expect(fetched == space)
+        #expect(fetched?.coverAssetID == nil)
+    }
+
+    @Test("an asset SpaceItem round-trips (asset_id set, style nil)")
+    func assetItemRoundTrips() throws {
+        let dbQueue = try makeMigratedQueue()
+        // A space + a real asset the item can point at (FK).
+        let space = Space(id: UUID(), name: "B", createdAt: createdAt, updatedAt: updatedAt)
+        let source = Source(id: UUID(), platform: .web, capturedAt: createdAt)
+        let asset = Asset(
+            id: UUID(), kind: .image, blobHash: "abc", mimeType: "image/png",
+            width: 10, height: 10, duration: nil, fileSize: 100,
+            downloadState: .downloaded, createdAt: createdAt, sourceId: source.id)
+        let item = SpaceItem(
+            id: UUID(), spaceID: space.id, kind: .asset, assetID: asset.id,
+            x: 12, y: 34, w: 100, h: 200, z: 3, style: nil,
+            createdAt: createdAt, updatedAt: updatedAt)
+        try dbQueue.write { db in
+            try space.insert(db); try source.insert(db); try asset.insert(db); try item.insert(db)
+        }
+        let fetched = try dbQueue.read { db in try SpaceItem.fetchOne(db, key: item.id.uuidString.lowercased()) }
+        #expect(fetched == item)
+    }
+
+    @Test("an element SpaceItem round-trips (asset_id nil, style JSON set)")
+    func elementItemRoundTrips() throws {
+        let dbQueue = try makeMigratedQueue()
+        let space = Space(id: UUID(), name: "B", createdAt: createdAt, updatedAt: updatedAt)
+        let item = SpaceItem(
+            id: UUID(), spaceID: space.id, kind: .text, assetID: nil,
+            x: 0, y: 0, w: 300, h: 80, z: 0,
+            style: ElementStyle(text: "hello", fontSize: 18).jsonString(),
+            createdAt: createdAt, updatedAt: updatedAt)
+        try dbQueue.write { db in try space.insert(db); try item.insert(db) }
+        let fetched = try dbQueue.read { db in try SpaceItem.fetchOne(db, key: item.id.uuidString.lowercased()) }
+        #expect(fetched == item)
+        #expect(fetched?.assetID == nil)
+        #expect(ElementStyle(jsonString: fetched?.style)?.text == "hello")
     }
 }

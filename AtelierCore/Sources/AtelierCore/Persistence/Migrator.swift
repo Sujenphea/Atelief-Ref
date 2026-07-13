@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -55,6 +55,11 @@ enum Migrator {
         // v3 — bulk-import job ledger. SHIPPED: never edit this body.
         migrator.registerMigration("v3") { db in
             try createV3Schema(db)
+        }
+
+        // v4 — first-class spaces. SHIPPED: never edit this body.
+        migrator.registerMigration("v4") { db in
+            try createV4Schema(db)
         }
 
         return migrator
@@ -269,6 +274,63 @@ enum Migrator {
                 ON job_item(source_id);
             CREATE INDEX index_job_on_platform
                 ON job(platform);
+            """)
+    }
+
+    // MARK: - v4
+
+    /// First-class spaces (005 · decision O1). A `space` is a freeform board —
+    /// its own entity, NOT a folder — and `space_item` is ONE discriminated
+    /// placement table serving both ASSET rows (`kind='asset'`, `asset_id` set)
+    /// and freeform ELEMENT rows (`kind='frame'/'text'`, `asset_id` NULL,
+    /// `style` JSON). All `id`/`*_id`/`*_at`/enum columns are TEXT (C5); geometry
+    /// is REAL/INTEGER and always present (every board row has a rect).
+    private static func createV4Schema(_ db: Database) throws {
+        // space — a freeform board. cover_asset_id is optional; SET NULL on
+        // asset delete so dropping a cover asset just clears the pointer (mirrors
+        // collection, 17A).
+        try db.execute(sql: """
+            CREATE TABLE space (
+                id             TEXT NOT NULL PRIMARY KEY,
+                name           TEXT NOT NULL,
+                cover_asset_id TEXT
+                    REFERENCES asset(id) ON DELETE SET NULL,
+                created_at     TEXT NOT NULL,
+                updated_at     TEXT NOT NULL
+            );
+            """)
+
+        // space_item — one board row. `space_id` CASCADEs (deleting a space
+        // drops its rows). `asset_id` is NULLABLE and CASCADEs: deleting an asset
+        // vacates ONLY its asset rows — element rows (NULL asset_id) are
+        // untouched (005 O1). Geometry is NOT NULL; `style` (ElementStyle JSON)
+        // is NULL for asset rows.
+        try db.execute(sql: """
+            CREATE TABLE space_item (
+                id         TEXT    NOT NULL PRIMARY KEY,
+                space_id   TEXT    NOT NULL
+                    REFERENCES space(id) ON DELETE CASCADE,
+                kind       TEXT    NOT NULL,
+                asset_id   TEXT
+                    REFERENCES asset(id) ON DELETE CASCADE,
+                x          REAL    NOT NULL,
+                y          REAL    NOT NULL,
+                w          REAL    NOT NULL,
+                h          REAL    NOT NULL,
+                z          INTEGER NOT NULL,
+                style      TEXT,
+                created_at TEXT    NOT NULL,
+                updated_at TEXT    NOT NULL
+            );
+            """)
+
+        // Indices (P13) — the known access paths: "rows of a space" (the board
+        // read) and "space rows referencing an asset" (delete/cascade lookups).
+        try db.execute(sql: """
+            CREATE INDEX index_space_item_on_space_id
+                ON space_item(space_id);
+            CREATE INDEX index_space_item_on_asset_id
+                ON space_item(asset_id);
             """)
     }
 }

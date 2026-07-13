@@ -1,11 +1,14 @@
 //
-//  LibraryView.swift
+//  CollectionView.swift
 //  AtelierRefs
 //
-//  Chunk 3 (folders) — the Library tab. A `NavigationSplitView` whose sidebar is
-//  the ``FolderTreeView`` and whose detail shows the selected folder's
-//  subfolders (navigable chips) + a thumbnail grid of its DIRECT items, plus the
-//  import affordances (drop target + Paste) now targeting the selected folder.
+//  004-P1 — one collection's screen, extracted from the old `LibraryView`
+//  detail. Header + drop target + navigable subfolder chips + a thumbnail grid
+//  of the collection's DIRECT items, plus the import affordances (drop + ⌘V)
+//  targeting this collection. Drilling into a subfolder pushes another
+//  `CollectionView` (via `NavModel`) rather than mutating a shared selection.
+//  The full-window item detail overlay keeps a LOCAL flag until 006 wires
+//  `NavModel.presentedItemID`.
 //
 
 import AppKit
@@ -14,11 +17,13 @@ import AtelierIngestion
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct LibraryView: View {
+struct CollectionView: View {
     @ObservedObject var model: IngestionModel
+    @ObservedObject var nav: NavModel
+    let collectionID: UUID
+
     @State private var isTargeted = false
     @State private var showDetail = false
-    @State private var showCaptureInfo = false
 
     private static let gridItemMinWidth: CGFloat = 112
     private static let gridSpacing: CGFloat = 8
@@ -28,28 +33,10 @@ struct LibraryView: View {
 
     var body: some View {
         ZStack {
-            NavigationSplitView {
-                FolderTreeView(model: model)
-                    .navigationSplitViewColumnWidth(min: 200, ideal: 240)
-            } detail: {
-                detail
-            }
-            .toolbar {
-                ToolbarItem {
-                    Button {
-                        showCaptureInfo.toggle()
-                    } label: {
-                        Label("Browser Capture", systemImage: "puzzlepiece.extension")
-                    }
-                    .popover(isPresented: $showCaptureInfo, arrowEdge: .bottom) {
-                        captureInfo
-                    }
-                }
-            }
-
+            content
             // Full-window detail page for the selected item. Guarding on
-            // `selectedItem != nil` auto-dismisses back to the grid when the item
-            // is removed/deleted from inside the page (selection clears on reload).
+            // `selectedItem != nil` auto-dismisses back to the grid when the
+            // item is removed/deleted from inside the page.
             if showDetail, model.selectedItem != nil {
                 ItemDetailView(model: model) {
                     withAnimation { showDetail = false }
@@ -57,58 +44,31 @@ struct LibraryView: View {
                 .transition(.opacity)
             }
         }
-    }
-
-    // MARK: - Browser capture info
-
-    /// The endpoint status + the token to paste into the Chrome extension.
-    private var captureInfo: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Browser Capture", systemImage: "puzzlepiece.extension")
-                .font(.headline)
-
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(model.captureEndpointRunning ? Color.green : Color.orange)
-                    .frame(width: 8, height: 8)
-                Text(model.captureEndpointRunning
-                     ? "Listening on 127.0.0.1:\(model.capturePort)"
-                     : "Endpoint unavailable (port \(model.capturePort) in use)")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            Divider()
-
-            Text("Extension token")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Text(model.captureToken.isEmpty ? "—" : model.captureToken)
-                    .font(.system(.caption, design: .monospaced))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                Spacer()
-                Button {
-                    model.copyCaptureToken()
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                .disabled(model.captureToken.isEmpty)
-            }
-
-            Text("Paste this token into the Atelier Chrome extension's options to authorize captures.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        // Bind the shared single-selection model to THIS collection whenever the
+        // screen appears (fresh push, or a pop back onto it).
+        .task(id: collectionID) {
+            model.selectedFolderID = collectionID
+            model.loadContents(of: collectionID)
         }
-        .padding()
-        .frame(width: 320)
+        .navigationTitle(model.name(for: collectionID))
+        .toolbar {
+            ToolbarItem {
+                Button {
+                    Task {
+                        if let id = await model.newSpaceFromCollection(collectionID) {
+                            nav.openSpace(id)
+                        }
+                    }
+                } label: {
+                    Label("New Space from Collection", systemImage: "square.on.square.dashed")
+                }
+                .help("Create a space seeded from this collection's arrangement")
+                .disabled(model.items.isEmpty)
+            }
+        }
     }
 
-    // MARK: - Detail
-
-    private var detail: some View {
+    private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             dropZone
@@ -118,13 +78,11 @@ struct LibraryView: View {
             grid
         }
         .padding()
-        .frame(minWidth: 480, minHeight: 400)
-        .navigationTitle(model.name(for: model.selectedFolderID))
     }
 
     private var header: some View {
         HStack {
-            Text(model.name(for: model.selectedFolderID)).font(.title2).bold()
+            Text(model.name(for: collectionID)).font(.title2).bold()
             Text("\(model.items.count) items")
                 .font(.callout).foregroundStyle(.secondary)
             Spacer()
@@ -151,7 +109,7 @@ struct LibraryView: View {
                 VStack(spacing: 6) {
                     Image(systemName: "square.and.arrow.down")
                         .font(.system(size: 26))
-                    Text("Drop images or files into “\(model.name(for: model.selectedFolderID))”")
+                    Text("Drop images or files into “\(model.name(for: collectionID))”")
                         .font(.callout)
                     if let progress = model.progress {
                         ProgressView(
@@ -176,8 +134,7 @@ struct LibraryView: View {
             HStack(spacing: 8) {
                 ForEach(model.subfolders) { folder in
                     Button {
-                        model.selectedFolderID = folder.id
-                        model.loadContents(of: folder.id)
+                        nav.openCollection(folder.id)
                     } label: {
                         Label(folder.name, systemImage: "folder")
                             .padding(.horizontal, 10)
@@ -192,9 +149,6 @@ struct LibraryView: View {
     }
 
     private var grid: some View {
-        // A `GeometryReader` gives the width the adaptive grid packs into, so
-        // Up/Down can step by the ACTUAL column count; a `ScrollViewReader` lets
-        // arrow-key selection scroll the newly-selected thumbnail into view.
         GeometryReader { geo in
             ScrollViewReader { proxy in
                 ScrollView {
@@ -204,25 +158,25 @@ struct LibraryView: View {
                                 model.select(detail)
                                 withAnimation { showDetail = true }
                             } label: {
-                                AsyncFolderThumbnail(
+                                AsyncThumbnail(
                                     hash: detail.asset.blobHash,
                                     url: model.thumbnailURL(for: detail),
                                     isSelected: model.selectedItemID == detail.item.id)
                             }
                             .buttonStyle(.plain)
                             .id(detail.item.id)
-                            // Drag-to-reorder. `LazyVGrid` has no `.onMove`, so we
-                            // carry the dragged item's ASSET id (the unit
-                            // `setGridOrder` persists) as the payload and compute
-                            // the insertion ourselves on drop.
                             .draggable(detail.asset.id.uuidString)
                             .dropDestination(for: String.self) { payloads, _ in
                                 reorder(dropped: payloads, onto: detail.asset.id)
                             }
                             .contextMenu {
-                                Button("Remove from Folder") {
+                                Button("Remove from Collection") {
                                     model.removeFromFolder(assetIDs: [detail.asset.id])
                                 }
+                                Button("Set as Cover") {
+                                    model.setCollectionCover(collectionID: collectionID, assetID: detail.asset.id)
+                                }
+                                Divider()
                                 Button("Delete", role: .destructive) {
                                     model.requestDelete(assetIDs: [detail.asset.id])
                                 }
@@ -231,8 +185,6 @@ struct LibraryView: View {
                     }
                     .padding(.top, 4)
                 }
-                // Focus is required to receive key events; keep click-to-select
-                // and ⌫ / Delete (destructive → confirmed) working alongside.
                 .focusable()
                 .onDeleteCommand { model.requestDeleteSelected() }
                 .onKeyPress(.leftArrow) { move(.left, width: geo.size.width, proxy: proxy) }
@@ -243,15 +195,14 @@ struct LibraryView: View {
         }
         .overlay {
             if model.items.isEmpty {
-                Text("No items in this folder yet.")
+                Text("No items in this collection yet.")
                     .foregroundStyle(.tertiary)
             }
         }
     }
 
-    /// Move the grid selection by one arrow press, then scroll the new selection
-    /// into view. Returns `.handled` when a grid item exists to act on (consuming
-    /// the arrow), `.ignored` for an empty folder.
+    // MARK: - Grid keyboard nav
+
     private func move(
         _ key: GridArrowKey, width: CGFloat, proxy: ScrollViewProxy
     ) -> KeyPress.Result {
@@ -275,10 +226,6 @@ struct LibraryView: View {
         return .handled
     }
 
-    /// Thin drop glue: the payload is the dragged cell's asset-id `uuidString`.
-    /// Parse the first one and ask the model to move it to `targetAssetID`'s slot
-    /// (the model no-ops on a foreign / self drop). Returns whether we accepted a
-    /// well-formed internal payload.
     private func reorder(dropped payloads: [String], onto targetAssetID: UUID) -> Bool {
         guard let first = payloads.first, let movingAssetID = UUID(uuidString: first)
         else { return false }
@@ -288,15 +235,11 @@ struct LibraryView: View {
 
     // MARK: - Import actions
 
-    /// Paste from the GENERAL pasteboard into the selected folder. Mirrors the
-    /// drop path's three outcomes (backlog B1): ingestible bytes → run them; a
-    /// bare image URL (no bytes) → download + ingest it; nothing readable → a
-    /// status line, never a silent no-op.
     private func paste() {
         guard model.isReady else { return }
         let pasteboard = NSPasteboard.general
         let inputs = DirectInputReader.inputs(
-            from: pasteboard, into: model.selectedFolderID, now: Date())
+            from: pasteboard, into: collectionID, now: Date())
         if !inputs.isEmpty {
             model.run(inputs: inputs)
         } else if let url = Self.firstWebURL(on: pasteboard) {
@@ -306,9 +249,6 @@ struct LibraryView: View {
         }
     }
 
-    /// The first web (`http`/`https`) URL on `pasteboard`, skipping file URLs — the
-    /// pasteboard counterpart of ``firstWebURL(in:)`` for the Paste path. Shares
-    /// one definition of "web URL" with the reader via `DirectInputReader.isWebURL`.
     private static func firstWebURL(on pasteboard: NSPasteboard) -> URL? {
         if let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
            let url = objects.first(where: { !$0.isFileURL && DirectInputReader.isWebURL($0) }) {
@@ -321,21 +261,9 @@ struct LibraryView: View {
         return nil
     }
 
-    /// Convert dropped providers into inputs targeting the selected folder,
-    /// off-main, then run them.
-    ///
-    /// A browser image drag delivers its source PAGE URL either on the same
-    /// provider as the image or as a separate URL provider, so we collect any
-    /// web URL across the whole drop FIRST, then attach it to the image(s) as
-    /// provenance — mirroring the pasteboard path (`DirectInputReader.inputs`).
-    ///
-    /// Three outcomes (backlog B1): the drop carried ingestible bytes → run them;
-    /// it carried only a bare image URL (no bytes) → download + ingest it as
-    /// `.web`; it carried nothing we can read → a status line, never a silent
-    /// no-op.
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         guard model.isReady else { return false }
-        let target = model.selectedFolderID
+        let target = collectionID
         Task {
             let webURL = await Self.firstWebURL(in: providers)
             var inputs: [IngestInput] = []
@@ -347,8 +275,6 @@ struct LibraryView: View {
             if !inputs.isEmpty {
                 model.run(inputs: inputs)
             } else if let webURL {
-                // No bytes on the drop, but a web URL — treat it as a direct image
-                // URL and download it (a non-image response fails cleanly).
                 model.ingestRemoteImage(from: webURL)
             } else {
                 model.reportUnreadableDrop()
@@ -357,12 +283,6 @@ struct LibraryView: View {
         return true
     }
 
-    // MARK: - NSItemProvider → IngestInput
-
-    /// Interpret one dropped provider. Files → `.localDrag` (reading the real
-    /// bytes). An image with an accompanying web `pageURL` → `.web` (browser
-    /// image, page URL as provenance); an image without one → `.localPaste`.
-    /// URL-only providers are skipped (their URL is captured via `pageURL`).
     private nonisolated static func input(
         from provider: NSItemProvider, pageURL: URL?, into collectionID: UUID
     ) async -> IngestInput? {
@@ -383,10 +303,6 @@ struct LibraryView: View {
         return nil
     }
 
-    /// The first web (`http`/`https`) URL across all dropped providers, or `nil`.
-    /// File-URL providers are skipped (a file URL also conforms to `public.url`,
-    /// but it isn't provenance); the scheme test is shared with the pasteboard
-    /// path via `DirectInputReader.isWebURL`.
     private nonisolated static func firstWebURL(in providers: [NSItemProvider]) async -> URL? {
         for provider in providers {
             guard provider.hasItemConformingToTypeIdentifier(UTType.url.identifier),
@@ -415,93 +331,5 @@ struct LibraryView: View {
                 continuation.resume(returning: data)
             }
         }
-    }
-}
-
-/// One thumbnail cell — shows the loaded image, or a placeholder tile. A
-/// selection ring marks the item currently shown in the inspector.
-/// A process-wide, thread-safe cache of decoded folder thumbnails, keyed by blob
-/// hash. The synchronous `cached(_:)` hit is read on the main render path; the
-/// disk read + decode in `load(hash:url:)` run OFF the main thread and populate the
-/// cache — so scrolling a large folder never blocks the UI on `NSImage(contentsOf:)`
-/// I/O (the previous per-cell, main-actor decode). Returning nothing from `load`
-/// keeps any non-Sendable `NSImage` from crossing an isolation boundary; the caller
-/// re-reads via `cached`.
-final class ThumbnailCache: @unchecked Sendable {
-    static let shared = ThumbnailCache()
-    private let cache = NSCache<NSString, NSImage>()
-
-    init() { cache.countLimit = 512 }
-
-    /// A synchronous cache hit (NSCache is thread-safe), or nil if not yet loaded.
-    func cached(_ hash: String) -> NSImage? { cache.object(forKey: hash as NSString) }
-
-    /// Read + decode the thumbnail off the main thread and store it under `hash`.
-    func load(hash: String, url: URL) async {
-        if cache.object(forKey: hash as NSString) != nil { return }
-        let data = await Task.detached(priority: .utility) { try? Data(contentsOf: url) }.value
-        guard let data, let image = NSImage(data: data) else { return }
-        cache.setObject(image, forKey: hash as NSString)
-    }
-}
-
-/// Loads a ``FolderThumbnail``'s image asynchronously via ``ThumbnailCache``, so the
-/// grid never decodes on the main render path. Shows a cached image immediately;
-/// otherwise a placeholder while it loads off-main, keyed by `hash` so cell reuse
-/// (scrolling) reloads for the new item.
-private struct AsyncFolderThumbnail: View {
-    let hash: String
-    let url: URL?
-    var isSelected: Bool = false
-    @State private var image: NSImage?
-
-    var body: some View {
-        FolderThumbnail(image: image, isSelected: isSelected)
-            .task(id: hash) {
-                if let hit = ThumbnailCache.shared.cached(hash) {
-                    image = hit
-                    return
-                }
-                image = nil
-                guard let url else { return }
-                await ThumbnailCache.shared.load(hash: hash, url: url)
-                image = ThumbnailCache.shared.cached(hash)
-            }
-    }
-}
-
-private struct FolderThumbnail: View {
-    let image: NSImage?
-    var isSelected: Bool = false
-
-    var body: some View {
-        // A square cell sized by the adaptive column (112–140), not a fixed
-        // frame — a fixed 128 overflowed narrow columns and overlapped
-        // neighbors. `Color.clear` adopts the column width; the overlay fills
-        // and is clipped to it.
-        Color.clear
-            .aspectRatio(1, contentMode: .fit)
-            .overlay {
-                if let image {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    Rectangle()
-                        .fill(.quaternary)
-                        .overlay {
-                            Image(systemName: "photo")
-                                .foregroundStyle(.tertiary)
-                        }
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(
-                        isSelected ? Color.accentColor : .clear,
-                        lineWidth: 3)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 }

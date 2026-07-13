@@ -33,6 +33,28 @@ enum Validation {
         return trimmed
     }
 
+    /// Trim a space name and reject empty/whitespace-only (`.invalidName`).
+    /// Returns the trimmed name to persist (mirrors ``collectionName``).
+    @discardableResult
+    static func spaceName(_ name: String) throws -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw AtelierError.invalidName }
+        return trimmed
+    }
+
+    /// Enforce the ``SpaceItem`` discriminator invariant (005 O1): an `.asset`
+    /// row MUST carry an `assetID`; an element row (`.frame` / `.text`) must NOT
+    /// (`.invalidSpaceItem`). Keeps the single discriminated table's two row
+    /// shapes from ever crossing, whichever insert path builds the row.
+    static func spaceItem(kind: SpaceItemKind, assetID: UUID?) throws {
+        switch kind {
+        case .asset:
+            guard assetID != nil else { throw AtelierError.invalidSpaceItem }
+        case .frame, .text:
+            guard assetID == nil else { throw AtelierError.invalidSpaceItem }
+        }
+    }
+
     /// Reject non-positive intrinsic dimensions (`.invalidDimensions`).
     static func dimensions(width: Int, height: Int) throws {
         guard width > 0, height > 0 else { throw AtelierError.invalidDimensions }

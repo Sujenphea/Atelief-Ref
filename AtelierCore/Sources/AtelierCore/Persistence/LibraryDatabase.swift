@@ -90,3 +90,14 @@ struct AssetSourceRow: FetchableRecord, Decodable, Equatable {
     var asset: Asset
     var source: Source
 }
+
+/// One row of the space-board read (005): a ``SpaceItem`` plus its OPTIONAL
+/// asset + source. Asset rows join their `asset` (and that asset's required
+/// `source`); element rows (NULL `asset_id`) decode both as `nil` via the LEFT
+/// join. `internal` (A2). The read API maps this to the GRDB-free
+/// ``SpaceItemDetail``.
+struct SpaceItemRow: FetchableRecord, Decodable, Equatable {
+    var item: SpaceItem
+    var asset: Asset?
+    var source: Source?
+}

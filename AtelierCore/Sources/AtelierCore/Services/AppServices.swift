@@ -518,6 +518,244 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// A batch cover lookup for the collections gallery (004-P2): each requested
+    /// collection id that HAS a cover asset maps to that asset's `blob_hash` (so
+    /// the UI can resolve the on-disk thumbnail). Collections with no cover — or
+    /// a cover asset that was deleted (`SET NULL`) — are simply absent from the
+    /// result. One joined round-trip; ids not present in the store are skipped.
+    public func collectionCovers(_ ids: [UUID]) async throws -> [UUID: String] {
+        let keys = ids.map(Self.key)
+        guard !keys.isEmpty else { return [:] }
+        return try await read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT collection.id AS cid, asset.blob_hash AS hash
+                FROM collection
+                JOIN asset ON asset.id = collection.cover_asset_id
+                WHERE collection.id IN (\(databaseQuestionMarks(count: keys.count)))
+                """, arguments: StatementArguments(keys))
+            var covers: [UUID: String] = [:]
+            for row in rows {
+                guard let cid = UUID(uuidString: row["cid"]) else { continue }
+                covers[cid] = row["hash"]
+            }
+            return covers
+        }
+    }
+
+    // MARK: - Spaces (005 · decision O1)
+
+    /// Create a freeform space (005). Validates + trims the name (C8); the
+    /// service generates `id` and `createdAt`/`updatedAt` (server-authoritative).
+    @discardableResult
+    public func createSpace(name: String) async throws -> Space {
+        let trimmed = try Validation.spaceName(name)
+        let now = Date()
+        let space = Space(id: UUID(), name: trimmed, createdAt: now, updatedAt: now)
+        return try await write { db in
+            try space.insert(db)
+            return space
+        }
+    }
+
+    /// Rename a space. `.notFound` if absent; bumps `updatedAt`. (Spaces have no
+    /// protected member, unlike the Unsorted folder.)
+    @discardableResult
+    public func renameSpace(id: UUID, to name: String) async throws -> Space {
+        let trimmed = try Validation.spaceName(name)
+        return try await write { db in
+            guard var space = try Space.fetchOne(db, key: Self.key(id)) else {
+                throw AtelierError.notFound(entity: "space", id: id)
+            }
+            space.name = trimmed
+            space.updatedAt = Date()
+            try space.update(db)
+            return space
+        }
+    }
+
+    /// Set a space's cover (005 Q2). Both the space and the asset must exist
+    /// (`.notFound`); bumps `updatedAt`.
+    public func setSpaceCover(spaceID: UUID, assetID: UUID) async throws {
+        try await write { db in
+            guard var space = try Space.fetchOne(db, key: Self.key(spaceID)) else {
+                throw AtelierError.notFound(entity: "space", id: spaceID)
+            }
+            guard try Asset.exists(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            space.coverAssetID = assetID
+            space.updatedAt = Date()
+            try space.update(db)
+        }
+    }
+
+    /// Delete a space; `.notFound` if absent. Its rows CASCADE at the DB level
+    /// (schema O1) — asset rows and element rows alike; the underlying assets
+    /// survive (only the placements go).
+    public func deleteSpace(id: UUID) async throws {
+        try await write { db in
+            guard try Space.deleteOne(db, key: Self.key(id)) else {
+                throw AtelierError.notFound(entity: "space", id: id)
+            }
+        }
+    }
+
+    /// Every space, newest first (`created_at DESC`, then `id`). The space count
+    /// is small and bounded, so this returns the full inventory (P16).
+    public func listSpaces() async throws -> [Space] {
+        try await read { db in
+            try Space.order(Column("created_at").desc, Column("id")).fetchAll(db)
+        }
+    }
+
+    /// A batch cover lookup for the Spaces list (005 Q2), symmetric to
+    /// ``collectionCovers(_:)``: each requested space id that HAS a (surviving)
+    /// cover asset maps to that asset's `blob_hash`. Spaces with no cover are
+    /// absent from the result.
+    public func spaceCovers(_ ids: [UUID]) async throws -> [UUID: String] {
+        let keys = ids.map(Self.key)
+        guard !keys.isEmpty else { return [:] }
+        return try await read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT space.id AS sid, asset.blob_hash AS hash
+                FROM space
+                JOIN asset ON asset.id = space.cover_asset_id
+                WHERE space.id IN (\(databaseQuestionMarks(count: keys.count)))
+                """, arguments: StatementArguments(keys))
+            var covers: [UUID: String] = [:]
+            for row in rows {
+                guard let sid = UUID(uuidString: row["sid"]) else { continue }
+                covers[sid] = row["hash"]
+            }
+            return covers
+        }
+    }
+
+    /// One space by id; `.notFound` if absent.
+    public func getSpace(id: UUID) async throws -> Space {
+        try await read { db in
+            guard let space = try Space.fetchOne(db, key: Self.key(id)) else {
+                throw AtelierError.notFound(entity: "space", id: id)
+            }
+            return space
+        }
+    }
+
+    /// Place an asset on a space (005). Validates the placement finite/positive
+    /// (C8) and the discriminator (an asset row requires the id); the space and
+    /// asset must exist (`.notFound`). Returns the created ``SpaceItem``. The same
+    /// asset MAY be added twice (each row has its own id) — a deliberate caller
+    /// act, mirroring `addAssets`.
+    @discardableResult
+    public func addAssetToSpace(
+        assetID: UUID, to spaceID: UUID,
+        x: Double, y: Double, w: Double, h: Double, z: Int
+    ) async throws -> SpaceItem {
+        try Validation.spaceItem(kind: .asset, assetID: assetID)
+        try Validation.canvasPlacement(x: x, y: y, w: w, h: h)
+        let now = Date()
+        let item = SpaceItem(
+            id: UUID(), spaceID: spaceID, kind: .asset, assetID: assetID,
+            x: x, y: y, w: w, h: h, z: z, style: nil, createdAt: now, updatedAt: now)
+        return try await write { db in
+            guard try Space.exists(db, key: Self.key(spaceID)) else {
+                throw AtelierError.notFound(entity: "space", id: spaceID)
+            }
+            guard try Asset.exists(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            try item.insert(db)
+            return item
+        }
+    }
+
+    /// Add a freeform element (frame / text) to a space (005 O1; wired by E3).
+    /// Validates the placement (C8) and the discriminator (an element row must
+    /// NOT carry an asset id); the space must exist (`.notFound`). `style` is the
+    /// element's ``ElementStyle`` and is stored as JSON TEXT.
+    @discardableResult
+    public func addElement(
+        to spaceID: UUID, kind: SpaceItemKind, style: ElementStyle?,
+        x: Double, y: Double, w: Double, h: Double, z: Int
+    ) async throws -> SpaceItem {
+        try Validation.spaceItem(kind: kind, assetID: nil)
+        try Validation.canvasPlacement(x: x, y: y, w: w, h: h)
+        let now = Date()
+        let item = SpaceItem(
+            id: UUID(), spaceID: spaceID, kind: kind, assetID: nil,
+            x: x, y: y, w: w, h: h, z: z, style: style?.jsonString(),
+            createdAt: now, updatedAt: now)
+        return try await write { db in
+            guard try Space.exists(db, key: Self.key(spaceID)) else {
+                throw AtelierError.notFound(entity: "space", id: spaceID)
+            }
+            try item.insert(db)
+            return item
+        }
+    }
+
+    /// Move / resize a space item, keeping its kind + style. Validates the
+    /// placement (C8); `.notFound` if the row is absent. Bumps `updatedAt`.
+    public func setSpaceItemPlacement(
+        itemID: UUID, x: Double, y: Double, w: Double, h: Double, z: Int
+    ) async throws {
+        try Validation.canvasPlacement(x: x, y: y, w: w, h: h)
+        try await write { db in
+            guard var item = try SpaceItem.fetchOne(db, key: Self.key(itemID)) else {
+                throw AtelierError.notFound(entity: "space_item", id: itemID)
+            }
+            item.x = x; item.y = y; item.w = w; item.h = h; item.z = z
+            item.updatedAt = Date()
+            try item.update(db)
+        }
+    }
+
+    /// Restyle a freeform element (005; wired by E3). `.notFound` if absent;
+    /// bumps `updatedAt`. Stores the ``ElementStyle`` as JSON TEXT (nil clears it).
+    public func updateSpaceItemStyle(itemID: UUID, style: ElementStyle?) async throws {
+        try await write { db in
+            guard var item = try SpaceItem.fetchOne(db, key: Self.key(itemID)) else {
+                throw AtelierError.notFound(entity: "space_item", id: itemID)
+            }
+            item.style = style?.jsonString()
+            item.updatedAt = Date()
+            try item.update(db)
+        }
+    }
+
+    /// Remove one row from a space (a placement, not the asset). Idempotent — an
+    /// unknown / already-removed id is a no-op, not an error.
+    public func removeSpaceItem(itemID: UUID) async throws {
+        try await write { db in
+            _ = try SpaceItem.deleteOne(db, key: Self.key(itemID))
+        }
+    }
+
+    /// The space's board: every row with its media (asset rows carry the full
+    /// ``Asset`` + ``Source``; element rows carry neither), ordered by `z` then
+    /// `id` so draw order is stable. Space-scoped, so the FULL array is returned
+    /// (P16). `.notFound` if the space is absent.
+    public func spaceItems(in spaceID: UUID) async throws -> [SpaceItemDetail] {
+        try await read { db in
+            guard try Space.exists(db, key: Self.key(spaceID)) else {
+                throw AtelierError.notFound(entity: "space", id: spaceID)
+            }
+            // SpaceItem ⟕ Asset ⟕ Source: BOTH joins are OPTIONAL (LEFT) —
+            // element rows have a NULL asset_id. The nested source must also be
+            // optional: GRDB forbids chaining a required association behind an
+            // optional one. An asset row's source is NOT NULL by schema (C6), so
+            // it is still populated for every asset row. One round-trip, no N+1.
+            let request = SpaceItem
+                .filter(Column("space_id") == Self.key(spaceID))
+                .including(optional: SpaceItem.asset
+                    .including(optional: Asset.source))
+                .order(Column("z"), Column("id"))
+            return try SpaceItemRow.fetchAll(db, request).map {
+                SpaceItemDetail(item: $0.item, asset: $0.asset, source: $0.source)
+            }
+        }
+    }
+
     // MARK: - Search (P16 bounded + FTS5)
 
     /// Search assets library-wide, bounded (P16) and keyset-paged.

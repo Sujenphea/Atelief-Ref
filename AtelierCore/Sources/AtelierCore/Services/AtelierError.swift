@@ -38,6 +38,9 @@ public enum AtelierError: Error, Equatable {
     /// A reparent that would make a folder its own ancestor/descendant — a
     /// cycle in the folder tree (decision F6).
     case folderCycle
+    /// A ``SpaceItem`` violated its discriminator invariant (005 O1): an
+    /// `.asset` row without an `assetID`, or an element row that carried one.
+    case invalidSpaceItem
     /// A database constraint (FK / NOT NULL / UNIQUE) was violated — mapped from
     /// GRDB so the raw `DatabaseError` never leaks (A2/C7).
     case constraintViolation
