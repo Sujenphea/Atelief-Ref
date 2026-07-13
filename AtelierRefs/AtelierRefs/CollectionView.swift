@@ -187,6 +187,11 @@ struct CollectionView: View {
                 }
                 .focusable()
                 .onDeleteCommand { model.requestDeleteSelected() }
+                .onKeyPress(.return) {
+                    guard let detail = model.selectedItem else { return .ignored }
+                    open(detail)
+                    return .handled
+                }
                 .onKeyPress(.leftArrow) { move(.left, width: geo.size.width, proxy: proxy) }
                 .onKeyPress(.rightArrow) { move(.right, width: geo.size.width, proxy: proxy) }
                 .onKeyPress(.upArrow) { move(.up, width: geo.size.width, proxy: proxy) }

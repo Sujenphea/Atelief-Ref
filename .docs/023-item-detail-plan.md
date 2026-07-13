@@ -99,14 +99,17 @@ app's first tags surface.
   - Add `.onKeyPress(.return)` on the focusable grid → open the *selected* item.
   - `open(_:)` helper (used by click and Return): `model.select(detail);
     nav.presentedItemID = detail.item.id`.
-- **Canvas (Space board)** — per decision 2:
-  - `SpaceView` / host: a double-click on a tile whose `SpaceItem.kind == .asset`
-    resolves the asset and opens its detail. The canvas already surfaces tile
-    ids; map tile→`SpaceItem`→`assetID`, then route to the same detail overlay
-    (which needs the asset loaded into an `IngestionModel` context — resolve a
-    `CollectionItemDetail` for the asset, or present a lightweight asset-only
-    detail if no membership context is available). **This is the risk point** —
-    if it needs more than a thin lookup, ship it as F3b.
+- **Canvas (Space board)** — **deferred to F3b** (the thin-lookup escape hatch of
+  decision 2 fired). `SpaceView.onActivateTile` already routes video→QuickLook and
+  frame/text→inspector; an image-asset double-click currently falls through to
+  nothing — that is the gap. But opening the *detail page* there is **not** a thin
+  lookup: `ItemDetailView` is structurally bound to `IngestionModel`'s
+  collection-scoped `selectedItem`, `items` (prev/next), and folder actions
+  (`removeFromFolder`, …). A space asset has a `SpaceItemDetail` (asset + source)
+  but **no `CollectionItem` membership**, so a correct presentation needs
+  `ItemDetailView` decoupled to accept an explicit detail (+ optional prev/next
+  set) — a refactor beyond F3's scope. **F3b** carries that decouple + the
+  canvas double-click.
 - **Tests:** the open-invocation is UI-gesture wiring (hard to unit-test);
   cover the pure bits — `open(_:)` sets `presentedItemID`, and the existing
   overlay-dismiss path. Extend the XCUITest smoke only if cheap.
@@ -121,7 +124,10 @@ entry (next indices `094+`). Suggested subjects (≤80, project format):
 
 - `refactor: item-detail - route overlay via NavModel, split sidebar`
 - `feat: item-detail - tags editor in the detail sidebar`
-- `feat: item-detail - open on Enter / double-click (grid + canvas)`
+- `feat: item-detail - open the detail page on Return from the grid` (F3;
+  canvas split to F3b)
+- `refactor: item-detail - decouple ItemDetailView; open from Space canvas` (F3b,
+  not yet built)
 
 ## Out of scope
 
