@@ -60,6 +60,44 @@ public final class AppServices: Sendable {
         }
     }
 
+    // MARK: - Backup / snapshot (008 H1)
+
+    /// Write a self-consistent, checkpointed copy of the live database to `url`
+    /// via `VACUUM INTO` — one statement producing a single portable `.sqlite`
+    /// with no `-wal` sidecar. `VACUUM` cannot run inside a transaction, so this
+    /// takes the pool's non-transactional writer rather than the `write {}`
+    /// funnel. SQLite refuses to overwrite, so `url` must not already exist.
+    public func snapshot(to url: URL) async throws {
+        do {
+            try await database.pool.writeWithoutTransaction { db in
+                try db.execute(sql: "VACUUM INTO ?", arguments: [url.path])
+            }
+        } catch {
+            throw AtelierError(mapping: error)
+        }
+    }
+
+    /// `PRAGMA integrity_check` on the live database: `true` when SQLite reports
+    /// the single `ok` row (healthy), `false` otherwise.
+    public func integrityCheck() async throws -> Bool {
+        try await read { db in
+            try String.fetchAll(db, sql: "PRAGMA integrity_check") == ["ok"]
+        }
+    }
+
+    /// Integrity-check a database FILE (a snapshot / backup) without touching the
+    /// live pool — opens it read-only, runs `PRAGMA integrity_check`, closes it.
+    /// Restore uses this to refuse an unhealthy snapshot before installing it;
+    /// GRDB stays confined to Core (A2).
+    public static func isHealthy(databaseFileAt url: URL) throws -> Bool {
+        var config = Configuration()
+        config.readonly = true
+        let queue = try DatabaseQueue(path: url.path, configuration: config)
+        return try queue.read { db in
+            try String.fetchAll(db, sql: "PRAGMA integrity_check") == ["ok"]
+        }
+    }
+
     // MARK: - Collections
 
     /// Create a collection (a folder — folders ARE collections, decision F1).
