@@ -37,6 +37,21 @@ struct SpaceView: View {
         }
         .navigationTitle(space.name)
         .toolbar {
+            ToolbarItemGroup {
+                Button { space.undo() } label: {
+                    Label("Undo", systemImage: "arrow.uturn.backward")
+                }
+                .disabled(!space.canUndo)
+                .help(space.canUndo ? "Undo \(space.undoActionName)" : "Nothing to undo")
+                .keyboardShortcut("z", modifiers: .command)
+
+                Button { space.redo() } label: {
+                    Label("Redo", systemImage: "arrow.uturn.forward")
+                }
+                .disabled(!space.canRedo)
+                .help(space.canRedo ? "Redo \(space.redoActionName)" : "Nothing to redo")
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+            }
             ToolbarItem {
                 Button { showAddSheet = true } label: {
                     Label("Add from Library", systemImage: "plus")

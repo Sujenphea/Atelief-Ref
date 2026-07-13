@@ -221,6 +221,44 @@ struct ServicesSpaceTests {
         _ = try await services.getAsset(id: assetID)
     }
 
+    @Test("restoreSpaceItem re-inserts a removed row verbatim (undo primitive)")
+    func restore() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let space = try await services.createSpace(name: "Board")
+        let element = try await services.addElement(
+            to: space.id, kind: .text, style: ElementStyle(text: "hi"),
+            x: 10, y: 20, w: 200, h: 60, z: 3)
+        try await services.removeSpaceItem(itemID: element.id)
+        #expect(try await services.spaceItems(in: space.id).isEmpty)
+
+        // Restore brings it back with the SAME id, kind, geometry, and style.
+        try await services.restoreSpaceItem(element)
+        let rows = try await services.spaceItems(in: space.id)
+        #expect(rows.count == 1)
+        #expect(rows.first?.item.id == element.id)
+        #expect(rows.first?.item.kind == .text)
+        #expect(rows.first?.item.z == 3)
+        #expect(ElementStyle(jsonString: rows.first?.item.style ?? nil)?.text == "hi")
+
+        // Idempotent — restoring an already-present row is a no-op (redo safety).
+        try await services.restoreSpaceItem(element)
+        #expect(try await services.spaceItems(in: space.id).count == 1)
+    }
+
+    @Test("restoreSpaceItem into a missing space throws notFound")
+    func restoreMissingSpace() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let ghostSpace = UUID()
+        let orphan = SpaceItem(
+            id: UUID(), spaceID: ghostSpace, kind: .frame, assetID: nil,
+            x: 0, y: 0, w: 100, h: 100, z: 0, style: nil, createdAt: Date(), updatedAt: Date())
+        await #expect(throws: AtelierError.notFound(entity: "space", id: ghostSpace)) {
+            try await services.restoreSpaceItem(orphan)
+        }
+    }
+
     // MARK: cover
 
     @Test("setSpaceCover points the space at an asset; missing asset throws notFound")

@@ -731,6 +731,29 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// Re-insert a full ``SpaceItem`` row **verbatim** — the inverse of
+    /// ``removeSpaceItem(itemID:)`` and the primitive undo/redo uses to restore a
+    /// deleted row or re-create an undone one with its **id preserved** (so the
+    /// undo chain stays stable). Validates the discriminator (C8) + placement; the
+    /// space (and, for an asset row, the asset) must exist (`.notFound`). A no-op
+    /// on an id that already exists (idempotent redo).
+    public func restoreSpaceItem(_ item: SpaceItem) async throws {
+        try Validation.spaceItem(kind: item.kind, assetID: item.assetID)
+        try Validation.canvasPlacement(x: item.x, y: item.y, w: item.w, h: item.h)
+        try await write { db in
+            guard try Space.exists(db, key: Self.key(item.spaceID)) else {
+                throw AtelierError.notFound(entity: "space", id: item.spaceID)
+            }
+            if let assetID = item.assetID {
+                guard try Asset.exists(db, key: Self.key(assetID)) else {
+                    throw AtelierError.notFound(entity: "asset", id: assetID)
+                }
+            }
+            guard try !SpaceItem.exists(db, key: Self.key(item.id)) else { return }
+            try item.insert(db)
+        }
+    }
+
     /// The space's board: every row with its media (asset rows carry the full
     /// ``Asset`` + ``Source``; element rows carry neither), ordered by `z` then
     /// `id` so draw order is stable. Space-scoped, so the FULL array is returned
