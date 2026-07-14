@@ -18,8 +18,11 @@ function verdict(problems, signals) {
   return { ok: problems.length === 0, problems, signals };
 }
 
-/** X `Bookmarks`/`Likes`: the timeline must still yield tweet entries, map media to
- * `media_key`-keyed items with a URL, and expose a Bottom pagination cursor. */
+/** X `Bookmarks`/`Likes`: the timeline must still yield tweet entries, map each to a
+ * tweet-id-keyed item, still extract media references where media exists, and expose a
+ * Bottom pagination cursor. (A tweet is now ONE item carrying its whole media[]; a
+ * text-only tweet legitimately has no media URL, so drift is measured on the media
+ * REFERENCE count, not a per-item URL requirement.) */
 export function checkTimeline(json, { host = "x.com" } = {}) {
   let page;
   try {
@@ -29,15 +32,19 @@ export function checkTimeline(json, { host = "x.com" } = {}) {
   }
   const problems = [];
   if (page.tweetCount < 1) problems.push("no tweet entries found (shape moved?)");
-  if (page.items.length < 1) problems.push("no media items mapped from any tweet");
-  const usable = page.items.filter((item) => item.sourceId && item.mediaUrl);
-  if (page.items.length > 0 && usable.length !== page.items.length) {
-    problems.push("some items missing media_key or media_url_https");
+  if (page.items.length < 1) problems.push("no tweets mapped from any entry");
+  if (page.items.some((item) => !item.sourceId)) problems.push("a mapped tweet is missing its id");
+  // Media extraction must still work: a bookmarks timeline is media-heavy, so a total of
+  // ZERO media references across all tweets means the media_url_https shape moved.
+  const mediaRefs = page.items.reduce(
+    (n, item) => n + (item.content?.payload?.tweet?.media?.length || 0), 0);
+  if (page.items.length > 0 && mediaRefs < 1) {
+    problems.push("no media extracted from any tweet (media_url_https shape moved?)");
   }
   if (!page.bottomCursor) problems.push("no Bottom cursor (pagination would stall)");
   return verdict(problems, {
     tweetCount: page.tweetCount,
-    mediaItems: page.items.length,
+    mediaItems: mediaRefs,
     hasCursor: !!page.bottomCursor,
   });
 }

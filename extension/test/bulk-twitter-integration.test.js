@@ -19,7 +19,7 @@ import { runSweep, OUTCOMES } from "../src/bulk-engine.js";
 const bookmarks = JSON.parse(
   readFileSync(new URL("./fixtures/x-bookmarks.json", import.meta.url)));
 
-/** The fixture's own media keys (the 4 top-level photos/video), derived not hardcoded. */
+/** The fixture's own tweet ids (one per top-level tweet), derived not hardcoded. */
 const MAIN_KEYS = parseTimelinePage(bookmarks, { host: "x.com" }).items.map((i) => i.sourceId);
 
 const MAIN_URL = "https://x.com/i/api/graphql/q1/Bookmarks?variables=%7B%7D";
@@ -91,7 +91,7 @@ test("X integration: a scroll STALL halts the sweep resumable, not a false compl
 
   assert.equal(result.status, "halted");            // NOT "complete" → checkpoint survives
   assert.equal(result.haltStatus, null);            // self-halt → controller closes "paused"
-  assert.deepEqual(relayed, ["a", "b"]);            // items before the wall still ingested
+  assert.deepEqual(relayed, ["t-a", "t-b"]);        // one item per tweet, keyed by tweet id
   assert.match(result.error, /stalled/);            // the stall surfaced for diagnostics
 });
 
@@ -115,7 +115,7 @@ test("X integration: a folder sweep drops a replayed MAIN page, ingests ONLY the
   const result = await runSweep(source, {}, { relay, ...engineOpts });
 
   assert.equal(result.status, "complete");
-  assert.deepEqual(relayed, ["fA", "fB"]);             // only the folder's tweets
+  assert.deepEqual(relayed, ["t-fA", "t-fB"]);         // only the folder's tweets (keyed by tweet id)
   assert.equal(result.counts.ingested, 2);
   for (const key of MAIN_KEYS) {
     assert.equal(relayed.includes(key), false, `main-bookmarks media ${key} leaked into the folder sweep`);

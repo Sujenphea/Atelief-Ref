@@ -9,9 +9,11 @@ import assert from "node:assert/strict";
 
 import { createTwitterSource, TimelineStallError } from "../src/twitter-source.js";
 
-/** A minimal timeline response: `mediaKeys` tweet entries + a Bottom cursor. */
-function timeline(mediaKeys, cursor = "C") {
-  const tweetEntries = mediaKeys.map((key) => ({
+/** A minimal timeline response: one tweet entry per `keys` element (each a single-photo
+ * tweet with `rest_id: t-<key>`) + a Bottom cursor. Since a tweet now maps to ONE item
+ * keyed by its tweet id, the yielded sourceIds are `t-<key>`. */
+function timeline(keys, cursor = "C") {
+  const tweetEntries = keys.map((key) => ({
     content: {
       entryType: "TimelineTimelineItem",
       itemContent: { tweet_results: { result: {
@@ -49,7 +51,7 @@ test("yields items across scroll-loaded pages, ends on an empty (0-tweet) page",
   source.onResponse(timeline(["k1a", "k1b"])); // first page already captured
 
   const keys = (await collect(source)).map((i) => i.sourceId);
-  assert.deepEqual(keys, ["k1a", "k1b", "k2"]); // empty page yields nothing, then ends
+  assert.deepEqual(keys, ["t-k1a", "t-k1b", "t-k2"]); // one item per tweet; empty page ends it
 });
 
 test("STALLS (throws) after maxIdleRounds when scrolling yields no new response", async () => {
@@ -77,7 +79,7 @@ test("a stall that follows real items still throws — the items already yielded
   await assert.rejects(async () => {
     for await (const item of source.enumerate()) yielded.push(item.sourceId);
   }, TimelineStallError);
-  assert.deepEqual(yielded, ["k1"]); // the real item came through before the wall
+  assert.deepEqual(yielded, ["t-k1"]); // the real item came through before the wall
 });
 
 test("with a folder scope, drops responses from OTHER feeds (replay-buffer contamination)", async () => {
@@ -99,7 +101,7 @@ test("with a folder scope, drops responses from OTHER feeds (replay-buffer conta
   source.onResponse(timeline(["fA", "fB"]), folderUrl);          // this folder → kept
 
   const keys = (await collect(source)).map((i) => i.sourceId);
-  assert.deepEqual(keys, ["fA", "fB"]); // only the folder's own tweets
+  assert.deepEqual(keys, ["t-fA", "t-fB"]); // only the folder's own tweets
 });
 
 test("with no scope set, accepts every response (unchanged legacy behaviour)", async () => {
@@ -109,7 +111,7 @@ test("with no scope set, accepts every response (unchanged legacy behaviour)", a
   });
   source.onResponse(timeline(["a"])); // no url, no scope → still queued
   const keys = (await collect(source)).map((i) => i.sourceId);
-  assert.deepEqual(keys, ["a"]);
+  assert.deepEqual(keys, ["t-a"]);
 });
 
 test("an unparseable captured response is ignored, not fatal", async () => {

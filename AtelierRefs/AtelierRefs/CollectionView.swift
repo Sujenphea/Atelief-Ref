@@ -353,6 +353,13 @@ struct CollectionView: View {
            let url = URL(string: string), DirectInputReader.isWebURL(url) {
             return url
         }
+        // A URL copied as PLAIN TEXT (the address bar, a message, a doc) carries only
+        // `public.utf8-plain-text` — not `.URL` or an NSURL — so parse that too, with a
+        // dotted-host guard so arbitrary text isn't mistaken for a link (001 · C2b).
+        if let text = pasteboard.string(forType: .string),
+           let url = IngestionModel.webURL(fromPastedText: text) {
+            return url
+        }
         return nil
     }
 

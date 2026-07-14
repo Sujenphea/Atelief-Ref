@@ -14,10 +14,13 @@
 // no real timers (bulk-engine.test.js drives it with fakes).
 //
 // A `BulkItem` (what the driver yields):
-//   { sourceId, mediaUrl, mediaUrlFallback, provenance, cursor }
+//   { sourceId, mediaUrl, mediaUrlFallback, provenance, cursor, content? }
 //     sourceId — stable platform id (tweetId / pinId): the dedup + skip key.
 //     cursor   — opaque resume token; the engine checkpoints the cursor of the
 //                last CONTIGUOUSLY-completed item so a resume never skips a gap.
+//     content  — optional content descriptor (kind + payload) the relay POSTs so the
+//                item lands as a first-class kind (a tweet); absent → plain image.
+// The engine is content-blind: it only pulls/paces/records; the relay reads `content`.
 
 import {
   MAX_CONCURRENCY, PACING_MS, PACING_JITTER_MS,

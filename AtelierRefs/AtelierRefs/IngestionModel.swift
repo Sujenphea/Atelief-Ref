@@ -134,6 +134,9 @@ final class IngestionModel: ObservableObject {
     /// Downloads a bare image URL (drag/paste with no bytes) off-main. Stateless +
     /// injectable; the default uses the shared session (tests inject a stub one).
     private let remoteFetcher = RemoteImageFetcher()
+    /// Resolves a pasted PAGE url to link metadata (og:title / description / og:image),
+    /// SSRF-walled (001 · C2b). Shares the SSRF posture with `remoteFetcher`.
+    private let pageResolver = PageResolver()
 
     /// Ingest-timing log (16A). A stall means generating the eager thumbnail tiers
     /// dominated the ingest — the signal to make the largest tier lazy (P16).
@@ -1114,9 +1117,84 @@ final class IngestionModel: ObservableObject {
                 let input = try await fetcher.ingestInput(for: url, into: target, at: Date())
                 run(inputs: [input])
             } catch {
-                status = Self.remoteFetchStatus(for: error)
+                // A page URL sniffs as HTML, not an image → resolve it into a LINK
+                // (001 · C2b) rather than failing. Any OTHER error (blocked host, too
+                // large, transport) surfaces its friendly status.
+                if case RemoteImageFetchError.notAnImage = error {
+                    await resolveLinkAndIngest(from: url, into: target)
+                } else {
+                    status = Self.remoteFetchStatus(for: error)
+                }
             }
         }
+    }
+
+    /// Resolve a page URL into a `.link` item (001 · C2b): fetch its og-metadata
+    /// (SSRF-walled), store its og:image as the card blob when present, and ingest
+    /// through the normal batch path. Every branch still SAVES a link — a bare one
+    /// keyed by the URL when resolution or the image fetch fails — so the paste is
+    /// never lost. An auth-walled host (x / instagram / pinterest) is NOT app-resolved
+    /// (it returns a login / share-card); the user is pointed at the extension.
+    private func resolveLinkAndIngest(from url: URL, into folder: UUID) async {
+        if PageResolver.isAuthWalledHost(url) {
+            // Auth-walled: an app fetch returns a login / share-card, so DON'T resolve —
+            // but still save a BARE link (URL preserved, no fetch) so the paste yields a
+            // clickable item. The extension remains the way to get the rich tweet card.
+            run(inputs: [Self.linkInput(for: url, page: nil, imageData: nil, into: folder)])
+            return
+        }
+        status = "Resolving link…"
+        let page = try? await pageResolver.resolve(url)
+        // Fetch the og:image as the link's card image (guarded), best-effort.
+        var imageData: Data?
+        if let imageURL = page?.imageURL {
+            imageData = try? await remoteFetcher.fetch(imageURL).data
+        }
+        run(inputs: [Self.linkInput(for: url, page: page, imageData: imageData, into: folder)])
+    }
+
+    /// Build the ``IngestInput`` for a resolved link (001 · C2b) — pure, so the
+    /// mapping is unit-tested. With og:image bytes it carries a card blob
+    /// (`remoteContentWithImage`); otherwise a media-less link. A `nil` page (resolution
+    /// failed) still yields a bare link keyed by the URL. Provenance `originalURL` is the
+    /// PAGE url (the funnel canonicalizes it into the dedup key + aligns the draft).
+    static func linkInput(
+        for url: URL, page: ResolvedPage?, imageData: Data?, into folder: UUID
+    ) -> IngestInput {
+        let draft = AssetContentDraft.link(
+            url: url.absoluteString, title: page?.title, description: page?.description)
+        let provenance = SourceDraft(
+            platform: .web, originalURL: url.absoluteString, title: page?.title, capturedAt: Date())
+        if let imageData {
+            return DirectInputReader.remoteContentWithImage(
+                draft: draft, imageData: imageData, provenance: provenance, into: folder)
+        }
+        return DirectInputReader.remoteContent(draft: draft, provenance: provenance, into: folder)
+    }
+
+    /// Parse user input into a fetchable http(s) URL — prepends `https://` when
+    /// scheme-less (mirroring the funnel's canonicalizer), and rejects anything that
+    /// isn't an http(s) URL with a host. `nil` → the caller saves a bare link and lets
+    /// the funnel surface `.invalidLinkURL`.
+    static func webURL(fromUserInput raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let withScheme = trimmed.contains("://") ? trimmed : "https://" + trimmed
+        guard let url = URL(string: withScheme),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = url.host, !host.isEmpty else { return nil }
+        return url
+    }
+
+    /// A pasted PLAIN-TEXT string interpreted as a web URL — stricter than
+    /// ``webURL(fromUserInput:)`` because the grid paste path GUESSES a URL from
+    /// arbitrary clipboard text: the host must look like a real domain (contain a dot),
+    /// so pasting a plain word (`"hello"`) isn't turned into `https://hello`. A
+    /// multi-word string fails URL parsing (spaces) and returns nil.
+    static func webURL(fromPastedText raw: String) -> URL? {
+        guard let url = webURL(fromUserInput: raw),
+              let host = url.host, host.contains(".") else { return nil }
+        return url
     }
 
     /// Add a color item (003 · C1) to the current folder from a user-typed hex or
@@ -1134,20 +1212,24 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Add a link item (003 · C2) to the current folder from a user-typed URL.
-    /// Media-less, so it skips the blob pipeline and goes straight through
-    /// `ingestContent` with `.web` provenance; the funnel canonicalizes the URL
-    /// (that's the dedup key) and rejects a non-http(s) one (`.invalidLinkURL`)
-    /// into ``lastError``. Title/description stay nil until a page resolver (001)
-    /// enriches them. Reloads the folder on success (`perform`).
-    func addLink(url: String) {
+    /// Add a link item (003 · C2) to the current folder from a user-typed URL. When
+    /// the input is a usable http(s) URL it is RESOLVED (001 · C2b) — og:title /
+    /// description / og:image fill the card (SSRF-walled). A resolution failure still
+    /// saves a bare link keyed by the URL. A non-URL string falls through to the funnel,
+    /// which surfaces `.invalidLinkURL` into ``lastError``.
+    func addLink(url raw: String) {
+        guard isReady else { return }
         let folder = selectedFolderID
-        perform { services in
-            _ = try await services.ingestContent(
-                .link(url: url),
-                from: SourceDraft(platform: .web, originalURL: url, capturedAt: Date()),
-                into: folder)
+        guard let url = Self.webURL(fromUserInput: raw) else {
+            perform { services in
+                _ = try await services.ingestContent(
+                    .link(url: raw),
+                    from: SourceDraft(platform: .web, originalURL: raw, capturedAt: Date()),
+                    into: folder)
+            }
+            return
         }
+        Task { await resolveLinkAndIngest(from: url, into: folder) }
     }
 
     /// Report a drop the app couldn't read at all (no image bytes, no file, no
@@ -1166,6 +1248,8 @@ final class IngestionModel: ObservableObject {
             return "That link isn't a direct image."
         case .tooLarge:
             return "That image is too large to import."
+        case .blockedHost:
+            return "That address can't be reached for safety reasons."
         case .invalidURL, .requestFailed, .httpStatus:
             return "Couldn't download that image."
         }

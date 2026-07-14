@@ -86,6 +86,18 @@ test("ordering: images (DOM order) precede video records; per video frame→post
   ]);
 });
 
+test("articleIndex: carried through when the reader provides it, omitted otherwise", () => {
+  const h = buildHarvest(raw({
+    images: [{ src: "https://pbs.twimg.com/media/A.jpg", width: 1, height: 1, alt: null, articleIndex: 0 }],
+    videos: [{ frame: null, poster: "https://pbs.twimg.com/amplify_video_thumb/1/x.jpg", src: "", width: 2, height: 2, articleIndex: 3 }],
+  }));
+  assert.equal(h.media[0].articleIndex, 0);  // image scoped to the focal article
+  assert.equal(h.media[1].articleIndex, 3);  // video-poster carries its article too
+  // An older snapshot without articleIndex → the key is omitted (no scoping applied).
+  const bare = buildHarvest(raw({ images: [{ src: "https://cdn/x.jpg", width: 1, height: 1, alt: null }] }));
+  assert.equal("articleIndex" in bare.media[0], false);
+});
+
 test("passthrough: url/title/canonical carried, defaults applied", () => {
   const h = buildHarvest(raw({ url: "https://cosmos.so/e/1", title: undefined, canonical: "https://cosmos.so/" }));
   assert.equal(h.url, "https://cosmos.so/e/1");

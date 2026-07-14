@@ -173,12 +173,18 @@ roadmap and is the strongest argument for shipping 008's snapshot early.
   image** (Option 3 hybrid ingest, Swift) · **C3 extension JS** (single X → tweet
   content capture with its card image) — all shipped (changelogs 109–115). Plan
   record: `.docs/025`.
-- ⏳ **Bulk X sweep → tweets** — the big payoff. Single-capture tweets ship; the
-  bulk engine still posts bare images. `ingestOne` already routes on an optional
-  content descriptor, so the sweep opts in by building one per item.
+- ✅ **Bulk X sweep → tweets** — the big payoff (changelog 116). `mapTweet` now emits
+  ONE item per tweet (keyed by tweet-id) carrying all media in `media[]` + first photo
+  as the card; text-only tweets included (media-less text card); video opt-in unchanged.
+  Shared `buildTweetPayload` (single + bulk). No Swift/schema change — the server's
+  content path already records bulk-tagged job-items. Remaining: multi-image `media[]`
+  backfill (waits on C2b); single-capture text-only tweet (small follow-on).
 - ⏳ **Web → link content capture** — deliberately NOT switched: a link's
   thumbnail is its og:image (needs C2b), so converting web captures to text-card
   links now would REGRESS their thumbnails. Waits on C2b.
-- ⏳ **C2b** link resolver enrichment (= 001 `PageResolver`, SSRF-hardened) —
-  deferred; the security-sensitive piece. Unblocks web→link and could backfill a
-  tweet's card image from `media[]`.
+- ✅ **C2b** link resolver enrichment (= 001 `PageResolver`, SSRF-hardened) —
+  shipped (changelog 118). A pasted/typed page URL resolves to a `.link` with
+  og:title/description + an og:image card blob; `SSRFGuard` walls the HTML +
+  og:image fetches (per-redirect on HTML), auth-walled hosts route to the extension.
+  Remaining: DNS-rebind pinning + per-redirect image-path validation (future
+  hardening); the extension web→link switch is intentionally not needed.

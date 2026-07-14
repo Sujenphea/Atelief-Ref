@@ -183,6 +183,44 @@ test("ingestOne: no content descriptor stays on the plain image body", async () 
   assert.equal("kind" in posted, false);       // plain image request — no kind/payload
 });
 
+test("ingestOne: a text-only tweet (no media url) posts a media-less content capture", async () => {
+  // A bulk text-only tweet: content descriptor present, but NO card image to fetch. It
+  // must post kind+payload with no image (→ the server's `.content` text-card path) and
+  // never touch fetchImage.
+  let posted = null;
+  let fetched = false;
+  const content = { kind: "tweet", payload: { tweet: { tweetID: "7", media: [], text: "just text" } } };
+  const { deps } = makeDeps({
+    fetchImage: async () => { fetched = true; throw new Error("must not fetch"); },
+    buildContentCaptureRequest: (p, b, c) => {
+      const req = { provenance: p, kind: c.kind, payload: c.payload };
+      if (b) req.image = b;                    // omit image when there are no bytes
+      return req;
+    },
+    postCapture: async (req) => { posted = req; return { status: 200, body: { deduplicated: false } }; },
+  });
+  const prov = { platform: "twitter", mediaUrl: null, rawMetadata: { tweetId: "7" } };
+  const r = await ingestOne(prov, { token: "tok", content }, deps);
+
+  assert.deepEqual(r, { status: "saved", kind: "tweet", deduplicated: false });
+  assert.equal(fetched, false);                // no image fetch for a media-less tweet
+  assert.equal("image" in posted, false);      // media-less content body → no image key
+  assert.equal(posted.kind, "tweet");
+});
+
+test("ingestOne: a FETCH FAILURE is never downgraded to a media-less card (auth-wall preserved)", async () => {
+  // A tweet WITH a card image whose fetch 401s must surface fetch-error (so the engine
+  // auth-halts), NOT silently post a text card — the media-less path is only for a tweet
+  // that never had a media URL.
+  const content = { kind: "tweet", payload: { tweet: { tweetID: "7", media: [{ url: "u" }] } } };
+  const { deps } = makeDeps({
+    fetchImage: async () => { throw Object.assign(new Error("HTTP 401 for u"), { httpStatus: 401 }); },
+  });
+  const r = await ingestOne(PROV, { token: "tok", content }, deps);
+  assert.equal(r.status, "fetch-error");
+  assert.equal(r.httpStatus, 401);
+});
+
 test("captureCore: a usable tweet routes through the content capture (still image)", async () => {
   let posted = null;
   const content = { kind: "tweet", payload: { tweet: { tweetID: "42", media: [] } } };
@@ -193,6 +231,36 @@ test("captureCore: a usable tweet routes through the content capture (still imag
   const r = await captureCore({}, {}, "tok", deps);
   assert.deepEqual(r, { status: "saved", kind: "tweet", deduplicated: false });
   assert.equal(posted.kind, "tweet");
+});
+
+test("captureCore: a text-only tweet (no image) saves as a media-less text card", async () => {
+  // The focal tweet has no image → provenance.mediaUrl is null, but tweetContent yields
+  // a usable tweet, so captureCore POSTs a media-less content capture instead of bailing
+  // "no-image". (The comment-image bug fix: a text-only tweet no longer borrows a reply's
+  // image, so it correctly lands as a text card.)
+  let posted = null;
+  const content = { kind: "tweet", payload: { tweet: { tweetID: "42", media: [], text: "hi" } } };
+  const { deps } = makeDeps({
+    extractProvenance: () => ({ platform: "twitter", mediaUrl: null, rawMetadata: { tweetId: "42" } }),
+    tweetContent: () => content,
+    buildContentCaptureRequest: (p, b, c) => {
+      const req = { provenance: p, kind: c.kind, payload: c.payload };
+      if (b) req.image = b;
+      return req;
+    },
+    postCapture: async (req) => { posted = req; return { status: 200, body: { deduplicated: false } }; },
+  });
+  const r = await captureCore({}, {}, "tok", deps);
+  assert.deepEqual(r, { status: "saved", kind: "tweet", deduplicated: false });
+  assert.equal("image" in posted, false); // media-less text card
+});
+
+test("captureCore: no image AND no tweet content → still no-image", async () => {
+  const { deps } = makeDeps({
+    extractProvenance: () => ({ mediaUrl: null }),
+    tweetContent: () => null, // not a tweet (e.g. a generic page with no media)
+  });
+  assert.deepEqual(await captureCore({}, {}, "tok", deps), { status: "no-image" });
 });
 
 test("captureCore: a tweet WITH video still ingests as video (content path not taken)", async () => {

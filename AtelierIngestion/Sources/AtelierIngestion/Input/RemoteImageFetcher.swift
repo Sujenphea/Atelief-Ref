@@ -1,11 +1,13 @@
 // AtelierIngestion — download a DIRECT image URL (backlog B1)
 //
-// The one deliberate exception to "the app never downloads" (007 §scope): when a
-// drag/paste hands us a BARE image URL and no bytes (a Pinterest drag delivering
-// only `https://i.pinimg.com/…​.jpg`), this fetches those bytes so the same local
-// pipeline can ingest them. Scoped strictly to DIRECT image URLs — a *page* URL
-// that needs HTML scraping is NOT handled here (it fails cleanly as `.notAnImage`
-// and stays with link-resolution / the Chrome extension, #6).
+// A deliberate, SSRF-walled exception to "the app never downloads" (007 §scope). The
+// app now makes exactly two kinds of outbound request, both user-initiated and both
+// guarded by ``SSRFGuard``: (i) a BARE image URL's bytes (this file — a Pinterest drag
+// delivering only `https://i.pinimg.com/…​.jpg`), and (ii) a page's HTML + its og:image
+// for link resolution (``PageResolver``, 001 · C2b). A pasted *page* URL still fails
+// here as `.notAnImage` (it isn't a direct image) — the caller then hands it to
+// ``PageResolver`` to become a link. A host that resolves to an internal / metadata /
+// loopback address is refused (`.blockedHost`) before any bytes move.
 //
 // Design for testability:
 //   • The `URLSession` is INJECTED, so a test drives the whole thing through a
@@ -27,6 +29,9 @@ import AtelierCore
 public enum RemoteImageFetchError: Error, Equatable {
     /// The URL isn't an `http`/`https` URL — nothing to download.
     case invalidURL
+    /// The URL's host resolves to an internal / private / loopback address — refused
+    /// by the SSRF guard (001 · C2b) before any request is made.
+    case blockedHost
     /// The request never completed (transport / connectivity failure).
     case requestFailed
     /// The server answered with a non-2xx status. `code` is that status.
@@ -61,10 +66,16 @@ public struct RemoteImageFetcher: Sendable {
 
     private let session: URLSession
     private let maxByteCount: Int
+    private let ssrf: SSRFGuard
 
-    public init(session: URLSession = .shared, maxByteCount: Int = RemoteImageFetcher.defaultMaxByteCount) {
+    public init(
+        session: URLSession = .shared,
+        maxByteCount: Int = RemoteImageFetcher.defaultMaxByteCount,
+        guard ssrf: SSRFGuard = SSRFGuard()
+    ) {
         self.session = session
         self.maxByteCount = maxByteCount
+        self.ssrf = ssrf
     }
 
     /// Download `url` and validate it is a still image, or throw a
@@ -74,6 +85,17 @@ public struct RemoteImageFetcher: Sendable {
     public func fetch(_ url: URL) async throws -> RemoteImage {
         guard DirectInputReader.isWebURL(url) else {
             throw RemoteImageFetchError.invalidURL
+        }
+        // SSRF wall (001 · C2b): a bare image URL is attacker-influenceable (a pasted
+        // page URL is fetched here FIRST to sniff whether it's an image, and a resolved
+        // og:image URL comes straight from a page's HTML), so refuse a host that
+        // resolves to an internal / metadata / loopback address before any bytes move.
+        // (Validates the request host; per-redirect-hop validation is the PageResolver's
+        // job — a v1 limitation noted there.)
+        do {
+            try ssrf.validate(url)
+        } catch {
+            throw RemoteImageFetchError.blockedHost
         }
 
         let bytes: URLSession.AsyncBytes

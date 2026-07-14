@@ -36,6 +36,9 @@ final class CanvasContent: TileProvider, TileImageSource {
     /// A dense cache key per distinct blob hash, so two tiles of the same image
     /// (or content-identical assets) share one decode + cached bitmap per tier.
     private let keyByHash: [String: Int]
+    /// The renderer content per tile (precomputed off the per-frame path): `.image`
+    /// for byte-backed assets, a vector swatch / card for media-less kinds (003 · O1).
+    private let contentByTile: [TileContent]
 
     // MARK: Layout constants (world units)
 
@@ -54,12 +57,19 @@ final class CanvasContent: TileProvider, TileImageSource {
             keyByHash[hash] = keyByHash.count
         }
         self.keyByHash = keyByHash
+        self.contentByTile = items.map { ElementRendering.assetTileContent($0.asset) }
         self.tiles = Self.layout(items)
     }
 
     // MARK: - TileProvider
 
     // (tiles is the stored property above)
+
+    /// What a tile draws — `.image` for byte-backed assets, a vector swatch / card
+    /// for media-less kinds (003 · O1). Index-aligned to `details` by `tile.id`.
+    func content(for tile: Tile) -> TileContent {
+        contentByTile.indices.contains(tile.id) ? contentByTile[tile.id] : .image
+    }
 
     /// A ▶ badge on video tiles, so a captured video reads as playable.
     func badge(for tile: Tile) -> TileBadge? {

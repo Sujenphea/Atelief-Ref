@@ -121,15 +121,27 @@ Files: `PageResolver.swift` (new), `RemoteImageFetcher.swift` (guard + redirect 
   `IngestPipeline.swift:138–140`).
 - Charset/encoding oddities in fetched HTML; `Content-Type: text/html; charset=…` parsing.
 
+## Status (2026-07) — ✅ SHIPPED (changelog 118)
+
+P1 (resolver) + P2 (auth-wall routing) shipped. `SSRFGuard` + `PageResolver` (og-tags
+only) in AtelierIngestion; `RemoteImageFetcher` SSRF-guarded; `IngestionModel` resolves
+a pasted/typed page URL into a `.link` with an og:image card blob (synchronous,
+first-wins-immutable). Auth-walled hosts (x / instagram / pinterest / …) route to the
+extension. Enrichment approach: sync-at-capture; SSRF depth: pragmatic v1 (no DNS-rebind
+pinning). See `.docs/025` (multikind) + `003` for the kind side.
+
 ## Settled decisions
 
 - App-side HTML fetch approved, gated as described (user, 2026-07-13).
 - Drag & drop and right-click are done; no work planned beyond the gap notes above.
+- **P3 extension reverse channel** — still deferred (auth-walled resolution rides the
+  extension's normal capture, which suffices).
 
 ## Open questions
 
-1. When a **tweet URL** is pasted before 003 ships: flatten to image now (recommended —
-   it works today via extension capture anyway) and redirect to the tweet kind when 003
-   lands, or hold the feature until 003?
-2. Should the resolver attempt oEmbed **discovery** (extra request per page) in v1, or
-   og-tags only first? (Recommend og-tags only; add oEmbed if hit-rate disappoints.)
+1. Tweet URL pasted — RESOLVED: an auth-walled host (incl. x.com) is NOT app-resolved;
+   the status routes to the extension (which produces a proper tweet, 003 · C3).
+2. oEmbed discovery — RESOLVED: og-tags only in v1 (shipped); add oEmbed later if the
+   hit-rate disappoints.
+3. **Residual hardening (open):** DNS-rebind socket pinning + per-redirect validation on
+   the image byte path (the HTML path is already per-hop). Future security hop.

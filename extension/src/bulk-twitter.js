@@ -9,13 +9,19 @@
 // engine lives with the content-script loop (Phase 6); the parsers here are what
 // [T9] pins against the committed fixture.
 //
-// A tweet can carry up to 4 photos, so a tweet maps to MANY `BulkItem`s — one per
-// media, keyed by the stable `media_key` (NOT the tweet id, which would collide and
-// make the engine dedup-skip all but one). `originalURL` still points at the tweet.
-// We read ONLY the top-level tweet's media — never a quoted tweet's (that's the
-// quoted author's asset, not what the user bookmarked).
+// A tweet maps to ONE `BulkItem` (003 · C3 bulk): a tweet is a single first-class
+// content item, keyed by its `tweetId`, carrying its media as REFERENCES — not one
+// asset per photo. `media[]` lists every top-level media (all up-to-4 photos, or the
+// video/gif poster); the FIRST media is fetched as the item's card image. X never
+// mixes photos and video in one tweet, so "first media" is unambiguous. A text-only
+// tweet still maps (an item with no media → a media-less text card). A REPOST (retweet)
+// is unwrapped to the ORIGINAL tweet, whose text + media are the real substance. A QUOTE
+// tweet keeps its OWN text/identity, and normally its own media — but a BARE quote (no
+// own media) falls back to the QUOTED tweet's media, since that quoted video/image is
+// the substance the user bookmarked.
 
 import { makeProvenance, toOrigName } from "./extractors/base.js";
+import { buildTweetPayload } from "./endpoint.js";
 import { selectBestVideo } from "./twitter-video.js";
 
 /** Unwrap a `tweet_results.result` to the underlying Tweet, or null for a
@@ -26,6 +32,31 @@ export function unwrapTweet(result) {
   if (result.__typename === "TweetWithVisibilityResults" && result.tweet) return result.tweet;
   if (result.__typename === "Tweet" || result.legacy) return result;
   return null;                       // TweetTombstone / unknown → skip
+}
+
+/** Resolve a REPOST (retweet) to the ORIGINAL tweet it carries. A retweet's own
+ * `legacy.full_text` is only "RT @user…" and it holds NO media — the substance (text
+ * + media) lives on `retweeted_status_result.result`. Returns the original (unwrapped)
+ * for a repost, or the tweet itself otherwise, so a reposted tweet saves the original's
+ * media/text and dedups against a direct save (same tweet id). A QUOTE tweet is NOT
+ * unwrapped — its own text is the substance and the quoted media belongs to the quoted
+ * author (kept out, per the mapper's rule). */
+export function underlyingTweet(tweet) {
+  const reposted =
+    tweet?.legacy?.retweeted_status_result?.result ||
+    tweet?.retweeted_status_result?.result || null;
+  return unwrapTweet(reposted) || tweet;
+}
+
+/** The QUOTED tweet a tweet embeds (`quoted_status_result`), unwrapped, or null. A
+ * quote's media is normally the quoted AUTHOR's asset, so it's read ONLY as a
+ * fallback when the quoting tweet has NO media of its own — a BARE quote whose
+ * substance IS the quoted video/image (the thing the user actually bookmarked). */
+export function quotedTweet(tweet) {
+  const quoted =
+    tweet?.legacy?.quoted_status_result?.result ||
+    tweet?.quoted_status_result?.result || null;
+  return unwrapTweet(quoted);
 }
 
 /** Find the timeline `instructions` array across the operation shapes (Bookmarks
@@ -81,16 +112,25 @@ function tweetAuthor(tweet) {
 }
 
 /**
- * Map one timeline tweet result to `BulkItem`s — one per top-level media, `[]` for a
- * text-only tweet or a tombstone. `host` sets the `originalURL` origin; `cursor` is
- * threaded in by the caller (the page's bottom cursor). A video/gif item maps its
- * POSTER as the image (matching the Pinterest driver + the design's default-off bulk
- * video) and stashes the best progressive MP4 in `rawMetadata.videoUrl` for a future
- * opt-in — the URL is already in the response, so no syndication call is needed.
+ * Map one timeline tweet result to a single `BulkItem` (`[item]`), or `[]` for a
+ * tombstone / no-id / empty tweet (no text AND no media — the app would reject it).
+ * `host` sets the `originalURL` origin; `cursor` is threaded in by the caller (the
+ * page's bottom cursor).
+ *
+ * The item carries a `content` descriptor (`kind: "tweet"` + payload with the tweet's
+ * whole `media[]` reference list) so it ingests as a first-class tweet, and its
+ * `mediaUrl` = the FIRST media (the card image the SW fetches). A video/gif tweet maps
+ * its POSTER as the card and stashes the best progressive MP4 in `rawMetadata.videoUrl`
+ * (already in the response — no syndication call). With the video opt-in ON the relay
+ * passes that MP4 and `ingestOne` ingests a video asset (the content descriptor is then
+ * ignored — no regression); OFF (default) the tweet lands with its poster card.
  */
 export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
-  const tweet = unwrapTweet(result);
-  if (!tweet) return [];
+  const outer = unwrapTweet(result);
+  if (!outer) return [];
+  // A repost carries its content on the original — read media/text/author/id from it,
+  // so a reposted tweet saves the original's media (not an empty "RT @user…").
+  const tweet = underlyingTweet(outer);
 
   const tweetId = tweet.rest_id || (tweet.legacy && tweet.legacy.id_str) || null;
   if (!tweetId) return [];
@@ -103,46 +143,74 @@ export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
     ? `https://${host}/${author.screenName}/status/${tweetId}`
     : `https://${host}/i/status/${tweetId}`;
 
-  const items = [];
-  for (const media of tweetMedia(tweet)) {
-    const sourceId = media.media_key || media.id_str || null;
-    if (!sourceId) continue;
+  // Media source: the tweet's OWN media, or — for a BARE quote (no own media) — the
+  // QUOTED tweet's media, so a quote whose substance is the quoted video/image captures
+  // it (a quote WITH its own media keeps using that). Retweets are already unwrapped above.
+  let mediaList = tweetMedia(tweet);
+  if (mediaList.length === 0) {
+    const quoted = quotedTweet(tweet);
+    if (quoted) mediaList = tweetMedia(quoted);
+  }
+
+  // Walk the media ONCE: collect every reference for payload.media[], pick the first as
+  // the card image to fetch, and capture the first video's progressive MP4.
+  const mediaUrls = [];
+  let card = null;          // { mediaUrl, mediaUrlFallback } — the image the SW fetches
+  let videoUrl = null;      // opt-in progressive MP4 (first video/gif media)
+  let kind = "text";        // rawMetadata hint: the tweet's media kind (text if none)
+  for (const media of mediaList) {
     const poster = media.media_url_https || null;
     if (!poster) continue;
-
     const mediaUrl = toOrigName(poster, { addIfAbsent: true });
-    const mediaUrlFallback = mediaUrl !== poster ? poster : null;
+    mediaUrls.push(mediaUrl);
+    if (!card) {
+      card = { mediaUrl, mediaUrlFallback: mediaUrl !== poster ? poster : null };
+      kind = media.type || "photo";
+    }
     const isVideo = media.type === "video" || media.type === "animated_gif";
-    const videoUrl = isVideo && media.video_info
-      ? selectBestVideo({ video: media.video_info }) : null;
+    if (isVideo && !videoUrl && media.video_info) {
+      videoUrl = selectBestVideo({ video: media.video_info });
+    }
+  }
 
-    items.push({
-      sourceId,
+  const content = buildTweetPayload({
+    tweetID: tweetId,
+    mediaUrls,
+    text: title,
+    authorHandle: author.handle,
+    authorName: author.name,
+  });
+  if (!content) return []; // no substance (no text AND no media) → skip
+
+  const mediaUrl = card ? card.mediaUrl : null;
+  const mediaUrlFallback = card ? card.mediaUrlFallback : null;
+  return [{
+    sourceId: tweetId,
+    mediaUrl,
+    mediaUrlFallback,
+    cursor,
+    content,
+    provenance: makeProvenance({
+      platform: "twitter",
+      originalURL,
       mediaUrl,
       mediaUrlFallback,
-      cursor,
-      provenance: makeProvenance({
-        platform: "twitter",
-        originalURL,
-        mediaUrl,
-        mediaUrlFallback,
-        authorHandle: author.handle,
-        authorName: author.name,
-        title,
-        rawMetadata: { tweetId, mediaKey: sourceId, kind: media.type || "photo", videoUrl },
-      }),
-    });
-  }
-  return items;
+      authorHandle: author.handle,
+      authorName: author.name,
+      title,
+      rawMetadata: { tweetId, kind, videoUrl },
+    }),
+  }];
 }
 
 /**
- * Parse one intercepted timeline response into `{ items, bottomCursor, tweetCount }`.
- * `tweetCount` is the number of tweet ENTRIES seen (incl. text-only) — the Phase-6
- * loop treats a page with `tweetCount === 0` as the end of the timeline (X has no
- * `-end-` sentinel; an exhausted timeline simply stops returning tweets). Each item
- * carries `bottomCursor` as its checkpoint token (X resume leans on the engine's
- * dedup-skip, since pagination is scroll-driven and not cursor-injectable).
+ * Parse one intercepted timeline response into `{ items, bottomCursor, tweetCount }` —
+ * ONE item per substantive tweet (see `mapTweet`). `tweetCount` is the number of tweet
+ * ENTRIES seen (incl. any dropped as empty) — the Phase-6 loop treats a page with
+ * `tweetCount === 0` as the end of the timeline (X has no `-end-` sentinel; an exhausted
+ * timeline simply stops returning tweets). Each item carries `bottomCursor` as its
+ * checkpoint token (X resume leans on the engine's dedup-skip, since pagination is
+ * scroll-driven and not cursor-injectable).
  */
 export function parseTimelinePage(json, { host = "x.com" } = {}) {
   const items = [];

@@ -108,13 +108,6 @@ struct LinkCardTile: View {
     var isSelected: Bool = false
     var cornerRadius: CGFloat = 8
 
-    /// The card's heading: the title if known, else the host, else the raw URL.
-    private var heading: String {
-        if let title = link.title, !title.isEmpty { return title }
-        if let host = URL(string: link.url)?.host { return host }
-        return link.url
-    }
-
     var body: some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
@@ -123,7 +116,7 @@ struct LinkCardTile: View {
                     Image(systemName: "link")
                         .font(.system(size: 26))
                         .foregroundStyle(.secondary)
-                    Text(heading)
+                    Text(link.displayHeading)
                         .font(.caption)
                         .foregroundStyle(.primary)
                         .lineLimit(3)
@@ -152,13 +145,6 @@ struct TweetCardTile: View {
     var isSelected: Bool = false
     var cornerRadius: CGFloat = 8
 
-    /// `@handle` when known, else the author name, else a generic label.
-    private var byline: String {
-        if let handle = tweet.authorHandle, !handle.isEmpty { return "@\(handle)" }
-        if let name = tweet.authorName, !name.isEmpty { return name }
-        return "Tweet"
-    }
-
     var body: some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
@@ -167,7 +153,7 @@ struct TweetCardTile: View {
                     Image(systemName: "bubble.left.and.text.bubble.right")
                         .font(.system(size: 24))
                         .foregroundStyle(.secondary)
-                    Text(byline)
+                    Text(tweet.displayByline)
                         .font(.caption).fontWeight(.medium)
                         .foregroundStyle(.primary)
                         .lineLimit(1)

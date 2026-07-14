@@ -150,5 +150,10 @@ references; `blob_hash` is the card picture.
   extension's single + bulk X capture: `CaptureDTO` gains `kind` / `payload`,
   `CaptureRoutes` branches content-only captures into `ingestContent`. That
   wire-level work lands real tweets (and links from `web` captures).
-- Board (canvas/space) rendering of media-less kinds is a defensive placeholder
-  today; a first-class swatch/link/tweet tile is later polish.
+- ✅ Board (canvas/space) rendering of media-less kinds (changelog 117): a color
+  draws as a swatch, a bare link / text tweet as a labelled card, via one shared
+  `ElementRendering.assetTileContent` used by BOTH boards (collection + spaces) and
+  the existing `.frame` primitive (no new renderer cases). Byte-backed kinds (incl.
+  hybrid tweet/link card images) keep the `.image` path. Rich first-class link/tweet
+  board cards (new `TileContent` cases matching the grid glyph/snippet) remain
+  optional polish.

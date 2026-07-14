@@ -61,7 +61,7 @@ final class SpaceContent: TileProvider, TileImageSource {
             let item = detail.item
             return Tile(id: index, x: item.x, y: item.y, w: item.w, h: item.h, z: item.z)
         }
-        self.contentByTile = drawable.map { ElementRendering.tileContent(for: $0.item) }
+        self.contentByTile = drawable.map { ElementRendering.tileContent(for: $0.item, asset: $0.asset) }
     }
 
     // MARK: - TileProvider

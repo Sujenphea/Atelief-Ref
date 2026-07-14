@@ -40,7 +40,7 @@ struct RemoteImageFetcherTests {
     func fetchImage() async throws {
         let png = try FixtureImages.solidImage(width: 12, height: 8, format: .png)
         StubURLProtocol.respond(status: 200, contentType: "image/png", body: png)
-        let fetcher = RemoteImageFetcher(session: makeSession())
+        let fetcher = RemoteImageFetcher(session: makeSession(), guard: .permissive)
 
         let image = try await fetcher.fetch(Self.imageURL)
 
@@ -55,7 +55,7 @@ struct RemoteImageFetcherTests {
         let png = try FixtureImages.solidImage(width: 8, height: 8, format: .png)
         // Server lies and calls PNG bytes "application/octet-stream".
         StubURLProtocol.respond(status: 200, contentType: "application/octet-stream", body: png)
-        let fetcher = RemoteImageFetcher(session: makeSession())
+        let fetcher = RemoteImageFetcher(session: makeSession(), guard: .permissive)
 
         let image = try await fetcher.fetch(Self.imageURL)
         #expect(image.mimeType == "image/png")
@@ -67,7 +67,7 @@ struct RemoteImageFetcherTests {
     func fetchNonImageHTML() async throws {
         let html = Data("<!doctype html><html><body>a page, not an image</body></html>".utf8)
         StubURLProtocol.respond(status: 200, contentType: "text/html", body: html)
-        let fetcher = RemoteImageFetcher(session: makeSession())
+        let fetcher = RemoteImageFetcher(session: makeSession(), guard: .permissive)
 
         await #expect(throws: RemoteImageFetchError.notAnImage(mime: "text/html")) {
             _ = try await fetcher.fetch(Self.imageURL)
@@ -79,7 +79,7 @@ struct RemoteImageFetcherTests {
     @Test("a transport failure → .requestFailed")
     func fetchNetworkError() async throws {
         StubURLProtocol.fail(with: URLError(.notConnectedToInternet))
-        let fetcher = RemoteImageFetcher(session: makeSession())
+        let fetcher = RemoteImageFetcher(session: makeSession(), guard: .permissive)
 
         await #expect(throws: RemoteImageFetchError.requestFailed) {
             _ = try await fetcher.fetch(Self.imageURL)
@@ -90,7 +90,7 @@ struct RemoteImageFetcherTests {
 
     @Test("a non-http URL → .invalidURL (no request made)")
     func rejectsNonHTTPURL() async throws {
-        let fetcher = RemoteImageFetcher(session: makeSession())
+        let fetcher = RemoteImageFetcher(session: makeSession(), guard: .permissive)
         let fileURL = URL(fileURLWithPath: "/tmp/ref.png")
 
         await #expect(throws: RemoteImageFetchError.invalidURL) {
@@ -98,10 +98,22 @@ struct RemoteImageFetcherTests {
         }
     }
 
+    @Test("a host that resolves to a private address → .blockedHost (SSRF, no request)")
+    func rejectsPrivateHost() async throws {
+        // A default (real-DNS) guard is replaced with one that maps this host to a
+        // private IP; the fetch must refuse it before touching the stub.
+        let fetcher = RemoteImageFetcher(
+            session: makeSession(),
+            guard: SSRFGuard { _ in ["169.254.169.254"] })
+        await #expect(throws: RemoteImageFetchError.blockedHost) {
+            _ = try await fetcher.fetch(URL(string: "http://metadata.internal/latest")!)
+        }
+    }
+
     @Test("a non-2xx status → .httpStatus")
     func rejectsNon2xx() async throws {
         StubURLProtocol.respond(status: 404, contentType: "text/plain", body: Data("nope".utf8))
-        let fetcher = RemoteImageFetcher(session: makeSession())
+        let fetcher = RemoteImageFetcher(session: makeSession(), guard: .permissive)
 
         await #expect(throws: RemoteImageFetchError.httpStatus(404)) {
             _ = try await fetcher.fetch(Self.imageURL)
@@ -115,7 +127,7 @@ struct RemoteImageFetcherTests {
         let oversize = Data(repeating: 0xAB, count: 64)
         StubURLProtocol.respond(
             status: 200, contentType: "application/octet-stream", body: oversize)
-        let fetcher = RemoteImageFetcher(session: makeSession(), maxByteCount: 8)
+        let fetcher = RemoteImageFetcher(session: makeSession(), maxByteCount: 8, guard: .permissive)
 
         await #expect(throws: RemoteImageFetchError.tooLarge(bytes: 9)) {
             _ = try await fetcher.fetch(Self.imageURL)
@@ -130,7 +142,7 @@ struct RemoteImageFetcherTests {
             contentType: "application/octet-stream",
             body: tiny,
             contentLength: 64 * 1024 * 1024)
-        let fetcher = RemoteImageFetcher(session: makeSession(), maxByteCount: 1024)
+        let fetcher = RemoteImageFetcher(session: makeSession(), maxByteCount: 1024, guard: .permissive)
 
         await #expect(throws: RemoteImageFetchError.tooLarge(bytes: 64 * 1024 * 1024)) {
             _ = try await fetcher.fetch(Self.imageURL)
@@ -143,7 +155,7 @@ struct RemoteImageFetcherTests {
     func ingestInputWebProvenance() async throws {
         let png = try FixtureImages.solidImage(width: 10, height: 10, format: .png)
         StubURLProtocol.respond(status: 200, contentType: "image/png", body: png)
-        let fetcher = RemoteImageFetcher(session: makeSession())
+        let fetcher = RemoteImageFetcher(session: makeSession(), guard: .permissive)
 
         let input = try await fetcher.ingestInput(
             for: Self.imageURL, into: Self.collectionID, at: Self.capturedAt)

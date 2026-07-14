@@ -27,18 +27,30 @@ export const twitter = {
     const handle = segments[0] ? "@" + segments[0] : null;
     const tweetId = segments[1] === "status" ? segments[2] || null : null;
 
-    // Priority: the exact right-clicked image → the focused tweet's photo → the
-    // live video frame (canvas grab of what's on screen) → the video poster.
-    // og:image is a last resort. For a video tweet there is no still on the
-    // server, so the captured frame is the closest thing to "the actual image";
-    // the poster stays as a fetch fallback for when the frame is unavailable.
+    // Scope DOM media to the FOCAL tweet (the first <article>, index 0) so a
+    // text-only tweet doesn't borrow a REPLY's image. When the harvest carries no
+    // article structure (an older snapshot / a non-tweet layout) we can't scope, so
+    // fall back to the whole page. A right-clicked image (context.srcUrl) is the
+    // user's explicit choice and stays UNSCOPED.
+    const articlesPresent = harvest.media.some((m) => (m.articleIndex ?? -1) >= 0);
+    const focal = articlesPresent
+      ? { ...harvest, media: harvest.media.filter((m) => m.articleIndex === 0) }
+      : harvest;
+
+    // Priority: the exact right-clicked image → the focal tweet's photo → the live
+    // video frame (canvas grab of what's on screen) → the video poster. For a video
+    // tweet there is no still on the server, so the captured frame is the closest
+    // thing to "the actual image"; the poster stays as a fetch fallback.
     const clicked = /pbs\.twimg\.com/.test(context.srcUrl || "") ? context.srcUrl : null;
-    const domPhoto = firstMedia(harvest, /pbs\.twimg\.com\/media\//)?.src || null;
-    const videoFrame = firstMediaOfKind(harvest, "video-frame")?.src || null;
+    const domPhoto = firstMedia(focal, /pbs\.twimg\.com\/media\//)?.src || null;
+    const videoFrame = firstMediaOfKind(focal, "video-frame")?.src || null;
     const videoPoster =
-      firstMedia(harvest, /pbs\.twimg\.com\/(ext_tw_video_thumb|amplify_video_thumb|tweet_video_thumb)/)?.src || null;
+      firstMedia(focal, /pbs\.twimg\.com\/(ext_tw_video_thumb|amplify_video_thumb|tweet_video_thumb)/)?.src || null;
     const rendered = clicked || domPhoto || videoFrame || videoPoster;
-    const mediaUrl = toOrigName(rendered) || ogImage(harvest);
+    // og:image is a last resort ONLY when we couldn't scope to a focal tweet. On a real
+    // tweet page a focal tweet with no media is genuinely TEXT-ONLY, so it stays
+    // image-less (→ a text card) rather than borrowing X's generic summary-card image.
+    const mediaUrl = toOrigName(rendered) || (articlesPresent ? null : ogImage(harvest));
     // When the frame won: the poster is the network fallback. Otherwise: the
     // un-rewritten original (in case `name=orig` is rejected).
     const mediaUrlFallback =
