@@ -118,6 +118,35 @@ test("mapTweet: an empty / no-id / tombstone tweet → no items", () => {
   assert.deepEqual(mapTweet({ __typename: "TweetTombstone" }, {}), []);
 });
 
+test("mapTweet: a REPOST unwraps to the original — saves its media/author/id", () => {
+  // A retweet holds no media of its own; the substance is on retweeted_status_result.
+  const repost = {
+    __typename: "Tweet",
+    rest_id: "9999", // the repost's OWN id — must NOT be used
+    core: { user_results: { result: { core: { screen_name: "reposter", name: "Reposter" } } } },
+    legacy: {
+      full_text: "RT @orig: check this",
+      retweeted_status_result: { result: {
+        __typename: "Tweet",
+        rest_id: "1000000000000000034",
+        core: { user_results: { result: { core: { screen_name: "origauthor", name: "Orig Author" } } } },
+        legacy: { full_text: "original tweet text", extended_entities: { media: [
+          { media_key: "3_abc", media_url_https: "https://pbs.twimg.com/media/ORIG.jpg", type: "photo" },
+        ] } },
+      } },
+    },
+  };
+  const items = mapTweet(repost, { host: "x.com" });
+  assert.equal(items.length, 1);
+  const item = items[0];
+  assert.equal(item.sourceId, "1000000000000000034");          // the ORIGINAL's id → dedups w/ a direct save
+  assert.equal(item.provenance.authorHandle, "@origauthor");    // original author, not the reposter
+  assert.equal(item.provenance.originalURL, "https://x.com/origauthor/status/1000000000000000034");
+  assert.equal(item.content.payload.tweet.text, "original tweet text");
+  assert.equal(item.content.payload.tweet.media.length, 1);     // the original's media, saved
+  assert.match(item.mediaUrl, /ORIG\.jpg\?name=orig$/);
+});
+
 // MARK: - parseTimelinePage
 
 test("parseTimelinePage: yields ONE item per tweet, keyed by tweet id", () => {

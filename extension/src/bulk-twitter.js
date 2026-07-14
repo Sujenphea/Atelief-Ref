@@ -14,9 +14,10 @@
 // asset per photo. `media[]` lists every top-level media (all up-to-4 photos, or the
 // video/gif poster); the FIRST media is fetched as the item's card image. X never
 // mixes photos and video in one tweet, so "first media" is unambiguous. A text-only
-// tweet still maps (an item with no media → a media-less text card). We read ONLY the
-// top-level tweet's media — never a quoted tweet's (that's the quoted author's asset,
-// not what the user bookmarked).
+// tweet still maps (an item with no media → a media-less text card). A REPOST (retweet)
+// is unwrapped to the ORIGINAL tweet, whose text + media are the real substance. But a
+// QUOTE tweet's own text is the substance and the quoted media belongs to the quoted
+// author, so quoted media is NOT read — only the (unwrapped) tweet's own.
 
 import { makeProvenance, toOrigName } from "./extractors/base.js";
 import { buildTweetPayload } from "./endpoint.js";
@@ -30,6 +31,20 @@ export function unwrapTweet(result) {
   if (result.__typename === "TweetWithVisibilityResults" && result.tweet) return result.tweet;
   if (result.__typename === "Tweet" || result.legacy) return result;
   return null;                       // TweetTombstone / unknown → skip
+}
+
+/** Resolve a REPOST (retweet) to the ORIGINAL tweet it carries. A retweet's own
+ * `legacy.full_text` is only "RT @user…" and it holds NO media — the substance (text
+ * + media) lives on `retweeted_status_result.result`. Returns the original (unwrapped)
+ * for a repost, or the tweet itself otherwise, so a reposted tweet saves the original's
+ * media/text and dedups against a direct save (same tweet id). A QUOTE tweet is NOT
+ * unwrapped — its own text is the substance and the quoted media belongs to the quoted
+ * author (kept out, per the mapper's rule). */
+export function underlyingTweet(tweet) {
+  const reposted =
+    tweet?.legacy?.retweeted_status_result?.result ||
+    tweet?.retweeted_status_result?.result || null;
+  return unwrapTweet(reposted) || tweet;
 }
 
 /** Find the timeline `instructions` array across the operation shapes (Bookmarks
@@ -99,8 +114,11 @@ function tweetAuthor(tweet) {
  * ignored — no regression); OFF (default) the tweet lands with its poster card.
  */
 export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
-  const tweet = unwrapTweet(result);
-  if (!tweet) return [];
+  const outer = unwrapTweet(result);
+  if (!outer) return [];
+  // A repost carries its content on the original — read media/text/author/id from it,
+  // so a reposted tweet saves the original's media (not an empty "RT @user…").
+  const tweet = underlyingTweet(outer);
 
   const tweetId = tweet.rest_id || (tweet.legacy && tweet.legacy.id_str) || null;
   if (!tweetId) return [];
