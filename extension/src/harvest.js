@@ -35,6 +35,15 @@ export function harvestSignals() {
     });
   }
 
+  // The index of an element's containing <article>, or -1. On a tweet STATUS page
+  // the focal tweet is the first <article> and replies follow, so this lets the X
+  // extractor scope media to the focal tweet instead of borrowing a reply's image.
+  const articles = Array.from(document.querySelectorAll("article"));
+  const articleIndexOf = (el) => {
+    const article = el.closest("article");
+    return article ? articles.indexOf(article) : -1;
+  };
+
   const images = [];
   for (const img of document.querySelectorAll("img")) {
     images.push({
@@ -42,6 +51,7 @@ export function harvestSignals() {
       width: img.naturalWidth || img.width || 0,
       height: img.naturalHeight || img.height || 0,
       alt: img.alt || null,
+      articleIndex: articleIndexOf(img),
     });
   }
 
@@ -76,6 +86,7 @@ export function harvestSignals() {
       src: video.currentSrc || video.getAttribute("src") || "",
       width: video.videoWidth || 0,
       height: video.videoHeight || 0,
+      articleIndex: articleIndexOf(video),
     });
   }
 
@@ -103,37 +114,43 @@ export function buildHarvest(raw) {
   }
 
   const media = [];
+  // Carry `articleIndex` through when the reader provided it (the X extractor uses it
+  // to scope to the focal tweet); absent in older fixtures, so it's added only when set.
+  const withArticle = (item, source) => {
+    if (source.articleIndex != null) item.articleIndex = source.articleIndex;
+    return item;
+  };
   for (const img of raw.images || []) {
     if (!img.src || img.src.startsWith("data:")) continue;
-    media.push({
+    media.push(withArticle({
       kind: "image",
       src: img.src,
       width: img.width || 0,
       height: img.height || 0,
       alt: img.alt || null,
-    });
+    }, img));
   }
   for (const video of raw.videos || []) {
     if (video.frame) {
-      media.push({
+      media.push(withArticle({
         kind: "video-frame", src: video.frame,
         width: video.width || 0, height: video.height || 0, alt: null,
-      });
+      }, video));
     }
     if (video.poster && !video.poster.startsWith("data:")) {
-      media.push({
+      media.push(withArticle({
         kind: "video-poster", src: video.poster,
         width: video.width || 0, height: video.height || 0, alt: null,
-      });
+      }, video));
     }
     // A real (non-blob/data) video src is a strong "this is a video" signal even
     // when it's an HLS manifest we can't ingest directly — it tells the SW to
     // resolve the downloadable MP4 (e.g. a Pinterest video pin).
     if (video.src && !video.src.startsWith("blob:") && !video.src.startsWith("data:")) {
-      media.push({
+      media.push(withArticle({
         kind: "video-src", src: video.src,
         width: video.width || 0, height: video.height || 0, alt: null,
-      });
+      }, video));
     }
   }
 

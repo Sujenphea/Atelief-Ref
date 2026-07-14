@@ -164,7 +164,12 @@ const defaultDeps = {
  */
 export async function captureCore(harvest, context, token, deps = defaultDeps) {
   const provenance = deps.extractProvenance(harvest, context);
-  if (!provenance.mediaUrl) return { status: "no-image" };
+  // A tweet with no image but real substance (a text-only tweet) is still capturable
+  // as a text card (003 · C3): compute the content descriptor up front and bail only
+  // when there's NEITHER an image NOR usable tweet content. `ingestOne` then posts a
+  // media-less content capture when there's a descriptor but no media URL.
+  const content = deps.tweetContent(provenance);
+  if (!provenance.mediaUrl && !content) return { status: "no-image" };
   if (!token) return { status: "no-token" };
 
   // Video DETECTION + resolution is single-item-specific: it reads harvest/context
@@ -183,12 +188,10 @@ export async function captureCore(harvest, context, token, deps = defaultDeps) {
     mp4Url = null;
   }
 
-  // A single-item tweet capture (003 · C3, Option 3): when this is a usable tweet,
-  // POST it as a `tweet` content item carrying its card image, so it lands as a
-  // first-class tweet (payload + picture) rather than a bare image. `null` for a
-  // non-tweet (or a tweet with no id/substance) → the plain image path. The bulk X
-  // sweep does NOT set this — it stays on the image path for now.
-  const content = deps.tweetContent(provenance);
+  // A single-item tweet capture (003 · C3, Option 3): a usable tweet POSTs as a
+  // `tweet` content item — carrying its card image when present, or media-less (a text
+  // card) when the focal tweet has no image. `content` is null for a non-tweet → the
+  // plain image path. (Computed above so a text-only tweet isn't rejected as no-image.)
   return ingestOne(provenance, { token, mp4Url, content }, deps);
 }
 

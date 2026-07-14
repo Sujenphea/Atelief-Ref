@@ -233,6 +233,36 @@ test("captureCore: a usable tweet routes through the content capture (still imag
   assert.equal(posted.kind, "tweet");
 });
 
+test("captureCore: a text-only tweet (no image) saves as a media-less text card", async () => {
+  // The focal tweet has no image → provenance.mediaUrl is null, but tweetContent yields
+  // a usable tweet, so captureCore POSTs a media-less content capture instead of bailing
+  // "no-image". (The comment-image bug fix: a text-only tweet no longer borrows a reply's
+  // image, so it correctly lands as a text card.)
+  let posted = null;
+  const content = { kind: "tweet", payload: { tweet: { tweetID: "42", media: [], text: "hi" } } };
+  const { deps } = makeDeps({
+    extractProvenance: () => ({ platform: "twitter", mediaUrl: null, rawMetadata: { tweetId: "42" } }),
+    tweetContent: () => content,
+    buildContentCaptureRequest: (p, b, c) => {
+      const req = { provenance: p, kind: c.kind, payload: c.payload };
+      if (b) req.image = b;
+      return req;
+    },
+    postCapture: async (req) => { posted = req; return { status: 200, body: { deduplicated: false } }; },
+  });
+  const r = await captureCore({}, {}, "tok", deps);
+  assert.deepEqual(r, { status: "saved", kind: "tweet", deduplicated: false });
+  assert.equal("image" in posted, false); // media-less text card
+});
+
+test("captureCore: no image AND no tweet content → still no-image", async () => {
+  const { deps } = makeDeps({
+    extractProvenance: () => ({ mediaUrl: null }),
+    tweetContent: () => null, // not a tweet (e.g. a generic page with no media)
+  });
+  assert.deepEqual(await captureCore({}, {}, "tok", deps), { status: "no-image" });
+});
+
 test("captureCore: a tweet WITH video still ingests as video (content path not taken)", async () => {
   // A video tweet resolves + posts a video; the content descriptor is ignored
   // because the image path never runs.

@@ -44,6 +44,40 @@ test("twitter: picks the real DOM media (pbs.twimg/media), not og:image, at full
   assert.deepEqual(p.rawMetadata, { tweetId: "1780000000000000000" });
 });
 
+test("twitter: scopes DOM media to the focal tweet — a reply's image is NOT borrowed", () => {
+  // The focal tweet (article 0) is text-only; a reply (article 1) has an image. The
+  // extractor must ignore the reply's image AND not fall back to X's generic og:image
+  // → no mediaUrl, so the capture becomes a text card.
+  const h = harvest({
+    url: "https://x.com/a/status/1",
+    metas: { "og:image": "https://pbs.twimg.com/generic_card.jpg" },
+    media: [
+      { kind: "image", src: "https://pbs.twimg.com/media/REPLY.jpg", width: 500, height: 500, alt: null, articleIndex: 1 },
+    ],
+  });
+  assert.equal(twitter.extract(h).mediaUrl, null);
+});
+
+test("twitter: the focal tweet's OWN image wins over a reply's", () => {
+  const h = harvest({
+    url: "https://x.com/a/status/1",
+    media: [
+      { kind: "image", src: "https://pbs.twimg.com/media/FOCAL?format=jpg&name=small", width: 900, height: 900, alt: null, articleIndex: 0 },
+      { kind: "image", src: "https://pbs.twimg.com/media/REPLY.jpg", width: 500, height: 500, alt: null, articleIndex: 1 },
+    ],
+  });
+  assert.equal(twitter.extract(h).mediaUrl, "https://pbs.twimg.com/media/FOCAL?format=jpg&name=orig");
+});
+
+test("twitter: a right-clicked image is honored even if it's outside the focal tweet", () => {
+  const h = harvest({
+    url: "https://x.com/a/status/1",
+    media: [{ kind: "image", src: "https://pbs.twimg.com/media/FOCAL.jpg", width: 9, height: 9, alt: null, articleIndex: 0 }],
+  });
+  const p = twitter.extract(h, { srcUrl: "https://pbs.twimg.com/media/CLICKED?format=jpg&name=large" });
+  assert.equal(p.mediaUrl, "https://pbs.twimg.com/media/CLICKED?format=jpg&name=orig");
+});
+
 test("twitter: prefers the LIVE url over a stale canonical", () => {
   const h = harvest({
     url: "https://x.com/designer/status/42?s=20&t=abc",
