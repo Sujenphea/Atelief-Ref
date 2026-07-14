@@ -83,4 +83,14 @@ struct LinkResolutionTests {
         #expect(IngestionModel.webURL(fromUserInput: "ftp://host/x") == nil)   // wrong scheme
         #expect(IngestionModel.webURL(fromUserInput: "not a url") == nil)      // no host / spaces
     }
+
+    @Test("pasted plain text needs a dotted host — a bare word isn't turned into a link")
+    func pastedTextGuard() {
+        #expect(IngestionModel.webURL(fromPastedText: "x.com/foo")?.absoluteString == "https://x.com/foo")
+        #expect(IngestionModel.webURL(fromPastedText: "  https://dribbble.com/shots/1  ")?.absoluteString
+            == "https://dribbble.com/shots/1")
+        #expect(IngestionModel.webURL(fromPastedText: "hello") == nil)         // no dot → not a link
+        #expect(IngestionModel.webURL(fromPastedText: "just a note") == nil)   // spaces → not a URL
+        #expect(IngestionModel.webURL(fromPastedText: "localhost") == nil)     // no dot (and internal)
+    }
 }

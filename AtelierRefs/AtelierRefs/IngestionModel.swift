@@ -1137,7 +1137,10 @@ final class IngestionModel: ObservableObject {
     /// (it returns a login / share-card); the user is pointed at the extension.
     private func resolveLinkAndIngest(from url: URL, into folder: UUID) async {
         if PageResolver.isAuthWalledHost(url) {
-            status = "Use the Atelier extension to capture from that site."
+            // Auth-walled: an app fetch returns a login / share-card, so DON'T resolve —
+            // but still save a BARE link (URL preserved, no fetch) so the paste yields a
+            // clickable item. The extension remains the way to get the rich tweet card.
+            run(inputs: [Self.linkInput(for: url, page: nil, imageData: nil, into: folder)])
             return
         }
         status = "Resolving link…"
@@ -1180,6 +1183,17 @@ final class IngestionModel: ObservableObject {
         guard let url = URL(string: withScheme),
               let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               let host = url.host, !host.isEmpty else { return nil }
+        return url
+    }
+
+    /// A pasted PLAIN-TEXT string interpreted as a web URL — stricter than
+    /// ``webURL(fromUserInput:)`` because the grid paste path GUESSES a URL from
+    /// arbitrary clipboard text: the host must look like a real domain (contain a dot),
+    /// so pasting a plain word (`"hello"`) isn't turned into `https://hello`. A
+    /// multi-word string fails URL parsing (spaces) and returns nil.
+    static func webURL(fromPastedText raw: String) -> URL? {
+        guard let url = webURL(fromUserInput: raw),
+              let host = url.host, host.contains(".") else { return nil }
         return url
     }
 
