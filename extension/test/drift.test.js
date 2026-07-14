@@ -22,7 +22,7 @@ test("checkTimeline passes on the committed X fixture with real signals", () => 
   assert.equal(result.ok, true);
   assert.equal(result.problems.length, 0);
   assert.equal(result.signals.tweetCount, 3);
-  assert.equal(result.signals.mediaItems, 4);
+  assert.equal(result.signals.mediaItems, 5); // incl. the bare-quote tweet's quoted video
   assert.equal(result.signals.hasCursor, true);
 });
 

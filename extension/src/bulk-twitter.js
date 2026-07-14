@@ -15,9 +15,10 @@
 // video/gif poster); the FIRST media is fetched as the item's card image. X never
 // mixes photos and video in one tweet, so "first media" is unambiguous. A text-only
 // tweet still maps (an item with no media → a media-less text card). A REPOST (retweet)
-// is unwrapped to the ORIGINAL tweet, whose text + media are the real substance. But a
-// QUOTE tweet's own text is the substance and the quoted media belongs to the quoted
-// author, so quoted media is NOT read — only the (unwrapped) tweet's own.
+// is unwrapped to the ORIGINAL tweet, whose text + media are the real substance. A QUOTE
+// tweet keeps its OWN text/identity, and normally its own media — but a BARE quote (no
+// own media) falls back to the QUOTED tweet's media, since that quoted video/image is
+// the substance the user bookmarked.
 
 import { makeProvenance, toOrigName } from "./extractors/base.js";
 import { buildTweetPayload } from "./endpoint.js";
@@ -45,6 +46,17 @@ export function underlyingTweet(tweet) {
     tweet?.legacy?.retweeted_status_result?.result ||
     tweet?.retweeted_status_result?.result || null;
   return unwrapTweet(reposted) || tweet;
+}
+
+/** The QUOTED tweet a tweet embeds (`quoted_status_result`), unwrapped, or null. A
+ * quote's media is normally the quoted AUTHOR's asset, so it's read ONLY as a
+ * fallback when the quoting tweet has NO media of its own — a BARE quote whose
+ * substance IS the quoted video/image (the thing the user actually bookmarked). */
+export function quotedTweet(tweet) {
+  const quoted =
+    tweet?.legacy?.quoted_status_result?.result ||
+    tweet?.quoted_status_result?.result || null;
+  return unwrapTweet(quoted);
 }
 
 /** Find the timeline `instructions` array across the operation shapes (Bookmarks
@@ -131,13 +143,22 @@ export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
     ? `https://${host}/${author.screenName}/status/${tweetId}`
     : `https://${host}/i/status/${tweetId}`;
 
-  // Walk the top-level media ONCE: collect every reference for payload.media[], pick the
-  // first as the card image to fetch, and capture the first video's progressive MP4.
+  // Media source: the tweet's OWN media, or — for a BARE quote (no own media) — the
+  // QUOTED tweet's media, so a quote whose substance is the quoted video/image captures
+  // it (a quote WITH its own media keeps using that). Retweets are already unwrapped above.
+  let mediaList = tweetMedia(tweet);
+  if (mediaList.length === 0) {
+    const quoted = quotedTweet(tweet);
+    if (quoted) mediaList = tweetMedia(quoted);
+  }
+
+  // Walk the media ONCE: collect every reference for payload.media[], pick the first as
+  // the card image to fetch, and capture the first video's progressive MP4.
   const mediaUrls = [];
   let card = null;          // { mediaUrl, mediaUrlFallback } — the image the SW fetches
   let videoUrl = null;      // opt-in progressive MP4 (first video/gif media)
   let kind = "text";        // rawMetadata hint: the tweet's media kind (text if none)
-  for (const media of tweetMedia(tweet)) {
+  for (const media of mediaList) {
     const poster = media.media_url_https || null;
     if (!poster) continue;
     const mediaUrl = toOrigName(poster, { addIfAbsent: true });

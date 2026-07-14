@@ -99,16 +99,54 @@ test("mapTweet: a multi-photo tweet → ONE item carrying all photos in media[]"
   assert.equal(item.mediaUrl, media[0].url);                     // the first photo is the card image
 });
 
-test("mapTweet: a text-only tweet → one media-less item (a text card)", () => {
+test("mapTweet: a BARE quote of a video captures the QUOTED video (own media empty)", () => {
+  // The fixture's 3rd tweet is a quote with no media of its own, quoting a video —
+  // exactly the case where the substance is the quoted media.
   const items = mapTweet(textTweet, { host: "x.com" });
   assert.equal(items.length, 1);
   const item = items[0];
-  assert.equal(item.sourceId, "1000000000000000212");
-  assert.equal(item.mediaUrl, null);                             // no card image to fetch
-  assert.equal(item.mediaUrlFallback, null);
+  assert.equal(item.sourceId, "1000000000000000212");           // the QUOTE tweet's OWN id (what you bookmarked)
+  assert.equal(item.provenance.rawMetadata.kind, "video");
+  assert.match(item.mediaUrl, /SAMPLE203\.jpg\?name=orig$/);     // the quoted video's poster
+  assert.equal(item.provenance.rawMetadata.videoUrl,             // the quoted video's MP4 (opt-in downloads it)
+    "https://video.twimg.com/amplify_video/1208/vid/720x1280/SAMPLE208.mp4?tag=12");
+  assert.equal(item.content.payload.tweet.media.length, 1);
+  assert.equal(item.content.payload.tweet.text, "Sample text"); // the quoter's OWN text is kept
+});
+
+test("mapTweet: a quote WITH its own media ignores the quoted media (own wins)", () => {
+  const quote = {
+    __typename: "Tweet", rest_id: "10",
+    core: { user_results: { result: { core: { screen_name: "q", name: "Q" } } } },
+    legacy: {
+      full_text: "my take",
+      extended_entities: { media: [
+        { media_key: "own", media_url_https: "https://pbs.twimg.com/media/OWN.jpg", type: "photo" },
+      ] },
+      quoted_status_result: { result: { __typename: "Tweet", rest_id: "11", legacy: {
+        extended_entities: { media: [
+          { media_key: "q1", media_url_https: "https://pbs.twimg.com/media/QUOTED.jpg", type: "photo" },
+        ] },
+      } } },
+    },
+  };
+  const item = mapTweet(quote, { host: "x.com" })[0];
+  assert.equal(item.content.payload.tweet.media.length, 1); // NOT merged with the quoted photo
+  assert.match(item.mediaUrl, /OWN\.jpg/);                  // the quoter's own media
+});
+
+test("mapTweet: a genuine text-only tweet (no media, no quote) → a media-less text card", () => {
+  const textOnly = {
+    __typename: "Tweet", rest_id: "555",
+    core: { user_results: { result: { core: { screen_name: "u", name: "U" } } } },
+    legacy: { full_text: "just a thought" },
+  };
+  const item = mapTweet(textOnly, { host: "x.com" })[0];
+  assert.equal(item.sourceId, "555");
+  assert.equal(item.mediaUrl, null);
   assert.equal(item.provenance.rawMetadata.kind, "text");
-  assert.deepEqual(item.content.payload.tweet.media, []);        // media[] present but empty
-  assert.equal(item.content.payload.tweet.text, "Sample text");
+  assert.deepEqual(item.content.payload.tweet.media, []);
+  assert.equal(item.content.payload.tweet.text, "just a thought");
 });
 
 test("mapTweet: an empty / no-id / tombstone tweet → no items", () => {
@@ -159,11 +197,11 @@ test("parseTimelinePage: yields ONE item per tweet, keyed by tweet id", () => {
   assert.deepEqual(items.map((i) => i.sourceId), [
     "1000000000000000034", "1000000000000000171", "1000000000000000212",
   ]);
-  // Quoted-tweet media must NOT leak (tweet 2 quotes a 3-photo tweet; tweet 3 quotes a
-  // video tweet). The top-level media references total exactly 1 (video poster) + 3
-  // (photos) + 0 (text) = 4; a quoted tweet's photos would inflate this.
+  // Media references: video (1) + the photo tweet's OWN 3 photos + the bare-quote
+  // tweet's fallback to its quoted video (1) = 5. The photo tweet HAS its own media, so
+  // its quoted 3-photo tweet is NOT merged (own media wins) — only a BARE quote borrows.
   const totalMedia = items.reduce((n, i) => n + i.content.payload.tweet.media.length, 0);
-  assert.equal(totalMedia, 4);
+  assert.equal(totalMedia, 5);
 
   // Every item is stamped with the page's checkpoint cursor.
   for (const item of items) assert.equal(item.cursor, "Sample text");
