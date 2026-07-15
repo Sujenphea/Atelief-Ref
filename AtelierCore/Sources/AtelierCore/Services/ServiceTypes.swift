@@ -226,6 +226,27 @@ public struct CollectionItemDetail: Sendable, Equatable {
     }
 }
 
+/// One root collection's Unsorted-screen stack card (009 · N4): the collection,
+/// its DIRECT item count, and the blob hashes of its most recently added
+/// byte-backed items (newest first, at most the read's `limit`) — enough to
+/// draw the fanned drop target without another round-trip. `Equatable` so the
+/// view model can skip republishing an unchanged row set (15A).
+public struct CollectionStackPreview: Sendable, Equatable {
+    /// The root collection this card represents (drop target for a move).
+    public let collection: Collection
+    /// The collection's DIRECT item count (media-less kinds included).
+    public let itemCount: Int
+    /// Newest-first thumbnail hashes for the fan; media-less items are skipped,
+    /// so this can be shorter than the limit (or empty — no fan).
+    public let recentBlobHashes: [String]
+
+    public init(collection: Collection, itemCount: Int, recentBlobHashes: [String]) {
+        self.collection = collection
+        self.itemCount = itemCount
+        self.recentBlobHashes = recentBlobHashes
+    }
+}
+
 /// One row of a ``Space`` board joined to its media (005). For an ASSET row the
 /// `asset` + `source` are present; for a freeform ELEMENT row (`kind ==
 /// .frame/.text`) both are `nil` and the row's ``ElementStyle`` lives in
