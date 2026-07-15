@@ -254,13 +254,23 @@ export function savedFeedHeaders() {
 
 /** A `fetchJson(url)` backed by the real `fetch` (via `fetchWithTimeout`), sending the
  * saved-feed headers with `credentials:'include'`. Returns `{ httpStatus, json }` (the
- * body is read even on a 4xx so a challenge body can be classified). Injected in tests. */
-export function makeSavedFeedFetch({ fetchImpl = fetch } = {}) {
+ * body is read even on a 4xx so a challenge body can be classified). Injected in tests.
+ * `log` is an optional diagnostic sink (the content script wires it to console). */
+export function makeSavedFeedFetch({ fetchImpl = fetch, log = () => {} } = {}) {
   return async (url) => {
-    const response = await fetchWithTimeout(
-      url, { headers: savedFeedHeaders(), credentials: "include" }, { fetchImpl });
+    let response;
+    try {
+      response = await fetchWithTimeout(
+        url, { headers: savedFeedHeaders(), credentials: "include" }, { fetchImpl });
+    } catch (error) {
+      log("IG fetch THREW (network/CORS/abort):", String(error));
+      throw error;
+    }
     let json = {};
     try { json = await response.json(); } catch { json = {}; }
+    log("IG fetch status", response.status,
+      "items", Array.isArray(json.items) ? json.items.length : "none",
+      "more", json.more_available, json.message ? "msg=" + json.message : "");
     return { httpStatus: response.status, json };
   };
 }

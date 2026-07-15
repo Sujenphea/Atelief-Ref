@@ -86,6 +86,13 @@ export async function runBulkSweep(spec, {
       // instead of streaming a doomed file only for the app to 413 it.
       caps,
     });
+    // Quiet on the happy path; surface only a non-"saved" result (blocked-host,
+    // fetch-error, unreachable, …) so a broken sweep explains itself without spamming a
+    // line per item on a healthy one.
+    if (!result || result.status !== "saved") {
+      log("relay", item.sourceId, "->", (result && result.status) || "no-result",
+        result && result.httpStatus != null ? "http" + result.httpStatus : "");
+    }
     return classifyIngestResult(result);
   };
 
@@ -199,8 +206,8 @@ function buildTwitterDriver({ win, host, scope }) {
  * trusted wheel, so we replay the endpoint ourselves. The session cookie authorizes it
  * (`credentials:'include'`); the only header is the public `x-ig-app-id` constant, so —
  * like Pinterest — `dispose` is a no-op (no page listener held). */
-function buildInstagramDriver({ loc, fetchImpl }) {
-  const fetchJson = makeSavedFeedFetch({ fetchImpl });
+function buildInstagramDriver({ loc, fetchImpl, log = () => {} }) {
+  const fetchJson = makeSavedFeedFetch({ fetchImpl, log });
   return { driver: instagramSavedDriver({ fetchJson, host: loc.host }), dispose: () => {} };
 }
 
@@ -235,6 +242,12 @@ export function registerBulkController(win, chromeApi) {
     }
     win.__atelierSweepInFlight = true;
 
+    // Diagnostic trace to the page console (visible in the tab's DevTools). Cheap + always
+    // on: a bulk sweep is a rare, user-initiated action, and "why did my sweep do nothing"
+    // is otherwise invisible. Every line is prefixed so it's easy to filter.
+    const log = (...args) => { try { console.log("[Atelier bulk]", ...args); } catch { /* ignore */ } };
+    log("START", spec.platform, spec.scope || "", "resolveVideo=" + !!spec.resolveVideo);
+
     const transport = makeRuntimeTransport((m) => chromeApi.runtime.sendMessage(m));
     const storage = makeChromeStorage(chromeApi.storage.local);
     const host = win.location.host;
@@ -243,15 +256,18 @@ export function registerBulkController(win, chromeApi) {
     if (spec.platform === "twitter") {
       built = buildTwitterDriver({ win, host, scope: spec.scope });
     } else if (spec.platform === "instagram") {
-      built = buildInstagramDriver({ loc: win.location, fetchImpl: win.fetch.bind(win) });
+      built = buildInstagramDriver({ loc: win.location, fetchImpl: win.fetch.bind(win), log });
     } else {
       built = buildPinterestDriver({ doc: win.document, loc: win.location, fetchImpl: win.fetch.bind(win) });
     }
     const { driver, dispose } = built;
+    log("driver built for", spec.platform, "on", host);
     // Per-platform engine pacing (13A): IG sweeps gentler; X/Pinterest inherit the globals.
-    runBulkSweep(spec, { transport, driver, storage, config: pacing.engine || {} })
-      .then((result) => sendResponse({ ok: true, result }))
-      .catch((error) => sendResponse({ ok: false, error: String(error) }))
+    // (No per-item progress log — the app's Sweeps tab owns live progress; the final
+    // `sweep SETTLED` line below carries the totals.)
+    runBulkSweep(spec, { transport, driver, storage, config: pacing.engine || {}, log })
+      .then((result) => { log("sweep SETTLED", result.status, JSON.stringify(result.counts), result.error || ""); sendResponse({ ok: true, result }); })
+      .catch((error) => { log("sweep THREW", String(error)); sendResponse({ ok: false, error: String(error) }); })
       .finally(() => { win.__atelierSweepInFlight = false; dispose(); }); // release guard + tear down listener
     return true; // async sendResponse
   });

@@ -21,24 +21,38 @@ test("allows the real Pinterest media CDNs", () => {
   assert.equal(isAllowedMediaHost("pinterest", "https://v.pinimg.com/videos/x.mp4"), true);
 });
 
+test("allows the real Instagram media CDNs (cdninstagram.com + the fbcdn.net Meta CDN)", () => {
+  // The hosts observed in a live saved-feed response (002 · O2) — a `blocked-host` here is
+  // exactly what stranded the whole IG sweep as permanentFailed before the entry existed.
+  assert.equal(isAllowedMediaHost("instagram", "https://scontent.cdninstagram.com/v/t51/x.jpg"), true);
+  assert.equal(isAllowedMediaHost("instagram", "https://scontent-lhr8-1.cdninstagram.com/v/x.jpg"), true);
+  assert.equal(isAllowedMediaHost("instagram", "https://instagram.fhlz4-1.fna.fbcdn.net/v/t51/x.jpg"), true);
+  assert.equal(isAllowedMediaHost("instagram", "https://scontent.xx.fbcdn.net/v/x.mp4"), true);
+});
+
 test("denies loopback, arbitrary hosts, and cross-platform hosts", () => {
   assert.equal(isAllowedMediaHost("pinterest", "http://127.0.0.1:47321/secret"), false);
   assert.equal(isAllowedMediaHost("twitter", "https://evil.example/x.jpg"), false);
-  // A Pinterest sweep must not fetch a twimg URL, and vice-versa.
+  // A Pinterest sweep must not fetch a twimg URL, and vice-versa; nor an IG sweep a twimg
+  // URL, nor a twitter sweep an IG CDN URL.
   assert.equal(isAllowedMediaHost("pinterest", "https://pbs.twimg.com/media/x.jpg"), false);
   assert.equal(isAllowedMediaHost("twitter", "https://i.pinimg.com/originals/x.jpg"), false);
+  assert.equal(isAllowedMediaHost("instagram", "https://pbs.twimg.com/media/x.jpg"), false);
+  assert.equal(isAllowedMediaHost("twitter", "https://scontent.cdninstagram.com/v/x.jpg"), false);
 });
 
 test("denies suffix-spoofed look-alike hosts", () => {
   assert.equal(isAllowedMediaHost("twitter", "https://pbs.twimg.com.evil.com/x.jpg"), false);
   assert.equal(isAllowedMediaHost("twitter", "https://eviltwimg.com/x.jpg"), false);
   assert.equal(isAllowedMediaHost("pinterest", "https://notpinimg.com/x.jpg"), false);
+  assert.equal(isAllowedMediaHost("instagram", "https://cdninstagram.com.evil.com/x.jpg"), false);
+  assert.equal(isAllowedMediaHost("instagram", "https://notfbcdn.net/x.jpg"), false);
 });
 
 test("denies a garbage URL, an empty host, and an unknown platform (deny-by-default)", () => {
   assert.equal(isAllowedMediaHost("twitter", "not a url"), false);
   assert.equal(isAllowedMediaHost("twitter", ""), false);
   assert.equal(isAllowedMediaHost("twitter", "data:image/png;base64,AAAA"), false); // no host
-  assert.equal(isAllowedMediaHost("instagram", "https://scontent.cdninstagram.com/x.jpg"), false);
+  assert.equal(isAllowedMediaHost("flickr", "https://pbs.twimg.com/x.jpg"), false);  // unknown platform
   assert.equal(isAllowedMediaHost(undefined, "https://pbs.twimg.com/x.jpg"), false);
 });

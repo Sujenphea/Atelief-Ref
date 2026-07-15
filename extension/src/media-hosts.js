@@ -11,12 +11,15 @@
 import { hostname, hostIs } from "./extractors/base.js";
 
 /** Per-platform CDN predicate. Twitter media rides pbs.twimg.com (images) and
- * video.twimg.com (clips); Pinterest rides i./v.pinimg.com. `hostIs` matches the apex
- * or any subdomain, but NOT a suffix-spoof (`hostIs("twimg.com.evil.com","twimg.com")`
- * is false — it ends with `.evil.com`). */
+ * video.twimg.com (clips); Pinterest rides i./v.pinimg.com; Instagram rides
+ * scontent*.cdninstagram.com and the `instagram.f<edge>-<n>.fna.fbcdn.net` /
+ * scontent*.fbcdn.net Meta CDN (both in the manifest host_permissions). `hostIs` matches
+ * the apex or any subdomain, but NOT a suffix-spoof (`hostIs("twimg.com.evil.com",
+ * "twimg.com")` is false — it ends with `.evil.com`). */
 const ALLOWED = {
   twitter: (host) => hostIs(host, "twimg.com"),
   pinterest: (host) => hostIs(host, "pinimg.com"),
+  instagram: (host) => hostIs(host, "cdninstagram.com") || hostIs(host, "fbcdn.net"),
 };
 
 /** True if `url`'s host is an allowed media CDN for `platform`. A missing/garbage URL,
