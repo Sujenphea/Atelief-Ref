@@ -54,8 +54,8 @@ function main() {
   console.log(`Drift markers to re-verify live:`);
   console.log(`  X app queryId (Likes ${baseline.markers.x.likesQueryId}) — rotates ~2-4 weeks`);
   console.log(`  Pinterest X-APP-VERSION (${baseline.markers.pinterest.appVersion}) — required`);
-  console.log(`  X harvest DOM (harvest.js): focal <article> scoping + quoted-tweet`);
-  console.log(`    container ('[role="link"]') — single-capture media[] relies on these\n`);
+  console.log(`  X harvest DOM (harvest.js): focal <article> scoping + pbs.twimg.com/media/`);
+  console.log(`    photos — single-capture media[] collection relies on these\n`);
 
   let failed = false;
   for (const [flag, { label, run }] of Object.entries(CHECKS)) {

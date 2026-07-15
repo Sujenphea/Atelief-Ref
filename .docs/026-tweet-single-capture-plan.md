@@ -98,5 +98,10 @@ Manual/E2E: the drift canary continues to cover the `harvestSignals` quoted sele
   media-less, which correctly rescues a video tweet whose poster didn't harvest — at the
   cost of one doomed syndication fetch per genuinely text-only capture (a non-hot
   user-gesture path). Kept the committed behavior; did NOT apply the skip.
-- **Feature ① (multi-image `media[]`): shipped** — changelog 123. Extension JS only;
-  298 → 311 tests green.
+- **Feature ① (multi-image `media[]`): shipped** — changelog 123. Extension JS only.
+- **5A REVERTED (changelog 124).** The quoted-exclusion via `closest('[role="link"]')`
+  was overbroad — X wraps a tweet's OWN clickable photos in `[role="link"]`, so it
+  dropped them and a multi-photo tweet saved as a media-less text card. Reverted the
+  exclusion (harvest `quoted` flag + extractor filter); `media[]` collects all focal
+  photos again. Correct quoted-exclusion needs a per-photo status-id signal — deferred as
+  its own change. Net tests: 308 green.

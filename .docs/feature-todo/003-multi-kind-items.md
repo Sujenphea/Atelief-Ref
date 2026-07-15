@@ -179,13 +179,16 @@ roadmap and is the strongest argument for shipping 008's snapshot early.
   Shared `buildTweetPayload` (single + bulk). No Swift/schema change — the server's
   content path already records bulk-tagged job-items.
 - ✅ **Single-capture tweet follow-ons** — both shipped (plan `.docs/026`, changelog
-  123). **Text-only** single capture landed in `54b865e` (`captureCore` computes the
+  123, 124). **Text-only** single capture landed in `54b865e` (`captureCore` computes the
   tweet content up front and no longer bails `no-image`). **Multi-image `media[]`**:
-  the DOM extractor now collects ALL the focal tweet's photos (card first, deduped,
-  capped at 4), excluding a nested quoted tweet's picture, and rides them via a dropped
-  `mediaUrls` client hint — no wire/Swift change. (The earlier "waits on C2b" note was a
-  misread: x.com is on `PageResolver.isAuthWalledHost`, so the resolver is the WRONG
-  source; the photos come from the harvest that's already in hand.)
+  the DOM extractor collects ALL the focal tweet's photos (card first, deduped, capped
+  at 4) and rides them via a dropped `mediaUrls` client hint — no wire/Swift change. (The
+  earlier "waits on C2b" note was a misread: x.com is on `PageResolver.isAuthWalledHost`,
+  so the resolver is the WRONG source; the photos come from the harvest already in hand.)
+  A first attempt to exclude nested quoted-tweet media via `[role="link"]` was reverted
+  (124) — that selector matches a tweet's OWN clickable photos, so it dropped them;
+  correct quoted-exclusion (per-photo status-id) is deferred, and a quoted photo may leak
+  into `media[]` until then.
 - ⏳ **Web → link content capture** — deliberately NOT switched: a link's
   thumbnail is its og:image (needs C2b), so converting web captures to text-card
   links now would REGRESS their thumbnails. Waits on C2b.
