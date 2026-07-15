@@ -98,6 +98,23 @@ test("articleIndex: carried through when the reader provides it, omitted otherwi
   assert.equal("articleIndex" in bare.media[0], false);
 });
 
+test("quoted: carried through when the reader provides it, omitted otherwise", () => {
+  // The X extractor uses `quoted` to drop a nested quoted tweet's picture; buildHarvest
+  // must carry the flag (like articleIndex) so the pure extractor can filter on it. (The
+  // DOM detection in harvestSignals is E2E/drift-checked — no jsdom; see file header.)
+  const h = buildHarvest(raw({
+    images: [
+      { src: "https://pbs.twimg.com/media/OWN.jpg", width: 1, height: 1, alt: null, quoted: false },
+      { src: "https://pbs.twimg.com/media/Q.jpg", width: 1, height: 1, alt: null, quoted: true },
+    ],
+  }));
+  assert.equal(h.media[0].quoted, false);
+  assert.equal(h.media[1].quoted, true);
+  // An older snapshot without `quoted` → the key is omitted (nothing excluded).
+  const bare = buildHarvest(raw({ images: [{ src: "https://cdn/x.jpg", width: 1, height: 1, alt: null }] }));
+  assert.equal("quoted" in bare.media[0], false);
+});
+
 test("passthrough: url/title/canonical carried, defaults applied", () => {
   const h = buildHarvest(raw({ url: "https://cosmos.so/e/1", title: undefined, canonical: "https://cosmos.so/" }));
   assert.equal(h.url, "https://cosmos.so/e/1");

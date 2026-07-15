@@ -177,8 +177,15 @@ roadmap and is the strongest argument for shipping 008's snapshot early.
   ONE item per tweet (keyed by tweet-id) carrying all media in `media[]` + first photo
   as the card; text-only tweets included (media-less text card); video opt-in unchanged.
   Shared `buildTweetPayload` (single + bulk). No Swift/schema change — the server's
-  content path already records bulk-tagged job-items. Remaining: multi-image `media[]`
-  backfill (waits on C2b); single-capture text-only tweet (small follow-on).
+  content path already records bulk-tagged job-items.
+- ✅ **Single-capture tweet follow-ons** — both shipped (plan `.docs/026`, changelog
+  123). **Text-only** single capture landed in `54b865e` (`captureCore` computes the
+  tweet content up front and no longer bails `no-image`). **Multi-image `media[]`**:
+  the DOM extractor now collects ALL the focal tweet's photos (card first, deduped,
+  capped at 4), excluding a nested quoted tweet's picture, and rides them via a dropped
+  `mediaUrls` client hint — no wire/Swift change. (The earlier "waits on C2b" note was a
+  misread: x.com is on `PageResolver.isAuthWalledHost`, so the resolver is the WRONG
+  source; the photos come from the harvest that's already in hand.)
 - ⏳ **Web → link content capture** — deliberately NOT switched: a link's
   thumbnail is its og:image (needs C2b), so converting web captures to text-card
   links now would REGRESS their thumbnails. Waits on C2b.

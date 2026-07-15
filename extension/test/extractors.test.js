@@ -78,6 +78,73 @@ test("twitter: a right-clicked image is honored even if it's outside the focal t
   assert.equal(p.mediaUrl, "https://pbs.twimg.com/media/CLICKED?format=jpg&name=orig");
 });
 
+// MARK: - twitter multi-photo media[] (003 · C3 — single-capture backfill, decision 8A)
+
+/** A focal-article photo (articleIndex 0 by default); `quoted` marks a nested quote. */
+const xphoto = (name, articleIndex = 0, quoted = false) => ({
+  kind: "image", src: `https://pbs.twimg.com/media/${name}?format=jpg&name=small`,
+  width: 900, height: 900, alt: null, articleIndex, quoted,
+});
+const orig = (name) => `https://pbs.twimg.com/media/${name}?format=jpg&name=orig`;
+
+test("twitter: a multi-photo tweet collects ALL focal photos into media[], card first", () => {
+  const h = harvest({ url: "https://x.com/a/status/1", media: [xphoto("P1"), xphoto("P2"), xphoto("P3")] });
+  const p = twitter.extract(h);
+  assert.deepEqual(p.mediaUrls, [orig("P1"), orig("P2"), orig("P3")]);
+  assert.equal(p.mediaUrl, p.mediaUrls[0]); // the card is media[0]
+});
+
+test("twitter: a nested quoted tweet's photo is excluded from media[] AND the card", () => {
+  const h = harvest({ url: "https://x.com/a/status/1", media: [xphoto("OWN"), xphoto("QUOTED", 0, true)] });
+  const p = twitter.extract(h);
+  assert.deepEqual(p.mediaUrls, [orig("OWN")]);
+  assert.equal(p.mediaUrl, orig("OWN"));
+});
+
+test("twitter: a text-only tweet QUOTING a photo stays a text card (no borrowed image)", () => {
+  // The focal tweet's only image is the quoted tweet's → must NOT be borrowed: no card,
+  // empty media[] → a media-less text card (parity with the reply-scoping rule).
+  const h = harvest({ url: "https://x.com/a/status/1", media: [xphoto("QUOTED", 0, true)] });
+  const p = twitter.extract(h);
+  assert.equal(p.mediaUrl, null);
+  assert.deepEqual(p.mediaUrls, []);
+});
+
+test("twitter: media[] dedupes a repeated src", () => {
+  const h = harvest({ url: "https://x.com/a/status/1", media: [xphoto("P1"), xphoto("P1")] });
+  assert.deepEqual(twitter.extract(h).mediaUrls, [orig("P1")]);
+});
+
+test("twitter: media[] is capped at X's max of 4 photos", () => {
+  const h = harvest({
+    url: "https://x.com/a/status/1",
+    media: [xphoto("P1"), xphoto("P2"), xphoto("P3"), xphoto("P4"), xphoto("P5")],
+  });
+  assert.deepEqual(twitter.extract(h).mediaUrls, [orig("P1"), orig("P2"), orig("P3"), orig("P4")]);
+});
+
+test("twitter: a single-photo tweet → media[] is just the card", () => {
+  const p = twitter.extract(harvest({ url: "https://x.com/a/status/1", media: [xphoto("SOLO")] }));
+  assert.deepEqual(p.mediaUrls, [orig("SOLO")]);
+  assert.equal(p.mediaUrl, orig("SOLO"));
+});
+
+test("twitter: a right-clicked photo leads media[], the focal photos following", () => {
+  const h = harvest({ url: "https://x.com/a/status/1", media: [xphoto("P1"), xphoto("P2")] });
+  const p = twitter.extract(h, { srcUrl: "https://pbs.twimg.com/media/CLICKED?format=jpg&name=large" });
+  assert.equal(p.mediaUrl, orig("CLICKED"));
+  assert.deepEqual(p.mediaUrls, [orig("CLICKED"), orig("P1"), orig("P2")]);
+});
+
+test("twitter: a text-only focal tweet → empty media[] (no image to reference)", () => {
+  const p = twitter.extract(harvest({
+    url: "https://x.com/a/status/1",
+    media: [{ kind: "image", src: "https://pbs.twimg.com/media/REPLY.jpg", width: 5, height: 5, alt: null, articleIndex: 1 }],
+  }));
+  assert.equal(p.mediaUrl, null);
+  assert.deepEqual(p.mediaUrls, []);
+});
+
 test("twitter: prefers the LIVE url over a stale canonical", () => {
   const h = harvest({
     url: "https://x.com/designer/status/42?s=20&t=abc",

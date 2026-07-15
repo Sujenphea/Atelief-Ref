@@ -174,6 +174,24 @@ test("ingestOne: a content descriptor posts a content capture (card image + payl
   assert.deepEqual(posted.payload, content.payload);
 });
 
+test("ingestOne: a multi-photo tweet fetches ONLY the card, not each photo (12A references)", async () => {
+  // payload.media[] carries every photo as a URL REFERENCE; only the first (the card)
+  // is fetched as bytes. One fetchImage call regardless of how many photos ride along.
+  let fetches = 0;
+  const content = { kind: "tweet", payload: { tweet: {
+    tweetID: "9", media: [{ url: "a" }, { url: "b" }, { url: "c" }, { url: "d" }],
+  } } };
+  const { deps } = makeDeps({
+    fetchImage: async () => {
+      fetches += 1;
+      return { base64: "B64", url: PROV.mediaUrl, contentType: "image/jpeg", byteLength: 3 };
+    },
+  });
+  const r = await ingestOne(PROV, { token: "tok", content }, deps);
+  assert.equal(r.status, "saved");
+  assert.equal(fetches, 1); // one card fetch, four references
+});
+
 test("ingestOne: no content descriptor stays on the plain image body", async () => {
   let posted = null;
   const { deps } = makeDeps({

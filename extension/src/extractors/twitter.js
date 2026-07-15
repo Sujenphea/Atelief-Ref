@@ -7,7 +7,7 @@
 
 import {
   hostname, hostIs, firstMeta, pathSegments, liveURL, firstPostURL, firstMedia,
-  firstMediaOfKind, ogImage, toOrigName,
+  firstMediaOfKind, mediaMatching, ogImage, toOrigName,
 } from "./base.js";
 
 export const twitter = {
@@ -27,15 +27,19 @@ export const twitter = {
     const handle = segments[0] ? "@" + segments[0] : null;
     const tweetId = segments[1] === "status" ? segments[2] || null : null;
 
-    // Scope DOM media to the FOCAL tweet (the first <article>, index 0) so a
-    // text-only tweet doesn't borrow a REPLY's image. When the harvest carries no
-    // article structure (an older snapshot / a non-tweet layout) we can't scope, so
-    // fall back to the whole page. A right-clicked image (context.srcUrl) is the
-    // user's explicit choice and stays UNSCOPED.
+    // Scope DOM media to the FOCAL tweet (the first <article>, index 0) so a text-only
+    // tweet doesn't borrow a REPLY's image, AND drop any nested quoted tweet's media (a
+    // quoted photo renders inside the focal <article>, so `articleIndex` alone doesn't
+    // exclude it — the `quoted` flag does; parity with the bulk sweep's top-level-only
+    // rule). When the harvest carries no article structure (an older snapshot / a
+    // non-tweet layout) we can't scope by article, so fall back to the whole page (still
+    // minus quoted). A right-clicked image (context.srcUrl) is the user's explicit choice
+    // and stays UNSCOPED.
+    const own = (m) => m.quoted !== true;
     const articlesPresent = harvest.media.some((m) => (m.articleIndex ?? -1) >= 0);
     const focal = articlesPresent
-      ? { ...harvest, media: harvest.media.filter((m) => m.articleIndex === 0) }
-      : harvest;
+      ? { ...harvest, media: harvest.media.filter((m) => m.articleIndex === 0 && own(m)) }
+      : { ...harvest, media: harvest.media.filter(own) };
 
     // Priority: the exact right-clicked image → the focal tweet's photo → the live
     // video frame (canvas grab of what's on screen) → the video poster. For a video
@@ -56,11 +60,21 @@ export const twitter = {
     const mediaUrlFallback =
       rendered === videoFrame ? videoPoster : rendered && mediaUrl !== rendered ? rendered : null;
 
+    // payload.media[] (003 · C3): the focal tweet's OWN photos — card first, deduped,
+    // capped at X's max of 4, each rewritten to full-res. Only the FIRST is fetched as
+    // the card blob; the rest ride as URL references (no extra network — decision 12A). A
+    // video/text tweet has no /media/ photos, so this collapses to just the card (or
+    // empty), matching the single-URL behaviour it replaces. Carried as a CLIENT HINT —
+    // `normalizeProvenance` drops it, so only `payload.media[]` reaches the wire.
+    const focalPhotos = mediaMatching(focal, /pbs\.twimg\.com\/media\//).map((m) => toOrigName(m.src));
+    const mediaUrls = [...new Set([mediaUrl, ...focalPhotos].filter(Boolean))].slice(0, 4);
+
     return {
       platform: "twitter",
       originalURL: url,
       mediaUrl,
       mediaUrlFallback,
+      mediaUrls,
       authorHandle: handle,
       authorName: null,
       title: firstMeta(harvest, ["og:description", "twitter:description"]) || harvest.title,

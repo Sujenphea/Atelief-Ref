@@ -86,13 +86,19 @@ export function buildTweetPayload(
 
 /** Map a single-capture twitter `provenance` to a `tweet` content descriptor for
  * `buildContentCaptureRequest`, or `null` for a non-tweet (→ plain image fallback).
- * A thin adapter over `buildTweetPayload`: one card image, best-effort text
- * (`provenance.title` ≈ the og:description X serves). The bulk sweep builds its own
- * descriptor (all of a tweet's media) directly from the timeline JSON. */
+ * A thin adapter over `buildTweetPayload`: the extractor's collected `media[]` (all of a
+ * multi-photo tweet's photos, card first) with a fallback to the single card URL for
+ * provenance that predates it, best-effort text (`provenance.title` ≈ the og:description
+ * X serves). `mediaUrls` is a client hint `normalizeProvenance` drops, so only the built
+ * `payload.media[]` reaches the wire. The bulk sweep builds its own descriptor (a tweet's
+ * whole media list) directly from the timeline JSON. */
 export function tweetContent(provenance) {
+  const mediaUrls = provenance.mediaUrls?.length
+    ? provenance.mediaUrls
+    : (provenance.mediaUrl ? [provenance.mediaUrl] : []);
   return buildTweetPayload({
     tweetID: provenance.rawMetadata?.tweetId,
-    mediaUrls: provenance.mediaUrl ? [provenance.mediaUrl] : [],
+    mediaUrls,
     text: provenance.title,
     authorHandle: provenance.authorHandle,
     authorName: provenance.authorName,

@@ -44,6 +44,16 @@ export function harvestSignals() {
     return article ? articles.indexOf(article) : -1;
   };
 
+  // A quoted tweet renders as a nested clickable container (role="link") INSIDE the
+  // focal tweet's <article> — it has no <article> of its own, so `articleIndex` alone
+  // can't separate its media from the focal tweet's OWN photos. Flag media inside such a
+  // container so the X extractor drops the quoted author's picture (parity with the bulk
+  // sweep, which reads only the top-level tweet's own entities).
+  const isQuoted = (el) => {
+    const link = el.closest('[role="link"]');
+    return link != null && !!link.closest("article");
+  };
+
   const images = [];
   for (const img of document.querySelectorAll("img")) {
     images.push({
@@ -52,6 +62,7 @@ export function harvestSignals() {
       height: img.naturalHeight || img.height || 0,
       alt: img.alt || null,
       articleIndex: articleIndexOf(img),
+      quoted: isQuoted(img),
     });
   }
 
@@ -87,6 +98,7 @@ export function harvestSignals() {
       width: video.videoWidth || 0,
       height: video.videoHeight || 0,
       articleIndex: articleIndexOf(video),
+      quoted: isQuoted(video),
     });
   }
 
@@ -114,15 +126,17 @@ export function buildHarvest(raw) {
   }
 
   const media = [];
-  // Carry `articleIndex` through when the reader provided it (the X extractor uses it
-  // to scope to the focal tweet); absent in older fixtures, so it's added only when set.
-  const withArticle = (item, source) => {
+  // Carry scope hints (`articleIndex`, `quoted`) through when the reader set them: the X
+  // extractor uses them to scope media to the focal tweet AND drop a nested quoted
+  // tweet's picture. Absent in older fixtures, so each is added only when present.
+  const withScope = (item, source) => {
     if (source.articleIndex != null) item.articleIndex = source.articleIndex;
+    if (source.quoted != null) item.quoted = source.quoted;
     return item;
   };
   for (const img of raw.images || []) {
     if (!img.src || img.src.startsWith("data:")) continue;
-    media.push(withArticle({
+    media.push(withScope({
       kind: "image",
       src: img.src,
       width: img.width || 0,
@@ -132,13 +146,13 @@ export function buildHarvest(raw) {
   }
   for (const video of raw.videos || []) {
     if (video.frame) {
-      media.push(withArticle({
+      media.push(withScope({
         kind: "video-frame", src: video.frame,
         width: video.width || 0, height: video.height || 0, alt: null,
       }, video));
     }
     if (video.poster && !video.poster.startsWith("data:")) {
-      media.push(withArticle({
+      media.push(withScope({
         kind: "video-poster", src: video.poster,
         width: video.width || 0, height: video.height || 0, alt: null,
       }, video));
@@ -147,7 +161,7 @@ export function buildHarvest(raw) {
     // when it's an HLS manifest we can't ingest directly — it tells the SW to
     // resolve the downloadable MP4 (e.g. a Pinterest video pin).
     if (video.src && !video.src.startsWith("blob:") && !video.src.startsWith("data:")) {
-      media.push(withArticle({
+      media.push(withScope({
         kind: "video-src", src: video.src,
         width: video.width || 0, height: video.height || 0, alt: null,
       }, video));

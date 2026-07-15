@@ -107,6 +107,48 @@ test("tweetContent always includes a media array (Swift media is non-optional)",
   assert.equal(content.kind, "tweet");
 });
 
+test("tweetContent carries the extractor's FULL media list (multi-photo tweet, 003 · C3)", () => {
+  const content = tweetContent({
+    platform: "twitter",
+    mediaUrl: "https://pbs.twimg.com/media/P1?name=orig", // the card
+    mediaUrls: [
+      "https://pbs.twimg.com/media/P1?name=orig",
+      "https://pbs.twimg.com/media/P2?name=orig",
+      "https://pbs.twimg.com/media/P3?name=orig",
+    ],
+    title: "three photos", authorHandle: "@a", rawMetadata: { tweetId: "9" },
+  });
+  assert.deepEqual(content.payload.tweet.media, [
+    { url: "https://pbs.twimg.com/media/P1?name=orig" },
+    { url: "https://pbs.twimg.com/media/P2?name=orig" },
+    { url: "https://pbs.twimg.com/media/P3?name=orig" },
+  ]);
+});
+
+test("tweetContent falls back to the single card URL when mediaUrls is absent/empty", () => {
+  const base = {
+    platform: "twitter", mediaUrl: "https://pbs.twimg.com/media/C?name=orig",
+    title: "t", rawMetadata: { tweetId: "9" },
+  };
+  assert.deepEqual(tweetContent(base).payload.tweet.media, [{ url: base.mediaUrl }]);
+  assert.deepEqual(tweetContent({ ...base, mediaUrls: [] }).payload.tweet.media, [{ url: base.mediaUrl }]);
+});
+
+test("the mediaUrls client hint is DROPPED from the wire provenance (2A/10A)", () => {
+  // The extractor attaches mediaUrls so tweetContent can build payload.media[]; it must
+  // NOT reach the server — normalizeProvenance whitelists keys, so the Swift contract is
+  // unchanged. Asserted via BOTH request builders (they share normalizeProvenance).
+  const provenance = {
+    platform: "twitter", originalURL: "https://x.com/a/status/1",
+    mediaUrl: "u", mediaUrls: ["u", "v"], rawMetadata: { tweetId: "9" },
+  };
+  const image = buildCaptureRequest(provenance, "B64");
+  assert.equal("mediaUrls" in image.provenance, false);
+  assert.equal("mediaUrl" in image.provenance, false); // the existing hint stays dropped too
+  const content = buildContentCaptureRequest(provenance, "B64", tweetContent(provenance));
+  assert.equal("mediaUrls" in content.provenance, false);
+});
+
 // MARK: - buildTweetPayload (shared by single-capture + bulk; the DRY core)
 
 test("buildTweetPayload: carries EVERY media url as a reference (multi-photo tweet)", () => {
