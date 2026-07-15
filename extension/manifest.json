@@ -12,6 +12,7 @@
     "*://*.pinterest.com/*",
     "*://*.pinterest.co.uk/*",
     "*://*.pinimg.com/*",
+    "*://*.instagram.com/*",
     "*://*.cdninstagram.com/*",
     "*://*.fbcdn.net/*",
     "*://*.cosmos.so/*"
@@ -28,7 +29,13 @@
       "run_at": "document_start"
     },
     {
-      "matches": ["*://*.x.com/*", "*://*.twitter.com/*", "*://*.pinterest.com/*", "*://*.pinterest.co.uk/*"],
+      "matches": ["*://*.instagram.com/*"],
+      "js": ["src/hook-core.js", "src/instagram-hook.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["*://*.x.com/*", "*://*.twitter.com/*", "*://*.pinterest.com/*", "*://*.pinterest.co.uk/*", "*://*.instagram.com/*"],
       "js": ["src/bulk-loader.js"],
       "world": "ISOLATED",
       "run_at": "document_idle"
@@ -37,7 +44,7 @@
   "web_accessible_resources": [
     {
       "resources": ["src/*.js"],
-      "matches": ["*://*.x.com/*", "*://*.twitter.com/*", "*://*.pinterest.com/*", "*://*.pinterest.co.uk/*"]
+      "matches": ["*://*.x.com/*", "*://*.twitter.com/*", "*://*.pinterest.com/*", "*://*.pinterest.co.uk/*", "*://*.instagram.com/*"]
     }
   ],
   "action": {

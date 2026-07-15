@@ -54,6 +54,16 @@ export const TIMELINE_MESSAGE_SOURCE = "atelier-x-timeline";
  * Duplicated as a literal in twitter-hook.js — KEEP IN SYNC. */
 export const TIMELINE_REPLAY_SOURCE = "atelier-x-timeline-replay";
 
+/** The `window.postMessage` envelope tag the MAIN-world Instagram hook uses to hand a
+ * captured saved-feed response to the ISOLATED controller (002 · B2). Duplicated as a
+ * literal in instagram-hook.js (a MAIN-world classic script can't import) — KEEP IN SYNC. */
+export const IG_SAVED_MESSAGE_SOURCE = "atelier-ig-saved";
+
+/** Envelope tag the controller posts to ask the Instagram hook to re-emit its buffered
+ * saved-feed responses (the first page, loaded on navigation before the sweep listener
+ * existed). Duplicated as a literal in instagram-hook.js — KEEP IN SYNC. */
+export const IG_SAVED_REPLAY_SOURCE = "atelier-ig-saved-replay";
+
 /** True if a runtime message belongs to the bulk protocol (so the SW listener can
  * ignore anything else and let other handlers run). */
 export function isBulkMessage(message) {
