@@ -17,6 +17,33 @@ export function sweepLabel(spec) {
   return `Sweep board: ${spec.scope.replace(/^board:/, "")}`;
 }
 
+/** The account-risk warning the popup MUST show — behind an acknowledge gate — before a
+ * sweep of `spec` can start, or null when none is needed (002 · B4, mandatory not
+ * optional). Instagram's saved-posts sweep carries a real throttle/checkpoint risk to the
+ * user's account (the dominant risk the whole feature is designed around); X and
+ * Pinterest have no such gate. Pure so popup.js stays chrome/DOM glue. */
+export function sweepWarning(spec) {
+  if (spec && spec.platform === "instagram") {
+    return {
+      platform: "instagram",
+      text:
+        "Instagram may throttle or checkpoint your account for automated browsing. This "
+        + "sweep paces itself gently and pauses if Instagram challenges you — but the "
+        + "risk is real, so sweep at your own risk. If Instagram asks you to verify, "
+        + "solve it in the tab, then start the sweep again to resume where it paused.",
+    };
+  }
+  return null;
+}
+
+/** Whether the Start button should be enabled, given the resolved `spec` and whether the
+ * user has ticked the acknowledge box. A platform with no warning is enabled immediately;
+ * a warned platform (Instagram) stays disabled until acknowledged. The single rule the
+ * popup consults, so the account-risk gate can't be bypassed by a wiring slip. */
+export function startEnabled(spec, acknowledged) {
+  return sweepWarning(spec) ? !!acknowledged : true;
+}
+
 /** Terminal one-liner from the controller's sweep result (best-effort — the popup is
  * usually closed by the time a real sweep finishes; the app's Sweeps tab is truth).
  * `complete` → Done; an explicit Cancel → Stopped; every other halt is resumable. */

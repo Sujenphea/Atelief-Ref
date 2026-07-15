@@ -8,7 +8,10 @@
       h1 { font-size: 14px; margin: 0 0 10px; }
       .target { color: #222; font-weight: 600; margin: 6px 0; min-height: 1.2em; }
       .reason { color: #8a5a00; line-height: 1.4; margin: 6px 0; }
+      .warn { color: #8a1f00; background: #fff4ef; border: 1px solid #f0c8b8;
+        border-radius: 6px; padding: 8px 10px; line-height: 1.4; margin: 8px 0; }
       label.opt { display: flex; align-items: center; gap: 6px; color: #444; margin: 10px 0; }
+      label.opt.ack { color: #8a1f00; font-weight: 600; align-items: flex-start; }
       label.opt input { width: auto; }
       button { padding: 6px 14px; margin-top: 6px; }
       button:disabled { opacity: 0.5; cursor: default; }
@@ -20,6 +23,11 @@
     <h1>Atelier — Start sweep</h1>
     <div id="target" class="target">Checking this tab…</div>
     <div id="reason" class="reason" hidden></div>
+    <div id="warn" class="warn" hidden></div>
+    <label class="opt ack" id="ackRow" hidden>
+      <input id="acknowledge" type="checkbox" />
+      I understand the account risk and want to sweep anyway
+    </label>
     <label class="opt" id="videoRow" hidden>
       <input id="resolveVideo" type="checkbox" />
       Download full video (not just the poster)

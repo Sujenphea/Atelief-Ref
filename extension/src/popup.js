@@ -11,11 +11,14 @@
 
 import { resolveSweepSpec, REASON_MESSAGE } from "./bulk-context.js";
 import { dispatchStart } from "./bulk-dispatch.js";
-import { sweepLabel, launchOutcome } from "./popup-view.js";
+import { sweepLabel, sweepWarning, startEnabled, launchOutcome } from "./popup-view.js";
 
 const els = {
   target: document.getElementById("target"),
   reason: document.getElementById("reason"),
+  warn: document.getElementById("warn"),
+  ackRow: document.getElementById("ackRow"),
+  acknowledge: document.getElementById("acknowledge"),
   videoRow: document.getElementById("videoRow"),
   resolveVideo: document.getElementById("resolveVideo"),
   start: document.getElementById("start"),
@@ -37,13 +40,33 @@ function showReason(reason) {
   els.reason.textContent = REASON_MESSAGE[reason] || REASON_MESSAGE["not-supported-site"];
   els.start.disabled = true;
   els.videoRow.hidden = true;
+  els.warn.hidden = true;
+  els.ackRow.hidden = true;
 }
 
 function showTarget(spec) {
   els.target.textContent = sweepLabel(spec);
   els.reason.hidden = true;
   els.videoRow.hidden = false;
-  els.start.disabled = false;
+
+  // Account-risk gate (002 · B4): a warned platform (Instagram) shows the warning + an
+  // acknowledge checkbox and keeps Start disabled until it's ticked; an unwarned platform
+  // enables Start immediately. `startEnabled` is the single source of truth so the gate
+  // can't be bypassed by a wiring slip.
+  const warning = sweepWarning(spec);
+  if (warning) {
+    els.warn.hidden = false;
+    els.warn.textContent = warning.text;
+    els.ackRow.hidden = false;
+    els.acknowledge.checked = false;
+    els.acknowledge.addEventListener("change", () => {
+      els.start.disabled = !startEnabled(spec, els.acknowledge.checked);
+    });
+  } else {
+    els.warn.hidden = true;
+    els.ackRow.hidden = true;
+  }
+  els.start.disabled = !startEnabled(spec, els.acknowledge.checked);
 }
 
 async function getActiveTab() {

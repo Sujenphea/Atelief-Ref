@@ -8,9 +8,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { sweepLabel, terminalMessage, launchOutcome } from "../src/popup-view.js";
+import {
+  sweepLabel, sweepWarning, startEnabled, terminalMessage, launchOutcome,
+} from "../src/popup-view.js";
 
-test("sweepLabel: X main bookmarks vs. a folder vs. a Pinterest board", () => {
+test("sweepLabel: X main bookmarks vs. a folder vs. a Pinterest board vs. IG saved", () => {
   assert.equal(
     sweepLabel({ platform: "twitter", scope: "bookmarks" }),
     "Sweep your X bookmarks");
@@ -20,6 +22,26 @@ test("sweepLabel: X main bookmarks vs. a folder vs. a Pinterest board", () => {
   assert.equal(
     sweepLabel({ platform: "pinterest", scope: "board:cool-refs" }),
     "Sweep board: cool-refs");
+  assert.equal(
+    sweepLabel({ platform: "instagram", scope: "saved" }),
+    "Sweep your Instagram saved posts");
+});
+
+test("sweepWarning: Instagram carries an account-risk warning; X/Pinterest carry none", () => {
+  const warn = sweepWarning({ platform: "instagram", scope: "saved" });
+  assert.equal(warn.platform, "instagram");
+  assert.match(warn.text, /throttle|checkpoint/i);          // names the real risk
+  assert.equal(sweepWarning({ platform: "twitter", scope: "bookmarks" }), null);
+  assert.equal(sweepWarning({ platform: "pinterest", scope: "board:x" }), null);
+});
+
+test("startEnabled: IG requires acknowledgement; unwarned platforms enable immediately", () => {
+  // The account-risk gate: IG Start stays disabled until the box is ticked.
+  assert.equal(startEnabled({ platform: "instagram", scope: "saved" }, false), false);
+  assert.equal(startEnabled({ platform: "instagram", scope: "saved" }, true), true);
+  // No warning → no gate, enabled regardless of the (absent) checkbox.
+  assert.equal(startEnabled({ platform: "twitter", scope: "bookmarks" }, false), true);
+  assert.equal(startEnabled({ platform: "pinterest", scope: "board:x" }, false), true);
 });
 
 test("terminalMessage: complete → Done, with the ingested count", () => {
