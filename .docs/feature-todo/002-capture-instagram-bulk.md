@@ -161,14 +161,16 @@ real block — halting on it is the desired "halt, don't burn".
      (`instagram-saved-page2.json`, 11 posts → 25 items incl. an 11-child carousel + 7
      reels) runs CLEAN through the real parser (`drift-check --instagram`, no drift), and
      its `?max_id=<token>` request URL **confirms the pagination request param**.
-   - ⚠️ **STILL OPEN (non-blocking):** (a) the response **`next_max_id` populated in a
-     non-terminal body** (`more_available: true`) is still unseen — both captures are
-     terminal pages (the account returns everything in ≤2 fetches). The `?max_id=`
-     request param is confirmed, so the response cursor is well-corroborated by IG
-     convention; the paginating test synthesizes it. Fully closed by capturing the first
-     fetch on a larger saved feed. (b) **Feed ordering** (save-time?) — gates the
-     deferred re-sweep early-stop; not yet confirmed. (c) a **collection page's**
-     endpoint and (d) a **live challenge body** — nice-to-have, neither blocks v1.
+   - ✅ **CLOSED 2026-07-16 (live recon):** (a) a **non-terminal `next_max_id`** is now
+     observed directly — `GET …/saved/posts/?count=12` returns `more_available: true` with
+     `next_max_id` populated (the resume cursor is no longer synthesized-only). (c) the
+     **collection endpoint** is resolved: `GET /api/v1/feed/collection/<id>/posts/`, same
+     envelope/pagination/header as the flat feed (→ collections built, changelog 134).
+   - ⚠️ **STILL OPEN:** (b) **Feed ordering** — recon showed the saved feed is **NOT**
+     post-time-ordered (`taken_at` is jumbled), consistent with newest-**save**-first, but
+     that isn't *proven* read-only (all 32 items were in one collection, so membership-by-
+     depth was uninformative). Proving newest-first needs a save-a-fresh-post mutation;
+     gates the re-sweep early-stop. (d) a **live challenge body** — nice-to-have.
 1. **B1 (M, settled 2A+5A) — shared refactors, X-regression-gated.**
    (a) Extract `hook-core.js`: a classic-script (no import/export)
    `installResponseHook({ isMatch, messageSource, replaySource, target, post })`
@@ -237,8 +239,12 @@ All `node --test`, no live IG (fixture discipline, 015 T9/T12). Settled 9A/10A/1
   confirming save-time ordering, and an early-stop guard for stranded
   `retryableFailed` items (e.g. only early-stop when the prior job closed
   `complete`). v1 matches X's current full-re-scroll behavior — no regression.
-- **Collections (6A):** additive `resolveSweepSpec` arm + collection-feed matcher +
-  per-collection checkpoint scopes, same shape as X bookmark folders.
+- ~~**Collections (6A):**~~ **BUILT 2026-07-16** (changelog 134). Live recon settled the
+  endpoint (`GET /api/v1/feed/collection/<id>/posts/` — identical envelope + `?max_id=`
+  pagination + `x-ig-app-id` header to the flat feed) and the URL shape
+  (`/{user}/saved/{slug}/{numericId}/`). Additive `resolveSweepSpec` arm +
+  `isCollectionFeedRequest` matcher + `saved:collection:<id>` checkpoint scope; driver reads
+  `input.collectionId`. Same account-risk gate applies.
 - **First-class `instagramPost` kind (1C):** additive via 003's multikind pattern if
   post-level grouping is ever wanted.
 - **Export-ZIP backfill:** [017](./017-capture-instagram-export.md).

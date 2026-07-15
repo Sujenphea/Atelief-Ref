@@ -35,6 +35,12 @@ export const IG_MEDIA_TYPE = Object.freeze({ image: 1, video: 2, carousel: 8 });
  * are NOT required. `x-ig-app-id` is the public IG-web app id — a constant, same for
  * every web session, so nothing needs scraping (contrast Pinterest's app-version). */
 export const SAVED_FEED_PATH = "/api/v1/feed/saved/posts/";
+/** A specific saved COLLECTION's feed path (002 · collections, verified live 2026-07-16):
+ * `GET /api/v1/feed/collection/<id>/posts/`. Live recon confirmed it returns the SAME
+ * envelope as the flat saved feed (`items[].media`, `more_available`, `next_max_id`) with
+ * the SAME `?max_id=` pagination and the SAME single `x-ig-app-id` header — so only the
+ * PATH differs; the parser + pagination + headers all reuse unchanged. */
+export const collectionFeedPath = (collectionId) => `/api/v1/feed/collection/${collectionId}/posts/`;
 export const IG_WEB_APP_ID = "936619743392459";
 
 /** True for a saved-posts feed request URL (`…/api/v1/feed/saved/posts/`, ± `?max_id=`).
@@ -42,6 +48,12 @@ export const IG_WEB_APP_ID = "936619743392459";
  * constant hasn't drifted. */
 export function isSavedFeedRequest(url) {
   return typeof url === "string" && /\/api\/v1\/feed\/saved\/posts\//.test(url);
+}
+
+/** True for a saved-COLLECTION feed request URL (`…/api/v1/feed/collection/<digits>/posts/`,
+ * ± `?max_id=`). The collection route the driver builds + the drift canary verifies. */
+export function isCollectionFeedRequest(url) {
+  return typeof url === "string" && /\/api\/v1\/feed\/collection\/\d+\/posts\//.test(url);
 }
 
 /** Thrown into the sweep when IG returns an account challenge (checkpoint / login /
@@ -238,9 +250,12 @@ export class InstagramSavedError extends Error {
  * cursor (never `more_available:false`): give up after this many CONSECUTIVE empties. */
 const MAX_EMPTY_PAGES = 3;
 
-/** The saved-feed request URL for a page (with the paginating `?max_id=` cursor when set). */
-export function buildSavedFeedURL({ host = "www.instagram.com", cursor = null } = {}) {
-  const url = new URL(SAVED_FEED_PATH, `https://${host}`);
+/** The feed request URL for a page (with the paginating `?max_id=` cursor when set). A
+ * `collectionId` selects a specific collection's feed (`…/feed/collection/<id>/posts/`);
+ * its absence walks the flat "All saved" feed (`…/feed/saved/posts/`). */
+export function buildSavedFeedURL({ host = "www.instagram.com", cursor = null, collectionId = null } = {}) {
+  const path = collectionId ? collectionFeedPath(encodeURIComponent(collectionId)) : SAVED_FEED_PATH;
+  const url = new URL(path, `https://${host}`);
   if (cursor) url.searchParams.set("max_id", cursor);
   return url.toString();
 }
@@ -283,7 +298,7 @@ export function makeSavedFeedFetch({ fetchImpl = fetch, log = () => {} } = {}) {
  * the sweep resumable, preserving the checkpoint (halt, don't burn — 3A).
  */
 export async function* enumerateSavedFeed(
-  fetchJson, { host = "www.instagram.com" } = {}, { cursor = null } = {}
+  fetchJson, { host = "www.instagram.com", collectionId = null } = {}, { cursor = null } = {}
 ) {
   let requestCursor = cursor;      // the max_id used to fetch the CURRENT page
   const seenCursors = new Set();   // loop guard: never re-request the same cursor
@@ -295,7 +310,7 @@ export async function* enumerateSavedFeed(
       seenCursors.add(requestCursor);
     }
 
-    const url = buildSavedFeedURL({ host, cursor: requestCursor });
+    const url = buildSavedFeedURL({ host, cursor: requestCursor, collectionId });
     const { httpStatus, json } = await fetchJson(url);
 
     // A challenge body (checkpoint / login / rate-limit) → halt resumable (3A).
@@ -318,13 +333,15 @@ export async function* enumerateSavedFeed(
 /**
  * A saved-feed driver conforming to the engine's `BulkSource` seam. Bind the session
  * context (`fetchJson`, `host`) once; `enumerate(input, { cursor })` then walks the feed.
- * `input` is ignored (there's one flat saved feed — 6A), mirroring how the X driver
- * ignores its input.
+ * `input.collectionId` (set by `resolveSweepSpec` for a `/saved/<slug>/<id>/` collection
+ * URL) selects that collection's feed; its absence walks the flat "All saved" feed. That
+ * is the ONLY field the IG driver reads from `input`.
  */
 export function instagramSavedDriver({ fetchJson, host = "www.instagram.com" }) {
   return {
-    enumerate(_input, { cursor = null } = {}) {
-      return enumerateSavedFeed(fetchJson, { host }, { cursor });
+    enumerate(input, { cursor = null } = {}) {
+      const collectionId = input && input.collectionId != null ? String(input.collectionId) : null;
+      return enumerateSavedFeed(fetchJson, { host, collectionId }, { cursor });
     },
   };
 }

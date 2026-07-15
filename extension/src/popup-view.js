@@ -13,7 +13,13 @@ export function sweepLabel(spec) {
       ? "Sweep this X bookmark folder"
       : "Sweep your X bookmarks";
   }
-  if (spec.platform === "instagram") return "Sweep your Instagram saved posts";
+  if (spec.platform === "instagram") {
+    if (spec.scope && spec.scope.startsWith("saved:collection:")) {
+      const slug = spec.input && spec.input.collectionSlug;
+      return slug ? `Sweep Instagram collection: ${slug}` : "Sweep this Instagram collection";
+    }
+    return "Sweep your Instagram saved posts";
+  }
   return `Sweep board: ${spec.scope.replace(/^board:/, "")}`;
 }
 

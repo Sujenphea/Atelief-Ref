@@ -101,17 +101,33 @@ export function resolveSweepSpec({ url, collageHref = null } = {}) {
   }
 
   if (platform === "instagram") {
-    // Flat "All saved" only in v1 (6A): `/{user}/saved/` or `/{user}/saved/all-posts/`.
-    // The driver ignores `input` (the page fetches the saved feed as the user scrolls);
-    // scope "saved" keys the checkpoint. A specific COLLECTION (`/{user}/saved/{slug}/`,
-    // slug ≠ all-posts) is refused with a typed reason — collections are a later additive
-    // arm, as X bookmark folders were. A non-saved IG page is likewise refused.
+    // Two saved sweeps, both under `/{user}/saved/`:
+    //   · Flat "All saved" — `/{user}/saved/` or `/{user}/saved/all-posts/` → scope "saved".
+    //   · A specific COLLECTION — `/{user}/saved/{slug}/{collectionId}/` (numeric id,
+    //     verified live 2026-07-16) → the collection feed. Scope by the STABLE numeric id
+    //     (a rename changes the slug, not the id, so a resume never collides / re-walks);
+    //     the slug rides along in `input` for the popup label only. `input.collectionId`
+    //     is what the driver reads to hit `…/feed/collection/<id>/posts/`.
+    // The driver otherwise ignores `input`. A saved subpath matching neither shape (e.g. a
+    // slug with no id) is refused clearly rather than swept as the wrong feed; a non-saved
+    // IG page is refused too.
     const segments = splitPathname(parsed.pathname);
     if (segments[1] === "saved") {
-      const isFlat = segments.length === 2 ||
-        (segments.length === 3 && segments[2] === "all-posts");
-      if (isFlat) return { ok: true, spec: { platform, input: {}, scope: "saved" } };
-      return { ok: false, reason: "instagram-collection-unsupported" };
+      if (segments.length === 2 || (segments.length === 3 && segments[2] === "all-posts")) {
+        return { ok: true, spec: { platform, input: {}, scope: "saved" } };
+      }
+      if (segments.length === 4 && /^\d+$/.test(segments[3])) {
+        const collectionId = segments[3];
+        return {
+          ok: true,
+          spec: {
+            platform,
+            input: { collectionId, collectionSlug: segments[2] },
+            scope: `saved:collection:${collectionId}`,
+          },
+        };
+      }
+      return { ok: false, reason: "instagram-saved-unrecognized" };
     }
     return { ok: false, reason: "instagram-not-saved" };
   }
@@ -141,6 +157,6 @@ export const REASON_MESSAGE = Object.freeze({
   "board-id-missing": "Couldn't read this board's id — reload the board page and try again.",
   "x-not-bookmarks": "Open x.com/i/bookmarks to sweep your bookmarks.",
   "instagram-not-saved": "Open your Instagram saved posts (instagram.com/<you>/saved/) to start a sweep.",
-  "instagram-collection-unsupported":
-    "Collection sweeps aren't supported yet — open your main Saved (…/saved/all-posts/) to sweep everything.",
+  "instagram-saved-unrecognized":
+    "Couldn't tell which saved feed this is — open your All posts (…/saved/all-posts/) or a specific collection to sweep.",
 });

@@ -12,8 +12,8 @@ import { readFileSync } from "node:fs";
 
 import {
   parseSavedFeedPage, mapSavedMedia, pickImage, pickVideo, detectChallenge,
-  isSavedFeedRequest, InstagramChallengeError, InstagramSavedError, IG_MEDIA_TYPE,
-  buildSavedFeedURL, savedFeedHeaders, makeSavedFeedFetch, enumerateSavedFeed,
+  isSavedFeedRequest, isCollectionFeedRequest, InstagramChallengeError, InstagramSavedError,
+  IG_MEDIA_TYPE, buildSavedFeedURL, savedFeedHeaders, makeSavedFeedFetch, enumerateSavedFeed,
   instagramSavedDriver, IG_WEB_APP_ID,
 } from "../src/bulk-instagram.js";
 
@@ -36,6 +36,14 @@ test("isSavedFeedRequest: matches the saved-posts feed, rejects other feeds", ()
   assert.equal(isSavedFeedRequest("/api/v1/feed/saved/posts/?max_id=ABC"), true);
   assert.equal(isSavedFeedRequest("https://www.instagram.com/api/v1/feed/collection/9/posts/"), false);
   assert.equal(isSavedFeedRequest(null), false);
+});
+
+test("isCollectionFeedRequest: matches a numeric-id collection feed, rejects the flat saved feed", () => {
+  assert.equal(isCollectionFeedRequest("https://www.instagram.com/api/v1/feed/collection/1021461010622913/posts/"), true);
+  assert.equal(isCollectionFeedRequest("/api/v1/feed/collection/42/posts/?max_id=ABC"), true);
+  assert.equal(isCollectionFeedRequest("https://www.instagram.com/api/v1/feed/saved/posts/"), false);
+  assert.equal(isCollectionFeedRequest("https://www.instagram.com/api/v1/feed/collection/abc/posts/"), false); // non-numeric id
+  assert.equal(isCollectionFeedRequest(null), false);
 });
 
 // MARK: - pickImage / pickVideo
@@ -212,6 +220,13 @@ test("buildSavedFeedURL: the saved-feed path, with ?max_id= only when a cursor i
   assert.equal(u.searchParams.get("max_id"), "aQ=b==");
 });
 
+test("buildSavedFeedURL: a collectionId targets the collection feed path (same ?max_id= pagination)", () => {
+  assert.equal(buildSavedFeedURL({ host: "www.instagram.com", collectionId: "1021461010622913" }),
+    "https://www.instagram.com/api/v1/feed/collection/1021461010622913/posts/");
+  assert.equal(buildSavedFeedURL({ host: "www.instagram.com", collectionId: "42", cursor: "CUR2" }),
+    "https://www.instagram.com/api/v1/feed/collection/42/posts/?max_id=CUR2");
+});
+
 test("savedFeedHeaders: only the public x-ig-app-id constant (verified live), no scraped secrets", () => {
   const h = savedFeedHeaders();
   assert.equal(h["x-ig-app-id"], IG_WEB_APP_ID);
@@ -292,10 +307,20 @@ test("enumerateSavedFeed: a repeated cursor stops the walk (loop guard, no infin
   assert.equal(ids.length, 2);
 });
 
-test("instagramSavedDriver: conforms to the engine seam and ignores its input", async () => {
+test("instagramSavedDriver: conforms to the engine seam; a bare input walks the flat saved feed", async () => {
   const endPage = { status: "ok", more_available: false, items: [{ media: imagePost }] };
-  const { fetchJson } = scripted([{ httpStatus: 200, json: endPage }]);
+  const { fetchJson, urls } = scripted([{ httpStatus: 200, json: endPage }]);
   const driver = instagramSavedDriver({ fetchJson, host: "www.instagram.com" });
   const ids = await drain(driver.enumerate({ anything: true }, { cursor: null }));
   assert.deepEqual(ids, [String(imagePost.pk)]);
+  assert.match(urls[0], /\/feed\/saved\/posts\//);
+});
+
+test("instagramSavedDriver: input.collectionId routes the walk to that collection's feed", async () => {
+  const endPage = { status: "ok", more_available: false, items: [{ media: imagePost }] };
+  const { fetchJson, urls } = scripted([{ httpStatus: 200, json: endPage }]);
+  const driver = instagramSavedDriver({ fetchJson, host: "www.instagram.com" });
+  const ids = await drain(driver.enumerate({ collectionId: "1021461010622913" }, { cursor: null }));
+  assert.deepEqual(ids, [String(imagePost.pk)]);
+  assert.match(urls[0], /\/feed\/collection\/1021461010622913\/posts\//);
 });

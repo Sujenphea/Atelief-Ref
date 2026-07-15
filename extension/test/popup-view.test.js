@@ -25,6 +25,23 @@ test("sweepLabel: X main bookmarks vs. a folder vs. a Pinterest board vs. IG sav
   assert.equal(
     sweepLabel({ platform: "instagram", scope: "saved" }),
     "Sweep your Instagram saved posts");
+  // A collection sweep names the collection by its slug (falls back if the slug is absent).
+  assert.equal(
+    sweepLabel({ platform: "instagram", scope: "saved:collection:1021461010622913",
+      input: { collectionId: "1021461010622913", collectionSlug: "test2" } }),
+    "Sweep Instagram collection: test2");
+  assert.equal(
+    sweepLabel({ platform: "instagram", scope: "saved:collection:42", input: {} }),
+    "Sweep this Instagram collection");
+});
+
+test("sweepWarning + startEnabled: a collection sweep carries the SAME account-risk gate", () => {
+  // A collection replays the same synthetic endpoint, so the warning + acknowledge gate
+  // must apply exactly as for the flat saved feed — not be bypassed by the different scope.
+  const collSpec = { platform: "instagram", scope: "saved:collection:42", input: {} };
+  assert.ok(sweepWarning(collSpec));
+  assert.equal(startEnabled(collSpec, false), false);
+  assert.equal(startEnabled(collSpec, true), true);
 });
 
 test("sweepWarning: Instagram carries an account-risk warning; X/Pinterest carry none", () => {

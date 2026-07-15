@@ -161,13 +161,32 @@ test("resolveSweepSpec: IG saved query string is ignored", () => {
   assert.equal(r.spec.scope, "saved");
 });
 
-test("resolveSweepSpec: IG a specific collection → typed refusal (flat-only v1, 6A)", () => {
+test("resolveSweepSpec: IG a specific collection → collection spec (real URL /saved/<slug>/<id>/)", () => {
+  // The live-verified collection URL shape (2026-07-16): a slug then a numeric id.
+  const r = resolveSweepSpec({ url: "https://www.instagram.com/lychee.web/saved/test2/1021461010622913/" });
+  assert.deepEqual(r, {
+    ok: true,
+    spec: {
+      platform: "instagram",
+      input: { collectionId: "1021461010622913", collectionSlug: "test2" },
+      scope: "saved:collection:1021461010622913",
+    },
+  });
+  // Trailing slash optional; query string ignored; scope keys off the STABLE id, not the slug.
+  const r2 = resolveSweepSpec({ url: "https://instagram.com/me/saved/refs/42?hl=en" });
+  assert.equal(r2.ok, true);
+  assert.equal(r2.spec.scope, "saved:collection:42");
+  assert.equal(r2.spec.input.collectionSlug, "refs");
+});
+
+test("resolveSweepSpec: IG a saved subpath that is neither flat nor a collection → typed refusal", () => {
   for (const url of [
-    "https://www.instagram.com/lychee.web/saved/interiors/",
-    "https://www.instagram.com/lychee.web/saved/type-refs/",
+    "https://www.instagram.com/lychee.web/saved/interiors/",       // a slug with no numeric id
+    "https://www.instagram.com/lychee.web/saved/test2/not-an-id/", // 4 segments but non-numeric id
+    "https://www.instagram.com/lychee.web/saved/a/1/b/",           // too deep
   ]) {
     assert.deepEqual(resolveSweepSpec({ url }),
-      { ok: false, reason: "instagram-collection-unsupported" }, url);
+      { ok: false, reason: "instagram-saved-unrecognized" }, url);
   }
 });
 
@@ -203,7 +222,7 @@ test("REASON_MESSAGE has a non-empty message for every refusal reason the resolv
     resolveSweepSpec({ url: "https://www.pinterest.com/pin/12345/" }),        // not-a-board
     resolveSweepSpec({ url: "https://www.pinterest.com/user/board/", collageHref: null }), // board-id-missing
     resolveSweepSpec({ url: "https://x.com/home" }),                          // x-not-bookmarks
-    resolveSweepSpec({ url: "https://www.instagram.com/me/saved/interiors/" }), // instagram-collection-unsupported
+    resolveSweepSpec({ url: "https://www.instagram.com/me/saved/interiors/" }), // instagram-saved-unrecognized
     resolveSweepSpec({ url: "https://www.instagram.com/me/" }),               // instagram-not-saved
   ];
   const seen = new Set();
@@ -215,7 +234,7 @@ test("REASON_MESSAGE has a non-empty message for every refusal reason the resolv
   }
   // All distinct branches were actually exercised (guards against a copy-paste input).
   assert.deepEqual([...seen].sort(),
-    ["board-id-missing", "instagram-collection-unsupported", "instagram-not-saved",
+    ["board-id-missing", "instagram-not-saved", "instagram-saved-unrecognized",
       "not-a-board", "not-supported-site", "x-not-bookmarks"]);
   // And no REASON_MESSAGE entry is a placeholder blank.
   for (const [reason, message] of Object.entries(REASON_MESSAGE)) {

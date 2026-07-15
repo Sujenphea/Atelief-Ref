@@ -11,7 +11,9 @@
 
 import { parseTimelinePage } from "./bulk-twitter.js";
 import { parseBoardFeedPage, parseBoardsPage, mapPinterestPin } from "./bulk-pinterest.js";
-import { parseSavedFeedPage, detectChallenge, isSavedFeedRequest, IG_MEDIA_TYPE } from "./bulk-instagram.js";
+import {
+  parseSavedFeedPage, detectChallenge, isSavedFeedRequest, isCollectionFeedRequest, IG_MEDIA_TYPE,
+} from "./bulk-instagram.js";
 
 /** A `{ ok, problems, signals }` verdict. `ok` is false if any invariant broke;
  * `problems` names each break; `signals` reports the parsed counts for context. */
@@ -142,9 +144,13 @@ export function checkInstagramSaved(json, { host = "www.instagram.com" } = {}) {
   }
   // A normal page must NOT trip the challenge recognizer (no false positives).
   if (detectChallenge(json)) problems.push("detectChallenge fired on a normal saved page");
-  // The route matcher the hook depends on must still match the canonical saved-feed URL.
+  // The route matchers the driver depends on must still match their canonical URLs (and not
+  // each other): the flat saved feed and a specific collection's feed.
   if (!isSavedFeedRequest("https://www.instagram.com/api/v1/feed/saved/posts/")) {
     problems.push("isSavedFeedRequest no longer matches the saved-feed route");
+  }
+  if (!isCollectionFeedRequest("https://www.instagram.com/api/v1/feed/collection/1021461010622913/posts/")) {
+    problems.push("isCollectionFeedRequest no longer matches the collection-feed route");
   }
   return verdict(problems, {
     posts: rawItems.length,
