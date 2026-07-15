@@ -272,8 +272,19 @@ struct CollectionView: View {
                         // locations match the computed cell frames.
                         Color.clear
                             .contentShape(Rectangle())
-                            .onTapGesture { model.applySelection(.clear) }
-                            .gesture(marqueeGesture(width: geo.size.width, proxy: proxy))
+                            // ONE exclusive chain, not two racing modifiers: the
+                            // marquee wins, and the plain-click clear only fires when
+                            // no drag happened. A separate `.onTapGesture` could fire
+                            // on press and wipe the selection before the marquee
+                            // captured its ⇧-additive base — invisible for a plain
+                            // marquee (clear + hits == hits) but it silently dropped
+                            // the base of a ⇧-drag. A ⇧-click never clears.
+                            .gesture(
+                                marqueeGesture(width: geo.size.width, proxy: proxy)
+                                    .exclusively(before: TapGesture().onEnded {
+                                        guard !NSEvent.modifierFlags.contains(.shift) else { return }
+                                        model.applySelection(.clear)
+                                    }))
                         LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
                             ForEach(model.items, id: \.item.id) { detail in
                                 CollectionCell(
