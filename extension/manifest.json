@@ -23,7 +23,7 @@
   "content_scripts": [
     {
       "matches": ["*://*.x.com/*", "*://*.twitter.com/*"],
-      "js": ["src/twitter-hook.js"],
+      "js": ["src/hook-core.js", "src/twitter-hook.js"],
       "world": "MAIN",
       "run_at": "document_start"
     },

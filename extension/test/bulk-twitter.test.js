@@ -18,15 +18,15 @@ import {
 } from "../src/bulk-messages.js";
 
 // twitter-hook.js ships as a CLASSIC MAIN-world content script (NO export — that would
-// SyntaxError on injection and silently kill the hook). So load + evaluate the REAL file
-// the way Chrome injects it and lift out its functions — this test then verifies the
-// exact injected artifact, not an ESM-only shim. A fake `window` (no `.location`) skips
-// the auto-install tail so only the explicit calls below run it.
-const { installTimelineHook, isTimelineRequest, TIMELINE_MESSAGE_SOURCE, REPLAY_REQUEST_SOURCE } = (() => {
+// SyntaxError on injection and silently kill the hook). Since [5A] the interception
+// MACHINERY lives in hook-core.js (tested in hook-core.test.js); this file is now a thin
+// config, so we lift out only what it still owns: the URL matcher + the message tags. A
+// fake `window` (no `.location`) skips the auto-install tail so the load is inert.
+const { isTimelineRequest, TIMELINE_MESSAGE_SOURCE, REPLAY_REQUEST_SOURCE } = (() => {
   const src = readFileSync(new URL("../src/twitter-hook.js", import.meta.url), "utf8");
   return new Function(
     "window",
-    `${src}\nreturn { installTimelineHook, isTimelineRequest, TIMELINE_MESSAGE_SOURCE, REPLAY_REQUEST_SOURCE };`,
+    `${src}\nreturn { isTimelineRequest, TIMELINE_MESSAGE_SOURCE, REPLAY_REQUEST_SOURCE };`,
   )({});
 })();
 
@@ -306,160 +306,7 @@ test("twitter-hook.js is a valid CLASSIC script (no static export/import → inj
   assert.doesNotThrow(() => new Function("window", src));
 });
 
-/** A fake window scope with an injectable `fetch` returning a cloneable response. */
-function fakeScope(responseJson) {
-  const response = {
-    clone: () => ({ json: async () => responseJson }),
-  };
-  return { fetch: async () => response, __response: response };
-}
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-test("installTimelineHook: forwards a timeline response, passes others through", async () => {
-  const scope = fakeScope({ ok: 1 });
-  const posted = [];
-  assert.equal(installTimelineHook({ target: scope, post: (m) => posted.push(m) }), true);
-
-  const returned = await scope.fetch("https://x.com/i/api/graphql/Q/Bookmarks");
-  await tick();
-  assert.equal(posted.length, 1);
-  assert.equal(posted[0].url, "https://x.com/i/api/graphql/Q/Bookmarks");
-  assert.deepEqual(posted[0].json, { ok: 1 });
-  assert.equal(returned, scope.__response);        // page's own response, untouched
-
-  await scope.fetch("https://x.com/i/api/graphql/Q/HomeTimeline");
-  await tick();
-  assert.equal(posted.length, 1);                  // non-timeline request ignored
-});
-
-test("installTimelineHook: is idempotent (no double-wrap) and needs a transport", () => {
-  const scope = fakeScope({});
-  assert.equal(installTimelineHook({ target: scope, post: () => {} }), true);
-  assert.equal(installTimelineHook({ target: scope, post: () => {} }), false);
-  assert.equal(installTimelineHook({ target: {}, post: () => {} }), false); // no fetch, no XHR
-  assert.equal(typeof TIMELINE_MESSAGE_SOURCE, "string");
-});
-
-test("installTimelineHook: a post/parse failure never breaks the page's fetch", async () => {
-  const scope = fakeScope({});
-  const returned = await (() => {
-    installTimelineHook({ target: scope, post: () => { throw new Error("boom"); } });
-    return scope.fetch("https://x.com/i/api/graphql/Q/Likes");
-  })();
-  await tick();
-  assert.equal(returned, scope.__response);        // still returns cleanly
-});
-
 test("hook wire constants stay in sync with bulk-messages (the KEEP IN SYNC duplication)", () => {
   assert.equal(TIMELINE_MESSAGE_SOURCE, MSG_SRC);
   assert.equal(REPLAY_REQUEST_SOURCE, REPLAY_SRC);
-});
-
-// MARK: - buffer + replay (the small-folder / already-scrolled fix)
-
-/** A fake scope with an injectable fetch (settable json) AND a message-listener sink,
- * so we can drive both the interception and a replay request. */
-function fakeReplayScope() {
-  const messageListeners = [];
-  let nextJson = null;
-  return {
-    fetch: async () => ({ clone: () => ({ json: async () => nextJson }) }),
-    setJson: (j) => { nextJson = j; },
-    addEventListener: (type, fn) => { if (type === "message") messageListeners.push(fn); },
-    dispatch: (data) => { for (const fn of messageListeners) fn({ data }); },
-  };
-}
-
-const FOLDER_URL = "https://x.com/i/api/graphql/Q/BookmarkFolderTimeline?variables=%7B%7D";
-
-test("installTimelineHook: buffers forwarded responses and replays them on request", async () => {
-  const scope = fakeReplayScope();
-  const posted = [];
-  installTimelineHook({ target: scope, post: (m) => posted.push(m) });
-
-  scope.setJson({ page: 1 }); await scope.fetch(FOLDER_URL); await tick();
-  scope.setJson({ page: 2 }); await scope.fetch(FOLDER_URL); await tick();
-  assert.equal(posted.length, 2, "two live forwards");
-
-  // The controller (late subscriber) asks for a replay → both buffered pages re-emit,
-  // in order, so the pages fetched before the sweep started aren't lost.
-  scope.dispatch({ source: REPLAY_REQUEST_SOURCE });
-  assert.deepEqual(posted.slice(2).map((p) => p.json), [{ page: 1 }, { page: 2 }]);
-
-  // An unrelated message triggers no replay.
-  scope.dispatch({ source: "something-else" });
-  assert.equal(posted.length, 4);
-});
-
-test("installTimelineHook: the replay buffer is bounded (keeps only the most recent)", async () => {
-  const scope = fakeReplayScope();
-  const posted = [];
-  installTimelineHook({ target: scope, post: (m) => posted.push(m) });
-
-  const N = 30; // exceeds REPLAY_BUFFER_LIMIT (25)
-  for (let i = 0; i < N; i += 1) { scope.setJson({ page: i }); await scope.fetch(FOLDER_URL); await tick(); }
-
-  const before = posted.length;
-  scope.dispatch({ source: REPLAY_REQUEST_SOURCE });
-  const replayed = posted.slice(before).map((p) => p.json.page);
-  assert.ok(replayed.length < N, "buffer is bounded, not unbounded");
-  assert.equal(replayed[replayed.length - 1], N - 1, "keeps the most recent page");
-  assert.equal(replayed[0], N - replayed.length, "drops the oldest pages");
-});
-
-// MARK: - XHR path (X's live transport for the timeline — the T9 root cause)
-
-/** A fake scope whose XMLHttpRequest fires a synchronous `load` on send(), with a
- * settable responseText / responseType — mirrors how X actually pulls the timeline. */
-function fakeXHRScope() {
-  class FakeXHR {
-    constructor() { this._load = []; this.responseType = ""; }
-    open(method, url) { this._method = method; this._url = url; }
-    addEventListener(type, fn) { if (type === "load") this._load.push(fn); }
-    send() { for (const fn of this._load) fn.call(this); } // synchronous load
-  }
-  return { XMLHttpRequest: FakeXHR };
-}
-
-test("installTimelineHook: forwards a timeline XHR response, ignores non-timeline XHRs", () => {
-  const scope = fakeXHRScope();
-  const posted = [];
-  assert.equal(installTimelineHook({ target: scope, post: (m) => posted.push(m) }), true);
-
-  const xhr = new scope.XMLHttpRequest();
-  xhr.open("GET", "https://x.com/i/api/graphql/Q/Bookmarks?variables=%7B%7D");
-  xhr.responseText = JSON.stringify({ ok: 2 });
-  xhr.send();
-  assert.equal(posted.length, 1);
-  assert.equal(posted[0].url, "https://x.com/i/api/graphql/Q/Bookmarks?variables=%7B%7D");
-  assert.deepEqual(posted[0].json, { ok: 2 });
-
-  const other = new scope.XMLHttpRequest();
-  other.open("GET", "https://x.com/i/api/graphql/Q/HomeTimeline");
-  other.responseText = JSON.stringify({ ok: 3 });
-  other.send();
-  assert.equal(posted.length, 1);                  // non-timeline XHR ignored
-});
-
-test("installTimelineHook: XHR responseType 'json' reads the parsed response object", () => {
-  const scope = fakeXHRScope();
-  const posted = [];
-  installTimelineHook({ target: scope, post: (m) => posted.push(m) });
-
-  const xhr = new scope.XMLHttpRequest();
-  xhr.open("GET", "https://x.com/i/api/graphql/Q/Bookmarks");
-  xhr.responseType = "json";
-  xhr.response = { already: "parsed" };
-  xhr.send();
-  assert.deepEqual(posted[0].json, { already: "parsed" });
-});
-
-test("installTimelineHook: an unparseable XHR body is swallowed (page unaffected)", () => {
-  const scope = fakeXHRScope();
-  installTimelineHook({ target: scope, post: () => { throw new Error("boom"); } });
-
-  const xhr = new scope.XMLHttpRequest();
-  xhr.open("GET", "https://x.com/i/api/graphql/Q/Bookmarks");
-  xhr.responseText = "<html>not json</html>";
-  assert.doesNotThrow(() => xhr.send());           // load handler never throws into send
 });
