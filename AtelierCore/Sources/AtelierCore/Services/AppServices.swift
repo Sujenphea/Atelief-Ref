@@ -548,6 +548,60 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// Atomically MOVE memberships between collections (009 · N1), IN ONE
+    /// transaction — the domain's triage verb, so a crash can never leave an
+    /// asset vanished from both collections or silently duplicated half-moved.
+    /// Per asset: gain a membership in `targetID` (skipped when already a
+    /// member — the dedup mirrors `addAssets`, so an already-member asset
+    /// simply loses its source membership), then lose the `sourceID`
+    /// membership (idempotent — a stale payload whose asset was already
+    /// removed from the source still honors the "put it there" intent, 9A).
+    /// `.notFound` (rolling back the whole batch) for a missing source/target
+    /// collection or asset. `sourceID == targetID` and an empty batch are
+    /// no-ops. Duplicate ids in one batch land a single membership.
+    ///
+    /// New target memberships are explicitly APPENDED to the manual order
+    /// (`max(manual_order) + 1, +2, …` in batch order) so a move lands at the
+    /// target's feed end deterministically (17A). Fresh `addAssets`
+    /// memberships stay NULL — which `.manual`'s `ORDER BY manual_order`
+    /// sorts FIRST — so without the append a move into an arranged collection
+    /// would surface at the front, breaking the "it went to the end" promise
+    /// move makes (copy/import keep their existing placement semantics).
+    public func moveAssets(_ assetIDs: [UUID], from sourceID: UUID, to targetID: UUID) async throws {
+        guard sourceID != targetID, !assetIDs.isEmpty else { return }
+        try await write { db in
+            guard try Collection.exists(db, key: Self.key(sourceID)) else {
+                throw AtelierError.notFound(entity: "collection", id: sourceID)
+            }
+            guard try Collection.exists(db, key: Self.key(targetID)) else {
+                throw AtelierError.notFound(entity: "collection", id: targetID)
+            }
+            let now = Date()
+            var nextOrder = try Int.fetchOne(db, sql: """
+                SELECT COALESCE(MAX(manual_order), -1) + 1 FROM collection_item
+                WHERE collection_id = ?
+                """, arguments: [Self.key(targetID)]) ?? 0
+            for assetID in assetIDs {
+                guard try Asset.exists(db, key: Self.key(assetID)) else {
+                    throw AtelierError.notFound(entity: "asset", id: assetID)
+                }
+                let isMember = try Self.membership(
+                    db, collectionID: targetID, assetID: assetID) != nil
+                if !isMember {
+                    let item = CollectionItem(
+                        id: UUID(), collectionID: targetID,
+                        assetID: assetID, addedAt: now, manualOrder: nextOrder)
+                    try item.insert(db)
+                    nextOrder += 1
+                }
+                try CollectionItem
+                    .filter(Column("collection_id") == Self.key(sourceID))
+                    .filter(Column("asset_id") == Self.key(assetID))
+                    .deleteAll(db)
+            }
+        }
+    }
+
     /// Delete assets ENTIRELY from the library (not just one folder membership),
     /// IN ONE transaction. Idempotent — an unknown / already-deleted id is
     /// skipped, not an error (so concurrent or repeated deletes are safe).
@@ -758,6 +812,67 @@ public final class AppServices: Sendable {
                 covers[cid] = row["hash"]
             }
             return covers
+        }
+    }
+
+    /// The Unsorted screen's stack-row data (009 · N4): every ROOT collection
+    /// EXCEPT Unsorted (the row lives ON the Unsorted screen — its drop targets
+    /// are the other roots), ordered `name, id` (stable, matching
+    /// ``listCollections()``). Each entry carries the collection, its DIRECT
+    /// item count, and the blob hashes of its `limit` most recently added
+    /// byte-backed items (newest first) for the fanned thumbnails — one
+    /// window-function query, not a per-collection N+1. Media-less kinds
+    /// (003 · O1) have no thumbnail so they are skipped in the hashes but
+    /// still counted; a collection with no byte-backed items simply fans
+    /// nothing.
+    public func collectionStackPreviews(limit: Int = 3) async throws -> [CollectionStackPreview] {
+        try await read { db in
+            let roots = try Collection
+                .filter(Column("parent_collection_id") == nil)
+                .filter(Column("id") != Self.key(Collection.unsortedID))
+                .order(Column("name"), Column("id"))
+                .fetchAll(db)
+            guard !roots.isEmpty else { return [] }
+
+            var counts: [UUID: Int] = [:]
+            let countRows = try Row.fetchAll(db, sql: """
+                SELECT collection_id AS cid, COUNT(*) AS cnt
+                FROM collection_item GROUP BY collection_id
+                """)
+            for row in countRows {
+                guard let cid = UUID(uuidString: row["cid"]) else { continue }
+                counts[cid] = row["cnt"]
+            }
+
+            var hashes: [UUID: [String]] = [:]
+            if limit > 0 {
+                // `added_at DESC, id DESC` — the id tie-break keeps a
+                // same-instant batch deterministic.
+                let hashRows = try Row.fetchAll(db, sql: """
+                    SELECT cid, hash FROM (
+                        SELECT ci.collection_id AS cid, a.blob_hash AS hash,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY ci.collection_id
+                                   ORDER BY ci.added_at DESC, ci.id DESC
+                               ) AS rn
+                        FROM collection_item ci
+                        JOIN asset a ON a.id = ci.asset_id
+                        WHERE a.blob_hash IS NOT NULL
+                    ) WHERE rn <= ?
+                    ORDER BY cid, rn
+                    """, arguments: [limit])
+                for row in hashRows {
+                    guard let cid = UUID(uuidString: row["cid"]) else { continue }
+                    hashes[cid, default: []].append(row["hash"])
+                }
+            }
+
+            return roots.map {
+                CollectionStackPreview(
+                    collection: $0,
+                    itemCount: counts[$0.id] ?? 0,
+                    recentBlobHashes: hashes[$0.id] ?? [])
+            }
         }
     }
 

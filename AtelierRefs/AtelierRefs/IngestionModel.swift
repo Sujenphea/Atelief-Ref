@@ -58,16 +58,31 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Selected folder contents
 
-    /// The selected folder's DIRECT items (decision F5).
-    @Published private(set) var items: [CollectionItemDetail] = []
+    /// The selected folder's DIRECT items (decision F5). Rebuilds the O(1)
+    /// selection/drag indexes (below) on every assignment — a load, a move, a
+    /// reorder — so the marquee/drag hot path never rescans `items` per cell.
+    @Published private(set) var items: [CollectionItemDetail] = [] {
+        didSet { rebuildItemDerivations() }
+    }
     /// The selected folder's immediate subfolders (navigable).
     @Published private(set) var subfolders: [Collection] = []
 
+    /// The Unsorted screen's stack-row cards (009 · N4): one per root collection
+    /// (Unsorted excluded), each with its count + recent thumbnail hashes. Loaded
+    /// ONLY while the Unsorted folder is selected (empty otherwise), refreshed via
+    /// the same `loadContents` funnel so a move keeps it live.
+    @Published private(set) var stackPreviews: [CollectionStackPreview] = []
+
     // MARK: - Selected item (inspector)
 
-    /// The membership id of the item shown in the inspector, or `nil` when
-    /// nothing is selected. Cleared automatically when it leaves ``items``.
-    @Published private(set) var selectedItemID: UUID?
+    /// The grid's multi-selection (009 · N2): the selected membership ids, the
+    /// ⇧-range anchor, and the `lead` (the detail-overlay / keyboard cursor).
+    /// Selection MODE is derived — `selection.isSelecting`. Pruned to surviving
+    /// ids on every contents reload. Mutated ONLY through ``applySelection`` (the
+    /// pure reducer) so the mode-dependent click contract stays testable.
+    @Published private(set) var selection = GridSelection() {
+        didSet { rebuildSelectedAssetIDs() }
+    }
     /// The selected item's large (1280-tier) preview, loaded OFF-MAIN; `nil`
     /// while loading, when nothing is selected, or if the tier can't be decoded.
     @Published private(set) var previewImage: NSImage?
@@ -167,11 +182,71 @@ final class IngestionModel: ObservableObject {
         folders.first { $0.id == id }?.name ?? "Folder"
     }
 
-    /// The selected item's detail, resolved from the loaded ``items`` (the
-    /// membership id is the source of truth so it survives a contents reload).
-    var selectedItem: CollectionItemDetail? {
-        guard let selectedItemID else { return nil }
-        return items.first { $0.item.id == selectedItemID }
+    /// The LEAD item's detail — what the full-window detail overlay shows and
+    /// what the tag editor mutates — resolved from the loaded ``items`` by the
+    /// `selection.lead` membership id (stable across a contents reload). `nil`
+    /// when there is no cursor, which auto-dismisses the overlay.
+    var leadItem: CollectionItemDetail? {
+        guard let lead = selection.lead else { return nil }
+        return items.first { $0.item.id == lead }
+    }
+
+    /// The asset ids of the current selection, in feed order — the boundary from
+    /// membership-id selection to the asset-id verbs (move / copy / remove /
+    /// delete / drag payload). Empty when nothing is selected. Served from a cache
+    /// rebuilt on every `items`/`selection` change: a marquee re-render rebuilds
+    /// each visible cell's `.draggable` payload, and every selected cell reads
+    /// this — recomputing the filter per cell was O(visible × N) per tick.
+    var selectedAssetIDs: [UUID] { cachedSelectedAssetIDs }
+
+    // MARK: - Derived selection/drag indexes (009 · N6 perf)
+
+    /// `item.id → asset.id` for O(1) single-cell drag/action scope, replacing an
+    /// `items.first { … }` linear scan run per visible cell each marquee tick.
+    private var assetIDByItemID: [UUID: UUID] = [:]
+    /// The item ids in feed order — the reducer's `order` argument, hoisted out of
+    /// `applySelection` so a per-tick `items.map` allocation is avoided.
+    private var itemOrder: [UUID] = []
+    /// The current selection's asset ids in feed order (see `selectedAssetIDs`).
+    private var cachedSelectedAssetIDs: [UUID] = []
+
+    /// Rebuild the item-keyed indexes after `items` changes (a load / mutation);
+    /// the selection cache depends on `items` too, so refresh it here as well.
+    private func rebuildItemDerivations() {
+        itemOrder = items.map { $0.item.id }
+        assetIDByItemID = Dictionary(
+            items.map { ($0.item.id, $0.asset.id) }, uniquingKeysWith: { first, _ in first })
+        rebuildSelectedAssetIDs()
+    }
+
+    /// Rebuild the selected-asset-id cache after `items` or `selection` changes.
+    /// Preserves feed order (mirrors the old `items.filter { … }.map` exactly).
+    private func rebuildSelectedAssetIDs() {
+        cachedSelectedAssetIDs = items.compactMap {
+            selection.ids.contains($0.item.id) ? $0.asset.id : nil
+        }
+    }
+
+    /// The asset ids a batch action should act on for a right-click on the cell
+    /// whose membership id is `itemID` (Finder scope, 009 · 7A): the WHOLE
+    /// selection when that cell is part of it, else just that one cell — the
+    /// selection is left untouched either way.
+    func actionTargets(forCellItemID itemID: UUID) -> [UUID] {
+        if selection.ids.contains(itemID) { return selectedAssetIDs }
+        guard let assetID = assetIDByItemID[itemID] else { return [] }
+        return [assetID]
+    }
+
+    /// Build the drag payload for a drag that starts on the cell `itemID`
+    /// (009 · N3). Same scope rule as ``actionTargets(forCellItemID:)``: a cell
+    /// that is part of the selection drags the WHOLE selection; an UNSELECTED
+    /// cell drags just itself — a single-item drag, **selection left untouched**
+    /// (an idle drag leaves you idle, not stuck in selection mode). Returns `nil`
+    /// only if the cell has vanished.
+    func dragPayload(forCellItemID itemID: UUID) -> AssetDragPayload? {
+        let assetIDs = actionTargets(forCellItemID: itemID)
+        guard !assetIDs.isEmpty else { return nil }
+        return AssetDragPayload(assetIDs: assetIDs, sourceCollectionID: selectedFolderID)
     }
 
     /// A pending destructive delete awaiting the user's confirmation. Set by the
@@ -507,21 +582,41 @@ final class IngestionModel: ObservableObject {
         contentsLoadID &+= 1
         let loadID = contentsLoadID
         let sort = sortMode(for: id)
+        // The stack row is shown only on the Unsorted screen (009 · N4), so its
+        // preview read is skipped for every other folder.
+        let loadsStacks = id == unsortedFolderID
         Task {
             do {
-                let loadedItems = try await services.collectionItems(in: id, sort: sort)
-                let loadedSubfolders = try await services.childCollections(of: id)
-                // A newer load has superseded this one — the two DB reads can
-                // finish out of order, so a stale read must NOT overwrite the
-                // current folder's content. Bail before publishing anything.
+                // The three reads are independent — run them concurrently so the
+                // reload latency is the slowest ONE, not their sum (009 · 16A).
+                async let itemsRead = services.collectionItems(in: id, sort: sort)
+                async let subfoldersRead = services.childCollections(of: id)
+                async let stacksRead: [CollectionStackPreview] =
+                    loadsStacks ? services.collectionStackPreviews() : []
+                let loadedItems = try await itemsRead
+                let loadedSubfolders = try await subfoldersRead
+                let loadedStacks = try await stacksRead
+                // A newer load has superseded this one — the reads can finish out
+                // of order, so a stale read must NOT overwrite the current
+                // folder's content. Bail before publishing anything.
                 guard loadID == contentsLoadID else { return }
                 items = loadedItems
                 subfolders = loadedSubfolders
-                // Drop a selection that no longer exists in the reloaded set
-                // (folder switch, or the item was removed).
-                if let selectedItemID,
-                   !items.contains(where: { $0.item.id == selectedItemID }) {
-                    select(nil)
+                // Republish the stack row only when it actually changed — an
+                // unchanged set never re-renders or re-decodes its fans (009 · 15A).
+                if loadsStacks {
+                    if stackPreviews != loadedStacks { stackPreviews = loadedStacks }
+                } else if !stackPreviews.isEmpty {
+                    stackPreviews = []
+                }
+                // Prune the selection to ids that survive the reloaded set
+                // (folder switch, move-away, or delete). A removed lead clears
+                // the inspector so a stale preview/tags can't linger.
+                let hadLead = selection.lead
+                selection = selection.pruned(to: items.map { $0.item.id })
+                if hadLead != nil, selection.lead == nil {
+                    previewImage = nil
+                    selectedTags = []
                 }
                 contentsVersion &+= 1
             } catch {
@@ -599,19 +694,20 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Reorder (drag-to-reorder)
 
-    /// Move the item with `movingAssetID` to the grid slot currently held by
-    /// `targetAssetID`, within the selected folder. OPTIMISTIC: reorders the local
-    /// ``items`` immediately for feedback, then persists the new full order via
-    /// `setGridOrder` (the write hops OFF the main actor). On failure the message
-    /// surfaces via ``lastError`` and the folder reloads to the truth; on success
-    /// it reloads too (core sorts by `manual_order`, so state stays consistent).
-    /// A no-op when the ids match, either isn't a current item (foreign drop), or
+    /// Move the dragged BLOCK `movingAssetIDs` to the grid slot currently held by
+    /// `targetAssetID`, within the selected folder (009 · N3 — multi-select drag).
+    /// OPTIMISTIC: reorders the local ``items`` immediately for feedback, then
+    /// persists the new full order via `setGridOrder` (the write hops OFF the main
+    /// actor). On failure the message surfaces via ``lastError`` and the folder
+    /// reloads to the truth; on success it reloads too (core sorts by
+    /// `manual_order`, so state stays consistent). A no-op when the target is one
+    /// of the dragged items, no dragged id is a current item (foreign drop), or
     /// the folder isn't in `.manual` mode (reordering has no meaning there).
-    func reorderItem(movingAssetID: UUID, toIndexOf targetAssetID: UUID) {
+    func reorderItems(movingAssetIDs: [UUID], toIndexOf targetAssetID: UUID) {
         guard let services, sortMode(for: selectedFolderID) == .manual else { return }
         let currentIDs = items.map { $0.asset.id }
         guard let newOrder = reorderedIDs(
-            ids: currentIDs, movingID: movingAssetID, toIndexOf: targetAssetID)
+            ids: currentIDs, movingIDs: movingAssetIDs, toIndexOf: targetAssetID)
         else { return }
 
         // Optimistic local reorder — rebuild `items` in the new order.
@@ -636,18 +732,37 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Selection + inspector
 
-    /// Select `detail` (or clear with `nil`) and load its preview + tags off-main.
-    func select(_ detail: CollectionItemDetail?) {
-        selectedItemID = detail?.item.id
+    /// Apply a selection `action` through the pure ``GridSelection`` reducer over
+    /// the current feed order (+ `columns` for arrow keys), publish the new
+    /// selection, and hand the caller the ``GridSelectionEffect`` to execute
+    /// (open detail / scroll a cell into view / nothing). This is the ONLY
+    /// selection mutator — views report raw input and never branch on mode (009 ·
+    /// N2 · 11A). Pure state: NO preview/tags I/O happens here, so a toggle or a
+    /// ⌘A never decodes a large thumbnail (009 · 8A); loads happen in
+    /// ``openItem(_:)`` when the detail page is actually opened.
+    @discardableResult
+    func applySelection(_ action: GridSelectionAction, columns: Int = 1) -> GridSelectionEffect {
+        let (next, effect) = selection.applying(action, order: itemOrder, columns: columns)
+        // Publish only real changes: the marquee re-fires on every mouse-move
+        // tick, and an unchanged hit set must not re-render the whole screen.
+        if next != selection { selection = next }
+        return effect
+    }
+
+    /// Open `detail` in the inspector/detail page: make it the lead cursor and
+    /// load its preview + tags off-main (009 · 8A — the I/O is here, on open, not
+    /// on every selection change). Called by a grid open and by the detail page's
+    /// prev/next stepper; the caller still records the view + raises the overlay.
+    func openItem(_ detail: CollectionItemDetail) {
+        selection.lead = detail.item.id
         previewImage = nil
         selectedTags = []
-        guard let detail else { return }
         loadPreview(for: detail)
         loadTags(for: detail.asset.id)
     }
 
     /// Load the large (1280-tier) thumbnail for `detail` off-main, then publish
-    /// it only if that item is still the selection (guards rapid re-selection).
+    /// it only if that item is still the lead (guards rapid re-selection).
     private func loadPreview(for detail: CollectionItemDetail) {
         // A media-less asset (003 · O1) has no thumbnail to decode.
         guard let store, let hash = detail.asset.blobHash else { return }
@@ -658,7 +773,7 @@ final class IngestionModel: ObservableObject {
         Task.detached(priority: .userInitiated) {
             let image = NSImage(contentsOf: url)
             await MainActor.run { [weak self] in
-                guard let self, self.selectedItemID == targetID else { return }
+                guard let self, self.selection.lead == targetID else { return }
                 self.previewImage = image
             }
         }
@@ -688,8 +803,7 @@ final class IngestionModel: ObservableObject {
         Task {
             do {
                 let tags = try await services.tags(for: assetID)
-                guard selectedItemID != nil,
-                      selectedItem?.asset.id == assetID else { return }
+                guard leadItem?.asset.id == assetID else { return }
                 selectedTags = tags
             } catch {
                 lastError = Self.message(for: error)
@@ -701,7 +815,7 @@ final class IngestionModel: ObservableObject {
     /// whitespace names are rejected inside the funnel (`Validation.tagName`) and
     /// surface via ``lastError``; a duplicate is idempotent (no second chip).
     func addTag(_ name: String) {
-        guard let services, let detail = selectedItem else { return }
+        guard let services, let detail = leadItem else { return }
         let assetID = detail.asset.id
         Task {
             do {
@@ -716,7 +830,7 @@ final class IngestionModel: ObservableObject {
     /// Remove `tag` from the selected item, then refresh the chips. Idempotent —
     /// a no-op if the link is already gone.
     func removeTag(_ tag: Tag) {
-        guard let services, let detail = selectedItem else { return }
+        guard let services, let detail = leadItem else { return }
         let assetID = detail.asset.id
         Task {
             do {
@@ -731,7 +845,7 @@ final class IngestionModel: ObservableObject {
     /// Reload the tag chips if `assetID` is still the selection (a tag edit that
     /// lands after the user has navigated away must not repopulate a stale item).
     private func reloadTagsIfCurrent(_ assetID: UUID) {
-        guard selectedItem?.asset.id == assetID else { return }
+        guard leadItem?.asset.id == assetID else { return }
         loadTags(for: assetID)
     }
 
@@ -811,10 +925,39 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Remove the inspector's currently-selected item from the current folder.
+    /// MOVE assets out of the current folder into `targetID` — the atomic triage
+    /// verb (009 · N1). One transaction; the moved items leave this folder, so the
+    /// reload prunes them from the selection. A `from == to` / empty set is a
+    /// no-op in core.
+    func moveToCollection(assetIDs: [UUID], to targetID: UUID) {
+        guard !assetIDs.isEmpty else { return }
+        let folder = selectedFolderID
+        mutateContents { services in
+            try await services.moveAssets(assetIDs, from: folder, to: targetID)
+            return "Moved \(Self.itemCount(assetIDs.count)) to “\(self.name(for: targetID))”."
+        }
+    }
+
+    /// COPY assets into `targetID` WITHOUT removing them here (009 · ⌥-drag / Add
+    /// to ▸) — multi-membership, so it is exactly `addAssets`. The current folder
+    /// is unchanged, so the selection survives.
+    func copyToCollection(assetIDs: [UUID], to targetID: UUID) {
+        guard !assetIDs.isEmpty else { return }
+        mutateContents { services in
+            try await services.addAssets(assetIDs, to: targetID)
+            return "Added \(Self.itemCount(assetIDs.count)) to “\(self.name(for: targetID))”."
+        }
+    }
+
+    /// The asset ids a keyboard command (Delete / Remove) acts on: the whole
+    /// selection when selecting, else the lead cursor's single item.
+    private var keyboardActionTargets: [UUID] {
+        selection.isSelecting ? selectedAssetIDs : (leadItem.map { [$0.asset.id] } ?? [])
+    }
+
+    /// Remove the current selection (or the lead item) from the current folder.
     func removeSelectedFromFolder() {
-        guard let detail = selectedItem else { return }
-        removeFromFolder(assetIDs: [detail.asset.id])
+        removeFromFolder(assetIDs: keyboardActionTargets)
     }
 
     /// Stage a destructive delete for confirmation (see ``confirmPendingDeletion``).
@@ -824,10 +967,9 @@ final class IngestionModel: ObservableObject {
         pendingDeletion = PendingDeletion(assetIDs: assetIDs)
     }
 
-    /// Stage a delete of the inspector's currently-selected item.
+    /// Stage a delete of the current selection (or the lead item).
     func requestDeleteSelected() {
-        guard let detail = selectedItem else { return }
-        requestDelete(assetIDs: [detail.asset.id])
+        requestDelete(assetIDs: keyboardActionTargets)
     }
 
     /// Dismiss the pending delete without acting.

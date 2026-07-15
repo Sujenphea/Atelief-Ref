@@ -20,15 +20,36 @@ import Foundation
 /// `ids` (e.g. a foreign drop whose payload isn't one of this folder's items). A
 /// non-nil result is always a permutation of `ids` with the same count.
 func reorderedIDs(ids: [UUID], movingID: UUID, toIndexOf targetID: UUID) -> [UUID]? {
-    guard movingID != targetID,
-          let fromIndex = ids.firstIndex(of: movingID),
-          let toIndex = ids.firstIndex(of: targetID) else { return nil }
-    var result = ids
-    result.remove(at: fromIndex)
-    // Forward: after removal the target sits at `toIndex - 1`, so inserting at
-    // `toIndex` drops the item just after it. Backward: the target is unmoved at
-    // `toIndex`, so inserting there drops the item just before it.
-    result.insert(movingID, at: toIndex)
+    reorderedIDs(ids: ids, movingIDs: [movingID], toIndexOf: targetID)
+}
+
+/// Return `ids` with the dragged BLOCK `movingIDs` moved next to `targetID` —
+/// the multi-select generalization of the single-item drop (009 · N3). The block
+/// is re-gathered in `ids` (feed) order, so a non-contiguous or reverse-picked
+/// selection lands as ONE contiguous run in its natural feed order. Insertion is
+/// DIRECTIONAL, matching the single-item rule: if the block's first member sat
+/// BEFORE the target it lands just AFTER the target, else just BEFORE — so an
+/// adjacent drop always moves toward the drop and there is no dead zone.
+///
+/// Returns `nil` for a no-op: an empty/foreign `movingIDs` (none present in
+/// `ids`), a `targetID` absent from `ids`, or a `targetID` that is itself one of
+/// the dragged items (dropping the block onto itself). A non-nil result is always
+/// a permutation of `ids` with the same count.
+func reorderedIDs(ids: [UUID], movingIDs: [UUID], toIndexOf targetID: UUID) -> [UUID]? {
+    let movingSet = Set(movingIDs)
+    guard !movingSet.isEmpty, !movingSet.contains(targetID),
+          let targetOriginalIndex = ids.firstIndex(of: targetID) else { return nil }
+    // The block in feed order, dropping any foreign ids not in this folder.
+    let block = ids.filter { movingSet.contains($0) }
+    guard let firstBlockOriginalIndex = block.first.flatMap({ ids.firstIndex(of: $0) })
+    else { return nil }
+    let remaining = ids.filter { !movingSet.contains($0) }
+    guard let targetNewIndex = remaining.firstIndex(of: targetID) else { return nil }
+    let insertAt = firstBlockOriginalIndex < targetOriginalIndex
+        ? targetNewIndex + 1   // forward: land just after the target
+        : targetNewIndex       // backward: land just before the target
+    var result = remaining
+    result.insert(contentsOf: block, at: insertAt)
     return result
 }
 

@@ -96,12 +96,9 @@ struct CollectionsGalleryView: View {
     // MARK: - Ordering (Unsorted pinned first)
 
     private var orderedRoots: [Collection] {
-        let roots = model.rootCollections
-        let unsorted = roots.filter { $0.id == model.unsortedFolderID }
-        let rest = roots
-            .filter { $0.id != model.unsortedFolderID }
-            .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
-        return unsorted + rest
+        // The ONE definition of collection ordering (009 · 6B) — shared with the
+        // Move/Add menus and the drop rail so the three can never drift apart.
+        CollectionTargets.galleryRoots(model.folders, unsortedID: model.unsortedFolderID)
     }
 
     private func coverURL(for id: UUID) -> URL? {

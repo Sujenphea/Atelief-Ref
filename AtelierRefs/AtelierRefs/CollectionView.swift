@@ -24,8 +24,20 @@ struct CollectionView: View {
 
     @State private var isTargeted = false
 
+    // The marquee's per-tick state (009 · N6), a class in plain `@State` ON
+    // PURPOSE: only the two layers in `GridMarquee.swift` observe it, so a
+    // 120Hz drag re-renders those layers and NOT this whole screen. (`@State`
+    // keeps the first instance across re-inits; `@StateObject` would subscribe
+    // this view to every tick.)
+    @State private var marquee = GridMarqueeState()
+    // Programmatic scroll handle for the marquee's edge auto-scroll (offset-based
+    // scrolling — `proxy.scrollTo` can only target whole cells).
+    @State private var gridScroll = ScrollPosition()
+
     private static let gridItemMinWidth: CGFloat = 112
     private static let gridSpacing: CGFloat = 8
+    private static let gridTopInset: CGFloat = 4
+    private static let marqueeSpace = "collectionGridContent"
     private let columns = [
         GridItem(.adaptive(minimum: gridItemMinWidth, maximum: 140), spacing: gridSpacing)
     ]
@@ -34,12 +46,17 @@ struct CollectionView: View {
         LibrarySearchable(model: model, collectionID: collectionID) {
             ZStack {
                 content
+                // The floating drop rail (009 · N5) — every collection screen EXCEPT
+                // Unsorted, and hidden while the detail page covers the grid.
+                if collectionID != model.unsortedFolderID, nav.presentedItemID == nil {
+                    dropRail
+                }
                 // Full-window detail page for the presented item. The overlay is
                 // shared route state (`NavModel.presentedItemID`) so the grid, the
                 // Return key, and the Space canvas can all open it; guarding also on
                 // `selectedItem != nil` auto-dismisses back to the grid when the item
                 // is removed/deleted from inside the page.
-                if nav.presentedItemID != nil, let detail = model.selectedItem {
+                if nav.presentedItemID != nil, let detail = model.leadItem {
                     detailOverlay(for: detail)
                         .transition(.opacity)
                 }
@@ -50,6 +67,8 @@ struct CollectionView: View {
         .task(id: collectionID) {
             model.selectedFolderID = collectionID
             model.loadContents(of: collectionID)
+            // Covers feed the rail's mini thumbnails; refresh them for this screen.
+            await model.refreshCollectionCovers()
         }
         .navigationTitle(model.name(for: collectionID))
         .toolbar {
@@ -109,6 +128,11 @@ struct CollectionView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            // The stack row is the Unsorted screen's triage surface (009 · N4):
+            // drop the selection onto a root collection to move it out of Unsorted.
+            if collectionID == model.unsortedFolderID && !model.stackPreviews.isEmpty {
+                stackRow
+            }
             dropZone
             if !model.subfolders.isEmpty {
                 subfolderChips
@@ -116,6 +140,59 @@ struct CollectionView: View {
             grid
         }
         .padding()
+    }
+
+    /// The Unsorted-only horizontal row of collection stacks (009 · N4). Each card
+    /// is a drop target that MOVES (⌥ copies) the dragged selection out of Unsorted
+    /// into that collection, and navigates into it on a plain click.
+    private var stackRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(model.stackPreviews, id: \.collection.id) { preview in
+                    StackDropTarget(
+                        preview: preview,
+                        thumbnailURL: { model.thumbnailURL(forBlobHash: $0) },
+                        onNavigate: { nav.openCollection(preview.collection.id) },
+                        onDrop: { handleCollectionDrop($0, into: preview.collection.id) })
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    /// The floating trailing drop rail (009 · N5), materialized only when there
+    /// are reachable targets. Aligned to the trailing edge over the grid.
+    @ViewBuilder
+    private var dropRail: some View {
+        let dests = CollectionTargets.moveTargets(
+            from: collectionID, folders: model.folders, unsortedID: model.unsortedFolderID)
+        if !dests.isEmpty {
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                CollectionDropRail(
+                    targets: dests,
+                    coverHash: { model.collectionCovers[$0] },
+                    thumbnailURL: { model.thumbnailURL(forBlobHash: $0) },
+                    onNavigate: { nav.openCollection($0) },
+                    onDrop: { handleCollectionDrop($0, into: $1) })
+            }
+        }
+    }
+
+    /// Route a payload dropped onto a collection target (stack card / rail row)
+    /// and apply the move or copy. Shared by the stack row and the drop rail.
+    private func handleCollectionDrop(_ payload: AssetDragPayload, into targetID: UUID) -> Bool {
+        switch routeDrop(
+            payload, onto: .collection(targetID), optionDown: Self.modifierReader.isOptionDown) {
+        case let .move(assetIDs, _, to):
+            model.moveToCollection(assetIDs: assetIDs, to: to)
+            return true
+        case let .copy(assetIDs, to):
+            model.copyToCollection(assetIDs: assetIDs, to: to)
+            return true
+        case .reject, .reorder:
+            return false
+        }
     }
 
     private var header: some View {
@@ -190,49 +267,92 @@ struct CollectionView: View {
         GeometryReader { geo in
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
-                        ForEach(model.items, id: \.item.id) { detail in
-                            Button {
-                                open(detail)
-                            } label: {
-                                AssetContentThumbnail(
-                                    asset: detail.asset,
+                    ZStack(alignment: .topLeading) {
+                        // Background capture layer (009 · N6): a drag on EMPTY space
+                        // is a marquee (image-drags hit the cells above and mean
+                        // move/copy); a plain click clears the selection. Sized to
+                        // the grid via the ZStack, in a named space so drag
+                        // locations match the computed cell frames.
+                        MarqueeCaptureLayer(
+                            state: marquee,
+                            width: geo.size.width,
+                            itemIDs: model.items.map { $0.item.id },
+                            minItemWidth: Self.gridItemMinWidth,
+                            spacing: Self.gridSpacing,
+                            topInset: Self.gridTopInset,
+                            spaceName: Self.marqueeSpace,
+                            selectionIDs: model.selection.ids,
+                            onMarquee: { hits, base in
+                                model.applySelection(.marquee(hits: hits, base: base))
+                            },
+                            onClear: { model.applySelection(.clear) },
+                            onAutoScroll: { gridScroll.scrollTo(y: $0) })
+                        LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
+                            ForEach(model.items, id: \.item.id) { detail in
+                                CollectionCell(
+                                    detail: detail,
                                     url: model.thumbnailURL(for: detail),
-                                    isSelected: model.selectedItemID == detail.item.id)
-                            }
-                            .buttonStyle(.plain)
-                            .id(detail.item.id)
-                            .draggable(detail.asset.id.uuidString)
-                            .dropDestination(for: String.self) { payloads, _ in
-                                reorder(dropped: payloads, onto: detail.asset.id)
-                            }
-                            .contextMenu {
-                                Button("Remove from Collection") {
-                                    model.removeFromFolder(assetIDs: [detail.asset.id])
+                                    isSelected: model.selection.ids.contains(detail.item.id),
+                                    isCursor: model.selection.lead == detail.item.id,
+                                    isSelecting: model.selection.isSelecting,
+                                    onImagePress: { shift, command in
+                                        handleImagePress(
+                                            detail, shift: shift, command: command, proxy: proxy)
+                                    },
+                                    onImageClick: { shift, command in
+                                        handleImageClick(
+                                            detail, shift: shift, command: command, proxy: proxy)
+                                    },
+                                    onCircleToggle: {
+                                        model.applySelection(.tapCircle(detail.item.id))
+                                    })
+                                .equatable()
+                                .id(detail.item.id)
+                                .draggable(dragPayload(for: detail)) { dragPreview(for: detail) }
+                                .dropDestination(for: AssetDragPayload.self) { payloads, _ in
+                                    handleCellDrop(payloads, onto: detail.asset.id)
                                 }
-                                Button("Set as Cover") {
-                                    model.setCollectionCover(collectionID: collectionID, assetID: detail.asset.id)
-                                }
-                                Divider()
-                                Button("Delete", role: .destructive) {
-                                    model.requestDelete(assetIDs: [detail.asset.id])
-                                }
+                                .contextMenu { cellMenu(for: detail) }
                             }
                         }
+                        .padding(.top, Self.gridTopInset)
+                        // The live marquee rectangle, drawn in the same space.
+                        MarqueeRectangleLayer(state: marquee)
                     }
-                    .padding(.top, 4)
+                    .coordinateSpace(name: Self.marqueeSpace)
+                }
+                .scrollPosition($gridScroll)
+                // Feed the live viewport (scroll offset + container size) and
+                // content height to the marquee's edge auto-scroll. Written to
+                // plain (non-published) vars on purpose: this fires every scroll
+                // tick and must not re-render this screen.
+                .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }) { _, geo in
+                    marquee.visibleRect = CGRect(
+                        x: geo.contentOffset.x, y: geo.contentOffset.y,
+                        width: geo.containerSize.width, height: geo.containerSize.height)
+                    marquee.contentHeight = geo.contentSize.height
                 }
                 .focusable()
+                .focusEffectDisabled()
                 .onDeleteCommand { model.requestDeleteSelected() }
                 .onKeyPress(.return) {
-                    guard let detail = model.selectedItem else { return .ignored }
-                    open(detail)
+                    let effect = model.applySelection(.openLead)
+                    execute(effect, proxy: proxy)
+                    return effect == .none ? .ignored : .handled
+                }
+                .onKeyPress(.escape) {
+                    guard model.selection.isSelecting else { return .ignored }
+                    model.applySelection(.clear)
                     return .handled
                 }
-                .onKeyPress(.leftArrow) { move(.left, width: geo.size.width, proxy: proxy) }
-                .onKeyPress(.rightArrow) { move(.right, width: geo.size.width, proxy: proxy) }
-                .onKeyPress(.upArrow) { move(.up, width: geo.size.width, proxy: proxy) }
-                .onKeyPress(.downArrow) { move(.down, width: geo.size.width, proxy: proxy) }
+                .onKeyPress(keys: ["a"]) { press in
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    model.applySelection(.selectAll)
+                    return .handled
+                }
+                .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow]) { press in
+                    handleArrow(press, width: geo.size.width, proxy: proxy)
+                }
             }
         }
         .overlay {
@@ -242,6 +362,51 @@ struct CollectionView: View {
             }
         }
     }
+
+    /// The batch context menu (009 · N2/N6). Finder scope (7A): a right-click on a
+    /// SELECTED cell acts on the whole selection; on an UNSELECTED cell it acts on
+    /// that one cell and leaves the selection untouched. Counts are shown in the
+    /// destructive verbs so the scope is never ambiguous.
+    @ViewBuilder
+    private func cellMenu(for detail: CollectionItemDetail) -> some View {
+        let targets = model.actionTargets(forCellItemID: detail.item.id)
+        let n = targets.count
+        let dests = CollectionTargets.moveTargets(
+            from: collectionID, folders: model.folders, unsortedID: model.unsortedFolderID)
+
+        Menu("Move to") {
+            targetButtons(dests) { model.moveToCollection(assetIDs: targets, to: $0) }
+        }
+        Menu("Add to") {
+            targetButtons(dests) { model.copyToCollection(assetIDs: targets, to: $0) }
+        }
+        if n == 1 {
+            Button("Set as Cover") {
+                model.setCollectionCover(collectionID: collectionID, assetID: targets[0])
+            }
+        }
+        Divider()
+        Button("Remove from Collection\(Self.countSuffix(n))") {
+            model.removeFromFolder(assetIDs: targets)
+        }
+        Button("Delete\(Self.countSuffix(n))", role: .destructive) {
+            model.requestDelete(assetIDs: targets)
+        }
+    }
+
+    /// A Move-to / Add-to submenu: subfolders first, a divider, then roots.
+    @ViewBuilder
+    private func targetButtons(
+        _ dests: MoveTargets, action: @escaping (UUID) -> Void
+    ) -> some View {
+        ForEach(dests.subfolders) { c in Button(c.name) { action(c.id) } }
+        if !dests.subfolders.isEmpty && !dests.roots.isEmpty { Divider() }
+        ForEach(dests.roots) { c in Button(c.name) { action(c.id) } }
+    }
+
+    /// " (N)" for a multi-item action, empty for a single — keeps the verb scope
+    /// explicit ("Delete (34)") without noise on the common one-item case.
+    private static func countSuffix(_ n: Int) -> String { n > 1 ? " (\(n))" : "" }
 
     /// Build the full-window detail overlay for `detail`, feeding the
     /// presentation-only ``ItemDetailView`` from this collection's `IngestionModel`
@@ -271,7 +436,7 @@ struct CollectionView: View {
                 ItemDetailNavigator(index: i, count: model.items.count) { delta in
                     let target = i + delta
                     if model.items.indices.contains(target) {
-                        model.select(model.items[target])
+                        model.openItem(model.items[target])
                         // Stepping to a new item in the detail page is a view.
                         model.recordView(assetID: model.items[target].asset.id)
                     }
@@ -283,49 +448,133 @@ struct CollectionView: View {
             })
     }
 
-    /// Open the full-window detail page for `detail`: bind the shared selection
-    /// and raise the overlay via `NavModel.presentedItemID` (the routing seam the
-    /// grid click, the Return key, and the Space canvas all funnel through). The
-    /// open is the deliberate "view" signal (007 G4).
+    /// Open the full-window detail page for `detail`: make it the lead (loading
+    /// its preview + tags, 009 · 8A) and raise the overlay via
+    /// `NavModel.presentedItemID` (the routing seam the grid click, the Return
+    /// key, and the Space canvas all funnel through). The open is the deliberate
+    /// "view" signal (007 G4).
     private func open(_ detail: CollectionItemDetail) {
-        model.select(detail)
+        model.openItem(detail)
         model.recordView(assetID: detail.asset.id)
         withAnimation { nav.presentedItemID = detail.item.id }
     }
 
-    // MARK: - Grid keyboard nav
+    // MARK: - Selection input routing (009 · N2)
 
-    private func move(
-        _ key: GridArrowKey, width: CGFloat, proxy: ScrollViewProxy
-    ) -> KeyPress.Result {
-        let currentIndex = model.selectedItemID.flatMap { id in
-            model.items.firstIndex { $0.item.id == id }
+    /// The mouse-DOWN edge on a cell's image: apply the down-edge cases (⇧/⌘,
+    /// toggle-on of an unselected cell while selecting) so a drag activation
+    /// can't swallow them, and report whether the press consumed the interaction
+    /// (the cell then ignores the matching mouse-up click). The decision table
+    /// is the pure ``gridPressRouting(imageID:isSelecting:isSelected:shift:command:)``.
+    private func handleImagePress(
+        _ detail: CollectionItemDetail, shift: Bool, command: Bool, proxy: ScrollViewProxy
+    ) -> Bool {
+        let routing = gridPressRouting(
+            imageID: detail.item.id,
+            isSelecting: model.selection.isSelecting,
+            isSelected: model.selection.ids.contains(detail.item.id),
+            shift: shift, command: command)
+        if let action = routing.pressAction {
+            execute(model.applySelection(action), proxy: proxy)
         }
-        let columnCount = gridColumnCount(
+        return routing.consumesRelease
+    }
+
+    /// A plain/⇧/⌘ click on a cell's image: build the reducer action from the live
+    /// modifiers and execute the returned effect. The reducer owns the
+    /// mode-dependent "open vs toggle" decision — this only routes.
+    private func handleImageClick(
+        _ detail: CollectionItemDetail, shift: Bool, command: Bool, proxy: ScrollViewProxy
+    ) {
+        let action = gridClickAction(imageID: detail.item.id, shift: shift, command: command)
+        execute(model.applySelection(action), proxy: proxy)
+    }
+
+    /// Route an arrow key (with ⇧ = extend) through the reducer, feeding it the
+    /// live column count so Up/Down step a whole row.
+    private func handleArrow(
+        _ press: KeyPress, width: CGFloat, proxy: ScrollViewProxy
+    ) -> KeyPress.Result {
+        let key: GridArrowKey
+        switch press.key {
+        case .leftArrow: key = .left
+        case .rightArrow: key = .right
+        case .upArrow: key = .up
+        case .downArrow: key = .down
+        default: return .ignored
+        }
+        let columns = gridColumnCount(
             availableWidth: width,
             minItemWidth: Self.gridItemMinWidth,
             spacing: Self.gridSpacing)
-        guard let target = nextGridIndex(
-            from: currentIndex, key: key,
-            count: model.items.count, columns: columnCount)
-        else { return .ignored }
-
-        let detail = model.items[target]
-        if detail.item.id != model.selectedItemID {
-            model.select(detail)
-        }
-        withAnimation { proxy.scrollTo(detail.item.id, anchor: .center) }
+        let effect = model.applySelection(
+            .arrow(key, extend: press.modifiers.contains(.shift)), columns: columns)
+        execute(effect, proxy: proxy)
         return .handled
     }
 
-    private func reorder(dropped payloads: [String], onto targetAssetID: UUID) -> Bool {
-        // Reordering only means something in manual mode — reject the drop
-        // otherwise (the model guards too, so this is the visual half).
-        guard model.sortMode(for: collectionID) == .manual,
-              let first = payloads.first, let movingAssetID = UUID(uuidString: first)
-        else { return false }
-        model.reorderItem(movingAssetID: movingAssetID, toIndexOf: targetAssetID)
-        return true
+    /// Carry out a reducer ``GridSelectionEffect``: open a detail page or scroll a
+    /// cell into view (Q4 — ⇧-arrow reuses the existing `scrollTo` path).
+    private func execute(_ effect: GridSelectionEffect, proxy: ScrollViewProxy) {
+        switch effect {
+        case .none:
+            break
+        case let .scrollTo(id):
+            withAnimation { proxy.scrollTo(id, anchor: .center) }
+        case let .openDetail(id):
+            if let detail = model.items.first(where: { $0.item.id == id }) { open(detail) }
+        }
+    }
+
+    // MARK: - Drag & drop (009 · N3)
+
+    /// The ⌥-at-drop-time reader, isolated behind a protocol so move-vs-copy
+    /// routing stays unit-testable (the routing itself lives in `routeDrop`).
+    private static let modifierReader: ModifierReading = LiveModifierReader()
+
+    /// The payload for a drag starting on `detail`: the whole selection when the
+    /// cell is selected, else the cell alone (which it also selects). Falls back
+    /// to a lone-cell payload if the model can't build one (cell vanished).
+    private func dragPayload(for detail: CollectionItemDetail) -> AssetDragPayload {
+        model.dragPayload(forCellItemID: detail.item.id)
+            ?? AssetDragPayload(assetIDs: [detail.asset.id], sourceCollectionID: collectionID)
+    }
+
+    /// The drag image: the cell's thumbnail with a count badge when more than one
+    /// item travels (Q3 — count badge on the lead thumbnail).
+    @ViewBuilder
+    private func dragPreview(for detail: CollectionItemDetail) -> some View {
+        let count = model.selection.ids.contains(detail.item.id)
+            ? max(model.selection.ids.count, 1) : 1
+        AssetContentThumbnail(asset: detail.asset, url: model.thumbnailURL(for: detail))
+            .frame(width: 84, height: 84)
+            .overlay(alignment: .topTrailing) {
+                if count > 1 {
+                    Text("\(count)")
+                        .font(.caption2).bold().monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(Color.accentColor))
+                        .padding(4)
+                }
+            }
+    }
+
+    /// Handle a payload dropped onto the cell for `targetAssetID`: route it (only
+    /// a same-collection, manual-sort drop is a reorder) and apply the multi-block
+    /// move. Cross-collection / non-manual drops are refused here — those moves go
+    /// through the stack row / rail.
+    private func handleCellDrop(_ payloads: [AssetDragPayload], onto targetAssetID: UUID) -> Bool {
+        guard let payload = payloads.first else { return false }
+        let target = DropTarget.cell(
+            collectionID: collectionID, sortMode: model.sortMode(for: collectionID))
+        switch routeDrop(payload, onto: target, optionDown: Self.modifierReader.isOptionDown) {
+        case let .reorder(assetIDs):
+            model.reorderItems(movingAssetIDs: assetIDs, toIndexOf: targetAssetID)
+            return true
+        case .reject, .move, .copy:
+            return false
+        }
     }
 
     // MARK: - Import actions
