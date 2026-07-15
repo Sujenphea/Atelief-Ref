@@ -103,6 +103,28 @@ struct MarqueeMathTests {
         #expect(marqueeIndices(in: rect, frames: frames) == [3, 4])
     }
 
+    @Test("an area marquee whose edge only touches a boundary excludes the neighbour")
+    func boundaryTouchExcludesNeighbour() {
+        let frames = grid(9, columns: 3)   // 3×3, 100pt cells
+        // A marquee snug over column 0 (x∈[0,100]) across all rows: its right edge
+        // sits exactly on column 1's left edge (x=100) — strict overlap must NOT
+        // pull in column 1.
+        let column = CGRect(x: 0, y: 0, width: 100, height: 300)
+        #expect(marqueeIndices(in: column, frames: frames) == [0, 3, 6])
+        // A marquee snug over row 0 (y∈[0,100]): bottom edge on row 1's top edge.
+        let row = CGRect(x: 0, y: 0, width: 300, height: 100)
+        #expect(marqueeIndices(in: row, frames: frames) == [0, 1, 2])
+    }
+
+    @Test("an axis-aligned thin drag (zero-area) still registers the line it traces")
+    func thinDragIsInclusive() {
+        let frames = grid(9, columns: 3)   // 3×3
+        // A vertical hairline down column 1's interior (x=150, zero width): the
+        // degenerate branch stays edge-inclusive so it selects that column.
+        let hairline = CGRect(x: 150, y: 0, width: 0, height: 300)
+        #expect(marqueeIndices(in: hairline, frames: frames) == [1, 4, 7])
+    }
+
     @Test("a rect past the content bounds simply hits nothing extra")
     func pastBounds() {
         let frames = grid(4, columns: 2)

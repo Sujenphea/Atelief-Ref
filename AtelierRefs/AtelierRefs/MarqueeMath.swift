@@ -39,10 +39,19 @@ func marqueeIndices(in rect: CGRect, frames: [CGRect]) -> [Int] {
     }
 }
 
-/// Edge-inclusive rect overlap (unlike `CGRect.intersects`, which is false for a
-/// zero-area rect). A click (zero-size rect) on a cell's interior counts as a hit.
+/// Overlap between the marquee `a` and a cell frame `b`, boundary-aware:
+///
+/// - A marquee with area uses STRICT overlap, so a drag stopping exactly on a
+///   row/column boundary doesn't sweep in the neighbouring line (a cell whose
+///   edge merely touches the marquee's edge is not a hit).
+/// - A degenerate marquee — a click (zero-size) or an axis-aligned thin drag
+///   (`isEmpty`) — falls back to edge-INCLUSIVE overlap so it still registers the
+///   cell it lands inside (unlike `CGRect.intersects`, false for a zero-area rect).
 private func rectsIntersect(_ a: CGRect, _ b: CGRect) -> Bool {
-    a.minX <= b.maxX && b.minX <= a.maxX && a.minY <= b.maxY && b.minY <= a.maxY
+    if a.isEmpty {
+        return a.minX <= b.maxX && b.minX <= a.maxX && a.minY <= b.maxY && b.minY <= a.maxY
+    }
+    return a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY
 }
 
 /// Every item's frame in a uniform grid of `columns` columns (009 · N6, TEMPORARY

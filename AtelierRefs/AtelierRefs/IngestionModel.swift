@@ -202,17 +202,15 @@ final class IngestionModel: ObservableObject {
     }
 
     /// Build the drag payload for a drag that starts on the cell `itemID`
-    /// (009 · N3). Dragging a cell that is part of the selection drags the whole
-    /// selection; dragging an UNSELECTED cell first makes it the sole selection
-    /// (Finder convention), so the drag count always equals the visible
-    /// selection. Returns `nil` only if the cell has vanished.
+    /// (009 · N3). Same scope rule as ``actionTargets(forCellItemID:)``: a cell
+    /// that is part of the selection drags the WHOLE selection; an UNSELECTED
+    /// cell drags just itself — a single-item drag, **selection left untouched**
+    /// (an idle drag leaves you idle, not stuck in selection mode). Returns `nil`
+    /// only if the cell has vanished.
     func dragPayload(forCellItemID itemID: UUID) -> AssetDragPayload? {
-        if !selection.ids.contains(itemID) {
-            guard items.contains(where: { $0.item.id == itemID }) else { return nil }
-            applySelection(.selectOnly(itemID))
-        }
-        return AssetDragPayload(
-            assetIDs: selectedAssetIDs, sourceCollectionID: selectedFolderID)
+        let assetIDs = actionTargets(forCellItemID: itemID)
+        guard !assetIDs.isEmpty else { return nil }
+        return AssetDragPayload(assetIDs: assetIDs, sourceCollectionID: selectedFolderID)
     }
 
     /// A pending destructive delete awaiting the user's confirmation. Set by the

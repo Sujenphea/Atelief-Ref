@@ -151,7 +151,7 @@ struct GridSelectionTests {
         #expect(next.anchor == id(1))
     }
 
-    // MARK: - selectOnly (drag on an unselected cell)
+    // MARK: - selectOnly (click-to-select a single cell)
 
     @Test("selectOnly replaces any existing selection with the one id")
     func selectOnlyReplaces() {
