@@ -34,6 +34,11 @@ struct CollectionView: View {
         LibrarySearchable(model: model, collectionID: collectionID) {
             ZStack {
                 content
+                // The floating drop rail (009 · N5) — every collection screen EXCEPT
+                // Unsorted, and hidden while the detail page covers the grid.
+                if collectionID != model.unsortedFolderID, nav.presentedItemID == nil {
+                    dropRail
+                }
                 // Full-window detail page for the presented item. The overlay is
                 // shared route state (`NavModel.presentedItemID`) so the grid, the
                 // Return key, and the Space canvas can all open it; guarding also on
@@ -50,6 +55,8 @@ struct CollectionView: View {
         .task(id: collectionID) {
             model.selectedFolderID = collectionID
             model.loadContents(of: collectionID)
+            // Covers feed the rail's mini thumbnails; refresh them for this screen.
+            await model.refreshCollectionCovers()
         }
         .navigationTitle(model.name(for: collectionID))
         .toolbar {
@@ -138,6 +145,25 @@ struct CollectionView: View {
                 }
             }
             .padding(.vertical, 2)
+        }
+    }
+
+    /// The floating trailing drop rail (009 · N5), materialized only when there
+    /// are reachable targets. Aligned to the trailing edge over the grid.
+    @ViewBuilder
+    private var dropRail: some View {
+        let dests = CollectionTargets.moveTargets(
+            from: collectionID, folders: model.folders, unsortedID: model.unsortedFolderID)
+        if !dests.isEmpty {
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                CollectionDropRail(
+                    targets: dests,
+                    coverHash: { model.collectionCovers[$0] },
+                    thumbnailURL: { model.thumbnailURL(forBlobHash: $0) },
+                    onNavigate: { nav.openCollection($0) },
+                    onDrop: { handleCollectionDrop($0, into: $1) })
+            }
         }
     }
 
