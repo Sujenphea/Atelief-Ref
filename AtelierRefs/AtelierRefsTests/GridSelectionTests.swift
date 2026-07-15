@@ -151,6 +151,18 @@ struct GridSelectionTests {
         #expect(next.anchor == id(1))
     }
 
+    // MARK: - selectOnly (drag on an unselected cell)
+
+    @Test("selectOnly replaces any existing selection with the one id")
+    func selectOnlyReplaces() {
+        let (next, effect) = sel([0, 1, 2], anchor: 0, lead: 2).applying(
+            .selectOnly(id(4)), order: order)
+        #expect(effect == .none)
+        #expect(next.ids == [id(4)])
+        #expect(next.anchor == id(4))
+        #expect(next.lead == id(4))
+    }
+
     // MARK: - ⌘A / Esc
 
     @Test("select-all selects every item; anchor=first, lead=last")

@@ -195,6 +195,20 @@ final class IngestionModel: ObservableObject {
         return items.first { $0.item.id == itemID }.map { [$0.asset.id] } ?? []
     }
 
+    /// Build the drag payload for a drag that starts on the cell `itemID`
+    /// (009 · N3). Dragging a cell that is part of the selection drags the whole
+    /// selection; dragging an UNSELECTED cell first makes it the sole selection
+    /// (Finder convention), so the drag count always equals the visible
+    /// selection. Returns `nil` only if the cell has vanished.
+    func dragPayload(forCellItemID itemID: UUID) -> AssetDragPayload? {
+        if !selection.ids.contains(itemID) {
+            guard items.contains(where: { $0.item.id == itemID }) else { return nil }
+            applySelection(.selectOnly(itemID))
+        }
+        return AssetDragPayload(
+            assetIDs: selectedAssetIDs, sourceCollectionID: selectedFolderID)
+    }
+
     /// A pending destructive delete awaiting the user's confirmation. Set by the
     /// three delete surfaces (inspector / grid / canvas); drives one shared
     /// confirmation dialog in ``ContentView``.
@@ -623,19 +637,20 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Reorder (drag-to-reorder)
 
-    /// Move the item with `movingAssetID` to the grid slot currently held by
-    /// `targetAssetID`, within the selected folder. OPTIMISTIC: reorders the local
-    /// ``items`` immediately for feedback, then persists the new full order via
-    /// `setGridOrder` (the write hops OFF the main actor). On failure the message
-    /// surfaces via ``lastError`` and the folder reloads to the truth; on success
-    /// it reloads too (core sorts by `manual_order`, so state stays consistent).
-    /// A no-op when the ids match, either isn't a current item (foreign drop), or
+    /// Move the dragged BLOCK `movingAssetIDs` to the grid slot currently held by
+    /// `targetAssetID`, within the selected folder (009 · N3 — multi-select drag).
+    /// OPTIMISTIC: reorders the local ``items`` immediately for feedback, then
+    /// persists the new full order via `setGridOrder` (the write hops OFF the main
+    /// actor). On failure the message surfaces via ``lastError`` and the folder
+    /// reloads to the truth; on success it reloads too (core sorts by
+    /// `manual_order`, so state stays consistent). A no-op when the target is one
+    /// of the dragged items, no dragged id is a current item (foreign drop), or
     /// the folder isn't in `.manual` mode (reordering has no meaning there).
-    func reorderItem(movingAssetID: UUID, toIndexOf targetAssetID: UUID) {
+    func reorderItems(movingAssetIDs: [UUID], toIndexOf targetAssetID: UUID) {
         guard let services, sortMode(for: selectedFolderID) == .manual else { return }
         let currentIDs = items.map { $0.asset.id }
         guard let newOrder = reorderedIDs(
-            ids: currentIDs, movingID: movingAssetID, toIndexOf: targetAssetID)
+            ids: currentIDs, movingIDs: movingAssetIDs, toIndexOf: targetAssetID)
         else { return }
 
         // Optimistic local reorder — rebuild `items` in the new order.

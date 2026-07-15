@@ -207,9 +207,9 @@ struct CollectionView: View {
                                 })
                             .equatable()
                             .id(detail.item.id)
-                            .draggable(detail.asset.id.uuidString)
-                            .dropDestination(for: String.self) { payloads, _ in
-                                reorder(dropped: payloads, onto: detail.asset.id)
+                            .draggable(dragPayload(for: detail)) { dragPreview(for: detail) }
+                            .dropDestination(for: AssetDragPayload.self) { payloads, _ in
+                                handleCellDrop(payloads, onto: detail.asset.id)
                             }
                             .contextMenu { cellMenu(for: detail) }
                         }
@@ -390,14 +390,55 @@ struct CollectionView: View {
         }
     }
 
-    private func reorder(dropped payloads: [String], onto targetAssetID: UUID) -> Bool {
-        // Reordering only means something in manual mode — reject the drop
-        // otherwise (the model guards too, so this is the visual half).
-        guard model.sortMode(for: collectionID) == .manual,
-              let first = payloads.first, let movingAssetID = UUID(uuidString: first)
-        else { return false }
-        model.reorderItem(movingAssetID: movingAssetID, toIndexOf: targetAssetID)
-        return true
+    // MARK: - Drag & drop (009 · N3)
+
+    /// The ⌥-at-drop-time reader, isolated behind a protocol so move-vs-copy
+    /// routing stays unit-testable (the routing itself lives in `routeDrop`).
+    private static let modifierReader: ModifierReading = LiveModifierReader()
+
+    /// The payload for a drag starting on `detail`: the whole selection when the
+    /// cell is selected, else the cell alone (which it also selects). Falls back
+    /// to a lone-cell payload if the model can't build one (cell vanished).
+    private func dragPayload(for detail: CollectionItemDetail) -> AssetDragPayload {
+        model.dragPayload(forCellItemID: detail.item.id)
+            ?? AssetDragPayload(assetIDs: [detail.asset.id], sourceCollectionID: collectionID)
+    }
+
+    /// The drag image: the cell's thumbnail with a count badge when more than one
+    /// item travels (Q3 — count badge on the lead thumbnail).
+    @ViewBuilder
+    private func dragPreview(for detail: CollectionItemDetail) -> some View {
+        let count = model.selection.ids.contains(detail.item.id)
+            ? max(model.selection.ids.count, 1) : 1
+        AssetContentThumbnail(asset: detail.asset, url: model.thumbnailURL(for: detail))
+            .frame(width: 84, height: 84)
+            .overlay(alignment: .topTrailing) {
+                if count > 1 {
+                    Text("\(count)")
+                        .font(.caption2).bold().monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(Color.accentColor))
+                        .padding(4)
+                }
+            }
+    }
+
+    /// Handle a payload dropped onto the cell for `targetAssetID`: route it (only
+    /// a same-collection, manual-sort drop is a reorder) and apply the multi-block
+    /// move. Cross-collection / non-manual drops are refused here — those moves go
+    /// through the stack row / rail.
+    private func handleCellDrop(_ payloads: [AssetDragPayload], onto targetAssetID: UUID) -> Bool {
+        guard let payload = payloads.first else { return false }
+        let target = DropTarget.cell(
+            collectionID: collectionID, sortMode: model.sortMode(for: collectionID))
+        switch routeDrop(payload, onto: target, optionDown: Self.modifierReader.isOptionDown) {
+        case let .reorder(assetIDs):
+            model.reorderItems(movingAssetIDs: assetIDs, toIndexOf: targetAssetID)
+            return true
+        case .reject, .move, .copy:
+            return false
+        }
     }
 
     // MARK: - Import actions

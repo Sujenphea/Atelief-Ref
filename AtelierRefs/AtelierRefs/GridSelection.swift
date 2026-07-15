@@ -61,6 +61,9 @@ enum GridSelectionAction: Equatable {
     case shiftClick(UUID)
     /// ⌘-click: toggle (the keyboard-savvy alias of the circle).
     case commandClick(UUID)
+    /// Replace the selection with exactly this one id (Finder convention when a
+    /// drag begins on an unselected cell — 009 · N3).
+    case selectOnly(UUID)
     /// ⌘A: select every item.
     case selectAll
     /// Esc / deselect-all / click empty background: clear selection, exit mode.
@@ -93,6 +96,12 @@ extension GridSelection {
 
         case let .tapCircle(id), let .commandClick(id):
             next.toggle(id)
+            return (next, .none)
+
+        case let .selectOnly(id):
+            next.ids = [id]
+            next.anchor = id
+            next.lead = id
             return (next, .none)
 
         case let .shiftClick(id):
