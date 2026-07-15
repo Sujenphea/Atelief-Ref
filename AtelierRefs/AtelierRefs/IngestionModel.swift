@@ -708,7 +708,9 @@ final class IngestionModel: ObservableObject {
     func applySelection(_ action: GridSelectionAction, columns: Int = 1) -> GridSelectionEffect {
         let order = items.map { $0.item.id }
         let (next, effect) = selection.applying(action, order: order, columns: columns)
-        selection = next
+        // Publish only real changes: the marquee re-fires on every mouse-move
+        // tick, and an unchanged hit set must not re-render the whole screen.
+        if next != selection { selection = next }
         return effect
     }
 

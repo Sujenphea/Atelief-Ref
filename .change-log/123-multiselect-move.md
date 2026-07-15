@@ -24,9 +24,23 @@ other collection screen (expands on drag, quick-switch on click). Drag **moves**
 
 ### App (AtelierRefs)
 - **`GridSelection`** — the pure, exhaustively-tested selection reducer
-  (`ids`/`anchor`/`lead`, mode derived): every gesture/key is an action →
-  `(nextSelection, Effect)`; the mode-dependent "open vs toggle" lives here, views
-  only execute effects (11A). `pruned(to:)` is a pure reload transition (10A).
+  (`ids`/`anchor`/`lead`/`shiftRange`, mode derived): every gesture/key is an
+  action → `(nextSelection, Effect)`; the mode-dependent "open vs toggle" lives
+  here, views only execute effects (11A). `pruned(to:)` is a pure reload
+  transition (10A). The ⇧-range is **additive, Finder-style**: `shiftRange`
+  tracks the ids the live anchor→lead range owns, so a ⇧ action re-pivots
+  (subtract old range, union new) while scattered picks survive; any non-⇧
+  membership edit collapses the range into ordinary picks. A marquee pins the
+  pivot to its own edges (anchor = first hit, lead = last hit in feed order) so
+  a following ⇧-click ranges from the box, not a stale pre-drag anchor.
+- **Press routing** (`gridPressRouting` + `PressReportingButtonStyle`) — cells
+  are `.draggable` and SwiftUI Buttons fire on mouse-UP, so a press with a few
+  points of trackpad drift used to become an aborted drag and silently swallow
+  the click. Finder's algorithm, as a pure decision table: ⇧/⌘ clicks and
+  toggle-ON of an unselected cell fire on the DOWN edge (consuming the release);
+  idle-open and toggle-OFF of a selected cell stay on mouse-up (a press that
+  becomes a drag must not open detail, and must keep a selected cell selected so
+  the drag carries the selection). The circle always toggles on the down edge.
 - **Model swap** — `selectedItemID` → `selection: GridSelection` (2A); `select()`
   split into a pure `applySelection(_:)` and an `openItem(_:)` that alone loads the
   preview/tags (8A — no large-JPEG decode on a toggle or ⌘A). Batch move/copy verbs.
@@ -54,13 +68,20 @@ other collection screen (expands on drag, quick-switch on click). Drag **moves**
 - **Floating drop rail** (`CollectionDropRail`) — trailing, minimized covers that
   expand on drag-approach (the rail's own footprint is the proximity target, 3A —
   no click-stealing overlay strip); click-to-navigate when idle.
-- **Marquee** (`MarqueeMath`) — a permanent layout-agnostic rect→indices core fed
-  by a **temporary** uniform-grid frame source (1A, replaced by 011-U2's
-  `JustifiedLayout`); ⇧-additive, click-clears, scroll-follow. Overlap is
+- **Marquee** (`MarqueeMath` + `GridMarquee`) — a permanent layout-agnostic
+  rect→indices core fed by a **temporary** uniform-grid frame source (1A,
+  replaced by 011-U2's `JustifiedLayout`); ⇧-additive, click-clears. Overlap is
   boundary-aware: an area marquee uses STRICT overlap so a drag ending exactly on
   a row/column line doesn't sweep in the neighbour, while a click / axis-aligned
   thin drag (zero-area) stays edge-inclusive so it still registers the cell it
-  lands on.
+  lands on. The per-tick state lives in `GridMarqueeState` (a class in plain
+  `@State`, deliberately not `@StateObject`) observed only by the capture layer
+  and the rectangle layer — a 120Hz drag no longer re-renders the whole screen —
+  and `applySelection` publishes only real changes. The per-tick animated
+  `scrollTo` scroll-follow is REMOVED: it pinned a hit cell to the viewport edge
+  on every mouse move and fought the user's own two-finger scroll (the drag jag);
+  content-space coordinates already let scrolling mid-drag extend the box, and
+  pointer-at-edge auto-scroll is left as a follow-up.
 
 ## Schema / migration
 

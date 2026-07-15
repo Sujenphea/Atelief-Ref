@@ -26,13 +26,23 @@ struct CollectionCell: View, Equatable {
     /// Selection mode is active somewhere in the grid — circles show on ALL cells
     /// so any of them can be toggled, not just the hovered one.
     let isSelecting: Bool
-    /// A plain/⇧/⌘ click on the image. The booleans are the live modifier state
-    /// read at click time; the parent maps them to a reducer action.
+    /// The mouse-DOWN edge on the image, BEFORE `.draggable` can steal the
+    /// interaction (009: Finder's press routing). Returns whether the press
+    /// consumed it — the cell then swallows the matching mouse-up click.
+    let onImagePress: (_ shift: Bool, _ command: Bool) -> Bool
+    /// A plain/⇧/⌘ click on the image (mouse-up, when the press didn't consume).
+    /// The booleans are the live modifier state read at click time; the parent
+    /// maps them to a reducer action.
     let onImageClick: (_ shift: Bool, _ command: Bool) -> Void
     /// A click on the circle — always a plain toggle (enters/exits selection).
     let onCircleToggle: () -> Void
 
     @State private var isHovering = false
+    /// Set on the down edge when the press already applied the action; the
+    /// mouse-up Button action checks-and-ignores, and the release edge resets it
+    /// (covering a press whose click was cancelled by a drag).
+    @State private var imagePressConsumed = false
+    @State private var circlePressConsumed = false
 
     /// Value-equality for `.equatable()` — closures excluded on purpose so a
     /// parent re-render that rebuilds the closures doesn't invalidate the cell.
@@ -51,12 +61,19 @@ struct CollectionCell: View, Equatable {
 
     var body: some View {
         Button {
+            if imagePressConsumed { return }
             let flags = NSEvent.modifierFlags
             onImageClick(flags.contains(.shift), flags.contains(.command))
         } label: {
             AssetContentThumbnail(asset: detail.asset, url: url, isSelected: isSelected)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressReportingButtonStyle(
+            onPress: {
+                let flags = NSEvent.modifierFlags
+                imagePressConsumed = onImagePress(
+                    flags.contains(.shift), flags.contains(.command))
+            },
+            onRelease: { imagePressConsumed = false }))
         .overlay { cursorRing }
         .overlay(alignment: .topTrailing) {
             if showsCircle { circle }
@@ -75,7 +92,10 @@ struct CollectionCell: View, Equatable {
     }
 
     private var circle: some View {
-        Button(action: onCircleToggle) {
+        Button {
+            if circlePressConsumed { return }
+            onCircleToggle()
+        } label: {
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                 .font(.system(size: 20, weight: .medium))
                 .symbolRenderingMode(.palette)
@@ -85,7 +105,39 @@ struct CollectionCell: View, Equatable {
                 .background(Circle().fill(.black.opacity(0.15)).padding(1))
                 .padding(6)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressReportingButtonStyle(
+            onPress: {
+                // The circle is ALWAYS a toggle, so it can always fire on the
+                // down edge — immune to `.draggable` swallowing the click.
+                circlePressConsumed = true
+                onCircleToggle()
+            },
+            onRelease: { circlePressConsumed = false }))
         .help(isSelected ? "Deselect" : "Select")
+    }
+}
+
+/// A plain-look button style that also reports the press edges. SwiftUI
+/// `Button` fires its action on mouse-UP, but every grid cell is `.draggable`:
+/// a press with a few points of trackpad drift activates the drag session and
+/// the click is silently cancelled. Reporting the down edge lets a cell apply
+/// toggle actions immediately (009: Finder-style press routing).
+///
+/// Ordering contract the consumed-flag relies on: the Button `action` runs
+/// synchronously in the mouse-up event, while `onChange` fires on the NEXT
+/// render pass — so `onPress` (down-edge render) precedes the action, and
+/// `onRelease` follows it. On an ultra-fast tap where no render happens between
+/// down and up, `isPressed` is never observed `true`, neither edge fires, and
+/// the plain mouse-up action handles the click alone — both paths route through
+/// live selection state, so neither double-applies.
+struct PressReportingButtonStyle: ButtonStyle {
+    let onPress: () -> Void
+    let onRelease: () -> Void
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .onChange(of: configuration.isPressed) { _, pressed in
+                pressed ? onPress() : onRelease()
+            }
     }
 }

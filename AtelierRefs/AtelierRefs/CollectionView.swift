@@ -24,12 +24,12 @@ struct CollectionView: View {
 
     @State private var isTargeted = false
 
-    // Marquee (rubber-band) drag state (009 · N6). `start`/`current` are in the
-    // named grid-content space; `base` is the selection captured at drag start
-    // (empty for a plain marquee, the prior selection for a ⇧-additive one).
-    @State private var marqueeStart: CGPoint?
-    @State private var marqueeCurrent: CGPoint?
-    @State private var marqueeBase: Set<UUID> = []
+    // The marquee's per-tick state (009 · N6), a class in plain `@State` ON
+    // PURPOSE: only the two layers in `GridMarquee.swift` observe it, so a
+    // 120Hz drag re-renders those layers and NOT this whole screen. (`@State`
+    // keeps the first instance across re-inits; `@StateObject` would subscribe
+    // this view to every tick.)
+    @State private var marquee = GridMarqueeState()
 
     private static let gridItemMinWidth: CGFloat = 112
     private static let gridSpacing: CGFloat = 8
@@ -270,21 +270,19 @@ struct CollectionView: View {
                         // move/copy); a plain click clears the selection. Sized to
                         // the grid via the ZStack, in a named space so drag
                         // locations match the computed cell frames.
-                        Color.clear
-                            .contentShape(Rectangle())
-                            // ONE exclusive chain, not two racing modifiers: the
-                            // marquee wins, and the plain-click clear only fires when
-                            // no drag happened. A separate `.onTapGesture` could fire
-                            // on press and wipe the selection before the marquee
-                            // captured its ⇧-additive base — invisible for a plain
-                            // marquee (clear + hits == hits) but it silently dropped
-                            // the base of a ⇧-drag. A ⇧-click never clears.
-                            .gesture(
-                                marqueeGesture(width: geo.size.width, proxy: proxy)
-                                    .exclusively(before: TapGesture().onEnded {
-                                        guard !NSEvent.modifierFlags.contains(.shift) else { return }
-                                        model.applySelection(.clear)
-                                    }))
+                        MarqueeCaptureLayer(
+                            state: marquee,
+                            width: geo.size.width,
+                            itemIDs: model.items.map { $0.item.id },
+                            minItemWidth: Self.gridItemMinWidth,
+                            spacing: Self.gridSpacing,
+                            topInset: Self.gridTopInset,
+                            spaceName: Self.marqueeSpace,
+                            selectionIDs: model.selection.ids,
+                            onMarquee: { hits, base in
+                                model.applySelection(.marquee(hits: hits, base: base))
+                            },
+                            onClear: { model.applySelection(.clear) })
                         LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
                             ForEach(model.items, id: \.item.id) { detail in
                                 CollectionCell(
@@ -293,6 +291,10 @@ struct CollectionView: View {
                                     isSelected: model.selection.ids.contains(detail.item.id),
                                     isCursor: model.selection.lead == detail.item.id,
                                     isSelecting: model.selection.isSelecting,
+                                    onImagePress: { shift, command in
+                                        handleImagePress(
+                                            detail, shift: shift, command: command, proxy: proxy)
+                                    },
                                     onImageClick: { shift, command in
                                         handleImageClick(
                                             detail, shift: shift, command: command, proxy: proxy)
@@ -311,7 +313,7 @@ struct CollectionView: View {
                         }
                         .padding(.top, Self.gridTopInset)
                         // The live marquee rectangle, drawn in the same space.
-                        marqueeRectangle
+                        MarqueeRectangleLayer(state: marquee)
                     }
                     .coordinateSpace(name: Self.marqueeSpace)
                 }
@@ -443,6 +445,25 @@ struct CollectionView: View {
 
     // MARK: - Selection input routing (009 · N2)
 
+    /// The mouse-DOWN edge on a cell's image: apply the down-edge cases (⇧/⌘,
+    /// toggle-on of an unselected cell while selecting) so a drag activation
+    /// can't swallow them, and report whether the press consumed the interaction
+    /// (the cell then ignores the matching mouse-up click). The decision table
+    /// is the pure ``gridPressRouting(imageID:isSelecting:isSelected:shift:command:)``.
+    private func handleImagePress(
+        _ detail: CollectionItemDetail, shift: Bool, command: Bool, proxy: ScrollViewProxy
+    ) -> Bool {
+        let routing = gridPressRouting(
+            imageID: detail.item.id,
+            isSelecting: model.selection.isSelecting,
+            isSelected: model.selection.ids.contains(detail.item.id),
+            shift: shift, command: command)
+        if let action = routing.pressAction {
+            execute(model.applySelection(action), proxy: proxy)
+        }
+        return routing.consumesRelease
+    }
+
     /// A plain/⇧/⌘ click on a cell's image: build the reducer action from the live
     /// modifiers and execute the returned effect. The reducer owns the
     /// mode-dependent "open vs toggle" decision — this only routes.
@@ -474,76 +495,6 @@ struct CollectionView: View {
             .arrow(key, extend: press.modifiers.contains(.shift)), columns: columns)
         execute(effect, proxy: proxy)
         return .handled
-    }
-
-    // MARK: - Marquee (rubber-band selection, 009 · N6)
-
-    /// The marquee drag: a small movement threshold (so a click still clears via
-    /// the tap gesture) begins the box; each change recomputes the hit set and
-    /// pushes it through the reducer; ⇧ at drag start makes it additive.
-    private func marqueeGesture(width: CGFloat, proxy: ScrollViewProxy) -> some Gesture {
-        DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.marqueeSpace))
-            .onChanged { value in
-                if marqueeStart == nil {
-                    marqueeStart = value.startLocation
-                    marqueeBase = NSEvent.modifierFlags.contains(.shift)
-                        ? model.selection.ids : []
-                }
-                marqueeCurrent = value.location
-                updateMarquee(width: width, proxy: proxy)
-            }
-            .onEnded { _ in
-                marqueeStart = nil
-                marqueeCurrent = nil
-                marqueeBase = []
-            }
-    }
-
-    /// Recompute the marquee hit set from the current box and apply it. Frames come
-    /// from pure math (the virtualization trap: offscreen cells aren't laid out, so
-    /// live frames can't drive hit-testing) — today's uniform-grid source, swapped
-    /// for 011-U2's `JustifiedLayout` frames when justified rows land.
-    private func updateMarquee(width: CGFloat, proxy: ScrollViewProxy) {
-        guard let start = marqueeStart, let current = marqueeCurrent else { return }
-        let columnCount = gridColumnCount(
-            availableWidth: width, minItemWidth: Self.gridItemMinWidth, spacing: Self.gridSpacing)
-        let side = uniformCellSide(
-            availableWidth: width, columns: columnCount, spacing: Self.gridSpacing)
-        let frames = uniformGridFrames(
-            count: model.items.count, columns: columnCount,
-            cellSize: CGSize(width: side, height: side),
-            spacing: Self.gridSpacing, topInset: Self.gridTopInset)
-        let rect = marqueeRect(from: start, to: current)
-        let hits = marqueeIndices(in: rect, frames: frames)
-        let hitIDs = Set(hits.map { model.items[$0].item.id })
-        model.applySelection(.marquee(hits: hitIDs, base: marqueeBase))
-        // Follow the growing box toward whichever end is newest so the selection
-        // stays visible (a lightweight stand-in for true edge auto-scroll — the
-        // one piece the risk note flags for manual tuning).
-        if current.y < start.y, let first = hits.first {
-            withAnimation(.linear(duration: 0.1)) {
-                proxy.scrollTo(model.items[first].item.id, anchor: .top)
-            }
-        } else if current.y > start.y, let last = hits.last {
-            withAnimation(.linear(duration: 0.1)) {
-                proxy.scrollTo(model.items[last].item.id, anchor: .bottom)
-            }
-        }
-    }
-
-    /// The translucent marquee box, offset to its top-left within the grid space.
-    @ViewBuilder
-    private var marqueeRectangle: some View {
-        if let start = marqueeStart, let current = marqueeCurrent {
-            let rect = marqueeRect(from: start, to: current)
-            Rectangle()
-                .fill(Color.accentColor.opacity(0.12))
-                .overlay(
-                    Rectangle().strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1))
-                .frame(width: rect.width, height: rect.height)
-                .offset(x: rect.minX, y: rect.minY)
-                .allowsHitTesting(false)
-        }
     }
 
     /// Carry out a reducer ``GridSelectionEffect``: open a detail page or scroll a

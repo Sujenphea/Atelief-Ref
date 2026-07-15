@@ -30,6 +30,12 @@ struct GridSelection: Equatable {
     /// plain arrow moves the cursor WITHOUT selecting, and the detail page shows
     /// the lead.
     var lead: UUID?
+    /// The ids owned by the LIVE ⇧-range (anchor→lead). The next ⇧ action
+    /// re-pivots: it subtracts this set, then unions the new anchor→target range
+    /// — so the range shrinks/grows Finder-style while scattered picks made
+    /// BEFORE it survive. Any membership edit outside a ⇧ action collapses it
+    /// (its ids simply stay selected as ordinary picks).
+    var shiftRange: Set<UUID> = []
 
     /// Nothing selected (idle mode: plain clicks open detail).
     var isEmpty: Bool { ids.isEmpty }
@@ -106,6 +112,7 @@ extension GridSelection {
             next.ids = [id]
             next.anchor = id
             next.lead = id
+            next.shiftRange = []
             return (next, .none)
 
         case let .shiftClick(id):
@@ -117,10 +124,17 @@ extension GridSelection {
             next.ids = Set(order)
             next.anchor = order.first
             next.lead = order.last
+            next.shiftRange = []
             return (next, .none)
 
         case let .marquee(hits, base):
             next.ids = base.union(hits)
+            next.shiftRange = []
+            // Give the box a real pivot: a following ⇧-click must range from the
+            // marquee's own edges (first/last hit in feed order), not from a
+            // stale pre-drag anchor. An empty box leaves the pivot alone.
+            if let first = order.first(where: hits.contains) { next.anchor = first }
+            if let last = order.last(where: hits.contains) { next.lead = last }
             return (next, .none)
 
         case .clear:
@@ -142,6 +156,7 @@ extension GridSelection {
         let present = Set(order)
         var next = self
         next.ids = ids.intersection(present)
+        next.shiftRange = shiftRange.intersection(present)
         if let anchor, !present.contains(anchor) { next.anchor = nil }
         if let lead, !present.contains(lead) { next.lead = nil }
         return next
@@ -149,7 +164,9 @@ extension GridSelection {
 
     // MARK: - Private transitions
 
-    /// Toggle `id`'s membership and make it the new anchor + cursor.
+    /// Toggle `id`'s membership and make it the new anchor + cursor. A toggle is
+    /// a membership edit outside the ⇧-range, so the live range collapses — its
+    /// ids stay selected, they just stop being range-owned.
     private mutating func toggle(_ id: UUID) {
         if ids.contains(id) {
             ids.remove(id)
@@ -158,18 +175,23 @@ extension GridSelection {
         }
         anchor = id
         lead = id
+        shiftRange = []
     }
 
-    /// Replace the selection with the anchor→`id` contiguous range in feed order.
-    /// With no live anchor, `id` becomes the anchor (a lone selection). This
-    /// deliberately REPLACES rather than unioning ⌘-added islands — the Photos
-    /// default, and explicit/testable over clever base+range bookkeeping.
+    /// Union the anchor→`id` contiguous range into the selection (Finder-style
+    /// additive — scattered picks survive a ⇧-click), after subtracting the
+    /// PREVIOUS range so consecutive ⇧ actions re-pivot (shrink/grow) instead of
+    /// accreting. With no live anchor, `id` becomes the anchor (a lone range).
+    /// Sharp edge, shared with Finder: a pick the previous range swallowed is
+    /// released with it when the range shrinks past it.
     private mutating func selectRange(to id: UUID, in order: [UUID]) {
         guard let targetIndex = order.firstIndex(of: id) else { return }
         let anchorIndex = anchor.flatMap { order.firstIndex(of: $0) } ?? targetIndex
         let lo = min(anchorIndex, targetIndex)
         let hi = max(anchorIndex, targetIndex)
-        ids = Set(order[lo...hi])
+        let range = Set(order[lo...hi])
+        ids = ids.subtracting(shiftRange).union(range)
+        shiftRange = range
         anchor = order[anchorIndex]
         lead = id
     }
@@ -206,4 +228,31 @@ func gridClickAction(imageID id: UUID, shift: Bool, command: Bool) -> GridSelect
     if shift { return .shiftClick(id) }
     if command { return .commandClick(id) }
     return .tapImage(id)
+}
+
+/// What the mouse-DOWN edge of a cell-image interaction does. `pressAction` is
+/// applied immediately on press; `consumesRelease` tells the cell to swallow the
+/// matching mouse-up click so the action isn't applied twice.
+struct GridPressRouting: Equatable {
+    var pressAction: GridSelectionAction?
+    var consumesRelease: Bool
+}
+
+/// Route the mouse-DOWN on a cell image (Finder's algorithm). Every cell is
+/// `.draggable`, and a SwiftUI `Button` fires on mouse-UP — so a press with a
+/// few points of trackpad drift activates the drag session and the click never
+/// arrives. Anything that can safely fire on the down edge therefore does:
+/// ⇧/⌘ clicks, and toggling an UNSELECTED cell on while selecting. Two cases
+/// deliberately stay on mouse-up (press → nil): opening detail from idle (a
+/// press that becomes a drag must NOT open), and toggling a SELECTED cell off
+/// (a press that becomes a drag must keep it selected and drag the selection).
+func gridPressRouting(
+    imageID id: UUID, isSelecting: Bool, isSelected: Bool, shift: Bool, command: Bool
+) -> GridPressRouting {
+    if shift { return GridPressRouting(pressAction: .shiftClick(id), consumesRelease: true) }
+    if command { return GridPressRouting(pressAction: .commandClick(id), consumesRelease: true) }
+    if isSelecting && !isSelected {
+        return GridPressRouting(pressAction: .tapImage(id), consumesRelease: true)
+    }
+    return GridPressRouting(pressAction: nil, consumesRelease: false)
 }

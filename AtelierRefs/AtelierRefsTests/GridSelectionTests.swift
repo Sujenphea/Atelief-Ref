@@ -142,13 +142,68 @@ struct GridSelectionTests {
         #expect(next.anchor == id(4))
     }
 
-    @Test("a second shift-click re-ranges from the SAME anchor (replaces, not grows)")
+    @Test("a second shift-click re-pivots the range from the SAME anchor (shrinks, not grows)")
     func shiftReRangeFromAnchor() {
         let start = sel([1], anchor: 1, lead: 1)
         let (mid, _) = start.applying(.shiftClick(id(4)), order: order)
         let (next, _) = mid.applying(.shiftClick(id(2)), order: order)
         #expect(next.ids == [id(1), id(2)])   // shrank back toward the anchor
         #expect(next.anchor == id(1))
+    }
+
+    // MARK: - ⇧-range is ADDITIVE (Finder): scattered picks survive
+
+    @Test("shift-click keeps scattered picks outside the range (additive, not replace)")
+    func shiftKeepsScatteredPicks() {
+        // Circle-picked 5, then 0 (anchor lands on 0), then ⇧-click 2.
+        let (a, _) = GridSelection().applying(.tapCircle(id(5)), order: order)
+        let (b, _) = a.applying(.tapCircle(id(0)), order: order)
+        let (next, _) = b.applying(.shiftClick(id(2)), order: order)
+        #expect(next.ids == [id(0), id(1), id(2), id(5)])
+        #expect(next.anchor == id(0))
+        #expect(next.lead == id(2))
+    }
+
+    @Test("re-pivoting the range releases only the range's own ids, not scattered picks")
+    func shiftRePivotKeepsScatteredPicks() {
+        let (a, _) = GridSelection().applying(.tapCircle(id(5)), order: order)
+        let (b, _) = a.applying(.tapCircle(id(0)), order: order)
+        let (wide, _) = b.applying(.shiftClick(id(3)), order: order)     // [0..3, 5]
+        let (next, _) = wide.applying(.shiftClick(id(1)), order: order)  // shrink to [0,1]
+        #expect(next.ids == [id(0), id(1), id(5)])
+    }
+
+    @Test("sharp edge: a pick the previous range swallowed is released with it")
+    func shiftShrinkReleasesSwallowedPick() {
+        // 2 was picked on its own, then a 0→4 range covered it; shrinking the
+        // range to 0→1 releases 2 with the range (Finder does the same — the
+        // range owns everything between its ends).
+        let (a, _) = GridSelection().applying(.tapCircle(id(2)), order: order)
+        let (b, _) = a.applying(.tapCircle(id(0)), order: order)
+        let (wide, _) = b.applying(.shiftClick(id(4)), order: order)     // [0..4]
+        let (next, _) = wide.applying(.shiftClick(id(1)), order: order)
+        #expect(next.ids == [id(0), id(1)])
+    }
+
+    @Test("a toggle collapses the live range: the next shift-click unions on top of it")
+    func toggleCollapsesRange() {
+        let (a, _) = GridSelection().applying(.shiftClick(id(0)), order: order)
+        let (b, _) = a.applying(.shiftClick(id(2)), order: order)       // range [0..2]
+        let (c, _) = b.applying(.tapCircle(id(5)), order: order)        // pick 5, anchor→5
+        let (next, _) = c.applying(.shiftClick(id(4)), order: order)    // range [4,5]
+        // The old [0..2] survives as ordinary picks; the new range adds [4,5].
+        #expect(next.ids == [id(0), id(1), id(2), id(4), id(5)])
+    }
+
+    @Test("shift-arrow shrinking back toward the anchor releases only range ids")
+    func shiftArrowRePivotKeepsPicks() {
+        let (a, _) = GridSelection().applying(.tapCircle(id(5)), order: order)
+        let (b, _) = a.applying(.tapCircle(id(0)), order: order)
+        let (wide, _) = b.applying(.arrow(.right, extend: true), order: order, columns: 6)
+        let (wider, _) = wide.applying(.arrow(.right, extend: true), order: order, columns: 6)
+        // Range grew 0→2; shrink one step back → range [0,1], 5 still picked.
+        let (next, _) = wider.applying(.arrow(.left, extend: true), order: order, columns: 6)
+        #expect(next.ids == [id(0), id(1), id(5)])
     }
 
     // MARK: - selectOnly (click-to-select a single cell)
@@ -278,6 +333,36 @@ struct GridSelectionTests {
         #expect(narrow.ids == [id(0)])
     }
 
+    @Test("marquee pins the pivot to its own edges: anchor=first hit, lead=last hit")
+    func marqueeSetsAnchorAndLead() {
+        let start = sel([5], anchor: 5, lead: 5)
+        let (next, _) = start.applying(
+            .marquee(hits: [id(2), id(1)], base: []), order: order)
+        #expect(next.anchor == id(1))
+        #expect(next.lead == id(2))
+        // A following ⇧-click ranges from the marquee's edge, additively.
+        let (after, _) = next.applying(.shiftClick(id(4)), order: order)
+        #expect(after.ids == [id(1), id(2), id(3), id(4)])
+    }
+
+    @Test("an empty marquee box leaves the pivot alone")
+    func marqueeEmptyKeepsPivot() {
+        let start = sel([3], anchor: 3, lead: 3)
+        let (next, _) = start.applying(.marquee(hits: [], base: []), order: order)
+        #expect(next.ids.isEmpty)
+        #expect(next.anchor == id(3))
+        #expect(next.lead == id(3))
+    }
+
+    @Test("shift-click after a marquee ADDS the range, keeping the marquee's hits")
+    func shiftAfterMarqueeIsAdditive() {
+        let (boxed, _) = GridSelection().applying(
+            .marquee(hits: [id(0), id(1)], base: []), order: order)
+        let (next, _) = boxed.applying(.shiftClick(id(4)), order: order)
+        // Anchor pinned to first hit (0); range 0→4 unions over the box.
+        #expect(next.ids == [id(0), id(1), id(2), id(3), id(4)])
+    }
+
     // MARK: - Enter opens the lead
 
     @Test("openLead opens the cursor item's detail")
@@ -324,6 +409,16 @@ struct GridSelectionTests {
         #expect(pruned == GridSelection())
     }
 
+    @Test("prune drops removed ids from the live shift-range too")
+    func pruneIntersectsShiftRange() {
+        let (ranged, _) = sel([0], anchor: 0, lead: 0).applying(
+            .shiftClick(id(3)), order: order)
+        #expect(ranged.shiftRange == [id(0), id(1), id(2), id(3)])
+        let pruned = ranged.pruned(to: [id(0), id(1), id(4)])
+        #expect(pruned.shiftRange == [id(0), id(1)])
+        #expect(pruned.ids == [id(0), id(1)])
+    }
+
     // MARK: - Click-action routing (modifier → action)
 
     @Test("modifier routing: shift wins over command; command over plain")
@@ -333,5 +428,52 @@ struct GridSelectionTests {
         #expect(gridClickAction(imageID: x, shift: false, command: true) == .commandClick(x))
         #expect(gridClickAction(imageID: x, shift: true, command: false) == .shiftClick(x))
         #expect(gridClickAction(imageID: x, shift: true, command: true) == .shiftClick(x))
+    }
+
+    // MARK: - Press routing (mouse-DOWN edge, Finder's algorithm)
+
+    @Test("press: ⇧/⌘ fire on the down edge and consume the release")
+    func pressRoutesModifiersOnDown() {
+        let x = id(2)
+        #expect(
+            gridPressRouting(imageID: x, isSelecting: false, isSelected: false,
+                             shift: true, command: false)
+            == GridPressRouting(pressAction: .shiftClick(x), consumesRelease: true))
+        #expect(
+            gridPressRouting(imageID: x, isSelecting: true, isSelected: true,
+                             shift: false, command: true)
+            == GridPressRouting(pressAction: .commandClick(x), consumesRelease: true))
+        // ⇧ wins over ⌘, matching the click routing.
+        #expect(
+            gridPressRouting(imageID: x, isSelecting: false, isSelected: false,
+                             shift: true, command: true)
+            == GridPressRouting(pressAction: .shiftClick(x), consumesRelease: true))
+    }
+
+    @Test("press: while selecting, an UNSELECTED cell toggles on at the down edge")
+    func pressTogglesUnselectedOnDown() {
+        let x = id(2)
+        #expect(
+            gridPressRouting(imageID: x, isSelecting: true, isSelected: false,
+                             shift: false, command: false)
+            == GridPressRouting(pressAction: .tapImage(x), consumesRelease: true))
+    }
+
+    @Test("press: toggle-OFF of a selected cell stays on mouse-up (a drag must keep it)")
+    func pressLeavesSelectedToggleToRelease() {
+        let x = id(2)
+        #expect(
+            gridPressRouting(imageID: x, isSelecting: true, isSelected: true,
+                             shift: false, command: false)
+            == GridPressRouting(pressAction: nil, consumesRelease: false))
+    }
+
+    @Test("press: idle open stays on mouse-up (a press that becomes a drag must not open)")
+    func pressLeavesIdleOpenToRelease() {
+        let x = id(2)
+        #expect(
+            gridPressRouting(imageID: x, isSelecting: false, isSelected: false,
+                             shift: false, command: false)
+            == GridPressRouting(pressAction: nil, consumesRelease: false))
     }
 }
