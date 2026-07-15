@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  009 · N3 — declare the app-private drag type so the OS registers
+	  `com.ref-atelier.asset-ids` for in-app drag sessions. Without this
+	  declaration the exported UTType is unknown at the drop destination and
+	  every drag (reorder / stack-move / rail-move) shows an invalid cursor and
+	  snaps back. Conforms to public.data so SwiftUI treats the payload as
+	  data-bearing. Other Info.plist keys are still generated
+	  (GENERATE_INFOPLIST_FILE = YES merges them on top of this file).
+	-->
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.ref-atelier.asset-ids</string>
+			<key>UTTypeDescription</key>
+			<string>Atelier asset selection</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict/>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -8,10 +8,11 @@
 //  from a cross-collection move without guessing. Replaces the old bare-UUID
 //  `String` payload everywhere.
 //
-//  The custom `UTType` is declared at runtime via `UTType(exportedAs:)` — the app
-//  only drags within itself, so a full `UTExportedTypeDeclarations` Info.plist
-//  entry isn't required for the OS to round-trip it; the exported-as form
-//  registers the identifier for this process's drag sessions.
+//  The custom `UTType` is BOTH declared in `Info.plist`
+//  (`UTExportedTypeDeclarations`, conforming to `public.data`) AND mirrored here
+//  via `UTType(exportedAs:)`. The Info.plist declaration is load-bearing: without
+//  it the OS doesn't recognize the identifier at a drop destination, so every
+//  drag (reorder / stack-move / rail-move) shows an invalid cursor and snaps back.
 //
 
 import AtelierCore
