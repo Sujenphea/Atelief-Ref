@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { runBulkSweep, sweepCheckpointKey } from "../src/bulk-controller.js";
+import { runBulkSweep, sweepCheckpointKey, sweepCleanMarkerKey } from "../src/bulk-controller.js";
 import { BULK } from "../src/bulk-messages.js";
 
 function item(sourceId, videoUrl = null) {
@@ -189,13 +189,17 @@ test("runBulkSweep: checkpoints under the STABLE key (not jobId), cleared on com
 
   assert.equal(result.status, "complete");
   const key = "atelier:bulk:pinterest:B7";                  // boardId, not "JOB-9"
-  assert.ok(storage.calls.save.length > 0);
-  assert.ok(storage.calls.save.every((c) => c.key === key));
+  // The engine's CHECKPOINT saves (each carrying a cursor) go under the stable key…
+  const checkpointSaves = storage.calls.save.filter((c) => c.value.cursor !== undefined);
+  assert.ok(checkpointSaves.length > 0);
+  assert.ok(checkpointSaves.every((c) => c.key === key));
   assert.ok(!storage.calls.save.some((c) => c.key.includes("JOB-9")));
   // Each checkpoint carries the jobId (task 8) so a later run can reopen this job.
-  assert.ok(storage.calls.save.every((c) => c.value.jobId === "JOB-9"));
-  assert.deepEqual(storage.calls.remove, [key]);            // cleared on clean finish
+  assert.ok(checkpointSaves.every((c) => c.value.jobId === "JOB-9"));
+  assert.deepEqual(storage.calls.remove, [key]);            // checkpoint cleared on clean finish
   assert.equal(storage.store[key], undefined);
+  // …and the 14A clean-marker is written once, to the :lastclean key (a failure-free run).
+  assert.deepEqual(storage.store[`${key}:lastclean`], { clean: true });
 });
 
 test("runBulkSweep: resumes enumeration from the saved cursor under the stable key", async () => {
@@ -294,6 +298,81 @@ test("runBulkSweep: a checkpoint-cleanup (remove) failure LOGS but does not mask
 
   assert.equal(result.status, "complete");
   assert.ok(logs.some((l) => /cleanup failed/.test(l)), "the failure is logged, not swallowed silently");
+});
+
+// MARK: - re-sweep early-stop arming (14A)
+
+test("sweepCleanMarkerKey: points at the same target as the checkpoint, with a :lastclean suffix", () => {
+  assert.equal(
+    sweepCleanMarkerKey({ platform: "instagram", scope: "saved" }),
+    "atelier:bulk:instagram:saved:lastclean");
+});
+
+test("runBulkSweep: records a clean-marker true after a failure-free completion", async () => {
+  const { transport } = fakeTransport();
+  const driver = driverOf([item("a"), item("b")]);
+  const storage = fakeStorage();
+
+  await runBulkSweep(
+    { platform: "instagram", scope: "saved", input: {} },
+    { transport, driver, storage, ...engineOpts });
+
+  assert.deepEqual(storage.store["atelier:bulk:instagram:saved:lastclean"], { clean: true });
+});
+
+test("runBulkSweep: records clean-marker false when the sweep had a permanent/retryable fail", async () => {
+  // A stray failure means the NEXT sweep must full-walk to re-attempt it, so it must NOT
+  // be allowed to early-stop — the marker records the failure to enforce that.
+  const { transport } = fakeTransport({
+    relayFor: (id) => (id === "a" ? { status: "ingest-error" } : { status: "saved", deduplicated: false }),
+  });
+  const driver = driverOf([item("a"), item("b")]);
+  const storage = fakeStorage();
+
+  const result = await runBulkSweep(
+    { platform: "instagram", scope: "saved", input: {} },
+    { transport, driver, storage, ...engineOpts });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.counts.permanentFailed, 1);
+  assert.deepEqual(storage.store["atelier:bulk:instagram:saved:lastclean"], { clean: false });
+});
+
+test("runBulkSweep: arms early-stop ONLY on a fresh sweep whose prior run was clean", async () => {
+  const items = Array.from({ length: 10 }, (_, i) => item(`k${i}`));
+  const known = items.map((it) => it.sourceId);          // the whole feed is already ingested
+  const cleanKey = "atelier:bulk:instagram:saved:lastclean";
+
+  // (a) prior clean=true → early-stops after the threshold, not a full re-walk.
+  {
+    const { transport } = fakeTransport({ known });
+    const storage = fakeStorage({ [cleanKey]: { clean: true } });
+    const result = await runBulkSweep(
+      { platform: "instagram", scope: "saved", input: {} },
+      { transport, driver: driverOf(items), storage, ...engineOpts, earlyStopThreshold: 3 });
+    assert.equal(result.earlyStopped, true);
+    assert.ok(result.counts.skipped < 10, "stopped early");
+  }
+  // (b) no prior marker (first-ever sweep) → full walk, never early-stop.
+  {
+    const { transport } = fakeTransport({ known });
+    const storage = fakeStorage();
+    const result = await runBulkSweep(
+      { platform: "instagram", scope: "saved", input: {} },
+      { transport, driver: driverOf(items), storage, ...engineOpts, earlyStopThreshold: 3 });
+    assert.equal(result.earlyStopped, false);
+    assert.equal(result.counts.skipped, 10);
+  }
+  // (c) prior clean=false → full walk (re-attempt any stranded stray).
+  {
+    const { transport } = fakeTransport({ known });
+    const storage = fakeStorage({ [cleanKey]: { clean: false } });
+    const result = await runBulkSweep(
+      { platform: "instagram", scope: "saved", input: {} },
+      { transport, driver: driverOf(items), storage, ...engineOpts, earlyStopThreshold: 3 });
+    assert.equal(result.earlyStopped, false);
+    assert.equal(result.counts.skipped, 10);
+  }
 });
 
 test("runBulkSweep: a failing job-close (complete) PROPAGATES — the ledger close is load-bearing", async () => {

@@ -62,5 +62,14 @@ export const MAX_ITEM_RETRIES = 4;
 export const PLATFORM_PACING = Object.freeze({
   instagram: {
     engine: { MAX_CONCURRENCY: 2, PACING_MS: 1500, PACING_JITTER_MS: 1200 },
+    // Re-sweep early-stop (14A): after this many CONSECUTIVE already-known items, a FRESH
+    // sweep whose PRIOR run closed clean stops — it has reached previously-synced territory
+    // on IG's saved feed. Precondition VERIFIED LIVE (2026-07-16): the feed is ordered
+    // newest-SAVE-first — a freshly-saved post lands at index 0 and pushes the rest down in
+    // order (and it is NOT post-time ordered), so once a run of known items begins the tail
+    // stays monotonically known. ~1 page of singles of margin absorbs minor feed reordering;
+    // carousels count per-image, so this is comfortably conservative. IG-only — X/Pinterest
+    // re-walk in full. The controller arms it ONLY on a fresh + prior-clean sweep.
+    reSweep: { STOP_AFTER_CONSECUTIVE_SKIPS: 30 },
   },
 });

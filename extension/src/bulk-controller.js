@@ -38,6 +38,7 @@ const SUPPORTED_PLATFORMS = new Set(["twitter", "pinterest", "instagram"]);
  */
 export async function runBulkSweep(spec, {
   transport, driver, storage = null, config = {}, onProgress = null, sleep, random, log = () => {},
+  earlyStopThreshold = null,
 }) {
   const { platform, input, scope = null, totalEstimate = null, resolveVideo = false } = spec;
 
@@ -53,6 +54,23 @@ export async function runBulkSweep(spec, {
   // longer resumable, so a stale id is safe.
   const prior = storage && storage.load ? await storage.load(checkpointKey) : null;
   const resumeJobId = prior && prior.jobId ? prior.jobId : null;
+
+  // Re-sweep early-stop (14A): arm it ONLY on a fresh sweep (no outstanding checkpoint)
+  // whose PRIOR run of this scope closed clean — failure-free. The clean marker persists
+  // separately from the checkpoint (which a clean close clears), so it survives to gate the
+  // next run. This keeps a stranded retryable/permanent item from being walled off behind
+  // the known-run: any prior failure forces a full re-walk that re-attempts it. Fully
+  // extension-side — no app/server change. Threshold is IG-only (config), null elsewhere.
+  const cleanMarkerKey = sweepCleanMarkerKey({ platform, scope, input });
+  const freshStart = !prior;
+  const engineConfig = { ...config };
+  if (earlyStopThreshold && freshStart && storage && storage.load) {
+    const lastClean = await storage.load(cleanMarkerKey);
+    if (lastClean && lastClean.clean === true) {
+      engineConfig.STOP_AFTER_CONSECUTIVE_SKIPS = earlyStopThreshold;
+      log("re-sweep early-stop armed (prior sweep clean), threshold", earlyStopThreshold);
+    }
+  }
 
   const { jobId, caps } = await transport({
     type: BULK.open, platform, scope, totalEstimate, resumeJobId,
@@ -98,7 +116,7 @@ export async function runBulkSweep(spec, {
 
   const result = await runSweep(driver, input, {
     relay, knownSet, storage: checkpointStorage, checkpointKey,
-    config, onProgress, sleep, random, log,
+    config: engineConfig, onProgress, sleep, random, log,
   });
 
   // Map the engine's terminal state to the ledger close status (7A). A clean finish
@@ -128,6 +146,20 @@ export async function runBulkSweep(spec, {
     }
   }
 
+  // Record whether this CLEAN completion was failure-free, so the NEXT fresh sweep of this
+  // scope may early-stop (14A). A run with any retryable/permanent fail records `clean:false`,
+  // forcing the next sweep to full-walk and re-attempt the stray. Persisted separately from
+  // the (now-cleared) checkpoint. Best-effort — a write failure only forgoes a future
+  // optimisation, so it LOGs rather than failing an otherwise-successful sweep.
+  if (result.status === "complete" && storage && storage.save) {
+    try {
+      const clean = result.counts.retryableFailed === 0 && result.counts.permanentFailed === 0;
+      await storage.save(cleanMarkerKey, { clean });
+    } catch (error) {
+      log("clean-marker write failed (non-fatal — next sweep just full-walks):", String(error));
+    }
+  }
+
   return { jobId, caps, ...result };
 }
 
@@ -136,6 +168,14 @@ export async function runBulkSweep(spec, {
 export function sweepCheckpointKey({ platform, scope = null, input = null }) {
   const target = (input && input.boardId) || scope || "default";
   return `atelier:bulk:${platform}:${target}`;
+}
+
+/** The persistent "was the last completed sweep of this target failure-free?" marker key
+ * (14A). Derived from the checkpoint key + a suffix so it points at the SAME target but
+ * survives the checkpoint's clean-close clearing — it's what arms the next sweep's
+ * early-stop. */
+export function sweepCleanMarkerKey({ platform, scope = null, input = null }) {
+  return `${sweepCheckpointKey({ platform, scope, input })}:lastclean`;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,8 +305,9 @@ export function registerBulkController(win, chromeApi) {
     // Per-platform engine pacing (13A): IG sweeps gentler; X/Pinterest inherit the globals.
     // (No per-item progress log — the app's Sweeps tab owns live progress; the final
     // `sweep SETTLED` line below carries the totals.)
-    runBulkSweep(spec, { transport, driver, storage, config: pacing.engine || {}, log })
-      .then((result) => { log("sweep SETTLED", result.status, JSON.stringify(result.counts), result.error || ""); sendResponse({ ok: true, result }); })
+    const earlyStopThreshold = (pacing.reSweep && pacing.reSweep.STOP_AFTER_CONSECUTIVE_SKIPS) || null;
+    runBulkSweep(spec, { transport, driver, storage, config: pacing.engine || {}, log, earlyStopThreshold })
+      .then((result) => { log("sweep SETTLED", result.status, result.earlyStopped ? "(early-stop)" : "", JSON.stringify(result.counts), result.error || ""); sendResponse({ ok: true, result }); })
       .catch((error) => { log("sweep THREW", String(error)); sendResponse({ ok: false, error: String(error) }); })
       .finally(() => { win.__atelierSweepInFlight = false; dispose(); }); // release guard + tear down listener
     return true; // async sendResponse

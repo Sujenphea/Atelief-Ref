@@ -534,6 +534,92 @@ test("auth wall halts the sweep resumable, sparing the rest of the board (5A)", 
   assert.equal(result.counts.permanentFailed, 0);  // NOTHING wrongly burned as permanent
 });
 
+// MARK: - re-sweep early-stop [14A]
+
+test("early-stop: after K consecutive known items a fresh sweep completes EARLY (clean, not a halt)", async () => {
+  const { driver } = driverFrom([item("k1"), item("k2"), item("k3"), item("new1"), item("new2")]);
+  const relayed = [];
+  const relay = async (it) => { relayed.push(it.sourceId); return { outcome: OUTCOMES.ingested }; };
+  const { opts } = serialOpts({
+    relay, knownSet: new Set(["k1", "k2", "k3"]),
+    config: { MAX_CONCURRENCY: 1, PACING_MS: 0, PACING_JITTER_MS: 0, STOP_AFTER_CONSECUTIVE_SKIPS: 3 },
+  });
+
+  const result = await runSweep(driver, "in", opts);
+
+  assert.equal(result.status, "complete");     // a clean completion, NOT "halted"
+  assert.equal(result.earlyStopped, true);
+  assert.equal(result.counts.skipped, 3);
+  assert.equal(result.counts.ingested, 0);
+  assert.deepEqual(relayed, []);               // new1/new2 past the wall are never reached
+});
+
+test("early-stop: a non-skip RESETS the consecutive run — a new item deep in the feed is not walled off", async () => {
+  // k,k, NEW (resets to 0), k,k, NEW → the longest known-run is 2 < 3, so the whole feed
+  // is walked and both new items are captured. This is the guard against under-capturing.
+  const { driver } = driverFrom([item("k1"), item("k2"), item("n1"), item("k3"), item("k4"), item("n2")]);
+  const relayed = [];
+  const relay = async (it) => { relayed.push(it.sourceId); return { outcome: OUTCOMES.ingested }; };
+  const { opts } = serialOpts({
+    relay, knownSet: new Set(["k1", "k2", "k3", "k4"]),
+    config: { MAX_CONCURRENCY: 1, PACING_MS: 0, PACING_JITTER_MS: 0, STOP_AFTER_CONSECUTIVE_SKIPS: 3 },
+  });
+
+  const result = await runSweep(driver, "in", opts);
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.earlyStopped, false);
+  assert.equal(result.counts.skipped, 4);
+  assert.deepEqual(relayed, ["n1", "n2"]);     // BOTH new items reached; never early-stopped
+});
+
+test("early-stop: disabled on a RESUME (a checkpoint present) even when configured", async () => {
+  // A resumed sweep must run to the end (its checkpoint-page overlap would be a false
+  // skip-run at the very front). The engine inerts early-stop whenever startCursor != null.
+  const { driver } = driverFrom([item("k1"), item("k2"), item("k3"), item("k4")]);
+  const storage = memStorage({ "job:r": { cursor: "RESUME", counts: {} } });
+  const relay = async () => ({ outcome: OUTCOMES.ingested });
+  const { opts } = serialOpts({
+    relay, storage, checkpointKey: "job:r", knownSet: new Set(["k1", "k2", "k3", "k4"]),
+    config: { MAX_CONCURRENCY: 1, PACING_MS: 0, PACING_JITTER_MS: 0, STOP_AFTER_CONSECUTIVE_SKIPS: 2 },
+  });
+
+  const result = await runSweep(driver, "in", opts);
+
+  assert.equal(result.earlyStopped, false);
+  assert.equal(result.counts.skipped, 4);      // full walk despite 4 consecutive knowns
+});
+
+test("early-stop: no threshold → a full re-walk even when everything is already known (default off)", async () => {
+  const { driver } = driverFrom([item("k1"), item("k2"), item("k3")]);
+  const relay = async () => ({ outcome: OUTCOMES.ingested });
+  const { opts } = serialOpts({ relay, knownSet: new Set(["k1", "k2", "k3"]) }); // no STOP_AFTER config
+
+  const result = await runSweep(driver, "in", opts);
+
+  assert.equal(result.earlyStopped, false);
+  assert.equal(result.counts.skipped, 3);      // X/Pinterest behaviour — unchanged
+});
+
+test("early-stop: under concurrency it still stops early (the run is counted in enumeration order)", async () => {
+  // 50 all-known items, threshold 5, 3 workers: the trailing-skip run is measured over the
+  // CONTIGUOUS committed prefix (seq order), so it trips well before the feed is exhausted.
+  const { driver } = driverFrom(Array.from({ length: 50 }, (_, i) => item(`k${i}`)));
+  const known = new Set(Array.from({ length: 50 }, (_, i) => `k${i}`));
+  const relay = async () => ({ outcome: OUTCOMES.ingested });
+  const { sleep } = recordingSleep();
+
+  const result = await runSweep(driver, "in", {
+    relay, knownSet: known, sleep, random: () => 0,
+    config: { MAX_CONCURRENCY: 3, PACING_MS: 0, PACING_JITTER_MS: 0, STOP_AFTER_CONSECUTIVE_SKIPS: 5 },
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.earlyStopped, true);
+  assert.equal(result.counts.ingested, 0);
+  assert.ok(result.counts.skipped < 50, `stopped early, not a full walk (skipped ${result.counts.skipped})`);
+});
+
 // MARK: - guardrails
 
 test("runSweep requires a relay function", async () => {

@@ -164,6 +164,10 @@ export async function runSweep(driver, input, {
   const cfg = {
     MAX_CONCURRENCY, PACING_MS, PACING_JITTER_MS,
     BACKOFF_BASE_MS, BACKOFF_MAX_MS, MAX_ITEM_RETRIES,
+    // Re-sweep early-stop (14A): stop cleanly after this many CONSECUTIVE already-known
+    // (skipped) items. null/0 = disabled (X/Pinterest, and any first/resumed sweep). The
+    // caller (bulk-controller) only sets it on a FRESH sweep whose prior run closed clean.
+    STOP_AFTER_CONSECUTIVE_SKIPS: null,
     ...config,
   };
 
@@ -177,7 +181,7 @@ export async function runSweep(driver, input, {
   }
 
   const counts = zeroCounts();
-  const completed = new Map();   // seq → cursor, pending contiguous commit
+  const completed = new Map();   // seq → { cursor, outcome }, pending contiguous commit
   let committedSeq = -1;         // highest seq whose whole prefix is terminal
   let committedCursor = startCursor;
   let lastSavedSeq = -1;
@@ -186,6 +190,13 @@ export async function runSweep(driver, input, {
   let nextSeq = 0;
   let iterDone = false;
   let enumerationError = null;
+
+  // Re-sweep early-stop (14A): only on a FRESH sweep (never a resume — a resumed walk must
+  // run to the end, and its checkpoint-page overlap would be a false skip-run at the front).
+  const earlyStopAfter =
+    cfg.STOP_AFTER_CONSECUTIVE_SKIPS && startCursor == null ? cfg.STOP_AFTER_CONSECUTIVE_SKIPS : null;
+  let trailingSkips = 0;         // consecutive skips at the head of the committed prefix
+  let earlyStop = false;         // true once the skip-run tripped a clean early completion
 
   const iterator = driver.enumerate(input, { cursor: startCursor })[Symbol.asyncIterator]();
 
@@ -226,7 +237,20 @@ export async function runSweep(driver, input, {
     let advanced = false;
     while (completed.has(committedSeq + 1)) {
       committedSeq += 1;
-      committedCursor = completed.get(committedSeq);
+      const entry = completed.get(committedSeq);
+      committedCursor = entry.cursor;
+      // Count CONSECUTIVE skips over the contiguous prefix (enumeration order, immune to
+      // out-of-order completion). A long run of already-known items means we've reached
+      // previously-synced territory on a newest-save-first feed → the sweep is effectively
+      // done, so stop cleanly (a COMPLETE close, not a resumable halt) rather than re-walk
+      // the whole known tail. Any non-skip resets the run (a stranded item to re-attempt is
+      // never walled off). Guarded to a fresh sweep + a caller-supplied threshold.
+      if (entry.outcome === OUTCOMES.skipped) trailingSkips += 1;
+      else trailingSkips = 0;
+      if (earlyStopAfter && !earlyStop && trailingSkips >= earlyStopAfter) {
+        earlyStop = true;
+        halting = true;
+      }
       completed.delete(committedSeq);
       advanced = true;
     }
@@ -246,7 +270,7 @@ export async function runSweep(driver, input, {
 
   async function record(outcome, seq, cursor) {
     counts[outcome] += 1;
-    completed.set(seq, cursor);
+    completed.set(seq, { cursor, outcome });
     if (onProgress) onProgress({ ...counts });
     await checkpoint();
   }
@@ -310,7 +334,11 @@ export async function runSweep(driver, input, {
   await checkpoint();  // final flush for any tail that completed out of order
 
   return {
-    status: halting ? "halted" : "complete",
+    // An early-stop is a CLEAN completion (we reached already-synced territory), not a
+    // halt — so it closes the job `complete` and clears the checkpoint, same as a natural
+    // end of feed. Only a real wall/app-halt yields "halted".
+    status: (halting && !earlyStop) ? "halted" : "complete",
+    earlyStopped: earlyStop,
     // Why it halted, so the caller closes the ledger correctly: "halted" (app Cancel)
     // is terminal; "paused" (app Pause) and null (a wall/unreachable self-halt) are
     // both resumable. Only meaningful when status === "halted".

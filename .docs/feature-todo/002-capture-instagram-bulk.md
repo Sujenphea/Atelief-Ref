@@ -166,11 +166,11 @@ real block — halting on it is the desired "halt, don't burn".
      `next_max_id` populated (the resume cursor is no longer synthesized-only). (c) the
      **collection endpoint** is resolved: `GET /api/v1/feed/collection/<id>/posts/`, same
      envelope/pagination/header as the flat feed (→ collections built, changelog 134).
-   - ⚠️ **STILL OPEN:** (b) **Feed ordering** — recon showed the saved feed is **NOT**
-     post-time-ordered (`taken_at` is jumbled), consistent with newest-**save**-first, but
-     that isn't *proven* read-only (all 32 items were in one collection, so membership-by-
-     depth was uninformative). Proving newest-first needs a save-a-fresh-post mutation;
-     gates the re-sweep early-stop. (d) a **live challenge body** — nice-to-have.
+   - ✅ **CLOSED 2026-07-16:** (b) **Feed ordering is newest-SAVE-first** — verified live by
+     a fresh-save test: a newly-saved post landed at feed index 0 and pushed the rest down in
+     order (the feed is also NOT post-time ordered). This is the precondition that made the
+     re-sweep early-stop safe to build (→ built, changelog 136).
+   - ⚠️ **STILL OPEN:** (d) a **live challenge body** — nice-to-have, doesn't block anything.
 1. **B1 (M, settled 2A+5A) — shared refactors, X-regression-gated.**
    (a) Extract `hook-core.js`: a classic-script (no import/export)
    `installResponseHook({ isMatch, messageSource, replaySource, target, post })`
@@ -232,13 +232,14 @@ All `node --test`, no live IG (fixture discipline, 015 T9/T12). Settled 9A/10A/1
 
 ## Deferred (documented, not built)
 
-- **Re-sweep early-stop (settled 14A):** every re-sweep re-scrolls the whole saved
-  feed (skips are cheap — no pace, no relay, no ledger write — but the scroll isn't).
-  Design when wanted: engine config `STOP_AFTER_CONSECUTIVE_SKIPS` (IG-only),
-  completing the sweep once K contiguous known items pass. **Blocked on:** B0
-  confirming save-time ordering, and an early-stop guard for stranded
-  `retryableFailed` items (e.g. only early-stop when the prior job closed
-  `complete`). v1 matches X's current full-re-scroll behavior — no regression.
+- ~~**Re-sweep early-stop (settled 14A):**~~ **BUILT 2026-07-16** (changelog 136). Engine
+  `STOP_AFTER_CONSECUTIVE_SKIPS` (IG-only, 30) completes a fresh sweep once K contiguous
+  known items pass — counted over the contiguous committed prefix (concurrency-safe), a
+  non-skip resets the run. The stranded-`retryableFailed` guard is fully extension-side: a
+  persistent `:lastclean` marker arms early-stop ONLY after a failure-free prior run (no
+  app/server change, contra the earlier "prior job closed complete" sketch which a
+  complete-with-retryables would have mis-passed). Both prerequisites now met (save-time
+  ordering verified live; the clean-marker guard). X/Pinterest unchanged.
 - ~~**Collections (6A):**~~ **BUILT 2026-07-16** (changelog 134). Live recon settled the
   endpoint (`GET /api/v1/feed/collection/<id>/posts/` — identical envelope + `?max_id=`
   pagination + `x-ig-app-id` header to the flat feed) and the URL shape
