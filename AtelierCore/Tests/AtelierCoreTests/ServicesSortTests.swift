@@ -125,6 +125,56 @@ struct ServicesSortTests {
         #expect(order == [d, b, a])
     }
 
+    // MARK: append-on-insert (manual order)
+
+    @Test("ingest appends to the END of the manual grid, in insertion order")
+    func ingestAppendsInOrder() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        // Three ingests in a known order — no drag reorder at all.
+        let a = try await seed(services, into: c.id)
+        let b = try await seed(services, into: c.id)
+        let d = try await seed(services, into: c.id)
+
+        // Manual order is the insertion order (0,1,2), NOT a random NULL/id order.
+        let order = try await services.collectionItems(in: c.id, sort: .manual).map(\.asset.id)
+        #expect(order == [a, b, d])
+    }
+
+    @Test("a fresh ingest lands after an existing arrangement, not in front of it")
+    func ingestAppendsAfterArranged() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let a = try await seed(services, into: c.id)
+        let b = try await seed(services, into: c.id)
+        // Impose an explicit order, then ingest a new item.
+        try await services.setGridOrder(collectionID: c.id, orderedAssetIDs: [b, a])
+        let d = try await seed(services, into: c.id)
+
+        // The new item is appended to the end — the arrangement is preserved.
+        let order = try await services.collectionItems(in: c.id, sort: .manual).map(\.asset.id)
+        #expect(order == [b, a, d])
+    }
+
+    @Test("addAssets appends the batch to the end, in order, only for new members")
+    func addAssetsAppendsBatch() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let source = try await services.createCollection(name: "Source")
+        let target = try await services.createCollection(name: "Target")
+        let a = try await seed(services, into: target.id)   // target already holds `a`
+        let b = try await seed(services, into: source.id)
+        let d = try await seed(services, into: source.id)
+
+        // Add b, d to target (a is already a member and must not move / re-slot).
+        try await services.addAssets([b, a, d], to: target.id)
+
+        let order = try await services.collectionItems(in: target.id, sort: .manual).map(\.asset.id)
+        #expect(order == [a, b, d])
+    }
+
     // MARK: non-destructive switching
 
     @Test("manual order survives view bumps and mode switches")

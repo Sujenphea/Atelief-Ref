@@ -194,17 +194,25 @@ struct ServicesInvariantTests {
         defer { temp.cleanup() }
         let c = try await services.createCollection(name: "C")
         let r = try await services.ingest(assetDraft(), from: sourceDraft(), into: c.id)
+        // The single ingest appended it at slot 0 — capture that so the assertion
+        // tracks the atomicity invariant (rollback leaves the order UNCHANGED),
+        // not a hardcoded pre-insert value.
+        func storedOrder() throws -> Int? {
+            try temp.database.read { db -> Int? in
+                try CollectionItem
+                    .filter(Column("asset_id") == r.asset.id.uuidString.lowercased())
+                    .fetchOne(db)?.manualOrder
+            }
+        }
+        let before = try storedOrder()
+        #expect(before == 0)
+
         let ghost = UUID()
         await #expect(throws: AtelierError.notFound(entity: "collection_item", id: ghost)) {
             try await services.setGridOrder(collectionID: c.id, orderedAssetIDs: [r.asset.id, ghost])
         }
-        // The member's order must NOT have been written (atomic rollback).
-        let order = try temp.database.read { db -> Int? in
-            try CollectionItem
-                .filter(Column("asset_id") == r.asset.id.uuidString.lowercased())
-                .fetchOne(db)?.manualOrder
-        }
-        #expect(order == nil)
+        // The member's order must be untouched by the rolled-back batch.
+        #expect(try storedOrder() == before)
     }
 
     @Test("createCollection rejects an empty name with invalidName")
