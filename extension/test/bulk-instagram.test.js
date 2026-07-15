@@ -12,7 +12,9 @@ import { readFileSync } from "node:fs";
 
 import {
   parseSavedFeedPage, mapSavedMedia, pickImage, pickVideo, detectChallenge,
-  isSavedFeedRequest, InstagramChallengeError, IG_MEDIA_TYPE,
+  isSavedFeedRequest, InstagramChallengeError, InstagramSavedError, IG_MEDIA_TYPE,
+  buildSavedFeedURL, savedFeedHeaders, makeSavedFeedFetch, enumerateSavedFeed,
+  instagramSavedDriver, IG_WEB_APP_ID,
 } from "../src/bulk-instagram.js";
 
 const saved = JSON.parse(readFileSync(new URL("./fixtures/instagram-saved.json", import.meta.url)));
@@ -146,15 +148,14 @@ test("parseSavedFeedPage: end-of-feed when more_available is false (the fixture)
   for (const item of page.items) assert.equal(item.cursor, null);
 });
 
-test("parseSavedFeedPage: a mid-feed page carries next_max_id and is NOT end-of-feed", () => {
-  // The recon account was single-page; synthesize the paginating shape (README documents
-  // this — the field name is IG convention, re-verify against a multi-page feed).
-  const midPage = { status: "ok", more_available: true, next_max_id: "QVFC_cursor_123",
+test("parseSavedFeedPage: a mid-feed page exposes next_max_id; items carry the REQUEST cursor", () => {
+  const midPage = { status: "ok", more_available: true, next_max_id: "NEXT_CUR",
     items: [{ media: imagePost }] };
-  const page = parseSavedFeedPage(midPage, {});
+  const page = parseSavedFeedPage(midPage, { cursor: "REQ_CUR" });
   assert.equal(page.endOfFeed, false);
-  assert.equal(page.nextMaxId, "QVFC_cursor_123");
-  assert.equal(page.items[0].cursor, "QVFC_cursor_123"); // items stamped with the checkpoint token
+  assert.equal(page.nextMaxId, "NEXT_CUR");         // the cursor to fetch the NEXT page
+  // Items carry the cursor that REQUESTED this page (resume re-fetches it), NOT next_max_id.
+  assert.equal(page.items[0].cursor, "REQ_CUR");
 });
 
 test("parseSavedFeedPage: a challenge body → error (InstagramChallengeError), no items, never throws", () => {
@@ -197,4 +198,104 @@ test("parseSavedFeedPage: a malformed / empty page → no items, ends the feed (
   assert.deepEqual(parseSavedFeedPage(null, {}).items, []);
   assert.equal(parseSavedFeedPage(null, {}).endOfFeed, true);
   assert.equal(parseSavedFeedPage({ items: [] }, {}).endOfFeed, true);   // no more_available → end
+});
+
+// MARK: - the O2 driver (URL / headers / fetch / pagination)
+
+test("buildSavedFeedURL: the saved-feed path, with ?max_id= only when a cursor is set", () => {
+  assert.equal(buildSavedFeedURL({ host: "www.instagram.com" }),
+    "https://www.instagram.com/api/v1/feed/saved/posts/");
+  assert.equal(buildSavedFeedURL({ host: "www.instagram.com", cursor: "CUR2" }),
+    "https://www.instagram.com/api/v1/feed/saved/posts/?max_id=CUR2");
+  // A real cursor carries base64 `=` padding — it round-trips through the query param.
+  const u = new URL(buildSavedFeedURL({ host: "www.instagram.com", cursor: "aQ=b==" }));
+  assert.equal(u.searchParams.get("max_id"), "aQ=b==");
+});
+
+test("savedFeedHeaders: only the public x-ig-app-id constant (verified live), no scraped secrets", () => {
+  const h = savedFeedHeaders();
+  assert.equal(h["x-ig-app-id"], IG_WEB_APP_ID);
+  assert.equal(h["x-ig-app-id"], "936619743392459");
+  assert.equal(h["x-requested-with"], "XMLHttpRequest");
+  assert.ok(!("x-csrftoken" in h) && !("x-ig-www-claim" in h), "no csrf / www-claim needed");
+});
+
+test("makeSavedFeedFetch: sends the header + credentials, returns { httpStatus, json }", async () => {
+  let seen = null;
+  const fetchImpl = async (url, opts) => {
+    seen = { url, opts };
+    return { ok: true, status: 200, json: async () => ({ items: [], more_available: false }) };
+  };
+  const fetchJson = makeSavedFeedFetch({ fetchImpl });
+  const res = await fetchJson("https://www.instagram.com/api/v1/feed/saved/posts/");
+  assert.equal(res.httpStatus, 200);
+  assert.deepEqual(res.json, { items: [], more_available: false });
+  assert.equal(seen.opts.credentials, "include");
+  assert.equal(seen.opts.headers["x-ig-app-id"], IG_WEB_APP_ID);
+});
+
+test("makeSavedFeedFetch: a 4xx body is still read (so a challenge can be classified)", async () => {
+  const fetchImpl = async () => ({ ok: false, status: 400, json: async () => ({ message: "checkpoint_required" }) });
+  const res = await makeSavedFeedFetch({ fetchImpl })("u");
+  assert.equal(res.httpStatus, 400);
+  assert.equal(res.json.message, "checkpoint_required");
+});
+
+/** Collect a driver/enumerator's yielded sourceIds. */
+async function drain(iter) { const out = []; for await (const it of iter) out.push(it.sourceId); return out; }
+
+/** A scripted fetchJson serving responses in order, recording requested URLs. */
+function scripted(responses) {
+  const urls = []; let i = 0;
+  return { urls, fetchJson: async (url) => { urls.push(url); return responses[Math.min(i++, responses.length - 1)]; } };
+}
+
+test("enumerateSavedFeed: paginates via next_max_id, threading the cursor into the next request", async () => {
+  const midPage = { status: "ok", more_available: true, next_max_id: "CUR2", items: [{ media: imagePost }] };
+  const endPage = { status: "ok", more_available: false, items: [{ media: reelPost }] };
+  const { urls, fetchJson } = scripted([{ httpStatus: 200, json: midPage }, { httpStatus: 200, json: endPage }]);
+
+  const ids = await drain(enumerateSavedFeed(fetchJson, { host: "www.instagram.com" }, {}));
+  assert.deepEqual(ids, [String(imagePost.pk), String(reelPost.pk)]);
+  assert.equal(urls.length, 2);
+  assert.ok(!urls[0].includes("max_id"));
+  assert.match(urls[1], /max_id=CUR2/);
+});
+
+test("enumerateSavedFeed: a single terminal page yields once and stops (no phantom request)", async () => {
+  const endPage = { status: "ok", more_available: false, items: [{ media: imagePost }] };
+  const { urls, fetchJson } = scripted([{ httpStatus: 200, json: endPage }]);
+  const ids = await drain(enumerateSavedFeed(fetchJson, {}, {}));
+  assert.deepEqual(ids, [String(imagePost.pk)]);
+  assert.equal(urls.length, 1);
+});
+
+test("enumerateSavedFeed: a challenge body THROWS InstagramChallengeError (halt, don't burn)", async () => {
+  const { fetchJson } = scripted([{ httpStatus: 400, json: { message: "checkpoint_required", status: "fail" } }]);
+  await assert.rejects(() => drain(enumerateSavedFeed(fetchJson, {}, {})), InstagramChallengeError);
+});
+
+test("enumerateSavedFeed: a non-200 (no challenge shape) THROWS InstagramSavedError", async () => {
+  const { fetchJson } = scripted([{ httpStatus: 500, json: {} }]);
+  await assert.rejects(() => drain(enumerateSavedFeed(fetchJson, {}, {})), InstagramSavedError);
+});
+
+test("enumerateSavedFeed: a repeated cursor stops the walk (loop guard, no infinite loop)", async () => {
+  // A pathological feed that keeps returning the SAME next_max_id must not loop forever:
+  // the first page yields, then the repeated cursor halts the walk before re-requesting it.
+  const loopPage = { status: "ok", more_available: true, next_max_id: "SAME", items: [{ media: imagePost }] };
+  const { fetchJson, urls } = scripted([{ httpStatus: 200, json: loopPage }]); // always returns SAME
+  const ids = await drain(enumerateSavedFeed(fetchJson, {}, {}));
+  // Terminates (no infinite loop): page 1 (no cursor) + one request at SAME, then the
+  // repeated SAME is guarded before a third fetch.
+  assert.equal(urls.length, 2);
+  assert.equal(ids.length, 2);
+});
+
+test("instagramSavedDriver: conforms to the engine seam and ignores its input", async () => {
+  const endPage = { status: "ok", more_available: false, items: [{ media: imagePost }] };
+  const { fetchJson } = scripted([{ httpStatus: 200, json: endPage }]);
+  const driver = instagramSavedDriver({ fetchJson, host: "www.instagram.com" });
+  const ids = await drain(driver.enumerate({ anything: true }, { cursor: null }));
+  assert.deepEqual(ids, [String(imagePost.pk)]);
 });

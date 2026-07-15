@@ -1,106 +1,116 @@
-// Atelier Capture — Instagram end-to-end integration: fixture → source → engine (002 · B3, [9A][11A]).
+// Atelier Capture — Instagram end-to-end integration: fixtures → driver → engine (002 · O2, [9A][11A]).
 //
-// The parser (bulk-instagram.js), the push→pull source (instagram-source.js) and the
-// sweep engine (bulk-engine.js) are each unit-tested in isolation; these exercise them
-// TOGETHER, the seam a real intercepted saved-feed response drives an actual sweep. A fake
-// `scroll` feeds pages into the source exactly as the live hook would, `runSweep` pulls
-// them, and a recording relay stands in for the SW. Second test pins the account-safety
-// property (11A): a challenge mid-sweep halts RESUMABLE with the checkpoint preserved.
+// The parser (bulk-instagram.js) and the sweep engine (bulk-engine.js) are unit-tested in
+// isolation; these exercise them TOGETHER through the O2 PULL driver — a scripted
+// `fetchJson` stands in for the credentialled saved-feed fetch, the driver paginates by
+// `next_max_id`, `runSweep` pulls its items, and a recording relay stands in for the SW.
+// Pins: multi-page pagination + fan-out end-to-end, the cursor is threaded into the next
+// request, and the account-safety property (11A) — a challenge / non-200 mid-sweep halts
+// RESUMABLE with the checkpoint preserved.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { createInstagramSource, InstagramStallError } from "../src/instagram-source.js";
-import { parseSavedFeedPage, IG_MEDIA_TYPE } from "../src/bulk-instagram.js";
+import { instagramSavedDriver, parseSavedFeedPage } from "../src/bulk-instagram.js";
 import { runSweep, OUTCOMES } from "../src/bulk-engine.js";
 
-const saved = JSON.parse(readFileSync(new URL("./fixtures/instagram-saved.json", import.meta.url)));
+const page1 = JSON.parse(readFileSync(new URL("./fixtures/instagram-saved.json", import.meta.url)));       // 3 posts
+const page2 = JSON.parse(readFileSync(new URL("./fixtures/instagram-saved-page2.json", import.meta.url))); // 11 posts
 
-/** The fixture's expected fanned-out item count (image + reel + carousel children). */
-const EXPECTED_ITEMS = parseSavedFeedPage(saved).items.length;
+/** Fanned-out item count for a raw page (image/reel → 1, carousel → child count). */
+const fanout = (page) => parseSavedFeedPage(page).items.length;
 
 const engineOpts = {
   sleep: () => Promise.resolve(), random: () => 0,
   config: { MAX_CONCURRENCY: 1, PACING_MS: 0, PACING_JITTER_MS: 0 },
 };
 
-/** A relay that records every sourceId it ingests (stands in for the SW → app). */
 function recordingRelay() {
   const ingested = [];
-  return {
-    ingested,
-    relay: async (item) => { ingested.push(item.sourceId); return { outcome: OUTCOMES.ingested }; },
-  };
+  return { ingested, relay: async (item) => { ingested.push(item.sourceId); return { outcome: OUTCOMES.ingested }; } };
 }
 
-test("IG integration: the real saved fixture drives a full sweep, every media ingested (fan-out)", async () => {
-  // The live hook feeds page 1 (the fixture, more_available:false → the terminal page).
-  const source = createInstagramSource({
-    sleep: () => Promise.resolve(), maxIdleRounds: 3,
-    scroll: () => {}, // no more pages; the fixture is already end-of-feed
-  });
-  source.onResponse(saved, "https://www.instagram.com/api/v1/feed/saved/posts/");
+/** A scripted `fetchJson`: serves `responses` in order and records every requested URL. */
+function scriptedFetch(responses) {
+  const urls = [];
+  let i = 0;
+  const fetchJson = async (url) => {
+    urls.push(url);
+    const r = responses[Math.min(i, responses.length - 1)];
+    i += 1;
+    return r;
+  };
+  return { fetchJson, urls };
+}
+
+test("IG integration: the driver paginates two pages and ingests every fanned-out media", async () => {
+  // Page 1 (the 11-post fixture) carries more_available + a cursor → the driver continues to
+  // page 2 (the 3-post fixture, terminal). Total = both pages' fan-out, all distinct pks.
+  const midPage = { ...page2, more_available: true, next_max_id: "CURSOR2" };
+  const { fetchJson, urls } = scriptedFetch([
+    { httpStatus: 200, json: midPage },
+    { httpStatus: 200, json: page1 },   // terminal (more_available:false)
+  ]);
+  const driver = instagramSavedDriver({ fetchJson, host: "www.instagram.com" });
 
   const { ingested, relay } = recordingRelay();
-  const result = await runSweep(source, {}, { ...engineOpts, relay });
+  const result = await runSweep(driver, {}, { ...engineOpts, relay });
 
+  const expected = fanout(page2) + fanout(page1);
   assert.equal(result.status, "complete");
-  assert.equal(result.counts.ingested, EXPECTED_ITEMS);
-  assert.equal(ingested.length, EXPECTED_ITEMS);
-  assert.equal(new Set(ingested).size, EXPECTED_ITEMS, "every fanned-out media is a distinct per-media pk");
+  assert.equal(ingested.length, expected);
+  assert.equal(new Set(ingested).size, expected, "every fanned-out media is a distinct per-media pk");
+
+  // The cursor was threaded: page 1 requested without max_id, page 2 with max_id=CURSOR2.
+  assert.equal(urls.length, 2);
+  assert.ok(!urls[0].includes("max_id"), "first page requested without a cursor");
+  assert.match(urls[1], /max_id=CURSOR2/);
 });
 
-test("IG integration: a carousel post ingests one item PER child image (1A end-to-end)", async () => {
-  const carousel = saved.items.map((w) => w.media).find((m) => m.media_type === IG_MEDIA_TYPE.carousel);
-  const onePost = { status: "ok", more_available: false, items: [{ media: carousel }] };
-
-  const source = createInstagramSource({ sleep: () => Promise.resolve(), maxIdleRounds: 2, scroll: () => {} });
-  source.onResponse(onePost, "https://www.instagram.com/api/v1/feed/saved/posts/");
-
+test("IG integration: a single terminal page completes cleanly (no phantom next request)", async () => {
+  const { fetchJson, urls } = scriptedFetch([{ httpStatus: 200, json: page1 }]);
   const { ingested, relay } = recordingRelay();
-  const result = await runSweep(source, {}, { ...engineOpts, relay });
+  const result = await runSweep(instagramSavedDriver({ fetchJson }), {}, { ...engineOpts, relay });
 
   assert.equal(result.status, "complete");
-  assert.equal(ingested.length, carousel.carousel_media.length); // one BulkItem per child
-  assert.deepEqual(ingested.sort(), carousel.carousel_media.map((c) => String(c.pk)).sort());
+  assert.equal(ingested.length, fanout(page1));
+  assert.equal(urls.length, 1, "more_available:false → no second request");
 });
 
 test("IG integration: a challenge mid-sweep HALTS resumable, checkpoint preserved (11A)", async () => {
-  // Page 1 ingests; the next scroll delivers a checkpoint_required challenge body (which the
-  // status-blind hook forwards). The source re-raises it → the engine halts RESUMABLE, so a
-  // half-swept feed is paused (checkpoint kept), never falsely completed.
-  const midPage = { status: "ok", more_available: true, next_max_id: "CURSOR2",
-    items: [{ media: saved.items[0].media }] };
-  const challenge = { message: "checkpoint_required", status: "fail" };
-
-  const source = createInstagramSource({
-    sleep: () => Promise.resolve(), maxIdleRounds: 3,
-    scroll: (() => { let fed = false; return () => { if (!fed) { fed = true; source.onResponse(challenge, "https://www.instagram.com/api/v1/feed/saved/posts/?max_id=CURSOR2"); } }; })(),
-  });
-  source.onResponse(midPage, "https://www.instagram.com/api/v1/feed/saved/posts/");
-
+  // Page 1 ingests (with a cursor to continue); page 2 is a checkpoint_required body. The
+  // driver throws → the engine halts RESUMABLE, keeping the checkpoint, never falsely
+  // completing a half-swept feed.
+  const midPage = { ...page1, more_available: true, next_max_id: "CURSOR2" };
+  const { fetchJson } = scriptedFetch([
+    { httpStatus: 200, json: midPage },
+    { httpStatus: 400, json: { message: "checkpoint_required", status: "fail" } },
+  ]);
   const store = new Map();
   const storage = { load: async (k) => store.get(k) ?? null, save: async (k, v) => { store.set(k, v); }, remove: async (k) => { store.delete(k); } };
   const { ingested, relay } = recordingRelay();
-  const result = await runSweep(source, {}, {
+
+  const result = await runSweep(instagramSavedDriver({ fetchJson }), {}, {
     ...engineOpts, relay, storage, checkpointKey: "ig:test",
   });
 
-  assert.equal(result.status, "halted");                 // the challenge halted the sweep
-  assert.ok(result.error && /checkpoint_required/.test(result.error), "the halt reason is the challenge");
-  assert.ok(ingested.length >= 1, "page 1's items were ingested before the halt");
-  assert.ok(store.has("ig:test"), "the checkpoint survived — the sweep is resumable, not lost");
+  assert.equal(result.status, "halted");
+  assert.ok(result.error && /checkpoint_required/.test(result.error), "halted on the challenge");
+  assert.equal(ingested.length, fanout(page1), "page 1's items ingested before the halt");
+  assert.ok(store.has("ig:test"), "checkpoint survived — the sweep is resumable, not lost");
 });
 
-test("IG integration: a stall (no challenge, no end page) halts resumable via InstagramStallError", async () => {
-  // more_available:true but scrolling yields nothing new → a STALL, not a confirmed end.
-  const midPage = { status: "ok", more_available: true, next_max_id: "CURSOR2",
-    items: [{ media: saved.items[0].media }] };
-  const source = createInstagramSource({ sleep: () => Promise.resolve(), maxIdleRounds: 2, scroll: () => {} });
-  source.onResponse(midPage, "https://www.instagram.com/api/v1/feed/saved/posts/");
+test("IG integration: a non-200 (no recognizable challenge) also halts resumable", async () => {
+  const midPage = { ...page1, more_available: true, next_max_id: "C2" };
+  const { fetchJson } = scriptedFetch([
+    { httpStatus: 200, json: midPage },
+    { httpStatus: 500, json: {} },
+  ]);
+  const { ingested, relay } = recordingRelay();
+  const result = await runSweep(instagramSavedDriver({ fetchJson }), {}, { ...engineOpts, relay });
 
-  await assert.rejects(async () => {
-    for await (const _item of source.enumerate()) { /* drain */ }
-  }, InstagramStallError);
+  assert.equal(result.status, "halted");
+  assert.ok(result.error && /http 500/.test(result.error));
+  assert.equal(ingested.length, fanout(page1));
 });

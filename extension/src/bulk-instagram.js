@@ -1,9 +1,13 @@
-// Atelier Capture — Instagram saved-posts BulkSource parsing (002 · B3, [1A][3A][7A]).
+// Atelier Capture — Instagram saved-posts BulkSource (002 · O2, [1A][3A][7A]).
 //
-// Instagram serves the saved feed from `…/api/v1/feed/saved/posts/` (REST, verified live
-// 2026-07-15 — 002 §B0). The MAIN-world hook (instagram-hook.js) captures those RESPONSES
-// and forwards them; this module is the PURE half: parse one intercepted saved-feed
-// response into `BulkItem`s + the pagination signal.
+// Instagram serves the saved feed from `…/api/v1/feed/saved/posts/` (REST, verified live).
+// We REPLAY that endpoint ourselves (service-worker cursor replay, O2) — a same-origin
+// credentialled `fetch` paginated by `next_max_id` — rather than intercept the page's
+// traffic: live testing proved IG's own saved-feed request bypasses the page's fetch/XHR
+// (un-hookable) and its infinite scroll only fires on a trusted wheel (un-automatable), so
+// the X-style interception can't work here. This file is BOTH halves: the PURE parser
+// (`parseSavedFeedPage` → `BulkItem`s + cursor) and the PULL driver (`instagramSavedDriver`),
+// mirroring the Pinterest driver's shape.
 //
 // FAN-OUT (decision 1A): unlike X (one tweet → one item with a media[] payload), a saved
 // post fans out to ONE `BulkItem` PER MEDIA via the plain-image path — `sourceId` = IG's
@@ -19,13 +23,23 @@
 // where `cursor` is the page's `next_max_id` (the checkpoint token).
 
 import { makeProvenance } from "./extractors/base.js";
+import { fetchWithTimeout } from "./net.js";
 
 /** IG `media_type` discriminants. */
 export const IG_MEDIA_TYPE = Object.freeze({ image: 1, video: 2, carousel: 8 });
 
+/** The saved-feed endpoint path and the ONE required request header value. Verified live
+ * (2026-07-16, doc 002 §mechanism): `GET /api/v1/feed/saved/posts/` with
+ * `x-ig-app-id: 936619743392459` + `credentials:'include'` returns 200 (the session
+ * cookie authorizes it); NO header → 400; `x-csrftoken` / `x-ig-www-claim` / `x-asbd-id`
+ * are NOT required. `x-ig-app-id` is the public IG-web app id — a constant, same for
+ * every web session, so nothing needs scraping (contrast Pinterest's app-version). */
+export const SAVED_FEED_PATH = "/api/v1/feed/saved/posts/";
+export const IG_WEB_APP_ID = "936619743392459";
+
 /** True for a saved-posts feed request URL (`…/api/v1/feed/saved/posts/`, ± `?max_id=`).
- * KEEP IN SYNC with instagram-hook.js `isSavedFeedRequest` — the same predicate the hook
- * uses to decide what to forward. Kept here too so the drift canary can verify it. */
+ * The route the driver builds + the drift canary verifies; a sanity check that the path
+ * constant hasn't drifted. */
 export function isSavedFeedRequest(url) {
   return typeof url === "string" && /\/api\/v1\/feed\/saved\/posts\//.test(url);
 }
@@ -175,7 +189,7 @@ export function mapSavedMedia(media, { host = "www.instagram.com", cursor = null
  *   · `error`     — an `InstagramChallengeError` when the body is a challenge (3A); the
  *                   source re-raises it so the engine halts resumable. Never throws.
  */
-export function parseSavedFeedPage(json, { host = "www.instagram.com" } = {}) {
+export function parseSavedFeedPage(json, { host = "www.instagram.com", cursor = null } = {}) {
   const challenge = detectChallenge(json);
   if (challenge) {
     return { items: [], endOfFeed: false, nextMaxId: null, error: new InstagramChallengeError(challenge) };
@@ -186,11 +200,121 @@ export function parseSavedFeedPage(json, { host = "www.instagram.com" } = {}) {
   const items = [];
   for (const wrapper of rawItems) {
     const media = wrapper && wrapper.media ? wrapper.media : wrapper;
-    for (const item of mapSavedMedia(media, { host, cursor: nextMaxId })) items.push(item);
+    // Stamp each item with the cursor that REQUESTED this page (`cursor`), NOT next_max_id,
+    // so a checkpointed resume re-fetches the SAME page and re-yields it (dedup makes the
+    // overlap idempotent) — the Pinterest resume contract, never skipping a gap.
+    for (const item of mapSavedMedia(media, { host, cursor })) items.push(item);
   }
 
   // End of feed when IG says no more (or the field is absent — a malformed/empty page
   // ends the sweep cleanly rather than looping, mirroring X's empty-page terminator).
   const endOfFeed = !(json && json.more_available);
   return { items, endOfFeed, nextMaxId, error: null };
+}
+
+// ---------------------------------------------------------------------------
+// The saved-feed DRIVER (engine seam) — service-worker cursor replay (002 · O2).
+//
+// Unlike X (which we can't paginate — the request is un-hookable and infinite scroll
+// needs a trusted wheel), IG's saved feed IS a plain credentialled REST endpoint we can
+// replay ourselves: same-origin `fetch` with `credentials:'include'` carries the session,
+// `x-ig-app-id` authorizes it, and `next_max_id` pages it. So this is a PULL driver
+// (Pinterest-style), not a push→pull hook source — no MAIN-world hook, no auto-scroll.
+// ---------------------------------------------------------------------------
+
+/** Raised when a saved-feed request isn't a usable page (non-200, or a challenge the
+ * body-shape recognizer didn't catch) — carries the http status so the engine's halt can
+ * reason about it. Enumeration throws HALT the sweep resumable (never burn a flagged
+ * account); the checkpoint is preserved so the user resumes after solving the challenge. */
+export class InstagramSavedError extends Error {
+  constructor(message, { httpStatus = null } = {}) {
+    super(message);
+    this.name = "InstagramSavedError";
+    this.httpStatus = httpStatus;
+  }
+}
+
+/** A stop-gap against a pathological feed that returns empty pages with an ever-changing
+ * cursor (never `more_available:false`): give up after this many CONSECUTIVE empties. */
+const MAX_EMPTY_PAGES = 3;
+
+/** The saved-feed request URL for a page (with the paginating `?max_id=` cursor when set). */
+export function buildSavedFeedURL({ host = "www.instagram.com", cursor = null } = {}) {
+  const url = new URL(SAVED_FEED_PATH, `https://${host}`);
+  if (cursor) url.searchParams.set("max_id", cursor);
+  return url.toString();
+}
+
+/** Headers for a saved-feed request. Only `x-ig-app-id` is required (verified live);
+ * `x-requested-with` mirrors the real client cheaply. The session cookie rides via
+ * `credentials:'include'` (set by the fetch wrapper), so nothing is scraped. */
+export function savedFeedHeaders() {
+  return { "x-ig-app-id": IG_WEB_APP_ID, "x-requested-with": "XMLHttpRequest" };
+}
+
+/** A `fetchJson(url)` backed by the real `fetch` (via `fetchWithTimeout`), sending the
+ * saved-feed headers with `credentials:'include'`. Returns `{ httpStatus, json }` (the
+ * body is read even on a 4xx so a challenge body can be classified). Injected in tests. */
+export function makeSavedFeedFetch({ fetchImpl = fetch } = {}) {
+  return async (url) => {
+    const response = await fetchWithTimeout(
+      url, { headers: savedFeedHeaders(), credentials: "include" }, { fetchImpl });
+    let json = {};
+    try { json = await response.json(); } catch { json = {}; }
+    return { httpStatus: response.status, json };
+  };
+}
+
+/**
+ * Walk the saved feed, yielding a `BulkItem` per media (fanned out, 1A). `fetchJson(url)`
+ * returns `{ httpStatus, json }`. Each item carries the cursor that REQUESTED its page, so
+ * a checkpointed resume re-fetches that page. Terminates at `more_available:false` (or an
+ * absent `next_max_id`). A challenge / non-200 THROWS — the engine catches it and halts
+ * the sweep resumable, preserving the checkpoint (halt, don't burn — 3A).
+ */
+export async function* enumerateSavedFeed(
+  fetchJson, { host = "www.instagram.com" } = {}, { cursor = null } = {}
+) {
+  let requestCursor = cursor;      // the max_id used to fetch the CURRENT page
+  const seenCursors = new Set();   // loop guard: never re-request the same cursor
+  let emptyPages = 0;
+
+  while (true) {
+    if (requestCursor) {
+      if (seenCursors.has(requestCursor)) return;  // cursor repeated → stop
+      seenCursors.add(requestCursor);
+    }
+
+    const url = buildSavedFeedURL({ host, cursor: requestCursor });
+    const { httpStatus, json } = await fetchJson(url);
+
+    // A challenge body (checkpoint / login / rate-limit) → halt resumable (3A).
+    const challenge = detectChallenge(json);
+    if (challenge) throw new InstagramChallengeError(challenge);
+    // Any other non-200 is an error we halt on rather than silently ending the sweep.
+    if (httpStatus !== 200) throw new InstagramSavedError(`saved feed http ${httpStatus}`, { httpStatus });
+
+    const page = parseSavedFeedPage(json, { host, cursor: requestCursor });
+    let yielded = 0;
+    for (const item of page.items) { yield item; yielded += 1; }
+
+    if (page.endOfFeed || !page.nextMaxId) return;  // IG says no more, or no cursor to continue
+    emptyPages = yielded === 0 ? emptyPages + 1 : 0;
+    if (emptyPages >= MAX_EMPTY_PAGES) return;
+    requestCursor = page.nextMaxId;
+  }
+}
+
+/**
+ * A saved-feed driver conforming to the engine's `BulkSource` seam. Bind the session
+ * context (`fetchJson`, `host`) once; `enumerate(input, { cursor })` then walks the feed.
+ * `input` is ignored (there's one flat saved feed — 6A), mirroring how the X driver
+ * ignores its input.
+ */
+export function instagramSavedDriver({ fetchJson, host = "www.instagram.com" }) {
+  return {
+    enumerate(_input, { cursor = null } = {}) {
+      return enumerateSavedFeed(fetchJson, { host }, { cursor });
+    },
+  };
 }

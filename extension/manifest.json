@@ -29,12 +29,6 @@
       "run_at": "document_start"
     },
     {
-      "matches": ["*://*.instagram.com/*"],
-      "js": ["src/hook-core.js", "src/instagram-hook.js"],
-      "world": "MAIN",
-      "run_at": "document_start"
-    },
-    {
       "matches": ["*://*.x.com/*", "*://*.twitter.com/*", "*://*.pinterest.com/*", "*://*.pinterest.co.uk/*", "*://*.instagram.com/*"],
       "js": ["src/bulk-loader.js"],
       "world": "ISOLATED",

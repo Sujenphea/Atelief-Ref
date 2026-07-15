@@ -31,23 +31,43 @@
   `job_item` ledger is platform-generic — the app side needs **zero changes** (holds
   under the per-media fan-out decision, §data model).
 
-## Mechanism (settled)
+## Mechanism (SETTLED — O2, after O1 failed live 2026-07-16)
 
-IG's saved posts live at `instagram.com/{user}/saved/` (flat "All posts" +
-per-collection). **Transport verified 2026-07-15** (recon, §B0): the flat feed is a
-REST call — `GET instagram.com/api/v1/feed/saved/posts/`, same-origin,
-`credentials:'include'`, `x-ig-app-id` + `x-csrftoken` headers — **not** GraphQL, and
+IG's saved posts live at `instagram.com/{user}/saved/`. The flat feed is a REST call —
+`GET instagram.com/api/v1/feed/saved/posts/`, same-origin, `credentials:'include'`,
 paginated by a top-level `next_max_id` (+ `?max_id=` on the next request).
 
-**O1 — MAIN-world response interception (X-style) — SETTLED.** Hook `fetch`/XHR at
-`document_start`, capture saved-feed responses as the user scrolls (plus auto-scroll
-assist), parse → `BulkItem`s. Rides genuine page traffic at human scroll cadence — the
-safest request pattern against Meta's detection. O2 (service-worker cursor replay) was
-rejected: synthetic request patterns are exactly what Meta's anti-bot targets. O3
-(official data-export ZIP) was **descoped to [017](./017-capture-instagram-export.md)**
-after review: shipped 001 deliberately refuses to app-resolve instagram.com URLs
-(auth-walled host set), and no headless URL-list capture mechanism exists — O3 is
-really an unplanned tab-driving import queue, not an "S" parser.
+> ⚠️ **O1 (MAIN-world interception) was built (B1–B4) then found NON-FUNCTIONAL on
+> Instagram by live browser testing (2026-07-16). Two independent, unfixable blockers:**
+> 1. **The hook never sees IG's request.** A real scroll loaded a page (grid 12→21), but
+>    `window.fetch` calls = 0, `XMLHttpRequest` calls = 0, hook forwards = 0. IG's
+>    saved-feed request bypasses BOTH the page's `fetch` and `XMLHttpRequest` (a captured
+>    reference / worker) — so a `document_start` hook can't intercept it. (X works because
+>    X uses XHR, and we patch `XMLHttpRequest.prototype`, which a reference-capture can't
+>    bypass.)
+> 2. **Auto-scroll can't paginate.** IG's saved grid only loads more on a **trusted wheel
+>    gesture**. Every programmatic method (`scrollTo`/`scrollBy`/`scrollTop`/
+>    `scrollIntoView`/gradual stepping/synthetic wheel+scroll events) left the grid at 12
+>    items; only a physical wheel grew it (12→32). A content script can only scroll
+>    programmatically.
+
+**O2 — service-worker cursor replay — NOW SETTLED (the only mechanism that works).** The
+content script REPLAYS the endpoint itself: a same-origin credentialled `fetch` to
+`/api/v1/feed/saved/posts/`, following `next_max_id`. Live-verified 2026-07-16:
+- The ONLY required header is `x-ig-app-id: 936619743392459` (a **public constant** — no
+  header → 400; `x-csrftoken` / `x-ig-www-claim` / `x-asbd-id` NOT required). Nothing is
+  scraped — simpler than Pinterest (which needs a scraped app-version + pws-handler).
+- A full live walk swept the **entire** saved feed — **2 pages, 32 posts → 78 media
+  items** — and terminated cleanly. Pagination + `next_max_id` field name confirmed live.
+
+This sidesteps BOTH O1 blockers (the SW originates the request; cursor pagination, no
+scroll). Mechanically it mirrors the working **Pinterest driver** (SW credentialled fetch
++ cursor). The tradeoff O2 was rejected for — a synthetic request pattern carries more
+account risk than riding real traffic — stands, but O1 simply does not function on IG, so
+the real choice was O2 or no Instagram sweep. The account-risk warning UI (B4) is now
+doubly warranted; pacing (13A) matters more, not less.
+
+O3 (official data-export ZIP) remains **descoped to [017](./017-capture-instagram-export.md)**.
 
 > ✅ Endpoint shape resolved by B0 recon (2026-07-15): REST `api/v1/feed/saved/posts/`.
 > The response is `{ items: [{ media }], more_available, next_max_id?, status }`; each
@@ -245,7 +265,11 @@ user's time; everything else shrank or moved out)
 
 - Live driver first; export-ZIP second → then **descoped to 017** (user, 2026-07-13 /
   2026-07-15).
-- Mechanism O1 (interception), not O2 (replay) (user, 2026-07-13).
+- Mechanism O1 (interception), not O2 (replay) (user, 2026-07-13) — **REVERSED
+  2026-07-16**: O1 was built (B1–B4) but live browser testing proved it non-functional on
+  Instagram (hook can't intercept IG's request; auto-scroll can't paginate — see
+  §Mechanism). **Rebuilt on O2** (SW cursor replay), live-verified to sweep the whole feed
+  (2 pages, 32 posts → 78 media). User approved the rebuild ("try and build", 2026-07-16).
 - 2026-07-15 plan review (all user-confirmed):
   1. **1A** carousel → per-media fan-out, plain-image path (per-media `pk` sourceId).
   2. **2A** generalize `twitter-source.js` → `createInterceptSource`; warning UI is a

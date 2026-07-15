@@ -14,14 +14,13 @@
 import { runSweep, classifyIngestResult } from "./bulk-engine.js";
 import { PLATFORM_PACING } from "./config.js";
 import {
-  BULK, START, TIMELINE_MESSAGE_SOURCE, TIMELINE_REPLAY_SOURCE,
-  IG_SAVED_MESSAGE_SOURCE, IG_SAVED_REPLAY_SOURCE, readStartMessage,
+  BULK, START, TIMELINE_MESSAGE_SOURCE, TIMELINE_REPLAY_SOURCE, readStartMessage,
 } from "./bulk-messages.js";
 import {
   pinterestBoardDriver, makeResourceFetch, scrapePinterestAppVersionFromDoc, readCookie,
 } from "./bulk-pinterest.js";
 import { createTwitterSource } from "./twitter-source.js";
-import { createInstagramSource } from "./instagram-source.js";
+import { makeSavedFeedFetch, instagramSavedDriver } from "./bulk-instagram.js";
 
 /** Platforms the controller can build a driver for. A START for anything else is refused
  * with a typed error rather than silently mis-dispatched. */
@@ -193,28 +192,16 @@ function buildTwitterDriver({ win, host, scope }) {
   return { driver: source, dispose: () => win.removeEventListener("message", onMessage) };
 }
 
-/** Build the Instagram driver: subscribe to the MAIN-world saved-feed hook's messages and
- * feed them to the push→pull source, which auto-scrolls to page. The mirror image of
- * buildTwitterDriver (its own message/replay tags + parser), so `dispose` REMOVES the
- * `message` listener (1A) to avoid leaking a live listener into the next sweep. `pacing`
- * is `PLATFORM_PACING.instagram.source` (settle + stall budget); the engine pacing is
- * threaded separately via `runBulkSweep`'s `config`. */
-function buildInstagramDriver({ win, host, pacing = {} }) {
-  const source = createInstagramSource({
-    host,
-    scroll: () => win.scrollTo(0, win.document.body.scrollHeight),
-    ...pacing,
-  });
-  const onMessage = (event) => {
-    if (event.source === win && event.data && event.data.source === IG_SAVED_MESSAGE_SOURCE) {
-      source.onResponse(event.data.json, event.data.url);
-    }
-  };
-  win.addEventListener("message", onMessage);
-  // Replay the saved-feed pages IG fetched before this listener existed (the first page,
-  // loaded on navigation), so an already-scrolled feed still captures them.
-  win.postMessage({ source: IG_SAVED_REPLAY_SOURCE }, win.location.origin);
-  return { driver: source, dispose: () => win.removeEventListener("message", onMessage) };
+/** Build the Instagram driver (002 · O2): a same-origin credentialled `fetch` to the
+ * saved-feed REST endpoint, paginated by `next_max_id`. The mirror image of
+ * buildPinterestDriver — a PULL driver, NOT a hook source: IG's saved feed can't be
+ * intercepted (the request bypasses the page's fetch/XHR) and its infinite scroll needs a
+ * trusted wheel, so we replay the endpoint ourselves. The session cookie authorizes it
+ * (`credentials:'include'`); the only header is the public `x-ig-app-id` constant, so —
+ * like Pinterest — `dispose` is a no-op (no page listener held). */
+function buildInstagramDriver({ loc, fetchImpl }) {
+  const fetchJson = makeSavedFeedFetch({ fetchImpl });
+  return { driver: instagramSavedDriver({ fetchJson, host: loc.host }), dispose: () => {} };
 }
 
 /** Register the START-message listener on a page. Extracted so the guard + wiring are
@@ -256,7 +243,7 @@ export function registerBulkController(win, chromeApi) {
     if (spec.platform === "twitter") {
       built = buildTwitterDriver({ win, host, scope: spec.scope });
     } else if (spec.platform === "instagram") {
-      built = buildInstagramDriver({ win, host, pacing: pacing.source });
+      built = buildInstagramDriver({ loc: win.location, fetchImpl: win.fetch.bind(win) });
     } else {
       built = buildPinterestDriver({ doc: win.document, loc: win.location, fetchImpl: win.fetch.bind(win) });
     }

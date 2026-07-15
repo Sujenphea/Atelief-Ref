@@ -1,12 +1,13 @@
 // Atelier Capture — shared MAIN-world response-interception core (Phase 5/6, [5A]).
 //
-// The machinery every platform's MAIN-world hook needs, in ONE place: wrap `fetch` AND
+// The machinery a MAIN-world response hook needs, in ONE place: wrap `fetch` AND
 // `XMLHttpRequest`, forward the RESPONSE of any request whose URL a per-platform
 // `isMatch(url)` accepts to `post({ url, json })`, buffer recent responses (bounded),
 // and re-emit them when the controller asks (so a sweep that subscribes late still gets
-// the pages fetched before it started). X (twitter-hook.js) and Instagram
-// (instagram-hook.js) are now THIN configs over this — they supply only a URL matcher +
-// their message/replay tags. See 002 §B1 for why the fork was collapsed.
+// the pages fetched before it started). X (twitter-hook.js) is a THIN config over this —
+// it supplies only a URL matcher + its message/replay tags. (Instagram does NOT use a
+// hook — its saved feed is replayed directly, 002 · O2 — so X is the sole caller today;
+// the seam stays generic for the next interceptable platform.)
 //
 // SELF-CONTAINED — a CLASSIC script (NO import/export): a MAIN-world content script is
 // injected as a classic script and must run synchronously at document_start. `export`

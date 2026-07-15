@@ -49,18 +49,18 @@ export const MAX_ITEM_RETRIES = 4;
 // ---------------------------------------------------------------------------
 // Per-platform pacing overrides (002 · 13A). The globals above are the default;
 // a platform listed here overrides them so a more detection-sensitive site sweeps
-// gentler. `engine` keys override the `runSweep` config (concurrency + pacing);
-// `source` keys override the push→pull source's timing (settle + stall budget).
+// gentler. `engine` keys override the `runSweep` config (concurrency + pacing).
 // A platform NOT listed inherits the globals (X and Pinterest keep today's values).
 // ---------------------------------------------------------------------------
 
 /** Instagram sweeps gentler than X/Pinterest by construction (Meta's anti-bot is the
- * dominant risk, 002 §account-safety). Lower concurrency + longer pacing; a longer
- * settle + a larger idle budget suit IG's slower feed loads. Under the 1A per-media
- * fan-out a carousel takes one paced slot per image — slow is the safe direction. */
+ * dominant risk, 002 §account-safety) — and O2 replays the saved-feed endpoint directly
+ * (a synthetic request pattern), so pacing matters MORE, not less. Lower concurrency +
+ * longer pacing; under the 1A per-media fan-out a carousel takes one paced slot per image,
+ * which also throttles how fast the driver pages the feed (a page fetch only fires once
+ * its items drain). Slow is the safe direction. */
 export const PLATFORM_PACING = Object.freeze({
   instagram: {
     engine: { MAX_CONCURRENCY: 2, PACING_MS: 1500, PACING_JITTER_MS: 1200 },
-    source: { settleMs: 3000, maxIdleRounds: 5 },
   },
 });
