@@ -1,0 +1,192 @@
+//
+//  GridSelection.swift
+//  AtelierRefs
+//
+//  009 · N2 — the pure, SwiftUI-free selection reducer behind the Library grid's
+//  multi-select. Selection is a value (`ids` + `anchor` + `lead`); every gesture
+//  and key is an ``GridSelectionAction`` fed through ``GridSelection/applying``,
+//  which returns the NEXT selection plus a view ``GridSelectionEffect`` (open the
+//  detail page, scroll a cell into view, or nothing). Views never branch on mode
+//  themselves — they report the raw input and execute the returned effect (the
+//  `GridNavigation`/`GridReorder` pattern, exhaustively unit-tested).
+//
+//  Identity note: the ids here are MEMBERSHIP ids (`CollectionItem.id`), matching
+//  `lead`'s role as the detail-overlay cursor and surviving a contents reload;
+//  the drop/move/delete boundary maps them to asset ids via the loaded items.
+//
+
+import Foundation
+
+/// The Library grid's selection state (009 · N2). Selection MODE is derived, not
+/// stored — "selecting" is simply `!ids.isEmpty`, so there is no separate flag to
+/// drift out of sync.
+struct GridSelection: Equatable {
+    /// The selected membership ids (order-independent; feed order lives in the
+    /// grid's `items`).
+    var ids: Set<UUID> = []
+    /// The ⇧-range pivot — where a range selection grows FROM.
+    var anchor: UUID?
+    /// The detail-overlay / keyboard-cursor item. Distinct from selection: a
+    /// plain arrow moves the cursor WITHOUT selecting, and the detail page shows
+    /// the lead.
+    var lead: UUID?
+
+    /// Nothing selected (idle mode: plain clicks open detail).
+    var isEmpty: Bool { ids.isEmpty }
+    /// At least one item selected (selecting mode: plain clicks toggle).
+    var isSelecting: Bool { !ids.isEmpty }
+}
+
+/// What the view must do after a selection transition (009 · N2). The reducer
+/// decides; the view executes — so the mode-dependent "does this open detail?"
+/// rule is testable without any UI.
+enum GridSelectionEffect: Equatable {
+    /// Nothing beyond publishing the new selection.
+    case none
+    /// Open the full-window detail page for this membership id.
+    case openDetail(UUID)
+    /// Scroll this membership id's cell into view (keyboard nav).
+    case scrollTo(UUID)
+}
+
+/// A user gesture or key, resolved against the grid's feed order + column count.
+enum GridSelectionAction: Equatable {
+    /// A plain click on the thumbnail image: opens detail when idle, toggles
+    /// while selecting (never opens detail mid-triage).
+    case tapImage(UUID)
+    /// A click on the hover/selection circle: always toggles, never opens detail
+    /// — this is what ENTERS selection mode from idle.
+    case tapCircle(UUID)
+    /// ⇧-click: range from the anchor in feed order (never opens detail).
+    case shiftClick(UUID)
+    /// ⌘-click: toggle (the keyboard-savvy alias of the circle).
+    case commandClick(UUID)
+    /// ⌘A: select every item.
+    case selectAll
+    /// Esc / deselect-all / click empty background: clear selection, exit mode.
+    case clear
+    /// An arrow key; `extend` is ⇧ held (extend the range vs move the cursor).
+    case arrow(GridArrowKey, extend: Bool)
+    /// Return: open the cursor item's detail (006's planned invocation).
+    case openLead
+}
+
+extension GridSelection {
+    /// Apply `action` against the current feed `order` (membership ids in display
+    /// order) and `columns` per row, returning the next selection + the view
+    /// effect. Pure: no UI, no I/O — the whole mode-dependent click contract is
+    /// exercised here.
+    func applying(
+        _ action: GridSelectionAction, order: [UUID], columns: Int = 1
+    ) -> (selection: GridSelection, effect: GridSelectionEffect) {
+        var next = self
+        switch action {
+        case let .tapImage(id):
+            // The one mode-dependent gesture: idle opens, selecting toggles.
+            if isSelecting {
+                next.toggle(id)
+                return (next, .none)
+            }
+            next.lead = id
+            next.anchor = id
+            return (next, .openDetail(id))
+
+        case let .tapCircle(id), let .commandClick(id):
+            next.toggle(id)
+            return (next, .none)
+
+        case let .shiftClick(id):
+            next.selectRange(to: id, in: order)
+            return (next, .none)
+
+        case .selectAll:
+            guard !order.isEmpty else { return (self, .none) }
+            next.ids = Set(order)
+            next.anchor = order.first
+            next.lead = order.last
+            return (next, .none)
+
+        case .clear:
+            return (GridSelection(), .none)
+
+        case let .arrow(key, extend):
+            return next.movingCursor(key, extend: extend, order: order, columns: columns)
+
+        case .openLead:
+            if let lead = next.lead { return (next, .openDetail(lead)) }
+            return (next, .none)
+        }
+    }
+
+    /// Prune to the ids still present after a feed reload (009 · N2). Selected ids
+    /// intersect the new order; a removed `anchor`/`lead` falls back to `nil`
+    /// (which dismisses the detail overlay, matching the existing auto-dismiss).
+    func pruned(to order: [UUID]) -> GridSelection {
+        let present = Set(order)
+        var next = self
+        next.ids = ids.intersection(present)
+        if let anchor, !present.contains(anchor) { next.anchor = nil }
+        if let lead, !present.contains(lead) { next.lead = nil }
+        return next
+    }
+
+    // MARK: - Private transitions
+
+    /// Toggle `id`'s membership and make it the new anchor + cursor.
+    private mutating func toggle(_ id: UUID) {
+        if ids.contains(id) {
+            ids.remove(id)
+        } else {
+            ids.insert(id)
+        }
+        anchor = id
+        lead = id
+    }
+
+    /// Replace the selection with the anchor→`id` contiguous range in feed order.
+    /// With no live anchor, `id` becomes the anchor (a lone selection). This
+    /// deliberately REPLACES rather than unioning ⌘-added islands — the Photos
+    /// default, and explicit/testable over clever base+range bookkeeping.
+    private mutating func selectRange(to id: UUID, in order: [UUID]) {
+        guard let targetIndex = order.firstIndex(of: id) else { return }
+        let anchorIndex = anchor.flatMap { order.firstIndex(of: $0) } ?? targetIndex
+        let lo = min(anchorIndex, targetIndex)
+        let hi = max(anchorIndex, targetIndex)
+        ids = Set(order[lo...hi])
+        anchor = order[anchorIndex]
+        lead = id
+    }
+
+    /// Move the cursor one step; `extend` grows the range from the anchor instead.
+    private func movingCursor(
+        _ key: GridArrowKey, extend: Bool, order: [UUID], columns: Int
+    ) -> (GridSelection, GridSelectionEffect) {
+        guard !order.isEmpty else { return (self, .none) }
+        let currentIndex = lead.flatMap { order.firstIndex(of: $0) }
+        guard let target = nextGridIndex(
+            from: currentIndex, key: key, count: order.count, columns: columns)
+        else { return (self, .none) }
+        let targetID = order[target]
+        var next = self
+        if extend {
+            // Establish a pivot at the current cursor before the first extension.
+            if next.anchor == nil || order.firstIndex(of: next.anchor!) == nil {
+                next.anchor = lead ?? targetID
+            }
+            next.selectRange(to: targetID, in: order)
+        } else {
+            next.lead = targetID
+        }
+        return (next, .scrollTo(targetID))
+    }
+}
+
+/// Map a raw cell click (which id, which modifiers held) to its selection action
+/// (009 · N2). Pure so the modifier routing is unit-testable independent of the
+/// AppKit `NSEvent.modifierFlags` read that supplies the booleans. ⇧ wins over ⌘
+/// when both are held (⇧ signals a range, the stronger intent).
+func gridClickAction(imageID id: UUID, shift: Bool, command: Bool) -> GridSelectionAction {
+    if shift { return .shiftClick(id) }
+    if command { return .commandClick(id) }
+    return .tapImage(id)
+}

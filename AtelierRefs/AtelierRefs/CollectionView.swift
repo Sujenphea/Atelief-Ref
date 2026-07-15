@@ -39,7 +39,7 @@ struct CollectionView: View {
                 // Return key, and the Space canvas can all open it; guarding also on
                 // `selectedItem != nil` auto-dismisses back to the grid when the item
                 // is removed/deleted from inside the page.
-                if nav.presentedItemID != nil, let detail = model.selectedItem {
+                if nav.presentedItemID != nil, let detail = model.leadItem {
                     detailOverlay(for: detail)
                         .transition(.opacity)
                 }
@@ -192,32 +192,26 @@ struct CollectionView: View {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
                         ForEach(model.items, id: \.item.id) { detail in
-                            Button {
-                                open(detail)
-                            } label: {
-                                AssetContentThumbnail(
-                                    asset: detail.asset,
-                                    url: model.thumbnailURL(for: detail),
-                                    isSelected: model.selectedItemID == detail.item.id)
-                            }
-                            .buttonStyle(.plain)
+                            CollectionCell(
+                                detail: detail,
+                                url: model.thumbnailURL(for: detail),
+                                isSelected: model.selection.ids.contains(detail.item.id),
+                                isCursor: model.selection.lead == detail.item.id,
+                                isSelecting: model.selection.isSelecting,
+                                onImageClick: { shift, command in
+                                    handleImageClick(
+                                        detail, shift: shift, command: command, proxy: proxy)
+                                },
+                                onCircleToggle: {
+                                    model.applySelection(.tapCircle(detail.item.id))
+                                })
+                            .equatable()
                             .id(detail.item.id)
                             .draggable(detail.asset.id.uuidString)
                             .dropDestination(for: String.self) { payloads, _ in
                                 reorder(dropped: payloads, onto: detail.asset.id)
                             }
-                            .contextMenu {
-                                Button("Remove from Collection") {
-                                    model.removeFromFolder(assetIDs: [detail.asset.id])
-                                }
-                                Button("Set as Cover") {
-                                    model.setCollectionCover(collectionID: collectionID, assetID: detail.asset.id)
-                                }
-                                Divider()
-                                Button("Delete", role: .destructive) {
-                                    model.requestDelete(assetIDs: [detail.asset.id])
-                                }
-                            }
+                            .contextMenu { cellMenu(for: detail) }
                         }
                     }
                     .padding(.top, 4)
@@ -225,14 +219,23 @@ struct CollectionView: View {
                 .focusable()
                 .onDeleteCommand { model.requestDeleteSelected() }
                 .onKeyPress(.return) {
-                    guard let detail = model.selectedItem else { return .ignored }
-                    open(detail)
+                    let effect = model.applySelection(.openLead)
+                    execute(effect, proxy: proxy)
+                    return effect == .none ? .ignored : .handled
+                }
+                .onKeyPress(.escape) {
+                    guard model.selection.isSelecting else { return .ignored }
+                    model.applySelection(.clear)
                     return .handled
                 }
-                .onKeyPress(.leftArrow) { move(.left, width: geo.size.width, proxy: proxy) }
-                .onKeyPress(.rightArrow) { move(.right, width: geo.size.width, proxy: proxy) }
-                .onKeyPress(.upArrow) { move(.up, width: geo.size.width, proxy: proxy) }
-                .onKeyPress(.downArrow) { move(.down, width: geo.size.width, proxy: proxy) }
+                .onKeyPress(keys: ["a"]) { press in
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    model.applySelection(.selectAll)
+                    return .handled
+                }
+                .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow]) { press in
+                    handleArrow(press, width: geo.size.width, proxy: proxy)
+                }
             }
         }
         .overlay {
@@ -242,6 +245,51 @@ struct CollectionView: View {
             }
         }
     }
+
+    /// The batch context menu (009 · N2/N6). Finder scope (7A): a right-click on a
+    /// SELECTED cell acts on the whole selection; on an UNSELECTED cell it acts on
+    /// that one cell and leaves the selection untouched. Counts are shown in the
+    /// destructive verbs so the scope is never ambiguous.
+    @ViewBuilder
+    private func cellMenu(for detail: CollectionItemDetail) -> some View {
+        let targets = model.actionTargets(forCellItemID: detail.item.id)
+        let n = targets.count
+        let dests = CollectionTargets.moveTargets(
+            from: collectionID, folders: model.folders, unsortedID: model.unsortedFolderID)
+
+        Menu("Move to") {
+            targetButtons(dests) { model.moveToCollection(assetIDs: targets, to: $0) }
+        }
+        Menu("Add to") {
+            targetButtons(dests) { model.copyToCollection(assetIDs: targets, to: $0) }
+        }
+        if n == 1 {
+            Button("Set as Cover") {
+                model.setCollectionCover(collectionID: collectionID, assetID: targets[0])
+            }
+        }
+        Divider()
+        Button("Remove from Collection\(Self.countSuffix(n))") {
+            model.removeFromFolder(assetIDs: targets)
+        }
+        Button("Delete\(Self.countSuffix(n))", role: .destructive) {
+            model.requestDelete(assetIDs: targets)
+        }
+    }
+
+    /// A Move-to / Add-to submenu: subfolders first, a divider, then roots.
+    @ViewBuilder
+    private func targetButtons(
+        _ dests: MoveTargets, action: @escaping (UUID) -> Void
+    ) -> some View {
+        ForEach(dests.subfolders) { c in Button(c.name) { action(c.id) } }
+        if !dests.subfolders.isEmpty && !dests.roots.isEmpty { Divider() }
+        ForEach(dests.roots) { c in Button(c.name) { action(c.id) } }
+    }
+
+    /// " (N)" for a multi-item action, empty for a single — keeps the verb scope
+    /// explicit ("Delete (34)") without noise on the common one-item case.
+    private static func countSuffix(_ n: Int) -> String { n > 1 ? " (\(n))" : "" }
 
     /// Build the full-window detail overlay for `detail`, feeding the
     /// presentation-only ``ItemDetailView`` from this collection's `IngestionModel`
@@ -271,7 +319,7 @@ struct CollectionView: View {
                 ItemDetailNavigator(index: i, count: model.items.count) { delta in
                     let target = i + delta
                     if model.items.indices.contains(target) {
-                        model.select(model.items[target])
+                        model.openItem(model.items[target])
                         // Stepping to a new item in the detail page is a view.
                         model.recordView(assetID: model.items[target].asset.id)
                     }
@@ -283,39 +331,63 @@ struct CollectionView: View {
             })
     }
 
-    /// Open the full-window detail page for `detail`: bind the shared selection
-    /// and raise the overlay via `NavModel.presentedItemID` (the routing seam the
-    /// grid click, the Return key, and the Space canvas all funnel through). The
-    /// open is the deliberate "view" signal (007 G4).
+    /// Open the full-window detail page for `detail`: make it the lead (loading
+    /// its preview + tags, 009 · 8A) and raise the overlay via
+    /// `NavModel.presentedItemID` (the routing seam the grid click, the Return
+    /// key, and the Space canvas all funnel through). The open is the deliberate
+    /// "view" signal (007 G4).
     private func open(_ detail: CollectionItemDetail) {
-        model.select(detail)
+        model.openItem(detail)
         model.recordView(assetID: detail.asset.id)
         withAnimation { nav.presentedItemID = detail.item.id }
     }
 
-    // MARK: - Grid keyboard nav
+    // MARK: - Selection input routing (009 · N2)
 
-    private func move(
-        _ key: GridArrowKey, width: CGFloat, proxy: ScrollViewProxy
+    /// A plain/⇧/⌘ click on a cell's image: build the reducer action from the live
+    /// modifiers and execute the returned effect. The reducer owns the
+    /// mode-dependent "open vs toggle" decision — this only routes.
+    private func handleImageClick(
+        _ detail: CollectionItemDetail, shift: Bool, command: Bool, proxy: ScrollViewProxy
+    ) {
+        let action = gridClickAction(imageID: detail.item.id, shift: shift, command: command)
+        execute(model.applySelection(action), proxy: proxy)
+    }
+
+    /// Route an arrow key (with ⇧ = extend) through the reducer, feeding it the
+    /// live column count so Up/Down step a whole row.
+    private func handleArrow(
+        _ press: KeyPress, width: CGFloat, proxy: ScrollViewProxy
     ) -> KeyPress.Result {
-        let currentIndex = model.selectedItemID.flatMap { id in
-            model.items.firstIndex { $0.item.id == id }
+        let key: GridArrowKey
+        switch press.key {
+        case .leftArrow: key = .left
+        case .rightArrow: key = .right
+        case .upArrow: key = .up
+        case .downArrow: key = .down
+        default: return .ignored
         }
-        let columnCount = gridColumnCount(
+        let columns = gridColumnCount(
             availableWidth: width,
             minItemWidth: Self.gridItemMinWidth,
             spacing: Self.gridSpacing)
-        guard let target = nextGridIndex(
-            from: currentIndex, key: key,
-            count: model.items.count, columns: columnCount)
-        else { return .ignored }
-
-        let detail = model.items[target]
-        if detail.item.id != model.selectedItemID {
-            model.select(detail)
-        }
-        withAnimation { proxy.scrollTo(detail.item.id, anchor: .center) }
+        let effect = model.applySelection(
+            .arrow(key, extend: press.modifiers.contains(.shift)), columns: columns)
+        execute(effect, proxy: proxy)
         return .handled
+    }
+
+    /// Carry out a reducer ``GridSelectionEffect``: open a detail page or scroll a
+    /// cell into view (Q4 — ⇧-arrow reuses the existing `scrollTo` path).
+    private func execute(_ effect: GridSelectionEffect, proxy: ScrollViewProxy) {
+        switch effect {
+        case .none:
+            break
+        case let .scrollTo(id):
+            withAnimation { proxy.scrollTo(id, anchor: .center) }
+        case let .openDetail(id):
+            if let detail = model.items.first(where: { $0.item.id == id }) { open(detail) }
+        }
     }
 
     private func reorder(dropped payloads: [String], onto targetAssetID: UUID) -> Bool {

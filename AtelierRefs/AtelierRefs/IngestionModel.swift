@@ -65,9 +65,12 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Selected item (inspector)
 
-    /// The membership id of the item shown in the inspector, or `nil` when
-    /// nothing is selected. Cleared automatically when it leaves ``items``.
-    @Published private(set) var selectedItemID: UUID?
+    /// The grid's multi-selection (009 · N2): the selected membership ids, the
+    /// ⇧-range anchor, and the `lead` (the detail-overlay / keyboard cursor).
+    /// Selection MODE is derived — `selection.isSelecting`. Pruned to surviving
+    /// ids on every contents reload. Mutated ONLY through ``applySelection`` (the
+    /// pure reducer) so the mode-dependent click contract stays testable.
+    @Published private(set) var selection = GridSelection()
     /// The selected item's large (1280-tier) preview, loaded OFF-MAIN; `nil`
     /// while loading, when nothing is selected, or if the tier can't be decoded.
     @Published private(set) var previewImage: NSImage?
@@ -167,11 +170,29 @@ final class IngestionModel: ObservableObject {
         folders.first { $0.id == id }?.name ?? "Folder"
     }
 
-    /// The selected item's detail, resolved from the loaded ``items`` (the
-    /// membership id is the source of truth so it survives a contents reload).
-    var selectedItem: CollectionItemDetail? {
-        guard let selectedItemID else { return nil }
-        return items.first { $0.item.id == selectedItemID }
+    /// The LEAD item's detail — what the full-window detail overlay shows and
+    /// what the tag editor mutates — resolved from the loaded ``items`` by the
+    /// `selection.lead` membership id (stable across a contents reload). `nil`
+    /// when there is no cursor, which auto-dismisses the overlay.
+    var leadItem: CollectionItemDetail? {
+        guard let lead = selection.lead else { return nil }
+        return items.first { $0.item.id == lead }
+    }
+
+    /// The asset ids of the current selection, in feed order — the boundary from
+    /// membership-id selection to the asset-id verbs (move / copy / remove /
+    /// delete / drag payload). Empty when nothing is selected.
+    var selectedAssetIDs: [UUID] {
+        items.filter { selection.ids.contains($0.item.id) }.map { $0.asset.id }
+    }
+
+    /// The asset ids a batch action should act on for a right-click on the cell
+    /// whose membership id is `itemID` (Finder scope, 009 · 7A): the WHOLE
+    /// selection when that cell is part of it, else just that one cell — the
+    /// selection is left untouched either way.
+    func actionTargets(forCellItemID itemID: UUID) -> [UUID] {
+        if selection.ids.contains(itemID) { return selectedAssetIDs }
+        return items.first { $0.item.id == itemID }.map { [$0.asset.id] } ?? []
     }
 
     /// A pending destructive delete awaiting the user's confirmation. Set by the
@@ -517,11 +538,14 @@ final class IngestionModel: ObservableObject {
                 guard loadID == contentsLoadID else { return }
                 items = loadedItems
                 subfolders = loadedSubfolders
-                // Drop a selection that no longer exists in the reloaded set
-                // (folder switch, or the item was removed).
-                if let selectedItemID,
-                   !items.contains(where: { $0.item.id == selectedItemID }) {
-                    select(nil)
+                // Prune the selection to ids that survive the reloaded set
+                // (folder switch, move-away, or delete). A removed lead clears
+                // the inspector so a stale preview/tags can't linger.
+                let hadLead = selection.lead
+                selection = selection.pruned(to: items.map { $0.item.id })
+                if hadLead != nil, selection.lead == nil {
+                    previewImage = nil
+                    selectedTags = []
                 }
                 contentsVersion &+= 1
             } catch {
@@ -636,18 +660,36 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Selection + inspector
 
-    /// Select `detail` (or clear with `nil`) and load its preview + tags off-main.
-    func select(_ detail: CollectionItemDetail?) {
-        selectedItemID = detail?.item.id
+    /// Apply a selection `action` through the pure ``GridSelection`` reducer over
+    /// the current feed order (+ `columns` for arrow keys), publish the new
+    /// selection, and hand the caller the ``GridSelectionEffect`` to execute
+    /// (open detail / scroll a cell into view / nothing). This is the ONLY
+    /// selection mutator — views report raw input and never branch on mode (009 ·
+    /// N2 · 11A). Pure state: NO preview/tags I/O happens here, so a toggle or a
+    /// ⌘A never decodes a large thumbnail (009 · 8A); loads happen in
+    /// ``openItem(_:)`` when the detail page is actually opened.
+    @discardableResult
+    func applySelection(_ action: GridSelectionAction, columns: Int = 1) -> GridSelectionEffect {
+        let order = items.map { $0.item.id }
+        let (next, effect) = selection.applying(action, order: order, columns: columns)
+        selection = next
+        return effect
+    }
+
+    /// Open `detail` in the inspector/detail page: make it the lead cursor and
+    /// load its preview + tags off-main (009 · 8A — the I/O is here, on open, not
+    /// on every selection change). Called by a grid open and by the detail page's
+    /// prev/next stepper; the caller still records the view + raises the overlay.
+    func openItem(_ detail: CollectionItemDetail) {
+        selection.lead = detail.item.id
         previewImage = nil
         selectedTags = []
-        guard let detail else { return }
         loadPreview(for: detail)
         loadTags(for: detail.asset.id)
     }
 
     /// Load the large (1280-tier) thumbnail for `detail` off-main, then publish
-    /// it only if that item is still the selection (guards rapid re-selection).
+    /// it only if that item is still the lead (guards rapid re-selection).
     private func loadPreview(for detail: CollectionItemDetail) {
         // A media-less asset (003 · O1) has no thumbnail to decode.
         guard let store, let hash = detail.asset.blobHash else { return }
@@ -658,7 +700,7 @@ final class IngestionModel: ObservableObject {
         Task.detached(priority: .userInitiated) {
             let image = NSImage(contentsOf: url)
             await MainActor.run { [weak self] in
-                guard let self, self.selectedItemID == targetID else { return }
+                guard let self, self.selection.lead == targetID else { return }
                 self.previewImage = image
             }
         }
@@ -688,8 +730,7 @@ final class IngestionModel: ObservableObject {
         Task {
             do {
                 let tags = try await services.tags(for: assetID)
-                guard selectedItemID != nil,
-                      selectedItem?.asset.id == assetID else { return }
+                guard leadItem?.asset.id == assetID else { return }
                 selectedTags = tags
             } catch {
                 lastError = Self.message(for: error)
@@ -701,7 +742,7 @@ final class IngestionModel: ObservableObject {
     /// whitespace names are rejected inside the funnel (`Validation.tagName`) and
     /// surface via ``lastError``; a duplicate is idempotent (no second chip).
     func addTag(_ name: String) {
-        guard let services, let detail = selectedItem else { return }
+        guard let services, let detail = leadItem else { return }
         let assetID = detail.asset.id
         Task {
             do {
@@ -716,7 +757,7 @@ final class IngestionModel: ObservableObject {
     /// Remove `tag` from the selected item, then refresh the chips. Idempotent —
     /// a no-op if the link is already gone.
     func removeTag(_ tag: Tag) {
-        guard let services, let detail = selectedItem else { return }
+        guard let services, let detail = leadItem else { return }
         let assetID = detail.asset.id
         Task {
             do {
@@ -731,7 +772,7 @@ final class IngestionModel: ObservableObject {
     /// Reload the tag chips if `assetID` is still the selection (a tag edit that
     /// lands after the user has navigated away must not repopulate a stale item).
     private func reloadTagsIfCurrent(_ assetID: UUID) {
-        guard selectedItem?.asset.id == assetID else { return }
+        guard leadItem?.asset.id == assetID else { return }
         loadTags(for: assetID)
     }
 
@@ -811,10 +852,39 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Remove the inspector's currently-selected item from the current folder.
+    /// MOVE assets out of the current folder into `targetID` — the atomic triage
+    /// verb (009 · N1). One transaction; the moved items leave this folder, so the
+    /// reload prunes them from the selection. A `from == to` / empty set is a
+    /// no-op in core.
+    func moveToCollection(assetIDs: [UUID], to targetID: UUID) {
+        guard !assetIDs.isEmpty else { return }
+        let folder = selectedFolderID
+        mutateContents { services in
+            try await services.moveAssets(assetIDs, from: folder, to: targetID)
+            return "Moved \(Self.itemCount(assetIDs.count)) to “\(self.name(for: targetID))”."
+        }
+    }
+
+    /// COPY assets into `targetID` WITHOUT removing them here (009 · ⌥-drag / Add
+    /// to ▸) — multi-membership, so it is exactly `addAssets`. The current folder
+    /// is unchanged, so the selection survives.
+    func copyToCollection(assetIDs: [UUID], to targetID: UUID) {
+        guard !assetIDs.isEmpty else { return }
+        mutateContents { services in
+            try await services.addAssets(assetIDs, to: targetID)
+            return "Added \(Self.itemCount(assetIDs.count)) to “\(self.name(for: targetID))”."
+        }
+    }
+
+    /// The asset ids a keyboard command (Delete / Remove) acts on: the whole
+    /// selection when selecting, else the lead cursor's single item.
+    private var keyboardActionTargets: [UUID] {
+        selection.isSelecting ? selectedAssetIDs : (leadItem.map { [$0.asset.id] } ?? [])
+    }
+
+    /// Remove the current selection (or the lead item) from the current folder.
     func removeSelectedFromFolder() {
-        guard let detail = selectedItem else { return }
-        removeFromFolder(assetIDs: [detail.asset.id])
+        removeFromFolder(assetIDs: keyboardActionTargets)
     }
 
     /// Stage a destructive delete for confirmation (see ``confirmPendingDeletion``).
@@ -824,10 +894,9 @@ final class IngestionModel: ObservableObject {
         pendingDeletion = PendingDeletion(assetIDs: assetIDs)
     }
 
-    /// Stage a delete of the inspector's currently-selected item.
+    /// Stage a delete of the current selection (or the lead item).
     func requestDeleteSelected() {
-        guard let detail = selectedItem else { return }
-        requestDelete(assetIDs: [detail.asset.id])
+        requestDelete(assetIDs: keyboardActionTargets)
     }
 
     /// Dismiss the pending delete without acting.
