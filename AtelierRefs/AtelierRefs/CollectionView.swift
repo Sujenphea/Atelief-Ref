@@ -24,8 +24,17 @@ struct CollectionView: View {
 
     @State private var isTargeted = false
 
+    // Marquee (rubber-band) drag state (009 · N6). `start`/`current` are in the
+    // named grid-content space; `base` is the selection captured at drag start
+    // (empty for a plain marquee, the prior selection for a ⇧-additive one).
+    @State private var marqueeStart: CGPoint?
+    @State private var marqueeCurrent: CGPoint?
+    @State private var marqueeBase: Set<UUID> = []
+
     private static let gridItemMinWidth: CGFloat = 112
     private static let gridSpacing: CGFloat = 8
+    private static let gridTopInset: CGFloat = 4
+    private static let marqueeSpace = "collectionGridContent"
     private let columns = [
         GridItem(.adaptive(minimum: gridItemMinWidth, maximum: 140), spacing: gridSpacing)
     ]
@@ -255,31 +264,45 @@ struct CollectionView: View {
         GeometryReader { geo in
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
-                        ForEach(model.items, id: \.item.id) { detail in
-                            CollectionCell(
-                                detail: detail,
-                                url: model.thumbnailURL(for: detail),
-                                isSelected: model.selection.ids.contains(detail.item.id),
-                                isCursor: model.selection.lead == detail.item.id,
-                                isSelecting: model.selection.isSelecting,
-                                onImageClick: { shift, command in
-                                    handleImageClick(
-                                        detail, shift: shift, command: command, proxy: proxy)
-                                },
-                                onCircleToggle: {
-                                    model.applySelection(.tapCircle(detail.item.id))
-                                })
-                            .equatable()
-                            .id(detail.item.id)
-                            .draggable(dragPayload(for: detail)) { dragPreview(for: detail) }
-                            .dropDestination(for: AssetDragPayload.self) { payloads, _ in
-                                handleCellDrop(payloads, onto: detail.asset.id)
+                    ZStack(alignment: .topLeading) {
+                        // Background capture layer (009 · N6): a drag on EMPTY space
+                        // is a marquee (image-drags hit the cells above and mean
+                        // move/copy); a plain click clears the selection. Sized to
+                        // the grid via the ZStack, in a named space so drag
+                        // locations match the computed cell frames.
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture { model.applySelection(.clear) }
+                            .gesture(marqueeGesture(width: geo.size.width, proxy: proxy))
+                        LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
+                            ForEach(model.items, id: \.item.id) { detail in
+                                CollectionCell(
+                                    detail: detail,
+                                    url: model.thumbnailURL(for: detail),
+                                    isSelected: model.selection.ids.contains(detail.item.id),
+                                    isCursor: model.selection.lead == detail.item.id,
+                                    isSelecting: model.selection.isSelecting,
+                                    onImageClick: { shift, command in
+                                        handleImageClick(
+                                            detail, shift: shift, command: command, proxy: proxy)
+                                    },
+                                    onCircleToggle: {
+                                        model.applySelection(.tapCircle(detail.item.id))
+                                    })
+                                .equatable()
+                                .id(detail.item.id)
+                                .draggable(dragPayload(for: detail)) { dragPreview(for: detail) }
+                                .dropDestination(for: AssetDragPayload.self) { payloads, _ in
+                                    handleCellDrop(payloads, onto: detail.asset.id)
+                                }
+                                .contextMenu { cellMenu(for: detail) }
                             }
-                            .contextMenu { cellMenu(for: detail) }
                         }
+                        .padding(.top, Self.gridTopInset)
+                        // The live marquee rectangle, drawn in the same space.
+                        marqueeRectangle
                     }
-                    .padding(.top, 4)
+                    .coordinateSpace(name: Self.marqueeSpace)
                 }
                 .focusable()
                 .onDeleteCommand { model.requestDeleteSelected() }
@@ -440,6 +463,76 @@ struct CollectionView: View {
             .arrow(key, extend: press.modifiers.contains(.shift)), columns: columns)
         execute(effect, proxy: proxy)
         return .handled
+    }
+
+    // MARK: - Marquee (rubber-band selection, 009 · N6)
+
+    /// The marquee drag: a small movement threshold (so a click still clears via
+    /// the tap gesture) begins the box; each change recomputes the hit set and
+    /// pushes it through the reducer; ⇧ at drag start makes it additive.
+    private func marqueeGesture(width: CGFloat, proxy: ScrollViewProxy) -> some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.marqueeSpace))
+            .onChanged { value in
+                if marqueeStart == nil {
+                    marqueeStart = value.startLocation
+                    marqueeBase = NSEvent.modifierFlags.contains(.shift)
+                        ? model.selection.ids : []
+                }
+                marqueeCurrent = value.location
+                updateMarquee(width: width, proxy: proxy)
+            }
+            .onEnded { _ in
+                marqueeStart = nil
+                marqueeCurrent = nil
+                marqueeBase = []
+            }
+    }
+
+    /// Recompute the marquee hit set from the current box and apply it. Frames come
+    /// from pure math (the virtualization trap: offscreen cells aren't laid out, so
+    /// live frames can't drive hit-testing) — today's uniform-grid source, swapped
+    /// for 011-U2's `JustifiedLayout` frames when justified rows land.
+    private func updateMarquee(width: CGFloat, proxy: ScrollViewProxy) {
+        guard let start = marqueeStart, let current = marqueeCurrent else { return }
+        let columnCount = gridColumnCount(
+            availableWidth: width, minItemWidth: Self.gridItemMinWidth, spacing: Self.gridSpacing)
+        let side = uniformCellSide(
+            availableWidth: width, columns: columnCount, spacing: Self.gridSpacing)
+        let frames = uniformGridFrames(
+            count: model.items.count, columns: columnCount,
+            cellSize: CGSize(width: side, height: side),
+            spacing: Self.gridSpacing, topInset: Self.gridTopInset)
+        let rect = marqueeRect(from: start, to: current)
+        let hits = marqueeIndices(in: rect, frames: frames)
+        let hitIDs = Set(hits.map { model.items[$0].item.id })
+        model.applySelection(.marquee(hits: hitIDs, base: marqueeBase))
+        // Follow the growing box toward whichever end is newest so the selection
+        // stays visible (a lightweight stand-in for true edge auto-scroll — the
+        // one piece the risk note flags for manual tuning).
+        if current.y < start.y, let first = hits.first {
+            withAnimation(.linear(duration: 0.1)) {
+                proxy.scrollTo(model.items[first].item.id, anchor: .top)
+            }
+        } else if current.y > start.y, let last = hits.last {
+            withAnimation(.linear(duration: 0.1)) {
+                proxy.scrollTo(model.items[last].item.id, anchor: .bottom)
+            }
+        }
+    }
+
+    /// The translucent marquee box, offset to its top-left within the grid space.
+    @ViewBuilder
+    private var marqueeRectangle: some View {
+        if let start = marqueeStart, let current = marqueeCurrent {
+            let rect = marqueeRect(from: start, to: current)
+            Rectangle()
+                .fill(Color.accentColor.opacity(0.12))
+                .overlay(
+                    Rectangle().strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1))
+                .frame(width: rect.width, height: rect.height)
+                .offset(x: rect.minX, y: rect.minY)
+                .allowsHitTesting(false)
+        }
     }
 
     /// Carry out a reducer ``GridSelectionEffect``: open a detail page or scroll a

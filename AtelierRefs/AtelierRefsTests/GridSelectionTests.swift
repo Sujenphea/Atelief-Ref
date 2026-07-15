@@ -248,6 +248,36 @@ struct GridSelectionTests {
         #expect(next == GridSelection())
     }
 
+    // MARK: - Marquee (rubber-band)
+
+    @Test("plain marquee replaces the selection with the box's hits")
+    func marateePlainReplaces() {
+        let start = sel([5], lead: 5)
+        let (next, effect) = start.applying(
+            .marquee(hits: [id(1), id(2)], base: []), order: order)
+        #expect(effect == .none)
+        #expect(next.ids == [id(1), id(2)])
+    }
+
+    @Test("⇧-additive marquee unions the box's hits with the captured base")
+    func marqueeAdditiveUnions() {
+        let base: Set<UUID> = [id(0)]
+        let start = sel([0])
+        let (next, _) = start.applying(
+            .marquee(hits: [id(2), id(3)], base: base), order: order)
+        #expect(next.ids == [id(0), id(2), id(3)])
+    }
+
+    @Test("shrinking the box drops items not in the base")
+    func marqueeShrinks() {
+        // First a wide box, then a narrower one — plain (empty base).
+        let (wide, _) = GridSelection().applying(
+            .marquee(hits: [id(0), id(1), id(2)], base: []), order: order)
+        let (narrow, _) = wide.applying(
+            .marquee(hits: [id(0)], base: []), order: order)
+        #expect(narrow.ids == [id(0)])
+    }
+
     // MARK: - Enter opens the lead
 
     @Test("openLead opens the cursor item's detail")

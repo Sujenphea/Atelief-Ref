@@ -66,6 +66,10 @@ enum GridSelectionAction: Equatable {
     case selectOnly(UUID)
     /// ⌘A: select every item.
     case selectAll
+    /// A live marquee (rubber-band) update: the ids the box currently touches,
+    /// unioned with `base` — the selection captured when the drag began (empty
+    /// for a plain marquee, the prior selection for a ⇧-additive one). 009 · N6.
+    case marquee(hits: Set<UUID>, base: Set<UUID>)
     /// Esc / deselect-all / click empty background: clear selection, exit mode.
     case clear
     /// An arrow key; `extend` is ⇧ held (extend the range vs move the cursor).
@@ -113,6 +117,10 @@ extension GridSelection {
             next.ids = Set(order)
             next.anchor = order.first
             next.lead = order.last
+            return (next, .none)
+
+        case let .marquee(hits, base):
+            next.ids = base.union(hits)
             return (next, .none)
 
         case .clear:
