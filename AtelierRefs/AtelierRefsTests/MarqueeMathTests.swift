@@ -157,4 +157,75 @@ struct MarqueeMathTests {
         // 2 columns: row 0 = 0,1; row 1 = 2,3 (both within 150 tall). Col span 0-1.
         #expect(marqueeIndices(in: rect, frames: grid(6, columns: 2)) == [0, 1, 2, 3])
     }
+
+    // MARK: - Analytic uniform-grid hit path (009 · N6 perf)
+
+    /// The analytic `uniformMarqueeIndices` fast path MUST return exactly what the
+    /// general core returns over materialized frames — same order, same set. If it
+    /// ever diverges the marquee silently mis-selects, so every hit-testing test
+    /// above is re-asserted here through both code paths.
+    private func expectSameHits(
+        rect: CGRect, count: Int, columns: Int,
+        cellSize: CGSize, spacing: CGFloat, topInset: CGFloat = 0,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        let frames = uniformGridFrames(
+            count: count, columns: columns, cellSize: cellSize,
+            spacing: spacing, topInset: topInset)
+        let general = marqueeIndices(in: rect, frames: frames)
+        let analytic = uniformMarqueeIndices(
+            in: rect, count: count, columns: columns, cellSize: cellSize,
+            spacing: spacing, topInset: topInset)
+        #expect(analytic == general, sourceLocation: sourceLocation)
+    }
+
+    @Test("analytic path matches the frame-array path across shapes and rects")
+    func analyticMatchesGeneral() {
+        let cell = CGSize(width: 100, height: 100)
+        // A representative rect zoo: area drags, full cover, single-cell, a column,
+        // a row, boundary-snug, zero-size clicks (in and out), thin axis-aligned
+        // drags, and rects starting before/past the grid — over several grid shapes
+        // (column counts, spacing, top inset, partial last row).
+        let rects = [
+            CGRect(x: 0, y: 0, width: 150, height: 50),      // first two of row 0
+            CGRect(x: 0, y: 0, width: 40, height: 300),      // column 0
+            CGRect(x: 0, y: 0, width: 300, height: 200),     // cover
+            CGRect(x: 0, y: 100, width: 300, height: 100),   // a middle row
+            CGRect(x: 0, y: 0, width: 100, height: 300),     // boundary-snug column
+            CGRect(x: 0, y: 0, width: 300, height: 100),     // boundary-snug row
+            CGRect(x: 150, y: 0, width: 0, height: 300),      // thin vertical drag
+            CGRect(x: 0, y: 150, width: 300, height: 0),      // thin horizontal drag
+            CGRect(x: 150, y: 150, width: 0, height: 0),      // click inside a cell
+            CGRect(x: 350, y: 150, width: 0, height: 0),      // click in dead space
+            CGRect(x: 500, y: 500, width: 100, height: 100), // wholly past the grid
+            CGRect(x: -50, y: -50, width: 120, height: 120), // starts before origin
+            CGRect(x: 33, y: 71, width: 187, height: 143),   // arbitrary off-grid rect
+        ]
+        // (count, columns, spacing, topInset) shapes: square, wide, partial rows,
+        // spacing, top inset, single column, more items than fit a tidy rectangle.
+        let shapes: [(Int, Int, CGFloat, CGFloat)] = [
+            (9, 3, 0, 0), (6, 3, 0, 0), (5, 3, 0, 0), (6, 2, 0, 0),
+            (7, 3, 10, 4), (8, 4, 8, 0), (10, 1, 6, 2), (12, 5, 12, 4),
+        ]
+        for (count, columns, spacing, topInset) in shapes {
+            for rect in rects {
+                expectSameHits(
+                    rect: rect, count: count, columns: columns,
+                    cellSize: cell, spacing: spacing, topInset: topInset)
+            }
+        }
+    }
+
+    @Test("analytic path handles degenerate counts and columns like the core")
+    func analyticDegenerate() {
+        let big = CGRect(x: 0, y: 0, width: 999, height: 999)
+        // Zero count → no hits.
+        #expect(uniformMarqueeIndices(
+            in: big, count: 0, columns: 3,
+            cellSize: CGSize(width: 10, height: 10), spacing: 2).isEmpty)
+        // columns 0 clamps to 1 — same as `uniformGridFrames`.
+        expectSameHits(
+            rect: big, count: 3, columns: 0,
+            cellSize: CGSize(width: 10, height: 10), spacing: 2)
+    }
 }

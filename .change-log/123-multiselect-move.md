@@ -81,12 +81,32 @@ other collection screen (expands on drag, quick-switch on click). Drag **moves**
   `scrollTo` scroll-follow is REMOVED: it pinned a hit cell to the viewport edge
   on every mouse move and fought the pointer (the drag jag). In its place,
   Finder-style **edge auto-scroll**: the ScrollView ignores trackpad pans while
-  the drag gesture is live, so a `.common`-mode timer scrolls when the pointer
-  enters a 28pt top/bottom edge zone, speed ramping with penetration
-  (~180–1080 pt/s), unanimated, clamped to the content bounds, stepping the
-  content-space pointer + hit set each tick. Offset scrolling runs through a
-  `ScrollPosition` handle; `onScrollGeometryChange` feeds the live viewport into
-  non-published vars so scroll ticks never re-render the screen.
+  the drag gesture is live, so the grid scrolls when the pointer enters a 28pt
+  top/bottom edge zone, speed ramping with penetration (~180–1080 pt/s),
+  unanimated, clamped to the content bounds, stepping the content-space pointer +
+  hit set each frame. Offset scrolling runs through a `ScrollPosition` handle;
+  `onScrollGeometryChange` feeds the live viewport into non-published vars so
+  scroll ticks never re-render the screen.
+- **Smooth + virtualized scroll-drag** (009 · N6 perf) — three fixes so the
+  marquee/auto-scroll hot path is frame-accurate AND stops scaling with
+  collection size:
+  - The auto-scroll pump is a **`CADisplayLink`** (`DisplayLinkPump`, vended from
+    a hit-transparent host `NSView`), not a wall-clock `Timer`. The timer fired at
+    a fixed 60Hz and advanced a fixed pt-*per-tick* delta, so its jitter became
+    velocity jitter and it drifted against 120Hz ProMotion vsync (the residual
+    judder). The link fires in lock-step with the panel and reports each frame's
+    real duration, so speeds are pt/**sec** × dt — smooth at any refresh rate.
+  - **Analytic uniform-grid hit-testing** (`uniformMarqueeIndices`) — the old
+    `uniformGridFrames` + `marqueeIndices` allocated an N-element frame array and
+    scanned all N on every tick (rendering virtualized via `LazyVGrid`; the
+    hit-test did not). The rect's bounds now pick the candidate row/column band
+    directly, so only cells that can overlap are frame-tested — O(hits), not O(N).
+    A property test asserts it returns exactly what the general core returns.
+  - **O(1) drag/selection indexes** in `IngestionModel` — `item.id → asset.id`
+    map + cached feed-order id list + cached `selectedAssetIDs`, rebuilt only when
+    `items`/`selection` change (not per render). A selection re-render rebuilds
+    every visible cell's `.draggable` payload, and each `dragPayload` was an
+    `items` linear scan → O(visible × N) per tick; now O(1)/O(selection).
 
 ## Schema / migration
 

@@ -74,6 +74,55 @@ func uniformGridFrames(
     }
 }
 
+/// The hit indices for a uniform grid, computed ANALYTICALLY from the drag `rect`
+/// (009 · N6 fast path). `uniformGridFrames` + `marqueeIndices` allocate an
+/// N-element frame array and scan all N on EVERY marquee/auto-scroll tick — O(N)
+/// regardless of how few cells the box covers (the marquee hit-test didn't
+/// virtualize the way `LazyVGrid`'s rendering does). Here the rect's bounds pick
+/// the candidate row/column band directly, so only the handful of cells that can
+/// overlap are frame-tested — O(hits), no N-array.
+///
+/// It delegates the actual overlap to the SAME `rectsIntersect` the general core
+/// uses (candidate band widened by one cell each way so a boundary-touching /
+/// edge-inclusive click is never pruned before that exact test runs), so the
+/// result is identical to `marqueeIndices(in: rect, frames: uniformGridFrames(…))`
+/// — asserted by `MarqueeMathTests`. 011-U2's justified layout keeps feeding the
+/// general core; this is only the uniform-grid shortcut.
+func uniformMarqueeIndices(
+    in rect: CGRect, count: Int, columns: Int, cellSize: CGSize,
+    spacing: CGFloat, topInset: CGFloat = 0
+) -> [Int] {
+    guard count > 0 else { return [] }
+    let cols = max(1, columns)
+    let strideX = cellSize.width + spacing
+    let strideY = cellSize.height + spacing
+    let rowCount = (count + cols - 1) / cols
+
+    // Candidate bands from the rect bounds, widened ±1 so an edge-inclusive hit
+    // (click / thin drag landing exactly on a boundary) survives to the exact
+    // `rectsIntersect` test below. `strideX`/`strideY` are ≥ 1 (cell side ≥ 1,
+    // spacing ≥ 0), so the divisions are safe.
+    let firstRow = max(0, Int(floor((rect.minY - topInset) / strideY)) - 1)
+    let lastRow = min(rowCount - 1, Int(floor((rect.maxY - topInset) / strideY)) + 1)
+    let firstCol = max(0, Int(floor(rect.minX / strideX)) - 1)
+    let lastCol = min(cols - 1, Int(floor(rect.maxX / strideX)) + 1)
+    guard firstRow <= lastRow, firstCol <= lastCol else { return [] }
+
+    var hits: [Int] = []
+    for row in firstRow...lastRow {
+        for col in firstCol...lastCol {
+            let index = row * cols + col
+            guard index < count else { continue }   // last row's trailing gap
+            let frame = CGRect(
+                x: CGFloat(col) * strideX,
+                y: topInset + CGFloat(row) * strideY,
+                width: cellSize.width, height: cellSize.height)
+            if rectsIntersect(rect, frame) { hits.append(index) }
+        }
+    }
+    return hits
+}
+
 /// The cell edge length a uniform adaptive grid uses to fill `availableWidth` with
 /// `columns` columns and `spacing` gaps — the square side the marquee frames use
 /// (mirrors how the grid packs a row). At least 1 to stay drawable.

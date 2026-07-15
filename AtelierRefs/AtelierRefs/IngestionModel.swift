@@ -58,8 +58,12 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Selected folder contents
 
-    /// The selected folder's DIRECT items (decision F5).
-    @Published private(set) var items: [CollectionItemDetail] = []
+    /// The selected folder's DIRECT items (decision F5). Rebuilds the O(1)
+    /// selection/drag indexes (below) on every assignment — a load, a move, a
+    /// reorder — so the marquee/drag hot path never rescans `items` per cell.
+    @Published private(set) var items: [CollectionItemDetail] = [] {
+        didSet { rebuildItemDerivations() }
+    }
     /// The selected folder's immediate subfolders (navigable).
     @Published private(set) var subfolders: [Collection] = []
 
@@ -76,7 +80,9 @@ final class IngestionModel: ObservableObject {
     /// Selection MODE is derived — `selection.isSelecting`. Pruned to surviving
     /// ids on every contents reload. Mutated ONLY through ``applySelection`` (the
     /// pure reducer) so the mode-dependent click contract stays testable.
-    @Published private(set) var selection = GridSelection()
+    @Published private(set) var selection = GridSelection() {
+        didSet { rebuildSelectedAssetIDs() }
+    }
     /// The selected item's large (1280-tier) preview, loaded OFF-MAIN; `nil`
     /// while loading, when nothing is selected, or if the tier can't be decoded.
     @Published private(set) var previewImage: NSImage?
@@ -187,9 +193,38 @@ final class IngestionModel: ObservableObject {
 
     /// The asset ids of the current selection, in feed order — the boundary from
     /// membership-id selection to the asset-id verbs (move / copy / remove /
-    /// delete / drag payload). Empty when nothing is selected.
-    var selectedAssetIDs: [UUID] {
-        items.filter { selection.ids.contains($0.item.id) }.map { $0.asset.id }
+    /// delete / drag payload). Empty when nothing is selected. Served from a cache
+    /// rebuilt on every `items`/`selection` change: a marquee re-render rebuilds
+    /// each visible cell's `.draggable` payload, and every selected cell reads
+    /// this — recomputing the filter per cell was O(visible × N) per tick.
+    var selectedAssetIDs: [UUID] { cachedSelectedAssetIDs }
+
+    // MARK: - Derived selection/drag indexes (009 · N6 perf)
+
+    /// `item.id → asset.id` for O(1) single-cell drag/action scope, replacing an
+    /// `items.first { … }` linear scan run per visible cell each marquee tick.
+    private var assetIDByItemID: [UUID: UUID] = [:]
+    /// The item ids in feed order — the reducer's `order` argument, hoisted out of
+    /// `applySelection` so a per-tick `items.map` allocation is avoided.
+    private var itemOrder: [UUID] = []
+    /// The current selection's asset ids in feed order (see `selectedAssetIDs`).
+    private var cachedSelectedAssetIDs: [UUID] = []
+
+    /// Rebuild the item-keyed indexes after `items` changes (a load / mutation);
+    /// the selection cache depends on `items` too, so refresh it here as well.
+    private func rebuildItemDerivations() {
+        itemOrder = items.map { $0.item.id }
+        assetIDByItemID = Dictionary(
+            items.map { ($0.item.id, $0.asset.id) }, uniquingKeysWith: { first, _ in first })
+        rebuildSelectedAssetIDs()
+    }
+
+    /// Rebuild the selected-asset-id cache after `items` or `selection` changes.
+    /// Preserves feed order (mirrors the old `items.filter { … }.map` exactly).
+    private func rebuildSelectedAssetIDs() {
+        cachedSelectedAssetIDs = items.compactMap {
+            selection.ids.contains($0.item.id) ? $0.asset.id : nil
+        }
     }
 
     /// The asset ids a batch action should act on for a right-click on the cell
@@ -198,7 +233,8 @@ final class IngestionModel: ObservableObject {
     /// selection is left untouched either way.
     func actionTargets(forCellItemID itemID: UUID) -> [UUID] {
         if selection.ids.contains(itemID) { return selectedAssetIDs }
-        return items.first { $0.item.id == itemID }.map { [$0.asset.id] } ?? []
+        guard let assetID = assetIDByItemID[itemID] else { return [] }
+        return [assetID]
     }
 
     /// Build the drag payload for a drag that starts on the cell `itemID`
@@ -706,8 +742,7 @@ final class IngestionModel: ObservableObject {
     /// ``openItem(_:)`` when the detail page is actually opened.
     @discardableResult
     func applySelection(_ action: GridSelectionAction, columns: Int = 1) -> GridSelectionEffect {
-        let order = items.map { $0.item.id }
-        let (next, effect) = selection.applying(action, order: order, columns: columns)
+        let (next, effect) = selection.applying(action, order: itemOrder, columns: columns)
         // Publish only real changes: the marquee re-fires on every mouse-move
         // tick, and an unchanged hit set must not re-render the whole screen.
         if next != selection { selection = next }
