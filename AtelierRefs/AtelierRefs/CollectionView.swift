@@ -30,6 +30,9 @@ struct CollectionView: View {
     // keeps the first instance across re-inits; `@StateObject` would subscribe
     // this view to every tick.)
     @State private var marquee = GridMarqueeState()
+    // Programmatic scroll handle for the marquee's edge auto-scroll (offset-based
+    // scrolling — `proxy.scrollTo` can only target whole cells).
+    @State private var gridScroll = ScrollPosition()
 
     private static let gridItemMinWidth: CGFloat = 112
     private static let gridSpacing: CGFloat = 8
@@ -282,7 +285,8 @@ struct CollectionView: View {
                             onMarquee: { hits, base in
                                 model.applySelection(.marquee(hits: hits, base: base))
                             },
-                            onClear: { model.applySelection(.clear) })
+                            onClear: { model.applySelection(.clear) },
+                            onAutoScroll: { gridScroll.scrollTo(y: $0) })
                         LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
                             ForEach(model.items, id: \.item.id) { detail in
                                 CollectionCell(
@@ -317,7 +321,19 @@ struct CollectionView: View {
                     }
                     .coordinateSpace(name: Self.marqueeSpace)
                 }
+                .scrollPosition($gridScroll)
+                // Feed the live viewport (scroll offset + container size) and
+                // content height to the marquee's edge auto-scroll. Written to
+                // plain (non-published) vars on purpose: this fires every scroll
+                // tick and must not re-render this screen.
+                .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }) { _, geo in
+                    marquee.visibleRect = CGRect(
+                        x: geo.contentOffset.x, y: geo.contentOffset.y,
+                        width: geo.containerSize.width, height: geo.containerSize.height)
+                    marquee.contentHeight = geo.contentSize.height
+                }
                 .focusable()
+                .focusEffectDisabled()
                 .onDeleteCommand { model.requestDeleteSelected() }
                 .onKeyPress(.return) {
                     let effect = model.applySelection(.openLead)

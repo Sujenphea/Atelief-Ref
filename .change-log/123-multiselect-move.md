@@ -79,9 +79,14 @@ other collection screen (expands on drag, quick-switch on click). Drag **moves**
   and the rectangle layer — a 120Hz drag no longer re-renders the whole screen —
   and `applySelection` publishes only real changes. The per-tick animated
   `scrollTo` scroll-follow is REMOVED: it pinned a hit cell to the viewport edge
-  on every mouse move and fought the user's own two-finger scroll (the drag jag);
-  content-space coordinates already let scrolling mid-drag extend the box, and
-  pointer-at-edge auto-scroll is left as a follow-up.
+  on every mouse move and fought the pointer (the drag jag). In its place,
+  Finder-style **edge auto-scroll**: the ScrollView ignores trackpad pans while
+  the drag gesture is live, so a `.common`-mode timer scrolls when the pointer
+  enters a 28pt top/bottom edge zone, speed ramping with penetration
+  (~180–1080 pt/s), unanimated, clamped to the content bounds, stepping the
+  content-space pointer + hit set each tick. Offset scrolling runs through a
+  `ScrollPosition` handle; `onScrollGeometryChange` feeds the live viewport into
+  non-published vars so scroll ticks never re-render the screen.
 
 ## Schema / migration
 
