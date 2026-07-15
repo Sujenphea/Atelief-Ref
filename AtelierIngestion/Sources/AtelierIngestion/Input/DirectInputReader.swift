@@ -236,4 +236,111 @@ public enum DirectInputReader {
         guard let scheme = url.scheme?.lowercased() else { return false }
         return scheme == "http" || scheme == "https"
     }
+
+    // MARK: - Drag provider interpretation
+
+    /// The decoded result of a drag drop's `NSItemProvider`s.
+    public struct DroppedProviders {
+        /// The ingestable inputs, in provider order.
+        public let inputs: [IngestInput]
+        /// A page/web URL to fall back on when no bytes decoded (a bare-link or
+        /// downloadable-image drag) — the drop handler downloads/resolves it.
+        public let webURL: URL?
+        /// How many providers yielded nothing recognizable (not a file, image, or
+        /// web URL) — drives the "N imported, M couldn't be read" partial-drop
+        /// feedback. A pure web-URL carrier is NOT counted (it feeds `webURL`).
+        public let undecodedCount: Int
+    }
+
+    /// Decode a drag drop's providers into ``IngestInput``s, mirroring the
+    /// pasteboard decision order (``inputs(from:into:now:)``) for the drag path:
+    /// a file URL → `.localDrag`; inline image bytes → `.web` when a page URL rode
+    /// along, else `.localPaste`. A provider that is only a web URL contributes the
+    /// fall-back ``DroppedProviders/webURL`` rather than an input. Anything else is
+    /// counted in ``DroppedProviders/undecodedCount`` so a partial drop is reported
+    /// instead of silently dropping items.
+    ///
+    /// The page URL is resolved ONCE up front (the first web URL across all
+    /// providers) and threaded into every image provider, so a browser image drag —
+    /// whose provider carries BOTH the bitmap and its page URL — lands as `.web`
+    /// with that page as provenance.
+    public static func inputs(
+        from providers: [NSItemProvider], into collectionID: UUID, now: Date
+    ) async -> DroppedProviders {
+        let webURL = await firstWebURL(in: providers)
+        var inputs: [IngestInput] = []
+        var undecoded = 0
+        for provider in providers {
+            if let input = await input(
+                from: provider, pageURL: webURL, into: collectionID, at: now) {
+                inputs.append(input)
+            } else if isWebURLCarrier(provider) {
+                // The page-URL carrier for the drag — folded into `webURL`, not a
+                // failure. (A browser image is decoded above before reaching here.)
+                continue
+            } else {
+                undecoded += 1
+            }
+        }
+        return DroppedProviders(inputs: inputs, webURL: webURL, undecodedCount: undecoded)
+    }
+
+    /// Decode a SINGLE provider: a file URL → `.localDrag`; inline image bytes →
+    /// `.web` (when `pageURL` is present) else `.localPaste`. `nil` when the
+    /// provider is neither a loadable file nor a loadable image (e.g. a bare web
+    /// URL, handled by the caller as the `webURL` fallback).
+    private static func input(
+        from provider: NSItemProvider, pageURL: URL?, into collectionID: UUID, at now: Date
+    ) async -> IngestInput? {
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier),
+           let url = await loadURL(provider), url.isFileURL {
+            return fileInput(fileURL: url, into: collectionID, at: now)
+        }
+        if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier),
+           let data = await loadData(provider, type: UTType.image.identifier), !data.isEmpty {
+            if let pageURL {
+                return browserImageInput(
+                    imageData: data, pageURL: pageURL, into: collectionID, at: now)
+            }
+            return pasteInput(
+                imageData: data, sourceURL: nil, into: collectionID, at: now)
+        }
+        return nil
+    }
+
+    /// The first http(s) URL carried by a NON-file provider — the page a browser
+    /// image/link drag came from. Skips file-URL providers (a dragged file's path
+    /// isn't a page).
+    private static func firstWebURL(in providers: [NSItemProvider]) async -> URL? {
+        for provider in providers where isWebURLCarrier(provider) {
+            if let url = await loadURL(provider), isWebURL(url) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    /// Whether `provider` can carry a (non-file) URL — the shape a bare web-URL or
+    /// browser-image drag has. Used both to find the page URL and to decide that a
+    /// non-decoding provider was "just a URL", not an unreadable item.
+    private static func isWebURLCarrier(_ provider: NSItemProvider) -> Bool {
+        provider.hasItemConformingToTypeIdentifier(UTType.url.identifier)
+            && !provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+    }
+
+    private static func loadURL(_ provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                continuation.resume(returning: url)
+            }
+        }
+    }
+
+    private static func loadData(_ provider: NSItemProvider, type: String) async -> Data? {
+        await withCheckedContinuation { continuation in
+            provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
+                continuation.resume(returning: data)
+            }
+        }
+    }
 }

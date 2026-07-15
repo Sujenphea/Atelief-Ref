@@ -109,20 +109,40 @@ struct CollectionView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            dropZone
             if !model.subfolders.isEmpty {
                 subfolderChips
             }
             grid
         }
         .padding()
+        // The whole collection pane is the drop target (the explicit dropzone is
+        // gone): a Finder file, a browser image, or a dragged web URL dropped
+        // anywhere here imports into this collection. Internal reorder drags carry
+        // `AssetDragPayload` (a `.json` UTI), which isn't in this accepted set, so a
+        // reorder dropped on an empty gap simply no-ops rather than importing.
+        .onDrop(of: [.image, .fileURL, .url], isTargeted: $isTargeted) { providers in
+            handleDrop(providers)
+        }
+        // Targeting highlight as an OVERLAY border so only this layer redraws on
+        // drag hover — the grid subtree and its cells are untouched (perf).
+        .overlay {
+            if isTargeted {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(
+                        Color.accentColor,
+                        style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                    .padding(4)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     private var header: some View {
-        HStack {
+        HStack(spacing: 10) {
             Text(model.name(for: collectionID)).font(.title2).bold()
             Text("\(model.items.count) items")
                 .font(.callout).foregroundStyle(.secondary)
+            importStatus
             Spacer()
             Button {
                 paste()
@@ -134,37 +154,25 @@ struct CollectionView: View {
         }
     }
 
-    private var dropZone: some View {
-        RoundedRectangle(cornerRadius: 12)
-            .strokeBorder(
-                isTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
-                style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(isTargeted ? Color.accentColor.opacity(0.08) : .clear))
-            .frame(height: 110)
-            .overlay {
-                VStack(spacing: 6) {
-                    Image(systemName: "square.and.arrow.down")
-                        .font(.system(size: 26))
-                    Text("Drop images or files into “\(model.name(for: collectionID))”")
-                        .font(.callout)
-                    if let progress = model.progress {
-                        ProgressView(
-                            value: Double(progress.completed),
-                            total: Double(max(progress.total, 1)))
-                        .frame(maxWidth: 200)
-                        Text("\(progress.completed) / \(progress.total)")
-                            .font(.caption).monospacedDigit()
-                    } else if let status = model.status {
-                        Text(status).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                .foregroundStyle(.secondary)
+    /// Live import feedback, re-homed from the old dropzone (3A): a compact
+    /// progress bar + count while a drop/paste batch runs, else the latest status
+    /// line. Browser/Instagram sweeps report separately via `BulkSweepsView`.
+    @ViewBuilder
+    private var importStatus: some View {
+        if let progress = model.progress {
+            HStack(spacing: 6) {
+                ProgressView(
+                    value: Double(progress.completed),
+                    total: Double(max(progress.total, 1)))
+                .frame(width: 120)
+                Text("\(progress.completed) / \(progress.total)")
+                    .font(.caption).monospacedDigit().foregroundStyle(.secondary)
             }
-            .onDrop(of: [.image, .fileURL, .url], isTargeted: $isTargeted) { providers in
-                handleDrop(providers)
-            }
+        } else if let status = model.status {
+            Text(status)
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.tail)
+        }
     }
 
     private var subfolderChips: some View {
@@ -202,8 +210,8 @@ struct CollectionView: View {
                             }
                             .buttonStyle(.plain)
                             .id(detail.item.id)
-                            .draggable(detail.asset.id.uuidString)
-                            .dropDestination(for: String.self) { payloads, _ in
+                            .draggable(AssetDragPayload(assetID: detail.asset.id))
+                            .dropDestination(for: AssetDragPayload.self) { payloads, _ in
                                 reorder(dropped: payloads, onto: detail.asset.id)
                             }
                             .contextMenu {
@@ -318,11 +326,11 @@ struct CollectionView: View {
         return .handled
     }
 
-    private func reorder(dropped payloads: [String], onto targetAssetID: UUID) -> Bool {
+    private func reorder(dropped payloads: [AssetDragPayload], onto targetAssetID: UUID) -> Bool {
         // Reordering only means something in manual mode — reject the drop
         // otherwise (the model guards too, so this is the visual half).
         guard model.sortMode(for: collectionID) == .manual,
-              let first = payloads.first, let movingAssetID = UUID(uuidString: first)
+              let movingAssetID = payloads.first?.assetID
         else { return false }
         model.reorderItem(movingAssetID: movingAssetID, toIndexOf: targetAssetID)
         return true
@@ -330,18 +338,26 @@ struct CollectionView: View {
 
     // MARK: - Import actions
 
+    /// The shared disposition for both import surfaces (paste + drop): decoded
+    /// inputs win; else a web URL is downloaded/resolved; else the drop is reported
+    /// as unreadable. `undecoded` (drag path only) rides into the batch so its
+    /// completion status can note how many items couldn't be read (7A).
+    private func dispatch(inputs: [IngestInput], webURL: URL?, undecoded: Int = 0) {
+        if !inputs.isEmpty {
+            model.run(inputs: inputs, undecoded: undecoded)
+        } else if let webURL {
+            model.ingestRemoteImage(from: webURL)
+        } else {
+            model.reportUnreadableDrop()
+        }
+    }
+
     private func paste() {
         guard model.isReady else { return }
         let pasteboard = NSPasteboard.general
         let inputs = DirectInputReader.inputs(
             from: pasteboard, into: collectionID, now: Date())
-        if !inputs.isEmpty {
-            model.run(inputs: inputs)
-        } else if let url = Self.firstWebURL(on: pasteboard) {
-            model.ingestRemoteImage(from: url)
-        } else {
-            model.reportUnreadableDrop()
-        }
+        dispatch(inputs: inputs, webURL: Self.firstWebURL(on: pasteboard))
     }
 
     private static func firstWebURL(on pasteboard: NSPasteboard) -> URL? {
@@ -363,75 +379,20 @@ struct CollectionView: View {
         return nil
     }
 
+    /// Decode a drag drop's providers off-main through the shared
+    /// ``DirectInputReader`` seam (the same decision order as the pasteboard path),
+    /// then dispatch. Returns `true` synchronously to claim the drop.
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         guard model.isReady else { return false }
         let target = collectionID
         Task {
-            let webURL = await Self.firstWebURL(in: providers)
-            var inputs: [IngestInput] = []
-            for provider in providers {
-                if let input = await Self.input(from: provider, pageURL: webURL, into: target) {
-                    inputs.append(input)
-                }
-            }
-            if !inputs.isEmpty {
-                model.run(inputs: inputs)
-            } else if let webURL {
-                model.ingestRemoteImage(from: webURL)
-            } else {
-                model.reportUnreadableDrop()
-            }
+            let decoded = await DirectInputReader.inputs(
+                from: providers, into: target, now: Date())
+            dispatch(
+                inputs: decoded.inputs,
+                webURL: decoded.webURL,
+                undecoded: decoded.undecodedCount)
         }
         return true
-    }
-
-    private nonisolated static func input(
-        from provider: NSItemProvider, pageURL: URL?, into collectionID: UUID
-    ) async -> IngestInput? {
-        let now = Date()
-        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier),
-           let url = await loadURL(provider), url.isFileURL {
-            return DirectInputReader.fileInput(fileURL: url, into: collectionID, at: now)
-        }
-        if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier),
-           let data = await loadData(provider, type: UTType.image.identifier) {
-            if let pageURL {
-                return DirectInputReader.browserImageInput(
-                    imageData: data, pageURL: pageURL, into: collectionID, at: now)
-            }
-            return DirectInputReader.pasteInput(
-                imageData: data, sourceURL: nil, into: collectionID, at: now)
-        }
-        return nil
-    }
-
-    private nonisolated static func firstWebURL(in providers: [NSItemProvider]) async -> URL? {
-        for provider in providers {
-            guard provider.hasItemConformingToTypeIdentifier(UTType.url.identifier),
-                  !provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
-            else { continue }
-            if let url = await loadURL(provider), DirectInputReader.isWebURL(url) {
-                return url
-            }
-        }
-        return nil
-    }
-
-    private nonisolated static func loadURL(_ provider: NSItemProvider) async -> URL? {
-        await withCheckedContinuation { continuation in
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                continuation.resume(returning: url)
-            }
-        }
-    }
-
-    private nonisolated static func loadData(
-        _ provider: NSItemProvider, type: String
-    ) async -> Data? {
-        await withCheckedContinuation { continuation in
-            provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
-                continuation.resume(returning: data)
-            }
-        }
     }
 }
