@@ -10,6 +10,13 @@
       "appVersion": "1df0da9",
       "pwsHandler": "www/[username]/[slug].js",
       "note": "The SOLE 403 gatekeeper on /resource/ is x-pinterest-pws-handler (verified live 019 T10); its value is a literal board-page route constant (brackets not interpolated). X-APP-VERSION is app-identifying but NOT the 403 trigger. Both scraped/hardcoded per resource; re-verify if a live sweep starts 403ing."
+    },
+    "instagram": {
+      "capturedAt": "2026-07-15",
+      "staleAfterDays": 14,
+      "route": "/api/v1/feed/saved/posts/",
+      "mediaTypes": { "image": 1, "video": 2, "carousel": 8 },
+      "note": "Saved feed is REST api/v1 (not GraphQL), verified 2026-07-15. Fan-out (002 · 1A) keys on per-media `pk`; carousel children under carousel_media[]. Poster at image_versions2.candidates[0], reel video at video_versions[]. Pagination cursor is top-level next_max_id (+ ?max_id request param) — NOT observed live (single-page recon account); re-verify against a multi-page feed. IG drifts fast — 14d window (vs X/Pinterest 30d). checkInstagramSaved + the per-platform staleAfterDays restructure land in B3."
     }
   }
 }
