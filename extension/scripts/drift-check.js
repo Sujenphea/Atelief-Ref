@@ -22,6 +22,7 @@ const FIXTURE = {
   x: "../test/fixtures/x-bookmarks.json",
   "pinterest-board": "../test/fixtures/pinterest-boardfeed.json",
   "pinterest-boards": "../test/fixtures/pinterest-boards.json",
+  instagram: "../test/fixtures/instagram-saved.json",
 };
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url));
 
@@ -51,9 +52,19 @@ function main() {
   console.log(`Fixtures captured ${baseline.capturedAt} (${age}d ago)`
     + (reminder ? `  ⚠️  STALE` : ""));
   if (reminder) console.log(`  ${reminder}`);
+  // Instagram carries its OWN capture date + a shorter stale window (14d — IG drifts
+  // faster than X/Pinterest, 12A), read from its per-platform marker.
+  const igMarker = baseline.markers.instagram;
+  const igReminder = igMarker ? fixtureStaleReminder(igMarker) : null;
+  if (igMarker) {
+    console.log(`Instagram fixture captured ${igMarker.capturedAt} (${ageInDays(igMarker.capturedAt)}d ago,`
+      + ` ${igMarker.staleAfterDays}d window)` + (igReminder ? `  ⚠️  STALE` : ""));
+    if (igReminder) console.log(`  ${igReminder}`);
+  }
   console.log(`Drift markers to re-verify live:`);
   console.log(`  X app queryId (Likes ${baseline.markers.x.likesQueryId}) — rotates ~2-4 weeks`);
   console.log(`  Pinterest X-APP-VERSION (${baseline.markers.pinterest.appVersion}) — required`);
+  if (igMarker) console.log(`  Instagram saved-feed route (${igMarker.route}) + next_max_id pagination`);
   console.log(`  X harvest DOM (harvest.js): focal <article> scoping + pbs.twimg.com/media/`);
   console.log(`    photos — single-capture media[] collection relies on these\n`);
 
@@ -82,10 +93,11 @@ function main() {
 
   console.log(failed ? "\nDrift detected — update the parsers + re-capture fixtures."
     : "\nNo drift — every check satisfied its invariants.");
-  if (reminder && !failed) {
-    console.log("\nReminder: fixtures are past staleAfterDays — re-capture before relying on live sweeps.");
+  const stale = reminder || igReminder;
+  if (stale && !failed) {
+    console.log("\nReminder: a fixture is past its staleAfterDays — re-capture before relying on live sweeps.");
   }
-  process.exit(failed || reminder ? 1 : 0);
+  process.exit(failed || stale ? 1 : 0);
 }
 
 main();

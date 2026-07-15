@@ -11,6 +11,7 @@
 
 import { parseTimelinePage } from "./bulk-twitter.js";
 import { parseBoardFeedPage, parseBoardsPage, mapPinterestPin } from "./bulk-pinterest.js";
+import { parseSavedFeedPage, detectChallenge, isSavedFeedRequest, IG_MEDIA_TYPE } from "./bulk-instagram.js";
 
 /** A `{ ok, problems, signals }` verdict. `ok` is false if any invariant broke;
  * `problems` names each break; `signals` reports the parsed counts for context. */
@@ -86,11 +87,79 @@ export function checkBoards(json) {
   return verdict(problems, { boards: page.boards.length });
 }
 
+/** Instagram saved feed: posts must still fan out per media to `pk`-keyed items with a
+ * usable image, a video/reel must still expose its `videoUrl` (7A), the challenge
+ * recognizer must NOT misfire on a normal page, and the saved-feed route matcher must
+ * still match. Fan-out is asserted STRUCTURALLY (carousel → child-count items), so the
+ * invariant holds against any capture, committed or live. */
+export function checkInstagramSaved(json, { host = "www.instagram.com" } = {}) {
+  let page;
+  try {
+    page = parseSavedFeedPage(json, { host });
+  } catch (error) {
+    return verdict([`parseSavedFeedPage threw: ${String(error)}`], {});
+  }
+  const problems = [];
+  if (page.error) problems.push(`challenge recognizer misfired on a normal page (${page.error.kind})`);
+
+  // Expected fan-out: sum over posts of (carousel ? child count : 1). The parser must
+  // produce exactly this many items (1A); a broken carousel walk shows up as a mismatch.
+  const rawItems = json && Array.isArray(json.items) ? json.items : [];
+  let expected = 0;
+  let videosSeen = 0;
+  for (const wrapper of rawItems) {
+    const media = wrapper && wrapper.media ? wrapper.media : wrapper;
+    if (!media) continue;
+    if (media.media_type === IG_MEDIA_TYPE.carousel) {
+      // Expected from IG's OWN declared count (not carousel_media.length) — so a rename /
+      // drop of the `carousel_media` array the parser walks DIVERGES from the count and is
+      // caught, rather than expected and actual dropping together and hiding the drift.
+      expected += media.carousel_media_count ||
+        (Array.isArray(media.carousel_media) ? media.carousel_media.length : 1);
+    } else {
+      expected += 1;
+    }
+    if (media.media_type === IG_MEDIA_TYPE.video ||
+        (Array.isArray(media.video_versions) && media.video_versions.length > 0)) {
+      videosSeen += 1;
+    }
+  }
+
+  if (rawItems.length > 0 && page.items.length < 1) {
+    problems.push("no items mapped from any saved post (items[].media shape moved?)");
+  }
+  if (page.items.length !== expected) {
+    problems.push(`fan-out count ${page.items.length} ≠ expected ${expected} (carousel walk / pk shape moved?)`);
+  }
+  const ids = new Set(page.items.map((item) => item.sourceId));
+  if (ids.size !== page.items.length) problems.push("duplicate per-media pk sourceIds (fan-out key collision)");
+  if (page.items.some((item) => !item.mediaUrl)) {
+    problems.push("a mapped item has no mediaUrl (image_versions2 shape moved?)");
+  }
+  const videoUrls = page.items.filter((item) => item.provenance.rawMetadata.videoUrl).length;
+  if (videosSeen > 0 && videoUrls < 1) {
+    problems.push("a video/reel yielded no videoUrl (video_versions shape moved?)");
+  }
+  // A normal page must NOT trip the challenge recognizer (no false positives).
+  if (detectChallenge(json)) problems.push("detectChallenge fired on a normal saved page");
+  // The route matcher the hook depends on must still match the canonical saved-feed URL.
+  if (!isSavedFeedRequest("https://www.instagram.com/api/v1/feed/saved/posts/")) {
+    problems.push("isSavedFeedRequest no longer matches the saved-feed route");
+  }
+  return verdict(problems, {
+    posts: rawItems.length,
+    items: page.items.length,
+    videos: videoUrls,
+    endOfFeed: page.endOfFeed,
+  });
+}
+
 /** The registered checks, by the `--<name>` flag the CLI accepts. */
 export const CHECKS = {
   x: { label: "X timeline (Bookmarks/Likes)", run: checkTimeline },
   "pinterest-board": { label: "Pinterest board feed", run: checkBoardFeed },
   "pinterest-boards": { label: "Pinterest boards list", run: checkBoards },
+  instagram: { label: "Instagram saved feed", run: checkInstagramSaved },
 };
 
 /**

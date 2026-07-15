@@ -34,6 +34,7 @@ export function platformForHost(hostname) {
   const host = (hostname || "").toLowerCase();
   if (/(^|\.)pinterest\.[a-z.]+$/.test(host)) return "pinterest";
   if (/(^|\.)(x|twitter)\.com$/.test(host)) return "twitter";
+  if (/(^|\.)instagram\.com$/.test(host)) return "instagram";
   return null;
 }
 
@@ -99,6 +100,22 @@ export function resolveSweepSpec({ url, collageHref = null } = {}) {
     return { ok: false, reason: "x-not-bookmarks" };
   }
 
+  if (platform === "instagram") {
+    // Flat "All saved" only in v1 (6A): `/{user}/saved/` or `/{user}/saved/all-posts/`.
+    // The driver ignores `input` (the page fetches the saved feed as the user scrolls);
+    // scope "saved" keys the checkpoint. A specific COLLECTION (`/{user}/saved/{slug}/`,
+    // slug ≠ all-posts) is refused with a typed reason — collections are a later additive
+    // arm, as X bookmark folders were. A non-saved IG page is likewise refused.
+    const segments = splitPathname(parsed.pathname);
+    if (segments[1] === "saved") {
+      const isFlat = segments.length === 2 ||
+        (segments.length === 3 && segments[2] === "all-posts");
+      if (isFlat) return { ok: true, spec: { platform, input: {}, scope: "saved" } };
+      return { ok: false, reason: "instagram-collection-unsupported" };
+    }
+    return { ok: false, reason: "instagram-not-saved" };
+  }
+
   // Pinterest: must be a board page, and we must recover its board id.
   const board = pinterestBoardPath(parsed.pathname);
   if (!board) return { ok: false, reason: "not-a-board" };
@@ -119,8 +136,11 @@ export function resolveSweepSpec({ url, collageHref = null } = {}) {
 /** Human-facing message for each refusal reason — the popup's single source of copy
  * so the strings live next to the reasons that produce them. */
 export const REASON_MESSAGE = Object.freeze({
-  "not-supported-site": "Open a Pinterest board or x.com/i/bookmarks to start a sweep.",
+  "not-supported-site": "Open a Pinterest board, x.com/i/bookmarks, or your Instagram saved posts to start a sweep.",
   "not-a-board": "This isn't a Pinterest board page. Open a board (pinterest.com/you/board/).",
   "board-id-missing": "Couldn't read this board's id — reload the board page and try again.",
   "x-not-bookmarks": "Open x.com/i/bookmarks to sweep your bookmarks.",
+  "instagram-not-saved": "Open your Instagram saved posts (instagram.com/<you>/saved/) to start a sweep.",
+  "instagram-collection-unsupported":
+    "Collection sweeps aren't supported yet — open your main Saved (…/saved/all-posts/) to sweep everything.",
 });

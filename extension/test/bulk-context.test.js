@@ -30,8 +30,14 @@ test("platformForHost: x and twitter", () => {
   }
 });
 
+test("platformForHost: instagram across subdomain variants", () => {
+  for (const h of ["instagram.com", "www.instagram.com"]) {
+    assert.equal(platformForHost(h), "instagram", h);
+  }
+});
+
 test("platformForHost: unsupported → null", () => {
-  for (const h of ["example.com", "notpinterest.evil.com", ""]) {
+  for (const h of ["example.com", "notpinterest.evil.com", "notinstagram.evil.com", ""]) {
     assert.equal(platformForHost(h), null, h);
   }
 });
@@ -135,6 +141,48 @@ test("resolveSweepSpec: other X pages → x-not-bookmarks (never sweep the home 
   }
 });
 
+// ---- resolveSweepSpec: Instagram ------------------------------------------
+
+test("resolveSweepSpec: IG flat saved → saved spec (/saved/ and /saved/all-posts/)", () => {
+  for (const url of [
+    "https://www.instagram.com/lychee.web/saved/",
+    "https://www.instagram.com/lychee.web/saved",
+    "https://www.instagram.com/lychee.web/saved/all-posts/",
+    "https://instagram.com/lychee.web/saved/all-posts",
+  ]) {
+    assert.deepEqual(resolveSweepSpec({ url }),
+      { ok: true, spec: { platform: "instagram", input: {}, scope: "saved" } }, url);
+  }
+});
+
+test("resolveSweepSpec: IG saved query string is ignored", () => {
+  const r = resolveSweepSpec({ url: "https://www.instagram.com/lychee.web/saved/?hl=en" });
+  assert.equal(r.ok, true);
+  assert.equal(r.spec.scope, "saved");
+});
+
+test("resolveSweepSpec: IG a specific collection → typed refusal (flat-only v1, 6A)", () => {
+  for (const url of [
+    "https://www.instagram.com/lychee.web/saved/interiors/",
+    "https://www.instagram.com/lychee.web/saved/type-refs/",
+  ]) {
+    assert.deepEqual(resolveSweepSpec({ url }),
+      { ok: false, reason: "instagram-collection-unsupported" }, url);
+  }
+});
+
+test("resolveSweepSpec: IG non-saved pages → instagram-not-saved", () => {
+  for (const url of [
+    "https://www.instagram.com/",
+    "https://www.instagram.com/lychee.web/",
+    "https://www.instagram.com/p/ABC123/",
+    "https://www.instagram.com/reel/XYZ/",
+    "https://www.instagram.com/explore/",
+  ]) {
+    assert.deepEqual(resolveSweepSpec({ url }), { ok: false, reason: "instagram-not-saved" }, url);
+  }
+});
+
 // ---- resolveSweepSpec: unsupported / malformed ----------------------------
 
 test("resolveSweepSpec: unsupported site and malformed url → not-supported-site", () => {
@@ -155,6 +203,8 @@ test("REASON_MESSAGE has a non-empty message for every refusal reason the resolv
     resolveSweepSpec({ url: "https://www.pinterest.com/pin/12345/" }),        // not-a-board
     resolveSweepSpec({ url: "https://www.pinterest.com/user/board/", collageHref: null }), // board-id-missing
     resolveSweepSpec({ url: "https://x.com/home" }),                          // x-not-bookmarks
+    resolveSweepSpec({ url: "https://www.instagram.com/me/saved/interiors/" }), // instagram-collection-unsupported
+    resolveSweepSpec({ url: "https://www.instagram.com/me/" }),               // instagram-not-saved
   ];
   const seen = new Set();
   for (const r of refusals) {
@@ -163,9 +213,10 @@ test("REASON_MESSAGE has a non-empty message for every refusal reason the resolv
     const message = REASON_MESSAGE[r.reason];
     assert.ok(typeof message === "string" && message.length > 0, `no message for "${r.reason}"`);
   }
-  // All four distinct branches were actually exercised (guards against a copy-paste input).
+  // All distinct branches were actually exercised (guards against a copy-paste input).
   assert.deepEqual([...seen].sort(),
-    ["board-id-missing", "not-a-board", "not-supported-site", "x-not-bookmarks"]);
+    ["board-id-missing", "instagram-collection-unsupported", "instagram-not-saved",
+      "not-a-board", "not-supported-site", "x-not-bookmarks"]);
   // And no REASON_MESSAGE entry is a placeholder blank.
   for (const [reason, message] of Object.entries(REASON_MESSAGE)) {
     assert.ok(typeof message === "string" && message.length > 0, reason);

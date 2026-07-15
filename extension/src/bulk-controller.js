@@ -12,13 +12,20 @@
 // exercised by manual E2E (Phase 9), not node --test.
 
 import { runSweep, classifyIngestResult } from "./bulk-engine.js";
+import { PLATFORM_PACING } from "./config.js";
 import {
-  BULK, START, TIMELINE_MESSAGE_SOURCE, TIMELINE_REPLAY_SOURCE, readStartMessage,
+  BULK, START, TIMELINE_MESSAGE_SOURCE, TIMELINE_REPLAY_SOURCE,
+  IG_SAVED_MESSAGE_SOURCE, IG_SAVED_REPLAY_SOURCE, readStartMessage,
 } from "./bulk-messages.js";
 import {
   pinterestBoardDriver, makeResourceFetch, scrapePinterestAppVersionFromDoc, readCookie,
 } from "./bulk-pinterest.js";
 import { createTwitterSource } from "./twitter-source.js";
+import { createInstagramSource } from "./instagram-source.js";
+
+/** Platforms the controller can build a driver for. A START for anything else is refused
+ * with a typed error rather than silently mis-dispatched. */
+const SUPPORTED_PLATFORMS = new Set(["twitter", "pinterest", "instagram"]);
 
 /**
  * Orchestrate one sweep to completion (or a halt). Pure/injectable: `transport`
@@ -186,6 +193,30 @@ function buildTwitterDriver({ win, host, scope }) {
   return { driver: source, dispose: () => win.removeEventListener("message", onMessage) };
 }
 
+/** Build the Instagram driver: subscribe to the MAIN-world saved-feed hook's messages and
+ * feed them to the push→pull source, which auto-scrolls to page. The mirror image of
+ * buildTwitterDriver (its own message/replay tags + parser), so `dispose` REMOVES the
+ * `message` listener (1A) to avoid leaking a live listener into the next sweep. `pacing`
+ * is `PLATFORM_PACING.instagram.source` (settle + stall budget); the engine pacing is
+ * threaded separately via `runBulkSweep`'s `config`. */
+function buildInstagramDriver({ win, host, pacing = {} }) {
+  const source = createInstagramSource({
+    host,
+    scroll: () => win.scrollTo(0, win.document.body.scrollHeight),
+    ...pacing,
+  });
+  const onMessage = (event) => {
+    if (event.source === win && event.data && event.data.source === IG_SAVED_MESSAGE_SOURCE) {
+      source.onResponse(event.data.json, event.data.url);
+    }
+  };
+  win.addEventListener("message", onMessage);
+  // Replay the saved-feed pages IG fetched before this listener existed (the first page,
+  // loaded on navigation), so an already-scrolled feed still captures them.
+  win.postMessage({ source: IG_SAVED_REPLAY_SOURCE }, win.location.origin);
+  return { driver: source, dispose: () => win.removeEventListener("message", onMessage) };
+}
+
 /** Register the START-message listener on a page. Extracted so the guard + wiring are
  * one place; idempotent via a window flag so a re-injection (the cold-tab recovery in
  * bulk-dispatch.js) can't leave two listeners → two sweeps for one click. */
@@ -211,7 +242,7 @@ export function registerBulkController(win, chromeApi) {
     // through to the Pinterest driver — which, on an X page, would scrape the wrong
     // bootstrap and open a job that ingests nothing. Validated before the guard is set,
     // so a bad message never blocks a subsequent good one.
-    if (spec.platform !== "twitter" && spec.platform !== "pinterest") {
+    if (!SUPPORTED_PLATFORMS.has(spec.platform)) {
       sendResponse({ ok: false, error: `unsupported-platform: ${spec.platform}` });
       return true;
     }
@@ -220,10 +251,18 @@ export function registerBulkController(win, chromeApi) {
     const transport = makeRuntimeTransport((m) => chromeApi.runtime.sendMessage(m));
     const storage = makeChromeStorage(chromeApi.storage.local);
     const host = win.location.host;
-    const { driver, dispose } = spec.platform === "twitter"
-      ? buildTwitterDriver({ win, host, scope: spec.scope })
-      : buildPinterestDriver({ doc: win.document, loc: win.location, fetchImpl: win.fetch.bind(win) });
-    runBulkSweep(spec, { transport, driver, storage })
+    const pacing = PLATFORM_PACING[spec.platform] || {};
+    let built;
+    if (spec.platform === "twitter") {
+      built = buildTwitterDriver({ win, host, scope: spec.scope });
+    } else if (spec.platform === "instagram") {
+      built = buildInstagramDriver({ win, host, pacing: pacing.source });
+    } else {
+      built = buildPinterestDriver({ doc: win.document, loc: win.location, fetchImpl: win.fetch.bind(win) });
+    }
+    const { driver, dispose } = built;
+    // Per-platform engine pacing (13A): IG sweeps gentler; X/Pinterest inherit the globals.
+    runBulkSweep(spec, { transport, driver, storage, config: pacing.engine || {} })
       .then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: String(error) }))
       .finally(() => { win.__atelierSweepInFlight = false; dispose(); }); // release guard + tear down listener

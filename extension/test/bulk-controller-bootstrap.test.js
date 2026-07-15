@@ -122,10 +122,10 @@ test("registerBulkController: an unsupported platform is refused with a typed er
   registerBulkController(win, chromeApi);
 
   const { reply } = await dispatch(chromeApi,
-    buildStartMessage({ platform: "instagram", input: {}, scope: "x" }));
+    buildStartMessage({ platform: "flickr", input: {}, scope: "x" }));
 
   assert.equal(reply.ok, false);
-  assert.match(reply.error, /unsupported-platform: instagram/);
+  assert.match(reply.error, /unsupported-platform: flickr/);
   assert.equal(chromeApi.sent.length, 0);              // never opened a job
   assert.equal(win.__atelierSweepInFlight, undefined); // guard never set → a good START still works
 });
