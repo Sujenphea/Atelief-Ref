@@ -16,7 +16,7 @@
       "staleAfterDays": 14,
       "route": "/api/v1/feed/saved/posts/",
       "mediaTypes": { "image": 1, "video": 2, "carousel": 8 },
-      "note": "Saved feed is REST api/v1 (not GraphQL), verified 2026-07-15. Fan-out (002 · 1A) keys on per-media `pk`; carousel children under carousel_media[]. Poster at image_versions2.candidates[0], reel video at video_versions[]. Pagination cursor is top-level next_max_id (+ ?max_id request param) — NOT observed live (single-page recon account); re-verify against a multi-page feed. IG drifts fast — 14d window (vs X/Pinterest 30d). checkInstagramSaved + the per-platform staleAfterDays restructure land in B3."
+      "note": "Saved feed is REST api/v1 (not GraphQL), verified 2026-07-15. Fan-out (002 · 1A) keys on per-media `pk`; carousel children under carousel_media[]. Poster at image_versions2.candidates[0], reel video at video_versions[]. Pagination REQUEST param ?max_id= confirmed live (page-2 capture); the response cursor next_max_id is corroborated by IG convention but not yet seen populated in a non-terminal body (account returns everything in <=2 fetches). Parser live-validated against a real 11-post/25-item page, no drift. IG drifts fast — 14d window (vs X/Pinterest 30d)."
     }
   }
 }

@@ -16,6 +16,10 @@ import {
 } from "../src/bulk-instagram.js";
 
 const saved = JSON.parse(readFileSync(new URL("./fixtures/instagram-saved.json", import.meta.url)));
+// A second committed fixture derived from a real page-2 capture (002 §B0, 2026-07-15):
+// 11 posts (incl. an 11-child carousel + 2 more carousels + 7 reels) → 25 fanned-out
+// items. Stresses large-carousel fan-out the small first fixture doesn't.
+const savedPage2 = JSON.parse(readFileSync(new URL("./fixtures/instagram-saved-page2.json", import.meta.url)));
 
 /** The fixture's three posts by media_type (1 image, 2 reel, 8 carousel). */
 const medias = saved.items.map((w) => w.media);
@@ -159,6 +163,34 @@ test("parseSavedFeedPage: a challenge body → error (InstagramChallengeError), 
   assert.equal(page.error.kind, "checkpoint_required");
   assert.equal(page.error.challenge, true);
   assert.equal(page.items.length, 0);
+});
+
+test("parseSavedFeedPage: the real page-2 fixture fans out 11 posts → 25 distinct items (large carousels)", () => {
+  const page = parseSavedFeedPage(savedPage2, {});
+  assert.equal(page.error, null);
+
+  // Expected fan-out = sum over posts of (carousel ? child count : 1). Computed from the
+  // fixture so it stays true if the fixture is re-captured.
+  const expected = savedPage2.items.reduce((n, w) => {
+    const m = w.media;
+    return n + (m.carousel_media ? m.carousel_media.length : 1);
+  }, 0);
+  assert.equal(page.items.length, expected);                       // 25 in this capture
+  assert.equal(new Set(page.items.map((i) => i.sourceId)).size, expected); // every pk distinct
+  for (const item of page.items) assert.ok(item.mediaUrl, "every fanned-out item has a poster");
+
+  // The biggest carousel really fanned out (not silently truncated to its cover).
+  const biggest = savedPage2.items.map((w) => w.media)
+    .filter((m) => m.carousel_media)
+    .sort((a, b) => b.carousel_media.length - a.carousel_media.length)[0];
+  const childIds = biggest.carousel_media.map((c) => String(c.pk));
+  assert.ok(childIds.every((id) => page.items.some((it) => it.sourceId === id)),
+    "every child of the largest carousel is present as its own item");
+
+  // Each reel exposed its MP4 for the resolve-video toggle (7A).
+  const reels = savedPage2.items.map((w) => w.media).filter((m) => m.media_type === 2).length;
+  const withVideo = page.items.filter((i) => i.provenance.rawMetadata.videoUrl).length;
+  assert.equal(withVideo, reels);
 });
 
 test("parseSavedFeedPage: a malformed / empty page → no items, ends the feed (no loop)", () => {

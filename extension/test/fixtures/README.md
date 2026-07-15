@@ -19,6 +19,7 @@ size segment for the `/originals/` rewrite). Raw captures live in the gitignored
 | `pinterest-boards.json` | `GET /resource/BoardsResource/get/` | `resource_response.data[]` boards (`id`, `name`, `url`) + `resource_response.bookmark` cursor. |
 | `pinterest-boardfeed.json` | `GET /resource/BoardFeedResource/get/` | `resource_response.data[]` pins (`id`, `images.{size}.url`, `board`, `videos`) + `bookmark` cursor. |
 | `instagram-saved.json` (captured 2026-07-15) | `GET instagram.com/api/v1/feed/saved/posts/` | `items[].media` — trimmed to **3 posts (1 image `media_type:1`, 1 reel `media_type:2`, 1 carousel `media_type:8`)**. Per-media `pk` (the fan-out dedup key, 002 · 1A), `image_versions2.candidates[]` (poster), `video_versions[]` (reel), `carousel_media[]` (child media, each its own `pk`). |
+| `instagram-saved-page2.json` (captured 2026-07-15) | `GET instagram.com/api/v1/feed/saved/posts/?max_id=…` | A second, richer page: **11 posts → 25 fanned-out items** (an 11-child carousel + 2- and 4-child carousels + 7 reels + 1 image). Stresses large-carousel fan-out; the `?max_id=` request URL **confirms the pagination param**. |
 
 ### Drift canary (`npm run drift-check`)
 The opt-in canary (`scripts/drift-check.js`, invariants in `src/drift.js`) runs these
@@ -48,13 +49,15 @@ fixtures are stale (> 30d) and exits non-zero on any drift.
   Capture a Pinterest video pin, or synthesize one, to test the video-pin mapper.
 - Cursor `value` strings are placeholders (`"Sample text"` / `SAMPLE_CURSOR_TOKEN==`);
   the tests only require non-empty, non-`-end-` — real cursor opacity is not needed.
-- **IG mid-feed cursor NOT observed.** The recon account had a single page
-  (`more_available: false`, no `next_max_id`), so `instagram-saved.json` is a
-  verified **end-of-feed** page. The paginating shape — top-level `next_max_id` +
-  the next request's `?max_id=<token>` param — is IG-private-API convention, **not
-  live-observed**; the paginating test case synthesizes it (`more_available: true` +
-  a synthetic `next_max_id`), as the X integration test synthesizes timeline pages.
-  Re-verify the field name against a multi-page saved feed when one is available.
+- **IG pagination: request param CONFIRMED, response cursor still inferred.** Both
+  committed captures are terminal pages (`more_available: false`, no `next_max_id`) —
+  the account returns its whole saved feed in ≤2 fetches. The **`?max_id=<token>`
+  request param is confirmed live** (page 2 was fetched with one — see the fixture
+  table), which corroborates IG's `response.next_max_id → request ?max_id=` convention.
+  What's still unseen is `next_max_id` **populated in a non-terminal body**
+  (`more_available: true`); the paginating test synthesizes that shape. To fully close
+  it, capture the FIRST fetch on an account with enough saves that one page doesn't
+  return everything, and confirm the response field name is `next_max_id`.
 
 ## Other fixtures
 - `capture-contract.json` — the single-item capture endpoint contract (pre-existing).

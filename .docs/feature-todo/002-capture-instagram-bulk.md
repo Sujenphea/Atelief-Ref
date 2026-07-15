@@ -137,14 +137,18 @@ real block — halting on it is the desired "halt, don't burn".
      raw capture gitignored in `/resources/ig-saved-page1.json`. Leak-checked against
      all 153 real tokens → clean.
    - ✅ Drift baseline seeded (`drift-baseline.json` → `markers.instagram`, 14d window).
-   - ⚠️ **STILL OPEN (do before/with B3):** (a) the **mid-feed `next_max_id` cursor**
-     was never emitted — the recon account is single-page (`more_available: false`);
-     the field name is IG-convention, not live-observed, so the paginating test
-     synthesizes it and the drift note flags re-verification. (b) **Feed ordering**
-     (save-time?) — gates the deferred re-sweep early-stop; not yet confirmed.
-     (c) a **collection page's** endpoint (for the refusal matcher) and (d) a **live
-     challenge body** — both nice-to-have, neither blocks v1 (flat-only; the challenge
-     recognizer can ship against a documented-shape fixture and be hardened later).
+   - ✅ **Second fixture + live validation (2026-07-15):** a real page-2 capture
+     (`instagram-saved-page2.json`, 11 posts → 25 items incl. an 11-child carousel + 7
+     reels) runs CLEAN through the real parser (`drift-check --instagram`, no drift), and
+     its `?max_id=<token>` request URL **confirms the pagination request param**.
+   - ⚠️ **STILL OPEN (non-blocking):** (a) the response **`next_max_id` populated in a
+     non-terminal body** (`more_available: true`) is still unseen — both captures are
+     terminal pages (the account returns everything in ≤2 fetches). The `?max_id=`
+     request param is confirmed, so the response cursor is well-corroborated by IG
+     convention; the paginating test synthesizes it. Fully closed by capturing the first
+     fetch on a larger saved feed. (b) **Feed ordering** (save-time?) — gates the
+     deferred re-sweep early-stop; not yet confirmed. (c) a **collection page's**
+     endpoint and (d) a **live challenge body** — nice-to-have, neither blocks v1.
 1. **B1 (M, settled 2A+5A) — shared refactors, X-regression-gated.**
    (a) Extract `hook-core.js`: a classic-script (no import/export)
    `installResponseHook({ isMatch, messageSource, replaySource, target, post })`
