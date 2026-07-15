@@ -109,6 +109,11 @@ struct CollectionView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            // The stack row is the Unsorted screen's triage surface (009 · N4):
+            // drop the selection onto a root collection to move it out of Unsorted.
+            if collectionID == model.unsortedFolderID && !model.stackPreviews.isEmpty {
+                stackRow
+            }
             dropZone
             if !model.subfolders.isEmpty {
                 subfolderChips
@@ -116,6 +121,40 @@ struct CollectionView: View {
             grid
         }
         .padding()
+    }
+
+    /// The Unsorted-only horizontal row of collection stacks (009 · N4). Each card
+    /// is a drop target that MOVES (⌥ copies) the dragged selection out of Unsorted
+    /// into that collection, and navigates into it on a plain click.
+    private var stackRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(model.stackPreviews, id: \.collection.id) { preview in
+                    StackDropTarget(
+                        preview: preview,
+                        thumbnailURL: { model.thumbnailURL(forBlobHash: $0) },
+                        onNavigate: { nav.openCollection(preview.collection.id) },
+                        onDrop: { handleCollectionDrop($0, into: preview.collection.id) })
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    /// Route a payload dropped onto a collection target (stack card / rail row)
+    /// and apply the move or copy. Shared by the stack row and the drop rail.
+    private func handleCollectionDrop(_ payload: AssetDragPayload, into targetID: UUID) -> Bool {
+        switch routeDrop(
+            payload, onto: .collection(targetID), optionDown: Self.modifierReader.isOptionDown) {
+        case let .move(assetIDs, _, to):
+            model.moveToCollection(assetIDs: assetIDs, to: to)
+            return true
+        case let .copy(assetIDs, to):
+            model.copyToCollection(assetIDs: assetIDs, to: to)
+            return true
+        case .reject, .reorder:
+            return false
+        }
     }
 
     private var header: some View {

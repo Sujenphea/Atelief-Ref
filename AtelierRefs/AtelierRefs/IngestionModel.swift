@@ -63,6 +63,12 @@ final class IngestionModel: ObservableObject {
     /// The selected folder's immediate subfolders (navigable).
     @Published private(set) var subfolders: [Collection] = []
 
+    /// The Unsorted screen's stack-row cards (009 · N4): one per root collection
+    /// (Unsorted excluded), each with its count + recent thumbnail hashes. Loaded
+    /// ONLY while the Unsorted folder is selected (empty otherwise), refreshed via
+    /// the same `loadContents` funnel so a move keeps it live.
+    @Published private(set) var stackPreviews: [CollectionStackPreview] = []
+
     // MARK: - Selected item (inspector)
 
     /// The grid's multi-selection (009 · N2): the selected membership ids, the
@@ -542,16 +548,33 @@ final class IngestionModel: ObservableObject {
         contentsLoadID &+= 1
         let loadID = contentsLoadID
         let sort = sortMode(for: id)
+        // The stack row is shown only on the Unsorted screen (009 · N4), so its
+        // preview read is skipped for every other folder.
+        let loadsStacks = id == unsortedFolderID
         Task {
             do {
-                let loadedItems = try await services.collectionItems(in: id, sort: sort)
-                let loadedSubfolders = try await services.childCollections(of: id)
-                // A newer load has superseded this one — the two DB reads can
-                // finish out of order, so a stale read must NOT overwrite the
-                // current folder's content. Bail before publishing anything.
+                // The three reads are independent — run them concurrently so the
+                // reload latency is the slowest ONE, not their sum (009 · 16A).
+                async let itemsRead = services.collectionItems(in: id, sort: sort)
+                async let subfoldersRead = services.childCollections(of: id)
+                async let stacksRead: [CollectionStackPreview] =
+                    loadsStacks ? services.collectionStackPreviews() : []
+                let loadedItems = try await itemsRead
+                let loadedSubfolders = try await subfoldersRead
+                let loadedStacks = try await stacksRead
+                // A newer load has superseded this one — the reads can finish out
+                // of order, so a stale read must NOT overwrite the current
+                // folder's content. Bail before publishing anything.
                 guard loadID == contentsLoadID else { return }
                 items = loadedItems
                 subfolders = loadedSubfolders
+                // Republish the stack row only when it actually changed — an
+                // unchanged set never re-renders or re-decodes its fans (009 · 15A).
+                if loadsStacks {
+                    if stackPreviews != loadedStacks { stackPreviews = loadedStacks }
+                } else if !stackPreviews.isEmpty {
+                    stackPreviews = []
+                }
                 // Prune the selection to ids that survive the reloaded set
                 // (folder switch, move-away, or delete). A removed lead clears
                 // the inspector so a stale preview/tags can't linger.
