@@ -32,8 +32,9 @@ other collection screen (expands on drag, quick-switch on click). Drag **moves**
   preview/tags (8A — no large-JPEG decode on a toggle or ⌘A). Batch move/copy verbs.
 - **`CollectionCell`** — extracted, `Equatable` (13A): hover/selection circle,
   keyboard-cursor ring, raw-input routing; clicks decoded via `NSEvent`.
-- **`AssetDragPayload`** (+ exported `com.ref-atelier.asset-ids` UTType) — the ONE
-  drag payload (asset ids + source collection); multi-drag with a count badge.
+- **`AssetDragPayload`** (+ exported `com.ref-atelier.asset-ids` UTType, declared
+  in `Info.plist`) — the ONE drag payload (asset ids + source collection);
+  multi-drag with a count badge.
   Scope mirrors `actionTargets`: dragging a selected cell drags the whole
   selection, dragging an UNSELECTED cell drags just that one cell — a single-item
   drag that **leaves the selection untouched** (an idle drag ends idle, not stuck
@@ -63,8 +64,15 @@ other collection screen (expands on drag, quick-switch on click). Drag **moves**
 
 ## Schema / migration
 
-**None** — `moveAssets` and `collectionStackPreviews` are additive service/read
-methods over existing rows.
+**None** at the DB layer — `moveAssets` and `collectionStackPreviews` are additive
+service/read methods over existing rows.
+
+**Build config:** the app now ships a physical `AtelierRefs/Info.plist`
+(`INFOPLIST_FILE = Info.plist`, still merged under `GENERATE_INFOPLIST_FILE = YES`)
+declaring the drag type in `UTExportedTypeDeclarations`. Without that declaration
+the OS doesn't recognize `com.ref-atelier.asset-ids` at a drop destination and
+every drag (reorder / stack-move / rail-move) shows an invalid cursor and snaps
+back — verified fixed by manual reorder after registering it.
 
 ## Files changed
 
