@@ -62,18 +62,36 @@ struct CollectionCell: View, Equatable {
     var body: some View {
         Button {
             if imagePressConsumed { return }
+            // A modified click is handled by the ⌘/⇧ tap gestures below; a SwiftUI
+            // `Button` doesn't reliably activate on a modified click, so the plain
+            // action only ever handles an UNMODIFIED click (open when idle, toggle
+            // when selecting). Bailing here also stops a double-apply if the button
+            // ever does fire under a held modifier.
             let flags = NSEvent.modifierFlags
-            onImageClick(flags.contains(.shift), flags.contains(.command))
+            guard !flags.contains(.shift), !flags.contains(.command) else { return }
+            onImageClick(false, false)
         } label: {
             AssetContentThumbnail(asset: detail.asset, url: url, isSelected: isSelected)
         }
         .buttonStyle(PressReportingButtonStyle(
             onPress: {
+                // Only the plain toggle-on-unselected case fires on the down edge
+                // (to beat the drag race). ⇧/⌘ deliberately do NOT route through the
+                // fragile `isPressed` edge — the modifier tap gestures below own them.
                 let flags = NSEvent.modifierFlags
-                imagePressConsumed = onImagePress(
-                    flags.contains(.shift), flags.contains(.command))
+                guard !flags.contains(.shift), !flags.contains(.command) else {
+                    imagePressConsumed = false
+                    return
+                }
+                imagePressConsumed = onImagePress(false, false)
             },
             onRelease: { imagePressConsumed = false }))
+        // ⌘/⇧ clicks: a SwiftUI `Button` doesn't fire on a modified click and its
+        // `isPressed` edge is unreliable under a `.draggable`, so the pure routing
+        // never ran for them. Modifier-aware tap gestures fire regardless and
+        // coexist with the drag — this is the ONLY path that applies ⌘/⇧ selection.
+        .simultaneousGesture(TapGesture().modifiers(.command).onEnded { onImageClick(false, true) })
+        .simultaneousGesture(TapGesture().modifiers(.shift).onEnded { onImageClick(true, false) })
         .overlay { cursorRing }
         .overlay(alignment: .topTrailing) {
             if showsCircle { circle }
