@@ -100,16 +100,40 @@ public struct CaptureResponse: Codable, Equatable, Sendable {
     /// sweep. Absent (nil, unencoded) on ordinary single-item captures — the wire is
     /// unchanged for the existing path.
     public var jobStatus: String?
+    /// The running app's version — stamped ONLY on the `/health` reply (010 · Phase
+    /// 3 handshake). Absent (nil, unencoded) on captures, so the ingest wire is
+    /// unchanged.
+    public var appVersion: String?
+    /// The oldest / newest extension version this app supports, on `/health` only.
+    /// The extension compares its own version against this range and warns on a
+    /// mismatch instead of drifting silently.
+    public var minExtensionVersion: String?
+    public var maxExtensionVersion: String?
 
     public init(
         status: String, assetId: UUID? = nil,
-        deduplicated: Bool? = nil, error: String? = nil, jobStatus: String? = nil
+        deduplicated: Bool? = nil, error: String? = nil, jobStatus: String? = nil,
+        appVersion: String? = nil,
+        minExtensionVersion: String? = nil, maxExtensionVersion: String? = nil
     ) {
         self.status = status
         self.assetId = assetId
         self.deduplicated = deduplicated
         self.error = error
         self.jobStatus = jobStatus
+        self.appVersion = appVersion
+        self.minExtensionVersion = minExtensionVersion
+        self.maxExtensionVersion = maxExtensionVersion
+    }
+
+    /// The `/health` reply (010 · Phase 3): liveness + the version handshake.
+    public static func health(
+        appVersion: String, minExtensionVersion: String, maxExtensionVersion: String
+    ) -> CaptureResponse {
+        CaptureResponse(
+            status: "ok", appVersion: appVersion,
+            minExtensionVersion: minExtensionVersion,
+            maxExtensionVersion: maxExtensionVersion)
     }
 
     public static func ingested(

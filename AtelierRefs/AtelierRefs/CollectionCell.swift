@@ -124,6 +124,33 @@ struct CollectionCell: View, Equatable {
             GifAnimationCoordinator.shared.release(detail.item.id)
         }
         .animation(.easeInOut(duration: 0.12), value: showsCircle)
+        // Accessibility (010 · Phase 3, first pass): one VoiceOver element per cell
+        // announcing kind + title and its selection state, with the interaction hint.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityHint(isSelecting ? "Toggles selection" : "Opens the item")
+    }
+
+    /// VoiceOver label: the asset kind plus its best available human name
+    /// (title → author → bare kind).
+    private var accessibilityLabel: String {
+        let kind: String
+        switch detail.asset.kind {
+        case .image: kind = "Image"
+        case .video: kind = "Video"
+        case .tweet: kind = "Tweet"
+        case .link: kind = "Link"
+        case .color: kind = "Color"
+        }
+        if let title = detail.source.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty {
+            return "\(kind), \(title)"
+        }
+        if let handle = detail.source.authorHandle, !handle.isEmpty {
+            return "\(kind) by \(handle)"
+        }
+        return kind
     }
 
     /// Hover routing (011-B5): update the circle affordance, and drive the

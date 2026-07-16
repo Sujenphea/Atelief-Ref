@@ -36,6 +36,17 @@ public actor CaptureServer {
     /// bounds disk use, not memory. 512 MB covers any reasonable social clip.
     public static let defaultMaxVideoBodyBytes = 512 * 1024 * 1024
 
+    // MARK: - Version handshake (010 · Phase 3)
+
+    /// This app's version, reported on `/health`. Source of truth for the
+    /// extension↔app compatibility check; bump alongside the extension `manifest`.
+    public static let appVersion = "0.1.0"
+    /// The extension version range this app accepts. The extension GETs `/health`,
+    /// compares its own `manifest.version`, and warns the user to update when it
+    /// falls outside — instead of silently drifting out of contract.
+    public static let minExtensionVersion = "0.1.0"
+    public static let maxExtensionVersion = "0.1.0"
+
     private let port: UInt16
     private let handler: CaptureHTTPHandler
     private var server: HTTPServer?
@@ -140,7 +151,10 @@ struct CaptureHTTPHandler: HTTPHandler {
         } else {
             switch (request.method, request.path) {
             case (.GET, "/health"):
-                response = makeResponse(.ok, cors: cors, body: CaptureResponse(status: "ok"))
+                response = makeResponse(.ok, cors: cors, body: .health(
+                    appVersion: CaptureServer.appVersion,
+                    minExtensionVersion: CaptureServer.minExtensionVersion,
+                    maxExtensionVersion: CaptureServer.maxExtensionVersion))
             case (.POST, "/ingest"):
                 response = try await handleImageIngest(request, cors: cors)
             case (.POST, "/ingest-video"):

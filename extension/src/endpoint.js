@@ -180,3 +180,81 @@ export async function postVideoCapture(
   });
   return parseJsonResponse(response);
 }
+
+// --- Version handshake (010 · Phase 3) -------------------------------------
+// The app's GET /health reply carries { appVersion, minExtensionVersion,
+// maxExtensionVersion }. The extension compares its own manifest version against
+// that range and warns the user to update — instead of drifting silently out of
+// the wire contract. Pure comparators (testable), plus a thin fetch wrapper.
+
+/** Parse a dotted version ("a.b.c") into ints; missing/garbage parts → 0. */
+export function parseVersion(v) {
+  return String(v ?? "0").split(".").map((n) => parseInt(n, 10) || 0);
+}
+
+/** Compare dotted versions: -1 (a<b), 0 (a==b), 1 (a>b). */
+export function compareVersions(a, b) {
+  const pa = parseVersion(a);
+  const pb = parseVersion(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const da = pa[i] || 0;
+    const db = pb[i] || 0;
+    if (da < db) return -1;
+    if (da > db) return 1;
+  }
+  return 0;
+}
+
+/**
+ * Compare this extension's version against the app's /health handshake. Pure:
+ * `health` is the parsed body { appVersion, minExtensionVersion,
+ * maxExtensionVersion }. Returns { compatible, reason, appVersion }. A missing
+ * range (an older app that predates the handshake) is treated as compatible —
+ * unknown is not a reason to cry wolf.
+ */
+export function checkExtensionCompatibility(extensionVersion, health) {
+  const min = health && health.minExtensionVersion;
+  const max = health && health.maxExtensionVersion;
+  const appVersion = (health && health.appVersion) || null;
+  if (!min || !max) return { compatible: true, reason: null, appVersion };
+  if (compareVersions(extensionVersion, min) < 0) {
+    return {
+      compatible: false,
+      reason: `The extension (v${extensionVersion}) is older than the app supports (needs v${min}+). Update the extension.`,
+      appVersion,
+    };
+  }
+  if (compareVersions(extensionVersion, max) > 0) {
+    return {
+      compatible: false,
+      reason: `The extension (v${extensionVersion}) is newer than the app supports (up to v${max}). Update the app.`,
+      appVersion,
+    };
+  }
+  return { compatible: true, reason: null, appVersion };
+}
+
+/**
+ * GET /health and evaluate compatibility. `fetchImpl` injectable for tests.
+ * Returns { reachable, compatible, reason, appVersion }. A network failure →
+ * reachable:false (the app isn't running / the port is blocked). /health is
+ * token-gated, so an unpaired extension gets `reachable:true` but can't yet read
+ * the range (treated as compatible until paired).
+ */
+export async function fetchHealth(
+  extensionVersion,
+  { base = DEFAULT_BASE, token = null, fetchImpl = fetch } = {}
+) {
+  try {
+    const headers = token ? { [TOKEN_HEADER]: token } : {};
+    const res = await fetchImpl(`${base}/health`, { method: "GET", headers });
+    if (!res.ok) {
+      return { reachable: true, compatible: true, reason: null, appVersion: null, status: res.status };
+    }
+    const body = await res.json();
+    return { reachable: true, ...checkExtensionCompatibility(extensionVersion, body) };
+  } catch {
+    return { reachable: false, compatible: true, reason: null, appVersion: null };
+  }
+}

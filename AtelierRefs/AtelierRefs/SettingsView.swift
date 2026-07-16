@@ -24,6 +24,7 @@ struct SettingsView: View {
             captureSection
             librarySection
             setupSection
+            diagnosticsSection
         }
         .formStyle(.grouped)
         .frame(width: 460, height: 380)
@@ -94,6 +95,16 @@ struct SettingsView: View {
             Button("Show Setup Guide Again") { didCompleteOnboarding = false }
             Text("Re-opens the first-run walkthrough (install the extension, pair the "
                  + "token, capture something) on the main window.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var diagnosticsSection: some View {
+        Section("Diagnostics") {
+            Button("Export Diagnostics…") { model.exportDiagnostics() }
+            Text("Saves a plain-text report (versions, sizes, counts) and reveals it in "
+                 + "Finder — for attaching to a bug report. It contains no library content.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

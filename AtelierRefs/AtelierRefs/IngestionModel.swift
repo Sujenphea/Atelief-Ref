@@ -506,6 +506,52 @@ final class IngestionModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([libraryRoot])
     }
 
+    // MARK: - Diagnostics (010 · Phase 3)
+
+    /// Gather non-sensitive facts for a diagnostics export — versions, sizes, and
+    /// counts only, never library content.
+    private func diagnosticsFacts() -> DiagnosticsFacts {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = info?["CFBundleVersion"] as? String ?? "—"
+        var dbSize: Int64?
+        if let root = libraryRoot {
+            let dbPath = root.appendingPathComponent("library.sqlite").path
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: dbPath),
+               let size = attrs[.size] as? NSNumber {
+                dbSize = size.int64Value
+            }
+        }
+        return DiagnosticsFacts(
+            appVersion: version, appBuild: build,
+            osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            supportedExtensionRange:
+                "\(CaptureServer.minExtensionVersion)–\(CaptureServer.maxExtensionVersion)",
+            capturePort: Int(capturePort),
+            captureEndpointRunning: captureEndpointRunning,
+            libraryPath: libraryRoot?.path(percentEncoded: false),
+            databaseFileSizeBytes: dbSize,
+            snapshotCount: snapshotManager?.list().count ?? 0,
+            generatedAt: Date())
+    }
+
+    /// Export diagnostics (Settings): write the text report into the app
+    /// container's temp dir (sandbox-safe) and reveal it in Finder.
+    func exportDiagnostics() {
+        let text = DiagnosticsReport.text(from: diagnosticsFacts())
+        let name = "AtelierRefs-Diagnostics-\(Int(Date().timeIntervalSince1970)).txt"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            status = "Diagnostics exported."
+            AppLog.diagnostics.info(
+                "exported diagnostics: \(name, privacy: .public)")
+        } catch {
+            lastError = "Couldn't export diagnostics: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Bulk import (sweeps) — 015 · Phase 7
 
     /// UserDefaults key for the bulk-import consent (7A / legal framing). The
