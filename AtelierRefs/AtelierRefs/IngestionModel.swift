@@ -102,10 +102,41 @@ final class IngestionModel: ObservableObject {
     /// `false` until the Library has opened — import affordances stay disabled.
     @Published private(set) var isReady = false
 
+    /// The most recent remote-capture batch (011-B4), published so the shell can
+    /// raise ONE "Saved — Jump" toast per batch. Carries a monotonic `token` so a
+    /// repeat batch into the same folder still trips `onChange`.
+    @Published private(set) var lastCaptureBatch: CaptureBatch?
+    private var captureBatchToken = 0
+
+    /// A selection to apply once a target collection finishes loading (011-B4 · 12A
+    /// Jump). Deterministic, not a timer: `loadContents` applies it against the
+    /// freshly loaded items, then clears it.
+    private var pendingSelection: (collectionID: UUID, assetIDs: Set<UUID>)?
+
     /// A batch's progress counters.
     struct Progress: Equatable {
         var completed: Int
         var total: Int
+    }
+
+    /// A landed remote-capture batch — enough for the shell's "Saved N to <folder>
+    /// — Jump" toast and its typed Jump target (011-B4).
+    struct CaptureBatch: Equatable {
+        let token: Int
+        let collectionID: UUID
+        let collectionName: String
+        let assetIDs: [UUID]
+        let importedCount: Int
+    }
+
+    /// Stash a Jump's target selection and load the collection so it lands on the
+    /// freshly captured items (011-B4). The caller also navigates via
+    /// `NavModel.openCollection`; if that folder is ALREADY the open one the
+    /// pushed screen's `.task` won't re-fire, so reload here to apply the pending
+    /// selection either way.
+    func requestJumpSelection(assetIDs: [UUID], in collectionID: UUID) {
+        pendingSelection = (collectionID, Set(assetIDs))
+        if collectionID == selectedFolderID { loadContents(of: collectionID) }
     }
 
     // MARK: - Capture endpoint (Chrome extension)
@@ -210,9 +241,18 @@ final class IngestionModel: ObservableObject {
     /// The current selection's asset ids in feed order (see `selectedAssetIDs`).
     private var cachedSelectedAssetIDs: [UUID] = []
 
+    /// Monotonic token bumped whenever `items` changes (a load / move / reorder),
+    /// so the grid's masonry layout cache (011-B1 · 14A) can key off cheap
+    /// integer equality instead of hashing the item ids or re-deriving aspects on
+    /// every re-render — the marquee's selection churn re-renders the grid many
+    /// times per second with `items` unchanged, and each of those must be a memo
+    /// hit, not an O(N) re-layout.
+    private(set) var itemsVersion = 0
+
     /// Rebuild the item-keyed indexes after `items` changes (a load / mutation);
     /// the selection cache depends on `items` too, so refresh it here as well.
     private func rebuildItemDerivations() {
+        itemsVersion &+= 1
         itemOrder = items.map { $0.item.id }
         assetIDByItemID = Dictionary(
             items.map { ($0.item.id, $0.asset.id) }, uniquingKeysWith: { first, _ in first })
@@ -384,9 +424,10 @@ final class IngestionModel: ObservableObject {
     /// it received the item, and always refresh the tree's counts. Runs on the
     /// main actor (hopped from the server's off-main callback).
     private func handleRemoteCapture(collectionID: UUID, outcomes: [IngestOutcome]) {
-        let imported = outcomes.reduce(into: 0) { count, outcome in
-            if case .ingested = outcome { count += 1 }
+        let ingested: [Asset] = outcomes.compactMap {
+            if case let .ingested(asset, _) = $0 { return asset } else { return nil }
         }
+        let imported = ingested.count
         Task { await refreshFolders() }
         if collectionID == selectedFolderID {
             loadContents(of: selectedFolderID)
@@ -394,6 +435,18 @@ final class IngestionModel: ObservableObject {
         status = imported > 0
             ? "Captured \(imported) from the browser."
             : "A browser capture failed."
+        // Publish a batch event (011-B4) so the shell can raise ONE "Saved — Jump"
+        // toast per batch. The monotonic token makes `onChange` fire even for a
+        // second batch into the same folder with the same count.
+        if imported > 0 {
+            captureBatchToken &+= 1
+            lastCaptureBatch = CaptureBatch(
+                token: captureBatchToken,
+                collectionID: collectionID,
+                collectionName: name(for: collectionID),
+                assetIDs: ingested.map(\.id),
+                importedCount: imported)
+        }
     }
 
     /// Load the persisted capture token from the Keychain, generating and storing
@@ -617,6 +670,13 @@ final class IngestionModel: ObservableObject {
                 if hadLead != nil, selection.lead == nil {
                     previewImage = nil
                     selectedTags = []
+                }
+                // Apply a pending Jump selection (011-B4 · 12A) against the freshly
+                // loaded items, then clear it — deterministic, no timing hack.
+                if let pending = pendingSelection, pending.collectionID == id {
+                    let jumped = jumpSelection(in: items, assetIDs: pending.assetIDs)
+                    if !jumped.isEmpty { selection = jumped }
+                    pendingSelection = nil
                 }
                 contentsVersion &+= 1
             } catch {

@@ -2,20 +2,24 @@
 //  MarqueeMath.swift
 //  AtelierRefs
 //
-//  009 · N6 — the pure geometry behind rubber-band (marquee) selection. Split in
-//  two so the durable half survives the layout change coming in 011:
+//  009 · N6 — the pure geometry behind rubber-band (marquee) selection. Split so
+//  the durable half survived the 011 layout change:
 //
 //   • `marqueeIndices(in:frames:)` — the PERMANENT layout-agnostic core: given the
 //     drag rect and EVERY item's frame (offscreen included) it returns the hit
-//     indices by rect-intersection. This is what 011-U2's `JustifiedLayout` will
-//     feed once justified rows land.
-//   • `uniformGridFrames(...)` — a TEMPORARY frame source for today's uniform grid
-//     (1A). It computes each item's frame from pure math (so offscreen rows are
-//     covered too); 011-U2 deletes it and hands `JustifiedLayout`'s exact frames
-//     to the same core. Don't grow this — it's scaffolding.
+//     indices by rect-intersection. `MasonryLayout` (011-B1) feeds it real frames.
+//   • `masonryMarqueeIndices(in:frames:columns:)` — the 011-B1 · 13A′ fast path
+//     for round-robin masonry: band-narrows the rect to the columns/rows it can
+//     touch (analytic column membership `i % C`, y-monotonic binary search within
+//     a column) and delegates the exact overlap to the SAME `rectsIntersect` the
+//     core uses, so it returns exactly what the general core would — O(cols + hits
+//     + logN per hit column) instead of the O(N) frame-array scan.
+//
+//  The 009 uniform-grid source (`uniformGridFrames` / `uniformMarqueeIndices` /
+//  `uniformCellSide`) was retired here when masonry landed — see git history.
 //
 //  Kept SwiftUI-free so the whole thing is unit-tested without a running view (the
-//  virtualization trap is that `LazyVGrid` only lays out VISIBLE cells, so live
+//  virtualization trap is that a lazy stack only lays out VISIBLE cells, so live
 //  cell frames can't drive offscreen hit-testing — computed frames must).
 //
 
@@ -54,80 +58,51 @@ private func rectsIntersect(_ a: CGRect, _ b: CGRect) -> Bool {
     return a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY
 }
 
-/// Every item's frame in a uniform grid of `columns` columns (009 · N6, TEMPORARY
-/// — replaced by 011-U2's `JustifiedLayout` frames). Frames are laid out
-/// left-to-right, top-to-bottom, starting at `(0, topInset)`, each `cellSize`
-/// with `spacing` gaps. Offscreen rows included (that's the point). `columns` is
-/// clamped to at least 1; a non-positive count returns no frames.
-func uniformGridFrames(
-    count: Int, columns: Int, cellSize: CGSize, spacing: CGFloat, topInset: CGFloat = 0
-) -> [CGRect] {
-    guard count > 0 else { return [] }
-    let cols = max(1, columns)
-    return (0..<count).map { i in
-        let row = i / cols
-        let col = i % cols
-        return CGRect(
-            x: CGFloat(col) * (cellSize.width + spacing),
-            y: topInset + CGFloat(row) * (cellSize.height + spacing),
-            width: cellSize.width, height: cellSize.height)
-    }
-}
-
-/// The hit indices for a uniform grid, computed ANALYTICALLY from the drag `rect`
-/// (009 · N6 fast path). `uniformGridFrames` + `marqueeIndices` allocate an
-/// N-element frame array and scan all N on EVERY marquee/auto-scroll tick — O(N)
-/// regardless of how few cells the box covers (the marquee hit-test didn't
-/// virtualize the way `LazyVGrid`'s rendering does). Here the rect's bounds pick
-/// the candidate row/column band directly, so only the handful of cells that can
-/// overlap are frame-tested — O(hits), no N-array.
+/// The hit indices for a ROUND-ROBIN masonry grid (011-B1 · 13A′), band-narrowed
+/// over the layout's REAL (aspect-staggered) frames. The general core scans all N
+/// frames on EVERY marquee / auto-scroll tick; here column membership is analytic
+/// (`i % C`) so the rect's x-range culls whole columns in O(1) each, and within a
+/// surviving column the frames are y-monotonic (cumulative stacking) so a binary
+/// search finds the first candidate and we walk forward only while the y-band can
+/// still overlap — O(cols + hits + logN per hit column).
 ///
-/// It delegates the actual overlap to the SAME `rectsIntersect` the general core
-/// uses (candidate band widened by one cell each way so a boundary-touching /
-/// edge-inclusive click is never pruned before that exact test runs), so the
-/// result is identical to `marqueeIndices(in: rect, frames: uniformGridFrames(…))`
-/// — asserted by `MarqueeMathTests`. 011-U2's justified layout keeps feeding the
-/// general core; this is only the uniform-grid shortcut.
-func uniformMarqueeIndices(
-    in rect: CGRect, count: Int, columns: Int, cellSize: CGSize,
-    spacing: CGFloat, topInset: CGFloat = 0
-) -> [Int] {
-    guard count > 0 else { return [] }
+/// The exact overlap is the SAME `rectsIntersect` the general core uses (the
+/// x-cull is edge-INCLUSIVE — a superset — so the strict/inclusive boundary call
+/// is always left to that per-cell test, never pre-pruned), so the result is
+/// identical to `marqueeIndices(in: rect, frames: frames)` — asserted in
+/// `MasonryLayoutTests`. Indices come back ascending to match the core's order.
+///
+/// `frames` must be `MasonryLayout.layout(...)`'s output for `columns`; `columns`
+/// clamps to ≥ 1. Empty frames yield no hits.
+func masonryMarqueeIndices(in rect: CGRect, frames: [CGRect], columns: Int) -> [Int] {
+    guard !frames.isEmpty else { return [] }
     let cols = max(1, columns)
-    let strideX = cellSize.width + spacing
-    let strideY = cellSize.height + spacing
-    let rowCount = (count + cols - 1) / cols
-
-    // Candidate bands from the rect bounds, widened ±1 so an edge-inclusive hit
-    // (click / thin drag landing exactly on a boundary) survives to the exact
-    // `rectsIntersect` test below. `strideX`/`strideY` are ≥ 1 (cell side ≥ 1,
-    // spacing ≥ 0), so the divisions are safe.
-    let firstRow = max(0, Int(floor((rect.minY - topInset) / strideY)) - 1)
-    let lastRow = min(rowCount - 1, Int(floor((rect.maxY - topInset) / strideY)) + 1)
-    let firstCol = max(0, Int(floor(rect.minX / strideX)) - 1)
-    let lastCol = min(cols - 1, Int(floor(rect.maxX / strideX)) + 1)
-    guard firstRow <= lastRow, firstCol <= lastCol else { return [] }
-
     var hits: [Int] = []
-    for row in firstRow...lastRow {
-        for col in firstCol...lastCol {
-            let index = row * cols + col
-            guard index < count else { continue }   // last row's trailing gap
-            let frame = CGRect(
-                x: CGFloat(col) * strideX,
-                y: topInset + CGFloat(row) * strideY,
-                width: cellSize.width, height: cellSize.height)
+    for col in 0..<min(cols, frames.count) {
+        // Column `col`'s items are indices col, col+cols, col+2·cols, … . Its
+        // count and x-span (every cell in a column shares x/width) come from the
+        // first item.
+        let colCount = (frames.count - col + cols - 1) / cols
+        let first = frames[col]
+        // O(1) x-cull, edge-inclusive: a column whose x-span can't touch the rect
+        // is skipped whole. The exact strict-vs-inclusive call is `rectsIntersect`.
+        guard rect.minX <= first.maxX, first.minX <= rect.maxX else { continue }
+        // Binary search the first position whose cell BOTTOM reaches the rect top;
+        // frames down a column are y-monotonic, so this lower bound is exact and
+        // edge-inclusive (`>=`) — a boundary-touching click is never pruned.
+        var lo = 0, hi = colCount
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if frames[col + mid * cols].maxY >= rect.minY { hi = mid } else { lo = mid + 1 }
+        }
+        var p = lo
+        while p < colCount {
+            let index = col + p * cols
+            let frame = frames[index]
+            if frame.minY > rect.maxY { break }   // past the band (y-monotonic)
             if rectsIntersect(rect, frame) { hits.append(index) }
+            p += 1
         }
     }
-    return hits
-}
-
-/// The cell edge length a uniform adaptive grid uses to fill `availableWidth` with
-/// `columns` columns and `spacing` gaps — the square side the marquee frames use
-/// (mirrors how the grid packs a row). At least 1 to stay drawable.
-func uniformCellSide(availableWidth: CGFloat, columns: Int, spacing: CGFloat) -> CGFloat {
-    let cols = CGFloat(max(1, columns))
-    let side = (availableWidth - (cols - 1) * spacing) / cols
-    return max(1, side)
+    return hits.sorted()
 }

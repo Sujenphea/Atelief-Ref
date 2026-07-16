@@ -21,7 +21,7 @@ struct SpaceView: View {
     /// Tags for the asset shown in the detail overlay (Space has no folder
     /// context, so it can't reuse `IngestionModel`'s selection-bound tags).
     @StateObject private var tagStore: AssetTagsStore
-    @State private var quickLook = QuickLookPresenter()
+    @State private var quickLook = QuickLookController()
     @State private var showAddSheet = false
     @State private var tool: CanvasTool = .select
     @State private var showEditor = false
@@ -142,7 +142,7 @@ struct SpaceView: View {
                 tool: tool,
                 onActivateTile: { tileID in
                     if let url = content.videoURL(forTileID: tileID) {
-                        quickLook.present(url: url, title: url.lastPathComponent)
+                        quickLook.present(url: url)
                     } else if let detail = content.detail(forTileID: tileID),
                               detail.item.kind == .asset, detail.asset != nil {
                         // Double-click an image asset → open its detail page.

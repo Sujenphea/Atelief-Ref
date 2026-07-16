@@ -44,10 +44,13 @@ struct AsyncThumbnail: View {
     let url: URL?
     var isSelected: Bool = false
     var cornerRadius: CGFloat = 8
+    /// Forwarded to ``ThumbnailTile`` — `true` fills the ambient (aspect-sized)
+    /// frame for the masonry grid (011-B1); `false` keeps the legacy square.
+    var fill: Bool = false
     @State private var image: NSImage?
 
     var body: some View {
-        ThumbnailTile(image: image, isSelected: isSelected, cornerRadius: cornerRadius)
+        ThumbnailTile(image: image, isSelected: isSelected, cornerRadius: cornerRadius, fill: fill)
             .task(id: hash) {
                 if let hit = ThumbnailCache.shared.cached(hash) {
                     image = hit
@@ -73,29 +76,40 @@ struct AssetContentThumbnail: View {
     var url: URL?
     var isSelected: Bool = false
     var cornerRadius: CGFloat = 8
+    /// `true` fills the ambient (aspect-sized) frame for the masonry grid
+    /// (011-B1). Media-less kinds have no intrinsic dims → a square (aspect 1)
+    /// frame, so their fixed-ratio cards render the same either way; the byte
+    /// kinds crop-fill their aspect rect.
+    var fill: Bool = false
 
     var body: some View {
         switch asset.content {
         case let .image(hash), let .video(hash):
-            AsyncThumbnail(hash: hash, url: url, isSelected: isSelected, cornerRadius: cornerRadius)
+            AsyncThumbnail(
+                hash: hash, url: url, isSelected: isSelected,
+                cornerRadius: cornerRadius, fill: fill)
         case let .color(hex):
             ColorSwatchTile(hex: hex, isSelected: isSelected, cornerRadius: cornerRadius)
         case let .link(link):
             // With a resolved og:image (blob) show the thumbnail; otherwise a card.
             if let hash = link.imageBlobHash {
-                AsyncThumbnail(hash: hash, url: url, isSelected: isSelected, cornerRadius: cornerRadius)
+                AsyncThumbnail(
+                    hash: hash, url: url, isSelected: isSelected,
+                    cornerRadius: cornerRadius, fill: fill)
             } else {
                 LinkCardTile(link: link, isSelected: isSelected, cornerRadius: cornerRadius)
             }
         case let .tweet(tweet):
             // With a captured card image (blob) show it; otherwise a text card.
             if let hash = tweet.cardImageBlobHash {
-                AsyncThumbnail(hash: hash, url: url, isSelected: isSelected, cornerRadius: cornerRadius)
+                AsyncThumbnail(
+                    hash: hash, url: url, isSelected: isSelected,
+                    cornerRadius: cornerRadius, fill: fill)
             } else {
                 TweetCardTile(tweet: tweet, isSelected: isSelected, cornerRadius: cornerRadius)
             }
         case .unknown:
-            ThumbnailTile(image: nil, isSelected: isSelected, cornerRadius: cornerRadius)
+            ThumbnailTile(image: nil, isSelected: isSelected, cornerRadius: cornerRadius, fill: fill)
         }
     }
 }
@@ -211,39 +225,57 @@ struct ColorSwatchTile: View {
     }
 }
 
-/// One square thumbnail cell — the loaded image, or a placeholder tile. A
-/// selection ring marks the item currently selected.
+/// One thumbnail cell — the loaded image, or a placeholder tile. A selection ring
+/// marks the item currently selected.
+///
+/// `fill` picks the sizing mode: the default (`false`) takes a SQUARE via the
+/// tile's own aspect ratio (the covers / drag-preview / gallery surfaces that
+/// want a uniform square); `true` FILLS the ambient frame instead (011-B1 — the
+/// masonry column cell sizes the tile by the item's aspect via an explicit
+/// `.frame(width:height:)`, and the image crop-fills that rect).
 struct ThumbnailTile: View {
     let image: NSImage?
     var isSelected: Bool = false
     var cornerRadius: CGFloat = 8
+    var fill: Bool = false
 
     var body: some View {
-        // A square cell sized by the adaptive column, not a fixed frame — a fixed
-        // size overflowed narrow columns and overlapped neighbors. `Color.clear`
-        // adopts the column width; the overlay fills and is clipped to it.
-        Color.clear
-            .aspectRatio(1, contentMode: .fit)
-            .overlay {
-                if let image {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    Rectangle()
-                        .fill(.quaternary)
-                        .overlay {
-                            Image(systemName: "photo")
-                                .foregroundStyle(.tertiary)
-                        }
-                }
-            }
+        sized
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 3)
             }
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
+    }
+
+    /// The image/placeholder layer sized to its host: a square (`Color.clear`
+    /// adopts the column width via `aspectRatio(1)`) or the full ambient frame
+    /// (`Color.clear` with no ratio flexes to fill), with the crop-fill overlay
+    /// clipped to it in both cases.
+    @ViewBuilder
+    private var sized: some View {
+        if fill {
+            Color.clear.overlay { imageLayer }
+        } else {
+            Color.clear.aspectRatio(1, contentMode: .fit).overlay { imageLayer }
+        }
+    }
+
+    @ViewBuilder
+    private var imageLayer: some View {
+        if let image {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            Rectangle()
+                .fill(.quaternary)
+                .overlay {
+                    Image(systemName: "photo")
+                        .foregroundStyle(.tertiary)
+                }
+        }
     }
 }
 

@@ -20,9 +20,14 @@ import UniformTypeIdentifiers
 struct CollectionView: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
+    @ObservedObject var gridPrefs: GridViewPreferences
     let collectionID: UUID
 
     @State private var isTargeted = false
+    /// The live grid viewport width, captured from the grid's `GeometryReader`, so
+    /// the toolbar / ⌘+/⌘− density controls can clamp against the current width
+    /// (011-B2 · 16A) without their own geometry reader.
+    @State private var gridWidth: CGFloat = 1
 
     // The marquee's per-tick state (009 · N6), a class in plain `@State` ON
     // PURPOSE: only the two layers in `GridMarquee.swift` observe it, so a
@@ -33,14 +38,25 @@ struct CollectionView: View {
     // Programmatic scroll handle for the marquee's edge auto-scroll (offset-based
     // scrolling — `proxy.scrollTo` can only target whole cells).
     @State private var gridScroll = ScrollPosition()
+    // The native Quick Look panel driver (011-B3): spacebar peeks the selection.
+    @State private var quickLook = QuickLookController()
 
-    private static let gridItemMinWidth: CGFloat = 112
     private static let gridSpacing: CGFloat = 8
     private static let gridTopInset: CGFloat = 4
     private static let marqueeSpace = "collectionGridContent"
-    private let columns = [
-        GridItem(.adaptive(minimum: gridItemMinWidth, maximum: 140), spacing: gridSpacing)
-    ]
+
+    // The masonry layout cache (011-B1 · 14A): frames recompute only when
+    // (itemsVersion, width, columns) change — never on the marquee's per-tick
+    // selection churn (which re-renders this screen), so a drag stays a memo hit.
+    @State private var masonryCache = MasonryLayoutCache()
+
+    /// The round-robin column count for a viewport `width` — the ONE source both
+    /// the masonry layout and keyboard nav read, so `nextGridIndex`'s `± columns`
+    /// index math always matches the frames. Driven by the global density notch
+    /// (011-B2), floored to the 512px cell cap ([16A]) by `GridDensity`.
+    private func gridColumns(forWidth width: CGFloat) -> Int {
+        gridPrefs.density.columns(forWidth: width)
+    }
 
     var body: some View {
         LibrarySearchable(model: model, collectionID: collectionID) {
@@ -72,6 +88,7 @@ struct CollectionView: View {
         }
         .navigationTitle(model.name(for: collectionID))
         .toolbar {
+            ToolbarItem { densityControls }
             ToolbarItem { sortMenu }
             ToolbarItem { AddColorButton { model.addColor(hex: $0) } }
             ToolbarItem { AddLinkButton { model.addLink(url: $0) } }
@@ -88,6 +105,32 @@ struct CollectionView: View {
                 .help("Create a space seeded from this collection's arrangement")
                 .disabled(model.items.isEmpty)
             }
+        }
+    }
+
+    /// The grid density control (011-B2): step the global column-count notch
+    /// smaller / larger. Clamped against the live `gridWidth` so a wide window
+    /// can't zoom cells past the 512px tier ([16A]); disabled at each end. The
+    /// ⌘+/⌘− keys drive the same steps from the focused grid.
+    private var densityControls: some View {
+        let width = gridWidth
+        let current = gridPrefs.density.columns(forWidth: width)
+        return ControlGroup {
+            Button {
+                gridPrefs.zoomIn(forWidth: width)
+            } label: {
+                Label("Larger Thumbnails", systemImage: "plus.magnifyingglass")
+            }
+            .help("Larger thumbnails (⌘+)")
+            .disabled(current <= GridDensity.minColumns(forWidth: width))
+
+            Button {
+                gridPrefs.zoomOut(forWidth: width)
+            } label: {
+                Label("Smaller Thumbnails", systemImage: "minus.magnifyingglass")
+            }
+            .help("Smaller thumbnails (⌘−)")
+            .disabled(current >= GridDensity.maxColumns)
         }
     }
 
@@ -273,6 +316,14 @@ struct CollectionView: View {
 
     private var grid: some View {
         GeometryReader { geo in
+            // Round-robin masonry (011-B1): fixed C columns, aspect-sized cells.
+            // The frames are memoized on (itemsVersion, width, columns) so this
+            // recomputes only when one of those changes — not on selection churn.
+            let cols = gridColumns(forWidth: geo.size.width)
+            let layout = masonryCache.frames(
+                version: model.itemsVersion, width: geo.size.width, columns: cols,
+                spacing: Self.gridSpacing, topInset: Self.gridTopInset,
+                aspects: { model.items.map { aspect(for: $0) } })
             ScrollViewReader { proxy in
                 ScrollView {
                     ZStack(alignment: .topLeading) {
@@ -280,14 +331,12 @@ struct CollectionView: View {
                         // is a marquee (image-drags hit the cells above and mean
                         // move/copy); a plain click clears the selection. Sized to
                         // the grid via the ZStack, in a named space so drag
-                        // locations match the computed cell frames.
+                        // locations match the computed masonry frames.
                         MarqueeCaptureLayer(
                             state: marquee,
-                            width: geo.size.width,
                             itemIDs: model.items.map { $0.item.id },
-                            minItemWidth: Self.gridItemMinWidth,
-                            spacing: Self.gridSpacing,
-                            topInset: Self.gridTopInset,
+                            frames: layout.frames,
+                            columns: layout.columns,
                             spaceName: Self.marqueeSpace,
                             selectionIDs: model.selection.ids,
                             onMarquee: { hits, base in
@@ -295,35 +344,8 @@ struct CollectionView: View {
                             },
                             onClear: { model.applySelection(.clear) },
                             onAutoScroll: { gridScroll.scrollTo(y: $0) })
-                        LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
-                            ForEach(model.items, id: \.item.id) { detail in
-                                CollectionCell(
-                                    detail: detail,
-                                    url: model.thumbnailURL(for: detail),
-                                    isSelected: model.selection.ids.contains(detail.item.id),
-                                    isCursor: model.selection.lead == detail.item.id,
-                                    isSelecting: model.selection.isSelecting,
-                                    onImagePress: { shift, command in
-                                        handleImagePress(
-                                            detail, shift: shift, command: command, proxy: proxy)
-                                    },
-                                    onImageClick: { shift, command in
-                                        handleImageClick(
-                                            detail, shift: shift, command: command, proxy: proxy)
-                                    },
-                                    onCircleToggle: {
-                                        model.applySelection(.tapCircle(detail.item.id))
-                                    })
-                                .equatable()
-                                .id(detail.item.id)
-                                .draggable(dragPayload(for: detail)) { dragPreview(for: detail) }
-                                .dropDestination(for: AssetDragPayload.self) { payloads, _ in
-                                    handleCellDrop(payloads, onto: detail.asset.id)
-                                }
-                                .contextMenu { cellMenu(for: detail) }
-                            }
-                        }
-                        .padding(.top, Self.gridTopInset)
+                        masonryColumns(layout: layout, proxy: proxy)
+                            .padding(.top, Self.gridTopInset)
                         // The live marquee rectangle, drawn in the same space.
                         MarqueeRectangleLayer(state: marquee)
                     }
@@ -353,6 +375,13 @@ struct CollectionView: View {
                     model.applySelection(.clear)
                     return .handled
                 }
+                // Spacebar Quick Look (011-B3): peek the selection (or the cursor
+                // item when nothing is multi-selected). Independent of the detail
+                // overlay — QL is an ephemeral peek, detail is the work surface.
+                .onKeyPress(.space) {
+                    presentQuickLook()
+                    return .handled
+                }
                 .onKeyPress(keys: ["a"]) { press in
                     guard press.modifiers.contains(.command) else { return .ignored }
                     model.applySelection(.selectAll)
@@ -361,6 +390,23 @@ struct CollectionView: View {
                 .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow]) { press in
                     handleArrow(press, width: geo.size.width, proxy: proxy)
                 }
+                // ⌘+ / ⌘= zoom in (bigger cells, fewer columns); ⌘− zoom out
+                // (011-B2). Accept ⇧ too so ⌘+ works on layouts where "+" needs it.
+                .onKeyPress(keys: ["=", "+", "-"]) { press in
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    if press.key.character == "-" {
+                        gridPrefs.zoomOut(forWidth: geo.size.width)
+                    } else {
+                        gridPrefs.zoomIn(forWidth: geo.size.width)
+                    }
+                    return .handled
+                }
+            }
+            // Capture the width for the toolbar/⌘ density clamp. Guarded to a real
+            // change (not subpixel wobble) so a geometry read inside a ScrollView
+            // can't feed a re-render → re-measure loop.
+            .onChange(of: geo.size.width, initial: true) { _, w in
+                if abs(gridWidth - w) > 0.5 { gridWidth = w }
             }
         }
         .overlay {
@@ -369,6 +415,76 @@ struct CollectionView: View {
                     .foregroundStyle(.tertiary)
             }
         }
+    }
+
+    /// The round-robin masonry body (011-B1 · 3A′): C side-by-side columns, each a
+    /// `VStack` of the items whose feed index falls in that column (`stride` from
+    /// `col` by `C`, so item `i` → column `i % C`). Each cell is sized to the
+    /// shared column width × its aspect height, which MUST match ``MasonryLayout``'s
+    /// analytic frame for the marquee to stay aligned.
+    ///
+    /// The columns are **eager `VStack`s, not `LazyVStack`s** on purpose. A lazy
+    /// stack in the cross-axis of an `HStack` inside a vertical `ScrollView` only
+    /// ESTIMATES its height (it hasn't created its offscreen cells), and the
+    /// `HStack` needs each column's real height for `.top` alignment — so the
+    /// estimate refines, the scrollbar toggles, the width wobbles, and the layout
+    /// never settles (an infinite re-layout, tripped by any content change that
+    /// crosses the scroll threshold, e.g. a move out of the folder). A `VStack`
+    /// derives an EXACT height from the fixed-frame cells, so the layout settles in
+    /// one pass. (Cells still decode their thumbnails lazily/async via
+    /// `AsyncThumbnail` + the shared cache, so this isn't an all-at-once decode.)
+    @ViewBuilder
+    private func masonryColumns(layout: MasonryFrames, proxy: ScrollViewProxy) -> some View {
+        HStack(alignment: .top, spacing: Self.gridSpacing) {
+            ForEach(Array(0..<layout.columns), id: \.self) { col in
+                VStack(spacing: Self.gridSpacing) {
+                    ForEach(columnDetails(col: col, columns: layout.columns), id: \.item.id) { detail in
+                        masonryCell(detail, columnWidth: layout.columnWidth, proxy: proxy)
+                    }
+                }
+                .frame(width: layout.columnWidth)
+            }
+        }
+    }
+
+    /// The items placed in round-robin column `col` (indices `col, col+C, …`), in
+    /// feed order — the render-side mirror of ``MasonryLayout``'s `i % C` membership.
+    private func columnDetails(col: Int, columns: Int) -> [CollectionItemDetail] {
+        guard columns > 0, col < model.items.count else { return [] }
+        return stride(from: col, to: model.items.count, by: columns).map { model.items[$0] }
+    }
+
+    /// One masonry cell: the shared ``CollectionCell`` sized to the column width ×
+    /// its aspect height (`columnWidth / aspect`), matching the analytic frame.
+    private func masonryCell(
+        _ detail: CollectionItemDetail, columnWidth: CGFloat, proxy: ScrollViewProxy
+    ) -> some View {
+        CollectionCell(
+            detail: detail,
+            url: model.thumbnailURL(for: detail),
+            isSelected: model.selection.ids.contains(detail.item.id),
+            isCursor: model.selection.lead == detail.item.id,
+            isSelecting: model.selection.isSelecting,
+            fill: true,
+            gifURL: detail.asset.mimeType == GifMotion.gifMimeType
+                ? model.blobURL(for: detail) : nil,
+            onImagePress: { shift, command in
+                handleImagePress(detail, shift: shift, command: command, proxy: proxy)
+            },
+            onImageClick: { shift, command in
+                handleImageClick(detail, shift: shift, command: command, proxy: proxy)
+            },
+            onCircleToggle: {
+                model.applySelection(.tapCircle(detail.item.id))
+            })
+            .equatable()
+            .frame(width: columnWidth, height: columnWidth / CGFloat(aspect(for: detail)))
+            .id(detail.item.id)
+            .draggable(dragPayload(for: detail)) { dragPreview(for: detail) }
+            .dropDestination(for: AssetDragPayload.self) { payloads, _ in
+                handleCellDrop(payloads, onto: detail.asset.id)
+            }
+            .contextMenu { cellMenu(for: detail) }
     }
 
     /// The batch context menu (009 · N2/N6). Finder scope (7A): a right-click on a
@@ -467,6 +583,26 @@ struct CollectionView: View {
         withAnimation { nav.presentedItemID = detail.item.id }
     }
 
+    /// Toggle the native Quick Look panel (011-B3) over the current preview set:
+    /// the whole selection when selecting, else the keyboard-cursor (`lead`) item.
+    /// Media-less items are skipped by `quickLookPlan`; an all-media-less set is a
+    /// no-op. Flipping starts at the lead item.
+    private func presentQuickLook() {
+        let details: [CollectionItemDetail]
+        if model.selection.isSelecting {
+            details = model.items.filter { model.selection.ids.contains($0.item.id) }
+        } else if let lead = model.leadItem {
+            details = [lead]
+        } else {
+            details = []
+        }
+        let plan = quickLookPlan(
+            for: details, leadID: model.selection.lead,
+            blobURL: { model.blobURL(for: $0) })
+        guard !plan.isEmpty else { return }
+        quickLook.toggle(urls: plan.urls, startIndex: plan.startIndex)
+    }
+
     // MARK: - Selection input routing (009 · N2)
 
     /// The mouse-DOWN edge on a cell's image: apply the down-edge cases (⇧/⌘,
@@ -511,10 +647,7 @@ struct CollectionView: View {
         case .downArrow: key = .down
         default: return .ignored
         }
-        let columns = gridColumnCount(
-            availableWidth: width,
-            minItemWidth: Self.gridItemMinWidth,
-            spacing: Self.gridSpacing)
+        let columns = gridColumns(forWidth: width)
         let effect = model.applySelection(
             .arrow(key, extend: press.modifiers.contains(.shift)), columns: columns)
         execute(effect, proxy: proxy)
