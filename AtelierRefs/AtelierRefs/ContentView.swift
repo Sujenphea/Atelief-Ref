@@ -15,9 +15,26 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var model = IngestionModel()
     @StateObject private var nav = NavModel()
+    // Global grid-view preferences (011-B2 density) — persisted, one muscle memory
+    // across every collection.
+    @StateObject private var gridPrefs = GridViewPreferences()
+    // Shell-level capture-feedback toasts (011-B4), overlaid over every screen.
+    @StateObject private var toasts = ToastCenter()
 
     var body: some View {
-        AppShellView(model: model, nav: nav)
+        AppShellView(model: model, nav: nav, gridPrefs: gridPrefs)
+            // The toast stack floats over the whole shell (bottom-trailing).
+            .overlay { ToastHostView(center: toasts, onJump: handleJump) }
+            // A landed browser-capture batch raises ONE "Saved — Jump" toast,
+            // coalesced per target folder so a burst never spams one-per-item.
+            .onChange(of: model.lastCaptureBatch) { _, batch in
+                guard let batch else { return }
+                toasts.post(
+                    message: "Saved \(batch.importedCount) to \(batch.collectionName)",
+                    action: .jump(JumpTarget(
+                        collectionID: batch.collectionID, assetIDs: batch.assetIDs)),
+                    coalesceKey: "capture-\(batch.collectionID.uuidString)")
+            }
             // The 3-pane split's 960 minimum no longer applies — the new shell is
             // a single navigation column.
             .frame(minWidth: 860, minHeight: 600)
@@ -50,6 +67,16 @@ struct ContentView: View {
                 Text("The image and its files move to the Trash, and it's removed from "
                      + "every collection. You can restore the files from the Trash.")
             }
+    }
+
+    /// Perform a toast's Jump (011-B4): ignore it if the target collection is
+    /// gone (a stale toast — `resolveJump` no-ops), else navigate there and stage
+    /// the post-load selection of the captured items.
+    private func handleJump(_ target: JumpTarget) {
+        let existing = Set(model.folders.map(\.id))
+        guard let resolved = resolveJump(target, existingCollectionIDs: existing) else { return }
+        nav.openCollection(resolved.collectionID)
+        model.requestJumpSelection(assetIDs: resolved.assetIDs, in: resolved.collectionID)
     }
 
     /// Bridges the model's optional ``PendingDeletion`` to the dialog's `Bool`

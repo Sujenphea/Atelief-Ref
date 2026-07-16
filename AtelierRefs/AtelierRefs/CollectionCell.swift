@@ -26,6 +26,13 @@ struct CollectionCell: View, Equatable {
     /// Selection mode is active somewhere in the grid — circles show on ALL cells
     /// so any of them can be toggled, not just the hovered one.
     let isSelecting: Bool
+    /// Fill the ambient (aspect-sized) frame instead of a square (011-B1 masonry).
+    /// The caller wraps the cell in an explicit `.frame(width:height:)`.
+    var fill: Bool = false
+    /// The ORIGINAL blob URL when this cell is a GIF (else nil), so it can animate
+    /// on hover (011-B5). The static thumbnail is a flattened poster; the animation
+    /// plays from the original bytes, dwell-gated + capped + Reduce-Motion aware.
+    var gifURL: URL? = nil
     /// The mouse-DOWN edge on the image, BEFORE `.draggable` can steal the
     /// interaction (009: Finder's press routing). Returns whether the press
     /// consumed it — the cell then swallows the matching mouse-up click.
@@ -37,7 +44,13 @@ struct CollectionCell: View, Equatable {
     /// A click on the circle — always a plain toggle (enters/exits selection).
     let onCircleToggle: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
+    /// True once the hover dwell has elapsed and this cell won the animation slot
+    /// (011-B5); drives the animated-GIF overlay.
+    @State private var animateGif = false
+    /// The pending dwell timer (cancelled on hover-out) before a GIF animates.
+    @State private var gifDwell: Task<Void, Never>?
     /// Set on the down edge when the press already applied the action; the
     /// mouse-up Button action checks-and-ignores, and the release edge resets it
     /// (covering a press whose click was cancelled by a drag).
@@ -71,7 +84,7 @@ struct CollectionCell: View, Equatable {
             guard !flags.contains(.shift), !flags.contains(.command) else { return }
             onImageClick(false, false)
         } label: {
-            AssetContentThumbnail(asset: detail.asset, url: url, isSelected: isSelected)
+            AssetContentThumbnail(asset: detail.asset, url: url, isSelected: isSelected, fill: fill)
         }
         .buttonStyle(PressReportingButtonStyle(
             onPress: {
@@ -92,12 +105,51 @@ struct CollectionCell: View, Equatable {
         // coexist with the drag — this is the ONLY path that applies ⌘/⇧ selection.
         .simultaneousGesture(TapGesture().modifiers(.command).onEnded { onImageClick(false, true) })
         .simultaneousGesture(TapGesture().modifiers(.shift).onEnded { onImageClick(true, false) })
+        // The animated GIF plays OVER the static poster once dwell + slot are won
+        // (011-B5). Hit-transparent so selection/drag still land on the cell.
+        .overlay {
+            if animateGif, let gifURL {
+                AnimatedGifView(url: gifURL)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .allowsHitTesting(false)
+            }
+        }
         .overlay { cursorRing }
         .overlay(alignment: .topTrailing) {
             if showsCircle { circle }
         }
-        .onHover { isHovering = $0 }
+        .onHover { handleHover($0) }
+        .onDisappear {
+            gifDwell?.cancel()
+            GifAnimationCoordinator.shared.release(detail.item.id)
+        }
         .animation(.easeInOut(duration: 0.12), value: showsCircle)
+    }
+
+    /// Hover routing (011-B5): update the circle affordance, and drive the
+    /// dwell-gated, budgeted, single-slot GIF animation. Reduce Motion / non-GIF
+    /// cells short-circuit before any decode is scheduled.
+    private func handleHover(_ hovering: Bool) {
+        isHovering = hovering
+        guard gifURL != nil,
+              hovering,
+              shouldAnimateGif(
+                mimeType: detail.asset.mimeType, reduceMotion: reduceMotion, isHovering: true),
+              gifWithinBudget(fileSize: detail.asset.fileSize) else {
+            gifDwell?.cancel()
+            gifDwell = nil
+            if animateGif { animateGif = false }
+            GifAnimationCoordinator.shared.release(detail.item.id)
+            return
+        }
+        gifDwell?.cancel()
+        gifDwell = Task { @MainActor in
+            try? await Task.sleep(for: GifMotion.hoverDwell)
+            guard !Task.isCancelled else { return }
+            if GifAnimationCoordinator.shared.claim(detail.item.id) {
+                animateGif = true
+            }
+        }
     }
 
     @ViewBuilder

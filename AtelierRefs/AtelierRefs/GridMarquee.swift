@@ -52,13 +52,16 @@ final class GridMarqueeState: ObservableObject {
 /// frame-accurate at any refresh rate.
 struct MarqueeCaptureLayer: View {
     @ObservedObject var state: GridMarqueeState
-    /// Grid geometry for the pure frame math (the virtualization trap: offscreen
-    /// cells aren't laid out, so live frames can't drive hit-testing).
-    let width: CGFloat
+    /// The item ids in feed order — hit indices map back through this.
     let itemIDs: [UUID]
-    let minItemWidth: CGFloat
-    let spacing: CGFloat
-    let topInset: CGFloat
+    /// The masonry layout's frames (011-B1), index-aligned to `itemIDs`, computed
+    /// (and memoized) by the parent. The virtualization trap: offscreen cells
+    /// aren't laid out, so these COMPUTED frames — not live cell frames — drive
+    /// hit-testing.
+    let frames: [CGRect]
+    /// The round-robin column count `C` the frames were laid out for (item
+    /// `i` → column `i % C`); band-narrows the hit-test.
+    let columns: Int
     let spaceName: String
     /// The selection as of the last parent render — the ⇧-additive base source.
     let selectionIDs: Set<UUID>
@@ -186,21 +189,17 @@ struct MarqueeCaptureLayer: View {
         return minSpeed + t * (maxSpeed - minSpeed)
     }
 
-    /// Recompute the hit set from the current box and hand it up. Frames come
-    /// from pure math — today's uniform-grid source, swapped for 011-U2's
-    /// `JustifiedLayout` frames when justified rows land.
+    /// Recompute the hit set from the current box and hand it up. Frames are the
+    /// parent's memoized `MasonryLayout` output (011-B1); the band-narrowed
+    /// `masonryMarqueeIndices` is O(cols + hits), not the O(N) frame-array scan.
     private func updateHits() {
         guard let start = state.start, let current = state.current else { return }
-        let columns = gridColumnCount(
-            availableWidth: width, minItemWidth: minItemWidth, spacing: spacing)
-        let side = uniformCellSide(availableWidth: width, columns: columns, spacing: spacing)
         let rect = marqueeRect(from: start, to: current)
-        // Analytic uniform-grid hit path: O(hits), not the O(N) frame-array scan.
-        let hits = uniformMarqueeIndices(
-            in: rect, count: itemIDs.count, columns: columns,
-            cellSize: CGSize(width: side, height: side),
-            spacing: spacing, topInset: topInset)
-        onMarquee(Set(hits.map { itemIDs[$0] }), state.base)
+        let hits = masonryMarqueeIndices(in: rect, frames: frames, columns: columns)
+        // A stale-frame guard: during a resize the parent's frames can lag the
+        // itemIDs by one render — never index past the shorter of the two.
+        let count = min(itemIDs.count, frames.count)
+        onMarquee(Set(hits.compactMap { $0 < count ? itemIDs[$0] : nil }), state.base)
     }
 }
 

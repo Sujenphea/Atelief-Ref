@@ -17,6 +17,7 @@ import SwiftUI
 struct AppShellView: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
+    @ObservedObject var gridPrefs: GridViewPreferences
 
     @State private var showCaptureInfo = false
     @State private var showSweeps = false
@@ -56,7 +57,7 @@ struct AppShellView: View {
     private func destination(for route: AppRoute) -> some View {
         switch route {
         case .collection(let id):
-            CollectionView(model: model, nav: nav, collectionID: id)
+            CollectionView(model: model, nav: nav, gridPrefs: gridPrefs, collectionID: id)
         case .spaces:
             SpacesListView(model: model, nav: nav)
         case .space(let id):
