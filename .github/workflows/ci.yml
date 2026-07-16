@@ -1,0 +1,69 @@
+name: CI
+
+# 010 · Phase 1 — compile + test gate on every push / PR. Runs the four Swift
+# package suites, the extension's node tests + drift check, and an xcodebuild
+# build-and-test of the app target (the SwiftUI layer isn't SPM-tested, so the
+# build is its compile-proof and AtelierRefsTests carries its unit coverage).
+#
+# Toolchain: the app targets macOS 26 / Xcode 26 (deployment target 26.5), so the
+# app job needs a runner with that SDK. Swift packages + the extension build on any
+# recent macOS runner. If GitHub-hosted images don't yet ship Xcode 26, point the
+# `app` job at a self-hosted macOS 26 runner (change `runs-on`).
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift-packages:
+    name: Swift packages (swift test)
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [AtelierCore, AtelierIngestion, AtelierServer, CanvasRenderer]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: swift --version
+      - name: Test ${{ matrix.package }}
+        working-directory: ${{ matrix.package }}
+        run: swift test --parallel
+
+  extension:
+    name: Extension (node --test + drift check)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Unit tests
+        working-directory: extension
+        run: node --test
+      - name: Drift check
+        working-directory: extension
+        run: npm run drift-check
+
+  app:
+    name: App (xcodebuild build + AtelierRefsTests)
+    # Needs the macOS 26 / Xcode 26 SDK (deployment target 26.5). Swap to a
+    # self-hosted macOS 26 runner if GitHub-hosted images don't provide it yet.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Xcode
+        run: xcodebuild -version
+      - name: Build + unit test (UI tests excluded)
+        run: |
+          xcodebuild test \
+            -project AtelierRefs/AtelierRefs.xcodeproj \
+            -scheme AtelierRefs \
+            -destination 'platform=macOS' \
+            -only-testing:AtelierRefsTests \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO

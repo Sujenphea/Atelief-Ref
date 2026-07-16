@@ -16,6 +16,13 @@ struct AtelierRefsApp: App {
         // 004-P1 — a menu Back command (⌘[) that pops the current NavModel,
         // reaching it through the focused-scene value the shell publishes.
         .commands {
+            // Standard Edit-menu undo/redo (010 · Phase 1), wired to the shared
+            // model's app-level UndoManager via the focused scene value — the
+            // default group targets the responder chain, which never sees our
+            // model-owned manager, so we replace it.
+            CommandGroup(replacing: .undoRedo) {
+                UndoRedoCommands()
+            }
             CommandGroup(after: .sidebar) {
                 BackCommand()
             }
@@ -23,6 +30,33 @@ struct AtelierRefsApp: App {
                 SnapshotCommands()
             }
         }
+    }
+}
+
+/// Edit-menu Undo / Redo (⌘Z · ⇧⌘Z), reaching the shared model through the
+/// focused scene value. Titles reflect the pending action ("Undo Rename"); the
+/// items disable when the stack is empty. `undoToken` is observed so the enabled
+/// state refreshes as actions register / fire.
+private struct UndoRedoCommands: View {
+    @FocusedValue(\.ingestionModel) private var model
+
+    var body: some View {
+        Button(undoTitle) { model?.undo() }
+            .keyboardShortcut("z", modifiers: .command)
+            .disabled(!(model?.canUndo ?? false))
+        Button(redoTitle) { model?.redo() }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .disabled(!(model?.canRedo ?? false))
+    }
+
+    private var undoTitle: String {
+        let name = model?.undoActionName ?? ""
+        return name.isEmpty ? "Undo" : "Undo \(name)"
+    }
+
+    private var redoTitle: String {
+        let name = model?.redoActionName ?? ""
+        return name.isEmpty ? "Redo" : "Redo \(name)"
     }
 }
 

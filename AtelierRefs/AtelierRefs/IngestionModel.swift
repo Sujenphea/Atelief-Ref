@@ -302,7 +302,20 @@ final class IngestionModel: ObservableObject {
     }
 
     init() {
+        undoManager.groupsByEvent = false
         Task { await bootstrap() }
+    }
+
+    /// Test-only: inject an already-open library (no capture endpoint / snapshot
+    /// orchestration) so the destructive verbs + their undo can be driven
+    /// deterministically — mirrors ``SpaceModel``'s injectable init. Callers load
+    /// the tree with ``refreshFolders()``.
+    init(services: AppServices, store: MediaStore) {
+        undoManager.groupsByEvent = false
+        self.services = services
+        self.store = store
+        self.selectedFolderID = services.unsortedFolderID
+        self.isReady = true
     }
 
     // MARK: - Bootstrap
@@ -568,6 +581,178 @@ final class IngestionModel: ObservableObject {
         }
     }
 
+    // MARK: - App-level undo/redo (010 · Phase 1)
+
+    /// Library-wide undo/redo for the reversible destructive verbs — rename,
+    /// move (folder + assets), reorder, remove-from-collection. Mirrors
+    /// ``SpaceModel``'s proven design: every undoable write funnels through
+    /// ``enqueueUndoable(_:)`` so an undo can't reorder ahead of an in-flight
+    /// write, and inverses are id-based (never index-based) so they stay correct
+    /// as remote captures interleave.
+    ///
+    /// Asset DELETE is deliberately NOT undoable in v1: reversing the cascading
+    /// `deleteAssets` (sources, memberships, tag links, covers, job ledger, +
+    /// trashed blobs) needs a core "undelete" primitive; until then the
+    /// pre-destructive snapshot (008 H3) is its safety net (033-plan open-Q1).
+    let undoManager = UndoManager()
+
+    /// Bumped on every register / undo / redo so the Edit menu's enabled state +
+    /// action names refresh (UndoManager isn't `ObservableObject`).
+    @Published private(set) var undoToken = 0
+
+    /// Serial write chain: each undoable op awaits the previous, so DB writes stay
+    /// strictly ordered even as undo/redo interleave with live edits.
+    private var undoWriteChain: Task<Void, Never> = Task {}
+
+    /// Await the tail of the undoable write chain — for tests to observe a settled
+    /// (committed) state after an edit / undo / redo.
+    func waitForWrites() async { await undoWriteChain.value }
+
+    /// Append `work` to the serial undoable write chain (FIFO, strictly ordered).
+    private func enqueueUndoable(_ work: @escaping () async -> Void) {
+        let previous = undoWriteChain
+        undoWriteChain = Task { @MainActor in
+            await previous.value
+            await work()
+        }
+    }
+
+    /// Register an already-performed action as its own closed undo group:
+    /// `inverse` runs on undo, `primary` re-runs on redo, ping-ponging. Neither
+    /// runs now.
+    private func registerReversible(_ name: String,
+                                    primary: @escaping () -> Void,
+                                    inverse: @escaping () -> Void) {
+        undoManager.beginUndoGrouping()
+        undoManager.setActionName(name)
+        installUndo(name, primary: primary, inverse: inverse)
+        undoManager.endUndoGrouping()
+        undoToken &+= 1
+    }
+
+    /// The recursive ping-pong (see ``SpaceModel``): run `inverse`, then re-install
+    /// the mirror so redo re-runs `primary`. During undo/redo `UndoManager`
+    /// supplies the enclosing group, so this must NOT open its own.
+    private func installUndo(_ name: String,
+                             primary: @escaping () -> Void,
+                             inverse: @escaping () -> Void) {
+        undoManager.registerUndo(withTarget: self) { model in
+            inverse()
+            model.installUndo(name, primary: inverse, inverse: primary)
+            model.undoManager.setActionName(name)
+        }
+    }
+
+    var canUndo: Bool { undoManager.canUndo }
+    var canRedo: Bool { undoManager.canRedo }
+    var undoActionName: String { undoManager.undoActionName }
+    var redoActionName: String { undoManager.redoActionName }
+
+    func undo() { undoManager.undo(); undoToken &+= 1 }
+    func redo() { undoManager.redo(); undoToken &+= 1 }
+
+    #if DEBUG
+    /// Test-only: seed the visible `items` so a verb that captures the live order
+    /// (reorder / remove / move) reads a known state without racing the async
+    /// `loadContents` reload.
+    func setItemsForTesting(_ items: [CollectionItemDetail]) {
+        self.items = items
+    }
+    #endif
+
+    // MARK: - Undoable write workers (shared by verbs + their inverses)
+
+    /// Rename a folder, then refresh. No undo re-registration (the ping-pong
+    /// installs the mirror).
+    private func applyRename(id: UUID, to name: String) async {
+        guard let services else { return }
+        do {
+            _ = try await services.renameCollection(id: id, to: name)
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Reparent a folder, then refresh.
+    private func applyMoveFolder(id: UUID, toParent parent: UUID?) async {
+        guard let services else { return }
+        do {
+            try await services.moveCollection(id: id, toParent: parent)
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Set `folder`'s grid order to `desired`, filtered to current members so a
+    /// concurrently-deleted asset can't throw `.notFound`.
+    private func applyOrder(folder: UUID, desired: [UUID]) async {
+        guard let services, !desired.isEmpty else { return }
+        do {
+            let members = Set(try await services.collectionItems(in: folder).map { $0.asset.id })
+            let filtered = desired.filter(members.contains)
+            guard !filtered.isEmpty else { return }
+            try await services.setGridOrder(collectionID: folder, orderedAssetIDs: filtered)
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Persist a reorder, then focus + reload the folder (reorder verb + inverse).
+    private func applyReorder(folder: UUID, order: [UUID]) async {
+        await applyOrder(folder: folder, desired: order)
+        selectedFolderID = folder
+        loadContents(of: folder)
+    }
+
+    /// Drop memberships from `folder`, refresh, optionally publish `message`.
+    private func applyRemove(assetIDs: [UUID], from folder: UUID, message: String?) async {
+        guard let services else { return }
+        do {
+            try await services.removeAssets(assetIDs, from: folder)
+            await refreshFolders()
+            selectedFolderID = folder
+            loadContents(of: folder)
+            if let message { status = message }
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Re-add memberships to `folder` and restore their prior order — the inverse
+    /// of ``applyRemove``.
+    private func applyRestoreMemberships(assetIDs: [UUID], to folder: UUID, order: [UUID]) async {
+        guard let services else { return }
+        do {
+            try await services.addAssets(assetIDs, to: folder)
+            await applyOrder(folder: folder, desired: order)
+            await refreshFolders()
+            selectedFolderID = folder
+            loadContents(of: folder)
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Move memberships `source → target`, then focus + reload the source (move
+    /// verb + redo).
+    private func applyMoveAssets(_ assetIDs: [UUID], from source: UUID, to target: UUID, message: String?) async {
+        guard let services else { return }
+        do {
+            try await services.moveAssets(assetIDs, from: source, to: target)
+            await refreshFolders()
+            selectedFolderID = source
+            loadContents(of: source)
+            if let message { status = message }
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Move memberships back `target → source` and restore the source order — the
+    /// inverse of ``applyMoveAssets``.
+    private func applyMoveBack(_ assetIDs: [UUID], from target: UUID, to source: UUID, order: [UUID]) async {
+        guard let services else { return }
+        do {
+            try await services.moveAssets(assetIDs, from: target, to: source)
+            await applyOrder(folder: source, desired: order)
+            await refreshFolders()
+            selectedFolderID = source
+            loadContents(of: source)
+        } catch { lastError = Self.message(for: error) }
+    }
+
     // MARK: - Folder actions
 
     /// Reload the flat folder list (drives ``folderTree``).
@@ -585,10 +770,16 @@ final class IngestionModel: ObservableObject {
         perform { services in _ = try await services.createCollection(name: name, parent: parent) }
     }
 
-    /// Rename a folder. Rejected for Unsorted (`.protectedCollection`).
+    /// Rename a folder. Rejected for Unsorted (`.protectedCollection`). Undoable.
     func renameFolder(id: UUID, to name: String) {
-        guard id != unsortedFolderID else { return }
-        perform { services in _ = try await services.renameCollection(id: id, to: name) }
+        guard id != unsortedFolderID, services != nil else { return }
+        let oldName = folders.first { $0.id == id }?.name
+        enqueueUndoable { await self.applyRename(id: id, to: name) }
+        if let oldName, oldName != name {
+            registerReversible("Rename",
+                primary: { self.enqueueUndoable { await self.applyRename(id: id, to: name) } },
+                inverse: { self.enqueueUndoable { await self.applyRename(id: id, to: oldName) } })
+        }
     }
 
     /// Delete a folder and its whole subtree. Rejected for Unsorted.
@@ -599,10 +790,16 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Reparent a folder (`nil` ⇒ top level). Rejects cycles / Unsorted.
+    /// Reparent a folder (`nil` ⇒ top level). Rejects cycles / Unsorted. Undoable.
     func moveFolder(id: UUID, toParent parent: UUID?) {
-        guard id != unsortedFolderID else { return }
-        perform { services in try await services.moveCollection(id: id, toParent: parent) }
+        guard id != unsortedFolderID, services != nil else { return }
+        let oldParent = folders.first { $0.id == id }?.parentCollectionID
+        enqueueUndoable { await self.applyMoveFolder(id: id, toParent: parent) }
+        if oldParent != parent {
+            registerReversible("Move Folder",
+                primary: { self.enqueueUndoable { await self.applyMoveFolder(id: id, toParent: parent) } },
+                inverse: { self.enqueueUndoable { await self.applyMoveFolder(id: id, toParent: oldParent) } })
+        }
     }
 
     /// Run a folder mutation, refresh the tree, and (optionally, when the
@@ -764,7 +961,7 @@ final class IngestionModel: ObservableObject {
     /// of the dragged items, no dragged id is a current item (foreign drop), or
     /// the folder isn't in `.manual` mode (reordering has no meaning there).
     func reorderItems(movingAssetIDs: [UUID], toIndexOf targetAssetID: UUID) {
-        guard let services, sortMode(for: selectedFolderID) == .manual else { return }
+        guard sortMode(for: selectedFolderID) == .manual, services != nil else { return }
         let currentIDs = items.map { $0.asset.id }
         guard let newOrder = reorderedIDs(
             ids: currentIDs, movingIDs: movingAssetIDs, toIndexOf: targetAssetID)
@@ -777,17 +974,13 @@ final class IngestionModel: ObservableObject {
         items = newOrder.compactMap { byAssetID[$0] }
         contentsVersion &+= 1
 
+        // Undoable: the inverse restores the exact prior order (id-based). The
+        // write is serialized + reloads to the persisted truth either way.
         let folder = selectedFolderID
-        Task {
-            do {
-                try await services.setGridOrder(
-                    collectionID: folder, orderedAssetIDs: newOrder)
-            } catch {
-                lastError = Self.message(for: error)
-            }
-            // Reload to the persisted truth either way (core sorts by manual_order).
-            loadContents(of: folder)
-        }
+        enqueueUndoable { await self.applyReorder(folder: folder, order: newOrder) }
+        registerReversible("Reorder",
+            primary: { self.enqueueUndoable { await self.applyReorder(folder: folder, order: newOrder) } },
+            inverse: { self.enqueueUndoable { await self.applyReorder(folder: folder, order: currentIDs) } })
     }
 
     // MARK: - Selection + inspector
@@ -977,12 +1170,15 @@ final class IngestionModel: ObservableObject {
     /// its bytes, and its memberships elsewhere are untouched. Non-destructive and
     /// reversible, so it runs immediately without confirmation.
     func removeFromFolder(assetIDs: [UUID]) {
-        guard !assetIDs.isEmpty else { return }
+        guard !assetIDs.isEmpty, services != nil else { return }
         let folder = selectedFolderID
-        mutateContents { services in
-            try await services.removeAssets(assetIDs, from: folder)
-            return "Removed \(Self.itemCount(assetIDs.count)) from “\(self.name(for: folder))”."
-        }
+        // Capture the folder's order so undo restores the removed items' positions.
+        let priorOrder = items.map { $0.asset.id }
+        let message = "Removed \(Self.itemCount(assetIDs.count)) from “\(name(for: folder))”."
+        enqueueUndoable { await self.applyRemove(assetIDs: assetIDs, from: folder, message: message) }
+        registerReversible("Remove",
+            primary: { self.enqueueUndoable { await self.applyRemove(assetIDs: assetIDs, from: folder, message: nil) } },
+            inverse: { self.enqueueUndoable { await self.applyRestoreMemberships(assetIDs: assetIDs, to: folder, order: priorOrder) } })
     }
 
     /// MOVE assets out of the current folder into `targetID` — the atomic triage
@@ -990,12 +1186,16 @@ final class IngestionModel: ObservableObject {
     /// reload prunes them from the selection. A `from == to` / empty set is a
     /// no-op in core.
     func moveToCollection(assetIDs: [UUID], to targetID: UUID) {
-        guard !assetIDs.isEmpty else { return }
-        let folder = selectedFolderID
-        mutateContents { services in
-            try await services.moveAssets(assetIDs, from: folder, to: targetID)
-            return "Moved \(Self.itemCount(assetIDs.count)) to “\(self.name(for: targetID))”."
-        }
+        guard !assetIDs.isEmpty, services != nil else { return }
+        let source = selectedFolderID
+        guard source != targetID else { return }
+        // Capture the source order so undo restores the moved items' positions.
+        let priorOrder = items.map { $0.asset.id }
+        let message = "Moved \(Self.itemCount(assetIDs.count)) to “\(name(for: targetID))”."
+        enqueueUndoable { await self.applyMoveAssets(assetIDs, from: source, to: targetID, message: message) }
+        registerReversible("Move",
+            primary: { self.enqueueUndoable { await self.applyMoveAssets(assetIDs, from: source, to: targetID, message: nil) } },
+            inverse: { self.enqueueUndoable { await self.applyMoveBack(assetIDs, from: targetID, to: source, order: priorOrder) } })
     }
 
     /// COPY assets into `targetID` WITHOUT removing them here (009 · ⌥-drag / Add
