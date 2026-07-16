@@ -5,13 +5,18 @@
 //  Created by Sujen Phea on 30/06/2026.
 //
 
+import AtelierCore
 import SwiftUI
 
 @main
 struct AtelierRefsApp: App {
+    // The single shared model, lifted to App level (010 · Phase 2) so BOTH the
+    // main window and the Settings scene (⌘,) drive the same Library instance.
+    @StateObject private var model = IngestionModel()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(model: model)
         }
         // 004-P1 — a menu Back command (⌘[) that pops the current NavModel,
         // reaching it through the focused-scene value the shell publishes.
@@ -23,12 +28,47 @@ struct AtelierRefsApp: App {
             CommandGroup(replacing: .undoRedo) {
                 UndoRedoCommands()
             }
+            // View ▸ Sort (010 · Phase 2) — sort modes (007) act on the current
+            // collection through the focused model.
+            CommandGroup(after: .toolbar) {
+                SortCommands()
+            }
             CommandGroup(after: .sidebar) {
                 BackCommand()
             }
             CommandGroup(after: .saveItem) {
                 SnapshotCommands()
             }
+        }
+
+        // The standard macOS Settings window (010 · Phase 2 · group 4): capture
+        // token, library location, setup-guide replay.
+        Settings {
+            SettingsView(model: model)
+        }
+    }
+}
+
+/// View ▸ Sort commands — set the current collection's sort mode (007) via the
+/// focused model. A checkmark marks the active mode.
+private struct SortCommands: View {
+    @FocusedValue(\.ingestionModel) private var model
+
+    var body: some View {
+        Menu("Sort By") {
+            sortButton("Manual", .manual)
+            sortButton("Newest", .newest)
+            sortButton("Most Viewed", .mostViewed)
+        }
+        .disabled(model == nil)
+    }
+
+    private func sortButton(_ title: String, _ mode: SortMode) -> some View {
+        Button {
+            if let model { model.setSortMode(mode, for: model.selectedFolderID) }
+        } label: {
+            let active = model.map { $0.sortMode(for: $0.selectedFolderID) == mode } ?? false
+            Label(title, systemImage: active ? "checkmark" : "")
         }
     }
 }

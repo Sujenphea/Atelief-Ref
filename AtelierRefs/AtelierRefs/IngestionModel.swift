@@ -146,6 +146,9 @@ final class IngestionModel: ObservableObject {
     @Published private(set) var captureToken: String = ""
     /// The loopback port the capture endpoint listens on.
     let capturePort = CaptureServer.defaultPort
+    /// The on-disk Library root (set once the Library opens) — surfaced in the
+    /// Settings scene (010 · Phase 2) so the user can locate/back up their data.
+    @Published private(set) var libraryRoot: URL?
     /// Whether the capture endpoint bound successfully (false if the port was in
     /// use). Drives a hint in the UI.
     @Published private(set) var captureEndpointRunning = false
@@ -326,6 +329,7 @@ final class IngestionModel: ObservableObject {
     private func bootstrap() async {
         do {
             let root = try LibraryLocation.defaultRoot()
+            self.libraryRoot = root
             let layout = LibraryLayout(root: root)
             let store = MediaStore(layout: layout)
             let dbURL = layout.root.appendingPathComponent("library.sqlite")
@@ -478,6 +482,28 @@ final class IngestionModel: ObservableObject {
         guard !captureToken.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(captureToken, forType: .string)
+    }
+
+    /// Regenerate the capture token (010 · Phase 2 Settings): stop the endpoint,
+    /// persist a fresh secret, and restart it bound to the new token — so the
+    /// change takes effect immediately (the user then re-pairs the extension).
+    /// The old token stops working the moment the server restarts.
+    func regenerateCaptureToken() {
+        guard let coordinator, let services else { return }
+        Task {
+            await captureServer?.stop()
+            _ = CaptureTokenStore.save(CaptureToken.generate())
+            // `startCaptureEndpoint` reloads the persisted token, republishes
+            // `captureToken`, and rebinds the server auth.
+            await startCaptureEndpoint(coordinator: coordinator, services: services)
+            status = "Capture token regenerated — re-pair the extension."
+        }
+    }
+
+    /// Reveal the Library root in Finder (Settings "Show in Finder").
+    func revealLibraryInFinder() {
+        guard let libraryRoot else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([libraryRoot])
     }
 
     // MARK: - Bulk import (sweeps) — 015 · Phase 7
