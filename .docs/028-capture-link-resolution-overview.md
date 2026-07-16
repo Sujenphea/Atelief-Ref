@@ -2,8 +2,8 @@
 
 > Covers the "Save designs from" group: **add from link** (the real gap), and records
 > **drag & drop** and **right-click from Chrome** as already built (with gap notes).
-> Companion: [002](./002-capture-instagram-bulk.md) (bookmarks bulk),
-> [003](./003-multi-kind-items.md) (tweet/link kinds this feature later feeds).
+> Companion: [002](./029-capture-instagram-bulk-overview.md) (bookmarks bulk),
+> [003](./030-multi-kind-items-overview.md) (tweet/link kinds this feature later feeds).
 
 ## Traceability
 
@@ -78,7 +78,7 @@ extension" instead of saving a garbage share-card.
 URL as `original_url` — so re-resolving the same page dedups correctly through
 `findDuplicate` (`AppServices.swift:917–919`).
 
-Once [003](./003-multi-kind-items.md) lands, a tweet/link page URL should produce a
+Once [003](./030-multi-kind-items-overview.md) lands, a tweet/link page URL should produce a
 tweet/link **item** instead of a flattened image; O3's host detection becomes the
 dispatcher into those kinds. No migration needed here either way.
 

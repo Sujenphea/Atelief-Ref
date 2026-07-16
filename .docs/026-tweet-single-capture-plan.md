@@ -1,6 +1,6 @@
 # 026 — Single-capture tweet follow-ons: multi-image `media[]` + text-only (plan)
 
-> The two remaining 003 · C3 tail items (see `003-multi-kind-items.md:180-181`):
+> The two remaining 003 · C3 tail items (see `030-multi-kind-items-overview.md:180-181`):
 > **①** a single X capture of a multi-photo tweet carries ALL its photos in
 > `payload.media[]` (not just the card), and **②** a text-only tweet can be
 > single-captured (today it dies at the `no-image` guard). Bulk already does both;

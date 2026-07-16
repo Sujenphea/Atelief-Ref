@@ -88,7 +88,7 @@ Cross-screen drag is deferred (can't see both screens in a push-nav shell).
 ## Schema / migration impact
 
 New append-only migration (next free slot — see the sequencing note in
-[003](./003-multi-kind-items.md)): `space` + `space_item` tables + indices; new domain
+[003](./030-multi-kind-items-overview.md)): `space` + `space_item` tables + indices; new domain
 types `Space`, `SpaceItem`, `SpaceItemKind`, `ElementStyle` (Codable/Sendable) + GRDB
 records mirroring `CollectionItem+GRDB.swift`; identifier appended to
 `Migrator.registeredIdentifiers` + the pinned test.

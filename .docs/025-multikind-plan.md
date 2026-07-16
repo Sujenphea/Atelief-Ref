@@ -1,7 +1,7 @@
 # 025 — Multi-Kind Items · Plan (003 · C0 + C1 + C2a + C3 shipped)
 
 Implementation record for feature 003 (multi-kind items). The roadmap +
-option analysis lives in `.docs/feature-todo/003-multi-kind-items.md` (still
+option analysis lives in `.docs/030-multi-kind-items-overview.md` (still
 live — C2b resolver + C3 extension wiring remain); this captures the kickoff
 decisions and what shipped in C0 (core seam) → C1 (color) → C2a (link) → C3
 (tweet).

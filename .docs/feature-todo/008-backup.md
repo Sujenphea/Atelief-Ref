@@ -131,7 +131,7 @@ lives in app storage, not the library.
 7. **H7 (M):** importer + round-trip harness.
 
 Do H1–H3 **early in the roadmap** — pre-migration snapshots protect the risky
-[003](./003-multi-kind-items.md) rebuild and every other migration.
+[003](../030-multi-kind-items-overview.md) rebuild and every other migration.
 
 ## Test strategy
 
