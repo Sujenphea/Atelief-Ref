@@ -1211,7 +1211,11 @@ final class IngestionModel: ObservableObject {
 
     /// Run a batch of inputs through the coordinator OFF-MAIN, then reload the
     /// selected folder's contents + the tree. A no-op if not ready / empty.
-    func run(inputs: [IngestInput]) {
+    ///
+    /// `undecoded` (drag path) is the count of dropped items that couldn't be read
+    /// at all — folded into the completion status so a partial drop reports "N
+    /// imported, M couldn't be read" rather than dropping them silently (7A).
+    func run(inputs: [IngestInput], undecoded: Int = 0) {
         guard isReady, let coordinator, !inputs.isEmpty else { return }
         let total = inputs.count
         progress = Progress(completed: 0, total: total)
@@ -1235,13 +1239,24 @@ final class IngestionModel: ObservableObject {
             }
 
             progress = nil
-            status = failures == 0
-                ? "Imported \(imported)."
-                : "Imported \(imported), \(failures) failed."
+            status = Self.importStatus(
+                imported: imported, failures: failures, undecoded: undecoded)
 
             await refreshFolders()
             loadContents(of: selectedFolderID)
         }
+    }
+
+    /// Compose the completion status for an import batch: always the imported
+    /// count, plus a failed clause (bytes that errored in the pipeline) and/or an
+    /// unreadable clause (dropped items that couldn't be decoded at all — 7A).
+    nonisolated static func importStatus(imported: Int, failures: Int, undecoded: Int) -> String {
+        var clauses: [String] = []
+        if failures > 0 { clauses.append("\(failures) failed") }
+        if undecoded > 0 { clauses.append("\(undecoded) couldn't be read") }
+        return clauses.isEmpty
+            ? "Imported \(imported)."
+            : "Imported \(imported), \(clauses.joined(separator: ", "))."
     }
 
     /// Download a BARE image URL (a drag/paste that carried a URL but no bytes —

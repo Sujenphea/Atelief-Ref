@@ -304,7 +304,8 @@ public final class AppServices: Sendable {
             if !alreadyMember {
                 let item = CollectionItem(
                     id: UUID(), collectionID: collectionID, assetID: resolvedAsset.id,
-                    addedAt: Date(), manualOrder: nil,
+                    addedAt: Date(),
+                    manualOrder: try Self.nextManualOrder(db, collectionID: collectionID),
                     canvasX: placement?.x, canvasY: placement?.y,
                     canvasW: placement?.w, canvasH: placement?.h, canvasZ: placement?.z)
                 try item.insert(db)
@@ -427,7 +428,8 @@ public final class AppServices: Sendable {
             if !alreadyMember {
                 let item = CollectionItem(
                     id: UUID(), collectionID: collectionID, assetID: resolvedAsset.id,
-                    addedAt: Date(), manualOrder: nil,
+                    addedAt: Date(),
+                    manualOrder: try Self.nextManualOrder(db, collectionID: collectionID),
                     canvasX: placement?.x, canvasY: placement?.y,
                     canvasW: placement?.w, canvasH: placement?.h, canvasZ: placement?.z)
                 try item.insert(db)
@@ -458,6 +460,24 @@ public final class AppServices: Sendable {
             item.canvasZ = z
             try item.update(db)
         }
+    }
+
+    /// The next append slot for a collection's manual order: one past the current
+    /// max, or 0 when the collection has no ordered items yet. Assigned to a new
+    /// membership at insert so a fresh import/add lands at the END of the manual
+    /// grid, in insertion order — instead of at a random position (a NULL
+    /// `manual_order` sorts first and ties break on the membership's random UUID).
+    /// SQLite makes uncommitted inserts visible within the same transaction, so a
+    /// batch that calls this per item still increments correctly.
+    static func nextManualOrder(_ db: Database, collectionID: UUID) throws -> Int {
+        let maxOrder = try Int.fetchOne(
+            db,
+            sql: """
+                SELECT COALESCE(MAX(manual_order), -1) FROM collection_item
+                WHERE collection_id = ?
+                """,
+            arguments: [Self.key(collectionID)]) ?? -1
+        return maxOrder + 1
     }
 
     /// Assign `manualOrder` 0,1,2,… to the listed memberships, IN ONE
@@ -519,6 +539,10 @@ public final class AppServices: Sendable {
                 throw AtelierError.notFound(entity: "collection", id: collectionID)
             }
             let now = Date()
+            // Append the batch after any existing items, in the given order — each
+            // newly-inserted membership takes the next manual slot (skipped assets
+            // that are already members don't consume one).
+            var order = try Self.nextManualOrder(db, collectionID: collectionID)
             for assetID in assetIDs {
                 guard try Asset.exists(db, key: Self.key(assetID)) else {
                     throw AtelierError.notFound(entity: "asset", id: assetID)
@@ -528,8 +552,9 @@ public final class AppServices: Sendable {
                 if !isMember {
                     let item = CollectionItem(
                         id: UUID(), collectionID: collectionID,
-                        assetID: assetID, addedAt: now)
+                        assetID: assetID, addedAt: now, manualOrder: order)
                     try item.insert(db)
+                    order += 1
                 }
             }
         }
