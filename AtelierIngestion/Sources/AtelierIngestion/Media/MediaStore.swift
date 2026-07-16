@@ -154,6 +154,29 @@ public struct MediaStore: Sendable {
         try Data(contentsOf: blobURL(hash: hash, fileExtension: fileExtension))
     }
 
+    /// Every stored blob as `(hash, fileExtension)`, by walking
+    /// `blobs/ab/cd/<hash>.<ext>` (010 · delete-undo launch GC). The hash is the
+    /// filename stem (everything before the extension); directories and any file
+    /// without a stem are skipped. Pure filesystem read — creates nothing.
+    public func enumerateBlobFiles() -> [(hash: String, fileExtension: String)] {
+        let fm = FileManager.default
+        guard let walker = fm.enumerator(
+            at: layout.blobs, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]) else { return [] }
+        var result: [(hash: String, fileExtension: String)] = []
+        for case let url as URL in walker {
+            let isRegular = (try? url.resourceValues(
+                forKeys: [.isRegularFileKey]).isRegularFile) ?? false
+            guard isRegular else { continue }
+            let ext = url.pathExtension
+            let name = url.lastPathComponent
+            let hash = ext.isEmpty ? name : String(name.dropLast(ext.count + 1))
+            guard !hash.isEmpty else { continue }
+            result.append((hash: hash, fileExtension: ext))
+        }
+        return result
+    }
+
     // MARK: - Thumbnails
 
     /// The deterministic content-addressed path for a thumbnail tier:

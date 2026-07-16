@@ -53,6 +53,31 @@ public struct MediaReaper: Sendable {
         return trashed
     }
 
+    /// Reap every stored blob whose hash is NOT in `referenced` — the launch
+    /// orphan-GC (010 · delete-undo). Because a recoverable delete DEFERS reaping
+    /// (so an in-session undo finds the bytes), a delete that was never undone
+    /// leaves orphans; at launch the undo history is empty, so any on-disk blob no
+    /// asset references is genuinely unreachable and safe to reclaim. Diffs the
+    /// on-disk set against `referenced` and Trashes each orphan's blob + every
+    /// thumbnail tier. Best-effort per file. Returns the Trash locations of every
+    /// file moved (like ``reap(blobHash:mimeType:)``) — for logging / test cleanup.
+    @discardableResult
+    public func reapOrphanedBlobs(referenced: Set<String>) -> [URL] {
+        var trashed: [URL] = []
+        for (hash, ext) in store.enumerateBlobFiles() where !referenced.contains(hash) {
+            if let url = try? store.removeBlob(hash: hash, fileExtension: ext) {
+                trashed.append(url)
+            }
+            for tier in ThumbnailTier.allCases {
+                if let url = try? store.removeThumbnail(
+                    hash: hash, size: tier.rawValue, fileExtension: Self.thumbnailExtension) {
+                    trashed.append(url)
+                }
+            }
+        }
+        return trashed
+    }
+
     /// The extension every thumbnail tier is stored under (JPEG), mirroring
     /// `IngestPipeline`'s write side. Kept here so the reaper stays the single
     /// home of the delete-side layout.

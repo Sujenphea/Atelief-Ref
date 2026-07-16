@@ -647,58 +647,186 @@ public final class AppServices: Sendable {
     /// `asset_tag` join cascades), matching ``removeTag(_:from:source:)``.
     @discardableResult
     public func deleteAssets(_ assetIDs: [UUID]) async throws -> [OrphanedBlob] {
+        try await write { db in try Self.performDelete(assetIDs, in: db) }
+    }
+
+    /// The delete cascade, shared by ``deleteAssets(_:)`` and the recoverable
+    /// variant so both run the SAME transaction logic (010 · delete-undo).
+    private static func performDelete(_ assetIDs: [UUID], in db: Database) throws -> [OrphanedBlob] {
+        // Resolve the targets that actually exist and remove them. Track a
+        // representative mime per distinct hash (for extension round-trip)
+        // and the set of sources touched, both in stable first-seen order.
+        var mimeByHash: [String: String] = [:]
+        var orderedHashes: [String] = []
+        var orderedSourceKeys: [String] = []
+        var seenSourceKeys: Set<String> = []
+        for assetID in assetIDs {
+            guard let asset = try Asset.fetchOne(db, key: Self.key(assetID)) else {
+                continue // idempotent: unknown / already-deleted id.
+            }
+            // A media-less asset (003 · O1) has no blob to reclaim — only
+            // byte-backed assets contribute an orphan-candidate hash.
+            if let hash = asset.blobHash, mimeByHash[hash] == nil {
+                mimeByHash[hash] = asset.mimeType ?? ""
+                orderedHashes.append(hash)
+            }
+            let sourceKey = Self.key(asset.sourceId)
+            if seenSourceKeys.insert(sourceKey).inserted {
+                orderedSourceKeys.append(sourceKey)
+            }
+            try asset.delete(db)
+        }
+
+        // GC sources whose last asset is gone (RESTRICT keeps them otherwise).
+        for sourceKey in orderedSourceKeys {
+            let stillReferenced = try Asset
+                .filter(Column("source_id") == sourceKey)
+                .fetchCount(db) > 0
+            if !stillReferenced {
+                try Source.deleteOne(db, key: sourceKey)
+            }
+        }
+
+        // A blob is reclaimable only when no remaining asset shares its hash.
+        var orphans: [OrphanedBlob] = []
+        for hash in orderedHashes {
+            let stillReferenced = try Asset
+                .filter(Column("blob_hash") == hash)
+                .fetchCount(db) > 0
+            if !stillReferenced {
+                orphans.append(OrphanedBlob(blobHash: hash, mimeType: mimeByHash[hash]!))
+            }
+        }
+        // "Delete is forgotten": the orphaned bytes are leaving the store, so drop
+        // the bulk-import ledger rows that marked this content known — a future
+        // sweep then re-ingests it. Keyed on blob ORPHANING (not per-asset): while
+        // any asset still shares the blob, the content is present and legitimately
+        // known.
+        try Self.forgetOrphanedKnownItems(orphans.map(\.blobHash), in: db)
+        return orphans
+    }
+
+    // MARK: - Delete-undo (010)
+
+    /// Delete assets AND capture a verbatim backup for undo, in ONE transaction
+    /// (010 · delete-undo). The backup is the exact graph removed — assets, their
+    /// sources, memberships (with order), tag links, and the covers the delete
+    /// `SET NULL`-ed — captured with set-based `IN (…)` reads (no N+1) BEFORE the
+    /// shared cascade runs, so it can't drift from what was deleted.
+    ///
+    /// Blobs are NOT reaped here (unlike the model's old delete path): reaping is
+    /// deferred to the launch orphan-GC, so ``restoreDeletedAssets(_:)`` finds the
+    /// bytes still on disk. A delete that is never undone is reclaimed next launch.
+    public func deleteAssetsRecoverable(_ assetIDs: [UUID]) async throws -> DeletedAssetsBackup {
         try await write { db in
-            // Resolve the targets that actually exist and remove them. Track a
-            // representative mime per distinct hash (for extension round-trip)
-            // and the set of sources touched, both in stable first-seen order.
-            var mimeByHash: [String: String] = [:]
-            var orderedHashes: [String] = []
-            var orderedSourceKeys: [String] = []
-            var seenSourceKeys: Set<String> = []
-            for assetID in assetIDs {
-                guard let asset = try Asset.fetchOne(db, key: Self.key(assetID)) else {
-                    continue // idempotent: unknown / already-deleted id.
-                }
-                // A media-less asset (003 · O1) has no blob to reclaim — only
-                // byte-backed assets contribute an orphan-candidate hash.
-                if let hash = asset.blobHash, mimeByHash[hash] == nil {
-                    mimeByHash[hash] = asset.mimeType ?? ""
-                    orderedHashes.append(hash)
-                }
-                let sourceKey = Self.key(asset.sourceId)
-                if seenSourceKeys.insert(sourceKey).inserted {
-                    orderedSourceKeys.append(sourceKey)
-                }
-                try asset.delete(db)
-            }
+            let backup = try Self.captureBackup(assetIDs, in: db)
+            _ = try Self.performDelete(assetIDs, in: db)
+            return backup
+        }
+    }
 
-            // GC sources whose last asset is gone (RESTRICT keeps them otherwise).
-            for sourceKey in orderedSourceKeys {
-                let stillReferenced = try Asset
-                    .filter(Column("source_id") == sourceKey)
-                    .fetchCount(db) > 0
-                if !stillReferenced {
-                    try Source.deleteOne(db, key: sourceKey)
-                }
-            }
+    /// Snapshot the full graph the delete will remove (set-based reads).
+    private static func captureBackup(_ assetIDs: [UUID], in db: Database) throws -> DeletedAssetsBackup {
+        let keys = assetIDs.map(Self.key)
+        guard !keys.isEmpty else { return DeletedAssetsBackup() }
 
-            // A blob is reclaimable only when no remaining asset shares its hash.
-            var orphans: [OrphanedBlob] = []
-            for hash in orderedHashes {
-                let stillReferenced = try Asset
-                    .filter(Column("blob_hash") == hash)
+        let assets = try Asset.filter(keys.contains(Column("id"))).fetchAll(db)
+        guard !assets.isEmpty else { return DeletedAssetsBackup() }
+
+        let sourceKeys = Array(Set(assets.map { Self.key($0.sourceId) }))
+        let sources = try Source.filter(sourceKeys.contains(Column("id"))).fetchAll(db)
+        let memberships = try CollectionItem.filter(keys.contains(Column("asset_id"))).fetchAll(db)
+        let tagLinks = try AssetTag.filter(keys.contains(Column("asset_id"))).fetchAll(db)
+
+        let coverRows = try Row.fetchAll(db, sql: """
+            SELECT id AS cid, cover_asset_id AS aid FROM collection
+            WHERE cover_asset_id IN (\(databaseQuestionMarks(count: keys.count)))
+            """, arguments: StatementArguments(keys))
+        let covers = coverRows.compactMap { row -> DeletedAssetsBackup.CoverRef? in
+            guard let cid = UUID(uuidString: row["cid"]),
+                  let aid = UUID(uuidString: row["aid"]) else { return nil }
+            return DeletedAssetsBackup.CoverRef(collectionID: cid, assetID: aid)
+        }
+        return DeletedAssetsBackup(
+            assets: assets, sources: sources, memberships: memberships,
+            tagLinks: tagLinks, covers: covers)
+    }
+
+    /// Reinstate a ``DeletedAssetsBackup`` verbatim — the inverse of
+    /// ``deleteAssetsRecoverable(_:)``. ONE transaction, best-effort per row (010 ·
+    /// 4A): idempotent (skip-if-exists), dedup-aware (an asset whose dedup key a
+    /// live capture recreated is skipped, not duplicated), and resilient (a
+    /// membership whose collection was since deleted is skipped; a cover is
+    /// restored only if the collection is still cover-less). Ids / timestamps /
+    /// manual order are preserved. Blobs are untouched (never reaped), so restored
+    /// byte-backed assets keep their media.
+    public func restoreDeletedAssets(_ backup: DeletedAssetsBackup) async throws {
+        guard !backup.isEmpty else { return }
+        try await write { db in
+            // 1. Sources — insert if absent (a shared source may still exist).
+            for source in backup.sources where try !Source.exists(db, key: Self.key(source.id)) {
+                try source.insert(db)
+            }
+            // 2. Assets — skip an id that already exists (idempotent) or a dedup key
+            //    a live capture recreated (4A). Track which assets are now present
+            //    so dependent rows only attach to real assets.
+            var presentAssetKeys: Set<String> = []
+            for asset in backup.assets {
+                let assetKey = Self.key(asset.id)
+                if try Asset.exists(db, key: assetKey) {
+                    presentAssetKeys.insert(assetKey)
+                    continue
+                }
+                if let dedup = asset.dedupKey,
+                   try Asset.filter(Column("dedup_key") == dedup).fetchCount(db) > 0 {
+                    continue // content re-created under a new id since the delete.
+                }
+                // The FK source must exist (inserted above, unless shared+present).
+                guard try Source.exists(db, key: Self.key(asset.sourceId)) else { continue }
+                try asset.insert(db)
+                presentAssetKeys.insert(assetKey)
+            }
+            // 3. Memberships — the asset must be present, the collection must still
+            //    exist, and no membership for (collection, asset) may already exist.
+            for item in backup.memberships {
+                guard presentAssetKeys.contains(Self.key(item.assetID)) else { continue }
+                guard try Collection.exists(db, key: Self.key(item.collectionID)) else { continue }
+                guard try Self.membership(
+                    db, collectionID: item.collectionID, assetID: item.assetID) == nil else { continue }
+                try item.insert(db)
+            }
+            // 4. Tag links — the asset must be present, the tag must still exist
+            //    (tags survive a delete), and the link must be absent.
+            for link in backup.tagLinks {
+                guard presentAssetKeys.contains(Self.key(link.assetID)) else { continue }
+                guard try Tag.exists(db, key: Self.key(link.tagID)) else { continue }
+                let already = try AssetTag
+                    .filter(Column("asset_id") == Self.key(link.assetID))
+                    .filter(Column("tag_id") == Self.key(link.tagID))
                     .fetchCount(db) > 0
-                if !stillReferenced {
-                    orphans.append(OrphanedBlob(blobHash: hash, mimeType: mimeByHash[hash]!))
+                if !already { try link.insert(db) }
+            }
+            // 5. Covers — restore only if the collection still has no cover (don't
+            //    clobber a choice the user made after the delete).
+            for cover in backup.covers {
+                guard presentAssetKeys.contains(Self.key(cover.assetID)) else { continue }
+                guard var collection = try Collection.fetchOne(
+                    db, key: Self.key(cover.collectionID)) else { continue }
+                if collection.coverAssetID == nil {
+                    collection.coverAssetID = cover.assetID
+                    collection.updatedAt = Date()
+                    try collection.update(db)
                 }
             }
-            // "Delete is forgotten": the orphaned bytes are leaving the store, so drop
-            // the bulk-import ledger rows that marked this content known — a future
-            // sweep then re-ingests it. Keyed on blob ORPHANING (not per-asset): while
-            // any asset still shares the blob, the content is present and legitimately
-            // known.
-            try Self.forgetOrphanedKnownItems(orphans.map(\.blobHash), in: db)
-            return orphans
+        }
+    }
+
+    /// Every distinct non-null `blob_hash` an asset currently references — the
+    /// "keep" set for the launch orphan-blob GC (010 · delete-undo).
+    public func referencedBlobHashes() async throws -> Set<String> {
+        try await read { db in
+            Set(try String.fetchAll(
+                db, sql: "SELECT DISTINCT blob_hash FROM asset WHERE blob_hash IS NOT NULL"))
         }
     }
 

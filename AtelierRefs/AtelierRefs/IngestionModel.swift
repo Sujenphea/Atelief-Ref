@@ -379,6 +379,11 @@ final class IngestionModel: ObservableObject {
             await refreshFolders()
             loadContents(of: selectedFolderID)
             await startCaptureEndpoint(coordinator: coordinator, services: services)
+
+            // Reclaim blobs orphaned by deletes that were never undone (010 ·
+            // delete-undo). Off-main, after the UI is up; the undo history is empty
+            // at launch, so any unreferenced blob is unreachable.
+            runOrphanBlobGC(services: services, store: store)
         } catch {
             self.lastError = "Failed to open library: \(error)"
             self.status = "Failed to open library."
@@ -1309,26 +1314,72 @@ final class IngestionModel: ObservableObject {
         pendingDeletion = nil
     }
 
-    /// Carry out the confirmed delete: remove the assets from the library, move
-    /// any now-orphaned blob/thumbnail files to the Trash (off-main), then refresh
-    /// the tree + current folder. Clears the pending state first so the dialog
-    /// dismisses immediately.
+    /// Carry out the confirmed delete (010 · delete-undo). Captures a verbatim
+    /// backup and removes the assets in one transaction, then registers an UNDO
+    /// (⌘Z → restore). Blobs are NOT reaped here — reaping is deferred to the
+    /// launch orphan-GC so an in-session undo finds the bytes on disk; a delete
+    /// that is never undone is reclaimed at the next launch. The pre-destructive
+    /// snapshot (008 H3) stays as the coarse net. Clears the pending state first so
+    /// the dialog dismisses immediately.
     func confirmPendingDeletion() {
-        guard let store, let pending = pendingDeletion else { return }
+        guard let services, let pending = pendingDeletion else { return }
         pendingDeletion = nil
         let assetIDs = pending.assetIDs
+        let count = assetIDs.count
         let snapshots = snapshotManager
-        mutateContents { services in
-            // Pre-destructive snapshot (008 H3): a recovery point before a
-            // library-wide delete removes bytes. Best-effort — a snapshot hiccup
-            // must not block the delete the user asked for.
+        enqueueUndoable {
             try? await snapshots?.snapshot(reason: .preDestructive)
-            let orphans = try await services.deleteAssets(assetIDs)
-            // File IO off the main actor; the DB delete is already committed, so
-            // this is best-effort cleanup (MediaReaper swallows per-file errors).
-            let reaper = MediaReaper(store: store)
-            _ = await Task.detached { reaper.reap(orphans) }.value
-            return "Deleted \(Self.itemCount(assetIDs.count))."
+            do {
+                let backup = try await services.deleteAssetsRecoverable(assetIDs)
+                await self.refreshFolders()
+                self.loadContents(of: self.selectedFolderID)
+                self.status = "Deleted \(Self.itemCount(count))."
+                // Register the undo now that the backup is in hand (id-based).
+                self.registerReversible("Delete",
+                    primary: { self.enqueueUndoable { await self.applyDeleteAgain(assetIDs, count: count) } },
+                    inverse: { self.enqueueUndoable { await self.applyRestore(backup) } })
+            } catch {
+                self.lastError = Self.message(for: error)
+            }
+        }
+    }
+
+    /// Restore a captured delete (undo). Blobs were never reaped, so byte-backed
+    /// assets come back with their media.
+    private func applyRestore(_ backup: DeletedAssetsBackup) async {
+        guard let services else { return }
+        do {
+            try await services.restoreDeletedAssets(backup)
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+            status = "Restored \(Self.itemCount(backup.assets.count))."
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Re-delete after a restore (redo). Reuses the plain delete and does NOT reap
+    /// (deferred to the launch GC), so a subsequent undo can restore again.
+    private func applyDeleteAgain(_ assetIDs: [UUID], count: Int) async {
+        guard let services else { return }
+        do {
+            _ = try await services.deleteAssets(assetIDs)
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+            status = "Deleted \(Self.itemCount(count))."
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Reclaim orphaned blob files left by deletes that were never undone (010 ·
+    /// delete-undo). Runs off-main after launch, when the undo history is empty so
+    /// any unreferenced blob is unreachable. A failed read of the referenced set
+    /// SKIPS the sweep (never reaps on uncertainty).
+    private func runOrphanBlobGC(services: AppServices, store: MediaStore) {
+        Task.detached(priority: .utility) {
+            guard let referenced = try? await services.referencedBlobHashes() else { return }
+            let reaped = MediaReaper(store: store).reapOrphanedBlobs(referenced: referenced)
+            if !reaped.isEmpty {
+                AppLog.model.info(
+                    "launch orphan-GC reclaimed \(reaped.count, privacy: .public) file(s)")
+            }
         }
     }
 

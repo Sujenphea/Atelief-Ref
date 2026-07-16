@@ -213,4 +213,61 @@ struct AppUndoTests {
     private func primeItems(_ model: IngestionModel, folder: UUID, _ services: AppServices) async throws {
         model.setItemsForTesting(try await services.collectionItems(in: folder))
     }
+
+    // MARK: - Delete (010 · delete-undo)
+
+    @Test("delete → undo restores the assets + order → redo re-deletes")
+    func deleteUndoRedo() async throws {
+        let (model, services) = try await makeModel()
+        let folder = try await services.createCollection(name: "Bin")
+        let ids = try await seedColors(3, into: folder.id, services)   // [0,1,2]
+        try await services.setCollectionSortMode(.manual, for: folder.id)
+        try await services.setGridOrder(collectionID: folder.id, orderedAssetIDs: ids)
+        model.selectedFolderID = folder.id
+
+        model.requestDelete(assetIDs: [ids[1]])
+        model.confirmPendingDeletion()
+        await model.waitForWrites()
+        #expect(try await members(of: folder.id, services) == [ids[0], ids[2]])
+        #expect(model.canUndo)
+
+        model.undo()
+        await model.waitForWrites()
+        #expect(try await members(of: folder.id, services) == ids)   // back, in order
+        #expect(model.canRedo)
+
+        model.redo()
+        await model.waitForWrites()
+        #expect(try await members(of: folder.id, services) == [ids[0], ids[2]])
+    }
+
+    @Test("delete defers blob reaping — the bytes stay on disk so undo recovers them")
+    func deleteDefersReap() async throws {
+        let (model, services) = try await makeModel()
+        let store = try #require(model.store)
+        let folder = try await services.createCollection(name: "Bin")
+        let hash = String(repeating: "e", count: 64)
+        let a = try await services.ingest(
+            AssetDraft(
+                kind: .image, blobHash: hash, mimeType: "image/png",
+                width: 10, height: 10, duration: nil, fileSize: 4,
+                downloadState: .downloaded),
+            from: SourceDraft(platform: .web, originalURL: "https://e/x", capturedAt: Date()),
+            into: folder.id).asset
+        try store.storeBlob(Data("img".utf8), hash: hash, fileExtension: "png")
+        model.selectedFolderID = folder.id
+
+        model.requestDelete(assetIDs: [a.id])
+        model.confirmPendingDeletion()
+        await model.waitForWrites()
+        // Removed from the library…
+        #expect(try await members(of: folder.id, services).isEmpty)
+        // …but the blob was NOT reaped (deferred to the launch GC).
+        #expect(store.hasBlob(hash: hash, fileExtension: "png"))
+
+        model.undo()
+        await model.waitForWrites()
+        #expect(try await members(of: folder.id, services) == [a.id])
+        #expect(store.hasBlob(hash: hash, fileExtension: "png")) // media intact
+    }
 }
