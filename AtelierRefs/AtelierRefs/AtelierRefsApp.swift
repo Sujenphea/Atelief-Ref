@@ -73,12 +73,12 @@ private struct SortCommands: View {
     }
 }
 
-/// Edit-menu Undo / Redo (⌘Z · ⇧⌘Z), reaching the shared model through the
-/// focused scene value. Titles reflect the pending action ("Undo Rename"); the
-/// items disable when the stack is empty. `undoToken` is observed so the enabled
-/// state refreshes as actions register / fire.
+/// Edit-menu Undo / Redo (⌘Z · ⇧⌘Z), reaching the shared model as a focused
+/// OBJECT so the view re-renders on the model's `objectWillChange` — the enabled
+/// state + titles then track `undoToken` as actions register / fire. (`@FocusedValue`
+/// does not observe the object, which left the items stuck disabled.)
 private struct UndoRedoCommands: View {
-    @FocusedValue(\.ingestionModel) private var model
+    @FocusedObject private var model: IngestionModel?
 
     var body: some View {
         Button(undoTitle) { model?.undo() }
