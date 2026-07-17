@@ -67,6 +67,36 @@ enum FixtureImages {
         return try encode(image, format: format, orientation: nil)
     }
 
+    /// A `width × height` image split left/right into two flat colors, `left`
+    /// covering `leftFraction` of the width. Exercises multi-cluster color
+    /// extraction with a known coverage split (default 50/50).
+    static func twoToneImage(
+        width: Int, height: Int,
+        left: (r: UInt8, g: UInt8, b: UInt8), right: (r: UInt8, g: UInt8, b: UInt8),
+        leftFraction: Double = 0.5, format: Format = .png
+    ) throws -> Data {
+        let split = Int((Double(width) * leftFraction).rounded())
+        let image = try makeFilledCGImage(width: width, height: height) { context in
+            context.setFillColor(
+                red: CGFloat(left.r) / 255, green: CGFloat(left.g) / 255,
+                blue: CGFloat(left.b) / 255, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: split, height: height))
+            context.setFillColor(
+                red: CGFloat(right.r) / 255, green: CGFloat(right.g) / 255,
+                blue: CGFloat(right.b) / 255, alpha: 1)
+            context.fill(CGRect(x: split, y: 0, width: width - split, height: height))
+        }
+        return try encode(image, format: format, orientation: nil)
+    }
+
+    /// A `width × height` fully-transparent PNG (every pixel alpha 0). Used to
+    /// assert color extraction drops transparent pixels (→ no swatches). PNG keeps
+    /// the alpha channel losslessly; JPEG would flatten it.
+    static func transparentImage(width: Int, height: Int) throws -> Data {
+        let image = try makeFilledCGImage(width: width, height: height) { _ in }
+        return try encode(image, format: .png, orientation: nil)
+    }
+
     // MARK: - EXIF-oriented image
 
     /// An image whose STORED pixels are `pixelWidth × pixelHeight` but which
