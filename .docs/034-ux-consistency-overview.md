@@ -79,7 +79,9 @@ safety, unified feedback, keyboard/mouse parity) are closed. What remains is P2 
 - Space tiles: no z-order (bring-to-front / send-back) controls.
 - "Snapshot Now" has no in-progress feedback; snapshot list is read-only (no size,
   no manual prune).
-- Loading flashes empty states (Spaces list, onboarding token row).
+- ~~Loading flashes empty states (Spaces list, onboarding token row)~~ — **shipped
+  (changelog 154 + 155):** onboarding token redacts; Spaces list shows a skeleton
+  until the first load, not a false "No spaces yet".
 
 ## Notes
 

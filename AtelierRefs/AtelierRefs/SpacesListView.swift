@@ -18,13 +18,18 @@ struct SpacesListView: View {
     @State private var newSpaceName = ""
     @State private var renameTarget: Space?
     @State private var renameText = ""
+    /// Whether the first `refreshSpaces` has completed. Until it has, an empty
+    /// `model.spaces` means "not loaded yet", NOT "no spaces" — so we show a
+    /// skeleton instead of flashing the "No spaces yet" empty state to users who
+    /// actually have spaces (034 P2 loading-flash).
+    @State private var didLoad = false
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16)]
 
     var body: some View {
         ScrollView {
             if model.spaces.isEmpty {
-                emptyState
+                if didLoad { emptyState } else { loadingState }
             } else {
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(model.spaces) { space in
@@ -62,7 +67,7 @@ struct SpacesListView: View {
                 }
             }
         }
-        .task { await model.refreshSpaces() }
+        .task { await model.refreshSpaces(); didLoad = true }
         .alert("New Space", isPresented: $showNewSpace) {
             TextField("Name", text: $newSpaceName)
             Button("Create") {
@@ -84,6 +89,25 @@ struct SpacesListView: View {
             .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { renameTarget = nil }
         }
+    }
+
+    /// Skeleton placeholder shown before the first load resolves — redacted cover
+    /// cards, so a user with spaces sees "content loading" rather than a false
+    /// "No spaces yet".
+    private var loadingState: some View {
+        LazyVGrid(columns: columns, spacing: 16) {
+            ForEach(0..<6, id: \.self) { _ in
+                CoverCard(
+                    title: "Space",
+                    subtitle: nil,
+                    coverHash: nil,
+                    coverURL: nil,
+                    placeholderSymbol: "square.on.square.dashed")
+            }
+        }
+        .padding(16)
+        .redacted(reason: .placeholder)
+        .accessibilityLabel("Loading spaces")
     }
 
     private var emptyState: some View {
