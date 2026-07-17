@@ -270,4 +270,60 @@ struct AppUndoTests {
         #expect(try await members(of: folder.id, services) == [a.id])
         #expect(store.hasBlob(hash: hash, fileExtension: "png")) // media intact
     }
+
+    // MARK: - Unified action+Undo toast (034 P1)
+
+    @Test("a reversible verb announces an Undo event whose token fires the undo")
+    func undoableEventReversesViaToken() async throws {
+        let (model, services) = try await makeModel()
+        let folder = try await services.createCollection(name: "Bin")
+        let ids = try await seedColors(2, into: folder.id, services)
+        try await services.setCollectionSortMode(.manual, for: folder.id)
+        try await services.setGridOrder(collectionID: folder.id, orderedAssetIDs: ids)
+        model.selectedFolderID = folder.id
+        try await primeItems(model, folder: folder.id, services)
+
+        model.removeFromFolder(assetIDs: [ids[0]])
+        await model.waitForWrites()
+        let event = try #require(model.lastUndoableAction)
+        #expect(event.message.contains("Removed"))
+        #expect(event.undoToken == model.undoToken)   // top of the stack
+
+        // The toast's guarded undo fires because the token still matches.
+        model.undoLastAction(expecting: event.undoToken)
+        await model.waitForWrites()
+        #expect(try await members(of: folder.id, services) == ids)
+    }
+
+    @Test("a superseded Undo toast no-ops — its token is no longer the stack top")
+    func staleUndoTokenNoOps() async throws {
+        let (model, services) = try await makeModel()
+        let folder = try await services.createCollection(name: "Bin")
+        let ids = try await seedColors(3, into: folder.id, services)
+        try await services.setCollectionSortMode(.manual, for: folder.id)
+        try await services.setGridOrder(collectionID: folder.id, orderedAssetIDs: ids)
+        model.selectedFolderID = folder.id
+        try await primeItems(model, folder: folder.id, services)
+
+        // First verb: capture its toast token.
+        model.removeFromFolder(assetIDs: [ids[0]])
+        await model.waitForWrites()
+        let staleToken = try #require(model.lastUndoableAction).undoToken
+
+        // A second verb supersedes it (bumps the stack).
+        model.removeFromFolder(assetIDs: [ids[1]])
+        await model.waitForWrites()
+        #expect(try await members(of: folder.id, services) == [ids[2]])
+
+        // Pressing the FIRST (now stale) toast's Undo must not fire.
+        model.undoLastAction(expecting: staleToken)
+        await model.waitForWrites()
+        #expect(try await members(of: folder.id, services) == [ids[2]])   // unchanged
+
+        // The current toast's token still works (reverses the second remove).
+        let liveToken = try #require(model.lastUndoableAction).undoToken
+        model.undoLastAction(expecting: liveToken)
+        await model.waitForWrites()
+        #expect(try await members(of: folder.id, services) == [ids[1], ids[2]])
+    }
 }

@@ -53,6 +53,9 @@ struct ToastHostView: View {
     @ObservedObject var center: ToastCenter
     /// Perform a Jump (validated + routed by the shell).
     let onJump: (JumpTarget) -> Void
+    /// Undo the destructive action a toast describes, guarded by its post-time
+    /// undo-stack token (034 P1).
+    let onUndo: (Int) -> Void
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
@@ -60,7 +63,11 @@ struct ToastHostView: View {
                 ToastCard(
                     toast: toast,
                     onAction: {
-                        if case let .jump(target) = toast.action { onJump(target) }
+                        switch toast.action {
+                        case let .jump(target): onJump(target)
+                        case let .undo(token): onUndo(token)
+                        case .none: break
+                        }
                         center.dismiss(toast.id)
                     },
                     onDismiss: { center.dismiss(toast.id) })
@@ -81,13 +88,13 @@ struct ToastCard: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+            Image(systemName: iconName)
+                .foregroundStyle(iconColor)
             Text(toast.message)
                 .font(.callout)
                 .lineLimit(2)
-            if case let .jump(target) = toast.action {
-                Button(target.buttonLabel, action: onAction)
+            if let label = actionLabel {
+                Button(label, action: onAction)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
             }
@@ -106,5 +113,27 @@ struct ToastCard: View {
         .overlay(Capsule().strokeBorder(.separator, lineWidth: 0.5))
         .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
         .frame(maxWidth: 420)
+    }
+
+    /// The leading glyph: a green check for a completed capture (Jump), an arrow for
+    /// a reversible destructive verb (Undo).
+    private var iconName: String {
+        if case .undo = toast.action { return "arrow.uturn.backward.circle.fill" }
+        return "checkmark.circle.fill"
+    }
+
+    private var iconColor: Color {
+        if case .undo = toast.action { return .orange }
+        return .green
+    }
+
+    /// The action button's label, or `nil` for a bare message. Jump carries its own
+    /// label; Undo is always "Undo".
+    private var actionLabel: String? {
+        switch toast.action {
+        case let .jump(target): return target.buttonLabel
+        case .undo: return "Undo"
+        case .none: return nil
+        }
     }
 }

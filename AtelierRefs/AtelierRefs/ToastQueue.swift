@@ -16,10 +16,17 @@
 
 import Foundation
 
-/// A typed action a toast's button performs (011-B4). Today only Jump.
+/// A typed action a toast's button performs. Jump navigates to captured assets
+/// (011-B4); Undo reverses a just-performed destructive verb (034 P1 — the unified
+/// "action + Undo" surface).
 enum ToastAction: Equatable {
     /// Navigate to a collection and select the given assets — the Saved—Jump verb.
     case jump(JumpTarget)
+    /// Undo the destructive action this toast describes (delete / remove / move).
+    /// `undoToken` is the model's undo-stack token AT POST TIME: the shell fires the
+    /// undo only if it's still the top of the stack, so a toast that another action
+    /// has since superseded no-ops instead of reversing the wrong thing.
+    case undo(undoToken: Int)
 }
 
 /// Where a Jump goes: a collection and the assets to select once it loads.

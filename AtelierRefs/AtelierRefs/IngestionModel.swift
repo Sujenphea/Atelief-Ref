@@ -113,6 +113,21 @@ final class IngestionModel: ObservableObject {
     /// freshly loaded items, then clears it.
     private var pendingSelection: (collectionID: UUID, assetIDs: Set<UUID>)?
 
+    /// The most recent reversible destructive verb (delete / remove / move),
+    /// published so the shell raises ONE "…— Undo" toast (034 P1 — the unified
+    /// action+undo surface). Carries the undo-stack `undoToken` captured just after
+    /// the action registered, so the toast can verify it's still the top of the
+    /// stack before firing (a superseded toast no-ops rather than undoing the wrong
+    /// action). A new event trips `onChange` because the token strictly increases.
+    @Published private(set) var lastUndoableAction: UndoableActionEvent?
+
+    /// A performed-and-reversible action worth a toast: the human message plus the
+    /// undo-stack token to fire against.
+    struct UndoableActionEvent: Equatable {
+        let message: String
+        let undoToken: Int
+    }
+
     /// A batch's progress counters.
     struct Progress: Equatable {
         var completed: Int
@@ -738,6 +753,22 @@ final class IngestionModel: ObservableObject {
     func undo() { undoManager.undo(); undoToken &+= 1 }
     func redo() { undoManager.redo(); undoToken &+= 1 }
 
+    /// Publish a just-performed reversible verb so the shell shows a "…— Undo" toast
+    /// (034 P1). Call AFTER `registerReversible` so `undoToken` already reflects this
+    /// action as the top of the stack.
+    private func announceUndoable(_ message: String) {
+        lastUndoableAction = UndoableActionEvent(message: message, undoToken: undoToken)
+    }
+
+    /// Fire an Undo toast's button: reverse the action ONLY if it's still the top of
+    /// the undo stack (`token` unchanged since the toast was posted). If any later
+    /// action / undo / redo bumped `undoToken`, this toast is stale — no-op, so it
+    /// can't silently undo something the user didn't mean.
+    func undoLastAction(expecting token: Int) {
+        guard undoToken == token, undoManager.canUndo else { return }
+        undo()
+    }
+
     #if DEBUG
     /// Test-only: seed the visible `items` so a verb that captures the live order
     /// (reorder / remove / move) reads a known state without racing the async
@@ -1266,6 +1297,7 @@ final class IngestionModel: ObservableObject {
         registerReversible("Remove",
             primary: { self.enqueueUndoable { await self.applyRemove(assetIDs: assetIDs, from: folder, message: nil) } },
             inverse: { self.enqueueUndoable { await self.applyRestoreMemberships(assetIDs: assetIDs, to: folder, order: priorOrder) } })
+        announceUndoable(message)
     }
 
     /// MOVE assets out of the current folder into `targetID` — the atomic triage
@@ -1283,6 +1315,7 @@ final class IngestionModel: ObservableObject {
         registerReversible("Move",
             primary: { self.enqueueUndoable { await self.applyMoveAssets(assetIDs, from: source, to: targetID, message: nil) } },
             inverse: { self.enqueueUndoable { await self.applyMoveBack(assetIDs, from: targetID, to: source, order: priorOrder) } })
+        announceUndoable(message)
     }
 
     /// COPY assets into `targetID` WITHOUT removing them here (009 · ⌥-drag / Add
@@ -1343,11 +1376,13 @@ final class IngestionModel: ObservableObject {
                 let backup = try await services.deleteAssetsRecoverable(assetIDs)
                 await self.refreshFolders()
                 self.loadContents(of: self.selectedFolderID)
-                self.status = "Deleted \(Self.itemCount(count))."
+                let message = "Deleted \(Self.itemCount(count))."
+                self.status = message
                 // Register the undo now that the backup is in hand (id-based).
                 self.registerReversible("Delete",
                     primary: { self.enqueueUndoable { await self.applyDeleteAgain(assetIDs, count: count) } },
                     inverse: { self.enqueueUndoable { await self.applyRestore(backup) } })
+                self.announceUndoable(message)
             } catch {
                 self.lastError = Self.message(for: error)
             }

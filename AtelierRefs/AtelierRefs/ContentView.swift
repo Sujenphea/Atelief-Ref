@@ -37,7 +37,19 @@ struct ContentView: View {
                 OnboardingSheet(model: model) { didCompleteOnboarding = true }
             }
             // The toast stack floats over the whole shell (bottom-trailing).
-            .overlay { ToastHostView(center: toasts, onJump: handleJump) }
+            .overlay { ToastHostView(center: toasts, onJump: handleJump, onUndo: handleUndo) }
+            // A reversible destructive verb (delete / remove / move) raises ONE
+            // "…— Undo" toast (034 P1). Coalesced into a single slot so a rapid
+            // sequence refreshes the same card — and, since UndoManager is a LIFO
+            // stack, the visible toast always describes the top action its button
+            // will reverse. `handleUndo` re-checks the token before firing.
+            .onChange(of: model.lastUndoableAction) { _, event in
+                guard let event else { return }
+                toasts.post(
+                    message: event.message,
+                    action: .undo(undoToken: event.undoToken),
+                    coalesceKey: "undo-action")
+            }
             // A landed browser-capture batch raises ONE "Saved — Jump" toast,
             // coalesced per target folder so a burst never spams one-per-item.
             .onChange(of: model.lastCaptureBatch) { _, batch in
@@ -109,6 +121,12 @@ struct ContentView: View {
         guard let resolved = resolveJump(target, existingCollectionIDs: existing) else { return }
         nav.openCollection(resolved.collectionID)
         model.requestJumpSelection(assetIDs: resolved.assetIDs, in: resolved.collectionID)
+    }
+
+    /// Fire an Undo toast: reverse the destructive verb it describes, but only if
+    /// it's still the top of the undo stack (034 P1 — the model re-checks `token`).
+    private func handleUndo(_ token: Int) {
+        model.undoLastAction(expecting: token)
     }
 
     /// Bridges the model's optional ``PendingDeletion`` to the dialog's `Bool`

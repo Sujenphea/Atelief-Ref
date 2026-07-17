@@ -53,14 +53,19 @@ Closes theme 3 (keyboard/mouse parity) for two of the three high-traffic surface
 | **Item Detail zoom** | Zoom/pan lifted out of `ZoomableImage` into `ItemDetailView`; top-bar zoom-out/percentage/zoom-in controls (image only) + `⌘−`/`⌘+`/`⌘=`/`⌘0`. Pinch + double-click-to-fit still work and share the state; resets to fit on prev/next. |
 | **Space tool shortcuts** | **V** Select / **F** Frame / **T** Text via hidden shortcut buttons behind the picker; a focused text field still takes plain keys first. |
 
+## Batch 3 — shipped (changelog 150)
+
+Closes theme 2 (fragmented feedback): the unified action+Undo toast.
+
+| Area | Change |
+|------|--------|
+| **Unified "action + Undo" toast** | `ToastAction` gains `.undo(undoToken:)`; delete / remove / move publish a `lastUndoableAction` event that the shell posts as a coalesced "…— Undo" toast. The button is guarded by the monotonic `undoToken` (LIFO-safe): a superseded toast no-ops instead of reversing the wrong action. This also delivers the **Remove-from-Folder** feedback the backlog wanted (it flows through the same toast). |
+
 ## Backlog (priority order)
 
 **P1 — parity & feedback**
-- **Unified "action + Undo" toast** — extend the toast action enum beyond `.jump`
-  and route delete/remove/move through it, surfacing the existing undo.
 - **Keyboard scattered multi-select in the grid** — a key to toggle the cursor cell
   into/out of the selection (Space is taken by Quick Look).
-- **Remove-from-Folder** in Item Detail — confirm or surface the undo (silent today).
 
 **P2 — discoverability & polish**
 - Search results grid lacks the main grid's selection/keyboard/context-menu model
