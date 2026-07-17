@@ -82,6 +82,11 @@ enum GridSelectionAction: Equatable {
     case arrow(GridArrowKey, extend: Bool)
     /// Return: open the cursor item's detail (006's planned invocation).
     case openLead
+    /// A key (X) that toggles the CURSOR cell's membership in place — the
+    /// keyboard peer of the hover-circle. Arrows move the cursor without touching
+    /// the set, so this builds a SCATTERED selection from the keyboard alone
+    /// (034 P1). A no-op with no cursor yet.
+    case toggleLead
 }
 
 extension GridSelection {
@@ -145,6 +150,13 @@ extension GridSelection {
 
         case .openLead:
             if let lead = next.lead { return (next, .openDetail(lead)) }
+            return (next, .none)
+
+        case .toggleLead:
+            // Toggle the cursor cell in place; `toggle` re-pins anchor/lead to it
+            // (already the lead), so the cursor doesn't jump. No cursor → no-op.
+            guard let lead = next.lead else { return (self, .none) }
+            next.toggle(lead)
             return (next, .none)
         }
     }

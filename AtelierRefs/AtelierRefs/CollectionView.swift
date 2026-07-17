@@ -393,6 +393,16 @@ struct CollectionView: View {
                     model.applySelection(.selectAll)
                     return .handled
                 }
+                // X toggles the keyboard cursor's cell in/out of the selection —
+                // arrows move the cursor without disturbing the set, so this builds
+                // a SCATTERED multi-selection from the keyboard (034 P1). Space is
+                // Quick Look, so X is the free, mnemonic (✕-a-box) toggle. Ignored
+                // under a modifier so it never eats ⌘X etc.
+                .onKeyPress(keys: ["x"]) { press in
+                    guard press.modifiers.isEmpty else { return .ignored }
+                    model.applySelection(.toggleLead)
+                    return .handled
+                }
                 .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow]) { press in
                     handleArrow(press, width: geo.size.width, proxy: proxy)
                 }

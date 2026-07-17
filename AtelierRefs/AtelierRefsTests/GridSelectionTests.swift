@@ -378,6 +378,47 @@ struct GridSelectionTests {
         #expect(effect == .none)
     }
 
+    // MARK: - toggleLead (X): keyboard scattered multi-select (034 P1)
+
+    @Test("toggleLead selects the cursor cell (enters mode) without moving the cursor")
+    func toggleLeadSelects() {
+        // A cursor established by an arrow (lead set, nothing selected yet).
+        let start = GridSelection(ids: [], anchor: id(2), lead: id(2))
+        let (next, effect) = start.applying(.toggleLead, order: order)
+        #expect(effect == .none)
+        #expect(next.ids == [id(2)])
+        #expect(next.isSelecting)
+        #expect(next.lead == id(2))   // cursor stays put
+    }
+
+    @Test("toggleLead on a selected cursor cell deselects it")
+    func toggleLeadDeselects() {
+        let (next, _) = sel([1, 2], anchor: 2, lead: 2).applying(.toggleLead, order: order)
+        #expect(next.ids == [id(1)])
+        #expect(next.lead == id(2))
+    }
+
+    @Test("arrows then toggleLead build a SCATTERED selection")
+    func arrowsThenToggleScatter() {
+        // Cursor at 0, select it, arrow-right twice (cursor to 2, set untouched),
+        // toggle 2 — a discontiguous {0, 2} from the keyboard alone.
+        let (a, _) = GridSelection(ids: [], anchor: id(0), lead: id(0))
+            .applying(.toggleLead, order: order)
+        let (b, _) = a.applying(.arrow(.right, extend: false), order: order)
+        let (c, _) = b.applying(.arrow(.right, extend: false), order: order)
+        #expect(c.ids == [id(0)])           // set unchanged by plain arrows
+        #expect(c.lead == id(2))
+        let (d, _) = c.applying(.toggleLead, order: order)
+        #expect(d.ids == [id(0), id(2)])    // scattered
+    }
+
+    @Test("toggleLead with no cursor is a no-op")
+    func toggleLeadNoCursor() {
+        let (next, effect) = GridSelection().applying(.toggleLead, order: order)
+        #expect(effect == .none)
+        #expect(next.ids.isEmpty)
+    }
+
     // MARK: - Reload pruning
 
     @Test("prune drops selected ids no longer present")

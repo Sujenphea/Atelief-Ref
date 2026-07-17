@@ -60,12 +60,12 @@ Closes theme 2 (fragmented feedback): the unified action+Undo toast.
 | Area | Change |
 |------|--------|
 | **Unified "action + Undo" toast** | `ToastAction` gains `.undo(undoToken:)`; delete / remove / move publish a `lastUndoableAction` event that the shell posts as a coalesced "…— Undo" toast. The button is guarded by the monotonic `undoToken` (LIFO-safe): a superseded toast no-ops instead of reversing the wrong action. This also delivers the **Remove-from-Folder** feedback the backlog wanted (it flows through the same toast). |
+| **Keyboard scattered multi-select** | New `GridSelectionAction.toggleLead`, bound to **X** on the focused grid: toggles the cursor cell in place. Arrows move the cursor without touching the set, so X builds a discontiguous selection keyboard-only. |
+
+With batch 3 the **P1 backlog is clear** — all three systemic themes (destructive-action
+safety, unified feedback, keyboard/mouse parity) are closed. What remains is P2 polish.
 
 ## Backlog (priority order)
-
-**P1 — parity & feedback**
-- **Keyboard scattered multi-select in the grid** — a key to toggle the cursor cell
-  into/out of the selection (Space is taken by Quick Look).
 
 **P2 — discoverability & polish**
 - Search results grid lacks the main grid's selection/keyboard/context-menu model
