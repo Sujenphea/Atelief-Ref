@@ -15,6 +15,11 @@ struct OnboardingSheet: View {
     /// Called when the user finishes / dismisses — the caller persists the flag.
     let onFinish: () -> Void
 
+    /// Flips the moment a capture lands while the guide is open — a LIVE pairing
+    /// confirmation (the token is pasted into the extension out-of-band, so the app
+    /// only learns pairing worked when the first capture arrives).
+    @State private var receivedFirstCapture = false
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -31,11 +36,9 @@ struct OnboardingSheet: View {
                     step(3, "Capture something",
                          "Right-click an image on any page ▸ Save to Atelier, or paste "
                          + "/ drop an image straight into the window. It lands in "
-                         + "Unsorted.")
-                    step(4, "You're set",
-                         "Organize into collections, arrange spaces, and snapshot from "
-                         + "File ▸ Snapshot Now. Re-open this guide any time from "
-                         + "Settings (⌘,).")
+                         + "Unsorted.",
+                         accessory: receivedFirstCapture ? capturedConfirmation : nil)
+                    outro
                 }
                 .padding(24)
             }
@@ -43,6 +46,10 @@ struct OnboardingSheet: View {
             footer
         }
         .frame(width: 520, height: 560)
+        // A capture landing while the guide is open confirms pairing succeeded.
+        .onChange(of: model.lastCaptureBatch) { _, batch in
+            if batch != nil { receivedFirstCapture = true }
+        }
     }
 
     // MARK: - Sections
@@ -58,6 +65,7 @@ struct OnboardingSheet: View {
             Text("Your reference library — set up capture in three quick steps.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 28)
@@ -66,24 +74,73 @@ struct OnboardingSheet: View {
 
     private var tokenRow: AnyView {
         AnyView(
-            HStack(spacing: 8) {
-                Text("127.0.0.1:\(String(model.capturePort))")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                Divider().frame(height: 14)
-                Text(model.captureToken.isEmpty ? "Opening library…" : model.captureToken)
-                    .font(.system(.caption, design: .monospaced))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                Spacer(minLength: 0)
-                Button("Copy") { model.copyCaptureToken() }
-                    .controlSize(.small)
-                    .disabled(model.captureToken.isEmpty)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Text("127.0.0.1:\(String(model.capturePort))")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Divider().frame(height: 14)
+                    Text(model.captureToken.isEmpty ? "Opening library…" : model.captureToken)
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .redacted(reason: model.captureToken.isEmpty ? .placeholder : [])
+                    Spacer(minLength: 0)
+                    Button("Copy") { model.copyCaptureToken() }
+                        .controlSize(.small)
+                        .disabled(model.captureToken.isEmpty)
+                }
+                endpointStatus
             }
             .padding(10)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
         )
+    }
+
+    /// A live dot for the local capture endpoint — green while it's listening,
+    /// orange if the port is busy so captures can't land (a real, actionable state,
+    /// not just static instructions).
+    private var endpointStatus: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(model.captureEndpointRunning ? Color.green : Color.orange)
+                .frame(width: 7, height: 7)
+            Text(model.captureEndpointRunning
+                 ? "Listening for captures"
+                 : "Endpoint unavailable — port \(model.capturePort) is in use")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Shown under step 3 once a capture lands while the guide is open — the pairing
+    /// worked end to end.
+    private var capturedConfirmation: AnyView {
+        AnyView(
+            Label("Nice — your first capture landed in Unsorted.", systemImage: "checkmark.circle.fill")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.green)
+        )
+    }
+
+    /// The closing note — deliberately NOT a numbered step, so the header's "three
+    /// quick steps" matches the three numbered setup rows above.
+    private var outro: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("You're set")
+                .font(.headline)
+            Text("Organize into collections, arrange spaces, and snapshot from "
+                 + "File ▸ Snapshot Now. Re-open this guide any time from Settings (⌘,).")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .combine)
     }
 
     private var footer: some View {
