@@ -52,8 +52,15 @@ struct ContentView: View {
             // a single navigation column.
             .frame(minWidth: 860, minHeight: 600)
             // Restore the last-opened collection once the folder list loads
-            // (004 Q3 — restore last collection only).
-            .onReceive(model.$folders) { nav.restoreIfNeeded(using: $0) }
+            // (004 Q3 — restore last collection only). `$folders` fires inside the
+            // model's publish cycle (a view update), and `restoreIfNeeded` writes
+            // `nav.path`; doing that synchronously here pushes the NavigationStack
+            // mid-update ("NavigationRequestObserver tried to update multiple times
+            // per frame" at launch). Hop to the next runloop so the push lands on a
+            // clean frame — the one-shot `didRestore` guard keeps it correct.
+            .onReceive(model.$folders) { folders in
+                DispatchQueue.main.async { nav.restoreIfNeeded(using: folders) }
+            }
             // App-shell alert so bootstrap / capture / space errors surface from
             // any screen.
             .alert(
