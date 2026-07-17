@@ -73,7 +73,17 @@ struct ElementInspector: View {
         .frame(width: 280)
         // Dismissing the popover by clicking outside used to discard every edit.
         // Commit those pending edits instead (unless Done/Delete already closed it).
-        .onDisappear { if !finished { commit() } }
+        // `onDisappear` runs INSIDE the view-removal update, and `onCommit`
+        // publishes on the SpaceModel (undo token + reload) — doing that
+        // synchronously here trips "Publishing changes from within view updates."
+        // Build the style now (reading local state), then hop off the update frame
+        // to publish. Done/Delete commit synchronously from their button actions
+        // (not a view update), so only this fallback needs the defer.
+        .onDisappear {
+            guard !finished else { return }
+            let style = builtStyle()
+            Task { @MainActor in onCommit(style) }
+        }
     }
 
     @ViewBuilder private var textEditor: some View {
@@ -108,6 +118,12 @@ struct ElementInspector: View {
     }
 
     private func commit() {
+        onCommit(builtStyle())
+    }
+
+    /// The `ElementStyle` for the current editor state — pure (reads local state
+    /// only, publishes nothing), so it's safe to call from `onDisappear`.
+    private func builtStyle() -> ElementStyle {
         var style = initialStyle
         switch kind {
         case .text:
@@ -123,6 +139,6 @@ struct ElementInspector: View {
         case .asset:
             break
         }
-        onCommit(style)
+        return style
     }
 }
