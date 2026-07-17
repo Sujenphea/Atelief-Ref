@@ -113,7 +113,22 @@ struct SpaceView: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .fixedSize()
-        .help("Select, draw a Frame, or add Text")
+        .help("Select (V), Frame (F), or Text (T)")
+        .background(toolShortcuts)
+    }
+
+    /// V / F / T switch tools without reaching for the picker (design-tool muscle
+    /// memory). Zero-size hidden buttons so the shortcuts register while the board
+    /// is up; a focused text field takes plain keys first, so typing isn't hijacked.
+    private var toolShortcuts: some View {
+        ZStack {
+            Button("") { tool = .select }.keyboardShortcut("v", modifiers: [])
+            Button("") { tool = .frame }.keyboardShortcut("f", modifiers: [])
+            Button("") { tool = .text }.keyboardShortcut("t", modifiers: [])
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     /// Appears when a freeform element is selected; opens its inspector popover.

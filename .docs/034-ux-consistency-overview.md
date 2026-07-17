@@ -44,15 +44,20 @@ Prior fix (changelog 145): Back button reloads collection items via the nav path
 (the reported bug) — the nav path is now the single owner of "which collection is
 live," so push *and* pop reload.
 
+## Batch 2 — shipped (changelog 147)
+
+Closes theme 3 (keyboard/mouse parity) for two of the three high-traffic surfaces:
+
+| Area | Change |
+|------|--------|
+| **Item Detail zoom** | Zoom/pan lifted out of `ZoomableImage` into `ItemDetailView`; top-bar zoom-out/percentage/zoom-in controls (image only) + `⌘−`/`⌘+`/`⌘=`/`⌘0`. Pinch + double-click-to-fit still work and share the state; resets to fit on prev/next. |
+| **Space tool shortcuts** | **V** Select / **F** Frame / **T** Text via hidden shortcut buttons behind the picker; a focused text field still takes plain keys first. |
+
 ## Backlog (priority order)
 
 **P1 — parity & feedback**
-- **Item Detail zoom for mouse users** — add `⌘+`/`⌘−`/`⌘0` + toolbar zoom buttons
-  (lift `ZoomableImage` zoom state to a binding). Pinch-only today
-  (`ItemDetailView.swift:404`).
 - **Unified "action + Undo" toast** — extend the toast action enum beyond `.jump`
   and route delete/remove/move through it, surfacing the existing undo.
-- **Space tool shortcuts** (V/F/T) — `SpaceView.swift:107`.
 - **Keyboard scattered multi-select in the grid** — a key to toggle the cursor cell
   into/out of the selection (Space is taken by Quick Look).
 - **Remove-from-Folder** in Item Detail — confirm or surface the undo (silent today).

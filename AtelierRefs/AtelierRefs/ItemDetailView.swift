@@ -67,6 +67,21 @@ struct ItemDetailView: View {
     @State private var fullImage: NSImage?
     /// The inline player (video assets only), rebuilt when the item changes.
     @State private var player: AVPlayer?
+    /// Zoom / pan for an image asset, lifted out of `ZoomableImage` so the top-bar
+    /// buttons + ⌘± / ⌘0 can drive it (mouse/keyboard parity — pinch alone locked
+    /// out non-trackpad users). Reset on navigation in `loadMedia`.
+    @State private var zoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+
+    /// Zoom ceiling (mirrors `ZoomableImage`'s pinch clamp) and the per-press step.
+    private let maxZoom: CGFloat = 6
+    private let zoomStep: CGFloat = 1.4
+
+    /// True for the image branch — the only kind with a zoomable surface.
+    private var isImage: Bool {
+        if case .image = asset.content { return true }
+        return false
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -129,6 +144,10 @@ struct ItemDetailView: View {
 
             Spacer()
 
+            if isImage {
+                zoomControls
+            }
+
             Text(source?.title ?? "")
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -136,6 +155,64 @@ struct ItemDetailView: View {
                 .frame(maxWidth: 240, alignment: .trailing)
         }
         .padding()
+    }
+
+    /// Zoom out / percentage-reset / zoom in for image assets. The percentage
+    /// button doubles as ⌘0 "fit," and a hidden ⌘= mirror makes zoom-in reachable
+    /// without Shift (⌘+ on most layouts is Shift-⌘=).
+    private var zoomControls: some View {
+        HStack(spacing: 4) {
+            Button {
+                zoomBy(1 / zoomStep)
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .keyboardShortcut("-", modifiers: .command)
+            .disabled(zoom <= 1)
+            .help("Zoom out (⌘−)")
+
+            Button {
+                resetZoom()
+            } label: {
+                Text("\(Int((zoom * 100).rounded()))%")
+                    .monospacedDigit()
+                    .frame(minWidth: 42)
+            }
+            .keyboardShortcut("0", modifiers: .command)
+            .help("Fit to view (⌘0)")
+
+            Button {
+                zoomBy(zoomStep)
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .keyboardShortcut("+", modifiers: .command)
+            .disabled(zoom >= maxZoom)
+            .help("Zoom in (⌘+)")
+
+            // ⌘= mirror (no Shift) — same action, no visible control.
+            Button { zoomBy(zoomStep) } label: { EmptyView() }
+                .keyboardShortcut("=", modifiers: .command)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// Multiply the zoom by `factor`, clamped to `[1, maxZoom]`; snap the pan back
+    /// to centre once we're at fit (nothing to pan there).
+    private func zoomBy(_ factor: CGFloat) {
+        withAnimation(.easeOut(duration: 0.15)) {
+            zoom = min(max(zoom * factor, 1), maxZoom)
+            if zoom == 1 { pan = .zero }
+        }
+    }
+
+    private func resetZoom() {
+        withAnimation(.easeOut(duration: 0.15)) {
+            zoom = 1
+            pan = .zero
+        }
     }
 
     // MARK: - Media
@@ -157,7 +234,10 @@ struct ItemDetailView: View {
                 // full-resolution decode when it lands. Keyed by `asset.id` so the
                 // zoom/pan resets on navigation but survives the preview→full swap.
                 if let image = fullImage ?? previewImage {
-                    ZoomableImage(image: image).id(asset.id)
+                    // Zoom/pan lives in this view (top-bar buttons + ⌘± drive it),
+                    // reset per-navigation in `loadMedia` — so no `.id(asset.id)`
+                    // remount is needed to clear it.
+                    ZoomableImage(image: image, zoom: $zoom, pan: $pan, maxZoom: maxZoom)
                 } else {
                     ProgressView()
                 }
@@ -183,6 +263,9 @@ struct ItemDetailView: View {
     /// demand and drop the previous one on navigation.
     private func loadMedia() async {
         fullImage = nil
+        // Fresh item → back to fit (the previous item's zoom shouldn't carry over).
+        zoom = 1
+        pan = .zero
         player?.pause()
         player = nil
         // Media-less kinds (003 · O1) have no blob — nothing to load off-disk.
@@ -369,19 +452,19 @@ private struct ColorDetailView: View {
 // MARK: - Zoomable image
 
 /// A fit-to-view image with pinch-to-zoom and (once zoomed) drag-to-pan; a
-/// double-click snaps back to fit. Its zoom/pan is local `@State`, and the
-/// caller keys it by `asset.id` so navigation resets it while the low-res→full-res
-/// swap (same id) keeps the current zoom.
+/// double-click snaps back to fit. Zoom/pan are OWNED by the caller
+/// (``ItemDetailView``) so the top-bar buttons + ⌘± / ⌘0 drive the same state the
+/// pinch does; the caller resets them on navigation.
 private struct ZoomableImage: View {
     let image: NSImage
+    @Binding var zoom: CGFloat
+    @Binding var pan: CGSize
+    /// Ceiling so a huge pinch can't lose the image off-screen (passed in so it
+    /// matches the button clamp).
+    let maxZoom: CGFloat
 
-    @State private var zoom: CGFloat = 1
-    @State private var pan: CGSize = .zero
     @GestureState private var pinch: CGFloat = 1
     @GestureState private var dragTranslation: CGSize = .zero
-
-    /// Ceiling so a huge pinch can't lose the image off-screen.
-    private let maxZoom: CGFloat = 6
 
     var body: some View {
         Image(nsImage: image)
