@@ -21,6 +21,9 @@ struct AppShellView: View {
 
     @State private var showCaptureInfo = false
     @State private var showSweeps = false
+    /// Guards the one-shot load of the relaunch-seeded collection so a later folder
+    /// refresh doesn't reload it (034 P1 nav-restore).
+    @State private var didLoadSeededCollection = false
 
     var body: some View {
         NavigationStack(path: $nav.path) {
@@ -54,14 +57,24 @@ struct AppShellView: View {
             Text(model.restoreStagedMessage ?? "")
         }
         .task { await model.refreshSweeps() }
-        // Load the initially-shown collection once the library is ready. The nav
-        // path is SEEDED with the restored collection (not pushed), so the
-        // `onChange(of: nav.path)` loader below never fires for it — this covers
-        // that first load. A no-op on a fresh launch (empty path → the gallery,
-        // which reads folders, not `model.items`). `isReady` flips once per launch,
-        // so this runs once and doesn't double-load with the path loader.
-        .task(id: model.isReady) {
-            if model.isReady { syncActiveCollection(nav.path) }
+        // Load the relaunch-SEEDED collection's items once the folder list is known
+        // — but ONLY if it still exists. The nav path is seeded (not pushed), so the
+        // `onChange(of: nav.path)` loader never fires for it; this covers that first
+        // load. Gating on `model.folders` (not `isReady`, which flips before folders
+        // load) is essential: loading a since-deleted collection throws `.notFound`
+        // → a "That folder no longer exists." alert on every launch. When it's gone
+        // we DON'T load — `ContentView`'s prune drops the stale path to the gallery
+        // silently. `initial: true` also handles a fresh launch (empty path → flag
+        // set, no load).
+        .onChange(of: model.folders, initial: true) { _, folders in
+            guard !didLoadSeededCollection, !folders.isEmpty else { return }
+            guard case .collection(let id)? = nav.path.last else {
+                didLoadSeededCollection = true   // no seeded collection to restore
+                return
+            }
+            guard folders.contains(where: { $0.id == id }) else { return } // gone → prune clears it
+            didLoadSeededCollection = true
+            syncActiveCollection(nav.path)
         }
         // The nav path is the single owner of "which collection is live": load the
         // top collection's contents on EVERY path change — push and pop alike. The
