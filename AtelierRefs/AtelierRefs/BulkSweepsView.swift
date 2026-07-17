@@ -19,6 +19,8 @@ import SwiftUI
 struct BulkSweepsView: View {
     @ObservedObject var model: IngestionModel
 
+    @State private var confirmingTurnOff = false
+
     var body: some View {
         Group {
             if model.bulkConsentGranted {
@@ -56,8 +58,19 @@ struct BulkSweepsView: View {
             }
             .toolbar {
                 ToolbarItem {
-                    Button("Turn Off Bulk Import") { model.revokeBulkConsent() }
+                    Button("Turn Off Bulk Import") { confirmingTurnOff = true }
                 }
+            }
+            .confirmationDialog(
+                "Turn off bulk import?",
+                isPresented: $confirmingTurnOff,
+                titleVisibility: .visible
+            ) {
+                Button("Turn Off", role: .destructive) { model.revokeBulkConsent() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The extension can't start new sweeps until you re-enable it. "
+                     + "Items already imported stay in your library.")
             }
         }
     }
@@ -119,6 +132,8 @@ private struct SweepRow: View {
     let sweep: IngestionModel.SweepProgress
     @ObservedObject var model: IngestionModel
 
+    @State private var confirmingCancel = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -145,6 +160,17 @@ private struct SweepRow: View {
         }
         .padding(14)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+        .confirmationDialog(
+            "Cancel this sweep?",
+            isPresented: $confirmingCancel,
+            titleVisibility: .visible
+        ) {
+            Button("Cancel Sweep", role: .destructive) { model.cancelSweep(sweep.id) }
+            Button("Keep Running", role: .cancel) {}
+        } message: {
+            Text("The import stops where it is and can't be resumed. Items already "
+                 + "saved stay in your library; a later sweep re-imports the rest.")
+        }
     }
 
     private var title: String {
@@ -164,10 +190,10 @@ private struct SweepRow: View {
         switch sweep.job.status {
         case .open:
             Button("Pause") { model.pauseSweep(sweep.id) }
-            Button("Cancel", role: .destructive) { model.cancelSweep(sweep.id) }
+            Button("Cancel", role: .destructive) { confirmingCancel = true }
         case .paused:
             Button("Resume") { model.resumeSweep(sweep.id) }
-            Button("Cancel", role: .destructive) { model.cancelSweep(sweep.id) }
+            Button("Cancel", role: .destructive) { confirmingCancel = true }
         case .complete, .halted:
             EmptyView() // terminal — nothing to do
         }

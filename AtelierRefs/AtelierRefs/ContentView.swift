@@ -80,6 +80,19 @@ struct ContentView: View {
                 Text("The image and its files move to the Trash, and it's removed from "
                      + "every collection. You can restore the files from the Trash.")
             }
+            // Space delete is confirmed + undoable, matching asset delete (a board
+            // can hold hundreds of placements). Triggered from the Spaces list.
+            .confirmationDialog(
+                "Delete “\(model.pendingSpaceDeletion?.name ?? "")”?",
+                isPresented: spaceDeletionConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) { model.confirmSpaceDeletion() }
+                Button("Cancel", role: .cancel) { model.cancelSpaceDeletion() }
+            } message: {
+                Text("The board and its arrangement are removed. Your images stay in "
+                     + "their collections, and you can undo this with ⌘Z.")
+            }
     }
 
     /// Perform a toast's Jump (011-B4): ignore it if the target collection is
@@ -98,6 +111,14 @@ struct ContentView: View {
         Binding(
             get: { model.pendingDeletion != nil },
             set: { if !$0 { model.cancelPendingDeletion() } })
+    }
+
+    /// Bridges the model's optional ``PendingSpaceDeletion`` to the dialog's `Bool`
+    /// binding; dismissing (Cancel / Esc) clears the pending state.
+    private var spaceDeletionConfirmation: Binding<Bool> {
+        Binding(
+            get: { model.pendingSpaceDeletion != nil },
+            set: { if !$0 { model.cancelSpaceDeletion() } })
     }
 }
 

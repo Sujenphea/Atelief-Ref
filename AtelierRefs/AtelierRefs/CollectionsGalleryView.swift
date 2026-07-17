@@ -68,6 +68,7 @@ struct CollectionsGalleryView: View {
                 newCollectionName = ""
                 model.createFolder(name: name, parent: nil)
             }
+            .disabled(newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { newCollectionName = "" }
         }
         // Rename.
@@ -77,6 +78,7 @@ struct CollectionsGalleryView: View {
                 if let target = renameTarget { model.renameFolder(id: target.id, to: renameText) }
                 renameTarget = nil
             }
+            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { renameTarget = nil }
         }
         // New subfolder.
@@ -89,6 +91,7 @@ struct CollectionsGalleryView: View {
                 subfolderName = ""
                 subfolderParent = nil
             }
+            .disabled(subfolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { subfolderName = ""; subfolderParent = nil }
         }
     }

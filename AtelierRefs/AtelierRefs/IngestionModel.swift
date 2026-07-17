@@ -304,6 +304,16 @@ final class IngestionModel: ObservableObject {
         var count: Int { assetIDs.count }
     }
 
+    /// The space a confirmed delete will remove (UX-batch · space-delete undo).
+    /// Drives the ``SpacesListView`` confirmation dialog; `nil` when none staged.
+    @Published var pendingSpaceDeletion: PendingSpaceDeletion?
+
+    /// The space staged for a confirmed, undoable delete.
+    struct PendingSpaceDeletion {
+        let id: UUID
+        let name: String
+    }
+
     init() {
         undoManager.groupsByEvent = false
         Task { await bootstrap() }
@@ -1538,17 +1548,58 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Delete a space, then refresh the list.
-    func deleteSpace(id: UUID) {
-        guard let services else { return }
-        Task {
+    /// Stage a space delete for confirmation (UX-batch · space-delete undo). A
+    /// space can hold hundreds of placements, so — like asset delete — it is
+    /// confirmed before it runs and undoable after.
+    func requestDeleteSpace(id: UUID, name: String) {
+        pendingSpaceDeletion = PendingSpaceDeletion(id: id, name: name)
+    }
+
+    /// Dismiss the staged space delete without acting.
+    func cancelSpaceDeletion() {
+        pendingSpaceDeletion = nil
+    }
+
+    /// Carry out the confirmed space delete: capture a verbatim backup (the space
+    /// + all its placements), delete, then register an UNDO (⌘Z restores the whole
+    /// board). The underlying assets are never touched, so a restore reinstates the
+    /// placements exactly. Clears the pending state first so the dialog dismisses.
+    func confirmSpaceDeletion() {
+        guard let services, let pending = pendingSpaceDeletion else { return }
+        pendingSpaceDeletion = nil
+        let id = pending.id
+        let name = pending.name
+        enqueueUndoable {
             do {
-                try await services.deleteSpace(id: id)
-                await refreshSpaces()
+                let backup = try await services.deleteSpaceRecoverable(id: id)
+                await self.refreshSpaces()
+                self.status = "Deleted space “\(name).”"
+                self.registerReversible("Delete Space",
+                    primary: { self.enqueueUndoable { await self.applyDeleteSpaceAgain(id) } },
+                    inverse: { self.enqueueUndoable { await self.applyRestoreSpace(backup) } })
             } catch {
-                lastError = Self.message(for: error)
+                self.lastError = Self.message(for: error)
             }
         }
+    }
+
+    /// Restore a captured space delete (undo) — reinstates the board verbatim.
+    private func applyRestoreSpace(_ backup: DeletedSpaceBackup) async {
+        guard let services else { return }
+        do {
+            try await services.restoreDeletedSpace(backup)
+            await refreshSpaces()
+            status = "Restored space “\(backup.space?.name ?? "").”"
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Re-delete a restored space (redo). Recoverable again so undo can restore it.
+    private func applyDeleteSpaceAgain(_ id: UUID) async {
+        guard let services else { return }
+        do {
+            _ = try await services.deleteSpaceRecoverable(id: id)
+            await refreshSpaces()
+        } catch { lastError = Self.message(for: error) }
     }
 
     /// Seed a NEW space from a collection's current arrangement (005 — "New Space

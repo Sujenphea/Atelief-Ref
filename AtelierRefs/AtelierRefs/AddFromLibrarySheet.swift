@@ -19,7 +19,9 @@ struct AddFromLibrarySheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var pickedCollectionID: UUID?
     @State private var items: [CollectionItemDetail] = []
-    @State private var selected: Set<UUID> = []   // asset ids
+    /// Picked assets keyed by asset id, ACCUMULATED across collection switches so
+    /// changing the picker no longer silently discards a cross-collection selection.
+    @State private var picked: [UUID: Asset] = [:]
     @State private var isLoading = false
 
     private let columns = [GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 8)]
@@ -53,8 +55,29 @@ struct AddFromLibrarySheet: View {
             .labelsHidden()
             .frame(maxWidth: 260)
             Spacer()
+            if !items.isEmpty {
+                Button(allSelectedHere ? "Deselect All" : "Select All") {
+                    toggleSelectAllHere()
+                }
+                .buttonStyle(.link)
+            }
         }
         .padding(12)
+    }
+
+    /// Whether every item in the CURRENT collection is already picked.
+    private var allSelectedHere: Bool {
+        !items.isEmpty && items.allSatisfy { picked[$0.asset.id] != nil }
+    }
+
+    /// Select (or clear) all items in the current collection, leaving picks from
+    /// other collections intact.
+    private func toggleSelectAllHere() {
+        if allSelectedHere {
+            for detail in items { picked[detail.asset.id] = nil }
+        } else {
+            for detail in items { picked[detail.asset.id] = detail.asset }
+        }
     }
 
     @ViewBuilder private var grid: some View {
@@ -69,12 +92,12 @@ struct AddFromLibrarySheet: View {
                 LazyVGrid(columns: columns, spacing: 8) {
                     ForEach(items, id: \.item.id) { detail in
                         Button {
-                            toggle(detail.asset.id)
+                            toggle(detail.asset)
                         } label: {
                             AssetContentThumbnail(
                                 asset: detail.asset,
                                 url: model.thumbnailURL(for: detail),
-                                isSelected: selected.contains(detail.asset.id))
+                                isSelected: picked[detail.asset.id] != nil)
                         }
                         .buttonStyle(.plain)
                     }
@@ -86,20 +109,17 @@ struct AddFromLibrarySheet: View {
 
     private var footer: some View {
         HStack {
-            Text(selected.isEmpty ? "Select items to add" : "\(selected.count) selected")
+            Text(picked.isEmpty ? "Select items to add" : "\(picked.count) selected")
                 .font(.callout).foregroundStyle(.secondary)
             Spacer()
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
             Button("Add") {
-                let chosen = items
-                    .filter { selected.contains($0.asset.id) }
-                    .map(\.asset)
-                onAdd(chosen)
+                onAdd(Array(picked.values))
                 dismiss()
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(selected.isEmpty)
+            .disabled(picked.isEmpty)
         }
         .padding(12)
     }
@@ -108,14 +128,15 @@ struct AddFromLibrarySheet: View {
         model.folders.sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
     }
 
-    private func toggle(_ assetID: UUID) {
-        if selected.contains(assetID) { selected.remove(assetID) } else { selected.insert(assetID) }
+    private func toggle(_ asset: Asset) {
+        if picked[asset.id] != nil { picked[asset.id] = nil } else { picked[asset.id] = asset }
     }
 
     private func loadItems() async {
         guard let id = pickedCollectionID else { items = []; return }
         isLoading = true
-        selected = []
+        // NB: `picked` is intentionally NOT cleared here — picks accumulate across
+        // collection switches (the previous behaviour discarded them silently).
         do {
             items = try await model.items(in: id)
         } catch {

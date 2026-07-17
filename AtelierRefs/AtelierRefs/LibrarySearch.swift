@@ -47,6 +47,9 @@ final class LibrarySearchModel: ObservableObject {
     @Published private(set) var results: [AssetDetail] = []
     /// A query is in flight (drives a subtle progress affordance).
     @Published private(set) var isRunning = false
+    /// Set when the last query FAILED, so the results view can distinguish a real
+    /// error from a genuine "no matches" (they used to look identical).
+    @Published private(set) var queryFailed = false
 
     private var services: AppServices?
     /// The screen's collection (`nil` = the global gallery — no scope toggle).
@@ -87,6 +90,7 @@ final class LibrarySearchModel: ObservableObject {
     func reset() {
         queryTask?.cancel(); suggestTask?.cancel()
         text = ""; tokens = []; suggestions = []; results = []; isRunning = false
+        queryFailed = false
     }
 
     // MARK: queries
@@ -94,7 +98,7 @@ final class LibrarySearchModel: ObservableObject {
     private func runSearch() {
         queryTask?.cancel()
         guard let services, isActive else {
-            results = []; isRunning = false
+            results = []; isRunning = false; queryFailed = false
             return
         }
         let text = self.text
@@ -110,8 +114,12 @@ final class LibrarySearchModel: ObservableObject {
                     collectionID: scoped, limit: 500)
                 guard !Task.isCancelled else { return }
                 results = hits
+                queryFailed = false
             } catch {
+                // Surface the failure distinctly — an empty `results` alone reads as
+                // "no matches" and hides that the search actually errored.
                 results = []
+                queryFailed = true
             }
             isRunning = false
         }
@@ -212,12 +220,20 @@ private struct LibrarySearchResults: View {
     var body: some View {
         Group {
             if search.results.isEmpty {
-                ContentUnavailableView(
-                    search.isRunning ? "Searching…" : "No results",
-                    systemImage: search.isRunning ? "hourglass" : "magnifyingglass",
-                    description: Text(search.isRunning
-                        ? "Looking through your library."
-                        : "No items match this search."))
+                if search.queryFailed {
+                    ContentUnavailableView(
+                        "Search failed",
+                        systemImage: "exclamationmark.magnifyingglass",
+                        description: Text("Something went wrong running this search. "
+                            + "Adjust the query to try again."))
+                } else {
+                    ContentUnavailableView(
+                        search.isRunning ? "Searching…" : "No results",
+                        systemImage: search.isRunning ? "hourglass" : "magnifyingglass",
+                        description: Text(search.isRunning
+                            ? "Looking through your library."
+                            : "No items match this search."))
+                }
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 8) {

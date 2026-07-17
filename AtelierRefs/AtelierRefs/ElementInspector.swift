@@ -20,6 +20,9 @@ struct ElementInspector: View {
     let onDelete: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    /// Set once Done or Delete has handled the close, so the commit-on-dismiss
+    /// fallback (below) doesn't double-write or resurrect a just-deleted element.
+    @State private var finished = false
     @State private var text: String
     @State private var fontSize: Double
     @State private var textColor: Color
@@ -58,16 +61,19 @@ struct ElementInspector: View {
 
             Divider()
             HStack {
-                Button(role: .destructive) { onDelete(); dismiss() } label: {
+                Button(role: .destructive) { finished = true; onDelete(); dismiss() } label: {
                     Label("Delete", systemImage: "trash")
                 }
                 Spacer()
-                Button("Done") { commit(); dismiss() }
+                Button("Done") { finished = true; commit(); dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(14)
         .frame(width: 280)
+        // Dismissing the popover by clicking outside used to discard every edit.
+        // Commit those pending edits instead (unless Done/Delete already closed it).
+        .onDisappear { if !finished { commit() } }
     }
 
     @ViewBuilder private var textEditor: some View {

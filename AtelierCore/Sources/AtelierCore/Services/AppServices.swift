@@ -1087,6 +1087,55 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// Delete a space AND capture a verbatim backup for undo, in ONE transaction
+    /// (UX-batch · space-delete undo). Mirrors ``deleteAssetsRecoverable(_:)``: the
+    /// space row and ALL its placements are read BEFORE the cascade runs, so the
+    /// backup can't drift from what was deleted. The underlying assets are never
+    /// touched, so ``restoreDeletedSpace(_:)`` reinstates the board exactly.
+    public func deleteSpaceRecoverable(id: UUID) async throws -> DeletedSpaceBackup {
+        try await write { db in
+            guard let space = try Space.fetchOne(db, key: Self.key(id)) else {
+                throw AtelierError.notFound(entity: "space", id: id)
+            }
+            let items = try SpaceItem
+                .filter(Column("space_id") == Self.key(id))
+                .fetchAll(db)
+            guard try Space.deleteOne(db, key: Self.key(id)) else {
+                throw AtelierError.notFound(entity: "space", id: id)
+            }
+            return DeletedSpaceBackup(space: space, items: items)
+        }
+    }
+
+    /// Reinstate a ``DeletedSpaceBackup`` verbatim — the inverse of
+    /// ``deleteSpaceRecoverable(id:)``. ONE transaction, best-effort per row and
+    /// idempotent (skip-if-exists), so a redo-after-undo can't duplicate. Ids /
+    /// positions / z-order / timestamps are preserved. Resilient: the space's cover
+    /// is nulled if that asset was deleted since, and any placement whose asset no
+    /// longer exists is skipped (element rows always restore).
+    public func restoreDeletedSpace(_ backup: DeletedSpaceBackup) async throws {
+        guard let space = backup.space else { return }
+        try await write { db in
+            if try !Space.exists(db, key: Self.key(space.id)) {
+                var restored = space
+                // Don't reinstate a dangling cover FK (the asset may be gone).
+                if let cover = restored.coverAssetID,
+                   try !Asset.exists(db, key: Self.key(cover)) {
+                    restored.coverAssetID = nil
+                }
+                try restored.insert(db)
+            }
+            for item in backup.items {
+                guard try !SpaceItem.exists(db, key: Self.key(item.id)) else { continue }
+                if let assetID = item.assetID,
+                   try !Asset.exists(db, key: Self.key(assetID)) {
+                    continue // the placed asset was deleted since — skip its row.
+                }
+                try item.insert(db)
+            }
+        }
+    }
+
     /// Every space, newest first (`created_at DESC`, then `id`). The space count
     /// is small and bounded, so this returns the full inventory (P16).
     public func listSpaces() async throws -> [Space] {

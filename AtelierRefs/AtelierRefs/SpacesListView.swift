@@ -45,8 +45,8 @@ struct SpacesListView: View {
                                 renameTarget = space
                             }
                             Divider()
-                            Button("Delete", role: .destructive) {
-                                model.deleteSpace(id: space.id)
+                            Button("Delete…", role: .destructive) {
+                                model.requestDeleteSpace(id: space.id, name: space.name)
                             }
                         }
                     }
@@ -72,6 +72,7 @@ struct SpacesListView: View {
                     if let id = await model.createSpace(name: name) { nav.openSpace(id) }
                 }
             }
+            .disabled(newSpaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { newSpaceName = "" }
         }
         .alert("Rename Space", isPresented: renameBinding) {
@@ -80,6 +81,7 @@ struct SpacesListView: View {
                 if let target = renameTarget { model.renameSpace(id: target.id, to: renameText) }
                 renameTarget = nil
             }
+            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { renameTarget = nil }
         }
     }
