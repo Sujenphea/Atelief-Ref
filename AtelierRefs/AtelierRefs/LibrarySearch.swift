@@ -13,6 +13,7 @@
 //  sparkles glyph.
 //
 
+import AppKit
 import AtelierCore
 import Combine
 import SwiftUI
@@ -45,6 +46,10 @@ final class LibrarySearchModel: ObservableObject {
     @Published private(set) var suggestions: [TagToken] = []
     /// The current result set (bounded, newest-first).
     @Published private(set) var results: [AssetDetail] = []
+    /// Bumped every time `results` is (re)assigned, so the results grid can prune a
+    /// stale multi-selection to the surviving ids without needing `AssetDetail` to
+    /// be `Equatable` for an `onChange`.
+    @Published private(set) var resultsVersion = 0
     /// A query is in flight (drives a subtle progress affordance).
     @Published private(set) var isRunning = false
     /// Set when the last query FAILED, so the results view can distinguish a real
@@ -95,10 +100,14 @@ final class LibrarySearchModel: ObservableObject {
 
     // MARK: queries
 
+    /// Re-run the active query (e.g. after a triage delete removes a hit from the
+    /// library, so the stale card leaves the results grid). A no-op when inactive.
+    func rerun() { if isActive { runSearch() } }
+
     private func runSearch() {
         queryTask?.cancel()
         guard let services, isActive else {
-            results = []; isRunning = false; queryFailed = false
+            results = []; resultsVersion &+= 1; isRunning = false; queryFailed = false
             return
         }
         let text = self.text
@@ -114,11 +123,13 @@ final class LibrarySearchModel: ObservableObject {
                     collectionID: scoped, limit: 500)
                 guard !Task.isCancelled else { return }
                 results = hits
+                resultsVersion &+= 1
                 queryFailed = false
             } catch {
                 // Surface the failure distinctly — an empty `results` alone reads as
                 // "no matches" and hides that the search actually errored.
                 results = []
+                resultsVersion &+= 1
                 queryFailed = true
             }
             isRunning = false
@@ -215,7 +226,21 @@ private struct LibrarySearchResults: View {
     @ObservedObject var search: LibrarySearchModel
     let onOpen: (AssetDetail) -> Void
 
+    // Multi-select over the result set, reusing the pure grid reducer (asset ids as
+    // the selection universe — search hits have no folder membership). This closes
+    // the "triage dead-end": found items can be picked and acted on (007 G2 / 034
+    // P2). Arrow-cursor + marquee are intentionally NOT ported — the adaptive
+    // LazyVGrid has no analytic frames to drive them; click / ⌘ / ⇧ / ⌘A / Delete
+    // / Esc cover keyboard-and-mouse triage.
+    @State private var selection = GridSelection()
+    /// The hovered cell (drives the selection circle), keyed off the cell CONTAINER
+    /// so moving onto the circle doesn't flicker it away (see CollectionView 149).
+    @State private var hoveredID: UUID?
+
     private let columns = [GridItem(.adaptive(minimum: 112, maximum: 140), spacing: 8)]
+
+    /// The result set's asset ids in display order — the reducer's `order`.
+    private var orderIDs: [UUID] { search.results.map(\.asset.id) }
 
     var body: some View {
         Group {
@@ -235,20 +260,161 @@ private struct LibrarySearchResults: View {
                             : "No items match this search."))
                 }
             } else {
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 8) {
-                        ForEach(search.results, id: \.asset.id) { asset in
-                            Button { onOpen(asset) } label: {
-                                AssetContentThumbnail(
-                                    asset: asset.asset,
-                                    url: model.thumbnailURL(forAsset: asset.asset))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(12)
+                resultsGrid
+            }
+        }
+    }
+
+    private var resultsGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(search.results, id: \.asset.id) { detail in
+                    resultCell(detail)
                 }
             }
+            .padding(12)
+        }
+        .focusable()
+        .focusEffectDisabled()
+        // Prune a stale multi-selection whenever the query's results change.
+        .onChange(of: search.resultsVersion) { _, _ in
+            selection = selection.pruned(to: orderIDs)
+        }
+        // A triage delete removes a hit from the library — re-run the query so the
+        // stale card leaves the grid (contentsVersion bumps when the delete reloads).
+        .onChange(of: model.contentsVersion) { _, _ in search.rerun() }
+        .onDeleteCommand { requestDeleteTargets() }
+        .onKeyPress(.escape) {
+            guard selection.isSelecting else { return .ignored }
+            apply(.clear)
+            return .handled
+        }
+        .onKeyPress(keys: ["a"]) { press in
+            guard press.modifiers.contains(.command) else { return .ignored }
+            apply(.selectAll)
+            return .handled
+        }
+        .onKeyPress(.return) {
+            apply(.openLead)
+            return selection.lead == nil ? .ignored : .handled
+        }
+    }
+
+    /// One result cell: the thumbnail with a selection border + hover/selection
+    /// circle, click routing (plain opens / ⌘ / ⇧ select), and a batch context menu.
+    private func resultCell(_ detail: AssetDetail) -> some View {
+        let id = detail.asset.id
+        let isSelected = selection.ids.contains(id)
+        let showsCircle = selection.isSelecting || hoveredID == id
+        return ZStack(alignment: .topTrailing) {
+            Button {
+                let flags = NSEvent.modifierFlags
+                guard !flags.contains(.shift), !flags.contains(.command) else { return }
+                apply(gridClickAction(imageID: id, shift: false, command: false), open: detail)
+            } label: {
+                AssetContentThumbnail(
+                    asset: detail.asset,
+                    url: model.thumbnailURL(forAsset: detail.asset),
+                    isSelected: isSelected)
+            }
+            .buttonStyle(.plain)
+            // ⌘/⇧ clicks: a SwiftUI Button doesn't fire reliably on a modified click,
+            // so modifier-aware tap gestures own them (mirrors CollectionCell).
+            .simultaneousGesture(TapGesture().modifiers(.command).onEnded {
+                apply(.commandClick(id))
+            })
+            .simultaneousGesture(TapGesture().modifiers(.shift).onEnded {
+                apply(.shiftClick(id))
+            })
+            .overlay {
+                if selection.lead == id && !isSelected {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 2)
+                        .allowsHitTesting(false)
+                }
+            }
+            if showsCircle {
+                selectionCircle(id: id, isSelected: isSelected).transition(.opacity)
+            }
+        }
+        .onHover { hovering in
+            if hovering { hoveredID = id }
+            else if hoveredID == id { hoveredID = nil }
+        }
+        .animation(.easeInOut(duration: 0.12), value: showsCircle)
+        .contextMenu { cellMenu(for: detail) }
+    }
+
+    private func selectionCircle(id: UUID, isSelected: Bool) -> some View {
+        Button {
+            apply(.tapCircle(id))
+        } label: {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 20, weight: .medium))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(
+                    isSelected ? Color.white : Color.white.opacity(0.95),
+                    isSelected ? Color.accentColor : Color.black.opacity(0.35))
+                .background(Circle().fill(.black.opacity(0.15)).padding(1))
+                .padding(6)
+        }
+        .buttonStyle(.plain)
+        .help(isSelected ? "Deselect" : "Select")
+        .accessibilityHidden(true)
+    }
+
+    /// Finder-scope batch menu: a right-click on a SELECTED cell acts on the whole
+    /// selection; on an unselected cell it acts on that one and leaves the selection
+    /// untouched. Only the verbs that make sense for a membership-less hit —
+    /// Add-to-Collection (copy) and Delete; Reveal in Finder for a lone byte-backed
+    /// item.
+    @ViewBuilder
+    private func cellMenu(for detail: AssetDetail) -> some View {
+        let id = detail.asset.id
+        let targets = (selection.isSelecting && selection.ids.contains(id))
+            ? Array(selection.ids) : [id]
+        let n = targets.count
+        Menu("Add to Collection") {
+            ForEach(addTargets) { c in
+                Button(c.name) { model.copyToCollection(assetIDs: targets, to: c.id) }
+            }
+        }
+        if n == 1, model.blobURL(forAsset: detail.asset) != nil {
+            Button("Reveal in Finder") { model.revealInFinder(asset: detail.asset) }
+        }
+        Divider()
+        Button("Delete\(n > 1 ? " (\(n))" : "")", role: .destructive) {
+            model.requestDelete(assetIDs: targets)
+        }
+    }
+
+    /// Every collection as a copy target, Unsorted pinned first (search has no
+    /// source folder to exclude, so all are offered).
+    private var addTargets: [Collection] {
+        let unsorted = model.folders.filter { $0.id == model.unsortedFolderID }
+        let rest = model.folders
+            .filter { $0.id != model.unsortedFolderID }
+            .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
+        return unsorted + rest
+    }
+
+    /// The ids a keyboard verb (Delete) acts on: the selection while selecting, else
+    /// the cursor's lone item.
+    private func requestDeleteTargets() {
+        let targets = selection.isSelecting
+            ? Array(selection.ids) : (selection.lead.map { [$0] } ?? [])
+        guard !targets.isEmpty else { return }
+        model.requestDelete(assetIDs: targets)
+    }
+
+    /// Apply a reducer action against the current result order; open the detail
+    /// page when the effect asks for it.
+    private func apply(_ action: GridSelectionAction, open detail: AssetDetail? = nil) {
+        let (next, effect) = selection.applying(action, order: orderIDs)
+        selection = next
+        if case let .openDetail(openID) = effect,
+           let hit = detail ?? search.results.first(where: { $0.asset.id == openID }) {
+            onOpen(hit)
         }
     }
 }

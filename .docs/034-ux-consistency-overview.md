@@ -68,8 +68,10 @@ safety, unified feedback, keyboard/mouse parity) are closed. What remains is P2 
 ## Backlog (priority order)
 
 **P2 — discoverability & polish**
-- Search results grid lacks the main grid's selection/keyboard/context-menu model
-  (a triage dead-end).
+- ~~Search results grid lacks the main grid's selection/keyboard/context-menu
+  model~~ — **shipped (changelog 153):** multi-select (`GridSelection` reuse) +
+  batch context menu (Add to Collection / Delete / Reveal), `⌘A`/`Esc`/`Return`/
+  `Delete` keys. Arrow-cursor + marquee deferred (adaptive grid, no analytic frames).
 - Bulk "Failed N" is a dead-end — no list/reason/retry.
 - Onboarding: no live pairing confirmation; "three steps" copy over four steps.
 - Space tiles: no z-order (bring-to-front / send-back) controls.
