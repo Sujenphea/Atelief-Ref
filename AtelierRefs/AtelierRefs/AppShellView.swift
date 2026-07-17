@@ -62,13 +62,13 @@ struct AppShellView: View {
         // always starts empty and relaunch-restore populates it as a *change* this
         // catches, so firing on the initial frame would only add nav-lifecycle churn.
         .onChange(of: nav.path) { _, path in
-            // Deferred to just AFTER this navigation frame. `destination(for:)`
-            // reads `model`, so publishing a model change synchronously here (while
-            // SwiftUI is mid-nav-update) makes the navigation observer re-fire in
-            // the same frame — the "tried to update multiple times per frame"
-            // warning. The old per-view `.task` load also ran after the frame; this
-            // restores that timing while keeping the path as the single loader.
-            Task { @MainActor in syncActiveCollection(path) }
+            // Deferred to the NEXT runloop turn. `destination(for:)` reads `model`,
+            // so publishing a model change while SwiftUI is mid-nav-update makes the
+            // navigation observer re-fire in the same frame ("tried to update
+            // multiple times per frame"). A `Task { @MainActor }` still drains
+            // inside that transaction; `DispatchQueue.main.async` runs after the
+            // current CATransaction commits, landing the publish on a clean frame.
+            DispatchQueue.main.async { syncActiveCollection(path) }
         }
     }
 
