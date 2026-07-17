@@ -58,10 +58,17 @@ struct AppShellView: View {
         // top collection's contents on EVERY path change — push and pop alike. The
         // per-view `.task` only fires on a fresh push, so on back the shared
         // `model.items` used to stay on the deeper folder while the title updated
-        // (the "back button shows the wrong items" bug). `initial: true` covers a
-        // relaunch that restores straight into a collection.
-        .onChange(of: nav.path, initial: true) { _, path in
-            syncActiveCollection(path)
+        // (the "back button shows the wrong items" bug). No `initial:` — the path
+        // always starts empty and relaunch-restore populates it as a *change* this
+        // catches, so firing on the initial frame would only add nav-lifecycle churn.
+        .onChange(of: nav.path) { _, path in
+            // Deferred to just AFTER this navigation frame. `destination(for:)`
+            // reads `model`, so publishing a model change synchronously here (while
+            // SwiftUI is mid-nav-update) makes the navigation observer re-fire in
+            // the same frame — the "tried to update multiple times per frame"
+            // warning. The old per-view `.task` load also ran after the frame; this
+            // restores that timing while keeping the path as the single loader.
+            Task { @MainActor in syncActiveCollection(path) }
         }
     }
 
@@ -70,11 +77,6 @@ struct AppShellView: View {
     /// / the root gallery keep the last-loaded folder as the import target).
     private func syncActiveCollection(_ path: [AppRoute]) {
         guard case .collection(let id)? = path.last else { return }
-        // Only publish `selectedFolderID` when it truly changes — an unconditional
-        // write during the same frame the nav path changes can trip SwiftUI's
-        // "update multiple times per frame" observer. The reload stays
-        // unconditional: a pop-back lands here with the deeper id still selected, so
-        // the guard above is always false then and the grid still reloads.
         if model.selectedFolderID != id { model.selectedFolderID = id }
         model.loadContents(of: id)
     }
