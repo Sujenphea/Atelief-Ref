@@ -83,12 +83,13 @@ struct CollectionView: View {
                 }
             }
         }
-        // Bind the shared single-selection model to THIS collection whenever the
-        // screen appears (fresh push, or a pop back onto it).
+        // Loading this collection's items into the shared model is owned by the
+        // shell (`AppShellView.syncActiveCollection`), driven off the nav path so a
+        // POP reloads too — a per-view `.task(id:)` fires only on a fresh push, so
+        // on back the reappearing view's `model.items` used to stay on the deeper
+        // folder even though the title updated (the "back shows wrong items" bug).
+        // This task only refreshes the covers the drop rail's mini thumbnails need.
         .task(id: collectionID) {
-            model.selectedFolderID = collectionID
-            model.loadContents(of: collectionID)
-            // Covers feed the rail's mini thumbnails; refresh them for this screen.
             await model.refreshCollectionCovers()
         }
         .navigationTitle(model.name(for: collectionID))

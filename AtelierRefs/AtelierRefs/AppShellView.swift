@@ -54,6 +54,24 @@ struct AppShellView: View {
             Text(model.restoreStagedMessage ?? "")
         }
         .task { await model.refreshSweeps() }
+        // The nav path is the single owner of "which collection is live": load the
+        // top collection's contents on EVERY path change — push and pop alike. The
+        // per-view `.task` only fires on a fresh push, so on back the shared
+        // `model.items` used to stay on the deeper folder while the title updated
+        // (the "back button shows the wrong items" bug). `initial: true` covers a
+        // relaunch that restores straight into a collection.
+        .onChange(of: nav.path, initial: true) { _, path in
+            syncActiveCollection(path)
+        }
+    }
+
+    /// Point the shared model at whatever collection is on top of the nav stack and
+    /// (re)load its contents. A no-op when the top route isn't a collection (spaces
+    /// / the root gallery keep the last-loaded folder as the import target).
+    private func syncActiveCollection(_ path: [AppRoute]) {
+        guard case .collection(let id)? = path.last else { return }
+        model.selectedFolderID = id
+        model.loadContents(of: id)
     }
 
     // MARK: - Routing
