@@ -2,13 +2,13 @@
 
 > Covers "Save designs from: bookmarks from X, Instagram". **X is done** — the bulk
 > sweep handles X Bookmarks (incl. bookmark folders) and Likes, plus Pinterest boards
-> (see [015–018](../015-bulk-import-overview.md)). The gap is **Instagram saved posts**,
+> (see [015–018](./015-bulk-import-overview.md)). The gap is **Instagram saved posts**,
 > explicitly deferred in 015 §scope. Single-item IG capture already works via the
 > context menu.
 >
 > **Reviewed 2026-07-15** (interactive plan review, 14 issues settled — see §Settled
 > decisions). The export-ZIP path was descoped to
-> [017](./017-capture-instagram-export.md).
+> [017](./feature-todo/017-capture-instagram-export.md).
 
 ## Current state
 
@@ -67,7 +67,7 @@ account risk than riding real traffic — stands, but O1 simply does not functio
 the real choice was O2 or no Instagram sweep. The account-risk warning UI (B4) is now
 doubly warranted; pacing (13A) matters more, not less.
 
-O3 (official data-export ZIP) remains **descoped to [017](./017-capture-instagram-export.md)**.
+O3 (official data-export ZIP) remains **descoped to [017](./feature-todo/017-capture-instagram-export.md)**.
 
 > ✅ Endpoint shape resolved by B0 recon (2026-07-15): REST `api/v1/feed/saved/posts/`.
 > The response is `{ items: [{ media }], more_available, next_max_id?, status }`; each
@@ -187,7 +187,7 @@ real block — halting on it is the desired "halt, don't burn".
    `[hook-core, instagram-hook]` MAIN-world pair at `document_start`, `bulk-loader.js`
    match, `web_accessible_resources` match. This is the risk-bearing permission change
    — flag in the publish-readiness doc (G12–G14 territory: store review + privacy
-   policy surface, [020](../020-production-readiness-overview.md)).
+   policy surface, [020](./020-production-readiness-overview.md)).
 3. **B3 (M) — driver.** `instagram-hook.js` (thin config over hook-core),
    `bulk-instagram.js` (pure: parse page → fan out per media → `makeProvenance` →
    challenge recognizer → `next_max_id` cursor), IG `createInterceptSource` config +
@@ -248,7 +248,7 @@ All `node --test`, no live IG (fixture discipline, 015 T9/T12). Settled 9A/10A/1
   `input.collectionId`. Same account-risk gate applies.
 - **First-class `instagramPost` kind (1C):** additive via 003's multikind pattern if
   post-level grouping is ever wanted.
-- **Export-ZIP backfill:** [017](./017-capture-instagram-export.md).
+- **Export-ZIP backfill:** [017](./feature-todo/017-capture-instagram-export.md).
 
 ## Effort: **M–L** (B1 refactors added ~S–M over the original M; B0 is an hour of the
 user's time; everything else shrank or moved out)
@@ -264,7 +264,7 @@ user's time; everything else shrank or moved out)
   fine, don't pre-optimize); the source queue only grows if the user out-scrolls the
   paced engine (harmless lag).
 - The new host permission expands the store-review/privacy surface (G12–G14 in
-  [020](../020-production-readiness-overview.md)).
+  [020](./020-production-readiness-overview.md)).
 - Add the IG parser a bounded deep-search fallback (à la `findInstructions`) **only if
   recon/drift shows nesting volatility** — that resilience is earned, not free.
 

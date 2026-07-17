@@ -13,7 +13,8 @@ import SwiftUI
 // the whole shell, so they surface from any screen (the G1 "errors visible
 // anywhere" property preserved across the 004 nav redesign).
 struct ContentView: View {
-    @StateObject private var model = IngestionModel()
+    // Injected from the App scene (010 · Phase 2) so the Settings window shares it.
+    @ObservedObject var model: IngestionModel
     @StateObject private var nav = NavModel()
     // Global grid-view preferences (011-B2 density) — persisted, one muscle memory
     // across every collection.
@@ -21,8 +22,20 @@ struct ContentView: View {
     // Shell-level capture-feedback toasts (011-B4), overlaid over every screen.
     @StateObject private var toasts = ToastCenter()
 
+    // First-run onboarding gate (010 · Phase 2). Replayable from Settings (which
+    // flips this back to false).
+    @AppStorage("AtelierDidCompleteOnboarding") private var didCompleteOnboarding = false
+
     var body: some View {
         AppShellView(model: model, nav: nav, gridPrefs: gridPrefs)
+            // First-run setup guide — surfaces the (previously undiscoverable)
+            // extension-pairing flow. Gated so it shows once, replayable from ⌘,.
+            .sheet(isPresented: Binding(
+                get: { !didCompleteOnboarding },
+                set: { if !$0 { didCompleteOnboarding = true } })
+            ) {
+                OnboardingSheet(model: model) { didCompleteOnboarding = true }
+            }
             // The toast stack floats over the whole shell (bottom-trailing).
             .overlay { ToastHostView(center: toasts, onJump: handleJump) }
             // A landed browser-capture batch raises ONE "Saved — Jump" toast,
@@ -89,5 +102,5 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView()
+    ContentView(model: IngestionModel())
 }

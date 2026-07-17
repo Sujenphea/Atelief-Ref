@@ -41,11 +41,13 @@ struct CollectionCell: View, Equatable {
     /// The booleans are the live modifier state read at click time; the parent
     /// maps them to a reducer action.
     let onImageClick: (_ shift: Bool, _ command: Bool) -> Void
-    /// A click on the circle — always a plain toggle (enters/exits selection).
-    let onCircleToggle: () -> Void
+    /// Hover crossings, hoisted to the parent so it can render the selection
+    /// circle as a sibling OUTSIDE this cell's `.draggable` surface. Kept inside,
+    /// a press on the small (~20pt) circle races — and loses to — the cell's drag
+    /// gesture, so the toggle is dropped. GIF-dwell hover stays local (below).
+    let onHoverChanged: (_ hovering: Bool) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovering = false
     /// True once the hover dwell has elapsed and this cell won the animation slot
     /// (011-B5); drives the animated-GIF overlay.
     @State private var animateGif = false
@@ -55,7 +57,6 @@ struct CollectionCell: View, Equatable {
     /// mouse-up Button action checks-and-ignores, and the release edge resets it
     /// (covering a press whose click was cancelled by a drag).
     @State private var imagePressConsumed = false
-    @State private var circlePressConsumed = false
 
     /// Value-equality for `.equatable()` — closures excluded on purpose so a
     /// parent re-render that rebuilds the closures doesn't invalidate the cell.
@@ -67,10 +68,6 @@ struct CollectionCell: View, Equatable {
             && lhs.isCursor == rhs.isCursor
             && lhs.isSelecting == rhs.isSelecting
     }
-
-    /// The circle is visible while selecting (every cell, so all are toggleable)
-    /// or, when idle, only on the hovered cell (the pointer-only entry affordance).
-    private var showsCircle: Bool { isSelecting || isHovering }
 
     var body: some View {
         Button {
@@ -115,22 +112,47 @@ struct CollectionCell: View, Equatable {
             }
         }
         .overlay { cursorRing }
-        .overlay(alignment: .topTrailing) {
-            if showsCircle { circle }
-        }
         .onHover { handleHover($0) }
         .onDisappear {
             gifDwell?.cancel()
             GifAnimationCoordinator.shared.release(detail.item.id)
         }
-        .animation(.easeInOut(duration: 0.12), value: showsCircle)
+        // Accessibility (010 · Phase 3, first pass): one VoiceOver element per cell
+        // announcing kind + title and its selection state, with the interaction hint.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityHint(isSelecting ? "Toggles selection" : "Opens the item")
+    }
+
+    /// VoiceOver label: the asset kind plus its best available human name
+    /// (title → author → bare kind).
+    private var accessibilityLabel: String {
+        let kind: String
+        switch detail.asset.kind {
+        case .image: kind = "Image"
+        case .video: kind = "Video"
+        case .tweet: kind = "Tweet"
+        case .link: kind = "Link"
+        case .color: kind = "Color"
+        }
+        if let title = detail.source.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty {
+            return "\(kind), \(title)"
+        }
+        if let handle = detail.source.authorHandle, !handle.isEmpty {
+            return "\(kind) by \(handle)"
+        }
+        return kind
     }
 
     /// Hover routing (011-B5): update the circle affordance, and drive the
     /// dwell-gated, budgeted, single-slot GIF animation. Reduce Motion / non-GIF
     /// cells short-circuit before any decode is scheduled.
     private func handleHover(_ hovering: Bool) {
-        isHovering = hovering
+        // Tell the parent so it can show/hide the selection circle (rendered
+        // outside our `.draggable`); the GIF-dwell logic below stays local.
+        onHoverChanged(hovering)
         guard gifURL != nil,
               hovering,
               shouldAnimateGif(
@@ -161,30 +183,6 @@ struct CollectionCell: View, Equatable {
         }
     }
 
-    private var circle: some View {
-        Button {
-            if circlePressConsumed { return }
-            onCircleToggle()
-        } label: {
-            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 20, weight: .medium))
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(
-                    isSelected ? Color.white : Color.white.opacity(0.95),
-                    isSelected ? Color.accentColor : Color.black.opacity(0.35))
-                .background(Circle().fill(.black.opacity(0.15)).padding(1))
-                .padding(6)
-        }
-        .buttonStyle(PressReportingButtonStyle(
-            onPress: {
-                // The circle is ALWAYS a toggle, so it can always fire on the
-                // down edge — immune to `.draggable` swallowing the click.
-                circlePressConsumed = true
-                onCircleToggle()
-            },
-            onRelease: { circlePressConsumed = false }))
-        .help(isSelected ? "Deselect" : "Select")
-    }
 }
 
 /// A plain-look button style that also reports the press edges. SwiftUI

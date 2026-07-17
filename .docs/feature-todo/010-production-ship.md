@@ -38,7 +38,7 @@
 | Gap | Recommendation |
 |---|---|
 | No backup/snapshot/restore | Execute [008](./008-backup.md) H1–H3 (VACUUM INTO snapshots, pre-migration + pre-destructive hooks, restore flow, TM hardening). Everything else in this doc is safer once this exists. |
-| No undo | App-level `UndoManager` for the destructive verbs: delete, remove-from-collection, move (009), reorder, rename. Register inverses at the model layer, each paired with its `AppServices` call (the same pattern [005](./005-spaces.md) specs for element editing — build the seam once, share it). Tradeoff: undo across async writes needs serialization through the model; start with the five verbs above, not a universal system. |
+| No undo | App-level `UndoManager` for the destructive verbs: delete, remove-from-collection, move (009), reorder, rename. Register inverses at the model layer, each paired with its `AppServices` call (the same pattern [005](../031-spaces-overview.md) specs for element editing — build the seam once, share it). Tradeoff: undo across async writes needs serialization through the model; start with the five verbs above, not a universal system. |
 | No corruption detection | `PRAGMA integrity_check` (008's `integrityCheck()`) at bootstrap; on failure → guided restore-from-snapshot instead of a hang or silent reset. |
 
 ### 2 — Distribution edge (only matters when someone else installs it)

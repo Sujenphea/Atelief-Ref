@@ -40,6 +40,11 @@ struct CollectionView: View {
     @State private var gridScroll = ScrollPosition()
     // The native Quick Look panel driver (011-B3): spacebar peeks the selection.
     @State private var quickLook = QuickLookController()
+    // The hovered cell's id, hoisted OUT of `CollectionCell` so the selection
+    // circle can be drawn as a sibling above the cell's `.draggable` surface
+    // (else a press on the small circle is stolen by the drag gesture). Set from
+    // the cell's `onHoverChanged`; drives `showsCircle` for the idle-hover case.
+    @State private var hoveredItemID: UUID?
 
     private static let gridSpacing: CGFloat = 8
     private static let gridTopInset: CGFloat = 4
@@ -459,32 +464,68 @@ struct CollectionView: View {
     private func masonryCell(
         _ detail: CollectionItemDetail, columnWidth: CGFloat, proxy: ScrollViewProxy
     ) -> some View {
-        CollectionCell(
-            detail: detail,
-            url: model.thumbnailURL(for: detail),
-            isSelected: model.selection.ids.contains(detail.item.id),
-            isCursor: model.selection.lead == detail.item.id,
-            isSelecting: model.selection.isSelecting,
-            fill: true,
-            gifURL: detail.asset.mimeType == GifMotion.gifMimeType
-                ? model.blobURL(for: detail) : nil,
-            onImagePress: { shift, command in
-                handleImagePress(detail, shift: shift, command: command, proxy: proxy)
-            },
-            onImageClick: { shift, command in
-                handleImageClick(detail, shift: shift, command: command, proxy: proxy)
-            },
-            onCircleToggle: {
-                model.applySelection(.tapCircle(detail.item.id))
-            })
-            .equatable()
-            .frame(width: columnWidth, height: columnWidth / CGFloat(aspect(for: detail)))
-            .id(detail.item.id)
-            .draggable(dragPayload(for: detail)) { dragPreview(for: detail) }
-            .dropDestination(for: AssetDragPayload.self) { payloads, _ in
-                handleCellDrop(payloads, onto: detail.asset.id)
+        // The circle shows on every cell while selecting (all are toggleable) or,
+        // when idle, only on the hovered cell. It is a ZStack SIBLING of the cell,
+        // outside the `.draggable`, so its press can't be stolen by the drag.
+        let showsCircle = model.selection.isSelecting || hoveredItemID == detail.item.id
+        return ZStack(alignment: .topTrailing) {
+            CollectionCell(
+                detail: detail,
+                url: model.thumbnailURL(for: detail),
+                isSelected: model.selection.ids.contains(detail.item.id),
+                isCursor: model.selection.lead == detail.item.id,
+                isSelecting: model.selection.isSelecting,
+                fill: true,
+                gifURL: detail.asset.mimeType == GifMotion.gifMimeType
+                    ? model.blobURL(for: detail) : nil,
+                onImagePress: { shift, command in
+                    handleImagePress(detail, shift: shift, command: command, proxy: proxy)
+                },
+                onImageClick: { shift, command in
+                    handleImageClick(detail, shift: shift, command: command, proxy: proxy)
+                },
+                onHoverChanged: { hovering in
+                    if hovering { hoveredItemID = detail.item.id }
+                    else if hoveredItemID == detail.item.id { hoveredItemID = nil }
+                })
+                .equatable()
+                .frame(width: columnWidth, height: columnWidth / CGFloat(aspect(for: detail)))
+                .draggable(dragPayload(for: detail)) { dragPreview(for: detail) }
+                .dropDestination(for: AssetDragPayload.self) { payloads, _ in
+                    handleCellDrop(payloads, onto: detail.asset.id)
+                }
+                .contextMenu { cellMenu(for: detail) }
+            if showsCircle {
+                selectionCircle(for: detail).transition(.opacity)
             }
-            .contextMenu { cellMenu(for: detail) }
+        }
+        .id(detail.item.id)
+        .animation(.easeInOut(duration: 0.12), value: showsCircle)
+    }
+
+    /// The hover/selection circle — the toggle that ENTERS/exits selection mode.
+    /// Rendered by the parent, outside the cell's `.draggable`, so a press lands as
+    /// a clean `Button` click instead of racing (and losing to) the drag gesture —
+    /// the bug where hover-clicking the circle did nothing. Hidden from VoiceOver:
+    /// the cell already announces + toggles selection (it was a children-ignored
+    /// child before the lift), so exposing it again would double up.
+    private func selectionCircle(for detail: CollectionItemDetail) -> some View {
+        let isSelected = model.selection.ids.contains(detail.item.id)
+        return Button {
+            model.applySelection(.tapCircle(detail.item.id))
+        } label: {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 20, weight: .medium))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(
+                    isSelected ? Color.white : Color.white.opacity(0.95),
+                    isSelected ? Color.accentColor : Color.black.opacity(0.35))
+                .background(Circle().fill(.black.opacity(0.15)).padding(1))
+                .padding(6)
+        }
+        .buttonStyle(.plain)
+        .help(isSelected ? "Deselect" : "Select")
+        .accessibilityHidden(true)
     }
 
     /// The batch context menu (009 · N2/N6). Finder scope (7A): a right-click on a

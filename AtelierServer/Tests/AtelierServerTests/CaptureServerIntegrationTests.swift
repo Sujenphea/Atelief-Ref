@@ -185,14 +185,21 @@ struct CaptureServerIntegrationTests {
         #expect(http.statusCode == 413)
     }
 
-    @Test("GET /health with a valid token → 200")
+    @Test("GET /health with a valid token → 200 + version handshake")
     func health() async throws {
         let running = try await start(); defer { Task { await running.server.stop() } }
 
-        let (_, response) = try await URLSession.shared.data(
+        let (data, response) = try await URLSession.shared.data(
             for: request(running, method: "GET", path: "/health"))
         let http = try #require(response as? HTTPURLResponse)
 
         #expect(http.statusCode == 200)
+
+        // 010 · Phase 3 — /health carries the extension↔app version handshake.
+        let body = try JSONDecoder().decode(CaptureResponse.self, from: data)
+        #expect(body.status == "ok")
+        #expect(body.appVersion == CaptureServer.appVersion)
+        #expect(body.minExtensionVersion == CaptureServer.minExtensionVersion)
+        #expect(body.maxExtensionVersion == CaptureServer.maxExtensionVersion)
     }
 }

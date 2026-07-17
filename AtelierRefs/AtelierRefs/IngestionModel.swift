@@ -146,6 +146,9 @@ final class IngestionModel: ObservableObject {
     @Published private(set) var captureToken: String = ""
     /// The loopback port the capture endpoint listens on.
     let capturePort = CaptureServer.defaultPort
+    /// The on-disk Library root (set once the Library opens) — surfaced in the
+    /// Settings scene (010 · Phase 2) so the user can locate/back up their data.
+    @Published private(set) var libraryRoot: URL?
     /// Whether the capture endpoint bound successfully (false if the port was in
     /// use). Drives a hint in the UI.
     @Published private(set) var captureEndpointRunning = false
@@ -302,7 +305,20 @@ final class IngestionModel: ObservableObject {
     }
 
     init() {
+        undoManager.groupsByEvent = false
         Task { await bootstrap() }
+    }
+
+    /// Test-only: inject an already-open library (no capture endpoint / snapshot
+    /// orchestration) so the destructive verbs + their undo can be driven
+    /// deterministically — mirrors ``SpaceModel``'s injectable init. Callers load
+    /// the tree with ``refreshFolders()``.
+    init(services: AppServices, store: MediaStore) {
+        undoManager.groupsByEvent = false
+        self.services = services
+        self.store = store
+        self.selectedFolderID = services.unsortedFolderID
+        self.isReady = true
     }
 
     // MARK: - Bootstrap
@@ -313,6 +329,7 @@ final class IngestionModel: ObservableObject {
     private func bootstrap() async {
         do {
             let root = try LibraryLocation.defaultRoot()
+            self.libraryRoot = root
             let layout = LibraryLayout(root: root)
             let store = MediaStore(layout: layout)
             let dbURL = layout.root.appendingPathComponent("library.sqlite")
@@ -362,6 +379,11 @@ final class IngestionModel: ObservableObject {
             await refreshFolders()
             loadContents(of: selectedFolderID)
             await startCaptureEndpoint(coordinator: coordinator, services: services)
+
+            // Reclaim blobs orphaned by deletes that were never undone (010 ·
+            // delete-undo). Off-main, after the UI is up; the undo history is empty
+            // at launch, so any unreferenced blob is unreachable.
+            runOrphanBlobGC(services: services, store: store)
         } catch {
             self.lastError = "Failed to open library: \(error)"
             self.status = "Failed to open library."
@@ -467,6 +489,74 @@ final class IngestionModel: ObservableObject {
         NSPasteboard.general.setString(captureToken, forType: .string)
     }
 
+    /// Regenerate the capture token (010 · Phase 2 Settings): stop the endpoint,
+    /// persist a fresh secret, and restart it bound to the new token — so the
+    /// change takes effect immediately (the user then re-pairs the extension).
+    /// The old token stops working the moment the server restarts.
+    func regenerateCaptureToken() {
+        guard let coordinator, let services else { return }
+        Task {
+            await captureServer?.stop()
+            _ = CaptureTokenStore.save(CaptureToken.generate())
+            // `startCaptureEndpoint` reloads the persisted token, republishes
+            // `captureToken`, and rebinds the server auth.
+            await startCaptureEndpoint(coordinator: coordinator, services: services)
+            status = "Capture token regenerated — re-pair the extension."
+        }
+    }
+
+    /// Reveal the Library root in Finder (Settings "Show in Finder").
+    func revealLibraryInFinder() {
+        guard let libraryRoot else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([libraryRoot])
+    }
+
+    // MARK: - Diagnostics (010 · Phase 3)
+
+    /// Gather non-sensitive facts for a diagnostics export — versions, sizes, and
+    /// counts only, never library content.
+    private func diagnosticsFacts() -> DiagnosticsFacts {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = info?["CFBundleVersion"] as? String ?? "—"
+        var dbSize: Int64?
+        if let root = libraryRoot {
+            let dbPath = root.appendingPathComponent("library.sqlite").path
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: dbPath),
+               let size = attrs[.size] as? NSNumber {
+                dbSize = size.int64Value
+            }
+        }
+        return DiagnosticsFacts(
+            appVersion: version, appBuild: build,
+            osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            supportedExtensionRange:
+                "\(CaptureServer.minExtensionVersion)–\(CaptureServer.maxExtensionVersion)",
+            capturePort: Int(capturePort),
+            captureEndpointRunning: captureEndpointRunning,
+            libraryPath: libraryRoot?.path(percentEncoded: false),
+            databaseFileSizeBytes: dbSize,
+            snapshotCount: snapshotManager?.list().count ?? 0,
+            generatedAt: Date())
+    }
+
+    /// Export diagnostics (Settings): write the text report into the app
+    /// container's temp dir (sandbox-safe) and reveal it in Finder.
+    func exportDiagnostics() {
+        let text = DiagnosticsReport.text(from: diagnosticsFacts())
+        let name = "AtelierRefs-Diagnostics-\(Int(Date().timeIntervalSince1970)).txt"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            status = "Diagnostics exported."
+            AppLog.diagnostics.info(
+                "exported diagnostics: \(name, privacy: .public)")
+        } catch {
+            lastError = "Couldn't export diagnostics: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Bulk import (sweeps) — 015 · Phase 7
 
     /// UserDefaults key for the bulk-import consent (7A / legal framing). The
@@ -568,6 +658,178 @@ final class IngestionModel: ObservableObject {
         }
     }
 
+    // MARK: - App-level undo/redo (010 · Phase 1)
+
+    /// Library-wide undo/redo for the reversible destructive verbs — rename,
+    /// move (folder + assets), reorder, remove-from-collection. Mirrors
+    /// ``SpaceModel``'s proven design: every undoable write funnels through
+    /// ``enqueueUndoable(_:)`` so an undo can't reorder ahead of an in-flight
+    /// write, and inverses are id-based (never index-based) so they stay correct
+    /// as remote captures interleave.
+    ///
+    /// Asset DELETE is deliberately NOT undoable in v1: reversing the cascading
+    /// `deleteAssets` (sources, memberships, tag links, covers, job ledger, +
+    /// trashed blobs) needs a core "undelete" primitive; until then the
+    /// pre-destructive snapshot (008 H3) is its safety net (033-plan open-Q1).
+    let undoManager = UndoManager()
+
+    /// Bumped on every register / undo / redo so the Edit menu's enabled state +
+    /// action names refresh (UndoManager isn't `ObservableObject`).
+    @Published private(set) var undoToken = 0
+
+    /// Serial write chain: each undoable op awaits the previous, so DB writes stay
+    /// strictly ordered even as undo/redo interleave with live edits.
+    private var undoWriteChain: Task<Void, Never> = Task {}
+
+    /// Await the tail of the undoable write chain — for tests to observe a settled
+    /// (committed) state after an edit / undo / redo.
+    func waitForWrites() async { await undoWriteChain.value }
+
+    /// Append `work` to the serial undoable write chain (FIFO, strictly ordered).
+    private func enqueueUndoable(_ work: @escaping () async -> Void) {
+        let previous = undoWriteChain
+        undoWriteChain = Task { @MainActor in
+            await previous.value
+            await work()
+        }
+    }
+
+    /// Register an already-performed action as its own closed undo group:
+    /// `inverse` runs on undo, `primary` re-runs on redo, ping-ponging. Neither
+    /// runs now.
+    private func registerReversible(_ name: String,
+                                    primary: @escaping () -> Void,
+                                    inverse: @escaping () -> Void) {
+        undoManager.beginUndoGrouping()
+        undoManager.setActionName(name)
+        installUndo(name, primary: primary, inverse: inverse)
+        undoManager.endUndoGrouping()
+        undoToken &+= 1
+    }
+
+    /// The recursive ping-pong (see ``SpaceModel``): run `inverse`, then re-install
+    /// the mirror so redo re-runs `primary`. During undo/redo `UndoManager`
+    /// supplies the enclosing group, so this must NOT open its own.
+    private func installUndo(_ name: String,
+                             primary: @escaping () -> Void,
+                             inverse: @escaping () -> Void) {
+        undoManager.registerUndo(withTarget: self) { model in
+            inverse()
+            model.installUndo(name, primary: inverse, inverse: primary)
+            model.undoManager.setActionName(name)
+        }
+    }
+
+    var canUndo: Bool { undoManager.canUndo }
+    var canRedo: Bool { undoManager.canRedo }
+    var undoActionName: String { undoManager.undoActionName }
+    var redoActionName: String { undoManager.redoActionName }
+
+    func undo() { undoManager.undo(); undoToken &+= 1 }
+    func redo() { undoManager.redo(); undoToken &+= 1 }
+
+    #if DEBUG
+    /// Test-only: seed the visible `items` so a verb that captures the live order
+    /// (reorder / remove / move) reads a known state without racing the async
+    /// `loadContents` reload.
+    func setItemsForTesting(_ items: [CollectionItemDetail]) {
+        self.items = items
+    }
+    #endif
+
+    // MARK: - Undoable write workers (shared by verbs + their inverses)
+
+    /// Rename a folder, then refresh. No undo re-registration (the ping-pong
+    /// installs the mirror).
+    private func applyRename(id: UUID, to name: String) async {
+        guard let services else { return }
+        do {
+            _ = try await services.renameCollection(id: id, to: name)
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Reparent a folder, then refresh.
+    private func applyMoveFolder(id: UUID, toParent parent: UUID?) async {
+        guard let services else { return }
+        do {
+            try await services.moveCollection(id: id, toParent: parent)
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Set `folder`'s grid order to `desired`, filtered to current members so a
+    /// concurrently-deleted asset can't throw `.notFound`.
+    private func applyOrder(folder: UUID, desired: [UUID]) async {
+        guard let services, !desired.isEmpty else { return }
+        do {
+            let members = Set(try await services.collectionItems(in: folder).map { $0.asset.id })
+            let filtered = desired.filter(members.contains)
+            guard !filtered.isEmpty else { return }
+            try await services.setGridOrder(collectionID: folder, orderedAssetIDs: filtered)
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Persist a reorder, then focus + reload the folder (reorder verb + inverse).
+    private func applyReorder(folder: UUID, order: [UUID]) async {
+        await applyOrder(folder: folder, desired: order)
+        selectedFolderID = folder
+        loadContents(of: folder)
+    }
+
+    /// Drop memberships from `folder`, refresh, optionally publish `message`.
+    private func applyRemove(assetIDs: [UUID], from folder: UUID, message: String?) async {
+        guard let services else { return }
+        do {
+            try await services.removeAssets(assetIDs, from: folder)
+            await refreshFolders()
+            selectedFolderID = folder
+            loadContents(of: folder)
+            if let message { status = message }
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Re-add memberships to `folder` and restore their prior order — the inverse
+    /// of ``applyRemove``.
+    private func applyRestoreMemberships(assetIDs: [UUID], to folder: UUID, order: [UUID]) async {
+        guard let services else { return }
+        do {
+            try await services.addAssets(assetIDs, to: folder)
+            await applyOrder(folder: folder, desired: order)
+            await refreshFolders()
+            selectedFolderID = folder
+            loadContents(of: folder)
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Move memberships `source → target`, then focus + reload the source (move
+    /// verb + redo).
+    private func applyMoveAssets(_ assetIDs: [UUID], from source: UUID, to target: UUID, message: String?) async {
+        guard let services else { return }
+        do {
+            try await services.moveAssets(assetIDs, from: source, to: target)
+            await refreshFolders()
+            selectedFolderID = source
+            loadContents(of: source)
+            if let message { status = message }
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Move memberships back `target → source` and restore the source order — the
+    /// inverse of ``applyMoveAssets``.
+    private func applyMoveBack(_ assetIDs: [UUID], from target: UUID, to source: UUID, order: [UUID]) async {
+        guard let services else { return }
+        do {
+            try await services.moveAssets(assetIDs, from: target, to: source)
+            await applyOrder(folder: source, desired: order)
+            await refreshFolders()
+            selectedFolderID = source
+            loadContents(of: source)
+        } catch { lastError = Self.message(for: error) }
+    }
+
     // MARK: - Folder actions
 
     /// Reload the flat folder list (drives ``folderTree``).
@@ -585,10 +847,16 @@ final class IngestionModel: ObservableObject {
         perform { services in _ = try await services.createCollection(name: name, parent: parent) }
     }
 
-    /// Rename a folder. Rejected for Unsorted (`.protectedCollection`).
+    /// Rename a folder. Rejected for Unsorted (`.protectedCollection`). Undoable.
     func renameFolder(id: UUID, to name: String) {
-        guard id != unsortedFolderID else { return }
-        perform { services in _ = try await services.renameCollection(id: id, to: name) }
+        guard id != unsortedFolderID, services != nil else { return }
+        let oldName = folders.first { $0.id == id }?.name
+        enqueueUndoable { await self.applyRename(id: id, to: name) }
+        if let oldName, oldName != name {
+            registerReversible("Rename",
+                primary: { self.enqueueUndoable { await self.applyRename(id: id, to: name) } },
+                inverse: { self.enqueueUndoable { await self.applyRename(id: id, to: oldName) } })
+        }
     }
 
     /// Delete a folder and its whole subtree. Rejected for Unsorted.
@@ -599,10 +867,16 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Reparent a folder (`nil` ⇒ top level). Rejects cycles / Unsorted.
+    /// Reparent a folder (`nil` ⇒ top level). Rejects cycles / Unsorted. Undoable.
     func moveFolder(id: UUID, toParent parent: UUID?) {
-        guard id != unsortedFolderID else { return }
-        perform { services in try await services.moveCollection(id: id, toParent: parent) }
+        guard id != unsortedFolderID, services != nil else { return }
+        let oldParent = folders.first { $0.id == id }?.parentCollectionID
+        enqueueUndoable { await self.applyMoveFolder(id: id, toParent: parent) }
+        if oldParent != parent {
+            registerReversible("Move Folder",
+                primary: { self.enqueueUndoable { await self.applyMoveFolder(id: id, toParent: parent) } },
+                inverse: { self.enqueueUndoable { await self.applyMoveFolder(id: id, toParent: oldParent) } })
+        }
     }
 
     /// Run a folder mutation, refresh the tree, and (optionally, when the
@@ -764,7 +1038,7 @@ final class IngestionModel: ObservableObject {
     /// of the dragged items, no dragged id is a current item (foreign drop), or
     /// the folder isn't in `.manual` mode (reordering has no meaning there).
     func reorderItems(movingAssetIDs: [UUID], toIndexOf targetAssetID: UUID) {
-        guard let services, sortMode(for: selectedFolderID) == .manual else { return }
+        guard sortMode(for: selectedFolderID) == .manual, services != nil else { return }
         let currentIDs = items.map { $0.asset.id }
         guard let newOrder = reorderedIDs(
             ids: currentIDs, movingIDs: movingAssetIDs, toIndexOf: targetAssetID)
@@ -777,17 +1051,13 @@ final class IngestionModel: ObservableObject {
         items = newOrder.compactMap { byAssetID[$0] }
         contentsVersion &+= 1
 
+        // Undoable: the inverse restores the exact prior order (id-based). The
+        // write is serialized + reloads to the persisted truth either way.
         let folder = selectedFolderID
-        Task {
-            do {
-                try await services.setGridOrder(
-                    collectionID: folder, orderedAssetIDs: newOrder)
-            } catch {
-                lastError = Self.message(for: error)
-            }
-            // Reload to the persisted truth either way (core sorts by manual_order).
-            loadContents(of: folder)
-        }
+        enqueueUndoable { await self.applyReorder(folder: folder, order: newOrder) }
+        registerReversible("Reorder",
+            primary: { self.enqueueUndoable { await self.applyReorder(folder: folder, order: newOrder) } },
+            inverse: { self.enqueueUndoable { await self.applyReorder(folder: folder, order: currentIDs) } })
     }
 
     // MARK: - Selection + inspector
@@ -977,12 +1247,15 @@ final class IngestionModel: ObservableObject {
     /// its bytes, and its memberships elsewhere are untouched. Non-destructive and
     /// reversible, so it runs immediately without confirmation.
     func removeFromFolder(assetIDs: [UUID]) {
-        guard !assetIDs.isEmpty else { return }
+        guard !assetIDs.isEmpty, services != nil else { return }
         let folder = selectedFolderID
-        mutateContents { services in
-            try await services.removeAssets(assetIDs, from: folder)
-            return "Removed \(Self.itemCount(assetIDs.count)) from “\(self.name(for: folder))”."
-        }
+        // Capture the folder's order so undo restores the removed items' positions.
+        let priorOrder = items.map { $0.asset.id }
+        let message = "Removed \(Self.itemCount(assetIDs.count)) from “\(name(for: folder))”."
+        enqueueUndoable { await self.applyRemove(assetIDs: assetIDs, from: folder, message: message) }
+        registerReversible("Remove",
+            primary: { self.enqueueUndoable { await self.applyRemove(assetIDs: assetIDs, from: folder, message: nil) } },
+            inverse: { self.enqueueUndoable { await self.applyRestoreMemberships(assetIDs: assetIDs, to: folder, order: priorOrder) } })
     }
 
     /// MOVE assets out of the current folder into `targetID` — the atomic triage
@@ -990,12 +1263,16 @@ final class IngestionModel: ObservableObject {
     /// reload prunes them from the selection. A `from == to` / empty set is a
     /// no-op in core.
     func moveToCollection(assetIDs: [UUID], to targetID: UUID) {
-        guard !assetIDs.isEmpty else { return }
-        let folder = selectedFolderID
-        mutateContents { services in
-            try await services.moveAssets(assetIDs, from: folder, to: targetID)
-            return "Moved \(Self.itemCount(assetIDs.count)) to “\(self.name(for: targetID))”."
-        }
+        guard !assetIDs.isEmpty, services != nil else { return }
+        let source = selectedFolderID
+        guard source != targetID else { return }
+        // Capture the source order so undo restores the moved items' positions.
+        let priorOrder = items.map { $0.asset.id }
+        let message = "Moved \(Self.itemCount(assetIDs.count)) to “\(name(for: targetID))”."
+        enqueueUndoable { await self.applyMoveAssets(assetIDs, from: source, to: targetID, message: message) }
+        registerReversible("Move",
+            primary: { self.enqueueUndoable { await self.applyMoveAssets(assetIDs, from: source, to: targetID, message: nil) } },
+            inverse: { self.enqueueUndoable { await self.applyMoveBack(assetIDs, from: targetID, to: source, order: priorOrder) } })
     }
 
     /// COPY assets into `targetID` WITHOUT removing them here (009 · ⌥-drag / Add
@@ -1037,26 +1314,72 @@ final class IngestionModel: ObservableObject {
         pendingDeletion = nil
     }
 
-    /// Carry out the confirmed delete: remove the assets from the library, move
-    /// any now-orphaned blob/thumbnail files to the Trash (off-main), then refresh
-    /// the tree + current folder. Clears the pending state first so the dialog
-    /// dismisses immediately.
+    /// Carry out the confirmed delete (010 · delete-undo). Captures a verbatim
+    /// backup and removes the assets in one transaction, then registers an UNDO
+    /// (⌘Z → restore). Blobs are NOT reaped here — reaping is deferred to the
+    /// launch orphan-GC so an in-session undo finds the bytes on disk; a delete
+    /// that is never undone is reclaimed at the next launch. The pre-destructive
+    /// snapshot (008 H3) stays as the coarse net. Clears the pending state first so
+    /// the dialog dismisses immediately.
     func confirmPendingDeletion() {
-        guard let store, let pending = pendingDeletion else { return }
+        guard let services, let pending = pendingDeletion else { return }
         pendingDeletion = nil
         let assetIDs = pending.assetIDs
+        let count = assetIDs.count
         let snapshots = snapshotManager
-        mutateContents { services in
-            // Pre-destructive snapshot (008 H3): a recovery point before a
-            // library-wide delete removes bytes. Best-effort — a snapshot hiccup
-            // must not block the delete the user asked for.
+        enqueueUndoable {
             try? await snapshots?.snapshot(reason: .preDestructive)
-            let orphans = try await services.deleteAssets(assetIDs)
-            // File IO off the main actor; the DB delete is already committed, so
-            // this is best-effort cleanup (MediaReaper swallows per-file errors).
-            let reaper = MediaReaper(store: store)
-            _ = await Task.detached { reaper.reap(orphans) }.value
-            return "Deleted \(Self.itemCount(assetIDs.count))."
+            do {
+                let backup = try await services.deleteAssetsRecoverable(assetIDs)
+                await self.refreshFolders()
+                self.loadContents(of: self.selectedFolderID)
+                self.status = "Deleted \(Self.itemCount(count))."
+                // Register the undo now that the backup is in hand (id-based).
+                self.registerReversible("Delete",
+                    primary: { self.enqueueUndoable { await self.applyDeleteAgain(assetIDs, count: count) } },
+                    inverse: { self.enqueueUndoable { await self.applyRestore(backup) } })
+            } catch {
+                self.lastError = Self.message(for: error)
+            }
+        }
+    }
+
+    /// Restore a captured delete (undo). Blobs were never reaped, so byte-backed
+    /// assets come back with their media.
+    private func applyRestore(_ backup: DeletedAssetsBackup) async {
+        guard let services else { return }
+        do {
+            try await services.restoreDeletedAssets(backup)
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+            status = "Restored \(Self.itemCount(backup.assets.count))."
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Re-delete after a restore (redo). Reuses the plain delete and does NOT reap
+    /// (deferred to the launch GC), so a subsequent undo can restore again.
+    private func applyDeleteAgain(_ assetIDs: [UUID], count: Int) async {
+        guard let services else { return }
+        do {
+            _ = try await services.deleteAssets(assetIDs)
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+            status = "Deleted \(Self.itemCount(count))."
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Reclaim orphaned blob files left by deletes that were never undone (010 ·
+    /// delete-undo). Runs off-main after launch, when the undo history is empty so
+    /// any unreferenced blob is unreachable. A failed read of the referenced set
+    /// SKIPS the sweep (never reaps on uncertainty).
+    private func runOrphanBlobGC(services: AppServices, store: MediaStore) {
+        Task.detached(priority: .utility) {
+            guard let referenced = try? await services.referencedBlobHashes() else { return }
+            let reaped = MediaReaper(store: store).reapOrphanedBlobs(referenced: referenced)
+            if !reaped.isEmpty {
+                AppLog.model.info(
+                    "launch orphan-GC reclaimed \(reaped.count, privacy: .public) file(s)")
+            }
         }
     }
 

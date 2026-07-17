@@ -84,9 +84,9 @@ Three of everything: ingest paths, joins, renderers, dedup rules. Anti-DRY. **Re
 - Append the new identifier to `Migrator.registeredIdentifiers` + the pinned migration
   test list.
 
-**Migration sequencing (cross-doc):** this rebuild, [005](./005-spaces.md)'s space
+**Migration sequencing (cross-doc):** this rebuild, [005](./031-spaces-overview.md)'s space
 tables, and [007](./007-search-sort.md)'s columns are three separate append-only
-migrations, numbered by actual ship order. Take an [008](./008-backup.md) snapshot
+migrations, numbered by actual ship order. Take an [008](./feature-todo/008-backup.md) snapshot
 before each once snapshots exist — this rebuild is the single riskiest migration in the
 roadmap and is the strongest argument for shipping 008's snapshot early.
 
@@ -102,7 +102,7 @@ roadmap and is the strongest argument for shipping 008's snapshot early.
   `twitter.js`'s existing text/author harvest becomes a **tweet** item. Later, the bulk X
   sweep produces tweet items instead of bare images — the big payoff.
 - **App**: paste `#RRGGBB` / color-picker drop → color item; pasted page URL →
-  [001](./001-capture-link-resolution.md)'s resolver → link item (og:image as blob,
+  [001](./028-capture-link-resolution-overview.md)'s resolver → link item (og:image as blob,
   title/description/favicon in payload).
 
 ## Phased implementation (recommended order: color → link → tweet)

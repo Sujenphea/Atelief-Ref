@@ -32,6 +32,11 @@ struct AppShellView: View {
         .toolbar { appToolbar }
         .focusedSceneValue(\.navModel, nav)
         .focusedSceneValue(\.ingestionModel, model)
+        // Publish the model as a focused OBJECT too (010 · Phase 1 undo): the Edit
+        // menu observes it via `@FocusedObject` so Undo/Redo enablement + titles
+        // refresh reactively as actions register/fire. `@FocusedValue` (above)
+        // does NOT observe changes, so it alone left ⌘Z stuck disabled.
+        .focusedSceneObject(model)
         .sheet(isPresented: $showSweeps) {
             sweepsSheet
         }

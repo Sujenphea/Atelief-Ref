@@ -1,7 +1,7 @@
 # 017 — Capture: Instagram Export-ZIP Backfill (descoped from 002)
 
 > The account-safe complement to the live IG saved-posts driver
-> ([002](./002-capture-instagram-bulk.md)): parse Meta's "Download Your Information"
+> ([002](../029-capture-instagram-bulk-overview.md)): parse Meta's "Download Your Information"
 > export (`saved_posts.json`) and backfill saved posts offline. **Descoped from 002 on
 > 2026-07-15** (review issue 4/4A) because the path the original plan assumed is a
 > dead end — see §Why this is its own feature.

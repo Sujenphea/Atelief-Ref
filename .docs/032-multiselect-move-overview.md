@@ -76,7 +76,7 @@ The interaction contract (settled):
 - **Marquee**: a drag gesture on the scroll content's background. The virtualization
   trap — `LazyVGrid` only lays out *visible* cells, so live cell frames can't drive
   hit-testing for offscreen rows. Solution: **compute, don't measure** — the layout's
-  frames must come from pure math. With [011](./011-ux-features.md)'s settled move to
+  frames must come from pure math. With [011](./feature-todo/011-ux-features.md)'s settled move to
   **justified rows**, that math is the `JustifiedLayout` helper: it returns every
   item's frame as pure data (offscreen included), and marquee resolution becomes
   rect-intersection over those frames — exact and trivially testable. (Under today's
@@ -211,7 +211,7 @@ to L — N6 alone is the fiddliest gesture work in the set.
 - **Marquee vs ScrollView** is the one genuinely risky interaction: begin-from-
   background + movement threshold usually suffices on macOS, but budget manual
   tuning time; the index math itself is pure and safe.
-- The marquee's frame source must match the shipped layout: [011](./011-ux-features.md)
+- The marquee's frame source must match the shipped layout: [011](./feature-todo/011-ux-features.md)
   settles justified rows, so build N6 against `JustifiedLayout`'s frames (land N6 and
   011-U2 in the same window; don't implement uniform-grid marquee math that U2 would
   immediately obsolete).
