@@ -614,6 +614,10 @@ final class IngestionModel: ObservableObject {
         var skipped: Int { counts[.skipped] ?? 0 }
         /// Items that failed (retryable + permanent).
         var failed: Int { (counts[.retryableFailed] ?? 0) + (counts[.permanentFailed] ?? 0) }
+        /// Temporary failures (429/timeout/5xx) — a retry can recover these.
+        var retryableFailed: Int { counts[.retryableFailed] ?? 0 }
+        /// Permanent failures (404/unsupported/decode) — a retry won't help.
+        var permanentFailed: Int { counts[.permanentFailed] ?? 0 }
         /// The extension's up-front estimate, if any.
         var total: Int? { job.totalEstimate }
         /// Progress fraction against the estimate, clamped — nil when unknown.
@@ -670,6 +674,23 @@ final class IngestionModel: ObservableObject {
     func resumeSweep(_ id: UUID) { setSweepStatus(id, .open) }
     /// Cancel a sweep for good (halted — the browser loop stops on the next item).
     func cancelSweep(_ id: UUID) { setSweepStatus(id, .halted) }
+
+    /// Retry a terminal sweep's failures (034 P2): re-open the job so the next
+    /// browser run re-attempts everything not yet ingested. Only ingested/deduped
+    /// items are in the download-skip set, so failed items ARE re-tried; this is the
+    /// actionable exit from the "Failed N" dead-end. Same write as resume.
+    func retrySweep(_ id: UUID) { setSweepStatus(id, .open) }
+
+    /// The failed items of a sweep (retryable + permanent), newest change first, for
+    /// the row's expandable failure list. Empty on error / no failures.
+    func sweepFailures(jobID: UUID) async -> [JobItem] {
+        guard let services else { return [] }
+        let failed: Set<JobItemStatus> = [.retryableFailed, .permanentFailed]
+        let items = (try? await services.jobItems(forJob: jobID)) ?? []
+        return items
+            .filter { failed.contains($0.status) }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
 
     private func setSweepStatus(_ id: UUID, _ status: JobStatus) {
         guard let services else { return }

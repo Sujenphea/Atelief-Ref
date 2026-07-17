@@ -67,12 +67,17 @@ safety, unified feedback, keyboard/mouse parity) are closed. What remains is P2 
 
 ## Backlog (priority order)
 
+With batch 4 the **P2 backlog is clear too** — every item in the original survey is
+addressed. See changelogs 153–158.
+
 **P2 — discoverability & polish**
 - ~~Search results grid lacks the main grid's selection/keyboard/context-menu
   model~~ — **shipped (changelog 153):** multi-select (`GridSelection` reuse) +
   batch context menu (Add to Collection / Delete / Reveal), `⌘A`/`Esc`/`Return`/
   `Delete` keys. Arrow-cursor + marquee deferred (adaptive grid, no analytic frames).
-- Bulk "Failed N" is a dead-end — no list/reason/retry.
+- ~~Bulk "Failed N" is a dead-end — no list/reason/retry~~ — **shipped (changelog
+  158):** expandable temporary/permanent split, per-item source-URL list, and
+  Retry (re-open) for terminal sweeps with recoverable failures.
 - ~~Space tiles: no z-order (bring-to-front / send-back) controls~~ — **shipped
   (changelog 157):** toolbar Bring-to-Front / Send-to-Back (⌘⇧] / ⌘⇧[) on the
   selected tile, undoable via the space's own ⌘Z.

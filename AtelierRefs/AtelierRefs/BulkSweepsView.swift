@@ -133,6 +133,9 @@ private struct SweepRow: View {
     @ObservedObject var model: IngestionModel
 
     @State private var confirmingCancel = false
+    @State private var showFailures = false
+    @State private var failures: [JobItem] = []
+    @State private var loadingFailures = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -157,6 +160,8 @@ private struct SweepRow: View {
                 controls
             }
             .font(.callout)
+
+            if sweep.failed > 0 { failuresSection }
         }
         .padding(14)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
@@ -195,8 +200,74 @@ private struct SweepRow: View {
             Button("Resume") { model.resumeSweep(sweep.id) }
             Button("Cancel", role: .destructive) { confirmingCancel = true }
         case .complete, .halted:
-            EmptyView() // terminal — nothing to do
+            // A terminal sweep with recoverable failures can be re-run (034 P2):
+            // re-opening re-attempts everything not yet ingested.
+            if sweep.retryableFailed > 0 {
+                Button("Retry Failed") { model.retrySweep(sweep.id) }
+            }
         }
+    }
+
+    /// An expandable breakdown of the failures — the "Failed N" count used to be a
+    /// dead-end (034 P2). Shows the temporary/permanent split, then the failed items
+    /// (with their source URL) on demand.
+    @ViewBuilder
+    private var failuresSection: some View {
+        DisclosureGroup(isExpanded: $showFailures) {
+            VStack(alignment: .leading, spacing: 6) {
+                if loadingFailures {
+                    ProgressView().controlSize(.small)
+                } else if failures.isEmpty {
+                    Text("No item details recorded for these failures.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(failures, id: \.sourceID) { item in
+                        failureRow(item)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+        } label: {
+            HStack(spacing: 8) {
+                Text(failureSummary).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .task(id: showFailures) {
+            guard showFailures, failures.isEmpty, !loadingFailures else { return }
+            loadingFailures = true
+            failures = await model.sweepFailures(jobID: sweep.id)
+            loadingFailures = false
+        }
+    }
+
+    private var failureSummary: String {
+        var parts: [String] = []
+        if sweep.retryableFailed > 0 { parts.append("\(sweep.retryableFailed) temporary") }
+        if sweep.permanentFailed > 0 { parts.append("\(sweep.permanentFailed) permanent") }
+        return parts.isEmpty ? "Failure details" : parts.joined(separator: " · ")
+    }
+
+    private func failureRow(_ item: JobItem) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: item.status == .retryableFailed
+                  ? "clock.arrow.circlepath" : "xmark.octagon")
+                .foregroundStyle(item.status == .retryableFailed ? .orange : .red)
+                .help(item.status == .retryableFailed
+                      ? "Temporary — retry can recover this" : "Permanent — retry won't help")
+            if let url = item.sourceURL, !url.isEmpty {
+                Button {
+                    model.openSourceURL(url)
+                } label: {
+                    Text(url).lineLimit(1).truncationMode(.middle)
+                }
+                .buttonStyle(.link)
+            } else {
+                Text(item.sourceID).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
     }
 }
 
