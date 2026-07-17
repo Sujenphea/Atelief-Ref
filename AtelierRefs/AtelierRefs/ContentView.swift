@@ -51,17 +51,14 @@ struct ContentView: View {
             // The 3-pane split's 960 minimum no longer applies — the new shell is
             // a single navigation column.
             .frame(minWidth: 860, minHeight: 600)
-            // Restore the last-opened collection once the folder list loads
-            // (004 Q3 — restore last collection only). `$folders` fires inside the
-            // model's publish cycle (a view update), and `restoreIfNeeded` writes
-            // `nav.path`; doing that synchronously pushes the NavigationStack
-            // mid-update ("NavigationRequestObserver tried to update multiple times
-            // per frame" at launch). Defer with a MainActor `Task` so the push
-            // lands on the next hop — crucially NOT a bare `DispatchQueue.main.async`,
-            // which mutates the stack OUTSIDE a SwiftUI transaction and escalates the
-            // warning to a hard fault. The one-shot `didRestore` guard keeps it correct.
+            // The last-opened collection is restored by seeding `NavModel.path`'s
+            // INITIAL value (004 Q3) — no launch-time push. Here we only VALIDATE it
+            // once folders load: drop the seeded path if that collection was deleted
+            // since last launch. The common case (it still exists) mutates nothing,
+            // so launch performs no `nav.path` change and the NavigationStack observer
+            // stays quiet.
             .onReceive(model.$folders) { folders in
-                Task { @MainActor in nav.restoreIfNeeded(using: folders) }
+                nav.pruneRestoredPathIfMissing(using: folders)
             }
             // App-shell alert so bootstrap / capture / space errors surface from
             // any screen.

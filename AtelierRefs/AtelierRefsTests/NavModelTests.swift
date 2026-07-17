@@ -65,7 +65,7 @@ struct NavRouteTests {
 
     @Test("openCollection / openSpace push; goBack pops; goToRoot clears")
     func pushPop() {
-        let nav = NavModel()
+        let nav = NavModel(initialPath: [])
         let c = UUID(), s = UUID()
         nav.openCollection(c)
         #expect(nav.path == [.collection(c)])
@@ -79,7 +79,7 @@ struct NavRouteTests {
 
     @Test("pushing the same route twice is idempotent")
     func idempotentPush() {
-        let nav = NavModel()
+        let nav = NavModel(initialPath: [])
         let c = UUID()
         nav.openCollection(c)
         nav.openCollection(c)
@@ -91,7 +91,7 @@ struct NavRouteTests {
 
     @Test("goBack at the root gallery is a no-op")
     func backAtRoot() {
-        let nav = NavModel()
+        let nav = NavModel(initialPath: [])
         nav.goBack()
         #expect(nav.path.isEmpty)
     }

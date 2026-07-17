@@ -54,6 +54,15 @@ struct AppShellView: View {
             Text(model.restoreStagedMessage ?? "")
         }
         .task { await model.refreshSweeps() }
+        // Load the initially-shown collection once the library is ready. The nav
+        // path is SEEDED with the restored collection (not pushed), so the
+        // `onChange(of: nav.path)` loader below never fires for it — this covers
+        // that first load. A no-op on a fresh launch (empty path → the gallery,
+        // which reads folders, not `model.items`). `isReady` flips once per launch,
+        // so this runs once and doesn't double-load with the path loader.
+        .task(id: model.isReady) {
+            if model.isReady { syncActiveCollection(nav.path) }
+        }
         // The nav path is the single owner of "which collection is live": load the
         // top collection's contents on EVERY path change — push and pop alike. The
         // per-view `.task` only fires on a fresh push, so on back the shared

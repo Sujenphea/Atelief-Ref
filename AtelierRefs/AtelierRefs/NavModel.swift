@@ -32,7 +32,19 @@ enum AppRoute: Hashable {
 final class NavModel: ObservableObject {
 
     /// The `NavigationStack` drill-down path. Empty = the Collections gallery.
-    @Published var path: [AppRoute] = []
+    /// Seeded at construction with the last-opened collection (004 Q3 restore) as
+    /// the STARTING value — never pushed at runtime during launch. Pushing the
+    /// restore reactively (once folders loaded) mutated the stack mid-launch and
+    /// tripped "NavigationRequestObserver tried to update multiple times per frame";
+    /// as the initial value there is no launch-time path change at all. Validated
+    /// against the real folder list once it loads (`pruneRestoredPathIfMissing`).
+    @Published var path: [AppRoute]
+
+    /// - Parameter initialPath: the starting nav path. Defaults to the relaunch
+    ///   restore (the last-opened collection); tests pass `[]` for a clean root.
+    init(initialPath: [AppRoute] = NavModel.restoredInitialPath()) {
+        self.path = initialPath
+    }
 
     /// The membership id of the item shown in the full-window detail overlay, or
     /// `nil`. Reserved for 006; the collection screen keeps a local flag until
@@ -41,11 +53,11 @@ final class NavModel: ObservableObject {
 
     /// UserDefaults key for the last-opened collection (nav restore, 004 Q3 —
     /// "restore last collection only").
-    private static let lastCollectionKey = "AtelierLastCollectionID"
+    nonisolated private static let lastCollectionKey = "AtelierLastCollectionID"
 
-    /// Whether the one-shot relaunch restore has already run (so a later folder
-    /// refresh can't re-push the restored collection over the user's navigation).
-    private var didRestore = false
+    /// Whether the one-shot restore VALIDATION has run (so a later folder refresh
+    /// doesn't keep re-checking the seeded collection).
+    private var didValidateRestore = false
 
     // MARK: - Navigation intents
 
@@ -76,23 +88,29 @@ final class NavModel: ObservableObject {
 
     // MARK: - Relaunch restore (004 Q3)
 
-    /// Reopen the last-viewed collection ONCE, after the folder list first
-    /// loads, if that collection still exists (restore last collection only).
-    /// Spaces / detail overlays deliberately start closed.
-    func restoreIfNeeded(using collections: [Collection]) {
-        guard !didRestore, path.isEmpty else { return }
-        // Wait until folders have actually loaded before deciding.
-        guard !collections.isEmpty else { return }
-        didRestore = true
-        // UI smoke tests launch with a clean, deterministic root (the Collections
-        // gallery) rather than whatever collection was last opened.
-        guard !ProcessInfo.processInfo.arguments.contains("-uitest-fresh-nav") else { return }
+    /// The nav path to START at: the last-opened collection, seeded as the initial
+    /// value so relaunch shows it WITHOUT a runtime push during launch. UI smoke
+    /// tests launch at a clean gallery root. Existence is validated later, once the
+    /// folder list loads (`pruneRestoredPathIfMissing`) — at construction we can't
+    /// yet know whether the collection survives.
+    nonisolated private static func restoredInitialPath() -> [AppRoute] {
         guard
-            let stored = UserDefaults.standard.string(forKey: Self.lastCollectionKey),
-            let id = UUID(uuidString: stored),
-            collections.contains(where: { $0.id == id })
-        else { return }
-        path = [.collection(id)]
+            !ProcessInfo.processInfo.arguments.contains("-uitest-fresh-nav"),
+            let stored = UserDefaults.standard.string(forKey: lastCollectionKey),
+            let id = UUID(uuidString: stored)
+        else { return [] }
+        return [.collection(id)]
+    }
+
+    /// Clear a seeded restore whose collection no longer exists, once the folder
+    /// list has loaded. Runs at most once; a no-op for the common case (the
+    /// collection still exists) and whenever the user has already navigated away —
+    /// so the common launch performs NO path mutation, which is the whole point.
+    func pruneRestoredPathIfMissing(using collections: [Collection]) {
+        guard !didValidateRestore, !collections.isEmpty else { return }
+        didValidateRestore = true
+        guard path.count == 1, case .collection(let id)? = path.first else { return }
+        if !collections.contains(where: { $0.id == id }) { path = [] }
     }
 }
 
