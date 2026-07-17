@@ -52,22 +52,10 @@ public enum ThumbnailGenerator {
     /// be encoded, and ``ImageError/decodeFailed`` for a corrupt/truncated
     /// source that yields no thumbnail.
     public static func makeThumbnail(from data: Data, maxPixelSize: Int) throws -> Data {
-        guard !data.isEmpty,
-              let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            throw ImageError.unreadable
-        }
-
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-        ]
-
-        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            // No thumbnail from a recognized source ⇒ the bytes wouldn't decode.
-            throw ImageError.decodeFailed
-        }
-
+        // Source creation + thumbnail decode live in the shared ``ImageDecoding``
+        // helper (same options + error mapping across every image utility); this
+        // path adds only the JPEG re-encode of the display-oriented result.
+        let thumbnail = try ImageDecoding.thumbnailCGImage(from: data, maxPixelSize: maxPixelSize)
         return try encodeJPEG(thumbnail)
     }
 
