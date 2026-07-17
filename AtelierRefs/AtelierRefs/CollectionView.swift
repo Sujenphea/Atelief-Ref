@@ -485,10 +485,13 @@ struct CollectionView: View {
                 onImageClick: { shift, command in
                     handleImageClick(detail, shift: shift, command: command, proxy: proxy)
                 },
-                onHoverChanged: { hovering in
-                    if hovering { hoveredItemID = detail.item.id }
-                    else if hoveredItemID == detail.item.id { hoveredItemID = nil }
-                })
+                // The cell's own hover stays LOCAL to it (GIF dwell only). Circle
+                // visibility is driven by the ZStack's `.onHover` below instead:
+                // the circle is a sibling ON TOP of the cell, so moving onto it to
+                // click occludes the cell and fires its hover FALSE — which used to
+                // hide the circle mid-reach (flicker), dropping the click onto the
+                // image underneath (it opened the item instead of multi-selecting).
+                onHoverChanged: { _ in })
                 .equatable()
                 .frame(width: columnWidth, height: columnWidth / CGFloat(aspect(for: detail)))
                 .draggable(dragPayload(for: detail)) { dragPreview(for: detail) }
@@ -501,6 +504,13 @@ struct CollectionView: View {
             }
         }
         .id(detail.item.id)
+        // Hover the WHOLE cell region (cell + circle): the circle sits on top of the
+        // cell, so keying visibility off the container keeps it stable while the
+        // pointer travels onto it — no flicker, and the click lands on the circle.
+        .onHover { hovering in
+            if hovering { hoveredItemID = detail.item.id }
+            else if hoveredItemID == detail.item.id { hoveredItemID = nil }
+        }
         .animation(.easeInOut(duration: 0.12), value: showsCircle)
     }
 
