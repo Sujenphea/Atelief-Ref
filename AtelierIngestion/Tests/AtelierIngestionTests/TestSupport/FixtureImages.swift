@@ -51,6 +51,22 @@ enum FixtureImages {
         return try encode(image, format: format, orientation: nil)
     }
 
+    /// A `width × height` image of ONE flat sRGB color — every pixel identical.
+    /// Unlike ``solidImage`` (which draws a gradient), this exercises flat-image
+    /// behavior: a dHash of all-equal luminance samples, and a single dominant
+    /// color. Defaults to PNG (lossless, so the decoded color is exact).
+    static func solidColorImage(
+        width: Int, height: Int, red: UInt8, green: UInt8, blue: UInt8, format: Format = .png
+    ) throws -> Data {
+        let image = try makeFilledCGImage(width: width, height: height) { context in
+            context.setFillColor(
+                red: CGFloat(red) / 255, green: CGFloat(green) / 255,
+                blue: CGFloat(blue) / 255, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        return try encode(image, format: format, orientation: nil)
+    }
+
     // MARK: - EXIF-oriented image
 
     /// An image whose STORED pixels are `pixelWidth × pixelHeight` but which
@@ -151,6 +167,32 @@ enum FixtureImages {
             context.fill(CGRect(x: CGFloat(x), y: 0, width: 1, height: CGFloat(height)))
         }
 
+        guard let image = context.makeImage() else {
+            throw FixtureError.contextCreationFailed
+        }
+        return image
+    }
+
+    /// Build a `width × height` RGBA `CGImage` by running `draw` against a fresh
+    /// premultiplied-alpha context — the flexible primitive behind the solid /
+    /// two-tone / transparent fixtures. The context starts fully transparent, so a
+    /// `draw` that fills only part of the frame leaves the rest transparent.
+    static func makeFilledCGImage(
+        width: Int, height: Int, draw: (CGContext) -> Void
+    ) throws -> CGImage {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw FixtureError.contextCreationFailed
+        }
+        draw(context)
         guard let image = context.makeImage() else {
             throw FixtureError.contextCreationFailed
         }
