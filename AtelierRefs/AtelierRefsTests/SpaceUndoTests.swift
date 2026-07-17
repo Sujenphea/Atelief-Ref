@@ -110,4 +110,42 @@ struct SpaceUndoTests {
         #expect(model.items.first!.item.x == 0)
         #expect(model.items.first!.item.y == 0)
     }
+
+    // MARK: - Restack (z-order, 034 P2)
+
+    @Test("bring to front raises z above all; undo restores the prior z")
+    func restackBringToFront() async throws {
+        let (model, _, _) = try await makeModel()
+        model.addFrame(worldRect: CGRect(x: 0, y: 0, width: 100, height: 100)) // behind
+        await model.waitForWrites()
+        model.addText(worldRect: CGRect(x: 0, y: 0, width: 100, height: 100))  // front
+        await model.waitForWrites()
+
+        let frameZ0 = model.items.first { $0.item.kind == .frame }!.item.z
+        let textZ0 = model.items.first { $0.item.kind == .text }!.item.z
+        #expect(frameZ0 < textZ0)   // frame starts behind the text
+
+        let frameID = model.items.first { $0.item.kind == .frame }!.item.id
+        model.bringToFront(itemID: frameID)
+        await model.waitForWrites()
+        let frameZ1 = model.items.first { $0.item.kind == .frame }!.item.z
+        let textZ1 = model.items.first { $0.item.kind == .text }!.item.z
+        #expect(frameZ1 > textZ1)   // frame is now in front
+
+        model.undo()
+        await model.waitForWrites()
+        #expect(model.items.first { $0.item.kind == .frame }!.item.z == frameZ0)
+    }
+
+    @Test("bring-to-front on the sole front tile leaves z unchanged (no-op guard)")
+    func restackNoOpAtExtreme() async throws {
+        let (model, _, _) = try await makeModel()
+        model.addText(worldRect: CGRect(x: 0, y: 0, width: 50, height: 50))
+        await model.waitForWrites()
+        let item = model.items.first!.item
+
+        model.bringToFront(itemID: item.id)   // already the only (front) tile
+        await model.waitForWrites()
+        #expect(model.items.first!.item.z == item.z)   // unchanged — no z inflation
+    }
 }

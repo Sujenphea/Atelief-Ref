@@ -73,6 +73,9 @@ safety, unified feedback, keyboard/mouse parity) are closed. What remains is P2 
   batch context menu (Add to Collection / Delete / Reveal), `⌘A`/`Esc`/`Return`/
   `Delete` keys. Arrow-cursor + marquee deferred (adaptive grid, no analytic frames).
 - Bulk "Failed N" is a dead-end — no list/reason/retry.
+- ~~Space tiles: no z-order (bring-to-front / send-back) controls~~ — **shipped
+  (changelog 157):** toolbar Bring-to-Front / Send-to-Back (⌘⇧] / ⌘⇧[) on the
+  selected tile, undoable via the space's own ⌘Z.
 - ~~Onboarding: no live pairing confirmation; "three steps" copy over four steps~~
   — **shipped (changelog 154):** step 4 → non-numbered outro (copy now truthful),
   live endpoint dot + first-capture confirmation, redacted token placeholder.

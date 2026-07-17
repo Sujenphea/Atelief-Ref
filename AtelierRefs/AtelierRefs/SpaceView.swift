@@ -66,6 +66,27 @@ struct SpaceView: View {
                 .help(space.canRedo ? "Redo \(space.redoActionName)" : "Nothing to redo")
                 .keyboardShortcut("z", modifiers: [.command, .shift])
             }
+            // Z-order for the selected tile (034 P2). Undoable via the space's own
+            // ⌘Z; disabled with nothing selected.
+            ToolbarItemGroup {
+                Button {
+                    if let id = space.selectedItemID { space.bringToFront(itemID: id) }
+                } label: {
+                    Label("Bring to Front", systemImage: "square.3.layers.3d.top.filled")
+                }
+                .disabled(space.selectedItemID == nil)
+                .help("Bring the selected item to the front (⌘⇧])")
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+
+                Button {
+                    if let id = space.selectedItemID { space.sendToBack(itemID: id) }
+                } label: {
+                    Label("Send to Back", systemImage: "square.3.layers.3d.bottom.filled")
+                }
+                .disabled(space.selectedItemID == nil)
+                .help("Send the selected item to the back (⌘⇧[)")
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+            }
             ToolbarItem {
                 Button { showAddSheet = true } label: {
                     Label("Add from Library", systemImage: "plus")

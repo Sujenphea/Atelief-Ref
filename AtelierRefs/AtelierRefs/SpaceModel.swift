@@ -259,6 +259,42 @@ final class SpaceModel: ObservableObject {
         await load()
     }
 
+    // MARK: - Restack (z-order)
+
+    /// Bring a tile to the FRONT (highest z). No-op if it's already the sole top.
+    func bringToFront(itemID: UUID) { restack(itemID, toFront: true) }
+
+    /// Send a tile to the BACK (lowest z). No-op if it's already the sole bottom.
+    func sendToBack(itemID: UUID) { restack(itemID, toFront: false) }
+
+    /// Resolve a tile id (canvas index) to its space-item id, then restack it. Lets
+    /// the canvas context menu act on the right-clicked tile without a selection.
+    func bringTileToFront(tileID: Int, in content: SpaceContent) {
+        if let id = content.spaceItemID(forTileID: tileID) { bringToFront(itemID: id) }
+    }
+    func sendTileToBack(tileID: Int, in content: SpaceContent) {
+        if let id = content.spaceItemID(forTileID: tileID) { sendToBack(itemID: id) }
+    }
+
+    /// Set a tile's z to one past the current front / back and PERSIST it, undoable
+    /// via the same placement write as a move (so it interleaves correctly). Skips a
+    /// tile that is already the sole item at that extreme — no pointless undo entry.
+    private func restack(_ itemID: UUID, toFront: Bool) {
+        guard let detail = items.first(where: { $0.item.id == itemID }) else { return }
+        let item = detail.item
+        let zs = items.map(\.item.z)
+        let extreme = toFront ? (zs.max() ?? item.z) : (zs.min() ?? item.z)
+        // Already the lone tile at the target edge → nothing to do.
+        if item.z == extreme, zs.filter({ $0 == item.z }).count == 1 { return }
+        let targetZ = toFront ? extreme + 1 : extreme - 1
+        let old = Placement(x: item.x, y: item.y, w: item.w, h: item.h, z: item.z)
+        let new = Placement(x: item.x, y: item.y, w: item.w, h: item.h, z: targetZ)
+        enqueue { await self.persistPlacement(itemID, new, reload: true) }
+        registerReversible(toFront ? "Bring to Front" : "Send to Back",
+            primary: { self.enqueue { await self.persistPlacement(itemID, new, reload: true) } },
+            inverse: { self.enqueue { await self.persistPlacement(itemID, old, reload: true) } })
+    }
+
     // MARK: - Remove
 
     /// Remove a tile's row from the space (a placement, NOT the underlying
