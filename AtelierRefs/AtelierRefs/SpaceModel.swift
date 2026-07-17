@@ -280,19 +280,36 @@ final class SpaceModel: ObservableObject {
     /// via the same placement write as a move (so it interleaves correctly). Skips a
     /// tile that is already the sole item at that extreme — no pointless undo entry.
     private func restack(_ itemID: UUID, toFront: Bool) {
-        guard let detail = items.first(where: { $0.item.id == itemID }) else { return }
-        let item = detail.item
+        guard items.contains(where: { $0.item.id == itemID }) else { return }
+        // Read the LIVE placement from content, not `items`: a drag updates content
+        // in place and persists with reload:false, so `items` holds the stale
+        // pre-drag x/y. Writing those back here would revert the move. z is never
+        // touched by a drag, so the extreme is still computed from `items`.
+        let content = self.content()
+        let current = livePlacement(itemID, in: content)
         let zs = items.map(\.item.z)
-        let extreme = toFront ? (zs.max() ?? item.z) : (zs.min() ?? item.z)
+        let extreme = toFront ? (zs.max() ?? current.z) : (zs.min() ?? current.z)
         // Already the lone tile at the target edge → nothing to do.
-        if item.z == extreme, zs.filter({ $0 == item.z }).count == 1 { return }
+        if current.z == extreme, zs.filter({ $0 == current.z }).count == 1 { return }
         let targetZ = toFront ? extreme + 1 : extreme - 1
-        let old = Placement(x: item.x, y: item.y, w: item.w, h: item.h, z: item.z)
-        let new = Placement(x: item.x, y: item.y, w: item.w, h: item.h, z: targetZ)
+        let old = current
+        let new = Placement(x: current.x, y: current.y, w: current.w, h: current.h, z: targetZ)
         enqueue { await self.persistPlacement(itemID, new, reload: true) }
         registerReversible(toFront ? "Bring to Front" : "Send to Back",
             primary: { self.enqueue { await self.persistPlacement(itemID, new, reload: true) } },
             inverse: { self.enqueue { await self.persistPlacement(itemID, old, reload: true) } })
+    }
+
+    /// The freshest placement for `itemID`: the in-memory tile (which carries a
+    /// not-yet-reloaded drag position) when present, else the stored row.
+    private func livePlacement(_ itemID: UUID, in content: SpaceContent) -> Placement {
+        if let tid = content.tileID(forSpaceItemID: itemID),
+           content.tiles.indices.contains(tid) {
+            let t = content.tiles[tid]
+            return Placement(x: t.x, y: t.y, w: t.w, h: t.h, z: t.z)
+        }
+        let item = items.first(where: { $0.item.id == itemID })!.item
+        return Placement(x: item.x, y: item.y, w: item.w, h: item.h, z: item.z)
     }
 
     // MARK: - Remove

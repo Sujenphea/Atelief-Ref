@@ -148,4 +148,29 @@ struct SpaceUndoTests {
         await model.waitForWrites()
         #expect(model.items.first!.item.z == item.z)   // unchanged — no z inflation
     }
+
+    @Test("restack after an unreloaded drag keeps the moved position (not the stale x/y)")
+    func restackKeepsDraggedPosition() async throws {
+        let (model, _, _) = try await makeModel()
+        model.addFrame(worldRect: CGRect(x: 0, y: 0, width: 100, height: 100)) // behind
+        await model.waitForWrites()
+        model.addText(worldRect: CGRect(x: 10, y: 10, width: 100, height: 100)) // front
+        await model.waitForWrites()
+
+        // Drag the frame WITHOUT a reload — mirrors flicker-free drag, so `items`
+        // keeps the stale pre-drag x/y while content holds the live position.
+        let content = model.content()
+        let frameID = model.items.first { $0.item.kind == .frame }!.item.id
+        let tileID = content.tileID(forSpaceItemID: frameID)!
+        model.moveTile(tileID: tileID, to: CGPoint(x: 640, y: 480), in: content)
+        await model.waitForWrites()
+
+        // Now bring it to front — it must NOT snap back to (0, 0).
+        model.bringToFront(itemID: frameID)
+        await model.waitForWrites()
+        await model.load()
+        let frame = model.items.first { $0.item.kind == .frame }!.item
+        #expect(frame.x == 640)
+        #expect(frame.y == 480)
+    }
 }
