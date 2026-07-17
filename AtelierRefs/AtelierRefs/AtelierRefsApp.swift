@@ -68,7 +68,14 @@ private struct SortCommands: View {
             if let model { model.setSortMode(mode, for: model.selectedFolderID) }
         } label: {
             let active = model.map { $0.sortMode(for: $0.selectedFolderID) == mode } ?? false
-            Label(title, systemImage: active ? "checkmark" : "")
+            // A menu Button reserves the checkmark gutter itself, so show the
+            // checkmark only when active — an empty `systemImage` string logs
+            // "No symbol named '' found in system symbol set" on every render.
+            if active {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
+            }
         }
     }
 }

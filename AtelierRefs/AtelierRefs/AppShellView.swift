@@ -70,7 +70,12 @@ struct AppShellView: View {
     /// / the root gallery keep the last-loaded folder as the import target).
     private func syncActiveCollection(_ path: [AppRoute]) {
         guard case .collection(let id)? = path.last else { return }
-        model.selectedFolderID = id
+        // Only publish `selectedFolderID` when it truly changes — an unconditional
+        // write during the same frame the nav path changes can trip SwiftUI's
+        // "update multiple times per frame" observer. The reload stays
+        // unconditional: a pop-back lands here with the deeper id still selected, so
+        // the guard above is always false then and the grid still reloads.
+        if model.selectedFolderID != id { model.selectedFolderID = id }
         model.loadContents(of: id)
     }
 
