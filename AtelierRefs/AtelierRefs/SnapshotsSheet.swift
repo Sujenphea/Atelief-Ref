@@ -14,6 +14,7 @@ import SwiftUI
 struct SnapshotsSheet: View {
     @ObservedObject var model: IngestionModel
     @State private var confirming: SnapshotFile?
+    @State private var deleting: SnapshotFile?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,6 +41,22 @@ struct SnapshotsSheet: View {
                 + "\(snapshot.date.formatted(date: .abbreviated, time: .shortened)). "
                 + "The restore completes the next time you open AtelierRefs.")
         }
+        .confirmationDialog(
+            "Delete this snapshot?",
+            isPresented: Binding(
+                get: { deleting != nil },
+                set: { if !$0 { deleting = nil } }),
+            presenting: deleting
+        ) { snapshot in
+            Button("Delete", role: .destructive) {
+                model.deleteSnapshot(snapshot)
+                deleting = nil
+            }
+            Button("Cancel", role: .cancel) { deleting = nil }
+        } message: { snapshot in
+            Text("This backup file is removed from disk. Your live library is not "
+                + "affected. This can't be undone.")
+        }
     }
 
     private var header: some View {
@@ -49,9 +66,16 @@ struct SnapshotsSheet: View {
             Button {
                 model.snapshotNow()
             } label: {
-                Label("Snapshot Now", systemImage: "camera")
+                if model.isSnapshotting {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Saving…")
+                    }
+                } else {
+                    Label("Snapshot Now", systemImage: "camera")
+                }
             }
-            .disabled(model.snapshotManager == nil)
+            .disabled(model.snapshotManager == nil || model.isSnapshotting)
             Button("Done") { model.showSnapshots = false }
         }
         .padding(12)
@@ -59,6 +83,9 @@ struct SnapshotsSheet: View {
 
     @ViewBuilder
     private var content: some View {
+        // Referencing the version subscribes the sheet so it re-reads the list when
+        // a snapshot lands or is deleted.
+        let _ = model.snapshotsVersion
         let snapshots = model.availableSnapshots()
         if snapshots.isEmpty {
             VStack(spacing: 6) {
@@ -72,19 +99,54 @@ struct SnapshotsSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding()
         } else {
-            List(snapshots, id: \.url) { snapshot in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(snapshot.date.formatted(date: .abbreviated, time: .shortened))
-                        Text(Self.label(for: snapshot.reason))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Restore…") { confirming = snapshot }
+            VStack(spacing: 0) {
+                List(snapshots, id: \.url) { snapshot in
+                    row(for: snapshot)
                 }
-                .padding(.vertical, 2)
+                snapshotsFooter(snapshots)
             }
         }
+    }
+
+    private func row(for snapshot: SnapshotFile) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(snapshot.date.formatted(date: .abbreviated, time: .shortened))
+                HStack(spacing: 6) {
+                    Text(Self.label(for: snapshot.reason))
+                    Text("·")
+                    Text(Self.sizeText(model.snapshotByteSize(snapshot)))
+                }
+                .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Restore…") { confirming = snapshot }
+            Button {
+                deleting = snapshot
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Delete this snapshot")
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// A summary of how much disk the backups occupy — the read-only list gave no
+    /// sense of footprint before (034 P2).
+    private func snapshotsFooter(_ snapshots: [SnapshotFile]) -> some View {
+        let total = snapshots.reduce(Int64(0)) { $0 + model.snapshotByteSize($1) }
+        return HStack {
+            Text("\(snapshots.count) snapshot\(snapshots.count == 1 ? "" : "s")")
+            Spacer()
+            Text(Self.sizeText(total))
+        }
+        .font(.caption).foregroundStyle(.secondary)
+        .padding(.horizontal, 12).padding(.vertical, 8)
+    }
+
+    private static func sizeText(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     private static func label(for reason: SnapshotReason) -> String {

@@ -69,6 +69,29 @@ final class SnapshotManager {
         return urls.compactMap { SnapshotFile(url: $0) }.sorted { $0.date > $1.date }
     }
 
+    /// The on-disk size of `snapshot` in bytes, including any `-wal`/`-shm`
+    /// sidecars a pre-migration snapshot carries. `0` if the file is gone.
+    func byteSize(of snapshot: SnapshotFile) -> Int64 {
+        var total: Int64 = 0
+        for suffix in ["", "-wal", "-shm"] {
+            if let attrs = try? FileManager.default.attributesOfItem(
+                atPath: snapshot.url.path + suffix),
+               let size = attrs[.size] as? Int64 {
+                total += size
+            }
+        }
+        return total
+    }
+
+    /// Delete one snapshot (+ its sidecars) on the user's explicit request. Unlike
+    /// `prune`, this honours a manual delete of ANY snapshot — including
+    /// pre-migration, which auto-retention keeps forever. Best-effort.
+    func delete(_ snapshot: SnapshotFile) {
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.removeItem(atPath: snapshot.url.path + suffix)
+        }
+    }
+
     /// Take a snapshot for `reason` now, then prune per the retention policy.
     /// Returns the new snapshot's URL.
     @discardableResult

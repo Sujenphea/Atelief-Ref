@@ -68,6 +68,21 @@ struct SnapshotManagerTests {
         #expect(try AppServices.isHealthy(databaseFileAt: url))
     }
 
+    @Test("byteSize reports a real size; delete removes the file from disk + list")
+    func byteSizeAndDelete() async throws {
+        let (manager, cleanup) = try makeManager()
+        defer { cleanup() }
+
+        _ = try await manager.snapshot(reason: .manual)
+        let snapshot = try #require(manager.list().first)
+        #expect(manager.byteSize(of: snapshot) > 0)
+
+        manager.delete(snapshot)
+        #expect(!FileManager.default.fileExists(atPath: snapshot.url.path))
+        #expect(manager.list().isEmpty)
+        #expect(manager.byteSize(of: snapshot) == 0)   // gone → 0
+    }
+
     @Test("snapshotIfStale takes one daily, then no-ops while it's fresh")
     func staleCheck() async throws {
         let (manager, cleanup) = try makeManager()

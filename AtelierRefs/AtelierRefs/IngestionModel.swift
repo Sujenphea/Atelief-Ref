@@ -1435,9 +1435,18 @@ final class IngestionModel: ObservableObject {
         snapshotManager?.list() ?? []
     }
 
+    /// `true` while a manual snapshot is being written (drives the sheet's
+    /// in-progress spinner + disabled button, 034 P2).
+    @Published private(set) var isSnapshotting = false
+    /// Bumped when the snapshot set on disk changes (a manual snapshot lands, or one
+    /// is deleted), so the sheet re-reads the list.
+    @Published private(set) var snapshotsVersion = 0
+
     /// Take a manual snapshot now; report success/failure on the shared surfaces.
+    /// Guards against a double-tap while one is already running.
     func snapshotNow() {
-        guard let manager = snapshotManager else { return }
+        guard let manager = snapshotManager, !isSnapshotting else { return }
+        isSnapshotting = true
         Task {
             do {
                 _ = try await manager.snapshot(reason: .manual)
@@ -1445,7 +1454,20 @@ final class IngestionModel: ObservableObject {
             } catch {
                 lastError = Self.message(for: error)
             }
+            isSnapshotting = false
+            snapshotsVersion &+= 1
         }
+    }
+
+    /// The on-disk size (bytes, incl. sidecars) of a snapshot, for the list.
+    func snapshotByteSize(_ snapshot: SnapshotFile) -> Int64 {
+        snapshotManager?.byteSize(of: snapshot) ?? 0
+    }
+
+    /// Delete one snapshot on the user's explicit request, then refresh the list.
+    func deleteSnapshot(_ snapshot: SnapshotFile) {
+        snapshotManager?.delete(snapshot)
+        snapshotsVersion &+= 1
     }
 
     /// Stage `snapshot` to be restored on the next launch, then prompt the user to

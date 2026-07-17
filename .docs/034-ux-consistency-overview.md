@@ -77,8 +77,9 @@ safety, unified feedback, keyboard/mouse parity) are closed. What remains is P2 
   — **shipped (changelog 154):** step 4 → non-numbered outro (copy now truthful),
   live endpoint dot + first-capture confirmation, redacted token placeholder.
 - Space tiles: no z-order (bring-to-front / send-back) controls.
-- "Snapshot Now" has no in-progress feedback; snapshot list is read-only (no size,
-  no manual prune).
+- ~~"Snapshot Now" has no in-progress feedback; snapshot list is read-only~~ —
+  **shipped (changelog 156):** spinner/disabled while saving, per-row size + total
+  footer, per-row manual delete (confirmed).
 - ~~Loading flashes empty states (Spaces list, onboarding token row)~~ — **shipped
   (changelog 154 + 155):** onboarding token redacts; Spaces list shows a skeleton
   until the first load, not a false "No spaces yet".
