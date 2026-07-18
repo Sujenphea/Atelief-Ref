@@ -35,7 +35,11 @@ import Foundation
 
 /// One dominant color of an image: its `#rrggbb` hex and the fraction of sampled
 /// pixels it represents (`0...1`).
-public struct ColorSwatch: Sendable, Equatable {
+///
+/// `Codable` with its member names, so a `[ColorSwatch]` encodes to the
+/// `[{"hex": "#…", "coverage": …}]` JSON that feeds 012's `asset_analysis.colors`
+/// column — see ``encodeList(_:)`` / ``decodeList(fromJSON:)``.
+public struct ColorSwatch: Sendable, Equatable, Codable {
     /// Lowercased `#rrggbb` — the weighted-mean sRGB of the cluster's members.
     public let hex: String
     /// Share of sampled pixels in this cluster, `0...1`. Swatches from one
@@ -46,6 +50,25 @@ public struct ColorSwatch: Sendable, Equatable {
     public init(hex: String, coverage: Double) {
         self.hex = hex
         self.coverage = coverage
+    }
+}
+
+extension ColorSwatch {
+    /// Serialize swatches to the `[{"hex", "coverage"}]` JSON stored in 012's
+    /// `asset_analysis.colors` — the 2A boundary codec (Ingestion owns the shape;
+    /// AtelierCore stores it opaquely). Returns `nil` for an empty list, matching
+    /// the NULLABLE column (no colors ⇒ no JSON, not `"[]"`).
+    public static func encodeList(_ swatches: [ColorSwatch]) -> String? {
+        guard !swatches.isEmpty else { return nil }
+        guard let data = try? JSONEncoder().encode(swatches) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Parse the `asset_analysis.colors` JSON back to swatches (the read-side of
+    /// ``encodeList(_:)`` — consumers + round-trip tests). `nil` on malformed input.
+    public static func decodeList(fromJSON json: String) -> [ColorSwatch]? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode([ColorSwatch].self, from: data)
     }
 }
 
