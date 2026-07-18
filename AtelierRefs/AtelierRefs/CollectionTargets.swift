@@ -59,3 +59,33 @@ struct MoveTargets: Equatable {
     /// library).
     var isEmpty: Bool { subfolders.isEmpty && roots.isEmpty }
 }
+
+/// A tiny memo for a collection screen's move/copy targets (012 · CQ 1A). The
+/// context menu builds EAGERLY for each visible cell, so without this every cell
+/// recomputes the IDENTICAL folder target list on every render (measured
+/// ~326ms/pass). Keyed on `(from, unsortedID, folders)`: the drop rail plus each
+/// cell menu in a render share one computation, and the list also survives across
+/// renders while the folder tree is unchanged. Held in plain `@State` (not
+/// observed), mirroring ``MasonryLayoutCache``'s discipline.
+@MainActor
+final class MoveTargetsCache {
+    private struct Key: Equatable {
+        var from: UUID
+        var unsortedID: UUID
+        var folders: [Collection]
+    }
+
+    private var key: Key?
+    private var value = MoveTargets(subfolders: [], roots: [])
+
+    /// The memoized targets for the given inputs — recomputed only when one of
+    /// `(from, unsortedID, folders)` changes.
+    func targets(from: UUID, folders: [Collection], unsortedID: UUID) -> MoveTargets {
+        let k = Key(from: from, unsortedID: unsortedID, folders: folders)
+        if key == k { return value }
+        value = CollectionTargets.moveTargets(
+            from: from, folders: folders, unsortedID: unsortedID)
+        key = k
+        return value
+    }
+}

@@ -8,14 +8,15 @@
 //  order and `row = i / C` stays clean for keyboard nav / reorder); within a
 //  column, aspect-sized cells stack top-to-bottom by cumulative height.
 //
-//  Kept SwiftUI-free so the EXACT frames — including OFFSCREEN cells the
-//  `LazyVStack` never lays out — drive the marquee hit-test and the keyboard-nav
-//  column count (the 009 virtualization trap: live cell frames can't see
-//  offscreen rows, so computed frames must). The analytic frames here MUST match
-//  the `LazyHStack`-of-`LazyVStack` render in `CollectionView` exactly (same
-//  column width, same gap, same top inset, same aspect→height), or the marquee
-//  drifts from what the user sees — asserted by `MasonryLayoutTests`
-//  (render position == frame).
+//  Kept SwiftUI-free so the EXACT frames — including the OFFSCREEN cells a
+//  windowed render never materializes (012) — drive the marquee hit-test and the
+//  keyboard-nav column count (the virtualization trap: only on-screen cells
+//  exist, so live cell frames can't see offscreen rows — computed frames must).
+//  The windowed render (`CollectionView.masonryWindow`) places each visible cell
+//  ABSOLUTELY at its frame here, so render position == frame BY CONSTRUCTION, and
+//  the same frames drive the marquee — one geometry source, no drift.
+//  `MasonryLayoutTests` asserts the frame math; `GridWindowingTests` asserts the
+//  windowed slice is a pure filter that never re-maps a cell off its frame.
 //
 
 import AtelierCore

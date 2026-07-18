@@ -55,6 +55,19 @@ struct CollectionView: View {
     // selection churn (which re-renders this screen), so a drag stays a memo hit.
     @State private var masonryCache = MasonryLayoutCache()
 
+    // The windowing band (012): the grid renders only the cells near the viewport
+    // (measured: eager rendering was ~7.4s layout + ~2.0s hit-testing on the main
+    // thread, both scaling with item count). This is the QUANTIZED scroll position
+    // — updated from `onScrollGeometryChange` but published ONLY when the band
+    // changes, so a scroll re-materializes the grid a few times per screenful, not
+    // once per tick (the churn the non-published marquee viewport avoids).
+    @State private var window = GridWindow(band: 0, rect: .zero)
+
+    // Move/copy targets, memoized (012 · CQ 1A): the drop rail and the eager
+    // per-cell context menus share ONE computation instead of recomputing the
+    // identical folder list per cell. Plain `@State`; not observed.
+    @State private var moveTargetsCache = MoveTargetsCache()
+
     /// The round-robin column count for a viewport `width` — the ONE source both
     /// the masonry layout and keyboard nav read, so `nextGridIndex`'s `± columns`
     /// index math always matches the frames. Driven by the global density notch
@@ -228,12 +241,18 @@ struct CollectionView: View {
         }
     }
 
+    /// This screen's move/copy targets, memoized (012 · CQ 1A) so the drop rail and
+    /// every eager per-cell context menu share ONE computation, not N.
+    private var moveTargets: MoveTargets {
+        moveTargetsCache.targets(
+            from: collectionID, folders: model.folders, unsortedID: model.unsortedFolderID)
+    }
+
     /// The floating trailing drop rail (009 · N5), materialized only when there
     /// are reachable targets. Aligned to the trailing edge over the grid.
     @ViewBuilder
     private var dropRail: some View {
-        let dests = CollectionTargets.moveTargets(
-            from: collectionID, folders: model.folders, unsortedID: model.unsortedFolderID)
+        let dests = moveTargets
         if !dests.isEmpty {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
@@ -330,14 +349,33 @@ struct CollectionView: View {
                 version: model.itemsVersion, width: geo.size.width, columns: cols,
                 spacing: Self.gridSpacing, topInset: Self.gridTopInset,
                 aspects: { model.items.map { aspect(for: $0) } })
+            // The windowed slice (012): the cells whose frames fall within the
+            // band's quantized viewport, plus a one-viewport overscan buffer so a
+            // fast flick never outruns the materialized region. Reads the PUBLISHED
+            // band rect (stable per screenful), not the live scroll offset, so the
+            // body re-renders only when the band changes. Before the first scroll
+            // geometry lands, fall back to a top-of-content viewport.
+            let viewportHeight = max(geo.size.height, 1)
+            let queryRect = window.rect.height > 0
+                ? window.rect
+                : CGRect(x: 0, y: 0, width: geo.size.width, height: viewportHeight)
+            let visible = masonryVisibleIndices(
+                in: queryRect, frames: layout.frames, columns: layout.columns,
+                overscan: viewportHeight)
+            // The windowed cells, resolved ONCE (index → frame) and shared by the
+            // render and the hover reconciliation below, so there's a single
+            // materialized set — never two that could disagree.
+            let cells = windowedCells(
+                visible: visible, itemCount: model.items.count, frames: layout.frames)
+            let contentHeight = max(layout.contentHeight, viewportHeight)
             ScrollViewReader { proxy in
                 ScrollView {
                     ZStack(alignment: .topLeading) {
                         // Background capture layer (009 · N6): a drag on EMPTY space
                         // is a marquee (image-drags hit the cells above and mean
-                        // move/copy); a plain click clears the selection. Sized to
-                        // the grid via the ZStack, in a named space so drag
-                        // locations match the computed masonry frames.
+                        // move/copy); a plain click clears the selection. Fills the
+                        // full content rect (the frame below), in a named space so
+                        // drag locations match the computed masonry frames.
                         MarqueeCaptureLayer(
                             state: marquee,
                             itemIDs: model.items.map { $0.item.id },
@@ -350,11 +388,18 @@ struct CollectionView: View {
                             },
                             onClear: { model.applySelection(.clear) },
                             onAutoScroll: { gridScroll.scrollTo(y: $0) })
-                        masonryColumns(layout: layout, proxy: proxy)
-                            .padding(.top, Self.gridTopInset)
+                        // Only the visible cells, absolutely placed at their analytic
+                        // frames (012). The frames already include the top inset, so
+                        // the offset IS the frame origin — no extra padding.
+                        masonryWindow(cells: cells, proxy: proxy)
                         // The live marquee rectangle, drawn in the same space.
                         MarqueeRectangleLayer(state: marquee)
                     }
+                    // Explicit content size: with only a window of cells rendered,
+                    // the cells no longer establish the scrollable height — this
+                    // frame does, so the scrollbar and the marquee hit-area span the
+                    // WHOLE collection, not just the materialized slice.
+                    .frame(width: geo.size.width, height: contentHeight, alignment: .topLeading)
                     .coordinateSpace(name: Self.marqueeSpace)
                 }
                 .scrollPosition($gridScroll)
@@ -363,10 +408,33 @@ struct CollectionView: View {
                 // plain (non-published) vars on purpose: this fires every scroll
                 // tick and must not re-render this screen.
                 .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }) { _, geo in
+                    // Non-published marquee viewport — every tick, must not re-render.
                     marquee.visibleRect = CGRect(
                         x: geo.contentOffset.x, y: geo.contentOffset.y,
                         width: geo.containerSize.width, height: geo.containerSize.height)
                     marquee.contentHeight = geo.contentSize.height
+                    // Windowing band (012 · Perf 4A): ONE observer, one guarded
+                    // publish. The band is quantized to the viewport height, so this
+                    // assignment fires only when the scroll crosses a band boundary —
+                    // a few times per screenful, not once per tick.
+                    let next = gridWindow(
+                        offsetY: geo.contentOffset.y,
+                        viewportHeight: geo.containerSize.height,
+                        contentHeight: geo.contentSize.height,
+                        width: geo.containerSize.width,
+                        bandHeight: geo.containerSize.height)
+                    if next != window { window = next }
+                }
+                // Hover reconciliation (012 · CQ 3A): when the band changes, the
+                // hovered cell may have UNMOUNTED (scrolled out) without firing its
+                // `.onHover(false)` — which would strand a phantom selection circle.
+                // Drop the hovered id if its cell is no longer in the window. (The
+                // GIF slot is freed by the cell's own `.onDisappear`, whose release
+                // is idempotent, so only the hover needs reconciling here.)
+                .onChange(of: window) { _, _ in
+                    let visibleIDs = Set(cells.map { model.items[$0.index].item.id })
+                    hoveredItemID = hoverAfterWindowChange(
+                        current: hoveredItemID, visibleIDs: visibleIDs)
                 }
                 .focusable()
                 .focusEffectDisabled()
@@ -433,47 +501,35 @@ struct CollectionView: View {
         }
     }
 
-    /// The round-robin masonry body (011-B1 · 3A′): C side-by-side columns, each a
-    /// `VStack` of the items whose feed index falls in that column (`stride` from
-    /// `col` by `C`, so item `i` → column `i % C`). Each cell is sized to the
-    /// shared column width × its aspect height, which MUST match ``MasonryLayout``'s
-    /// analytic frame for the marquee to stay aligned.
+    /// The windowed masonry body (012): only the cells in `visible` (near the
+    /// viewport), each ABSOLUTELY placed at its analytic ``MasonryLayout`` frame —
+    /// one shared source of truth for geometry, so the render and the marquee hit
+    /// math can never drift.
     ///
-    /// The columns are **eager `VStack`s, not `LazyVStack`s** on purpose. A lazy
-    /// stack in the cross-axis of an `HStack` inside a vertical `ScrollView` only
-    /// ESTIMATES its height (it hasn't created its offscreen cells), and the
-    /// `HStack` needs each column's real height for `.top` alignment — so the
-    /// estimate refines, the scrollbar toggles, the width wobbles, and the layout
-    /// never settles (an infinite re-layout, tripped by any content change that
-    /// crosses the scroll threshold, e.g. a move out of the folder). A `VStack`
-    /// derives an EXACT height from the fixed-frame cells, so the layout settles in
-    /// one pass. (Cells still decode their thumbnails lazily/async via
-    /// `AsyncThumbnail` + the shared cache, so this isn't an all-at-once decode.)
+    /// This replaces the old eager `HStack`-of-`VStack`s. Those columns were eager
+    /// (not `LazyVStack`s) because a lazy stack in an `HStack` cross-axis only
+    /// ESTIMATES its height and the `.top` alignment then never settles — but that
+    /// materialized EVERY cell, which is the ~9.4s main-thread scroll cost (layout
+    /// + hit-testing, both scaling with item count) this windowing removes. Absolute
+    /// placement needs no per-column height at all: each cell carries its own frame,
+    /// and the content's scrollable height is set explicitly on the container.
+    /// ``windowedCells`` is a pure FILTER (never a re-map), so cell `index` always
+    /// binds `items[index]` to `frames[index]`. (Cells still decode thumbnails
+    /// lazily/async via `AsyncThumbnail` + the shared cache.)
     @ViewBuilder
-    private func masonryColumns(layout: MasonryFrames, proxy: ScrollViewProxy) -> some View {
-        HStack(alignment: .top, spacing: Self.gridSpacing) {
-            ForEach(Array(0..<layout.columns), id: \.self) { col in
-                VStack(spacing: Self.gridSpacing) {
-                    ForEach(columnDetails(col: col, columns: layout.columns), id: \.item.id) { detail in
-                        masonryCell(detail, columnWidth: layout.columnWidth, proxy: proxy)
-                    }
-                }
-                .frame(width: layout.columnWidth)
-            }
+    private func masonryWindow(cells: [WindowedCell], proxy: ScrollViewProxy) -> some View {
+        ForEach(cells) { cell in
+            masonryCell(model.items[cell.index], frame: cell.frame, proxy: proxy)
+                .offset(x: cell.frame.minX, y: cell.frame.minY)
         }
     }
 
-    /// The items placed in round-robin column `col` (indices `col, col+C, …`), in
-    /// feed order — the render-side mirror of ``MasonryLayout``'s `i % C` membership.
-    private func columnDetails(col: Int, columns: Int) -> [CollectionItemDetail] {
-        guard columns > 0, col < model.items.count else { return [] }
-        return stride(from: col, to: model.items.count, by: columns).map { model.items[$0] }
-    }
-
-    /// One masonry cell: the shared ``CollectionCell`` sized to the column width ×
-    /// its aspect height (`columnWidth / aspect`), matching the analytic frame.
+    /// One masonry cell: the shared ``CollectionCell`` sized to its analytic
+    /// `frame` (012 — the SAME frame the marquee hit-test reads, so there is one
+    /// source of geometry, not a matching-by-luck inline recompute). The caller
+    /// offsets it to `frame.origin`.
     private func masonryCell(
-        _ detail: CollectionItemDetail, columnWidth: CGFloat, proxy: ScrollViewProxy
+        _ detail: CollectionItemDetail, frame: CGRect, proxy: ScrollViewProxy
     ) -> some View {
         // The circle shows on every cell while selecting (all are toggleable) or,
         // when idle, only on the hovered cell. It is a ZStack SIBLING of the cell,
@@ -503,7 +559,7 @@ struct CollectionView: View {
                 // image underneath (it opened the item instead of multi-selecting).
                 onHoverChanged: { _ in })
                 .equatable()
-                .frame(width: columnWidth, height: columnWidth / CGFloat(aspect(for: detail)))
+                .frame(width: frame.width, height: frame.height)
                 .draggable(dragPayload(for: detail)) { dragPreview(for: detail) }
                 .dropDestination(for: AssetDragPayload.self) { payloads, _ in
                     handleCellDrop(payloads, onto: detail.asset.id)
@@ -557,8 +613,7 @@ struct CollectionView: View {
     private func cellMenu(for detail: CollectionItemDetail) -> some View {
         let targets = model.actionTargets(forCellItemID: detail.item.id)
         let n = targets.count
-        let dests = CollectionTargets.moveTargets(
-            from: collectionID, folders: model.folders, unsortedID: model.unsortedFolderID)
+        let dests = moveTargets
 
         Menu("Move to") {
             targetButtons(dests) { model.moveToCollection(assetIDs: targets, to: $0) }
