@@ -24,7 +24,7 @@ private func makeMigratedQueue() throws -> DatabaseQueue {
 /// The set of base (non-FTS, non-shadow) tables the schema must contain.
 private let expectedTables = [
     "source", "asset", "collection", "collection_item", "tag", "asset_tag",
-    "job", "job_item", "space", "space_item",
+    "job", "job_item", "space", "space_item", "asset_analysis",
 ]
 
 /// `PRAGMA table_info` → column name ⇒ notnull flag (1 = NOT NULL).
@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -1348,5 +1348,273 @@ struct MigrationV6UpgradeTests {
                 try db.execute(sql: "DELETE FROM source WHERE id = ?", arguments: [sid])
             }
         }
+    }
+}
+
+// MARK: - v7 · on-device analysis index (012 · I1)
+
+@Suite("Migration v7: asset_analysis schema shape")
+struct MigrationV7ShapeTests {
+
+    @Test("asset_analysis columns: asset_id + analyzed_at + analyzer_version NOT NULL, data nullable")
+    func columns() throws {
+        let dbQueue = try makeMigratedQueue()
+        let nn = try dbQueue.read { try columnNotNull($0, table: "asset_analysis") }
+        let expected = ["asset_id", "ocr_text", "colors", "phash",
+                        "analyzed_at", "analyzer_version"]
+        for c in expected { #expect(nn[c] != nil, "asset_analysis missing \(c)") }
+        // Required.
+        #expect(nn["asset_id"] == 1)
+        #expect(nn["analyzed_at"] == 1)
+        #expect(nn["analyzer_version"] == 1)
+        // Derived data is all nullable.
+        #expect(nn["ocr_text"] == 0)
+        #expect(nn["colors"] == 0)
+        #expect(nn["phash"] == 0)
+    }
+
+    @Test("asset_id is the sole primary key (one analysis per asset, no own id)")
+    func assetIDPrimaryKey() throws {
+        let dbQueue = try makeMigratedQueue()
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(asset_analysis)")
+            let pkCols = Set(rows.filter { ($0["pk"] as Int) > 0 }.map { $0["name"] as String })
+            #expect(pkCols == ["asset_id"])
+            #expect(!rows.contains { ($0["name"] as String) == "id" })
+        }
+    }
+
+    @Test("phash column is INTEGER-affinity (signed storage of the 64-bit hash)")
+    func phashInteger() throws {
+        let dbQueue = try makeMigratedQueue()
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(asset_analysis)")
+            let phash = rows.first { ($0["name"] as String) == "phash" }
+            #expect((phash?["type"] as String?) == "INTEGER")
+        }
+    }
+
+    @Test("index_asset_analysis_on_analyzer_version exists")
+    func versionIndexed() throws {
+        let dbQueue = try makeMigratedQueue()
+        let names = try dbQueue.read { try indexNames($0, table: "asset_analysis") }
+        #expect(names.contains("index_asset_analysis_on_analyzer_version"))
+    }
+
+    @Test("foreign keys stay enforced after v7")
+    func foreignKeysStillOn() throws {
+        let dbQueue = try makeMigratedQueue()
+        let on = try dbQueue.read { db in try Int.fetchOne(db, sql: "PRAGMA foreign_keys") }
+        #expect(on == 1)
+    }
+}
+
+@Suite("Migration v7: asset_analysis FK + cascade")
+struct MigrationV7ForeignKeyTests {
+
+    private func count(_ db: Database, _ sql: String, _ args: StatementArguments) throws -> Int {
+        try Int.fetchOne(db, sql: sql, arguments: args) ?? -1
+    }
+
+    /// source → image asset, returning (source, asset).
+    private func seedAsset(_ db: Database) throws -> (source: String, asset: String) {
+        let sid = newID(), aid = newID()
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, captured_at, raw_metadata)
+            VALUES (?, 'web', ?, '{}')
+            """, arguments: [sid, ts])
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, blob_hash, mime_type, width, height, file_size, download_state, created_at, source_id)
+            VALUES (?, 'image', 'hash1', 'image/jpeg', 100, 100, 2048, 'downloaded', ?, ?)
+            """, arguments: [aid, ts, sid])
+        return (sid, aid)
+    }
+
+    @Test("inserting an analysis row for a non-existent asset is rejected")
+    func danglingAssetRejected() throws {
+        let dbQueue = try makeMigratedQueue()
+        #expect(throws: DatabaseError.self) {
+            try dbQueue.write { db in
+                try db.execute(sql: """
+                    INSERT INTO asset_analysis (asset_id, analyzed_at, analyzer_version)
+                    VALUES ('no-such-asset', ?, 1)
+                    """, arguments: [ts])
+            }
+        }
+    }
+
+    @Test("deleting an asset cascades its analysis row")
+    func deleteAssetCascadesAnalysis() throws {
+        let dbQueue = try makeMigratedQueue()
+        let ids = try dbQueue.write { db -> (source: String, asset: String) in
+            let s = try seedAsset(db)
+            try db.execute(sql: """
+                INSERT INTO asset_analysis (asset_id, ocr_text, colors, phash, analyzed_at, analyzer_version)
+                VALUES (?, 'label text', '[{"hex":"#ff0000","coverage":1.0}]', 42, ?, 1)
+                """, arguments: [s.asset, ts])
+            return s
+        }
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM asset WHERE id = ?", arguments: [ids.asset])
+        }
+        try dbQueue.read { db in
+            let rows = try count(db, "SELECT count(*) FROM asset_analysis WHERE asset_id = ?", [ids.asset])
+            #expect(rows == 0)
+        }
+    }
+
+    @Test("phash round-trips a full 64-bit value as signed INTEGER")
+    func phashSignedRoundTrip() throws {
+        let dbQueue = try makeMigratedQueue()
+        // UInt64.max bit-cast to Int64 is -1: the signed storage must preserve the
+        // exact bit pattern so the analyzer can cast it back.
+        let signed = Int64(bitPattern: UInt64.max)
+        let ids = try dbQueue.write { db -> String in
+            let s = try seedAsset(db)
+            try db.execute(sql: """
+                INSERT INTO asset_analysis (asset_id, phash, analyzed_at, analyzer_version)
+                VALUES (?, ?, ?, 1)
+                """, arguments: [s.asset, signed, ts])
+            return s.asset
+        }
+        try dbQueue.read { db in
+            let stored = try Int64.fetchOne(
+                db, sql: "SELECT phash FROM asset_analysis WHERE asset_id = ?", arguments: [ids])
+            #expect(stored == signed)
+            #expect(UInt64(bitPattern: stored ?? 0) == UInt64.max)
+        }
+    }
+}
+
+@Suite("Migration v7: analysis_fts (OCR full-text)")
+struct MigrationV7FTSTests {
+
+    @Test("analysis_fts virtual table + sync triggers exist")
+    func ftsExists() throws {
+        let dbQueue = try makeMigratedQueue()
+        try dbQueue.read { db in
+            let exists = try Bool.fetchOne(
+                db, sql: "SELECT count(*) > 0 FROM sqlite_master WHERE type='table' AND name='analysis_fts'")
+            #expect(exists == true)
+            let triggers = try Int.fetchOne(
+                db, sql: "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name='asset_analysis'")
+            #expect((triggers ?? 0) >= 3, "expected insert/update/delete sync triggers on asset_analysis")
+        }
+    }
+
+    @Test("inserting ocr_text indexes it; MATCH returns the asset")
+    func ftsIndexesOnInsert() throws {
+        let dbQueue = try makeMigratedQueue()
+        let sid = newID(), aid = newID()
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO source (id, platform, captured_at, raw_metadata) VALUES (?, 'web', ?, '{}')
+                """, arguments: [sid, ts])
+            try db.execute(sql: """
+                INSERT INTO asset (id, kind, blob_hash, mime_type, width, height, file_size, download_state, created_at, source_id)
+                VALUES (?, 'image', 'h', 'image/png', 10, 10, 100, 'downloaded', ?, ?)
+                """, arguments: [aid, ts, sid])
+            try db.execute(sql: """
+                INSERT INTO asset_analysis (asset_id, ocr_text, analyzed_at, analyzer_version)
+                VALUES (?, 'Helvetica specimen poster', ?, 1)
+                """, arguments: [aid, ts])
+        }
+        try dbQueue.read { db in
+            let hits = try String.fetchAll(db, sql: """
+                SELECT an.asset_id FROM asset_analysis an
+                JOIN analysis_fts ON analysis_fts.rowid = an.rowid
+                WHERE analysis_fts MATCH 'helvetica'
+                """)
+            #expect(hits == [aid])
+        }
+    }
+
+    @Test("updating ocr_text re-indexes; deleting the row removes it from the index")
+    func ftsReindexAndDelete() throws {
+        let dbQueue = try makeMigratedQueue()
+        let sid = newID(), aid = newID()
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO source (id, platform, captured_at, raw_metadata) VALUES (?, 'web', ?, '{}')
+                """, arguments: [sid, ts])
+            try db.execute(sql: """
+                INSERT INTO asset (id, kind, blob_hash, mime_type, width, height, file_size, download_state, created_at, source_id)
+                VALUES (?, 'image', 'h', 'image/png', 10, 10, 100, 'downloaded', ?, ?)
+                """, arguments: [aid, ts, sid])
+            try db.execute(sql: """
+                INSERT INTO asset_analysis (asset_id, ocr_text, analyzed_at, analyzer_version)
+                VALUES (?, 'brutalist', ?, 1)
+                """, arguments: [aid, ts])
+        }
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE asset_analysis SET ocr_text = 'watercolor' WHERE asset_id = ?",
+                           arguments: [aid])
+        }
+        try dbQueue.read { db in
+            let old = try Int.fetchOne(
+                db, sql: "SELECT count(*) FROM analysis_fts WHERE analysis_fts MATCH 'brutalist'")
+            let new = try Int.fetchOne(
+                db, sql: "SELECT count(*) FROM analysis_fts WHERE analysis_fts MATCH 'watercolor'")
+            #expect(old == 0, "old token must no longer match")
+            #expect(new == 1, "new token must match")
+        }
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM asset_analysis WHERE asset_id = ?", arguments: [aid])
+        }
+        try dbQueue.read { db in
+            let hits = try Int.fetchOne(
+                db, sql: "SELECT count(*) FROM analysis_fts WHERE analysis_fts MATCH 'watercolor'")
+            #expect(hits == 0)
+        }
+    }
+}
+
+@Suite("Migration v7: AssetAnalysis record round-trips")
+struct AssetAnalysisRoundTripTests {
+
+    private let analyzedAt = Date(timeIntervalSince1970: 1_700_000_777.250)
+
+    /// A real source + image asset the analysis row can reference (FK).
+    private func seed(_ db: Database) throws -> Asset {
+        let source = Source(id: UUID(), platform: .web, capturedAt: analyzedAt)
+        let asset = Asset(
+            id: UUID(), kind: .image, blobHash: "abc", mimeType: "image/png",
+            width: 10, height: 10, duration: nil, fileSize: 100,
+            downloadState: .downloaded, createdAt: analyzedAt, sourceId: source.id)
+        try source.insert(db)
+        try asset.insert(db)
+        return asset
+    }
+
+    @Test("a fully-populated analysis row round-trips insert + fetch equal")
+    func fullRoundTrip() throws {
+        let dbQueue = try makeMigratedQueue()
+        let asset = try dbQueue.write { try seed($0) }
+        let analysis = AssetAnalysis(
+            assetID: asset.id, ocrText: "type specimen",
+            colors: "[{\"hex\":\"#0a141e\",\"coverage\":0.5}]",
+            phash: Int64(bitPattern: 0xDEAD_BEEF_CAFE_F00D),
+            analyzedAt: analyzedAt, analyzerVersion: 3)
+        try dbQueue.write { try analysis.insert($0) }
+        let fetched = try dbQueue.read { db in
+            try AssetAnalysis.fetchOne(db, key: asset.id.uuidString.lowercased())
+        }
+        #expect(fetched == analysis)
+    }
+
+    @Test("an analysis row with all-nil data fields round-trips")
+    func nilDataRoundTrip() throws {
+        let dbQueue = try makeMigratedQueue()
+        let asset = try dbQueue.write { try seed($0) }
+        let analysis = AssetAnalysis(
+            assetID: asset.id, analyzedAt: analyzedAt, analyzerVersion: 1)
+        try dbQueue.write { try analysis.insert($0) }
+        let fetched = try dbQueue.read { db in
+            try AssetAnalysis.fetchOne(db, key: asset.id.uuidString.lowercased())
+        }
+        #expect(fetched == analysis)
+        #expect(fetched?.ocrText == nil)
+        #expect(fetched?.colors == nil)
+        #expect(fetched?.phash == nil)
     }
 }

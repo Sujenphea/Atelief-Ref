@@ -98,6 +98,84 @@ public final class AppServices: Sendable {
         }
     }
 
+    // MARK: - Analysis (012 · I1)
+
+    /// Insert or replace an asset's derived-analysis row (012 · I1).
+    ///
+    /// Values arrive already serialized at the AtelierIngestion analyzer seam —
+    /// `colors` as opaque JSON, `phash` as the signed bit-cast of the unsigned
+    /// hash — so this layer stores them verbatim (the 2A boundary; imaging types
+    /// never enter Core). `analyzedAt` is stamped here (server-authoritative). The
+    /// asset must exist (`.notFound`). Upsert by the `asset_id` PK, mirroring
+    /// ``recordJobItem``'s explicit fetch-then-insert/update idiom, so re-analysis
+    /// overwrites in place and `analysis_fts` re-indexes via its update trigger.
+    @discardableResult
+    public func upsertAnalysis(
+        assetID: UUID,
+        ocrText: String? = nil,
+        colors: String? = nil,
+        phash: Int64? = nil,
+        analyzerVersion: Int
+    ) async throws -> AssetAnalysis {
+        let row = AssetAnalysis(
+            assetID: assetID, ocrText: ocrText, colors: colors, phash: phash,
+            analyzedAt: Date(), analyzerVersion: analyzerVersion)
+        return try await write { db in
+            guard try Asset.exists(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            let exists = try AssetAnalysis
+                .filter(Column("asset_id") == Self.key(assetID))
+                .fetchCount(db) > 0
+            if exists { try row.update(db) } else { try row.insert(db) }
+            return row
+        }
+    }
+
+    /// The analysis row for `assetID`, or `nil` when the asset has not been
+    /// analyzed yet.
+    public func analysis(for assetID: UUID) async throws -> AssetAnalysis? {
+        try await read { db in
+            try AssetAnalysis
+                .filter(Column("asset_id") == Self.key(assetID))
+                .fetchOne(db)
+        }
+    }
+
+    /// The next batch of asset ids that need analysis at `analyzerVersion` — the
+    /// resumable backfill query (012 · I1). Selects **downloaded image** assets
+    /// whose analysis is either MISSING or was produced by an OLDER analyzer,
+    /// newest-first, capped at `limit` (clamped to `1...1000`).
+    ///
+    /// Media-less kinds (they have no bytes to analyze) and video (whose analysis
+    /// needs a poster-frame path, deferred) are excluded, so they never linger as
+    /// perpetually-pending — the batch drains to empty and stays there until new
+    /// images arrive or the analyzer version bumps. No ledger needed: "still
+    /// needs analysis" is expressible as this one LEFT JOIN, so a killed backfill
+    /// resumes simply by re-running it.
+    public func assetsNeedingAnalysis(analyzerVersion: Int, limit: Int) async throws -> [UUID] {
+        let clampedLimit = min(max(limit, 1), 1000)
+        return try await read { db in
+            let ids = try String.fetchAll(db, sql: """
+                SELECT a.id
+                FROM asset a
+                LEFT JOIN asset_analysis an ON an.asset_id = a.id
+                WHERE a.kind = ?
+                  AND a.blob_hash IS NOT NULL
+                  AND a.download_state = ?
+                  AND (an.asset_id IS NULL OR an.analyzer_version < ?)
+                ORDER BY a.created_at DESC
+                LIMIT ?
+                """, arguments: [
+                    AssetKind.image.rawValue,
+                    DownloadState.downloaded.rawValue,
+                    analyzerVersion,
+                    clampedLimit,
+                ])
+            return ids.compactMap { UUID(uuidString: $0) }
+        }
+    }
+
     // MARK: - Collections
 
     /// Create a collection (a folder — folders ARE collections, decision F1).

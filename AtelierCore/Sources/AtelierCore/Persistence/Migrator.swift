@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -75,6 +75,14 @@ enum Migrator {
         // contract. SHIPPED: never edit this body.
         migrator.registerMigration("v6") { db in
             try createV6Schema(db)
+        }
+
+        // v7 — on-device analysis index (012 · I1): one additive `asset_analysis`
+        // table + `analysis_fts` OCR full-text. Independent of the library schema
+        // (like v3's ledger), so no table rebuild. SHIPPED once released: never
+        // edit this body.
+        migrator.registerMigration("v7") { db in
+            try createV7Schema(db)
         }
 
         return migrator
@@ -454,6 +462,56 @@ enum Migrator {
         try db.create(virtualTable: "asset_fts", using: FTS5()) { t in
             t.synchronize(withTable: "asset")
             t.column("search_text")
+        }
+    }
+
+    // MARK: - v7
+
+    /// On-device analysis index (012 · I1). One additive `asset_analysis` table,
+    /// independent of the v1–v6 library schema (mirrors v3's ledger — no table
+    /// rebuild), holding the derived passive metadata a later analyzer produces.
+    ///
+    /// - `asset_id` is the PRIMARY KEY (one analysis per asset) and REFERENCES
+    ///   `asset(id) ON DELETE CASCADE`, so an asset's analysis dies with it — no
+    ///   orphan sweep needed (17A discipline).
+    /// - `ocr_text` / `colors` / `phash` are all NULLABLE: analysis is derived,
+    ///   possibly-absent data (an image with no legible text has no `ocr_text`;
+    ///   a media-less kind is never analyzed at all). `colors` is opaque JSON to
+    ///   this layer (the analyzer at the AtelierIngestion seam owns its shape);
+    ///   `phash` is the 64-bit signature stored as signed `INTEGER` (SQLite has no
+    ///   unsigned type — the `UInt64`↔`Int64` bitcast happens at that same seam).
+    /// - `analyzed_at` / `analyzer_version` are always present so the backfill can
+    ///   locate never-analyzed or stale-version rows with a plain WHERE clause.
+    private static func createV7Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE asset_analysis (
+                asset_id         TEXT    NOT NULL PRIMARY KEY
+                    REFERENCES asset(id) ON DELETE CASCADE,
+                ocr_text         TEXT,
+                colors           TEXT,
+                phash            INTEGER,
+                analyzed_at      TEXT    NOT NULL,
+                analyzer_version INTEGER NOT NULL
+            );
+            """)
+
+        // Backfill access path (012): "rows produced by an older analyzer" is a
+        // version comparison, so re-analysis after an algorithm upgrade is a
+        // WHERE-clause scan, not a schema event.
+        try db.execute(sql: """
+            CREATE INDEX index_asset_analysis_on_analyzer_version
+                ON asset_analysis(analyzer_version);
+            """)
+
+        // OCR content FTS (012 · I2): full-text over `ocr_text`, external-content
+        // synchronized with `asset_analysis` (auto INSERT/UPDATE/DELETE triggers +
+        // back-fill), mirroring `source_fts` / `asset_fts`. `searchAssets` adds it
+        // as a third MATCH arm so text INSIDE images (screenshots, type specimens)
+        // becomes findable — kept a SEPARATE index (derived data) so analysis
+        // writes never touch the content-FTS.
+        try db.create(virtualTable: "analysis_fts", using: FTS5()) { t in
+            t.synchronize(withTable: "asset_analysis")
+            t.column("ocr_text")
         }
     }
 }
