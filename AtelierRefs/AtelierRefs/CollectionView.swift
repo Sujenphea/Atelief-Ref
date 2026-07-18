@@ -63,6 +63,15 @@ struct CollectionView: View {
         gridPrefs.density.columns(forWidth: width)
     }
 
+    /// Whether the shared `model.items` currently belong to THIS collection. The
+    /// model holds a single shared items array, so a freshly-pushed view for a new
+    /// collection would otherwise render the PREVIOUS collection's items during the
+    /// async reload gap (the "flash of the last collection" on switch). Until the
+    /// load for this `collectionID` resolves, the grid shows a loading skeleton
+    /// instead of stale content. An in-place reload (move/delete within the same
+    /// folder) keeps this true, so it never flashes a skeleton.
+    private var isLoaded: Bool { model.loadedCollectionID == collectionID }
+
     var body: some View {
         LibrarySearchable(model: model, collectionID: collectionID) {
             ZStack {
@@ -179,10 +188,13 @@ struct CollectionView: View {
             header
             // The stack row is the Unsorted screen's triage surface (009 · N4):
             // drop the selection onto a root collection to move it out of Unsorted.
-            if collectionID == model.unsortedFolderID && !model.stackPreviews.isEmpty {
+            // Gate the data-bearing rows on `isLoaded` too: they read the same
+            // shared model state as the grid, so showing them mid-switch would flash
+            // the PREVIOUS collection's stacks / subfolders alongside the grid.
+            if isLoaded, collectionID == model.unsortedFolderID, !model.stackPreviews.isEmpty {
                 stackRow
             }
-            if !model.subfolders.isEmpty {
+            if isLoaded, !model.subfolders.isEmpty {
                 subfolderChips
             }
             grid
@@ -266,8 +278,12 @@ struct CollectionView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Text(model.name(for: collectionID)).font(.title2).bold()
-            Text("\(model.items.count) items")
+            // The title tracks `collectionID` and is always correct, but the count
+            // reads the shared `items` — redact it until this collection's load
+            // resolves so it can't show the previous collection's count on switch.
+            Text("\(isLoaded ? model.items.count : 0) items")
                 .font(.callout).foregroundStyle(.secondary)
+                .redacted(reason: isLoaded ? [] : .placeholder)
             importStatus
             Spacer()
             Button {
@@ -322,9 +338,66 @@ struct CollectionView: View {
 
     private var grid: some View {
         GeometryReader { geo in
+            Group {
+                if isLoaded {
+                    loadedGrid(geo: geo)
+                } else {
+                    // This collection's load hasn't resolved — show a masonry
+                    // skeleton, never the previous collection's items.
+                    ScrollView { gridSkeleton(width: geo.size.width) }
+                }
+            }
+            // Capture the width for the toolbar/⌘ density clamp. Guarded to a real
+            // change (not subpixel wobble) so a geometry read inside a ScrollView
+            // can't feed a re-render → re-measure loop.
+            .onChange(of: geo.size.width, initial: true) { _, w in
+                if abs(gridWidth - w) > 0.5 { gridWidth = w }
+            }
+        }
+        .overlay {
+            if isLoaded, model.items.isEmpty {
+                Text("No items in this collection yet.")
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    /// The masonry-shaped loading skeleton shown while THIS collection's items are
+    /// still being read — the shared `items` array belongs to another collection
+    /// until the load resolves. Fixed-count tiles with varied heights so it reads
+    /// as "content loading", with no dependency on the (stale) item data.
+    @ViewBuilder
+    private func gridSkeleton(width: CGFloat) -> some View {
+        let cols = max(gridColumns(forWidth: width), 1)
+        let columnWidth = max((width - CGFloat(cols - 1) * Self.gridSpacing) / CGFloat(cols), 1)
+        // Deterministic aspects so the skeleton reads as masonry, not a uniform
+        // grid, and stays stable across redraws (indexed by col/row, no RNG).
+        let aspects: [CGFloat] = [1.0, 0.72, 1.3, 0.88, 1.15, 0.8, 1.25, 0.95]
+        HStack(alignment: .top, spacing: Self.gridSpacing) {
+            ForEach(0..<cols, id: \.self) { col in
+                VStack(spacing: Self.gridSpacing) {
+                    ForEach(0..<5, id: \.self) { row in
+                        let aspect = aspects[(col * 5 + row) % aspects.count]
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(.quaternary)
+                            .frame(width: columnWidth, height: columnWidth / aspect)
+                    }
+                }
+            }
+        }
+        .padding(.top, Self.gridTopInset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityLabel("Loading collection")
+        .allowsHitTesting(false)
+    }
+
+    /// The real, loaded masonry grid for this collection — extracted so `grid` can
+    /// swap in the skeleton while the shared `items` still belong to another
+    /// collection. Memoized on (itemsVersion, width, columns) so it recomputes only
+    /// when one of those changes — not on selection churn.
+    @ViewBuilder
+    private func loadedGrid(geo: GeometryProxy) -> some View {
             // Round-robin masonry (011-B1): fixed C columns, aspect-sized cells.
-            // The frames are memoized on (itemsVersion, width, columns) so this
-            // recomputes only when one of those changes — not on selection churn.
             let cols = gridColumns(forWidth: geo.size.width)
             let layout = masonryCache.frames(
                 version: model.itemsVersion, width: geo.size.width, columns: cols,
@@ -418,19 +491,6 @@ struct CollectionView: View {
                     return .handled
                 }
             }
-            // Capture the width for the toolbar/⌘ density clamp. Guarded to a real
-            // change (not subpixel wobble) so a geometry read inside a ScrollView
-            // can't feed a re-render → re-measure loop.
-            .onChange(of: geo.size.width, initial: true) { _, w in
-                if abs(gridWidth - w) > 0.5 { gridWidth = w }
-            }
-        }
-        .overlay {
-            if model.items.isEmpty {
-                Text("No items in this collection yet.")
-                    .foregroundStyle(.tertiary)
-            }
-        }
     }
 
     /// The round-robin masonry body (011-B1 · 3A′): C side-by-side columns, each a

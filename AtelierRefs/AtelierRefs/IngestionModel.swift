@@ -64,6 +64,16 @@ final class IngestionModel: ObservableObject {
     @Published private(set) var items: [CollectionItemDetail] = [] {
         didSet { rebuildItemDerivations() }
     }
+    /// The collection `items` currently belong to — the identity a view checks to
+    /// know whether the shared array is ITS data yet. `nil` until the first load
+    /// resolves. Because `items` is a SINGLE shared array (not partitioned per
+    /// collection), a freshly-pushed `CollectionView` would otherwise render the
+    /// PREVIOUS collection's items during the async reload gap (the "flash of the
+    /// last collection" on switch). Set only when `items` is published for a
+    /// collection, so a view whose `collectionID` doesn't match shows a loading
+    /// skeleton instead of stale content. An in-place reload (move/delete within
+    /// the same folder) keeps this equal, so it never flashes a skeleton.
+    @Published private(set) var loadedCollectionID: UUID?
     /// The selected folder's immediate subfolders (navigable).
     @Published private(set) var subfolders: [Collection] = []
 
@@ -990,6 +1000,10 @@ final class IngestionModel: ObservableObject {
                 // folder's content. Bail before publishing anything.
                 guard loadID == contentsLoadID else { return }
                 items = loadedItems
+                // Stamp WHICH collection the shared `items` now belong to, so a
+                // freshly-pushed view for a different collection renders a skeleton
+                // instead of this (still-stale-until-now) content mid-switch.
+                loadedCollectionID = id
                 subfolders = loadedSubfolders
                 // Republish the stack row only when it actually changed — an
                 // unchanged set never re-renders or re-decodes its fans (009 · 15A).
