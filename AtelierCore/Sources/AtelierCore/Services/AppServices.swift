@@ -1445,10 +1445,13 @@ public final class AppServices: Sendable {
 
             // FTS5: an asset MATCHes when its PROVENANCE matches `source_fts`
             // (title/author) OR its own CONTENT matches `asset_fts` (003 · O1 —
-            // a tweet's text, a link's title/description, a color's name/hex).
-            // Two external-content indices, kept separate (provenance vs content)
-            // and OR-combined here so media-less items are findable by substance.
-            // Each subquery maps `*_fts.rowid` → the base table's rowid → id.
+            // a tweet's text, a link's title/description, a color's name/hex) OR
+            // the text INSIDE it matches `analysis_fts` (012 · I2 — OCR of
+            // screenshots / type specimens). Three external-content indices, kept
+            // separate (provenance vs content vs derived OCR) and OR-combined here
+            // so both media-less items and image-only text are findable by
+            // substance. Each subquery maps `*_fts.rowid` → the base table's
+            // rowid → id.
             if let trimmedText, !trimmedText.isEmpty {
                 let match = Self.ftsMatchQuery(trimmedText)
                 request = request.filter(sql: """
@@ -1461,8 +1464,13 @@ public final class AppServices: Sendable {
                         SELECT a.id FROM asset a
                         JOIN asset_fts ON asset_fts.rowid = a.rowid
                         WHERE asset_fts MATCH ?
+                     )
+                     OR asset.id IN (
+                        SELECT an.asset_id FROM asset_analysis an
+                        JOIN analysis_fts ON analysis_fts.rowid = an.rowid
+                        WHERE analysis_fts MATCH ?
                      ))
-                    """, arguments: [match, match])
+                    """, arguments: [match, match, match])
             }
 
             // Collection scope (007 · S3): membership subquery. Composes as a

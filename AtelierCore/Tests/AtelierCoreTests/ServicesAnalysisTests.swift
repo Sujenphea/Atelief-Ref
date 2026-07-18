@@ -169,4 +169,44 @@ struct ServicesAnalysisTests {
         // batch when candidates exist — the backfill would falsely think it's done).
         #expect(try await services.assetsNeedingAnalysis(analyzerVersion: 1, limit: 0).count == 1)
     }
+
+    // MARK: - OCR into search (Phase D)
+
+    @Test("searchAssets matches text found only in OCR (analysis_fts arm)")
+    func searchFindsByOCRText() async throws {
+        let (services, _) = try makeServices()
+        let c = try await services.createCollection(name: "Refs")
+        // A plain image: no source title/author, no content search_text — so the
+        // only place 'helvetica' can live is the OCR index.
+        let asset = try await ingestImage(services, into: c.id, hash: "0c71")
+        try await services.upsertAnalysis(
+            assetID: asset.id, ocrText: "Helvetica specimen poster", analyzerVersion: 1)
+
+        let hit = try await services.searchAssets(text: "helvetica").map(\.asset.id)
+        #expect(hit == [asset.id])
+        // A token in neither OCR nor provenance nor content finds nothing.
+        #expect(try await services.searchAssets(text: "zznomatch").isEmpty)
+    }
+
+    @Test("an un-analyzed image is not matched by an OCR-only token")
+    func ocrSearchIgnoresUnanalyzed() async throws {
+        let (services, _) = try makeServices()
+        let c = try await services.createCollection(name: "Refs")
+        _ = try await ingestImage(services, into: c.id, hash: "0c72")  // no analysis
+        #expect(try await services.searchAssets(text: "helvetica").isEmpty)
+    }
+
+    @Test("OCR search updates when the analysis text is overwritten")
+    func ocrSearchReindexesOnUpsert() async throws {
+        let (services, _) = try makeServices()
+        let c = try await services.createCollection(name: "Refs")
+        let asset = try await ingestImage(services, into: c.id, hash: "0c73")
+        try await services.upsertAnalysis(assetID: asset.id, ocrText: "brutalist", analyzerVersion: 1)
+        #expect(try await services.searchAssets(text: "brutalist").map(\.asset.id) == [asset.id])
+
+        // Re-analysis overwrites the OCR text; the FTS index must follow.
+        try await services.upsertAnalysis(assetID: asset.id, ocrText: "watercolor", analyzerVersion: 2)
+        #expect(try await services.searchAssets(text: "brutalist").isEmpty)
+        #expect(try await services.searchAssets(text: "watercolor").map(\.asset.id) == [asset.id])
+    }
 }
