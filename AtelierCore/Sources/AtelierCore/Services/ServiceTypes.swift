@@ -198,7 +198,10 @@ public struct CanvasPlacement: Sendable, Equatable {
 /// - `.all`: an asset must carry EVERY listed tag (progressive narrowing — the
 ///   reference-library default).
 /// - `.any`: an asset carrying ANY listed tag matches (additive).
-public enum TagMatch: Sendable, Equatable {
+/// A `String` rawValue so a multi-tag combine mode can be persisted inside a
+/// saved search's rules JSON (015) — `.all`/`.any` survive reordering (the
+/// open-ended-enum discipline). The rawValue is the stable on-disk token.
+public enum TagMatch: String, Sendable, Equatable, Hashable, Codable, CaseIterable {
     case all
     case any
 }

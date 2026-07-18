@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -83,6 +83,14 @@ enum Migrator {
         // edit this body.
         migrator.registerMigration("v7") { db in
             try createV7Schema(db)
+        }
+
+        // v8 — smart collections (015 · saved searches). One additive
+        // `saved_search` table, independent of the library schema (like v3's
+        // ledger and v7's analysis index — no table rebuild). SHIPPED once
+        // released: never edit this body.
+        migrator.registerMigration("v8") { db in
+            try createV8Schema(db)
         }
 
         return migrator
@@ -513,5 +521,38 @@ enum Migrator {
             t.synchronize(withTable: "asset_analysis")
             t.column("ocr_text")
         }
+    }
+
+    // MARK: - v8
+
+    /// Smart collections (015 · saved searches). A smart collection IS a saved
+    /// query — its own entity, NOT a `collection` flag (015 · the 005 O3 lesson:
+    /// don't overload the folder table with rows that have no memberships, no
+    /// manual order, and can't hold drops). Independent of the library schema
+    /// (like v3 / v7), so no table rebuild.
+    ///
+    /// - `rules` is a VERSIONED JSON blob — opaque TEXT to this layer (the
+    ///   `SearchRules` codec at the Services seam owns its shape, the same
+    ///   opaque-serialized discipline as `asset_analysis.colors`). The embedded
+    ///   `version` field lets the rule shape grow (kinds, color, favorite) without
+    ///   a migration; an unknown-newer blob still parses what it understands.
+    /// - No FK to `asset`/`tag`: a saved search references tags by id INSIDE its
+    ///   rules JSON, not via a relational column, so a deleted tag can't cascade
+    ///   the search away — evaluation drops the missing conjunct and badges it
+    ///   (015 · "explicit over silently-empty"). Deleting a saved search therefore
+    ///   never touches assets.
+    /// - The table is small (a handful of rows), so `ORDER BY created_at` needs no
+    ///   dedicated index — a scan of a few dozen rows is free (P13: index the
+    ///   paths that scale; this one doesn't).
+    private static func createV8Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE saved_search (
+                id         TEXT NOT NULL PRIMARY KEY,
+                name       TEXT NOT NULL,
+                rules      TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """)
     }
 }

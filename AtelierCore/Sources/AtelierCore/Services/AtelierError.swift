@@ -57,6 +57,11 @@ public enum AtelierError: Error, Equatable {
     /// A `.tweet` content draft had no usable tweet id, or no substance at all
     /// (neither text nor media) — not a usable tweet (003 · C3).
     case emptyTweet
+    /// A saved search's stored `rules` JSON could not be decoded (corrupt, or a
+    /// blob so malformed even the tolerant `SearchRules` codec returns `nil`) —
+    /// so it cannot be evaluated (015). Distinct from `.notFound`: the search row
+    /// exists, its rules don't parse.
+    case invalidSavedSearchRules(id: UUID)
     /// A database constraint (FK / NOT NULL / UNIQUE) was violated — mapped from
     /// GRDB so the raw `DatabaseError` never leaks (A2/C7).
     case constraintViolation

@@ -24,7 +24,7 @@ private func makeMigratedQueue() throws -> DatabaseQueue {
 /// The set of base (non-FTS, non-shadow) tables the schema must contain.
 private let expectedTables = [
     "source", "asset", "collection", "collection_item", "tag", "asset_tag",
-    "job", "job_item", "space", "space_item", "asset_analysis",
+    "job", "job_item", "space", "space_item", "asset_analysis", "saved_search",
 ]
 
 /// `PRAGMA table_info` → column name ⇒ notnull flag (1 = NOT NULL).
@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -1616,5 +1616,76 @@ struct AssetAnalysisRoundTripTests {
         #expect(fetched?.ocrText == nil)
         #expect(fetched?.colors == nil)
         #expect(fetched?.phash == nil)
+    }
+}
+
+// MARK: - v8 · smart collections (saved searches, 015)
+
+@Suite("Migration v8: saved_search schema shape")
+struct SavedSearchSchemaTests {
+
+    @Test("saved_search columns: id + name + rules + timestamps, all NOT NULL")
+    func columns() throws {
+        let dbQueue = try makeMigratedQueue()
+        let nn = try dbQueue.read { try columnNotNull($0, table: "saved_search") }
+        let expected = ["id", "name", "rules", "created_at", "updated_at"]
+        for c in expected { #expect(nn[c] != nil, "saved_search missing \(c)") }
+        #expect(Set(nn.keys) == Set(expected), "unexpected saved_search columns")
+        // Every column is NOT NULL — a saved search always has a name and a rule
+        // (even an empty "whole library" rule is a real JSON blob).
+        for c in expected { #expect(nn[c] == 1, "\(c) should be NOT NULL") }
+    }
+
+    @Test("id is the single-column primary key")
+    func primaryKey() throws {
+        let dbQueue = try makeMigratedQueue()
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(saved_search)")
+            let pk = rows.filter { ($0["pk"] as Int) > 0 }.map { $0["name"] as String }
+            #expect(pk == ["id"])
+        }
+    }
+
+    @Test("foreign keys stay enforced after v8")
+    func foreignKeysOn() throws {
+        let dbQueue = try makeMigratedQueue()
+        let on = try dbQueue.read { try Bool.fetchOne($0, sql: "PRAGMA foreign_keys") }
+        #expect(on == true)
+    }
+}
+
+@Suite("Migration v8: SavedSearch record round-trips")
+struct SavedSearchRoundTripTests {
+
+    private let stamp = Date(timeIntervalSince1970: 1_700_000_888.125)
+
+    @Test("a saved search round-trips insert + fetch equal")
+    func roundTrip() throws {
+        let dbQueue = try makeMigratedQueue()
+        let search = SavedSearch(
+            id: UUID(), name: "Pinterest UI",
+            rules: #"{"platform":"pinterest","tag_match":"all","version":1}"#,
+            createdAt: stamp, updatedAt: stamp)
+        try dbQueue.write { try search.insert($0) }
+        let fetched = try dbQueue.read { db in
+            try SavedSearch.fetchOne(db, key: search.id.uuidString.lowercased())
+        }
+        #expect(fetched == search)
+    }
+
+    @Test("saved searches have no asset/tag FK — deleting one touches nothing else")
+    func noOutboundFKs() throws {
+        let dbQueue = try makeMigratedQueue()
+        // A saved search referencing a tag id INSIDE its rules JSON — that id need
+        // not exist as a real row, and deleting the search is a plain row delete.
+        let search = SavedSearch(
+            id: UUID(), name: "By a ghost tag",
+            rules: #"{"tag_ids":["\#(UUID().uuidString.lowercased())"],"tag_match":"all","version":1}"#,
+            createdAt: stamp, updatedAt: stamp)
+        try dbQueue.write { try search.insert($0) }
+        let deleted = try dbQueue.write { db in
+            try SavedSearch.deleteOne(db, key: search.id.uuidString.lowercased())
+        }
+        #expect(deleted == true)
     }
 }

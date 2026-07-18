@@ -42,6 +42,15 @@ enum Validation {
         return trimmed
     }
 
+    /// Trim a saved-search name and reject empty/whitespace-only (`.invalidName`).
+    /// Returns the trimmed name to persist (mirrors ``collectionName``).
+    @discardableResult
+    static func savedSearchName(_ name: String) throws -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw AtelierError.invalidName }
+        return trimmed
+    }
+
     /// Enforce the ``SpaceItem`` discriminator invariant (005 O1): an `.asset`
     /// row MUST carry an `assetID`; an element row (`.frame` / `.text`) must NOT
     /// (`.invalidSpaceItem`). Keeps the single discriminated table's two row
