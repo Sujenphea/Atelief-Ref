@@ -19,8 +19,8 @@
 //  `uniformCellSide`) was retired here when masonry landed — see git history.
 //
 //  Kept SwiftUI-free so the whole thing is unit-tested without a running view (the
-//  virtualization trap is that a lazy stack only lays out VISIBLE cells, so live
-//  cell frames can't drive offscreen hit-testing — computed frames must).
+//  virtualization trap is that a windowed render only materializes VISIBLE cells,
+//  so live cell frames can't drive offscreen hit-testing — computed frames must).
 //
 
 import CoreGraphics
