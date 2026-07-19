@@ -1,7 +1,7 @@
 # 035 — Collection grid scroll performance: research
 
 Profiling investigation into collection-grid scroll lag, the windowing fix that
-landed (see change-log 160), the measured residual, and the two forward options
+landed (see change-log 169), the measured residual, and the two forward options
 with their costs. Companion to `035-*` if a design/plan is later split out.
 
 ## 1. The original problem
@@ -30,7 +30,7 @@ xcrun xctrace record --template "Time Profiler" --attach <PID> --time-limit 20s
 Thumbnail DECODE was OFF the main thread — not a factor. The bottleneck was
 purely that every cell existed.
 
-## 2. What landed: explicit windowing (change-log 160)
+## 2. What landed: explicit windowing (change-log 169)
 
 Only cells near the viewport are rendered, each placed ABSOLUTELY at its analytic
 `MasonryLayout` frame. Key pieces:
