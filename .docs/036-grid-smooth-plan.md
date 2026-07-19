@@ -271,14 +271,28 @@ async image arrivals publish only to the overlay.
 
 ## 4. Workstream C — Thumbnail pipeline for 500–2000 items
 
-### C1. New `ImageDecode.swift` + `ThumbnailPipeline.swift`
+### C1. Decode helper + `ThumbnailPipeline.swift`
 
 Replaces `ThumbnailCache` (`SharedThumbnail.swift:20–36`).
 
-- `ImageDecode.downsampled(at:maxPixelSize:) -> (NSImage, byteCost)?` —
-  `CGImageSourceCreateThumbnailAtIndex` with `ShouldCacheImmediately: true`
-  (fully-decoded bitmap, EXIF transform, never materializes full-res). Shared
-  with Workstream B.
+**Reuse, don't duplicate:** the 012 line already landed
+`AtelierIngestion/Sources/AtelierIngestion/Imaging/ImageDecoding.swift` —
+`thumbnailCGImage(from:maxPixelSize:)`, the same
+`CGImageSourceCreateThumbnailAtIndex` dance (always-synthesize +
+EXIF-transform), already shared by `ThumbnailGenerator`, `PerceptualHash`, and
+`ColorExtractor`. The app target imports `AtelierIngestion` already, but the
+enum is **internal**, so step one is marking `ImageDecoding` and its method
+`public` rather than writing a second decoder in `AtelierRefs`.
+
+Two gaps to close on top of it:
+- It takes `Data`, not a `URL` — add a URL overload there (or read bytes
+  app-side) so the grid path doesn't hold whole files in memory needlessly.
+- It returns a bare `CGImage` with no byte cost — the pipeline needs
+  `bytesPerRow * height` for the cache's `totalCostLimit` accounting, and
+  should set `kCGImageSourceShouldCacheImmediately` so no lazy decode lands on
+  the main thread at first draw.
+
+Workstream B (`DetailImageLoader`) uses the same helper.
 - Pure bucket ladder `thumbnailPixelBucket(pointLongSide:scale:)` → snapped UP
   to {128, 192, 256, 384, 512}; 512 = tier ceiling.
 - `ThumbnailPipeline` (singleton):
@@ -374,3 +388,24 @@ eviction reclaims old buckets.
   auto-dismisses; Most-Viewed rises after close; Space/search overlays
   unaffected; marquee/drag/drop/context menu/GIF hover/keyboard all survive
   the grid migration.
+
+## 7. Baseline note: the merged tree (post `372cc57`)
+
+This plan was researched on the windowing worktree, which did **not** contain
+the 012 analysis line. After merging, the baseline also carries Vision OCR
+(`VisionTextRecognizer`), `AssetAnalyzer`, `AnalysisBackfill`, perceptual
+hashing, colour extraction, and smart collections. Two consequences:
+
+1. **No current scroll contention.** `AnalysisBackfill` has no app-side call
+   site — nothing in `AtelierRefs` invokes it, so no Vision work competes with
+   scrolling today. The earlier "no background analysis contends" finding
+   therefore still holds, but for a different reason than assumed: the pipeline
+   exists and is simply not wired up yet.
+2. **It becomes a smoothness hazard the moment it is wired up.**
+   `AnalysisBackfill` states outright that it "does NOT own scheduling — QoS /
+   idle-priority / pause-on-user-activity is the app's concern (012)". Whoever
+   wires it must land that scheduling at the same time: idle-priority, paused
+   while a collection is being scrolled or marquee-selected, and never on the
+   same lane as visible thumbnail decodes (the `ThumbnailPipeline` prefetch gate
+   in C1 is the natural place to arbitrate). Wiring it without that will undo
+   the work in this plan.
