@@ -317,6 +317,19 @@ Two gaps to close on top of it:
   should set `kCGImageSourceShouldCacheImmediately` so no lazy decode lands on
   the main thread at first draw.
 
+  **CORRECTED after C1 (`307622d`).** The eager decode is *not* caused by
+  `kCGImageSourceShouldCacheImmediately`. Measured with the flag on and off
+  across two buckets, build and first-draw times were identical to within
+  noise: on the `CGImageSourceCreateThumbnailAtIndex` path the flag is a
+  **no-op**, because thumbnail synthesis already returns a rasterized bitmap.
+  The actual win is `CreateThumbnailAtIndex` + bucketing versus `NSImage`'s
+  lazy provider — 1.07 ms first draw **on main** for `NSImage(data:)` against
+  0.12–0.30 ms for the pipeline, medians of 20 over the real 512 px tier file.
+  The flag is kept (it states the requirement, and becomes load-bearing for any
+  future full-size `CreateImageAtIndex` decode) but it is not the mechanism.
+  The same misattribution appears in the `AppKitBakeoffGrid` comment — so the
+  AppKit mode's advantage was never attributable to it either.
+
 Workstream B (`DetailImageLoader`) uses the same helper.
 - Pure bucket ladder `thumbnailPixelBucket(pointLongSide:scale:)` → snapped UP
   to {128, 192, 256, 384, 512}; 512 = tier ceiling.
@@ -430,6 +443,27 @@ should render effortlessly. That points at `NSImage` deferring pixel decode to
 first draw, **on the main thread, mid-scroll**, producing a spike each time a
 band crossing brings new cells on screen. C1's fully-decoded off-main bitmaps
 target exactly this. If the prediction is right, step 4 cancels A1–A4.
+
+**Widened after C1 — the prediction above stands as written, but its confidence
+interval was too narrow.** Left in place deliberately rather than rewritten: it
+was recorded as falsifiable, and quietly restating it after new evidence is the
+exact failure mode `037` was written to prevent.
+
+C1 measured the named mechanism as **real and quantified but partial**: it moves
+~0.9 ms per newly visible cell off main ≈ **8–11 ms per band crossing** (8–12
+new cells) against a **44 ms** measured worst frame. Right order of magnitude to
+matter; wrong order to be the whole story. `038` §3.3 measured the per-cell
+wrappers as the largest SwiftUI-side effect, which puts C1 in a comparable band
+rather than a dominant one.
+
+So: **C1 alone reaching Smooth is plausible, not expected.** This strengthens
+`038` §5's closing suggestion that the cheap path is **C1 + C4 together**.
+
+**Consequence for the gate, binding:** if step 4 is run after C1 only and
+returns Not smooth, **that is not a framework verdict** and must not be recorded
+as one. C4 has to land first. Running the gate early and reading it literally
+would justify a 1–2 week rewrite off an admittedly incomplete comparison —
+structurally the same error `038` §4 caught the first time.
 
 ## 6. Test strategy
 
