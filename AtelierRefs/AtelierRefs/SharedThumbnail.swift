@@ -6,39 +6,37 @@
 //  the Spaces list (004-P1/P2, 005-E2). Extracted from the old `LibraryView` so
 //  every surface decodes off the main render path via one process-wide cache.
 //
+//  036 §4 C3 — every surface here now draws from ``ThumbnailPipeline``: a
+//  `CGImage` decoded to the slot's own PIXEL BUCKET, off the main thread, with
+//  the pixels already forced. The old `ThumbnailCache` (`NSCache<NSString,
+//  NSImage>`, countLimit 512, one 512 px bitmap for a 30 pt rail cover) is gone.
+//  Two consequences worth stating because they are the point of the change:
+//
+//   • Every call site passes a bucket derived from ITS OWN analytic display
+//     size via ``thumbnailPixelBucket(pointLongSide:scale:)``. A 30 pt rail
+//     cover asks for 128 px, not 512 — a 16× smaller bitmap for the same pixels
+//     on screen.
+//   • The tile draws `Image(decorative:scale:orientation:)` over a `CGImage`,
+//     NOT `Image(nsImage:)`. `NSImage` defers its pixel decode to first *draw*,
+//     which lands on the main thread mid-scroll (measured 1.07 ms per newly
+//     visible cell, `.change-log/176`). Round-tripping the pipeline's `CGImage`
+//     back through `NSImage` to keep the old initializer would reintroduce
+//     exactly the cost C1 measured away.
+//
 
 import AppKit
 import AtelierCore
 import SwiftUI
 
-/// A process-wide, thread-safe cache of decoded thumbnails, keyed by blob hash.
-/// The synchronous `cached(_:)` hit is read on the main render path; the disk
-/// read + decode in `load(hash:url:)` run OFF the main thread and populate the
-/// cache — so scrolling a large grid never blocks the UI on `NSImage(contentsOf:)`
-/// I/O. Returning nothing from `load` keeps any non-Sendable `NSImage` from
-/// crossing an isolation boundary; the caller re-reads via `cached`.
-final class ThumbnailCache: @unchecked Sendable {
-    static let shared = ThumbnailCache()
-    private let cache = NSCache<NSString, NSImage>()
-
-    init() { cache.countLimit = 512 }
-
-    /// A synchronous cache hit (NSCache is thread-safe), or nil if not yet loaded.
-    func cached(_ hash: String) -> NSImage? { cache.object(forKey: hash as NSString) }
-
-    /// Read + decode the thumbnail off the main thread and store it under `hash`.
-    func load(hash: String, url: URL) async {
-        if cache.object(forKey: hash as NSString) != nil { return }
-        let data = await Task.detached(priority: .utility) { try? Data(contentsOf: url) }.value
-        guard let data, let image = NSImage(data: data) else { return }
-        cache.setObject(image, forKey: hash as NSString)
-    }
-}
-
-/// Loads a thumbnail's image asynchronously via ``ThumbnailCache``, so the grid
-/// never decodes on the main render path. Shows a cached image immediately;
-/// otherwise a placeholder while it loads off-main, keyed by `hash` so cell reuse
-/// (scrolling) reloads for the new item.
+/// Loads a thumbnail's image asynchronously via ``ThumbnailPipeline``, so the
+/// grid never decodes on the main render path.
+///
+/// Paints in up to two steps, which is what keeps a fast scroll from showing
+/// holes: a bucket-TOLERANT synchronous cache hit draws immediately (any bucket
+/// already decoded for this hash, preferring a larger one), and if that hit
+/// wasn't the exact bucket the slot wants, the exact one is awaited and swapped
+/// in. Keyed on `hash + bucket` so both cell reuse (scrolling) and a density
+/// change (⌘±, which can cross a bucket boundary) re-run the load.
 struct AsyncThumbnail: View {
     let hash: String
     let url: URL?
@@ -47,19 +45,27 @@ struct AsyncThumbnail: View {
     /// Forwarded to ``ThumbnailTile`` — `true` fills the ambient (aspect-sized)
     /// frame for the masonry grid (011-B1); `false` keeps the legacy square.
     var fill: Bool = false
-    @State private var image: NSImage?
+    /// The pixel bucket to decode at, computed by the CALLER from its own
+    /// analytic display size (036 §4 C3 — "the cell never guesses its own
+    /// size"). Defaults to the 512 tier ceiling so any surface that hasn't been
+    /// sized yet is merely wasteful, never blurry.
+    var bucket: Int = thumbnailPixelBuckets[thumbnailPixelBuckets.count - 1]
+    @State private var image: CGImage?
 
     var body: some View {
         ThumbnailTile(image: image, isSelected: isSelected, cornerRadius: cornerRadius, fill: fill)
-            .task(id: hash) {
-                if let hit = ThumbnailCache.shared.cached(hash) {
-                    image = hit
-                    return
-                }
-                image = nil
+            .task(id: ThumbnailKey(hash: hash, bucket: bucket)) {
+                // Instant paint from ANY cached bucket (nil when nothing is
+                // cached, which also clears a reused cell's stale image).
+                let hit = ThumbnailPipeline.shared.cachedEntry(hash: hash, bucket: bucket)
+                image = hit?.image
+                // Exact bucket already in hand → nothing more to do.
+                if hit?.bucket == bucket { return }
                 guard let url else { return }
-                await ThumbnailCache.shared.load(hash: hash, url: url)
-                image = ThumbnailCache.shared.cached(hash)
+                if let exact = await ThumbnailPipeline.shared.image(
+                    hash: hash, url: url, bucket: bucket) {
+                    image = exact
+                }
             }
     }
 }
@@ -81,13 +87,15 @@ struct AssetContentThumbnail: View {
     /// frame, so their fixed-ratio cards render the same either way; the byte
     /// kinds crop-fill their aspect rect.
     var fill: Bool = false
+    /// Forwarded to ``AsyncThumbnail`` — the caller's own analytic pixel bucket.
+    var bucket: Int = thumbnailPixelBuckets[thumbnailPixelBuckets.count - 1]
 
     var body: some View {
         switch asset.content {
         case let .image(hash), let .video(hash):
             AsyncThumbnail(
                 hash: hash, url: url, isSelected: isSelected,
-                cornerRadius: cornerRadius, fill: fill)
+                cornerRadius: cornerRadius, fill: fill, bucket: bucket)
         case let .color(hex):
             ColorSwatchTile(hex: hex, isSelected: isSelected, cornerRadius: cornerRadius)
         case let .link(link):
@@ -95,7 +103,7 @@ struct AssetContentThumbnail: View {
             if let hash = link.imageBlobHash {
                 AsyncThumbnail(
                     hash: hash, url: url, isSelected: isSelected,
-                    cornerRadius: cornerRadius, fill: fill)
+                    cornerRadius: cornerRadius, fill: fill, bucket: bucket)
             } else {
                 LinkCardTile(link: link, isSelected: isSelected, cornerRadius: cornerRadius)
             }
@@ -104,7 +112,7 @@ struct AssetContentThumbnail: View {
             if let hash = tweet.cardImageBlobHash {
                 AsyncThumbnail(
                     hash: hash, url: url, isSelected: isSelected,
-                    cornerRadius: cornerRadius, fill: fill)
+                    cornerRadius: cornerRadius, fill: fill, bucket: bucket)
             } else {
                 TweetCardTile(tweet: tweet, isSelected: isSelected, cornerRadius: cornerRadius)
             }
@@ -234,10 +242,14 @@ struct ColorSwatchTile: View {
 /// masonry column cell sizes the tile by the item's aspect via an explicit
 /// `.frame(width:height:)`, and the image crop-fills that rect).
 struct ThumbnailTile: View {
-    let image: NSImage?
+    /// A fully decoded bitmap from ``ThumbnailPipeline`` — deliberately a
+    /// `CGImage`, not an `NSImage`, so the pixels are already rasterized when
+    /// this draws (036 §4 C1/C3; see the file header).
+    let image: CGImage?
     var isSelected: Bool = false
     var cornerRadius: CGFloat = 8
     var fill: Bool = false
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         sized
@@ -265,7 +277,13 @@ struct ThumbnailTile: View {
     @ViewBuilder
     private var imageLayer: some View {
         if let image {
-            Image(nsImage: image)
+            // `decorative:` because the tile carries no meaning of its own — the
+            // accessibility label lives on the CELL (`CollectionCell`), and a
+            // second label here would double-announce every grid item. `scale:`
+            // is the backing scale, so the bitmap's nominal point size matches
+            // the bucket that produced it; `.resizable()` makes the exact value
+            // cosmetic, but a wrong one would fight the layout on a rescale.
+            Image(decorative: image, scale: displayScale, orientation: .up)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
         } else {
@@ -291,12 +309,21 @@ struct CoverCard: View {
     /// SF Symbol drawn when there is no cover (folder vs board).
     var placeholderSymbol: String = "folder"
     var accent: Bool = false
+    /// The cover's drawn side in POINTS, for the pixel bucket (036 §4 C3). The
+    /// default is the widest a cover actually gets on the two surfaces that use
+    /// this card: both lay out `GridItem(.adaptive(minimum: 150, maximum: 220))`
+    /// and this card insets by 8 pt on each side, so 220 − 16 = 204.
+    var coverPointSide: CGFloat = 204
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack {
                 if let coverHash {
-                    AsyncThumbnail(hash: coverHash, url: coverURL, cornerRadius: 12)
+                    AsyncThumbnail(
+                        hash: coverHash, url: coverURL, cornerRadius: 12,
+                        bucket: thumbnailPixelBucket(
+                            pointLongSide: coverPointSide, scale: displayScale))
                 } else {
                     RoundedRectangle(cornerRadius: 12)
                         .fill(accent ? Color.accentColor.opacity(0.12) : Color(.quaternaryLabelColor).opacity(0.4))

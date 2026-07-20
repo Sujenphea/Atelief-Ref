@@ -68,6 +68,16 @@ struct CollectionView: View {
     // identical folder list per cell. Plain `@State`; not observed.
     @State private var moveTargetsCache = MoveTargetsCache()
 
+    // Thumbnail prefetching for the band ahead (036 §4 C3). Plain (non-observed)
+    // state on purpose — it is mutated from the band-change seam, and publishing
+    // that mutation would re-render the grid on the very frame already doing the
+    // most work. Mirrors `moveTargetsCache`'s discipline.
+    @State private var thumbnailPrefetcher = ThumbnailWindowPrefetcher()
+
+    /// The backing scale the grid draws at — the other half of the thumbnail
+    /// pixel bucket, alongside each cell's analytic frame (036 §4 C3).
+    @Environment(\.displayScale) private var displayScale
+
     /// The round-robin column count for a viewport `width` — the ONE source both
     /// the masonry layout and keyboard nav read, so `nextGridIndex`'s `± columns`
     /// index math always matches the frames. Driven by the global density notch
@@ -508,7 +518,14 @@ struct CollectionView: View {
                     let visibleIDs = Set(cells.map { model.items[$0.index].item.id })
                     hoveredItemID = hoverAfterWindowChange(
                         current: hoveredItemID, visibleIDs: visibleIDs)
+                    // Thumbnail prefetch for the ring beyond the materialized
+                    // window (036 §4 C3). The band seam is the right trigger: it
+                    // fires a few times per screenful, and it is exactly when the
+                    // set of "cells about to exist" changes.
+                    prefetchThumbnails(cells: cells, layout: layout, queryRect: queryRect,
+                                       viewportHeight: viewportHeight)
                 }
+                .onDisappear { thumbnailPrefetcher.cancelAll() }
                 .focusable()
                 .focusEffectDisabled()
                 .onDeleteCommand { model.requestDeleteSelected() }
@@ -575,13 +592,51 @@ struct CollectionView: View {
     /// and the content's scrollable height is set explicitly on the container.
     /// ``windowedCells`` is a pure FILTER (never a re-map), so cell `index` always
     /// binds `items[index]` to `frames[index]`. (Cells still decode thumbnails
-    /// lazily/async via `AsyncThumbnail` + the shared cache.)
+    /// lazily/async via `AsyncThumbnail` + ``ThumbnailPipeline``, at the pixel
+    /// bucket their own analytic frame implies.)
     @ViewBuilder
     private func masonryWindow(cells: [WindowedCell], proxy: ScrollViewProxy) -> some View {
         ForEach(cells) { cell in
             masonryCell(model.items[cell.index], frame: cell.frame, proxy: proxy)
                 .offset(x: cell.frame.minX, y: cell.frame.minY)
         }
+    }
+
+    /// Hand the ring of cells just BEYOND the materialized window to
+    /// ``ThumbnailPipeline``'s prefetch gate, and cancel whatever fell out of it
+    /// (036 §4 C3).
+    ///
+    /// The prefetch overscan is twice the render overscan, so the ring is the
+    /// screenful on either side of what is materialized — enough lead time for a
+    /// `.utility` decode to land before the band crossing that needs it, without
+    /// speculatively decoding a whole 2000-item collection. Each request carries
+    /// the SAME bucket the cell will ask for (its analytic frame), because a
+    /// prefetch at the wrong bucket is a decode the visible cell then has to
+    /// repeat.
+    private func prefetchThumbnails(
+        cells: [WindowedCell], layout: MasonryFrames, queryRect: CGRect, viewportHeight: CGFloat
+    ) {
+        let ring = masonryPrefetchIndices(
+            in: queryRect, frames: layout.frames, columns: layout.columns,
+            overscan: viewportHeight * 2, rendered: cells.map(\.index))
+        let requests: [ThumbnailRequest] = ring.compactMap { index in
+            guard index < model.items.count else { return nil }
+            let detail = model.items[index]
+            // Media-less kinds (color / bare link / text-only tweet) have no blob
+            // and no thumbnail to prefetch.
+            guard let hash = detail.asset.blobHash,
+                  let url = model.thumbnailURL(for: detail),
+                  index < layout.frames.count else { return nil }
+            let frame = layout.frames[index]
+            return ThumbnailRequest(
+                hash: hash, url: url,
+                bucket: thumbnailPixelBucket(
+                    pointLongSide: max(frame.width, frame.height), scale: displayScale))
+        }
+        // `keep` = the rendered cells' hashes: they drive their own visible loads
+        // and must never be cancelled out from under (see `update(requests:keep:)`).
+        let rendered = Set(cells.compactMap { model.items[$0.index].asset.blobHash })
+        thumbnailPrefetcher.update(requests: requests, keep: rendered)
     }
 
     /// One masonry cell: the shared ``CollectionCell`` sized to its analytic
@@ -605,6 +660,12 @@ struct CollectionView: View {
                 fill: true,
                 gifURL: detail.asset.mimeType == GifMotion.gifMimeType
                     ? model.blobURL(for: detail) : nil,
+                // The bucket comes from the cell's ANALYTIC masonry frame — the
+                // same `frame` the marquee hit-test and the offset read, so the
+                // pixels requested and the pixels drawn can't drift (036 §4 C3).
+                // Long side, because the tile crop-FILLS its rect.
+                bucket: thumbnailPixelBucket(
+                    pointLongSide: max(frame.width, frame.height), scale: displayScale),
                 onImagePress: { shift, command in
                     handleImagePress(detail, shift: shift, command: command, proxy: proxy)
                 },
@@ -864,7 +925,10 @@ struct CollectionView: View {
     private func dragPreview(for detail: CollectionItemDetail) -> some View {
         let count = model.selection.ids.contains(detail.item.id)
             ? max(model.selection.ids.count, 1) : 1
-        AssetContentThumbnail(asset: detail.asset, url: model.thumbnailURL(for: detail))
+        // 84 pt → 168 px at 2× → the 192 bucket (036 §4 C3).
+        AssetContentThumbnail(
+            asset: detail.asset, url: model.thumbnailURL(for: detail),
+            bucket: thumbnailPixelBucket(pointLongSide: 84, scale: displayScale))
             .frame(width: 84, height: 84)
             .overlay(alignment: .topTrailing) {
                 if count > 1 {

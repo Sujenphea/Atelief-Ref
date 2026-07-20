@@ -30,6 +30,7 @@ struct CollectionDropRail: View {
 
     @State private var isExpanded = false
     @State private var targetedRow: UUID?
+    @Environment(\.displayScale) private var displayScale
 
     private static let miniWidth: CGFloat = 44
     private static let expandedWidth: CGFloat = 220
@@ -105,8 +106,13 @@ struct CollectionDropRail: View {
     private func cover(_ id: UUID) -> some View {
         Group {
             if let hash = coverHash(id) {
+                // 30 pt → 60 px at 2× → the 128 bucket (036 §4 C3). This was the
+                // most wasteful site under the old cache: a full 512 px bitmap
+                // for a 30 pt swatch, ~16× the pixels it can possibly show.
                 AsyncThumbnail(
-                    hash: hash, url: thumbnailURL(hash), isSelected: false, cornerRadius: 6)
+                    hash: hash, url: thumbnailURL(hash), isSelected: false, cornerRadius: 6,
+                    bucket: thumbnailPixelBucket(
+                        pointLongSide: Self.coverSide, scale: displayScale))
             } else {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(.quaternary)

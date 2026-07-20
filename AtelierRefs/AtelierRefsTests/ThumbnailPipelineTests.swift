@@ -429,3 +429,102 @@ struct ThumbnailPipelineTests {
         #expect(probe.totalCalls == 2)
     }
 }
+
+// MARK: - Window-driven prefetching (036 §4 C3)
+
+@Suite("ThumbnailWindowPrefetcher: start the new set, cancel what fell out")
+struct ThumbnailWindowPrefetcherTests {
+
+    /// Note what is asserted and what deliberately is NOT. `ThumbnailPipeline`
+    /// checks `Task.isCancelled` ONCE, before entering the decode closure, so
+    /// cancellation reliably prevents work that hasn't started and is a no-op
+    /// against work already inside ImageIO. Whether the blocked "a" had entered
+    /// its decode when the cancel landed is a genuine race, so this asserts the
+    /// deterministic half: the QUEUED entry never runs, and the new window does.
+    @Test("a hash that left the window never starts if it was still queued")
+    func cancelsWhatFellOut() async {
+        // "a" blocks the only prefetch slot; "b" is queued behind it. The next
+        // window contains neither.
+        let probe = DecodeProbe(blocking: ["a"])
+        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
+        let prefetcher = ThumbnailWindowPrefetcher()
+
+        prefetcher.update(requests: [request("a"), request("b")], pipeline: pipeline)
+        prefetcher.update(requests: [request("c")], pipeline: pipeline)
+        probe.release()
+        await pipeline.waitForPendingWork()
+
+        #expect(probe.callCount("b") == 0)          // dropped from the queue
+        #expect(pipeline.cachedExact(hash: "b", bucket: 256) == nil)
+        #expect(pipeline.cachedExact(hash: "c", bucket: 256) != nil)  // the new set ran
+    }
+
+    /// The load-bearing rule. A hash crossing from the prefetch ring INTO the
+    /// visible window disappears from `requests` (rendered cells are excluded
+    /// from the ring), but a visible load joins that same in-flight task — so
+    /// cancelling it here would blank a cell that is on screen.
+    @Test("a hash promoted into the rendered window is NOT cancelled")
+    func keepSetIsNotCancelled() async {
+        let probe = DecodeProbe(blocking: ["a"])
+        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 2)
+        let prefetcher = ThumbnailWindowPrefetcher()
+
+        prefetcher.update(requests: [request("a")], pipeline: pipeline)
+        // Next band: "a" is now RENDERED, so it is absent from the ring but present
+        // in `keep`.
+        prefetcher.update(requests: [request("b")], keep: ["a"], pipeline: pipeline)
+        probe.release()
+        await pipeline.waitForPendingWork()
+
+        #expect(pipeline.cachedExact(hash: "a", bucket: 256) != nil)
+        #expect(pipeline.cachedExact(hash: "b", bucket: 256) != nil)
+    }
+
+    @Test("a hash still in the new window is not cancelled and is not re-decoded")
+    func stableHashSurvives() async {
+        let probe = DecodeProbe()
+        let pipeline = ThumbnailPipeline(decode: probe.decode)
+        let prefetcher = ThumbnailWindowPrefetcher()
+
+        prefetcher.update(requests: [request("a"), request("b")], pipeline: pipeline)
+        await pipeline.waitForPendingWork()
+        prefetcher.update(requests: [request("b"), request("c")], pipeline: pipeline)
+        await pipeline.waitForPendingWork()
+
+        #expect(probe.callCount("b") == 1)          // cached; not decoded twice
+        #expect(pipeline.cachedExact(hash: "b", bucket: 256) != nil)
+    }
+
+    @Test("cancelAll drops everything outstanding and is idempotent")
+    func cancelAllClears() async {
+        let probe = DecodeProbe(blocking: ["a"])
+        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
+        let prefetcher = ThumbnailWindowPrefetcher()
+
+        prefetcher.update(requests: [request("a"), request("b")], pipeline: pipeline)
+        prefetcher.cancelAll(pipeline: pipeline)
+        prefetcher.cancelAll(pipeline: pipeline)    // no-op, not a crash
+        #expect(prefetcher.outstandingHashes.isEmpty)
+
+        probe.release()
+        await pipeline.waitForPendingWork()
+        // Only the queued entry is deterministically stopped — see the note on
+        // `cancelsWhatFellOut` for why "a" is not asserted on.
+        #expect(probe.callCount("b") == 0)
+        #expect(pipeline.cachedExact(hash: "b", bucket: 256) == nil)
+    }
+
+    @Test("the outstanding set tracks the latest window, not the union of all of them")
+    func outstandingIsTheLatestWindow() {
+        let probe = DecodeProbe(blocking: ["a", "b", "c"])
+        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
+        let prefetcher = ThumbnailWindowPrefetcher()
+
+        prefetcher.update(requests: [request("a"), request("b")], pipeline: pipeline)
+        #expect(prefetcher.outstandingHashes == ["a", "b"])
+        prefetcher.update(requests: [request("c")], pipeline: pipeline)
+        #expect(prefetcher.outstandingHashes == ["c"])
+
+        probe.release()
+    }
+}

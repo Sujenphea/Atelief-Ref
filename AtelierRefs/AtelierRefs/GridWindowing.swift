@@ -92,6 +92,24 @@ func masonryVisibleIndices(
     return masonryMarqueeIndices(in: outset, frames: frames, columns: columns)
 }
 
+/// The item indices to PREFETCH thumbnails for around `rect` — the ring just
+/// beyond the materialized window (036 §4 C3).
+///
+/// Same geometry as ``masonryVisibleIndices`` at a WIDER `overscan`, minus the
+/// indices already rendered. The subtraction is not an optimization, it is a
+/// correctness rule: a rendered cell issues its own `.userInitiated` load, and
+/// listing it here too would put its key under `cancelPrefetch`'s authority —
+/// which, because a visible request JOINS an in-flight prefetch task rather than
+/// starting a second one, could cancel the very decode the visible cell is
+/// awaiting and leave it blank. Ascending order.
+func masonryPrefetchIndices(
+    in rect: CGRect, frames: [CGRect], columns: Int, overscan: CGFloat, rendered: [Int]
+) -> [Int] {
+    let materialized = Set(rendered)
+    return masonryVisibleIndices(in: rect, frames: frames, columns: columns, overscan: overscan)
+        .filter { !materialized.contains($0) }
+}
+
 /// One windowed cell the render will materialize: the item's feed `index` (its
 /// identity, stable across scroll) and the analytic `frame` to place it at (012).
 struct WindowedCell: Identifiable {

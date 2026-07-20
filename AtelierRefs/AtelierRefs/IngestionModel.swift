@@ -1305,8 +1305,9 @@ final class IngestionModel: ObservableObject {
     }
 
     /// The on-disk URL of a folder item's 512-tier thumbnail (pure — no decode).
-    /// The grid loads + caches it off the main thread via `ThumbnailCache`, so the
-    /// render path never blocks on disk I/O.
+    /// The grid decodes + caches it off the main thread via ``ThumbnailPipeline``
+    /// (at the cell's own pixel bucket), so the render path never blocks on disk
+    /// I/O and never pays a lazy decode at first draw.
     func thumbnailURL(for detail: CollectionItemDetail) -> URL? {
         thumbnailURL(forAsset: detail.asset)
     }

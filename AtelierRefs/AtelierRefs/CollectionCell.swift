@@ -33,6 +33,11 @@ struct CollectionCell: View, Equatable {
     /// on hover (011-B5). The static thumbnail is a flattened poster; the animation
     /// plays from the original bytes, dwell-gated + capped + Reduce-Motion aware.
     var gifURL: URL? = nil
+    /// The pixel bucket to decode the thumbnail at (036 §4 C3). Computed by the
+    /// GRID from the cell's analytic masonry frame + `displayScale` and passed
+    /// down — the cell never guesses its own size, because its frame is applied
+    /// by the parent (`.frame(width:height:)`) and isn't knowable in here.
+    var bucket: Int = thumbnailPixelBuckets[thumbnailPixelBuckets.count - 1]
     /// The mouse-DOWN edge on the image, BEFORE `.draggable` can steal the
     /// interaction (009: Finder's press routing). Returns whether the press
     /// consumed it — the cell then swallows the matching mouse-up click.
@@ -67,6 +72,9 @@ struct CollectionCell: View, Equatable {
             && lhs.isSelected == rhs.isSelected
             && lhs.isCursor == rhs.isCursor
             && lhs.isSelecting == rhs.isSelecting
+            // A density step (⌘±) can cross a bucket boundary; without this the
+            // `.equatable()` skip would keep the old, wrong-sized bitmap.
+            && lhs.bucket == rhs.bucket
     }
 
     var body: some View {
@@ -81,7 +89,9 @@ struct CollectionCell: View, Equatable {
             guard !flags.contains(.shift), !flags.contains(.command) else { return }
             onImageClick(false, false)
         } label: {
-            AssetContentThumbnail(asset: detail.asset, url: url, isSelected: isSelected, fill: fill)
+            AssetContentThumbnail(
+                asset: detail.asset, url: url, isSelected: isSelected, fill: fill,
+                bucket: bucket)
         }
         .buttonStyle(PressReportingButtonStyle(
             onPress: {

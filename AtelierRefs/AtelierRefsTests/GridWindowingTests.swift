@@ -215,6 +215,66 @@ struct MasonryVisibleIndicesTests {
     }
 }
 
+@Suite("masonryPrefetchIndices: the ring beyond the window")
+struct MasonryPrefetchIndicesTests {
+
+    private let aspects = [0.4, 1.0, 2.0, 0.5, 1.3, 1.0, 3.0, 0.7, 1.0, 2.5, 0.9, 1.1, 1.0, 0.3]
+
+    private func frames(width: CGFloat = 300, cols: Int = 3) -> [CGRect] {
+        MasonryLayout.layout(
+            aspects: aspects, availableWidth: width, columns: cols, spacing: 8, topInset: 4).frames
+    }
+
+    /// The correctness rule, not an optimization: a rendered index must never be
+    /// handed to the prefetcher, because a visible request JOINS an in-flight
+    /// prefetch task and a later `cancelPrefetch` would then cancel the decode
+    /// the on-screen cell is awaiting.
+    @Test("the rendered window is never included in the prefetch ring")
+    func excludesRendered() {
+        let f = frames()
+        let rect = CGRect(x: 0, y: 200, width: 300, height: 300)
+        let rendered = masonryVisibleIndices(in: rect, frames: f, columns: 3, overscan: 300)
+        let ring = masonryPrefetchIndices(
+            in: rect, frames: f, columns: 3, overscan: 600, rendered: rendered)
+        #expect(Set(ring).isDisjoint(with: Set(rendered)))
+    }
+
+    /// Ring ∪ rendered must equal what the wider overscan would have returned —
+    /// the exclusion drops cells from the PREFETCH set, never from consideration.
+    @Test("ring plus rendered reconstructs the wide window exactly")
+    func ringPlusRenderedIsTheWideWindow() {
+        let f = frames()
+        for y in stride(from: CGFloat(0), through: 1200, by: 200) {
+            let rect = CGRect(x: 0, y: y, width: 300, height: 300)
+            let rendered = masonryVisibleIndices(in: rect, frames: f, columns: 3, overscan: 300)
+            let wide = masonryVisibleIndices(in: rect, frames: f, columns: 3, overscan: 600)
+            let ring = masonryPrefetchIndices(
+                in: rect, frames: f, columns: 3, overscan: 600, rendered: rendered)
+            #expect(Set(ring).union(rendered) == Set(wide))
+        }
+    }
+
+    @Test("ascending order is preserved")
+    func ascending() {
+        let f = frames()
+        let ring = masonryPrefetchIndices(
+            in: CGRect(x: 0, y: 0, width: 300, height: 200),
+            frames: f, columns: 3, overscan: 900, rendered: [])
+        #expect(ring == ring.sorted())
+    }
+
+    @Test("no frames, or everything already rendered, yields nothing to prefetch")
+    func degenerate() {
+        let f = frames()
+        let rect = CGRect(x: 0, y: 0, width: 300, height: 300)
+        #expect(masonryPrefetchIndices(
+            in: rect, frames: [], columns: 3, overscan: 600, rendered: []).isEmpty)
+        let all = Array(0..<f.count)
+        #expect(masonryPrefetchIndices(
+            in: rect, frames: f, columns: 3, overscan: 10_000, rendered: all).isEmpty)
+    }
+}
+
 @Suite("windowedCells: identity mapping")
 struct WindowedCellsTests {
 

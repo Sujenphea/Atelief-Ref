@@ -33,6 +33,8 @@ struct CollectionStackCard: View {
     /// Highlighted because a drag is hovering (the Procreate "drop here" cue).
     var isTargeted: Bool = false
 
+    @Environment(\.displayScale) private var displayScale
+
     private static let side: CGFloat = 92
 
     var body: some View {
@@ -81,7 +83,12 @@ struct CollectionStackCard: View {
     }
 
     private func tile(hash: String) -> some View {
-        AsyncThumbnail(hash: hash, url: thumbnailURL(hash), isSelected: false, cornerRadius: 10)
+        // 92 pt → 184 px at 2× → the 192 bucket. The `scaleEffect(1.06)` drop cue
+        // is transient and well inside the round-up headroom, so it doesn't
+        // warrant the next bucket up.
+        AsyncThumbnail(
+            hash: hash, url: thumbnailURL(hash), isSelected: false, cornerRadius: 10,
+            bucket: thumbnailPixelBucket(pointLongSide: Self.side, scale: displayScale))
             .frame(width: Self.side, height: Self.side)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color(.windowBackgroundColor)))
             .clipShape(RoundedRectangle(cornerRadius: 10))

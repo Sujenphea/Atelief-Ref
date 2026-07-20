@@ -17,6 +17,7 @@ struct AddFromLibrarySheet: View {
     let onAdd: ([Asset]) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.displayScale) private var displayScale
     @State private var pickedCollectionID: UUID?
     @State private var items: [CollectionItemDetail] = []
     /// Picked assets keyed by asset id, ACCUMULATED across collection switches so
@@ -24,7 +25,10 @@ struct AddFromLibrarySheet: View {
     @State private var picked: [UUID: Asset] = [:]
     @State private var isLoading = false
 
-    private let columns = [GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 8)]
+    /// The widest a cell here can draw — the `columns` maximum below. Kept next
+    /// to it so the thumbnail bucket can't drift from the layout that sets it.
+    private static let maxCellSide: CGFloat = 120
+    private let columns = [GridItem(.adaptive(minimum: 96, maximum: maxCellSide), spacing: 8)]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -94,10 +98,15 @@ struct AddFromLibrarySheet: View {
                         Button {
                             toggle(detail.asset)
                         } label: {
+                            // The columns are `.adaptive(minimum: 96, maximum: 120)`,
+                            // so 120 pt is the widest a cell here ever draws →
+                            // 240 px at 2× → the 256 bucket (036 §4 C3).
                             AssetContentThumbnail(
                                 asset: detail.asset,
                                 url: model.thumbnailURL(for: detail),
-                                isSelected: picked[detail.asset.id] != nil)
+                                isSelected: picked[detail.asset.id] != nil,
+                                bucket: thumbnailPixelBucket(
+                                    pointLongSide: Self.maxCellSide, scale: displayScale))
                         }
                         .buttonStyle(.plain)
                     }

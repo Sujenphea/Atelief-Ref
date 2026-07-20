@@ -236,8 +236,12 @@ private struct LibrarySearchResults: View {
     /// The hovered cell (drives the selection circle), keyed off the cell CONTAINER
     /// so moving onto the circle doesn't flicker it away (see CollectionView 149).
     @State private var hoveredID: UUID?
+    @Environment(\.displayScale) private var displayScale
 
-    private let columns = [GridItem(.adaptive(minimum: 112, maximum: 140), spacing: 8)]
+    /// The widest a result cell can draw — the `columns` maximum below. Kept next
+    /// to it so the thumbnail bucket can't drift from the layout that sets it.
+    private static let maxCellSide: CGFloat = 140
+    private let columns = [GridItem(.adaptive(minimum: 112, maximum: maxCellSide), spacing: 8)]
 
     /// The result set's asset ids in display order — the reducer's `order`.
     private var orderIDs: [UUID] { search.results.map(\.asset.id) }
@@ -312,10 +316,13 @@ private struct LibrarySearchResults: View {
                 guard !flags.contains(.shift), !flags.contains(.command) else { return }
                 apply(gridClickAction(imageID: id, shift: false, command: false), open: detail)
             } label: {
+                // 140 pt (the columns maximum) → 280 px at 2× → the 384 bucket.
                 AssetContentThumbnail(
                     asset: detail.asset,
                     url: model.thumbnailURL(forAsset: detail.asset),
-                    isSelected: isSelected)
+                    isSelected: isSelected,
+                    bucket: thumbnailPixelBucket(
+                        pointLongSide: Self.maxCellSide, scale: displayScale))
             }
             .buttonStyle(.plain)
             // ⌘/⇧ clicks: a SwiftUI Button doesn't fire reliably on a modified click,

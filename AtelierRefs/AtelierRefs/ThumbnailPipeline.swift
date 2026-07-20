@@ -4,8 +4,9 @@
 //
 //  036 §4 C1 — the bucketed, byte-budgeted, fully-decoded thumbnail pipeline.
 //
-//  Three properties distinguish this from `ThumbnailCache` (`SharedThumbnail.swift`),
-//  each of them a root cause 036 §1.4 names:
+//  Three properties distinguish it from the `ThumbnailCache` it replaced (an
+//  `NSCache<NSString, NSImage>` in `SharedThumbnail.swift`, DELETED in C3 once
+//  every call site had moved), each of them a root cause 036 §1.4 names:
 //
 //   1. **Bucketed.** A cell ~150 pt wide on a 2× display needs ~300 px, not the
 //      512 px the on-disk tier stores. Decoding to a bucket means a smaller
@@ -356,4 +357,50 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
         defer { lock.unlock() }
         return (Array(inFlight.values), !queued.isEmpty)
     }
+}
+
+// MARK: - Window-driven prefetching
+
+/// Bridges a scrolling window's "what's coming up" to ``ThumbnailPipeline``'s
+/// prefetch gate (036 §4 C3): each ``update(requests:keep:)`` starts the new
+/// working set and cancels whatever fell out of it.
+///
+/// A plain class, not an observable one, deliberately — the grid holds it in
+/// `@State` and mutates it from a band change, and publishing that mutation
+/// would re-render the grid on exactly the frame that is already doing the most
+/// work. It owns only the outstanding-hash bookkeeping the pipeline itself has
+/// no reason to keep.
+nonisolated final class ThumbnailWindowPrefetcher {
+    private var outstanding: Set<String> = []
+
+    /// Prefetch `requests` and cancel any previously requested hash that is
+    /// neither in `requests` nor in `keep`.
+    ///
+    /// `keep` is the RENDERED set, and passing it is load-bearing: a hash that
+    /// crossed from the prefetch ring into the visible window is gone from
+    /// `requests`, but its in-flight task is the same one the now-visible cell
+    /// is awaiting (``ThumbnailPipeline/image(hash:url:bucket:)`` joins rather
+    /// than re-decodes). Cancelling it would blank a cell on screen.
+    func update(
+        requests: [ThumbnailRequest], keep: Set<String> = [],
+        pipeline: ThumbnailPipeline = .shared
+    ) {
+        let next = Set(requests.map(\.hash))
+        let dropped = outstanding.subtracting(next).subtracting(keep)
+        outstanding = next
+        if !dropped.isEmpty { pipeline.cancelPrefetch(hashes: Array(dropped)) }
+        pipeline.prefetch(requests)
+    }
+
+    /// Cancel everything outstanding — the grid leaving the screen, or switching
+    /// to a collection whose items share none of these hashes.
+    func cancelAll(pipeline: ThumbnailPipeline = .shared) {
+        guard !outstanding.isEmpty else { return }
+        let dropped = Array(outstanding)
+        outstanding = []
+        pipeline.cancelPrefetch(hashes: dropped)
+    }
+
+    /// The hashes currently believed to be prefetching. Test support.
+    var outstandingHashes: Set<String> { outstanding }
 }
