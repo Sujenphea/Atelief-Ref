@@ -46,6 +46,12 @@ struct CollectionView: View {
     // the cell's `onHoverChanged`; drives `showsCircle` for the idle-hover case.
     @State private var hoveredItemID: UUID?
 
+    // The container context menu's cursor + highlight state (036 §4 C4). A class
+    // in plain `@State`, exactly like `marquee` above and for the same reason:
+    // the cursor position is written on every mouse-moved event and must not
+    // publish. Only `GridContextHighlightLayer` observes it.
+    @State private var contextMenu = GridContextMenuState()
+
     private static let gridSpacing: CGFloat = 8
     private static let gridTopInset: CGFloat = 4
     private static let marqueeSpace = "collectionGridContent"
@@ -475,6 +481,11 @@ struct CollectionView: View {
                         // frames (012). The frames already include the top inset, so
                         // the offset IS the frame origin — no extra padding.
                         masonryWindow(cells: cells, proxy: proxy)
+                        // "The menu will act on THIS cell" — the outline AppKit
+                        // used to draw for free under the per-cell context menus
+                        // (036 §4 C4). Drawn from the analytic frames in the same
+                        // content space, above the cells.
+                        GridContextHighlightLayer(state: contextMenu)
                         // The live marquee rectangle, drawn in the same space.
                         MarqueeRectangleLayer(state: marquee)
                     }
@@ -484,6 +495,51 @@ struct CollectionView: View {
                     // WHOLE collection, not just the materialized slice.
                     .frame(width: geo.size.width, height: contentHeight, alignment: .topLeading)
                     .coordinateSpace(name: Self.marqueeSpace)
+                    // Track the pointer for the container context menu (036 §4
+                    // C4). Stored VIEWPORT-relative, not content-relative: a
+                    // wheel/trackpad scroll moves content under a stationary
+                    // pointer without firing a mouse-moved event, so a stored
+                    // content point would silently go stale and the menu would
+                    // target the wrong cell. Writes a non-published var — this
+                    // fires per pointer pixel and must not re-render the grid.
+                    .onContinuousHover(coordinateSpace: .named(Self.marqueeSpace)) { phase in
+                        if case let .active(point) = phase {
+                            let offset = marquee.visibleRect.origin
+                            contextMenu.cursorViewport = CGPoint(
+                                x: point.x - offset.x, y: point.y - offset.y)
+                        } else {
+                            contextMenu.cursorViewport = nil
+                        }
+                    }
+                    // ONE context menu for the whole grid instead of one per cell
+                    // (036 §4 C4). The target is hit-tested from the cursor
+                    // against the ANALYTIC frames; the menu body is the unchanged
+                    // `cellMenu`, so contents and action scope are identical to
+                    // the per-cell version. No target (cursor in a gap) emits
+                    // nothing, which is what right-clicking empty space did
+                    // before.
+                    .contextMenu { containerMenu(layout: layout) }
+                    // The targeted-cell outline's lifetime. NSMenu's tracking
+                    // notifications are global (the toolbar and main menus post
+                    // them too) — "the pointer is over the grid" is the
+                    // discriminator, which also means a keyboard-invoked menu
+                    // draws no extra outline; the lead cell already carries its
+                    // own cursor ring / selection fill in that case.
+                    .onReceive(
+                        NotificationCenter.default.publisher(
+                            for: NSMenu.didBeginTrackingNotification)
+                    ) { _ in
+                        guard contextMenu.cursorViewport != nil,
+                              let index = contextTargetIndex(layout: layout),
+                              index < layout.frames.count else { return }
+                        contextMenu.highlightFrame = layout.frames[index]
+                    }
+                    .onReceive(
+                        NotificationCenter.default.publisher(
+                            for: NSMenu.didEndTrackingNotification)
+                    ) { _ in
+                        contextMenu.highlightFrame = nil
+                    }
                 }
                 .scrollPosition($gridScroll)
                 // Feed the live viewport (scroll offset + container size) and
@@ -685,7 +741,10 @@ struct CollectionView: View {
                 .dropDestination(for: AssetDragPayload.self) { payloads, _ in
                     handleCellDrop(payloads, onto: detail.asset.id)
                 }
-                .contextMenu { cellMenu(for: detail) }
+                // NO per-cell `.contextMenu` (036 §4 C4) — one container-level
+                // menu on the grid content resolves its target by hit-testing the
+                // cursor, so a band crossing no longer builds ~100 full menu
+                // trees for a click that lands on at most one cell.
             if showsCircle {
                 selectionCircle(for: detail).transition(.opacity)
             }
@@ -724,6 +783,44 @@ struct CollectionView: View {
         .buttonStyle(.plain)
         .help(isSelected ? "Deselect" : "Select")
         .accessibilityHidden(true)
+    }
+
+    // MARK: - Container context menu (036 §4 C4)
+
+    /// The grid's ONE context menu: the unchanged ``cellMenu(for:)`` built for
+    /// whichever cell the cursor resolved to, or nothing at all when it resolved
+    /// to none — an empty `@ViewBuilder` result presents no menu, which is what a
+    /// right-click on empty space did when the menus were per-cell.
+    @ViewBuilder
+    private func containerMenu(layout: MasonryFrames) -> some View {
+        if let index = contextTargetIndex(layout: layout) {
+            cellMenu(for: model.items[index])
+        }
+    }
+
+    /// The item index a right-click should act on, shared by the menu body and
+    /// the targeted-cell outline so the two can never name different cells.
+    ///
+    /// Resolution rides the ANALYTIC ``MasonryLayout`` frames (038 §6): a
+    /// zero-size-rect ``masonryMarqueeIndices`` query at the cursor, exactly the
+    /// call the marquee runs per drag tick. Live cell frames are never consulted.
+    ///
+    /// A cursor over a GAP between cells resolves to `nil` (no menu) — parity
+    /// with the per-cell version. NO cursor at all means the menu was invoked
+    /// from the keyboard (the Menu key), which carries no position; 036 §4 C4
+    /// specifies falling back to the keyboard cursor (`lead`) cell.
+    private func contextTargetIndex(layout: MasonryFrames) -> Int? {
+        let point = gridCursorContentPoint(
+            viewport: contextMenu.cursorViewport, contentOffset: marquee.visibleRect.origin)
+        if let index = masonryContextTargetIndex(
+            at: point, frames: layout.frames, columns: layout.columns),
+           model.items.indices.contains(index) {
+            return index
+        }
+        guard contextMenu.cursorViewport == nil, let lead = model.selection.lead else {
+            return nil
+        }
+        return model.items.firstIndex { $0.item.id == lead }
     }
 
     /// The batch context menu (009 · N2/N6). Finder scope (7A): a right-click on a

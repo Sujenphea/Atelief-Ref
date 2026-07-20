@@ -299,10 +299,15 @@ final class IngestionModel: ObservableObject {
     /// whose membership id is `itemID` (Finder scope, 009 · 7A): the WHOLE
     /// selection when that cell is part of it, else just that one cell — the
     /// selection is left untouched either way.
+    ///
+    /// The rule itself is the pure ``gridActionTargets(isSelected:selectedAssetIDs:cellAssetID:)``
+    /// (036 §4 C4), so the container-level context menu and this model seam can
+    /// never diverge on scope, and the rule is unit-tested off the main actor.
     func actionTargets(forCellItemID itemID: UUID) -> [UUID] {
-        if selection.ids.contains(itemID) { return selectedAssetIDs }
-        guard let assetID = assetIDByItemID[itemID] else { return [] }
-        return [assetID]
+        gridActionTargets(
+            isSelected: selection.ids.contains(itemID),
+            selectedAssetIDs: selectedAssetIDs,
+            cellAssetID: assetIDByItemID[itemID])
     }
 
     /// Build the drag payload for a drag that starts on the cell `itemID`
