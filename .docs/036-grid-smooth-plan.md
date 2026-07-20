@@ -7,6 +7,19 @@ sketched the forward options; this plan takes **Option B** (AppKit
 `NSCollectionView`) plus the selection split, the detail-view fixes, and the
 thumbnail pipeline work that 035 §7 deferred.
 
+> **AMENDED after measurement — read `038-grid-bakeoff-results.md` first.**
+> A three-way bake-off at 200 and 2000 items (protocol in `037`) changed three
+> things in this plan:
+> 1. **035's Option A (equatable cell) is refuted** — measured no better than
+>    the current grid and often worse. It is removed from consideration; do not
+>    revive it.
+> 2. **Workstream A1–A4 is NOT yet justified.** The bake-off cannot separate
+>    `NSCollectionView` recycling from the bucketed-`CGImage` thumbnail
+>    pipeline that the AppKit mode necessarily bundled. Workstream C now runs
+>    **first**, followed by a re-measurement that decides A1–A4. See §5.
+> 3. Two "AppKit wins" are not framework properties at all and are pulled
+>    forward into the SwiftUI path — see §4.5.
+
 ## 1. Root causes (investigated, corroborated by 035)
 
 1. **Band-boundary re-materialization.** Every band crossing rebuilds ~100
@@ -48,6 +61,18 @@ broadly (open + step + close); thumbnail work in scope (real collections are
 **Load-bearing fact:** `MasonryLayout.layout` produces index-aligned `[CGRect]`
 in top-left-origin content space (incl. `topInset`), and `NSCollectionView` is
 a flipped view — the frames map 1:1 with zero conversion.
+
+> **Verified, with a sub-pixel asterisk (038 §3.4).** The coordinate space is
+> confirmed: layout *attributes* carry the analytic frames byte-for-byte. But
+> AppKit **pixel-snaps the item views** it places from those attributes, and
+> masonry heights are `columnWidth / aspect` — routinely fractional. Worst
+> measured deviation 0.233 pt over 612 comparisons (bounded by half a backing
+> pixel; the snap rule is NOT `backingAlignedRect(.alignAllEdgesNearest)` —
+> 6 of 12 cells disagreed, so only the bound is safe to rely on).
+> **Consequence:** hover, marquee, selection rings and hit-testing must ride the
+> **analytic** frames, never `cell.view.frame`. Read literally, "zero
+> conversion" invites exactly the opposite and would drift sub-pixel against
+> what is drawn.
 `masonryMarqueeIndices` (`MarqueeMath.swift:77`) is exactly the rect query
 `layoutAttributesForElements(in:)` needs.
 
@@ -307,6 +332,40 @@ Workstream B (`DetailImageLoader`) uses the same helper.
     decoded bytes, no countLimit. API is hash+url+bucket only (no SwiftUI
     types) so both the SwiftUI path and NSCollectionView prefetching use it.
 
+### C4 (new). Container-level lazy context menu
+
+Pulled out of A3 into the SwiftUI path, because it is **not an AppKit
+advantage** — it is a design change A3 happened to bundle. A3 already notes
+`menu(for:)` "removes the eager per-cell `.contextMenu` cost"; that cost can be
+removed without the migration.
+
+Today every visible cell eagerly builds a complete `NSMenu`-equivalent tree —
+two `Menu`s each looping every destination, plus buttons and a divider — during
+scroll, for a right-click that will land on at most one cell. 035 §4 measured
+122 ms/20 s (326 ms before the `MoveTargetsCache` memo). At the user's current
+4 collections; cost is **linear in folder count and paid twice per cell**, so a
+40-folder library pays ~10×.
+
+Replace with ONE `.contextMenu` at the grid container. The target cell is
+resolved on demand by hit-testing the click point against the analytic frames —
+`masonryMarqueeIndices` (`MarqueeMath.swift:77`) with a zero-size rect, the same
+query the marquee already runs per drag tick. No new machinery. The content
+closure then runs once per actual right-click instead of once per cell per
+rebuild.
+
+Two wrinkles to handle explicitly:
+- **Cursor position** — stash the location from `.onContinuousHover` on the
+  container and read it when the menu opens. A keyboard-invoked context menu
+  (Menu key) has no hover position; fall back to the `lead` cell.
+- **Lost system highlight** — per-cell `.contextMenu` draws the "targeted cell"
+  outline for free. A container menu must draw it; the selection/cursor ring
+  rendering already exists to build on.
+
+The drag preview does **not** collapse the same way (a drag genuinely
+originates from one cell). Deferring it — e.g. attaching `.draggable` only to
+the hovered cell, since the pointer must be over a cell to start a drag — is
+more delicate and is deliberately NOT bundled here.
+
 ### C2. Density (⌘±) tolerance
 
 Buckets are coarse; most density steps stay in-bucket (zero re-decode). On
@@ -334,24 +393,43 @@ eviction reclaims old buckets.
 
 ---
 
-## 5. Sequencing (each step shippable, commit per step)
+## 5. Sequencing (REVISED after the bake-off — each step shippable, commit per step)
 
-0. Merge `6933a17` (skeleton-on-switch) into this branch.
-1. **A0** — `GridSelectionStore` extraction (kills whole-screen re-render on
-   selection publish immediately; substrate for the coordinator).
-2. **C1** — `ImageDecode` + `ThumbnailPipeline` + bucket fn + tests (pure).
-3. **C3** — migrate `AsyncThumbnail`/cover/rail/stack call sites; delete
-   `ThumbnailCache`; Instruments check.
-4. **B1–B3** — `DetailSession` + `DetailImageLoader` + `CollectionDetailHost`;
-   strip `openItem`/`loadPreview`/`previewImage`/tag fns from `IngestionModel`.
-5. **B4** — per-id view-bump counts, `MostViewedReorder`, deferred close
-   reload.
-6. **A1** — AppKit grid read-only behind `AtelierUseAppKitGrid` flag (cells +
-   prefetch built on the C1 pipeline).
-7. **A2** — selection/mouse/hover/keyboard/density parity.
-8. **A3** — drag/drop/menu/marquee/GIF parity.
-9. **A4** — soak, flip default, delete old path (isolated commit).
-10. `.change-log/` entries per landed step; mark 035 §7 deferred item done.
+The ordering below is the amended one. C moves to the front because it is both
+independently justified AND the experiment that decides whether A1–A4 happens
+at all. A0/B are unaffected by the bake-off and keep their original content.
+
+0. ~~Merge `6933a17` (skeleton-on-switch)~~ — **done** (`372cc57`).
+1. **C1** — make `ImageDecoding` public + URL overload + byte cost;
+   `ThumbnailPipeline` + bucket ladder + tests (pure). §4.1.
+2. **C3** — migrate `AsyncThumbnail`/cover/rail/stack call sites; delete
+   `ThumbnailCache`. §4.3.
+3. **C4 (new)** — container-level lazy context menu. §4.5.
+4. **DECISION GATE — re-run the bake-off.** Re-measure `swiftUIWindowed/full`
+   at 200 and 2000 against the unchanged `appKit` mode, per `037` §3–§4.
+   - SwiftUI reaches **Smooth** → **cancel A1–A4** (~9 days saved); the grid
+     migration was moot. Delete the spike; keep the harness as a regression
+     guard.
+   - SwiftUI still **Not smooth** → the recycling gap is the real ceiling.
+     Proceed to step 7 with the confound eliminated and evidence in hand.
+5. **A0** — `GridSelectionStore` extraction. Unaffected by the gate: it is
+   substrate for the AppKit coordinator AND a win on its own (it stops
+   selection publishes invalidating every other view observing
+   `IngestionModel`). Note §2 A0's claim that it alone stops whole-screen
+   re-render is **overstated** — `CollectionView` reads `selection` at nine
+   sites in its own body, so the parent still re-runs until those reads move
+   down into per-cell views.
+6. **B1–B4** — detail work. Independent of the gate.
+7. *(only if the gate says so)* **A1 → A2 → A3 → A4** as originally specified.
+8. `.change-log/` entries per landed step; mark 035 §7 deferred item done.
+
+**Falsifiable prediction on record before step 4.** At 200 items with wrappers
+stripped and a warm cache, the SwiftUI grid still measured Not smooth (7 frames
+over 2P, worst 44 ms) — on a workload of ~200 plain images that any framework
+should render effortlessly. That points at `NSImage` deferring pixel decode to
+first draw, **on the main thread, mid-scroll**, producing a spike each time a
+band crossing brings new cells on screen. C1's fully-decoded off-main bitmaps
+target exactly this. If the prediction is right, step 4 cancels A1–A4.
 
 ## 6. Test strategy
 
