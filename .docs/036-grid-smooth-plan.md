@@ -340,6 +340,20 @@ Workstream B (`DetailImageLoader`) uses the same helper.
     `[ThumbnailKey: Task]`.
   - `prefetch([...])` / `cancelPrefetch(hashes:)` — `.utility` behind a
     max-4-concurrent gate; visible requests bypass and promote.
+
+    **As built (C1/C3), two properties worth stating explicitly:**
+    - `cancelPrefetch` **cannot interrupt a decode already in progress** —
+      cancellation is checked once, before entering the decode closure. This is
+      the right design (a half-decoded `CGImage` is worth nothing), but it makes
+      any test asserting "cancelled ⇒ not cached" **racy**; assert only the
+      deterministic half.
+    - A visible request **joins** an in-flight prefetch rather than starting a
+      second decode. Consequence: a hash crossing from the prefetch ring into
+      the visible window must be **excluded from cancellation**, or the next
+      band change cancels the very decode the on-screen cell is awaiting and
+      blanks it. Guarded in two places (`masonryPrefetchIndices` excludes the
+      rendered set; `update(requests:keep:)` takes the rendered hashes), both
+      tested. Any future prefetch caller must preserve this.
   - Cache: `NSCache` keyed `"hash#bucket"`,
     `totalCostLimit = clamp(physicalMemory/16, 128 MB...512 MB)`, cost =
     decoded bytes, no countLimit. API is hash+url+bucket only (no SwiftUI
@@ -425,6 +439,32 @@ at all. A0/B are unaffected by the bake-off and keep their original content.
      guard.
    - SwiftUI still **Not smooth** → the recycling gap is the real ceiling.
      Proceed to step 7 with the confound eliminated and evidence in hand.
+
+   **Harness skew, found during C3 — read before running this.** The harness's
+   SwiftUI modes build the *real* `CollectionCell`, so they DO inherit C1's
+   off-main eager decode (the effect the §5 prediction is actually about). They
+   do **not** inherit C3's bucketing: they never pass `bucket:`, so every cell
+   takes the 512 default while production requests 128–512 sized to the cell.
+
+   The skew runs one way — the harness is *pessimistic* relative to production.
+   So a **Smooth** verdict is trustworthy (production is at least as good), but
+   a **Not smooth** verdict is **not conclusive**, and the pre-registered rule
+   turns exactly that verdict into a 9-day commitment.
+
+   Therefore step 4 is run in **two configurations**, both reported:
+   - **(a) harness as-measured** — one line unchanged, directly comparable to
+     the `038` baseline. Answers "did C1+C3+C4 improve it, and by how much?"
+   - **(b) harness passing production buckets** — the one-line `masonryCell`
+     change. Answers "does the shipping configuration reach Smooth?", which is
+     the question the gate actually decides on.
+
+   Config (b) breaks byte-identity with `038`, which is why it is additive
+   rather than a replacement: (a) preserves the before/after delta, (b) tests
+   the absolute thresholds. The thresholds in `037` §4 are absolute, so (b) is
+   legitimate to decide on; `appKit` is unchanged in both. **If (a) and (b)
+   disagree, (b) governs the A1–A4 decision and the disagreement itself gets
+   recorded** — it would mean thumbnail sizing, not framework, was carrying the
+   difference.
 5. **A0** — `GridSelectionStore` extraction. Unaffected by the gate: it is
    substrate for the AppKit coordinator AND a win on its own (it stops
    selection publishes invalidating every other view observing
