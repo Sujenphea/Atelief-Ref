@@ -13,6 +13,10 @@ struct AtelierRefsApp: App {
     // The single shared model, lifted to App level (010 · Phase 2) so BOTH the
     // main window and the Settings scene (⌘,) drive the same Library instance.
     @StateObject private var model = IngestionModel()
+    // 037 — opens the grid bake-off window under `-grid-bakeoff`, and does
+    // nothing otherwise. The whole spike lives in `Debug/`; this line is its
+    // only footprint outside that folder.
+    @NSApplicationDelegateAdaptor(GridBakeoffAppDelegate.self) private var bakeoffDelegate
 
     var body: some Scene {
         WindowGroup {

@@ -363,7 +363,10 @@ final class IngestionModel: ObservableObject {
     /// so nothing is seeded here. Loads the folder tree + Unsorted's contents.
     private func bootstrap() async {
         do {
-            let root = try LibraryLocation.defaultRoot()
+            // `resolvedRoot` is `defaultRoot` unless the `-library-root` launch
+            // argument / `ATELIER_LIBRARY_ROOT` is supplied — the throwaway-library
+            // escape hatch used by the grid bake-off, never hit in normal launches.
+            let root = try LibraryLocation.resolvedRoot()
             self.libraryRoot = root
             let layout = LibraryLayout(root: root)
             let store = MediaStore(layout: layout)
