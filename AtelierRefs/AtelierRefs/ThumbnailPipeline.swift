@@ -1,0 +1,359 @@
+//
+//  ThumbnailPipeline.swift
+//  AtelierRefs
+//
+//  036 §4 C1 — the bucketed, byte-budgeted, fully-decoded thumbnail pipeline.
+//
+//  Three properties distinguish this from `ThumbnailCache` (`SharedThumbnail.swift`),
+//  each of them a root cause 036 §1.4 names:
+//
+//   1. **Bucketed.** A cell ~150 pt wide on a 2× display needs ~300 px, not the
+//      512 px the on-disk tier stores. Decoding to a bucket means a smaller
+//      texture, no resample at draw, and less cache pressure per item.
+//   2. **Byte-budgeted.** `ThumbnailCache` is `countLimit = 512` with no cost, so
+//      a 2000-item collection thrashes while the byte footprint is unbounded and
+//      unknowable. Here the cost is the real decoded size and the limit is a
+//      fraction of physical memory, with NO count limit.
+//   3. **Fully decoded, off-main.** `NSImage(data:)` defers the pixel decode to
+//      first *draw* — which happens on the main thread, mid-scroll, exactly when
+//      a band crossing brings new cells on screen. 036 §5 names this as the prime
+//      suspect for the residual jank at 200 items, and it measures out: over the
+//      512 px on-disk tier file the grid actually loads, `NSImage(data:)` costs
+//      0.11 ms to build and **1.07 ms at first draw**, while this pipeline pays
+//      0.6–1.9 ms off-main and **0.12–0.30 ms at draw**. So ~0.9 ms per newly
+//      visible cell moves off the main thread — call it 8–11 ms per band crossing
+//      at 8–12 new cells. Real, and the right order of magnitude for the measured
+//      44 ms worst frame, but NOT by itself obviously the whole of it; see the
+//      change-log entry for what that implies for the 036 §5 prediction.
+//
+//      A caveat worth recording so nobody re-derives it: the eager-decode win
+//      comes from `CGImageSourceCreateThumbnailAtIndex` returning an
+//      already-rasterized bitmap, NOT from
+//      `kCGImageSourceShouldCacheImmediately`. Measured with the flag on and off
+//      across two buckets, create and first-draw times were identical to within
+//      noise — for THIS decode path the flag is a no-op. It is still passed
+//      (correct by intent, and load-bearing the moment anything switches to
+//      `CGImageSourceCreateImageAtIndex`), but it is not the mechanism.
+//
+//  The decode itself is NOT reimplemented here — it is the same
+//  ``ImageDecoding`` the ingestion package already uses for thumbnail
+//  generation, perceptual hashing and color extraction. Only the caching,
+//  coalescing and scheduling live here.
+//
+//  The API is `hash` + `url` + `bucket` and nothing else — no SwiftUI types — so
+//  the SwiftUI cells (C3) and an `NSCollectionViewPrefetching` coordinator
+//  (Workstream A) can both drive it unchanged.
+//
+
+import AtelierIngestion
+import CoreGraphics
+import Foundation
+
+// MARK: - The bucket ladder (pure)
+
+/// The pixel ladder thumbnails are decoded to, ascending.
+///
+/// Coarse on purpose: most density steps (⌘±) land in the same bucket and
+/// re-decode nothing (036 §4 C2). 512 is the **tier ceiling** — the on-disk
+/// thumbnail tier is 512 px, so asking for more cannot add detail, only waste.
+nonisolated let thumbnailPixelBuckets: [Int] = [128, 192, 256, 384, 512]
+
+/// The bucket to decode a cell of `pointLongSide` points at `scale` backing
+/// pixels per point, snapped **UP** so the bitmap is never upscaled at draw.
+///
+/// Rounds up rather than to-nearest because a bucket below the drawn size is
+/// visibly soft, while one above merely costs a downscale the compositor does
+/// for free. Clamped to the 512 tier ceiling.
+nonisolated func thumbnailPixelBucket(pointLongSide: CGFloat, scale: CGFloat) -> Int {
+    let safeScale = (scale.isFinite && scale > 1) ? scale : 1
+    let safeSide = (pointLongSide.isFinite && pointLongSide > 0) ? pointLongSide : 0
+    let pixels = safeSide * safeScale
+    for bucket in thumbnailPixelBuckets where CGFloat(bucket) >= pixels { return bucket }
+    return thumbnailPixelBuckets[thumbnailPixelBuckets.count - 1]
+}
+
+/// The order to consult OTHER buckets in when the requested one isn't cached,
+/// so a cell can paint *something* on the very first frame rather than a hole.
+///
+/// **Larger buckets first, nearest of them first; only then smaller ones,
+/// nearest first.** A larger bitmap downscales to the cell cleanly, so it is
+/// preferred over any smaller one even when the smaller one is numerically
+/// closer — a blurry upscale is the more visible artifact of the two.
+nonisolated func thumbnailFallbackBuckets(for bucket: Int) -> [Int] {
+    let larger = thumbnailPixelBuckets.filter { $0 > bucket }.sorted()
+    let smaller = thumbnailPixelBuckets.filter { $0 < bucket }.sorted(by: >)
+    return larger + smaller
+}
+
+/// The thumbnail cache's byte budget: a sixteenth of physical memory, clamped to
+/// 128 MB…512 MB. Small enough to stay a good citizen on an 8 GB machine (512 MB
+/// → floor 128 MB), capped so a 64 GB machine doesn't hoard 4 GB of thumbnails
+/// it will never show.
+nonisolated func thumbnailCacheCostLimit(physicalMemory: UInt64) -> Int {
+    let floorBytes: UInt64 = 128 * 1024 * 1024
+    let ceilingBytes: UInt64 = 512 * 1024 * 1024
+    return Int(min(max(physicalMemory / 16, floorBytes), ceilingBytes))
+}
+
+// MARK: - Keys
+
+/// Identity of one decoded thumbnail: content hash at a pixel bucket.
+nonisolated struct ThumbnailKey: Hashable, Sendable {
+    let hash: String
+    let bucket: Int
+
+    /// The `NSCache` key — `"hash#bucket"` per 036 §4 C1.
+    var cacheKey: String { "\(hash)#\(bucket)" }
+}
+
+/// One unit of work for the pipeline. `url` is the on-disk thumbnail tier file.
+nonisolated struct ThumbnailRequest: Sendable {
+    let hash: String
+    let url: URL
+    let bucket: Int
+
+    init(hash: String, url: URL, bucket: Int) {
+        self.hash = hash
+        self.url = url
+        self.bucket = bucket
+    }
+
+    var key: ThumbnailKey { ThumbnailKey(hash: hash, bucket: bucket) }
+}
+
+// MARK: - The pipeline
+
+/// Process-wide decoded-thumbnail cache with coalesced loads and gated prefetch.
+///
+/// Thread-safe by construction: `NSCache` is thread-safe on its own, and the
+/// bookkeeping (in-flight map, prefetch queue) is guarded by one lock held only
+/// for pointer-shuffling — never across a decode or an `await`.
+nonisolated final class ThumbnailPipeline: @unchecked Sendable {
+    /// The decode seam. Synchronous by design — it runs inside a detached task,
+    /// and injecting it is what lets ``ThumbnailPipelineTests`` exercise
+    /// coalescing, eviction and cancellation without touching the filesystem.
+    typealias Decode = @Sendable (URL, Int) -> DecodedThumbnail?
+
+    static let shared = ThumbnailPipeline()
+
+    /// `NSCache` needs a class value. `Box` also lets a real byte cost be charged
+    /// instead of a meaningless count limit. `nonisolated` because it is built on
+    /// the DECODE thread (the target defaults to main-actor isolation).
+    private nonisolated final class Box {
+        let image: CGImage
+        init(_ image: CGImage) { self.image = image }
+    }
+
+    private let cache = NSCache<NSString, Box>()
+    private let decode: Decode
+    private let maxConcurrentPrefetches: Int
+
+    private let lock = NSLock()
+    /// Guarded by `lock`. One task per key ⇒ N concurrent requests for the same
+    /// thumbnail decode ONCE and all await the same task.
+    private var inFlight: [ThumbnailKey: Task<Void, Never>] = [:]
+    /// Guarded by `lock`. Which of `inFlight` are prefetches — only these are
+    /// cancellable by ``cancelPrefetch(hashes:)`` and only these occupy the gate.
+    private var inFlightPrefetches: Set<ThumbnailKey> = []
+    /// Guarded by `lock`. FIFO of prefetches waiting on the concurrency gate.
+    private var queued: [ThumbnailRequest] = []
+    private var queuedKeys: Set<ThumbnailKey> = []
+    private var activePrefetches = 0
+
+    /// - Parameters:
+    ///   - decode: injected for tests; defaults to the shared ImageIO decoder.
+    ///   - totalCostLimit: byte budget; defaults to
+    ///     ``thumbnailCacheCostLimit(physicalMemory:)`` for this machine.
+    ///   - maxConcurrentPrefetches: the 036 §4 C1 gate — background prefetching
+    ///     must never starve the decode lanes a visible cell needs.
+    init(
+        decode: @escaping Decode = ThumbnailPipeline.imageIODecode,
+        totalCostLimit: Int = thumbnailCacheCostLimit(
+            physicalMemory: ProcessInfo.processInfo.physicalMemory),
+        maxConcurrentPrefetches: Int = 4
+    ) {
+        self.decode = decode
+        self.maxConcurrentPrefetches = max(1, maxConcurrentPrefetches)
+        // Cost, NOT count: `ThumbnailCache`'s countLimit = 512 is what thrashes
+        // at target scale (036 §1.4). No countLimit is set here on purpose.
+        cache.totalCostLimit = totalCostLimit
+    }
+
+    /// The production decoder: one ImageIO decode to the bucket, EXIF-transformed,
+    /// **pixels forced now** on this background thread.
+    static let imageIODecode: Decode = { url, bucket in
+        try? ImageDecoding.decodedThumbnail(
+            from: url, maxPixelSize: bucket, cacheImmediately: true)
+    }
+
+    // MARK: Synchronous reads
+
+    /// A cache hit at exactly `bucket`, or nil. Thread-safe; cheap enough for the
+    /// render path.
+    func cachedExact(hash: String, bucket: Int) -> CGImage? {
+        cache.object(forKey: ThumbnailKey(hash: hash, bucket: bucket).cacheKey as NSString)?.image
+    }
+
+    /// The best cached bitmap for `hash` at `bucket`: the exact bucket if
+    /// present, else the best fallback per ``thumbnailFallbackBuckets(for:)``.
+    ///
+    /// Returns the bucket it actually found so the caller can tell an exact hit
+    /// from a stand-in and decide whether to request the exact one (C2/C3).
+    func cachedEntry(hash: String, bucket: Int) -> (image: CGImage, bucket: Int)? {
+        if let exact = cachedExact(hash: hash, bucket: bucket) { return (exact, bucket) }
+        for candidate in thumbnailFallbackBuckets(for: bucket) {
+            if let hit = cachedExact(hash: hash, bucket: candidate) { return (hit, candidate) }
+        }
+        return nil
+    }
+
+    /// Bucket-tolerant synchronous hit — the instant-paint path (036 §4 C1).
+    func cached(hash: String, bucket: Int) -> CGImage? {
+        cachedEntry(hash: hash, bucket: bucket)?.image
+    }
+
+    // MARK: Visible loads
+
+    /// Decode (or join an in-flight decode of) the thumbnail for a VISIBLE cell.
+    ///
+    /// Runs at `.userInitiated`. If a prefetch for the same key is still queued
+    /// behind the gate it is pulled out and started now; if one is already
+    /// running, this awaits it (and Swift's priority escalation raises that
+    /// task's priority for the duration) — either way the decode happens once.
+    @discardableResult
+    func image(hash: String, url: URL, bucket: Int) async -> CGImage? {
+        let request = ThumbnailRequest(hash: hash, url: url, bucket: bucket)
+        if let hit = cachedExact(hash: hash, bucket: bucket) { return hit }
+        await join(request, visible: true).value
+        return cachedExact(hash: hash, bucket: bucket)
+    }
+
+    // MARK: Prefetch
+
+    /// Queue background decodes at `.utility` behind the max-concurrent gate.
+    /// Already-cached, in-flight and already-queued keys are skipped.
+    func prefetch(_ requests: [ThumbnailRequest]) {
+        lock.lock()
+        for request in requests {
+            let key = request.key
+            guard cachedExact(hash: key.hash, bucket: key.bucket) == nil,
+                  inFlight[key] == nil,
+                  !queuedKeys.contains(key) else { continue }
+            queued.append(request)
+            queuedKeys.insert(key)
+        }
+        lock.unlock()
+        pump()
+    }
+
+    /// Drop queued prefetches for `hashes` (any bucket) and cancel in-flight
+    /// ones. Visible loads are never cancelled — scrolling past a cell that is
+    /// still on screen must not blank it.
+    func cancelPrefetch(hashes: [String]) {
+        let targets = Set(hashes)
+        guard !targets.isEmpty else { return }
+        lock.lock()
+        queued.removeAll { request in
+            guard targets.contains(request.hash) else { return false }
+            queuedKeys.remove(request.key)
+            return true
+        }
+        let doomed = inFlightPrefetches.filter { targets.contains($0.hash) }
+        let tasks = doomed.compactMap { inFlight[$0] }
+        lock.unlock()
+        for task in tasks { task.cancel() }
+        pump()
+    }
+
+    // MARK: Internals
+
+    /// Join the existing task for `request.key` or start a new one. Returns the
+    /// task to await. Caller must NOT hold `lock`.
+    private func join(_ request: ThumbnailRequest, visible: Bool) -> Task<Void, Never> {
+        lock.lock()
+        if let existing = inFlight[request.key] {
+            lock.unlock()
+            return existing
+        }
+        if visible, queuedKeys.remove(request.key) != nil {
+            // Promotion: it was waiting on the utility gate; it is visible now,
+            // so it runs immediately at .userInitiated instead.
+            queued.removeAll { $0.key == request.key }
+        }
+        let task = startLocked(request, visible: visible)
+        lock.unlock()
+        return task
+    }
+
+    /// Start the decode task and record it. **`lock` must be held.**
+    private func startLocked(_ request: ThumbnailRequest, visible: Bool) -> Task<Void, Never> {
+        let isPrefetch = !visible
+        if isPrefetch {
+            activePrefetches += 1
+            inFlightPrefetches.insert(request.key)
+        }
+        let decode = self.decode
+        let task = Task.detached(priority: visible ? .userInitiated : .utility) { [weak self] in
+            if !Task.isCancelled, let decoded = decode(request.url, request.bucket) {
+                self?.store(decoded, for: request.key)
+            }
+            self?.finish(request.key, wasPrefetch: isPrefetch)
+        }
+        inFlight[request.key] = task
+        return task
+    }
+
+    private func store(_ decoded: DecodedThumbnail, for key: ThumbnailKey) {
+        cache.setObject(
+            Box(decoded.image), forKey: key.cacheKey as NSString, cost: max(0, decoded.byteCost))
+    }
+
+    private func finish(_ key: ThumbnailKey, wasPrefetch: Bool) {
+        lock.lock()
+        inFlight[key] = nil
+        if wasPrefetch {
+            inFlightPrefetches.remove(key)
+            activePrefetches = max(0, activePrefetches - 1)
+        }
+        lock.unlock()
+        pump()
+    }
+
+    /// Start queued prefetches up to the gate. Caller must NOT hold `lock`.
+    private func pump() {
+        while true {
+            lock.lock()
+            guard activePrefetches < maxConcurrentPrefetches, !queued.isEmpty else {
+                lock.unlock()
+                return
+            }
+            let next = queued.removeFirst()
+            queuedKeys.remove(next.key)
+            guard cachedExact(hash: next.hash, bucket: next.bucket) == nil,
+                  inFlight[next.key] == nil else {
+                lock.unlock()
+                continue
+            }
+            _ = startLocked(next, visible: false)
+            lock.unlock()
+        }
+    }
+
+    /// Await everything currently in flight. Test/diagnostic support — the render
+    /// path never waits on the pipeline as a whole, only on its own key.
+    func waitForPendingWork() async {
+        while true {
+            let (tasks, stillQueued) = pendingSnapshot()
+            if tasks.isEmpty && !stillQueued { return }
+            for task in tasks { await task.value }
+            if tasks.isEmpty { await Task.yield() }
+        }
+    }
+
+    /// Synchronous so the lock is never held across a suspension point.
+    private func pendingSnapshot() -> (tasks: [Task<Void, Never>], queued: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (Array(inFlight.values), !queued.isEmpty)
+    }
+}
