@@ -453,6 +453,30 @@ async image arrivals publish only to the overlay.
    lands (downsampled image stays up meanwhile). Neighbor preloads use the FIT
    bucket only. Quantize `targetLongSidePx` to buckets (1280/2048/3072/native).
 
+> **As built in B3 (`1f4a6e0`):**
+> - **The decision is a pure fn** `detailDisplayDecode(fitLongSidePx:zoom:)` where
+>   `fitLongSidePx = mediaAreaLongSide(pt) × displayScale`. Returns `.preview`
+>   (decode nothing), `.decode(fit)`, or `.decode(nil)` (native). Unmeasured
+>   (`0`/`nan`/`inf`) → `.preview`, never eager native.
+> - **Retina reframes the "common laptop case."** Sharpness needs *physical*
+>   pixels, so the measured long side is multiplied by `displayScale`. On a 2×
+>   display the ≤1280 preview branch only fires for media areas ≤ **640 pt**; a
+>   normal wider viewport is 1400 px+ and correctly takes the **2048 FIT decode**.
+>   Strictly parity-safe (the chosen tier is always ≥ drawn size, never softer),
+>   but the honest statement is: **the FIT downsample decode is the common Retina
+>   path, not the decode-free preview branch** §3 B3's prose implies. Pixel-tier
+>   rule unchanged; only the framing shifts.
+> - **≤1280 branch is truly decode-free:** the eager `ThumbnailTier.large` (1280)
+>   is the overlay placeholder already; `.preview` calls the loader not at all and
+>   skips neighbour preloads.
+> - **Pinch-storm guarded twice:** the view reports on the settled `zoom` @State
+>   (not the transient pinch `@GestureState`), and every zoom>1 quantizes to the
+>   same native bucket → a 1.1×→6× drag collapses to one decode (tested: exactly
+>   two decodes for `[2048, native]`).
+> - **Accepted cosmetic:** first zoom-in inside a ≤1280 viewport shows the preview
+>   upscaled for one beat until native lands, then crisp — within the plan's
+>   "downsampled stays up meanwhile" model (B2's eager-native had no such moment).
+
 ### B4. Coalesced open + non-disruptive Most-Viewed reorder
 
 - After B1, an open = one `NavModel.presentedItemID` publish + one optional
