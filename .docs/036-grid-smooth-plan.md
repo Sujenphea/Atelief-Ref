@@ -314,6 +314,36 @@ New `AtelierRefs/GridSelectionStore.swift` — `@MainActor ObservableObject` wit
   Deletion = one isolated commit; flag removed one release later (rollback =
   flip flag, then revert commit).
 
+> **As built in A4 deletion (`3da565a`) — the delete list was partly blocked.**
+> The old SwiftUI **rendering path** in `CollectionView` (`loadedGrid`,
+> `masonryWindow`, `masonryCell`, `selectionCircle`, the key-press chain, the C4
+> SwiftUI menu helpers, the routing/press handlers, the flag conditional, and the
+> Settings toggle) was deleted — 596 lines. But these delete-list items are
+> **still live and were KEPT**:
+> - **`GridWindowing.swift`** (whole file) + **`GridWindowingTests.swift`** —
+>   `gridWindow`/`masonryVisibleIndices`/`windowedCells`/`hoverAfterWindowChange`
+>   are used by `Debug/SwiftUIWindowedBakeoffGrid.swift` and
+>   `Debug/SwiftUIEquatableBakeoffGrid.swift`.
+> - **`MarqueeCaptureLayer`/`MarqueeRectangleLayer`/`DisplayLinkHost`/
+>   `GridMarqueeState`** (in `GridMarquee.swift`) — same two Debug grids.
+> - **`PressReportingButtonStyle`** — applied by `CollectionCell`, which the Debug
+>   grids build.
+>
+> Cause: the `Debug/` bake-off harness is on the KEEP list (§5's gate keeps it as
+> a regression guard) and is compiled **unconditionally** (no `#if DEBUG`), so
+> anything it references is live in Release. These can only be deleted once the
+> Debug SwiftUI bake-off modes and `CollectionCell` are themselves retired — a
+> **separate follow-up step**, tracked. Consequence: test count did **not** drop
+> in A4 (428 → 428); the plan's "GridWindowingTests dies in A4" is deferred.
+>
+> Also now production-dead but left in place (out of A4 scope):
+> `GridContextMenu.swift`'s `GridContextMenuState`/`GridContextHighlightLayer`
+> (C4's SwiftUI menu — its pure fns stay tested). Retire with the same follow-up.
+>
+> **Flag:** the Settings toggle was removed and the `@AppStorage` read deleted;
+> the `AtelierUseAppKitGrid` UserDefaults key is left reserved (no migration). A
+> stale `false` can't resurrect anything — there is no `else` branch left.
+
 ### A. Risks & mitigations
 
 - **Coordinate conversions**: one helper `contentPoint(for: NSEvent)` used by
