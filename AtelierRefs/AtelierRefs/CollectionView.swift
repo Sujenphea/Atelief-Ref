@@ -457,12 +457,17 @@ struct CollectionView: View {
         .allowsHitTesting(false)
     }
 
-    /// The AppKit `NSCollectionView` grid (036 §2 A1), behind `AtelierUseAppKitGrid`.
-    /// READ-ONLY in A1: it renders + scrolls + prefetches, but routes no selection,
-    /// mouse, hover, keyboard, drag/drop, context menu, or marquee — those stay on
-    /// the SwiftUI path until A2/A3. The config is a plain value rebuilt each body
-    /// pass; the coordinator diffs `(itemsVersion, density)` + `collectionID` and
-    /// ignores the rest, so a selection or hover republish never reaches it.
+    /// The AppKit `NSCollectionView` grid (036 §2 A1 · §4 A2), behind
+    /// `AtelierUseAppKitGrid`. A1 rendered read-only; A2 wires live selection /
+    /// mouse / hover / keyboard / scroll / density through the coordinator, which
+    /// subscribes to `selectionStore` directly and reconciles cell layers WITHOUT a
+    /// body republish (the whole point — the SwiftUI grid's per-cell `selection`
+    /// reads and `.onKeyPress`/`.onHover` chain live in `loadedGrid`, which is not
+    /// rendered on this path). The config is a plain value rebuilt each body pass;
+    /// the coordinator diffs `(itemsVersion, density)` + `collectionID` for layout
+    /// and takes selection from the store, so a selection republish never relayouts.
+    /// The interaction effect closures forward to the same seams the SwiftUI path
+    /// used (`open`, `requestDeleteSelected`, `presentQuickLook`, density zoom).
     @ViewBuilder
     private func appKitGrid(geo: GeometryProxy) -> some View {
         MasonryGridHost(configuration: GridHostConfiguration(
@@ -474,7 +479,15 @@ struct CollectionView: View {
             collectionID: collectionID,
             displayScale: displayScale,
             thumbnailURL: { model.thumbnailURL(for: $0) },
-            blobURL: { model.blobURL(for: $0) }))
+            blobURL: { model.blobURL(for: $0) },
+            selectionStore: model.selectionStore,
+            onOpenDetail: { id in
+                if let detail = model.items.first(where: { $0.item.id == id }) { open(detail) }
+            },
+            onRequestDelete: { model.requestDeleteSelected() },
+            onQuickLook: { presentQuickLook() },
+            onZoomIn: { gridPrefs.zoomIn(forWidth: geo.size.width) },
+            onZoomOut: { gridPrefs.zoomOut(forWidth: geo.size.width) }))
     }
 
     /// The real, loaded masonry grid for this collection — extracted so `grid` can

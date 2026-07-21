@@ -78,6 +78,21 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     /// frame exists.
     var solvedColumnWidth: CGFloat { solved.columnWidth }
 
+    /// The solved column count at the current width — the ONE source A2 keyboard
+    /// nav (`nextGridIndex`'s `± columns`) and the coordinator's arrow routing read,
+    /// so the index math matches the frames (mirrors `CollectionView.gridColumns`).
+    var solvedColumns: Int { max(1, solved.columns) }
+
+    /// The item index at a content-space `point` (A2 mouse / hover hit-testing), via
+    /// a zero-size ``masonryMarqueeIndices`` query over the ANALYTIC frames — never
+    /// the pixel-snapped view frames (038 §3.4). `nil` in a gap between cells; the
+    /// first hit wins (masonry cells never overlap, so there is at most one).
+    func hitTestIndex(at point: CGPoint) -> Int? {
+        masonryMarqueeIndices(
+            in: CGRect(origin: point, size: .zero),
+            frames: solved.frames, columns: solved.columns).first
+    }
+
     // MARK: Solving
 
     /// The width to lay out in: the CLIP view's width, not the collection view's
