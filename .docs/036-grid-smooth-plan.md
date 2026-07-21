@@ -416,6 +416,27 @@ async image arrivals publish only to the overlay.
 - Preload prev/next only after the current item's image resolves. Pure
   `detailNeighbors(items:currentID:)` helper (unit-testable).
 
+> **As built in B2 (`b7120e1`):**
+> - **The `displayImage` seam is `CGImage?`, not `NSImage?`.** Rendered via
+>   `Image(decorative:)` so B2 does not reintroduce the `NSImage` lazy-decode cost
+>   C1 removed (the plan's own stated preference). `ItemDetailView` + its card
+>   views now take a SwiftUI `Image`; they suppress their own decode under a
+>   `usesExternalImageLoader` flag.
+> - **B2 exercises the `native` bucket only** (`targetLongSidePx: nil`) — a
+>   deliberate parity choice so the image is byte-identical to today's full-res
+>   decode. The `1280/2048/3072` tiers are *defined* but left for **B3** to drive
+>   from measured media-area geometry + a zoom>1 native re-decode. The loader API
+>   is stable across that — B3 adds no new loader surface.
+> - `native` decodes at `maxPixelSize = 16384` (beyond any real photo), not
+>   `Int.max`, to dodge ImageIO edge cases while staying byte-identical for all
+>   real content. The 384 MB / count-5 numbers hold (window = 3, +1 back-step of
+>   hysteresis, byte budget caps the panorama case).
+> - **Promoted-preload-vs-cancel race guarded twice, independently:** `retainOnly`
+>   only cancels keys still in `preloadKeys`, and a promotion removes the key from
+>   `preloadKeys` on join (actor serializes the two); AND `DetailSession` always
+>   passes a `retainOnly` window that contains the current hash. Mirrors C1's
+>   ring-into-visible hazard at full-res scale.
+
 ### B3. Decode strategy
 
 `ItemDetailView` has zoom (up to 6×, `ZoomableImage`,
