@@ -110,9 +110,9 @@ struct SettingsView: View {
         Section("Experimental") {
             Toggle("AppKit collection grid", isOn: $useAppKitGrid)
             Text("Renders the collection grid with a native NSCollectionView "
-                 + "(036 A1). Read-only for now: scrolling and thumbnails work, but "
-                 + "selection, drag, context menu, and keyboard stay on the current "
-                 + "grid. Off restores today's behavior exactly.")
+                 + "(036 A1–A3): scrolling, thumbnails, selection, mouse, hover, "
+                 + "keyboard, drag/drop, context menu, marquee and GIF hover all "
+                 + "run on the AppKit path. Off restores today's behavior exactly.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
