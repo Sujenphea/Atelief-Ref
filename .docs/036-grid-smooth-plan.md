@@ -492,6 +492,31 @@ async image arrivals publish only to the overlay.
   `ViewBumpCoalescer.drain()` to return per-id counts (has tests). Full
   `loadContents` remains only as fallback on `recordViews` error.
 
+> **As built in B4 (`57da82e`) — one added mechanism + two honest nuances:**
+> - **An accumulator was required, not in the plan text.** "Bump local
+>   `viewCount`s … skip the publish when order is unchanged" is not
+>   self-consistent as written: skipping the publish means the bump is never
+>   reflected in `items`, so a LATER flush recomputes order from stale counts and
+>   can diverge from the database (a second-place item quietly reaching a tie with
+>   the top). The fix is a non-published `pendingReorderBumps: [UUID: Int]` on the
+>   model holding persisted-but-not-yet-baked deltas across skips, preserving
+>   `items.viewCount + pendingReorderBumps == DB.view_count`. `loadContents` clears
+>   it (a reload IS DB truth); the deferred reorder consumes+clears it only when
+>   the order actually moves. Without this, "skip when unchanged" is an
+>   order-divergence bug, exactly the failure mode this step was warned about.
+> - **Per-id counts are exposed but the local bump is +1 per distinct id per
+>   flush, NOT the raw open count.** Core's `recordViews` coalesces a batch to one
+>   `view_count` increment per asset (`AppServices.swift:743`), so bumping local by
+>   a raw open-count of 3 would over-count vs the DB and diverge. `drain()` returns
+>   `[UUID: Int]` per the plan (and its tests), and the pure reorder honors
+>   arbitrary counts (tested), but `flushViewBumps` folds each drain to +1 per key.
+> - **`isDetailPresented` is toggled by the host on the overlay lifecycle**
+>   (`onChange(of: presentedItemID)`), which is what makes the flag catch the case
+>   the deferral is really about: the 3s debounce firing *while the overlay is up*.
+>   The reorder itself is applied from the close animation's `completion:`, so it
+>   lands after the fade. Comparator identity to core proven against real SQL
+>   (`MostViewedReorderTests` gold-standard), not a hand-copy.
+
 ---
 
 ## 4. Workstream C — Thumbnail pipeline for 500–2000 items
