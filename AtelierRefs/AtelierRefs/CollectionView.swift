@@ -633,7 +633,14 @@ private struct CollectionDetailHost: View {
         _tags = StateObject(wrappedValue: tagStore)
         _session = StateObject(wrappedValue: DetailSession(
             tags: tagStore,
-            previewURL: { model.previewImageURL(forAsset: $0) }))
+            previewURL: { model.previewImageURL(forAsset: $0) },
+            // 036 §3 B2: full-res source (content hash + on-disk blob URL) for the
+            // LRU loader; `nil` for a media-less kind (no blob to decode).
+            displaySource: { asset in
+                guard let hash = asset.blobHash,
+                      let url = model.blobURL(forAsset: asset) else { return nil }
+                return (hash, url)
+            }))
     }
 
     var body: some View {
@@ -650,7 +657,7 @@ private struct CollectionDetailHost: View {
         .onChange(of: nav.presentedItemID) { _, newID in
             if let newID {
                 if let detail = model.items.first(where: { $0.item.id == newID }) {
-                    withAnimation { session.present(detail) }
+                    withAnimation { session.present(detail, in: model.items) }
                 }
             } else {
                 withAnimation { session.dismiss() }
@@ -691,6 +698,11 @@ private struct CollectionDetailHost: View {
             source: detail.source,
             blobURL: model.blobURL(for: detail),
             previewImage: state.previewImage,
+            // 036 §3 B2: consume the loader's LRU-cached full-res image instead of
+            // decoding our own per-step — `usesExternalImageLoader` suppresses
+            // `ItemDetailView`'s internal decode (still used by Space / search).
+            displayImage: state.displayImage,
+            usesExternalImageLoader: true,
             tags: tags.tags,
             onAddTag: { tags.add($0) },
             onRemoveTag: { tags.remove($0) },
@@ -708,7 +720,7 @@ private struct CollectionDetailHost: View {
                         // Stepping mutates ONLY the session — no `IngestionModel`
                         // lead/selection write, so the grid does not re-render per
                         // step. The lead is synced back once on close.
-                        session.step(to: model.items[target])
+                        session.step(to: model.items[target], in: model.items)
                         model.recordView(assetID: model.items[target].asset.id)
                     }
                 }

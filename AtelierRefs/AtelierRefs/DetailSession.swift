@@ -38,12 +38,13 @@ final class DetailSession: ObservableObject {
         /// The instant 1280-tier placeholder shown while full-res decodes; `nil`
         /// until it lands (or for a media-less kind with no thumbnail).
         var previewImage: NSImage?
-        /// B2 seam (`DetailImageLoader` / decode strategy): the LRU-cached
-        /// display image the overlay will consume instead of decoding full-res
-        /// itself. Unused in B1 — `ItemDetailView` still decodes its own full-res
-        /// off `blobURL`; this field carries the shape B2 fills in. Always `nil`
-        /// here.
-        var displayImage: NSImage?
+        /// The LRU-cached full-res display image the overlay consumes instead of
+        /// decoding full-res itself (036 §3 B2). A `CGImage` — already fully
+        /// decoded off-main by ``DetailImageLoader`` and rendered via
+        /// `Image(decorative:)`, avoiding the `NSImage` lazy-decode-at-first-draw
+        /// cost C1 measured away. On a step the PREVIOUS image is retained here
+        /// until the next one lands, so stepping never flashes blank.
+        var displayImage: CGImage?
     }
 
     /// The overlay's whole state, or `nil` when nothing is presented. A single
@@ -60,9 +61,26 @@ final class DetailSession: ObservableObject {
     /// stays free of `MediaStore`). Returns `nil` for a media-less kind.
     private let previewURL: (Asset) -> URL?
 
-    init(tags: AssetTagsStore, previewURL: @escaping (Asset) -> URL?) {
+    /// The full-res LRU + neighbour preload (036 §3 B2). Shared process-wide so the
+    /// cache survives closing and reopening the overlay.
+    private let loader: DetailImageLoader
+
+    /// Resolves an asset's full-res source (content hash + on-disk blob URL) for
+    /// the loader; `nil` for a media-less kind (no blob to decode). Injected so
+    /// this object stays free of `MediaStore` (defaults to media-less-only, which
+    /// keeps the B1 tests' two-argument `init` and single-publish semantics intact).
+    private let displaySource: (Asset) -> DetailImageLoader.Source?
+
+    init(
+        tags: AssetTagsStore,
+        previewURL: @escaping (Asset) -> URL?,
+        loader: DetailImageLoader = .shared,
+        displaySource: @escaping (Asset) -> DetailImageLoader.Source? = { _ in nil }
+    ) {
         self.tags = tags
         self.previewURL = previewURL
+        self.loader = loader
+        self.displaySource = displaySource
     }
 
     /// The membership id currently presented — the host's check for auto-dismiss
@@ -71,14 +89,21 @@ final class DetailSession: ObservableObject {
 
     /// Present `detail` in the overlay (a fresh open). ONE publish: the new item
     /// with a cleared placeholder; the preview then arrives asynchronously as a
-    /// second publish. Binds tags to the asset.
-    func present(_ detail: CollectionItemDetail) { load(detail) }
+    /// second publish. Binds tags to the asset. `items` is the feed the overlay
+    /// steps through — used to preload prev/next and bound the loader's cache to
+    /// the current window.
+    func present(_ detail: CollectionItemDetail, in items: [CollectionItemDetail] = []) {
+        load(detail, in: items, isStep: false)
+    }
 
     /// Step the overlay to `detail` (prev/next). Identical mechanics to
-    /// ``present(_:)`` — the DISTINCTION that matters is that this NEVER touches
+    /// ``present(_:in:)`` — the DISTINCTION that matters is that this NEVER touches
     /// `IngestionModel` (no lead/selection write): only `state` moves, so the grid
-    /// does not re-render per step. The caller records the view separately.
-    func step(to detail: CollectionItemDetail) { load(detail) }
+    /// does not re-render per step. The caller records the view separately. The
+    /// previous display image is kept on screen until this item's resolves.
+    func step(to detail: CollectionItemDetail, in items: [CollectionItemDetail] = []) {
+        load(detail, in: items, isStep: true)
+    }
 
     /// Tear down the overlay: clear the state and unbind tags. Called by the host
     /// on close (Back / Escape) and on auto-dismiss when the item is deleted.
@@ -88,11 +113,75 @@ final class DetailSession: ObservableObject {
     }
 
     /// Set the shown item (one publish), rebind tags, and kick off the placeholder
-    /// decode. Shared by open + step so the two paths can never drift.
-    private func load(_ detail: CollectionItemDetail) {
-        state = State(detail: detail, previewImage: nil, displayImage: nil)
+    /// + full-res decodes. Shared by open + step so the two paths can never drift.
+    ///
+    /// On a STEP the previous ``State/displayImage`` is carried into the new state
+    /// so the last item's image stays on screen until the new one lands (no blank
+    /// flash on step, per 036 §3 B2); a fresh open starts with none.
+    private func load(_ detail: CollectionItemDetail, in items: [CollectionItemDetail], isStep: Bool) {
+        let retained = isStep ? state?.displayImage : nil
+        state = State(detail: detail, previewImage: nil, displayImage: retained)
         tags.bind(to: detail.asset.id)
         loadPreview(for: detail)
+        loadDisplayImage(for: detail, in: items)
+    }
+
+    /// Request the full-res display image for `detail` from the loader; on arrival
+    /// publish it (guarded against rapid stepping), THEN — and only then, so the
+    /// preloads don't contend with the visible decode — warm prev/next and retain
+    /// only the current window. A media-less kind has no blob: drop any retained
+    /// image and skip the decode.
+    private func loadDisplayImage(for detail: CollectionItemDetail, in items: [CollectionItemDetail]) {
+        let window = retentionWindow(for: detail.item.id, in: items)
+        guard let source = displaySource(detail.asset) else {
+            // Media-less current — clear the retained image ONLY if there is one, so
+            // a media-less open stays a single publish (the B1 invariant).
+            if state?.displayImage != nil { state?.displayImage = nil }
+            applyRetentionAndPreload(window: window, for: detail.item.id, in: items)
+            return
+        }
+        let targetID = detail.item.id
+        let loader = self.loader
+        Task { [weak self] in
+            let image = await loader.displayImage(
+                hash: source.hash, url: source.url, targetLongSidePx: nil)
+            guard let self, self.state?.detail.item.id == targetID else { return }
+            if let image { self.state?.displayImage = image }
+            self.applyRetentionAndPreload(window: window, for: targetID, in: items)
+        }
+    }
+
+    /// The set of content hashes the loader should keep decoding for: {prev,
+    /// current, next} restricted to displayable kinds. Always contains the current
+    /// item's hash (when it has one), which is what makes ``DetailImageLoader/retainOnly(hashes:)``
+    /// safe against cancelling the visible decode.
+    private func retentionWindow(for currentID: UUID, in items: [CollectionItemDetail]) -> Set<String> {
+        let neighbors = detailNeighbors(items: items, currentID: currentID)
+        return Set([neighbors.current, neighbors.previous, neighbors.next]
+            .compactMap { $0 }
+            .compactMap { displaySource($0.asset)?.hash })
+    }
+
+    /// Warm prev/next, then cancel any preload outside `window`. No-op when there is
+    /// nothing displayable in reach (keeps the shared loader — and the B1 tests —
+    /// untouched for a media-less feed). The loader calls run in one ordered task so
+    /// the just-started preloads (whose hashes are in `window`) are never the ones
+    /// `retainOnly` cancels.
+    private func applyRetentionAndPreload(
+        window: Set<String>, for currentID: UUID, in items: [CollectionItemDetail]
+    ) {
+        guard !window.isEmpty else { return }
+        let neighbors = detailNeighbors(items: items, currentID: currentID)
+        let neighborSources = [neighbors.previous, neighbors.next]
+            .compactMap { $0 }
+            .compactMap { displaySource($0.asset) }
+        let loader = self.loader
+        Task {
+            for source in neighborSources {
+                await loader.preload(hash: source.hash, url: source.url, targetLongSidePx: nil)
+            }
+            await loader.retainOnly(hashes: window)
+        }
     }
 
     /// Decode the 1280-tier placeholder off-main, then publish it into `state` only

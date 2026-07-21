@@ -52,6 +52,15 @@ struct ItemDetailView: View {
     let blobURL: URL?
     /// An instant placeholder (e.g. the 1280 tier) shown while full-res decodes.
     let previewImage: NSImage?
+    /// The LRU-cached full-res image supplied by ``DetailSession`` (036 §3 B2),
+    /// already decoded off-main. Only consulted when ``usesExternalImageLoader`` is
+    /// true; `nil` (the default) leaves this view on its own decode path.
+    var displayImage: CGImage? = nil
+    /// When true, this view is driven by a ``DetailImageLoader`` (the collection
+    /// detail overlay): it renders ``displayImage`` and does NOT decode the blob
+    /// itself, which is the per-step uncached full-res decode B2 removes. Left
+    /// false for the Space board + library search, which still own their decode.
+    var usesExternalImageLoader: Bool = false
     /// The item's tags + their editors.
     let tags: [Tag]
     let onAddTag: (String) -> Void
@@ -217,6 +226,22 @@ struct ItemDetailView: View {
 
     // MARK: - Media
 
+    /// The image to draw in the media area (and the link/tweet card): when a
+    /// ``DetailImageLoader`` drives this view, the loader's decoded ``displayImage``
+    /// (a `CGImage` → `Image(decorative:)`, no `NSImage` lazy-decode); otherwise the
+    /// internally-decoded ``fullImage``. The 1280 ``previewImage`` is the fallback
+    /// either way until the full image lands. Returns `nil` → the media area shows a
+    /// spinner (an image kind) or its own card (a media-less kind).
+    private var mediaImage: Image? {
+        if usesExternalImageLoader {
+            if let cg = displayImage { return Image(decorative: cg, scale: 1) }
+        } else if let ns = fullImage {
+            return Image(nsImage: ns)
+        }
+        if let ns = previewImage { return Image(nsImage: ns) }
+        return nil
+    }
+
     @ViewBuilder
     private var mediaArea: some View {
         Group {
@@ -231,9 +256,9 @@ struct ItemDetailView: View {
                 }
             case .image:
                 // Show the placeholder preview instantly, then swap to the
-                // full-resolution decode when it lands. Keyed by `asset.id` so the
+                // full-resolution image when it lands. Keyed by `asset.id` so the
                 // zoom/pan resets on navigation but survives the preview→full swap.
-                if let image = fullImage ?? previewImage {
+                if let image = mediaImage {
                     // Zoom/pan lives in this view (top-bar buttons + ⌘± drive it),
                     // reset per-navigation in `loadMedia` — so no `.id(asset.id)`
                     // remount is needed to clear it.
@@ -245,10 +270,10 @@ struct ItemDetailView: View {
                 ColorDetailView(hex: hex)
             case let .link(link):
                 // With a resolved og:image, show it above the card; else just the card.
-                LinkDetailView(link: link, image: fullImage ?? previewImage)
+                LinkDetailView(link: link, image: mediaImage)
             case let .tweet(tweet):
                 // With a captured card image, show it above the card; else the card.
-                TweetDetailView(tweet: tweet, image: fullImage ?? previewImage)
+                TweetDetailView(tweet: tweet, image: mediaImage)
             case .unknown:
                 ContentUnavailableView(
                     "No preview", systemImage: "questionmark.square.dashed",
@@ -258,9 +283,14 @@ struct ItemDetailView: View {
         .padding()
     }
 
-    /// Decode the full-resolution image off-main, or build the video player, for
-    /// the current asset. No caching — full-res images are large, so we decode on
-    /// demand and drop the previous one on navigation.
+    /// Reset zoom, (re)build the video player, and — on the non-loader path only —
+    /// decode the full-resolution image off-main for the current asset.
+    ///
+    /// Under ``usesExternalImageLoader`` (036 §3 B2) the image is fed in via
+    /// ``displayImage`` from the LRU ``DetailImageLoader``, so this view does NOT
+    /// decode it here — that internal decode is the per-step uncached full-res
+    /// decode B2 removes (root cause 3). The Space board + library search still own
+    /// their decode (no loader wired), so the arm below stays for them.
     private func loadMedia() async {
         fullImage = nil
         // Fresh item → back to fit (the previous item's zoom shouldn't carry over).
@@ -274,6 +304,8 @@ struct ItemDetailView: View {
         case .video:
             player = AVPlayer(url: url)
         case .image, .link, .tweet:
+            // The loader owns the image on the collection detail path.
+            guard !usesExternalImageLoader else { break }
             // A link's resolved og:image / a tweet's captured card image is the
             // asset's own blob; decode it like an image (a bare link or tweet has
             // no blobURL, so this arm is simply skipped).
@@ -296,14 +328,14 @@ struct ItemDetailView: View {
 private struct LinkDetailView: View {
     let link: LinkContent
     /// The resolved og:image, if the link has one decoded; nil for a bare link.
-    var image: NSImage?
+    var image: Image?
 
     private var host: String? { URL(string: link.url)?.host }
 
     var body: some View {
         VStack(spacing: 16) {
             if let image {
-                Image(nsImage: image)
+                image
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(maxHeight: 320)
@@ -355,7 +387,7 @@ private struct LinkDetailView: View {
 private struct TweetDetailView: View {
     let tweet: TweetContent
     /// The captured card image, if the tweet has one decoded; nil otherwise.
-    var image: NSImage?
+    var image: Image?
 
     /// `@handle` when known, else the author name, else a generic label.
     private var byline: String {
@@ -371,7 +403,7 @@ private struct TweetDetailView: View {
     var body: some View {
         VStack(spacing: 16) {
             if let image {
-                Image(nsImage: image)
+                image
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(maxHeight: 320)
@@ -456,7 +488,7 @@ private struct ColorDetailView: View {
 /// (``ItemDetailView``) so the top-bar buttons + ⌘± / ⌘0 drive the same state the
 /// pinch does; the caller resets them on navigation.
 private struct ZoomableImage: View {
-    let image: NSImage
+    let image: Image
     @Binding var zoom: CGFloat
     @Binding var pan: CGSize
     /// Ceiling so a huge pinch can't lose the image off-screen (passed in so it
@@ -467,7 +499,7 @@ private struct ZoomableImage: View {
     @GestureState private var dragTranslation: CGSize = .zero
 
     var body: some View {
-        Image(nsImage: image)
+        image
             .resizable()
             .aspectRatio(contentMode: .fit)
             .scaleEffect(zoom * pinch)
