@@ -153,6 +153,28 @@ New `AtelierRefs/GridSelectionStore.swift` — `@MainActor ObservableObject` wit
 - Exit: renders + scrolls with no `layoutAttributesForElements` hotspots,
   prefetch warms, switch shows skeleton, empty state OK.
 
+> **As built in A1 (`761f106`) — three deviations from the text above:**
+> 1. **`reconfigureItems` does not exist on `NSCollectionViewDiffableDataSource`
+>    in this SDK.** Same-id content edits instead re-run `configure` on the
+>    materialized cells directly (no snapshot, never `reloadItems`); offscreen
+>    cells reconfigure via the item provider on scroll-in. Same intended effect
+>    (no flash, no relayout). Wherever this plan says `reconfigureItems`, read
+>    "re-run `configure` on materialized cells."
+> 2. **Config diffs `(itemsVersion, density)`, not `(itemsVersion, columns)`.**
+>    Columns are width-derived, so density is the stable input; the layout
+>    derives columns from the live clip width (matching the SwiftUI path), and
+>    width-crossing column changes go through the clip-view width observer.
+> 3. **Media-less hosting is slightly broader than "link/tweet only"** — the
+>    hosted `AssetContentThumbnail` also covers colour/unknown kinds, reusing the
+>    one existing render seam. Image/video remain pure-layer as specified.
+>
+> Also: `applySelectionState`, the ring layers, and the circle button are
+> present but **inert** in A1 — A2 wires them. Scroll-invalidation is avoided by
+> width-only `shouldInvalidateLayout` + a per-index attribute cache built in
+> `prepare()`, so a scroll query only selects cached attributes and allocates
+> nothing. `analyticFrame(at:)` is exposed on the layout for A2/A3 hit-testing
+> (per the 038 §3.4 pixel-snap asterisk — ride analytic frames, never live).
+
 ### A2. Selection, mouse, hover, keyboard, scrollTo, density
 
 - Coordinator subscribes `selectionStore.$selection`; new pure
