@@ -434,6 +434,9 @@ at all. A0/B are unaffected by the bake-off and keep their original content.
 3. **C4 (new)** — container-level lazy context menu. §4.5.
 4. **DECISION GATE — re-run the bake-off.** Re-measure `swiftUIWindowed/full`
    at 200 and 2000 against the unchanged `appKit` mode, per `037` §3–§4.
+   **RAN — see `039-grid-bakeoff-gate-results.md` for results, both configs, and
+   the verdict-per-rule. Outcome: Not smooth with C complete; appKit Smooth. The
+   A1–A4 go/no-go is left to the human, per the binding blocks below.**
    - SwiftUI reaches **Smooth** → **cancel A1–A4** (~9 days saved); the grid
      migration was moot. Delete the spike; keep the harness as a regression
      guard.
