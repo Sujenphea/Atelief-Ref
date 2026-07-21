@@ -101,6 +101,12 @@ struct CollectionView: View {
     /// pixel bucket, alongside each cell's analytic frame (036 §4 C3).
     @Environment(\.displayScale) private var displayScale
 
+    /// 036 §2 A1 — the AppKit `NSCollectionView` grid feature flag. Defaults OFF:
+    /// with it off, behavior is EXACTLY the SwiftUI `masonryWindow` path as today
+    /// (the flag is the safety net). Toggle in Settings ▸ Experimental. Read via
+    /// `@AppStorage` so a toggle re-renders `grid` and swaps the host in/out.
+    @AppStorage("AtelierUseAppKitGrid") private var useAppKitGrid = false
+
     /// The round-robin column count for a viewport `width` — the ONE source both
     /// the masonry layout and keyboard nav read, so `nextGridIndex`'s `± columns`
     /// index math always matches the frames. Driven by the global density notch
@@ -392,7 +398,15 @@ struct CollectionView: View {
         GeometryReader { geo in
             Group {
                 if isLoaded {
-                    loadedGrid(geo: geo)
+                    // 036 §2 A1 — the AppKit grid behind the flag; otherwise the
+                    // unchanged SwiftUI windowed path. Everything OUTSIDE `grid`
+                    // (header, toolbar, drop rail, stack row, chips, detail
+                    // overlay, pane `.onDrop`) is identical either way.
+                    if useAppKitGrid {
+                        appKitGrid(geo: geo)
+                    } else {
+                        loadedGrid(geo: geo)
+                    }
                 } else {
                     // This collection's load hasn't resolved — show a masonry
                     // skeleton, never the previous collection's items.
@@ -441,6 +455,26 @@ struct CollectionView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityLabel("Loading collection")
         .allowsHitTesting(false)
+    }
+
+    /// The AppKit `NSCollectionView` grid (036 §2 A1), behind `AtelierUseAppKitGrid`.
+    /// READ-ONLY in A1: it renders + scrolls + prefetches, but routes no selection,
+    /// mouse, hover, keyboard, drag/drop, context menu, or marquee — those stay on
+    /// the SwiftUI path until A2/A3. The config is a plain value rebuilt each body
+    /// pass; the coordinator diffs `(itemsVersion, density)` + `collectionID` and
+    /// ignores the rest, so a selection or hover republish never reaches it.
+    @ViewBuilder
+    private func appKitGrid(geo: GeometryProxy) -> some View {
+        MasonryGridHost(configuration: GridHostConfiguration(
+            items: model.items,
+            itemsVersion: model.itemsVersion,
+            density: gridPrefs.density,
+            spacing: Self.gridSpacing,
+            topInset: Self.gridTopInset,
+            collectionID: collectionID,
+            displayScale: displayScale,
+            thumbnailURL: { model.thumbnailURL(for: $0) },
+            blobURL: { model.blobURL(for: $0) }))
     }
 
     /// The real, loaded masonry grid for this collection — extracted so `grid` can

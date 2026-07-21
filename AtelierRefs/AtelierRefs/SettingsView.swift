@@ -17,6 +17,11 @@ struct SettingsView: View {
     /// here re-shows the setup guide on the next main-window appearance.
     @AppStorage("AtelierDidCompleteOnboarding") private var didCompleteOnboarding = false
 
+    /// 036 §2 A1 — the AppKit `NSCollectionView` grid feature flag. Defaults OFF;
+    /// `CollectionView.grid` reads the same key. A1 renders it read-only, so this
+    /// is a debug/opt-in toggle while A2–A4 land the interaction.
+    @AppStorage("AtelierUseAppKitGrid") private var useAppKitGrid = false
+
     @State private var confirmRegenerate = false
 
     var body: some View {
@@ -24,6 +29,7 @@ struct SettingsView: View {
             captureSection
             librarySection
             setupSection
+            experimentalSection
             diagnosticsSection
         }
         .formStyle(.grouped)
@@ -95,6 +101,18 @@ struct SettingsView: View {
             Button("Show Setup Guide Again") { didCompleteOnboarding = false }
             Text("Re-opens the first-run walkthrough (install the extension, pair the "
                  + "token, capture something) on the main window.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var experimentalSection: some View {
+        Section("Experimental") {
+            Toggle("AppKit collection grid", isOn: $useAppKitGrid)
+            Text("Renders the collection grid with a native NSCollectionView "
+                 + "(036 A1). Read-only for now: scrolling and thumbnails work, but "
+                 + "selection, drag, context menu, and keyboard stay on the current "
+                 + "grid. Off restores today's behavior exactly.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
