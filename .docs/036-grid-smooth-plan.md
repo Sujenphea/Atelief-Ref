@@ -386,6 +386,25 @@ async image arrivals publish only to the overlay.
   `IngestionModel` (`:1148–1172`). Auto-dismiss on delete: host observes
   `itemsVersion` and closes if the current id vanished.
 
+> **As built in B1 (`f78dc1c`) — one load-bearing deviation + notes:**
+> - **The session lives on the child host, NOT on `CollectionView`.** The plan
+>   text ("`CollectionView` holds the session as `@StateObject` but never reads
+>   `state`") does not survive SwiftUI's invalidation semantics: `@StateObject`/
+>   `@ObservedObject` subscribes the **owner** to `objectWillChange` regardless of
+>   whether its body reads the value. Holding the session on `CollectionView`
+>   would re-render the grid on every step — defeating B1. So `CollectionDetailHost`
+>   **owns** the session + tag store; `CollectionView.body` reads neither
+>   `session.state` nor `tags.tags`, so the grid config is never rebuilt on a step.
+> - **Publish counts, before → after:** open 4 whole-screen model writes → 0 (the
+>   surviving 2 publishes — selection-lead + nav-route — pre-date B1); step ~5
+>   grid re-renders → 0; close unchanged. Proven by 4 new `DetailSession` tests.
+> - **Auto-dismiss** now watches `contentsVersion` and closes if `session.currentID`
+>   left `model.items` — keyed to the *stepped* item, which is more correct now
+>   that steps don't move the model lead. **Lead-on-close** syncs once via
+>   `.setLead`; the reducer's returned `.scrollTo` is **discarded** (the grid
+>   didn't scroll on close before B1 either — end state identical).
+> - Grep confirmed **no non-detail caller** of the deleted tag methods.
+
 ### B2. Full-res LRU + neighbor preload (new: `AtelierRefs/DetailImageLoader.swift`)
 
 - `DetailImageCache`: `NSCache`, key `"hash#bucket"`,
