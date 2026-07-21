@@ -105,7 +105,7 @@ struct CollectionView: View {
     /// with it off, behavior is EXACTLY the SwiftUI `masonryWindow` path as today
     /// (the flag is the safety net). Toggle in Settings ▸ Experimental. Read via
     /// `@AppStorage` so a toggle re-renders `grid` and swaps the host in/out.
-    @AppStorage("AtelierUseAppKitGrid") private var useAppKitGrid = false
+    @AppStorage("AtelierUseAppKitGrid") private var useAppKitGrid = true
 
     /// The round-robin column count for a viewport `width` — the ONE source both
     /// the masonry layout and keyboard nav read, so `nextGridIndex`'s `± columns`

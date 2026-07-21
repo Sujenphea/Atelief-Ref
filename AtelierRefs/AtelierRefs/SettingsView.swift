@@ -20,7 +20,7 @@ struct SettingsView: View {
     /// 036 §2 A1 — the AppKit `NSCollectionView` grid feature flag. Defaults OFF;
     /// `CollectionView.grid` reads the same key. A1 renders it read-only, so this
     /// is a debug/opt-in toggle while A2–A4 land the interaction.
-    @AppStorage("AtelierUseAppKitGrid") private var useAppKitGrid = false
+    @AppStorage("AtelierUseAppKitGrid") private var useAppKitGrid = true
 
     @State private var confirmRegenerate = false
 
