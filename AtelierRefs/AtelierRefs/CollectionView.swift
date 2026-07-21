@@ -655,6 +655,12 @@ private struct CollectionDetailHost: View {
         // item and present the session. Clearing the id (Back / auto-dismiss) tears
         // it down. The animation mirrors the old `withAnimation { presentedItemID }`.
         .onChange(of: nav.presentedItemID) { _, newID in
+            // Track the overlay's lifecycle so a view-bump flush that fires on the
+            // 3s debounce WHILE the overlay is up defers the Most-Viewed reorder
+            // instead of reflowing the grid under the fade (036 §3 B4). Covers every
+            // open source (all funnel through `presentedItemID`) and both close +
+            // auto-dismiss.
+            model.isDetailPresented = newID != nil
             if let newID {
                 if let detail = model.items.first(where: { $0.item.id == newID }) {
                     withAnimation { session.present(detail, in: model.items) }
@@ -740,11 +746,20 @@ private struct CollectionDetailHost: View {
     /// `presentedItemID` observer. The `.setLead` effect (a scroll) is discarded:
     /// the grid didn't scroll on close before B1 either — the store publish just
     /// reconciles the lead ring — and there is no scroll seam from this parent.
+    ///
+    /// The final `flushViewBumps()` runs while the overlay is still up, so its
+    /// Most-Viewed reorder is DEFERRED into ``pendingReorderBumps`` rather than
+    /// churning the grid mid-fade. Dropping the route flips `isDetailPresented`
+    /// off (via the `onChange` above), and the animation's completion applies the
+    /// reorder in place — the just-viewed item rises AFTER the fade, not under it
+    /// (036 §3 B4). Was a full `loadContents` reload that blew the grid away.
     private func close() {
         model.flushViewBumps()
         if let id = session.currentID {
             model.applySelection(.setLead(id))
         }
-        withAnimation { nav.presentedItemID = nil }
+        withAnimation { nav.presentedItemID = nil } completion: {
+            model.applyDeferredMostViewedReorder()
+        }
     }
 }

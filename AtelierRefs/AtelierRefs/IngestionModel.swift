@@ -213,6 +213,27 @@ final class IngestionModel: ObservableObject {
     /// How long a burst of opens is batched before an automatic flush.
     private let viewFlushDelay: Duration = .seconds(3)
 
+    /// Whether the COLLECTION item-detail overlay is currently up (036 §3 B4). A
+    /// PLAIN flag — deliberately NOT `@Published`: a view-bump flush that fires on
+    /// the 3s debounce while the overlay is open must NOT reorder the grid *under*
+    /// the fade, so ``flushViewBumps()`` defers the Most-Viewed reorder while this
+    /// is `true` and the host applies it once, after close, via
+    /// ``applyDeferredMostViewedReorder()``. The `CollectionDetailHost` toggles it
+    /// on the overlay's lifecycle. (Space / search detail overlays have their own
+    /// grids and never set this, so their flushes reorder as before.)
+    var isDetailPresented = false
+
+    /// Per-asset view-count deltas that have been PERSISTED (`recordViews`) but not
+    /// yet reflected in the local ``items`` (036 §3 B4). This is exactly
+    /// `DB.view_count − items.viewCount` for every asset, so the invariant
+    /// `items.viewCount + pendingReorderBumps == DB.view_count` holds at all times.
+    /// It exists to survive a "skip when unchanged" reorder: when a flush's bumps
+    /// don't move any item, its `items` publish is skipped, but the delta must NOT
+    /// be lost — a LATER flush needs it to compute an order identical to what a real
+    /// reload would produce. Cleared whenever ``loadContents(of:)`` re-syncs `items`
+    /// to the database truth, and consumed by ``applyDeferredMostViewedReorder()``.
+    private var pendingReorderBumps: [UUID: Int] = [:]
+
     /// Downloads a bare image URL (drag/paste with no bytes) off-main. Stateless +
     /// injectable; the default uses the shared session (tests inject a stub one).
     private let remoteFetcher = RemoteImageFetcher()
@@ -1037,6 +1058,12 @@ final class IngestionModel: ObservableObject {
                 // folder's content. Bail before publishing anything.
                 guard loadID == contentsLoadID else { return }
                 items = loadedItems
+                // A genuine reload IS the database truth — including every persisted
+                // `view_count`. So any locally-tracked, not-yet-baked view deltas are
+                // now redundant: clear them, or the next Most-Viewed reorder would
+                // double-count them on top of counts the reload already carries
+                // (036 §3 B4).
+                pendingReorderBumps.removeAll(keepingCapacity: true)
                 // Stamp WHICH collection the shared `items` now belong to, so a
                 // freshly-pushed view for a different collection renders a skeleton
                 // instead of this (still-stale-until-now) content mid-switch.
@@ -1115,25 +1142,71 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Write any pending view bumps now (called on detail-close). One batched
-    /// `recordViews` through the funnel; unknown/deleted ids are skipped by core.
-    /// When the current folder ranks by views, the grid is reloaded afterwards so
-    /// the ranking stays live — the just-viewed item visibly rises (manual /
-    /// newest orders are view-independent, so they are left untouched).
+    /// Write any pending view bumps now (the 3s debounce, or a detail-close). One
+    /// batched `recordViews` through the funnel; unknown/deleted ids are skipped by
+    /// core. Each DISTINCT drained id folds into ``pendingReorderBumps`` as +1 — the
+    /// exact `view_count` increment core applies per asset per batch — so a later
+    /// Most-Viewed reorder reproduces the database order without a reload.
+    ///
+    /// When the folder ranks by views AND the detail overlay is NOT up, the
+    /// Most-Viewed reorder is applied here in place (manual / newest orders are
+    /// view-independent and left untouched). While the overlay IS up
+    /// (``isDetailPresented``) the reorder is DEFERRED — the host applies it once,
+    /// after the close fade, via ``applyDeferredMostViewedReorder()`` — so nothing
+    /// reflows under the overlay (036 §3 B4). The full `loadContents` reload now
+    /// survives ONLY as the fallback when the `recordViews` write fails, so local
+    /// order can never drift from the persisted truth.
     func flushViewBumps() {
         viewFlushTask?.cancel()
         viewFlushTask = nil
         guard let services, !viewBumps.isEmpty else { return }
-        let ids = viewBumps.drain()
+        let counts = viewBumps.drain()
+        let ids = Array(counts.keys)
+        // Fold to +1 per distinct id: core coalesces a batch to one `view_count`
+        // bump per asset, so the local delta must too (raw per-open counts would
+        // over-bump vs the database and diverge on the next real reload).
+        for id in ids { pendingReorderBumps[id, default: 0] += 1 }
         let folder = selectedFolderID
         let reorders = sortMode(for: folder) == .mostViewed
+        let reorderNow = reorders && !isDetailPresented
         Task {
             do {
                 try await services.recordViews(ids)
-                if reorders { loadContents(of: folder) }
+                if reorderNow { applyDeferredMostViewedReorder() }
             } catch {
                 lastError = Self.message(for: error)
+                // The write did NOT land — the deltas we optimistically folded in
+                // aren't persisted. Fall back to the truth: a reload re-syncs `items`
+                // to the database (which lacks the failed bump) and clears the
+                // accumulator, so local order can't drift (036 §3 B4).
+                if reorders { loadContents(of: folder) }
+                else { for id in ids { pendingReorderBumps[id]? -= 1 } }
             }
+        }
+    }
+
+    /// Apply the deferred Most-Viewed reorder in place (036 §3 B4) — called by the
+    /// detail host in the close animation's completion, so the just-viewed item
+    /// rises AFTER the overlay fade rather than churning the grid under it.
+    ///
+    /// Pure and local: it bumps a copy of ``items`` by ``pendingReorderBumps`` and
+    /// stable-sorts with core's exact Most-Viewed tiebreak (``mostViewedReorder``).
+    /// When the order is unchanged (the common case — the viewed item was already
+    /// at the top) it publishes NOTHING and keeps the accumulator, so a later flush
+    /// still has the deltas. When it moves, `items` is replaced once (the bumped
+    /// `view_count`s baked in, so `items` again equals the database truth) and the
+    /// accumulator clears. A no-op when the folder isn't Most-Viewed or nothing is
+    /// pending.
+    func applyDeferredMostViewedReorder() {
+        guard sortMode(for: selectedFolderID) == .mostViewed,
+              !pendingReorderBumps.isEmpty else { return }
+        switch mostViewedReorder(items: items, bumps: pendingReorderBumps) {
+        case .unchanged:
+            break                                   // keep the accumulator; no publish
+        case .reordered(let newItems):
+            items = newItems                         // one publish; view_counts now baked in
+            contentsVersion &+= 1
+            pendingReorderBumps.removeAll(keepingCapacity: true)
         }
     }
 
