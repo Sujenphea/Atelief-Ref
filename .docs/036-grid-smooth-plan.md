@@ -95,6 +95,20 @@ New `AtelierRefs/GridSelectionStore.swift` — `@MainActor ObservableObject` wit
 - Immediately kills "every selection publish re-runs the whole screen" even
   before the AppKit grid lands; the coordinator subscribes to this store later.
 
+> **CORRECTED after A0 (`38dff33`).** Two adjustments to the above:
+> - **Scope of the win is narrower than "re-runs the whole screen."** A0 stops
+>   selection publishes invalidating *every other view observing `IngestionModel`*
+>   (the god-object fan-out). It does **not** stop `CollectionView`'s own body
+>   re-running — its ~nine body-level `selection` reads remain until A1–A2 push
+>   them into per-cell views.
+> - **A0 is not purely an `IngestionModel` change.** Once `model.selection` stops
+>   being `@Published`, reading it in a SwiftUI body no longer subscribes — so
+>   `CollectionView` had to gain an explicit `@ObservedObject` on the store (plus
+>   a custom init) or selection changes wouldn't repaint at all. That subscription
+>   *is* the mechanism delivering the narrower fan-out win. While the grid is
+>   still SwiftUI, the store must be observed by whoever renders selection; the
+>   AppKit coordinator replaces that observer later, it doesn't add the first one.
+
 ### A1. AppKit grid renders read-only behind a flag
 
 - New `AtelierRefs/MasonryGridHost.swift` — `NSViewRepresentable`:
