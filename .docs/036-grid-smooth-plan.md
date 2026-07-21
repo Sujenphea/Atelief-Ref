@@ -204,6 +204,27 @@ New `AtelierRefs/GridSelectionStore.swift` — `@MainActor ObservableObject` wit
   return/esc/space/x/⌘A/⌘±/delete; Instruments confirms a selection change
   touches only affected items.
 
+> **As built in A2 (`b276bf1`) — notes and one honest gap:**
+> - **Whole-body-republish elimination is partial, by design at this step.**
+>   The coordinator's *cell* reaction is fully layer-only (only changed∩visible
+>   cells repaint; proven by `selectionReconcileTargets` tests). But
+>   `CollectionView` still observes `selectionStore` at the struct level (A0's
+>   subscription, which A2 was told not to touch), so its *body* still
+>   re-evaluates on selection. On the AppKit path that body renders **no cells**,
+>   so there is no per-cell work and no relayout — the cost is a near-empty body
+>   pass. Fully removing even that needs the A0-flagged refactor (move the nine
+>   body-level `selection` reads down into per-cell views). Tracked, not done.
+> - **Reconcile split into two pure functions:** `selectionCellDelta(from:to:)`
+>   and `selectionReconcileTargets(delta:visibleIDs:)` (the plan named one
+>   `reconcileSelection`). Off-screen changes and a non-visible lead are excluded
+>   from the live touch and repaint from `configure` on scroll-in.
+> - **Circle hits go through the `NSButton` hit area**, not a `mouseDown` rect
+>   test. **Delete** is routed both via the key predicate and the responder
+>   `deleteBackward/Forward` methods. **Escape** consumes only while selecting.
+> - **Deferred to A3 (bundled with the marquee, noted here so it isn't lost):**
+>   empty-background **click-to-clear** selection. It rides the same
+>   marquee/background mouse handling A3 builds, so it was not wired in A2.
+
 ### A3. Drag out, drop, context menu, marquee, GIF
 
 - Drag out: `NSDraggingSource` from the threshold loop; pasteboard =
