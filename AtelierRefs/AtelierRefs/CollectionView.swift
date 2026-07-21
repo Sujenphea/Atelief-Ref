@@ -87,14 +87,16 @@ struct CollectionView: View {
                 if collectionID != model.unsortedFolderID, nav.presentedItemID == nil {
                     dropRail
                 }
-                // Full-window detail page for the presented item. The overlay is
-                // shared route state (`NavModel.presentedItemID`) so the grid, the
-                // Return key, and the Space canvas can all open it; guarding also on
-                // `selectedItem != nil` auto-dismisses back to the grid when the item
-                // is removed/deleted from inside the page.
-                if nav.presentedItemID != nil, let detail = model.leadItem {
-                    detailOverlay(for: detail)
-                        .transition(.opacity)
+                // Full-window detail page for the presented item, hosted in its own
+                // child (036 §3 B1). The host owns the `DetailSession` + tag store,
+                // so opening / prev-next / tag edits publish only to the host — this
+                // `CollectionView` body (and the grid it renders) never observes
+                // that state and is not re-run per step. The host raises the overlay
+                // off `NavModel.presentedItemID` (the shared route the grid click,
+                // the Return key, and the Space canvas all funnel through) and
+                // auto-dismisses when the shown item is deleted.
+                if let services = model.services {
+                    CollectionDetailHost(model: model, nav: nav, services: services)
                 }
             }
         }
@@ -459,53 +461,15 @@ struct CollectionView: View {
             onDelete: { model.requestDelete(assetIDs: $0) }))
     }
 
-    /// Build the full-window detail overlay for `detail`, feeding the
-    /// presentation-only ``ItemDetailView`` from this collection's `IngestionModel`
-    /// context — full folder actions plus prev/next across `model.items`.
-    private func detailOverlay(for detail: CollectionItemDetail) -> some View {
-        let hasSource = !(detail.source.originalURL ?? "").isEmpty
-        // A media-less kind (003 · O1) has no blob on disk — disable the blob
-        // actions rather than wiring them to a no-op.
-        let hasBlob = model.blobURL(for: detail) != nil
-        let index = model.items.firstIndex { $0.item.id == detail.item.id }
-        return ItemDetailView(
-            asset: detail.asset,
-            source: detail.source,
-            blobURL: model.blobURL(for: detail),
-            previewImage: model.previewImage,
-            tags: model.selectedTags,
-            onAddTag: { model.addTag($0) },
-            onRemoveTag: { model.removeTag($0) },
-            actions: ItemDetailActions(
-                openSource: hasSource ? { model.openSource(detail) } : nil,
-                openBlob: hasBlob ? { model.openBlob(detail) } : nil,
-                revealInFinder: hasBlob ? { model.revealInFinder(detail) } : nil,
-                copySourceLink: hasSource ? { model.copySourceLink(detail) } : nil,
-                removeFromFolder: { model.removeFromFolder(assetIDs: [detail.asset.id]) },
-                requestDelete: { model.requestDelete(assetIDs: [detail.asset.id]) }),
-            navigator: index.map { i in
-                ItemDetailNavigator(index: i, count: model.items.count) { delta in
-                    let target = i + delta
-                    if model.items.indices.contains(target) {
-                        model.openItem(model.items[target])
-                        // Stepping to a new item in the detail page is a view.
-                        model.recordView(assetID: model.items[target].asset.id)
-                    }
-                }
-            },
-            onClose: {
-                model.flushViewBumps()
-                withAnimation { nav.presentedItemID = nil }
-            })
-    }
-
-    /// Open the full-window detail page for `detail`: make it the lead (loading
-    /// its preview + tags, 009 · 8A) and raise the overlay via
-    /// `NavModel.presentedItemID` (the routing seam the grid click, the Return
-    /// key, and the Space canvas all funnel through). The open is the deliberate
-    /// "view" signal (007 G4).
+    /// Open the full-window detail page for `detail`: make it the grid lead cursor
+    /// (so the ring / QuickLook / next-open align with it — 009 · 8A) and raise the
+    /// overlay via `NavModel.presentedItemID` (the routing seam the grid click, the
+    /// Return key, and the Space canvas all funnel through). The `CollectionDetailHost`
+    /// picks up the id change and presents its `DetailSession` — the preview + tag
+    /// loads happen there now, NOT on this model (036 §3 B1). The open is the
+    /// deliberate "view" signal (007 G4).
     private func open(_ detail: CollectionItemDetail) {
-        model.openItem(detail)
+        model.applySelection(.setLead(detail.item.id))
         model.recordView(assetID: detail.asset.id)
         withAnimation { nav.presentedItemID = detail.item.id }
     }
@@ -634,5 +598,135 @@ struct CollectionView: View {
                 undecoded: decoded.undecodedCount)
         }
         return true
+    }
+}
+
+// MARK: - Detail overlay host (036 §3 B1)
+
+/// Hosts the full-window item-detail overlay in its own view so the overlay's
+/// state — the shown item, its preview placeholder, its tags — is observed HERE,
+/// not by ``CollectionView``. That is the whole point of B1: opening the page and
+/// stepping prev/next publish only to this host (via ``DetailSession`` +
+/// ``AssetTagsStore``), so the grid `CollectionView` renders is never re-run per
+/// step. (Before B1 those lived as `@Published` on `IngestionModel`, so every open
+/// / step / tag edit re-ran the whole screen — root cause 3.)
+///
+/// Ownership note (deviation from the 036 §3 text, which put the `@StateObject` on
+/// `CollectionView`): a classic `ObservableObject` `@StateObject`/`@ObservedObject`
+/// subscribes its OWNER to `objectWillChange` regardless of which properties the
+/// body reads — so holding the session on `CollectionView` would re-run the grid
+/// on every step, the exact opposite of the goal. The session therefore lives on
+/// this child; `CollectionView` renders the child but does not observe it.
+private struct CollectionDetailHost: View {
+    @ObservedObject var model: IngestionModel
+    @ObservedObject var nav: NavModel
+    /// The overlay's state — one `@Published` for the shown item + its preview.
+    @StateObject private var session: DetailSession
+    /// The detail page's tags, on the shared asset-scoped store (the Space board +
+    /// search overlays' path). Observed here so a chip edit repaints the overlay.
+    @StateObject private var tags: AssetTagsStore
+
+    init(model: IngestionModel, nav: NavModel, services: AppServices) {
+        _model = ObservedObject(wrappedValue: model)
+        _nav = ObservedObject(wrappedValue: nav)
+        let tagStore = AssetTagsStore(services: services)
+        _tags = StateObject(wrappedValue: tagStore)
+        _session = StateObject(wrappedValue: DetailSession(
+            tags: tagStore,
+            previewURL: { model.previewImageURL(forAsset: $0) }))
+    }
+
+    var body: some View {
+        ZStack {
+            if let state = session.state {
+                detailOverlay(for: state)
+                    .transition(.opacity)
+            }
+        }
+        // Raise / drop the overlay off the shared route. `open(_:)` sets the id
+        // AFTER this host exists, so `onChange` (not `initial`) fires: resolve the
+        // item and present the session. Clearing the id (Back / auto-dismiss) tears
+        // it down. The animation mirrors the old `withAnimation { presentedItemID }`.
+        .onChange(of: nav.presentedItemID) { _, newID in
+            if let newID {
+                if let detail = model.items.first(where: { $0.item.id == newID }) {
+                    withAnimation { session.present(detail) }
+                }
+            } else {
+                withAnimation { session.dismiss() }
+            }
+        }
+        // Auto-dismiss on delete (parity with the old `leadItem == nil` gate): a
+        // content reload that removes the shown item closes the page. `contentsVersion`
+        // is `@Published` and bumps on every load / move / reorder / delete.
+        .onChange(of: model.contentsVersion) { _, _ in
+            if let id = session.currentID,
+               !model.items.contains(where: { $0.item.id == id }) {
+                nav.presentedItemID = nil
+            }
+        }
+        // Surface a tag write/read failure on the model's alert (mirrors the old
+        // `IngestionModel` tag methods routing errors through `lastError`).
+        .onChange(of: tags.lastError) { _, message in
+            if let message {
+                model.lastError = message
+                tags.lastError = nil
+            }
+        }
+    }
+
+    /// Build the presentation-only ``ItemDetailView`` from the session state +
+    /// this collection's `IngestionModel` context — full folder actions plus
+    /// prev/next across `model.items`.
+    @ViewBuilder
+    private func detailOverlay(for state: DetailSession.State) -> some View {
+        let detail = state.detail
+        let hasSource = !(detail.source.originalURL ?? "").isEmpty
+        // A media-less kind (003 · O1) has no blob on disk — disable the blob
+        // actions rather than wiring them to a no-op.
+        let hasBlob = model.blobURL(for: detail) != nil
+        let index = model.items.firstIndex { $0.item.id == detail.item.id }
+        ItemDetailView(
+            asset: detail.asset,
+            source: detail.source,
+            blobURL: model.blobURL(for: detail),
+            previewImage: state.previewImage,
+            tags: tags.tags,
+            onAddTag: { tags.add($0) },
+            onRemoveTag: { tags.remove($0) },
+            actions: ItemDetailActions(
+                openSource: hasSource ? { model.openSource(detail) } : nil,
+                openBlob: hasBlob ? { model.openBlob(detail) } : nil,
+                revealInFinder: hasBlob ? { model.revealInFinder(detail) } : nil,
+                copySourceLink: hasSource ? { model.copySourceLink(detail) } : nil,
+                removeFromFolder: { model.removeFromFolder(assetIDs: [detail.asset.id]) },
+                requestDelete: { model.requestDelete(assetIDs: [detail.asset.id]) }),
+            navigator: index.map { i in
+                ItemDetailNavigator(index: i, count: model.items.count) { delta in
+                    let target = i + delta
+                    if model.items.indices.contains(target) {
+                        // Stepping mutates ONLY the session — no `IngestionModel`
+                        // lead/selection write, so the grid does not re-render per
+                        // step. The lead is synced back once on close.
+                        session.step(to: model.items[target])
+                        model.recordView(assetID: model.items[target].asset.id)
+                    }
+                }
+            },
+            onClose: { close() })
+    }
+
+    /// Close the page (Back / Escape): flush the coalesced view bumps, sync the
+    /// grid lead once to wherever the user stepped to (prev/next kept it off the
+    /// model), then drop the route — which tears down the session via the
+    /// `presentedItemID` observer. The `.setLead` effect (a scroll) is discarded:
+    /// the grid didn't scroll on close before B1 either — the store publish just
+    /// reconciles the lead ring — and there is no scroll seam from this parent.
+    private func close() {
+        model.flushViewBumps()
+        if let id = session.currentID {
+            model.applySelection(.setLead(id))
+        }
+        withAnimation { nav.presentedItemID = nil }
     }
 }

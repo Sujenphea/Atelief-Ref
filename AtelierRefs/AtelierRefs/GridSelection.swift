@@ -82,6 +82,12 @@ enum GridSelectionAction: Equatable {
     case arrow(GridArrowKey, extend: Bool)
     /// Return: open the cursor item's detail (006's planned invocation).
     case openLead
+    /// Set the detail-overlay / keyboard cursor to this id WITHOUT touching the
+    /// selection set — the detail page's lead-sync-on-close (036 §3 B1). Prev/next
+    /// stepping is kept off `IngestionModel`, so on close the model's lead is moved
+    /// once to wherever the user stepped to. Scrolls the lead into view like an
+    /// arrow move (the caller may discard the effect where a scroll isn't wanted).
+    case setLead(UUID)
     /// A key (X) that toggles the CURSOR cell's membership in place — the
     /// keyboard peer of the hover-circle. Arrows move the cursor without touching
     /// the set, so this builds a SCATTERED selection from the keyboard alone
@@ -151,6 +157,10 @@ extension GridSelection {
         case .openLead:
             if let lead = next.lead { return (next, .openDetail(lead)) }
             return (next, .none)
+
+        case let .setLead(id):
+            next.lead = id
+            return (next, .scrollTo(id))
 
         case .toggleLead:
             // Toggle the cursor cell in place; `toggle` re-pins anchor/lead to it

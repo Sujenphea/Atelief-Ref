@@ -103,13 +103,11 @@ final class IngestionModel: ObservableObject {
     /// Keeps the `selectedAssetIDs` cache in step with the store — the Combine
     /// replacement for the old `selection.didSet`.
     private var selectionCancellable: AnyCancellable?
-    /// The selected item's large (1280-tier) preview, loaded OFF-MAIN; `nil`
-    /// while loading, when nothing is selected, or if the tier can't be decoded.
-    @Published private(set) var previewImage: NSImage?
-    /// The selected item's tags (name-ordered), for the detail page's tags editor.
-    /// Reloaded on selection change and after every add/remove. Empty when nothing
-    /// is selected or the item has no tags.
-    @Published private(set) var selectedTags: [Tag] = []
+    // NOTE (036 §3 B1): the detail-overlay's `previewImage` + `selectedTags` moved
+    // OFF this god-object into `DetailSession` / `AssetTagsStore`, so opening or
+    // stepping the overlay no longer fires `@Published` writes here (each of which
+    // re-ran the whole screen, grid included). Only `recordView` remains on this
+    // model for the detail page.
 
     // MARK: - Import / status
 
@@ -1052,14 +1050,12 @@ final class IngestionModel: ObservableObject {
                     stackPreviews = []
                 }
                 // Prune the selection to ids that survive the reloaded set
-                // (folder switch, move-away, or delete). A removed lead clears
-                // the inspector so a stale preview/tags can't linger.
-                let hadLead = selection.lead
+                // (folder switch, move-away, or delete). A removed lead falls back
+                // to `nil`; the detail overlay's own state now lives in
+                // `DetailSession`, so its auto-dismiss-on-delete is driven by the
+                // host observing this reload (036 §3 B1), not by clearing model
+                // state here.
                 selectionStore.prune(to: items.map { $0.item.id })
-                if hadLead != nil, selection.lead == nil {
-                    previewImage = nil
-                    selectedTags = []
-                }
                 // Apply a pending Jump selection (011-B4 · 12A) against the freshly
                 // loaded items, then clear it — deterministic, no timing hack.
                 if let pending = pendingSelection, pending.collectionID == id {
@@ -1183,8 +1179,8 @@ final class IngestionModel: ObservableObject {
     /// (open detail / scroll a cell into view / nothing). This is the ONLY
     /// selection mutator — views report raw input and never branch on mode (009 ·
     /// N2 · 11A). Pure state: NO preview/tags I/O happens here, so a toggle or a
-    /// ⌘A never decodes a large thumbnail (009 · 8A); loads happen in
-    /// ``openItem(_:)`` when the detail page is actually opened.
+    /// ⌘A never decodes a large thumbnail (009 · 8A); the detail overlay's preview
+    /// + tags load in ``DetailSession`` when the page is actually opened (036 B1).
     @discardableResult
     func applySelection(_ action: GridSelectionAction, columns: Int = 1) -> GridSelectionEffect {
         // The single seam onto ``selectionStore`` (036 A0): it runs the same pure
@@ -1194,34 +1190,15 @@ final class IngestionModel: ObservableObject {
         selectionStore.apply(action, columns: columns)
     }
 
-    /// Open `detail` in the inspector/detail page: make it the lead cursor and
-    /// load its preview + tags off-main (009 · 8A — the I/O is here, on open, not
-    /// on every selection change). Called by a grid open and by the detail page's
-    /// prev/next stepper; the caller still records the view + raises the overlay.
-    func openItem(_ detail: CollectionItemDetail) {
-        selectionStore.setLead(detail.item.id)
-        previewImage = nil
-        selectedTags = []
-        loadPreview(for: detail)
-        loadTags(for: detail.asset.id)
-    }
-
-    /// Load the large (1280-tier) thumbnail for `detail` off-main, then publish
-    /// it only if that item is still the lead (guards rapid re-selection).
-    private func loadPreview(for detail: CollectionItemDetail) {
-        // A media-less asset (003 · O1) has no thumbnail to decode.
-        guard let store, let hash = detail.asset.blobHash else { return }
-        let targetID = detail.item.id
-        let url = store.thumbnailURL(
-            hash: hash, size: ThumbnailTier.large.rawValue,
-            fileExtension: "jpg")
-        Task.detached(priority: .userInitiated) {
-            let image = NSImage(contentsOf: url)
-            await MainActor.run { [weak self] in
-                guard let self, self.selection.lead == targetID else { return }
-                self.previewImage = image
-            }
-        }
+    /// The large (1280-tier) thumbnail URL for `asset` — the detail overlay's
+    /// instant placeholder while full-res decodes. `nil` for a media-less kind
+    /// (003 · O1) with no thumbnail. `DetailSession` (036 §3 B1) decodes it
+    /// off-main into the overlay-scoped state; opening the overlay no longer writes
+    /// a `previewImage` on this model.
+    func previewImageURL(forAsset asset: Asset) -> URL? {
+        guard let store, let hash = asset.blobHash else { return nil }
+        return store.thumbnailURL(
+            hash: hash, size: ThumbnailTier.large.rawValue, fileExtension: "jpg")
     }
 
     /// The on-disk full-resolution blob URL for `detail`.
@@ -1240,59 +1217,12 @@ final class IngestionModel: ObservableObject {
     }
 
     // MARK: - Tags (detail page)
-
-    /// Load `assetID`'s tags off-main, publishing only if it's still the current
-    /// selection (guards rapid re-selection, mirroring `loadPreview`).
-    private func loadTags(for assetID: UUID) {
-        guard let services else { return }
-        Task {
-            do {
-                let tags = try await services.tags(for: assetID)
-                guard leadItem?.asset.id == assetID else { return }
-                selectedTags = tags
-            } catch {
-                lastError = Self.message(for: error)
-            }
-        }
-    }
-
-    /// Apply a user tag to the selected item, then refresh the chips. Empty /
-    /// whitespace names are rejected inside the funnel (`Validation.tagName`) and
-    /// surface via ``lastError``; a duplicate is idempotent (no second chip).
-    func addTag(_ name: String) {
-        guard let services, let detail = leadItem else { return }
-        let assetID = detail.asset.id
-        Task {
-            do {
-                try await services.applyTag(name, to: assetID, source: .user)
-                reloadTagsIfCurrent(assetID)
-            } catch {
-                lastError = Self.message(for: error)
-            }
-        }
-    }
-
-    /// Remove `tag` from the selected item, then refresh the chips. Idempotent —
-    /// a no-op if the link is already gone.
-    func removeTag(_ tag: Tag) {
-        guard let services, let detail = leadItem else { return }
-        let assetID = detail.asset.id
-        Task {
-            do {
-                try await services.removeTag(tag.name, from: assetID, source: tag.source)
-                reloadTagsIfCurrent(assetID)
-            } catch {
-                lastError = Self.message(for: error)
-            }
-        }
-    }
-
-    /// Reload the tag chips if `assetID` is still the selection (a tag edit that
-    /// lands after the user has navigated away must not repopulate a stale item).
-    private func reloadTagsIfCurrent(_ assetID: UUID) {
-        guard leadItem?.asset.id == assetID else { return }
-        loadTags(for: assetID)
-    }
+    //
+    // 036 §3 B1: the detail overlay's tags moved onto the shared `AssetTagsStore`
+    // (already used by the Space board + search overlays), driven by
+    // `DetailSession`/`CollectionDetailHost`. The former `loadTags` / `addTag` /
+    // `removeTag` / `reloadTagsIfCurrent` on this model — which published
+    // `selectedTags` and re-ran the whole screen on every chip edit — are deleted.
 
     /// Open the selected item's original source URL in the default browser.
     /// A no-op when the source has no (valid) `originalURL`.
