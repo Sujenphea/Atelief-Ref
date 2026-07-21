@@ -85,14 +85,24 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Selected item (inspector)
 
-    /// The grid's multi-selection (009 · N2): the selected membership ids, the
-    /// ⇧-range anchor, and the `lead` (the detail-overlay / keyboard cursor).
-    /// Selection MODE is derived — `selection.isSelecting`. Pruned to surviving
-    /// ids on every contents reload. Mutated ONLY through ``applySelection`` (the
-    /// pure reducer) so the mode-dependent click contract stays testable.
-    @Published private(set) var selection = GridSelection() {
-        didSet { rebuildSelectedAssetIDs() }
-    }
+    /// The grid's multi-selection (009 · N2), extracted onto its own observable
+    /// (036 §2 A0) so a selection publish no longer fan-outs to every view that
+    /// observes this god-object. Mutated ONLY through ``applySelection`` (the pure
+    /// reducer) so the mode-dependent click contract stays testable; the store is
+    /// the single seam the AppKit grid coordinator subscribes to later.
+    let selectionStore = GridSelectionStore()
+
+    /// The current selection, read straight off ``selectionStore`` — a computed
+    /// forward so every internal reader (`leadItem`, `selectedAssetIDs`,
+    /// `dragPayload`, `actionTargets`, keyboard targets) is unchanged. NOTE: this
+    /// is NOT `@Published`, so reading `model.selection` in a SwiftUI body no
+    /// longer subscribes to selection changes — a view that must repaint on
+    /// selection (only ``CollectionView`` today) observes ``selectionStore``.
+    var selection: GridSelection { selectionStore.selection }
+
+    /// Keeps the `selectedAssetIDs` cache in step with the store — the Combine
+    /// replacement for the old `selection.didSet`.
+    private var selectionCancellable: AnyCancellable?
     /// The selected item's large (1280-tier) preview, loaded OFF-MAIN; `nil`
     /// while loading, when nothing is selected, or if the tier can't be decoded.
     @Published private(set) var previewImage: NSImage?
@@ -263,9 +273,6 @@ final class IngestionModel: ObservableObject {
     /// `item.id → asset.id` for O(1) single-cell drag/action scope, replacing an
     /// `items.first { … }` linear scan run per visible cell each marquee tick.
     private var assetIDByItemID: [UUID: UUID] = [:]
-    /// The item ids in feed order — the reducer's `order` argument, hoisted out of
-    /// `applySelection` so a per-tick `items.map` allocation is avoided.
-    private var itemOrder: [UUID] = []
     /// The current selection's asset ids in feed order (see `selectedAssetIDs`).
     private var cachedSelectedAssetIDs: [UUID] = []
 
@@ -281,15 +288,25 @@ final class IngestionModel: ObservableObject {
     /// the selection cache depends on `items` too, so refresh it here as well.
     private func rebuildItemDerivations() {
         itemsVersion &+= 1
-        itemOrder = items.map { $0.item.id }
+        // Push the feed order to the selection store (the reducer's `order`
+        // argument) — replaces the old hoisted `itemOrder`.
+        selectionStore.setOrder(items.map { $0.item.id })
         assetIDByItemID = Dictionary(
             items.map { ($0.item.id, $0.asset.id) }, uniquingKeysWith: { first, _ in first })
-        rebuildSelectedAssetIDs()
+        // Items changed, selection didn't — rebuild the cache against the store's
+        // CURRENT (settled) selection. Safe to read here: no `willSet` is in
+        // flight, unlike inside the `$selection` sink below.
+        rebuildSelectedAssetIDs(for: selectionStore.selection)
     }
 
     /// Rebuild the selected-asset-id cache after `items` or `selection` changes.
     /// Preserves feed order (mirrors the old `items.filter { … }.map` exactly).
-    private func rebuildSelectedAssetIDs() {
+    ///
+    /// Takes the selection EXPLICITLY rather than reading `self.selection`: when
+    /// driven by the `$selection` sink, `@Published` fires on `willSet`, so the
+    /// store's stored `selection` still holds the OLD value at that instant — the
+    /// computed `self.selection` would read stale. The sink passes the NEW value.
+    private func rebuildSelectedAssetIDs(for selection: GridSelection) {
         cachedSelectedAssetIDs = items.compactMap {
             selection.ids.contains($0.item.id) ? $0.asset.id : nil
         }
@@ -346,6 +363,7 @@ final class IngestionModel: ObservableObject {
 
     init() {
         undoManager.groupsByEvent = false
+        observeSelection()
         Task { await bootstrap() }
     }
 
@@ -359,6 +377,19 @@ final class IngestionModel: ObservableObject {
         self.store = store
         self.selectedFolderID = services.unsortedFolderID
         self.isReady = true
+        observeSelection()
+    }
+
+    /// Rebuild the `selectedAssetIDs` cache whenever the store publishes a new
+    /// selection — the Combine replacement for the old `selection.didSet`. The
+    /// closure receives the NEW value (see ``rebuildSelectedAssetIDs(for:)`` on
+    /// why we must not re-read `self.selection` here). `@Published` emits the
+    /// current value on subscribe, so the cache is seeded (empty) immediately.
+    private func observeSelection() {
+        selectionCancellable = selectionStore.$selection
+            .sink { [weak self] newSelection in
+                self?.rebuildSelectedAssetIDs(for: newSelection)
+            }
     }
 
     // MARK: - Bootstrap
@@ -1024,7 +1055,7 @@ final class IngestionModel: ObservableObject {
                 // (folder switch, move-away, or delete). A removed lead clears
                 // the inspector so a stale preview/tags can't linger.
                 let hadLead = selection.lead
-                selection = selection.pruned(to: items.map { $0.item.id })
+                selectionStore.prune(to: items.map { $0.item.id })
                 if hadLead != nil, selection.lead == nil {
                     previewImage = nil
                     selectedTags = []
@@ -1033,7 +1064,7 @@ final class IngestionModel: ObservableObject {
                 // loaded items, then clear it — deterministic, no timing hack.
                 if let pending = pendingSelection, pending.collectionID == id {
                     let jumped = jumpSelection(in: items, assetIDs: pending.assetIDs)
-                    if !jumped.isEmpty { selection = jumped }
+                    if !jumped.isEmpty { selectionStore.replace(jumped) }
                     pendingSelection = nil
                 }
                 contentsVersion &+= 1
@@ -1156,11 +1187,11 @@ final class IngestionModel: ObservableObject {
     /// ``openItem(_:)`` when the detail page is actually opened.
     @discardableResult
     func applySelection(_ action: GridSelectionAction, columns: Int = 1) -> GridSelectionEffect {
-        let (next, effect) = selection.applying(action, order: itemOrder, columns: columns)
-        // Publish only real changes: the marquee re-fires on every mouse-move
-        // tick, and an unchanged hit set must not re-render the whole screen.
-        if next != selection { selection = next }
-        return effect
+        // The single seam onto ``selectionStore`` (036 A0): it runs the same pure
+        // reducer over the store's `order` and publishes only real changes — the
+        // marquee re-fires per mouse-move tick, so an unchanged hit set must not
+        // re-render the store's observers.
+        selectionStore.apply(action, columns: columns)
     }
 
     /// Open `detail` in the inspector/detail page: make it the lead cursor and
@@ -1168,7 +1199,7 @@ final class IngestionModel: ObservableObject {
     /// on every selection change). Called by a grid open and by the detail page's
     /// prev/next stepper; the caller still records the view + raises the overlay.
     func openItem(_ detail: CollectionItemDetail) {
-        selection.lead = detail.item.id
+        selectionStore.setLead(detail.item.id)
         previewImage = nil
         selectedTags = []
         loadPreview(for: detail)

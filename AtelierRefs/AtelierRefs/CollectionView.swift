@@ -21,7 +21,24 @@ struct CollectionView: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
     @ObservedObject var gridPrefs: GridViewPreferences
+    // Selection moved off `IngestionModel` onto its own store (036 §2 A0). This
+    // screen reads `model.selection` at ~nine body sites and must still repaint on
+    // a selection change; since `model.selection` is no longer `@Published`, this
+    // explicit subscription is what invalidates the body now (its former path —
+    // `IngestionModel.objectWillChange` — no longer fires on selection). Every
+    // OTHER `IngestionModel` observer is spared the selection fan-out. Moving the
+    // nine reads down into per-cell views (so this too stops re-running) is the
+    // later A1–A2 work, deliberately NOT part of A0.
+    @ObservedObject private var selectionStore: GridSelectionStore
     let collectionID: UUID
+
+    init(model: IngestionModel, nav: NavModel, gridPrefs: GridViewPreferences, collectionID: UUID) {
+        _model = ObservedObject(wrappedValue: model)
+        _nav = ObservedObject(wrappedValue: nav)
+        _gridPrefs = ObservedObject(wrappedValue: gridPrefs)
+        _selectionStore = ObservedObject(wrappedValue: model.selectionStore)
+        self.collectionID = collectionID
+    }
 
     @State private var isTargeted = false
     /// The live grid viewport width, captured from the grid's `GeometryReader`, so
