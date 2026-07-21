@@ -74,6 +74,40 @@ struct GridHostConfiguration {
     var onZoomIn: () -> Void
     /// ⌘− — smaller cells, more columns (`gridPrefs.zoomOut`).
     var onZoomOut: () -> Void
+
+    // MARK: A3 — drag out / drop / context menu seams
+
+    /// The `AssetDragPayload` for a drag starting on a cell `itemID`: the whole
+    /// selection when the cell is selected, else the cell alone
+    /// (`IngestionModel.dragPayload(forCellItemID:)`). `nil` only if the cell
+    /// vanished — the coordinator falls back to a lone-cell payload.
+    var dragPayload: (UUID) -> AssetDragPayload?
+    /// The drag image for a cell `itemID`, rendered on the SwiftUI side via
+    /// `ImageRenderer` over the EXISTING `dragPreview` (thumbnail + count badge),
+    /// so the AppKit drag looks identical to the SwiftUI one.
+    var dragImage: (UUID) -> NSImage?
+    /// Route a payload dropped ONTO the cell for `targetAssetID` — wraps the
+    /// unchanged `handleCellDrop`/`routeDrop` (same-collection manual-sort reorder;
+    /// everything else refused). Returns whether the drop was accepted.
+    var onCellDrop: (AssetDragPayload, _ targetAssetID: UUID) -> Bool
+
+    /// The assets a menu / drag acts on for the cell `itemID` — the Finder scope
+    /// rule (`IngestionModel.actionTargets(forCellItemID:)`): a right-click INSIDE
+    /// the selection acts on the whole selection, OUTSIDE it on that one cell.
+    var actionTargets: (UUID) -> [UUID]
+    /// The move/copy destinations for this collection (memoized `MoveTargetsCache`),
+    /// carried as a value so the native menu builds its submenus without recompute.
+    var moveTargets: MoveTargets
+    /// Move the given assets into a collection (menu "Move to ▸").
+    var onMoveToCollection: (_ assetIDs: [UUID], _ targetID: UUID) -> Void
+    /// Copy (add) the given assets into a collection (menu "Add to ▸").
+    var onCopyToCollection: (_ assetIDs: [UUID], _ targetID: UUID) -> Void
+    /// Set a single asset as this collection's cover (menu "Set as Cover").
+    var onSetCover: (_ assetID: UUID) -> Void
+    /// Remove the given assets from this collection (menu "Remove from Collection").
+    var onRemoveFromCollection: (_ assetIDs: [UUID]) -> Void
+    /// Delete the given assets from the library entirely (menu "Delete", confirmed).
+    var onDelete: (_ assetIDs: [UUID]) -> Void
 }
 
 // MARK: - The collection view subclass (A2 seam)
@@ -97,6 +131,21 @@ protocol MasonryGridViewEvents: AnyObject {
     /// scroll under a stationary pointer updates the hovered cell (structurally
     /// fixes hover-during-scroll + the stranded circle; no `hoverAfterWindowChange`).
     func gridClipBoundsChanged()
+
+    // MARK: A3 — background mouse (marquee + click-to-clear) and context menu
+
+    /// A `mouseDown` on EMPTY space (a cell forwards its own image-area down via
+    /// ``MasonryGridInteraction`` instead, so this only fires in a gap / inset /
+    /// past content) — begins a marquee, or, if it turns out to be a click, clears.
+    func gridBackgroundMouseDown(_ event: NSEvent)
+    /// A `mouseDragged` after a background down — extends the live marquee box.
+    func gridBackgroundMouseDragged(_ event: NSEvent)
+    /// A `mouseUp` ending a background gesture — commits the marquee, or clears the
+    /// selection on a bare (un-modified) click (the A2-deferred click-to-clear).
+    func gridBackgroundMouseUp(_ event: NSEvent)
+    /// Build the right-click / Menu-key context menu for `event`, hit-testing its
+    /// location against the analytic frames (036 §4 A3 — native `menu(for:)`).
+    func gridMenu(for event: NSEvent) -> NSMenu?
 }
 
 /// `NSCollectionView` subclass. A1 turned native selection off; A2 makes it a
@@ -145,6 +194,18 @@ final class MasonryNSCollectionView: NSCollectionView {
 
     override func deleteBackward(_ sender: Any?) { events?.gridDeleteCommand() }
     override func deleteForward(_ sender: Any?) { events?.gridDeleteCommand() }
+
+    // A3 — a down/drag/up that reaches the collection view itself is on EMPTY space
+    // (cell views intercept their own; see `FlippedContentView`). Route it to the
+    // marquee + click-to-clear. Not calling `super` avoids native selection (off).
+    override func mouseDown(with event: NSEvent) { events?.gridBackgroundMouseDown(event) }
+    override func mouseDragged(with event: NSEvent) { events?.gridBackgroundMouseDragged(event) }
+    override func mouseUp(with event: NSEvent) { events?.gridBackgroundMouseUp(event) }
+
+    /// The native context menu (036 §4 A3) — right-click anywhere over the grid,
+    /// resolved to a target cell by the coordinator; `nil` over a true gap so empty
+    /// space shows no menu (parity with the SwiftUI container menu).
+    override func menu(for event: NSEvent) -> NSMenu? { events?.gridMenu(for: event) }
 }
 
 // MARK: - The representable
@@ -179,6 +240,7 @@ struct MasonryGridHost: NSViewRepresentable {
 /// reducer). It never mutates selection except through the store's reducer seams.
 @MainActor
 final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
+    NSCollectionViewDelegate, NSDraggingSource,
     MasonryGridInteraction, MasonryGridViewEvents {
     private var configuration: GridHostConfiguration
     private let layout = MasonryCollectionLayout()
@@ -186,6 +248,11 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     private var scrollView: NSScrollView?
     private var collectionView: MasonryNSCollectionView?
     private var dataSource: NSCollectionViewDiffableDataSource<Int, UUID>?
+
+    /// The AppKit marquee (036 §4 A3): background rubber-band + edge auto-scroll +
+    /// click-to-clear, drawing ONE `CALayer` and mutating only changed cells per
+    /// tick. Created once the collection view exists.
+    private var marquee: GridMarqueeController?
 
     /// The rendered item set, index-aligned to the snapshot order.
     private(set) var items: [CollectionItemDetail] = []
@@ -219,10 +286,17 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         collectionView.isSelectable = false
         collectionView.allowsMultipleSelection = false
         collectionView.backgroundColors = [.clear]
+        collectionView.wantsLayer = true
         collectionView.collectionViewLayout = layout
         collectionView.register(
             MasonryGridItem.self, forItemWithIdentifier: MasonryGridItem.identifier)
         collectionView.prefetchDataSource = self
+        collectionView.delegate = self
+        // Register ONLY the intra-app asset-ids type (036 §4 A3): an external
+        // file/image/URL drag is NOT a registered type here, so the collection view
+        // is transparent to it and it falls through to the pane-level SwiftUI
+        // `.onDrop` (import). Only a same-app reorder drag is accepted onto a cell.
+        collectionView.registerForDraggedTypes([AssetDragPayload.pasteboardType])
         // A2 — keyboard + hover forwarding (cell mouse-down arrives via the cell).
         collectionView.events = self
 
@@ -252,6 +326,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         self.collectionView = collectionView
         self.dataSource = dataSource
 
+        makeMarqueeController(on: collectionView)
         observeClipView(scrollView.contentView)
         bindSelection()
 
@@ -270,8 +345,34 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
             .sink { [weak self] newValue in self?.reconcileSelection(to: newValue) }
     }
 
+    /// Build the AppKit marquee (036 §4 A3) and wire its callbacks to the store /
+    /// layout, so a background rubber-band applies `.marquee`/`.clear` through the
+    /// SAME reducer seam the SwiftUI `MarqueeCaptureLayer` used, and its hit-test
+    /// reads the ANALYTIC frames (never live cell frames — the pixel-snap asterisk).
+    private func makeMarqueeController(on collectionView: MasonryNSCollectionView) {
+        let controller = GridMarqueeController(collectionView: collectionView)
+        controller.itemIDs = { [weak self] in self?.items.map { $0.item.id } ?? [] }
+        controller.frames = { [weak self] in self?.layout.solvedFrames ?? [] }
+        controller.columns = { [weak self] in self?.layout.solvedColumns ?? 1 }
+        controller.currentSelectionIDs = { [weak self] in
+            self?.configuration.selectionStore.selection.ids ?? []
+        }
+        controller.onMarquee = { [weak self] hits, base in
+            guard let self else { return }
+            self.execute(self.configuration.selectionStore.apply(
+                .marquee(hits: hits, base: base), columns: self.currentColumns()))
+        }
+        controller.onClear = { [weak self] in
+            guard let self else { return }
+            self.execute(self.configuration.selectionStore.apply(
+                .clear, columns: self.currentColumns()))
+        }
+        marquee = controller
+    }
+
     func tearDown() {
         selectionCancellable = nil
+        marquee?.cancel()
         NotificationCenter.default.removeObserver(self)
         // Drop any outstanding prefetches for this grid's hashes (visible loads
         // are never prefetch-tagged, so this cannot blank an on-screen cell).
@@ -378,10 +479,15 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         guard items.indices.contains(index) else { return }
         let detail = items[index]
         cell.interaction = self
+        // GIF hover-preview (A3) animates from the ORIGINAL bytes, and only for the
+        // GIF mime — mirrors the SwiftUI cell's `gifURL` gate exactly.
+        let gifURL = detail.asset.mimeType == GifMotion.gifMimeType
+            ? configuration.blobURL(detail) : nil
         cell.configure(
             detail: detail,
             url: configuration.thumbnailURL(detail),
-            bucket: bucket(at: index))
+            bucket: bucket(at: index),
+            gifURL: gifURL)
         // Paint the cell's CURRENT selection + hover, so a freshly materialized or
         // reconfigured cell (scroll-in, snapshot, density step) shows the right
         // rings/circle without waiting for a reconcile tick — this is also how a
@@ -544,9 +650,8 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     ) {
         let didDrag = trackDragThreshold(from: downEvent)
         if didDrag {
-            // A3: begin the `NSDraggingSource` session from here. Classification is
-            // A2; the drag hand-off itself is deliberately a no-op stub until A3.
-            beginDragHandoffStub(id: id)
+            // A3: begin the `NSDraggingSource` session from the classified drag.
+            beginDragHandoff(id: id, downEvent: downEvent)
             return
         }
         guard !consumesRelease else { return }
@@ -572,13 +677,191 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         }
     }
 
-    /// A3 stub — the drag classified above will start an `NSDraggingSource` session
-    /// carrying the `AssetDragPayload`. In A2 it is intentionally inert.
-    private func beginDragHandoffStub(id: UUID) {}
+    /// Start the `NSDraggingSource` session for a drag classified above (036 §4 A3).
+    /// The pasteboard carries the JSON-encoded `AssetDragPayload` under the SAME
+    /// `.assetIDs` type the SwiftUI `.draggable` wrote — byte-compatible, so the
+    /// still-SwiftUI drop rail / stack row / Spaces accept it unchanged. A selected
+    /// cell drags the whole selection (via `dragPayload`); the image is the existing
+    /// `dragPreview` rendered by `ImageRenderer`, centred on the pointer.
+    private func beginDragHandoff(id: UUID, downEvent: NSEvent) {
+        guard let collectionView, let index = idToIndex[id],
+              items.indices.contains(index) else { return }
+        let detail = items[index]
+        let payload = configuration.dragPayload(id)
+            ?? AssetDragPayload(
+                assetIDs: [detail.asset.id], sourceCollectionID: configuration.collectionID)
+        guard let pasteboardItem = payload.makePasteboardItem() else { return }
+
+        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        let image = configuration.dragImage(id)
+        let size = image?.size ?? CGSize(width: 84, height: 84)
+        // Centre the image on the pointer in the flipped content space the drag
+        // frame is interpreted in. The flipped-origin is the classic place a
+        // coordinate bug hides (036 §A-risks) — a small offset is cosmetic and can't
+        // change what the drop receives; the byte-exact payload is what matters.
+        let point = contentPoint(for: downEvent)
+        let frame = CGRect(
+            x: point.x - size.width / 2, y: point.y - size.height / 2,
+            width: size.width, height: size.height)
+        draggingItem.setDraggingFrame(frame, contents: image)
+
+        collectionView.beginDraggingSession(
+            with: [draggingItem], event: downEvent, source: self)
+    }
+
+    // MARK: NSDraggingSource
+
+    func draggingSession(
+        _ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        // Intra-app only: move or copy (⌥) within the window; nothing dragged out to
+        // Finder. Matches the SwiftUI `.draggable`, which never exported files.
+        context == .withinApplication ? [.move, .copy] : []
+    }
 
     func gridCellCircleClicked(id: UUID) {
         collectionView?.window?.makeFirstResponder(collectionView)
         execute(configuration.selectionStore.apply(.tapCircle(id), columns: currentColumns()))
+    }
+
+    // MARK: Coordinate conversion (036 §A-risks — the ONE helper)
+
+    /// The single event → content-space conversion used by click / hover / marquee /
+    /// menu / drag (036 §A-risks). `NSCollectionView` is flipped and IS the document
+    /// view, so its coordinate space is the analytic content space (top inset
+    /// included, `MasonryLayout`'s own space). A click inside the `topInset` or PAST
+    /// the content bottom converts fine and hit-tests to no cell — the caller then
+    /// treats it as empty space (a marquee / a clear), never a crash or a mis-hit.
+    func contentPoint(for event: NSEvent) -> CGPoint {
+        guard let collectionView else { return .zero }
+        return collectionView.convert(event.locationInWindow, from: nil)
+    }
+
+    // MARK: Background mouse — marquee + click-to-clear (036 §4 A3)
+
+    func gridBackgroundMouseDown(_ event: NSEvent) {
+        // Focus the grid so keyboard nav works after a background click, matching a
+        // cell click (A2). Then hand the down to the marquee controller.
+        collectionView?.window?.makeFirstResponder(collectionView)
+        marquee?.mouseDown(
+            at: contentPoint(for: event), shiftKey: event.modifierFlags.contains(.shift))
+    }
+
+    func gridBackgroundMouseDragged(_ event: NSEvent) {
+        marquee?.mouseDragged(to: contentPoint(for: event))
+    }
+
+    func gridBackgroundMouseUp(_ event: NSEvent) {
+        marquee?.mouseUp()
+    }
+
+    // MARK: Context menu (036 §4 A3 — native NSMenu, hit-tested target)
+
+    func gridMenu(for event: NSEvent) -> NSMenu? {
+        // Resolve the target cell from the cursor over the ANALYTIC frames (the same
+        // query the marquee / C4 container menu ran). A gap → nil (no menu), parity
+        // with right-clicking empty space. A non-pointer invocation (Menu key, no
+        // location) falls back to the keyboard cursor (`lead`) cell, per 036 §4 C4.
+        var index = layout.hitTestIndex(at: contentPoint(for: event))
+        if index == nil {
+            let isPointer = event.type == .rightMouseDown || event.type == .leftMouseDown
+            if !isPointer, let lead = configuration.selectionStore.selection.lead {
+                index = idToIndex[lead]
+            }
+        }
+        guard let index, items.indices.contains(index) else { return nil }
+        return buildContextMenu(forCellItemID: items[index].item.id)
+    }
+
+    /// The unchanged cell menu (009 · N2/N6 · C4 scope) as a native `NSMenu`:
+    /// Move to ▸ / Add to ▸ (from the memoized `MoveTargets`), Set as Cover (single
+    /// only), Remove, Delete — counts in the destructive verbs. Actions run on the
+    /// Finder-scope asset set from `actionTargets` (selection when the cell is in
+    /// the selection, else the one cell), exactly as the SwiftUI `cellMenu` did.
+    private func buildContextMenu(forCellItemID itemID: UUID) -> NSMenu {
+        let targets = configuration.actionTargets(itemID)   // asset ids
+        let n = targets.count
+        let dests = configuration.moveTargets
+        let menu = NSMenu()
+
+        let moveItem = NSMenuItem(title: "Move to", action: nil, keyEquivalent: "")
+        moveItem.submenu = targetSubmenu(dests) { [weak self] target in
+            self?.configuration.onMoveToCollection(targets, target)
+        }
+        menu.addItem(moveItem)
+
+        let addItem = NSMenuItem(title: "Add to", action: nil, keyEquivalent: "")
+        addItem.submenu = targetSubmenu(dests) { [weak self] target in
+            self?.configuration.onCopyToCollection(targets, target)
+        }
+        menu.addItem(addItem)
+
+        if n == 1 {
+            menu.addItem(BlockMenuItem(title: "Set as Cover") { [weak self] in
+                self?.configuration.onSetCover(targets[0])
+            })
+        }
+        menu.addItem(.separator())
+        menu.addItem(BlockMenuItem(
+            title: "Remove from Collection\(Self.countSuffix(n))"
+        ) { [weak self] in
+            self?.configuration.onRemoveFromCollection(targets)
+        })
+        menu.addItem(BlockMenuItem(title: "Delete\(Self.countSuffix(n))") { [weak self] in
+            self?.configuration.onDelete(targets)
+        })
+        return menu
+    }
+
+    /// A Move-to / Add-to submenu: subfolders first, a divider, then roots — the
+    /// exact order of the SwiftUI `targetButtons`.
+    private func targetSubmenu(
+        _ dests: MoveTargets, action: @escaping (UUID) -> Void
+    ) -> NSMenu {
+        let submenu = NSMenu()
+        for c in dests.subfolders {
+            submenu.addItem(BlockMenuItem(title: c.name) { action(c.id) })
+        }
+        if !dests.subfolders.isEmpty && !dests.roots.isEmpty { submenu.addItem(.separator()) }
+        for c in dests.roots {
+            submenu.addItem(BlockMenuItem(title: c.name) { action(c.id) })
+        }
+        return submenu
+    }
+
+    /// " (N)" for a multi-item action, empty for a single — mirrors
+    /// `CollectionView.countSuffix`.
+    private static func countSuffix(_ n: Int) -> String { n > 1 ? " (\(n))" : "" }
+
+    // MARK: Drop onto a cell (036 §4 A3 — NSCollectionViewDelegate)
+
+    /// Force `.on` a cell hit-tested from the drag location; a drag over a GAP
+    /// returns `[]` (rejected) so an internal reorder dropped on empty space no-ops,
+    /// exactly as it did in SwiftUI (the pane `.onDrop` doesn't accept `.assetIDs`).
+    func collectionView(
+        _ collectionView: NSCollectionView, validateDrop draggingInfo: NSDraggingInfo,
+        proposedIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
+        dropOperation proposedDropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>
+    ) -> NSDragOperation {
+        let point = collectionView.convert(draggingInfo.draggingLocation, from: nil)
+        guard let index = layout.hitTestIndex(at: point) else { return [] }
+        proposedIndexPath.pointee = IndexPath(item: index, section: 0) as NSIndexPath
+        proposedDropOperation.pointee = .on
+        return .move
+    }
+
+    /// Decode the byte-compatible payload and route it through the unchanged
+    /// `handleCellDrop`/`routeDrop` (only a same-collection manual-sort drop is a
+    /// reorder — everything else is refused there).
+    func collectionView(
+        _ collectionView: NSCollectionView, acceptDrop draggingInfo: NSDraggingInfo,
+        indexPath: IndexPath, dropOperation: NSCollectionView.DropOperation
+    ) -> Bool {
+        guard let data = draggingInfo.draggingPasteboard.data(
+                forType: AssetDragPayload.pasteboardType),
+              let payload = AssetDragPayload.decode(from: data),
+              items.indices.contains(indexPath.item) else { return false }
+        return configuration.onCellDrop(payload, items[indexPath.item].asset.id)
     }
 
     // MARK: Effects
@@ -707,6 +990,23 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
             cell.setHovered(true)
         }
     }
+}
+
+// MARK: - Block-backed menu item (036 §4 A3)
+
+/// An `NSMenuItem` that fires a closure — the native menu's leaf actions carry
+/// captured `[UUID]` target sets, so a per-item closure is cleaner than one shared
+/// `@objc` selector demuxing on `representedObject`.
+private final class BlockMenuItem: NSMenuItem {
+    private let handler: () -> Void
+    init(title: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(fire), keyEquivalent: "")
+        target = self
+    }
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func fire() { handler() }
 }
 
 // MARK: - Pure coordinator helpers (unit-tested)

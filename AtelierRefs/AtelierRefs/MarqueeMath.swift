@@ -24,6 +24,23 @@
 //
 
 import CoreGraphics
+import Foundation
+
+/// The set of item ids a marquee `rect` touches, given the layout's analytic
+/// `frames` (all items — offscreen included), its round-robin `columns`, and the
+/// index-aligned `itemIDs` (009 · N6 / 036 §4 A3). The band-narrowed
+/// `masonryMarqueeIndices` does the geometry; this maps its hit indices back to
+/// ids, guarding the frames/itemIDs length skew a mid-resize render can produce
+/// (never index past the shorter of the two). Extracted pure so the AppKit
+/// ``GridMarqueeController`` and its flipped-space tests share ONE definition,
+/// mirroring `GridMarquee`'s inline `updateHits` byte-for-byte.
+func marqueeHitIDs(
+    rect: CGRect, frames: [CGRect], columns: Int, itemIDs: [UUID]
+) -> Set<UUID> {
+    let hits = masonryMarqueeIndices(in: rect, frames: frames, columns: columns)
+    let count = min(itemIDs.count, frames.count)
+    return Set(hits.compactMap { $0 < count ? itemIDs[$0] : nil })
+}
 
 /// The normalized selection rect for a drag from `a` to `b` (corners in any
 /// order) — always a rect with non-negative size.

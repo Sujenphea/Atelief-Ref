@@ -120,8 +120,24 @@ final class MasonryGridItem: NSCollectionViewItem {
     private let cursorRingLayer = CALayer()
     /// Inert-until-A2 enter-selection circle affordance.
     private let circleButton = NSButton()
-    /// Inert-until-A3 animated-GIF overlay slot.
+    /// The hover-dwell animated-GIF overlay slot (A3). Populated only after the
+    /// dwell elapses AND this cell wins the single-animation slot; hit-transparent.
     private var gifSlot: NSView?
+
+    /// The ORIGINAL blob URL when this cell is an animatable GIF (else nil — the
+    /// static thumbnail tiers are flattened posters and can't animate). Set in
+    /// ``configure``; the coordinator already gates it on `mimeType == image/gif`.
+    private var gifURL: URL?
+    /// The GIF's byte size, for the animation budget (a huge GIF stays static —
+    /// a hover peek isn't worth decoding multi-MB into memory).
+    private var gifFileSize: Int?
+    /// The pending dwell timer before a hovered GIF animates (cancelled on
+    /// hover-out / reuse), ported verbatim from `CollectionCell` (011-B5 · 15A).
+    private var gifDwell: Task<Void, Never>?
+    /// The id currently holding the ``GifAnimationCoordinator`` slot via this cell,
+    /// so reuse / hover-out releases exactly what it claimed (a stale release from
+    /// another cell is already a no-op in the coordinator).
+    private var animatingGifID: UUID?
 
     private let cornerRadius: CGFloat = 8
 
@@ -208,13 +224,19 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// kind hosts ``AssetContentThumbnail``. `url` is the on-disk 512-tier
     /// thumbnail (nil for media-less), `bucket` the analytic-frame pixel bucket
     /// the host computed (the cell never guesses its own size — 036 §4 C3).
-    func configure(detail: CollectionItemDetail, url: URL?, bucket: Int) {
+    func configure(detail: CollectionItemDetail, url: URL?, bucket: Int, gifURL: URL?) {
         loadToken &+= 1
         let token = loadToken
         loadTask?.cancel()
         loadTask = nil
 
         itemID = detail.item.id
+        // GIF hover-preview inputs (A3): the original bytes (nil unless this is an
+        // animatable GIF) plus its size for the budget. A (re)configure that lands
+        // on a different item cancels any in-flight dwell for the old one.
+        cancelGifDwell()
+        self.gifURL = gifURL
+        gifFileSize = detail.asset.fileSize
         view.setAccessibilityLabel(gridCellAccessibilityLabel(for: detail))
 
         // Media-less card kinds (bare link / tweet / colour / unknown) have no
@@ -271,6 +293,44 @@ final class MasonryGridItem: NSCollectionViewItem {
         guard hovered != isHovered else { return }
         isHovered = hovered
         updateCircleVisibility()
+        updateGifAnimation()
+    }
+
+    /// The dwell-gated, budgeted, single-slot GIF animation (011-B5 · 15A), ported
+    /// from `CollectionCell.handleHover`. Reduce Motion (read live off
+    /// `NSWorkspace`), a non-GIF cell, or an over-budget GIF short-circuits BEFORE
+    /// any decode; otherwise a 150 ms dwell must elapse and the single-animation
+    /// slot must be free before the overlay is created.
+    private func updateGifAnimation() {
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard let gifURL, let itemID, isHovered,
+              shouldAnimateGif(
+                mimeType: GifMotion.gifMimeType, reduceMotion: reduceMotion, isHovering: true),
+              gifWithinBudget(fileSize: gifFileSize) else {
+            cancelGifDwell()
+            return
+        }
+        gifDwell?.cancel()
+        gifDwell = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: GifMotion.hoverDwell)
+            guard let self, !Task.isCancelled, self.itemID == itemID else { return }
+            if GifAnimationCoordinator.shared.claim(itemID) {
+                self.animatingGifID = itemID
+                self.showGif(url: gifURL)
+            }
+        }
+    }
+
+    /// Cancel any pending dwell, release the animation slot iff this cell holds it,
+    /// and tear down the overlay (frees the decoded frames). Idempotent.
+    private func cancelGifDwell() {
+        gifDwell?.cancel()
+        gifDwell = nil
+        if let id = animatingGifID {
+            GifAnimationCoordinator.shared.release(id)
+            animatingGifID = nil
+        }
+        releaseGifSlot()
     }
 
     /// The circle shows while SELECTING (every cell is toggleable) or, when idle,
@@ -299,9 +359,14 @@ final class MasonryGridItem: NSCollectionViewItem {
         loadTask = nil
         itemID = nil
         isHovered = false
+        // Cancels the dwell AND releases the animation slot this cell held (A3), so
+        // a recycled GIF cell never leaks the single-animation slot — this is the
+        // real-recycling hook NSCollectionView calls before re-vending the item.
+        cancelGifDwell()
+        gifURL = nil
+        gifFileSize = nil
         setImage(nil)
         hideCard()
-        releaseGifSlot()
         applySelectionState(.inert)
     }
 
@@ -343,10 +408,32 @@ final class MasonryGridItem: NSCollectionViewItem {
         cardHost?.isHidden = true
     }
 
+    /// Mount the animated GIF over the static poster (011-B5). Reuses the proven
+    /// ``AnimatedGifView`` player through a hit-transparent host so selection / drag
+    /// still land on the cell underneath (the SwiftUI overlay used
+    /// `.allowsHitTesting(false)`; the host below returns `nil` from `hitTest`).
+    private func showGif(url: URL) {
+        releaseGifSlot()
+        let host = HitTransparentHostingView(rootView: AnimatedGifView(url: url))
+        host.sizingOptions = []
+        host.frame = view.bounds
+        host.autoresizingMask = [.width, .height]
+        // Above the image layer, below the circle/rings (added on the container).
+        view.addSubview(host, positioned: .below, relativeTo: circleButton)
+        gifSlot = host
+    }
+
     private func releaseGifSlot() {
         gifSlot?.removeFromSuperview()
         gifSlot = nil
     }
+}
+
+/// An `NSHostingView` that never claims a hit, so the animated-GIF overlay it
+/// carries can't steal the cell's mouse-down / drag (the SwiftUI peer used
+/// `.allowsHitTesting(false)`).
+private final class HitTransparentHostingView<Content: View>: NSHostingView<Content> {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// The cell container. Flipped so any A2/A3 subview geometry shares the grid's

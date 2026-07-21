@@ -15,6 +15,7 @@
 //  drag (reorder / stack-move / rail-move) shows an invalid cursor and snaps back.
 //
 
+import AppKit
 import AtelierCore
 import CoreTransferable
 import Foundation
@@ -37,5 +38,38 @@ struct AssetDragPayload: Codable, Equatable, Transferable {
 
     static var transferRepresentation: some TransferRepresentation {
         CodableRepresentation(contentType: .assetIDs)
+    }
+}
+
+// MARK: - NSPasteboard bridge (036 §4 A3 — byte-compatible with the SwiftUI drag)
+
+extension AssetDragPayload {
+    /// The pasteboard type the AppKit drag writes under — the SAME identifier the
+    /// `.assetIDs` `UTType` (and therefore the SwiftUI `CodableRepresentation`)
+    /// uses, so a drag started on the AppKit grid lands on the still-SwiftUI drop
+    /// rail / stack row / Spaces exactly as the SwiftUI `.draggable` did.
+    static let pasteboardType = NSPasteboard.PasteboardType(UTType.assetIDs.identifier)
+
+    /// The wire bytes for this payload — plain `JSONEncoder`, which is precisely
+    /// what SwiftUI's `CodableRepresentation(contentType:)` serializes (036 §4 A3).
+    /// This IS the interop contract: `AssetDragPayloadTests` pins that these bytes
+    /// decode back through the same `Codable` form the SwiftUI drop targets use, so
+    /// a drift here silently breaks drag-to-rail and the test catches it.
+    func pasteboardData() throws -> Data { try JSONEncoder().encode(self) }
+
+    /// An `NSPasteboardItem` carrying this payload's JSON under `.pasteboardType`,
+    /// for `NSDraggingItem(pasteboardWriter:)`. `nil` only if encoding fails (it
+    /// cannot for this value type).
+    func makePasteboardItem() -> NSPasteboardItem? {
+        guard let data = try? pasteboardData() else { return nil }
+        let item = NSPasteboardItem()
+        item.setData(data, forType: Self.pasteboardType)
+        return item
+    }
+
+    /// Decode a payload from a drop's pasteboard bytes — the inverse of
+    /// ``pasteboardData()``, used by the AppKit cell-drop delegate.
+    static func decode(from data: Data) -> AssetDragPayload? {
+        try? JSONDecoder().decode(AssetDragPayload.self, from: data)
     }
 }

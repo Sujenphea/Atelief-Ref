@@ -78,6 +78,13 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     /// frame exists.
     var solvedColumnWidth: CGFloat { solved.columnWidth }
 
+    /// The full analytic frame array (all items, offscreen included), for the A3
+    /// marquee's `masonryMarqueeIndices` rect query — the virtualization trap is
+    /// that only VISIBLE cells are materialized, so a live-frame scan can't drive
+    /// offscreen hit-testing; these computed frames must (038 §3.4). Index-aligned
+    /// to the data source's items.
+    var solvedFrames: [CGRect] { solved.frames }
+
     /// The solved column count at the current width — the ONE source A2 keyboard
     /// nav (`nextGridIndex`'s `± columns`) and the coordinator's arrow routing read,
     /// so the index math matches the frames (mirrors `CollectionView.gridColumns`).

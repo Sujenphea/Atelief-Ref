@@ -252,6 +252,55 @@ New `AtelierRefs/GridSelectionStore.swift` — `@MainActor ObservableObject` wit
   `NSWorkspace.accessibilityDisplayShouldReduceMotion`); pure policy fns
   (`shouldAnimateGif`, `gifWithinBudget`) reused as-is.
 
+> **As built in A3 (`183`) — decisions, deviations, and honest gaps:**
+> - **Context menu: NATIVE `NSMenu` via `menu(for:)`, not C4's SwiftUI menu.**
+>   C4 already removed the per-cell cost this section worried about, so the
+>   deciding factor was right-click *reliability*, not perf. A SwiftUI
+>   `.contextMenu` over the `NSCollectionView` host would have to re-plumb hover +
+>   the AppKit scroll offset back into SwiftUI and fight the collection view's own
+>   first-responder / event handling — fragile and prone to silently not firing.
+>   The native path is self-contained in the coordinator, deterministic, and
+>   reuses every pure piece (`actionTargets`' Finder-scope rule, the memoized
+>   `MoveTargets`, the action closures). Menu contents / counts / scope are
+>   byte-identical to `cellMenu`. **No system targeted-cell highlight** is drawn
+>   (C4's `GridContextHighlightLayer` is SwiftUI-only) — a cosmetic gap, noted.
+> - **Drag out:** pasteboard = `JSONEncoder().encode(AssetDragPayload)` under
+>   `com.ref-atelier.asset-ids` (= the `.assetIDs` UTI), which IS the byte form
+>   SwiftUI's `CodableRepresentation` writes — pinned by `AssetDragPayloadTests`
+>   (`pasteboardData()` == `JSONEncoder().encode`, decodes back, type == UTI).
+>   Image = `ImageRenderer` over the existing `dragPreview`; multi-select carries
+>   the whole selection via `dragPayload`. The flipped drag-image *origin* is
+>   centred on the pointer but is a coordinate the compiler can't check headlessly
+>   — a small offset is cosmetic and can't change what the drop receives.
+> - **Drop onto cell:** cells register ONLY `.assetIDs`, so an external
+>   file/image/URL drag is not a registered type and falls through to the pane
+>   `.onDrop` — **the clean path, NOT the register+forward fallback.** Fall-through
+>   is sound in principle (an unregistered NSView is transparent to that drag) but
+>   is **owed to the A4 soak** (untestable headlessly); if a real external drop is
+>   eaten, the fallback is register file/url types + forward to the import path.
+> - **Marquee:** new `GridMarqueeController` (AppKit). Rectangle = ONE flipped
+>   hit-transparent overlay VIEW (single layer, content-space top-left frame like
+>   the item views — no reliance on layer `isGeometryFlipped`; `CATransaction` per
+>   tick, no view rebuilds); hits ride `layout.solvedFrames`;
+>   auto-scroll reuses `DisplayLinkPump`'s velocity ramp intact. Empty-background
+>   bare-click clears; ⇧-click no-ops (exact SwiftUI semantics). **Parity gap:** a
+>   click in the dead area BELOW a SHORT collection's content (content shorter than
+>   the viewport) does NOT clear — the AppKit document view stops at content
+>   height, unlike the SwiftUI capture layer that fills the viewport. Any real gap
+>   between/around cells clears. Target-scale collections (fill the viewport) never
+>   hit this.
+> - **GIF hover** ported into `MasonryGridItem` (dwell + claim/release + the reused
+>   policy fns, reduce-motion off `NSWorkspace`); the proven `AnimatedGifView`
+>   plays through a hit-transparent host. `prepareForReuse` cancels the dwell AND
+>   releases the slot — the correct recycling hook, though live recycling / hosting
+>   leaks are **owed to the A4 soak**.
+> - **Owed to the A4 soak (headlessly unverifiable):** the `NSDraggingSession`
+>   round-trip to the SwiftUI drop targets, external-drop fall-through, `menu(for:)`
+>   delivery, `NSTrackingArea` / live-recycling behaviour, the marquee `CALayer`
+>   z-order/flipped rendering, and NSHostingView leak-after-2k. The pure halves
+>   (pasteboard bytes, flipped rect→ids incl. topInset/past-bottom, GIF policy) are
+>   unit-tested.
+
 ### A4. Flip default, delete old path
 
 - Soak with the flag on (marquee+autoscroll at edges, 2000 items, drag to

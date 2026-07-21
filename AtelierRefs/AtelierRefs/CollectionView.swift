@@ -487,7 +487,26 @@ struct CollectionView: View {
             onRequestDelete: { model.requestDeleteSelected() },
             onQuickLook: { presentQuickLook() },
             onZoomIn: { gridPrefs.zoomIn(forWidth: geo.size.width) },
-            onZoomOut: { gridPrefs.zoomOut(forWidth: geo.size.width) }))
+            onZoomOut: { gridPrefs.zoomOut(forWidth: geo.size.width) },
+            // A3 — drag out / drop / context menu. Every closure forwards to the
+            // SAME model/view seams the SwiftUI grid used, so parity is structural.
+            dragPayload: { model.dragPayload(forCellItemID: $0) },
+            dragImage: { id in
+                guard let detail = model.items.first(where: { $0.item.id == id }) else { return nil }
+                let renderer = ImageRenderer(content: dragPreview(for: detail))
+                renderer.scale = displayScale
+                return renderer.nsImage
+            },
+            onCellDrop: { payload, targetAssetID in
+                handleCellDrop([payload], onto: targetAssetID)
+            },
+            actionTargets: { model.actionTargets(forCellItemID: $0) },
+            moveTargets: moveTargets,
+            onMoveToCollection: { model.moveToCollection(assetIDs: $0, to: $1) },
+            onCopyToCollection: { model.copyToCollection(assetIDs: $0, to: $1) },
+            onSetCover: { model.setCollectionCover(collectionID: collectionID, assetID: $0) },
+            onRemoveFromCollection: { model.removeFromFolder(assetIDs: $0) },
+            onDelete: { model.requestDelete(assetIDs: $0) }))
     }
 
     /// The real, loaded masonry grid for this collection — extracted so `grid` can
