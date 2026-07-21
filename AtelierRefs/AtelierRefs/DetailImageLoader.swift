@@ -71,6 +71,56 @@ nonisolated func detailPixelBucket(longSidePx: CGFloat?) -> Int {
     return detailNativeBucket
 }
 
+// MARK: - The display-image decode decision (pure, 036 §3 B3)
+
+/// The preview tier's pixel long side. The overlay already shows a 1280-tier
+/// (`ThumbnailTier.large`) JPEG as its placeholder, generated eagerly at ingest —
+/// and that is exactly the first FIT bucket. A media area at or under this is
+/// therefore already served, crisply, by the preview alone.
+nonisolated let detailPreviewTierPx = detailPixelBuckets[0]  // 1280
+
+/// What image to show for the item the overlay is displaying NOW — a PURE function
+/// of the measured media-area size and the zoom (036 §3 B3).
+///
+/// Extracted from the view so the tier decision is unit-testable headlessly:
+/// `onGeometryChange` and live pinch cannot run in a test, but the sizing rule they
+/// feed can.
+nonisolated enum DetailDisplayDecode: Equatable, Sendable {
+    /// Reuse the already-decoded 1280 preview — decode the blob NOT AT ALL. The
+    /// media area fits inside the preview tier and the image is not zoomed (the
+    /// common laptop viewport). At 1× the preview is byte-for-byte as sharp as a
+    /// native decode downscaled to the same area, so this is never softer.
+    case preview
+    /// Decode through ``DetailImageLoader`` at `targetLongSidePx`, which the loader
+    /// snaps UP the 1280/2048/3072 ladder (``detailPixelBucket``). `nil` == native:
+    /// the zoom>1 request. One native decode is crisp across the whole 1×…6× range,
+    /// so quantizing every zoom>1 to the SAME bucket means a live pinch asks the
+    /// decoder at most once — no decode storm.
+    case decode(targetLongSidePx: CGFloat?)
+}
+
+/// The display decode for a media area whose FIT long side is `fitLongSidePx`
+/// PIXELS (measured points × display scale) at the given `zoom`.
+///
+/// - `zoom > 1` → native (crisp at every magnification, one decode).
+/// - `fitLongSidePx <= 1280` (or not-yet-measured / degenerate) → the preview
+///   covers it, so no decode at all.
+/// - larger → a downsampled FIT decode at the measured size, so a 40MP panorama is
+///   never materialized at native just to fill a 2400px viewport.
+///
+/// Multiplying points by the display scale is deliberate: sharpness is set by
+/// PHYSICAL pixels, so on a 2× Retina display a 700pt-wide media area is 1400px and
+/// correctly takes the 2048 FIT decode rather than the 1280 preview (which would be
+/// upscaled, i.e. soft). This makes the ≤1280 "preview only" branch the common case
+/// only for smaller/non-Retina viewports; on Retina the FIT decode is the norm.
+nonisolated func detailDisplayDecode(fitLongSidePx: CGFloat, zoom: CGFloat) -> DetailDisplayDecode {
+    if zoom > 1 { return .decode(targetLongSidePx: nil) }
+    guard fitLongSidePx.isFinite, fitLongSidePx > CGFloat(detailPreviewTierPx) else {
+        return .preview
+    }
+    return .decode(targetLongSidePx: fitLongSidePx)
+}
+
 // MARK: - Pure neighbour helper
 
 /// The item currently shown plus the two the user can step to (036 §3 B2), so the

@@ -61,6 +61,13 @@ struct ItemDetailView: View {
     /// itself, which is the per-step uncached full-res decode B2 removes. Left
     /// false for the Space board + library search, which still own their decode.
     var usesExternalImageLoader: Bool = false
+    /// Reports the media area's FIT long side in PIXELS (points × display scale) and
+    /// the current zoom to the driving ``DetailSession`` (036 §3 B3), so it can pick
+    /// the decode tier — preview for a ≤1280 viewport, a downsampled FIT decode for a
+    /// larger one, native on zoom-in. Only the loader-backed collection overlay wires
+    /// this; the Space board / library search leave it `nil` (they own their decode),
+    /// so measuring is a no-op there.
+    var onDisplayTarget: ((_ fitLongSidePx: CGFloat, _ zoom: CGFloat) -> Void)? = nil
     /// The item's tags + their editors.
     let tags: [Tag]
     let onAddTag: (String) -> Void
@@ -82,6 +89,16 @@ struct ItemDetailView: View {
     @State private var zoom: CGFloat = 1
     @State private var pan: CGSize = .zero
 
+    /// The media area's long side in POINTS, measured via `onGeometryChange` (036 §3
+    /// B3). Combined with ``displayScale`` into the FIT pixel size reported through
+    /// ``onDisplayTarget``. `0` until the first layout measures it.
+    @State private var mediaLongSidePt: CGFloat = 0
+
+    /// The backing-store scale (2 on Retina). Sharpness is set by PHYSICAL pixels, so
+    /// the FIT target reported to the loader is points × this — a 700pt media area on
+    /// a 2× display needs 1400px, not 700.
+    @Environment(\.displayScale) private var displayScale
+
     /// Zoom ceiling (mirrors `ZoomableImage`'s pinch clamp) and the per-press step.
     private let maxZoom: CGFloat = 6
     private let zoomStep: CGFloat = 1.4
@@ -99,6 +116,17 @@ struct ItemDetailView: View {
             HStack(spacing: 0) {
                 mediaArea
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // B3: measure the media area and report its FIT size + zoom up to
+                    // the `DetailSession`, which picks the decode tier. `zoom` (the
+                    // @State, not the transient pinch) only changes at a settle point
+                    // — button press or gesture end — so reporting on it decodes at
+                    // zoom SETTLE, never per pinch tick; the loader's bucket
+                    // quantization is the second line of defence against a decode storm.
+                    .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                        mediaLongSidePt = max(size.width, size.height)
+                        reportDisplayTarget()
+                    }
+                    .onChange(of: zoom) { _, _ in reportDisplayTarget() }
                 Divider()
                 DetailSidebar(
                     asset: asset, source: source, tags: tags,
@@ -222,6 +250,15 @@ struct ItemDetailView: View {
             zoom = 1
             pan = .zero
         }
+    }
+
+    /// Report the media area's FIT pixel long side (points × display scale) and the
+    /// current zoom to the driving ``DetailSession`` (036 §3 B3). A no-op until the
+    /// area is measured, and off entirely for the non-loader callers (Space board /
+    /// library search leave ``onDisplayTarget`` nil).
+    private func reportDisplayTarget() {
+        guard let onDisplayTarget, mediaLongSidePt > 0 else { return }
+        onDisplayTarget(mediaLongSidePt * displayScale, zoom)
     }
 
     // MARK: - Media

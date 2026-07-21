@@ -22,6 +22,7 @@
 import AtelierCore
 import AtelierIngestion
 import Combine
+import CoreGraphics
 import Foundation
 import Testing
 @testable import AtelierRefs
@@ -160,5 +161,157 @@ struct DetailSessionTests {
         // equality here — the store's `apply` compares before assigning).
         let (again, _) = selection.applying(.setLead(c), order: [a, b, c])
         #expect(again == selection)
+    }
+}
+
+// MARK: - B3: the sizing/decode threading (036 §3 B3)
+
+/// Records which pixel buckets the loader was asked to decode per hash, so the
+/// session's target threading is observable headlessly (the `onGeometryChange` /
+/// live pinch that FEED the target can't run in a test — the pure sizing decision
+/// they drive is covered by `DetailDisplayDecodeTests`; here we assert the session
+/// forwards it to the loader at the right bucket, and preloads neighbours FIT-only).
+private final class SizingProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var byHash: [String: Set<Int>] = [:]
+
+    func decode(url: URL, bucket: Int) -> DecodedThumbnail? {
+        let hash = url.lastPathComponent
+        lock.lock(); byHash[hash, default: []].insert(bucket); lock.unlock()
+        return DecodedThumbnail(image: sizingProbeImage())
+    }
+    func buckets(_ hash: String) -> Set<Int> {
+        lock.lock(); defer { lock.unlock() }
+        return byHash[hash] ?? []
+    }
+}
+
+private func sizingProbeImage() -> CGImage {
+    let ctx = CGContext(
+        data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue)!
+    return ctx.makeImage()!
+}
+
+@MainActor
+@Suite("DetailSession B3 sizing (036 §3 B3)")
+struct DetailSessionSizingTests {
+
+    private func services() async throws -> AppServices {
+        let dbPath = NSTemporaryDirectory() + "ingest-b3-\(UUID().uuidString).sqlite"
+        return try AppServices(databasePath: dbPath)
+    }
+
+    /// A displayable (image) item whose blob hash IS `hash`, so the injected
+    /// `displaySource` maps it to a `/…/\(hash)` URL the probe records by hash.
+    private func imageDetail(hash: String) -> CollectionItemDetail {
+        let sourceID = UUID(), assetID = UUID()
+        let source = Source(id: sourceID, platform: .web, capturedAt: Date())
+        let asset = Asset(
+            id: assetID, kind: .image, blobHash: hash, mimeType: "image/png",
+            width: 4000, height: 3000, duration: nil, fileSize: 100,
+            downloadState: .downloaded, createdAt: Date(), sourceId: sourceID)
+        let item = CollectionItem(id: UUID(), collectionID: UUID(), assetID: assetID, addedAt: Date())
+        return CollectionItemDetail(item: item, asset: asset, source: source)
+    }
+
+    private func makeSession(
+        _ services: AppServices, _ loader: DetailImageLoader
+    ) -> DetailSession {
+        DetailSession(
+            tags: AssetTagsStore(services: services),
+            previewURL: { _ in nil },
+            loader: loader,
+            displaySource: { asset in
+                asset.blobHash.map { ($0, URL(fileURLWithPath: "/tmp/atelier-b3/\($0)")) }
+            })
+    }
+
+    /// A larger-than-preview viewport at 1× decodes the CURRENT item at the FIT
+    /// bucket (never native), and warms both neighbours at the same FIT bucket.
+    @Test("fit viewport → FIT decode; neighbours preload FIT, never native")
+    func fitDecodeAndNeighborPreload() async throws {
+        let services = try await services()
+        let probe = SizingProbe()
+        let loader = DetailImageLoader(cache: DetailImageCache(), decode: probe.decode)
+        let feed = [imageDetail(hash: "prev"), imageDetail(hash: "cur"), imageDetail(hash: "next")]
+        let session = makeSession(services, loader)
+
+        session.present(feed[1], in: feed)
+        session.updateDisplayTarget(fitLongSidePx: 2400, zoom: 1)   // 2400 → bucket 3072
+        await session.waitForDisplayWorkForTesting()
+
+        #expect(probe.buckets("cur") == [3072])
+        #expect(probe.buckets("prev") == [3072])   // neighbour warmed at FIT
+        #expect(probe.buckets("next") == [3072])
+        #expect(!probe.buckets("prev").contains(detailNativeBucket))
+        #expect(!probe.buckets("next").contains(detailNativeBucket))
+    }
+
+    /// Zooming in upgrades the CURRENT item to a native decode while the neighbours
+    /// stay at the FIT bucket only — the crisp-on-zoom path without over-decoding
+    /// prev/next.
+    @Test("zoom>1 → current native; neighbours remain FIT")
+    func zoomUpgradesCurrentToNative() async throws {
+        let services = try await services()
+        let probe = SizingProbe()
+        let loader = DetailImageLoader(cache: DetailImageCache(), decode: probe.decode)
+        let feed = [imageDetail(hash: "prev"), imageDetail(hash: "cur"), imageDetail(hash: "next")]
+        let session = makeSession(services, loader)
+
+        session.present(feed[1], in: feed)
+        session.updateDisplayTarget(fitLongSidePx: 2400, zoom: 1)
+        await session.waitForDisplayWorkForTesting()
+        session.updateDisplayTarget(fitLongSidePx: 2400, zoom: 3)   // zoom in → native
+        await session.waitForDisplayWorkForTesting()
+
+        #expect(probe.buckets("cur").contains(detailNativeBucket))  // native decoded
+        #expect(probe.buckets("cur").contains(3072))                // FIT kept from before
+        #expect(probe.buckets("prev") == [3072])                    // never native
+        #expect(probe.buckets("next") == [3072])
+    }
+
+    /// A ≤1280 viewport at 1× decodes NOTHING — current and neighbours are served by
+    /// the eagerly-generated 1280 preview. This is the common-laptop decode-free case.
+    @Test("≤1280 viewport → no decode at all (current or neighbours)")
+    func previewViewportSkipsAllDecode() async throws {
+        let services = try await services()
+        let probe = SizingProbe()
+        let loader = DetailImageLoader(cache: DetailImageCache(), decode: probe.decode)
+        let feed = [imageDetail(hash: "prev"), imageDetail(hash: "cur"), imageDetail(hash: "next")]
+        let session = makeSession(services, loader)
+
+        session.present(feed[1], in: feed)
+        session.updateDisplayTarget(fitLongSidePx: 1000, zoom: 1)   // ≤1280 → preview
+        await session.waitForDisplayWorkForTesting()
+
+        #expect(probe.buckets("cur").isEmpty)
+        #expect(probe.buckets("prev").isEmpty)
+        #expect(probe.buckets("next").isEmpty)
+    }
+
+    /// A geometry jitter that stays inside a bucket, and a pinch that stays native,
+    /// must NOT re-decode — the anti-storm de-dup. Two 2048-bucket sizes and two
+    /// zoom>1 levels each collapse to a single decode.
+    @Test("in-bucket size jitter and native-staying zoom don't re-decode")
+    func antiStormDeDup() async throws {
+        let services = try await services()
+        let probe = SizingProbe()
+        let loader = DetailImageLoader(cache: DetailImageCache(), decode: probe.decode)
+        let feed = [imageDetail(hash: "cur")]   // no neighbours — isolate the current decode
+        let session = makeSession(services, loader)
+
+        session.present(feed[0], in: feed)
+        session.updateDisplayTarget(fitLongSidePx: 1400, zoom: 1)   // → 2048
+        await session.waitForDisplayWorkForTesting()
+        session.updateDisplayTarget(fitLongSidePx: 1900, zoom: 1)   // still 2048 (no re-decode)
+        await session.waitForDisplayWorkForTesting()
+        session.updateDisplayTarget(fitLongSidePx: 1900, zoom: 2)   // native
+        await session.waitForDisplayWorkForTesting()
+        session.updateDisplayTarget(fitLongSidePx: 1900, zoom: 5)   // still native (no re-decode)
+        await session.waitForDisplayWorkForTesting()
+
+        #expect(probe.buckets("cur") == [2048, detailNativeBucket])  // exactly two decodes
     }
 }

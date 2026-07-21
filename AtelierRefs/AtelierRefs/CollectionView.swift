@@ -703,6 +703,12 @@ private struct CollectionDetailHost: View {
             // `ItemDetailView`'s internal decode (still used by Space / search).
             displayImage: state.displayImage,
             usesExternalImageLoader: true,
+            // 036 §3 B3: feed the measured media-area size + zoom back so the session
+            // decodes at the right tier (preview ≤1280 / FIT downsample / native on
+            // zoom) instead of always materializing native.
+            onDisplayTarget: { fit, zoom in
+                session.updateDisplayTarget(fitLongSidePx: fit, zoom: zoom)
+            },
             tags: tags.tags,
             onAddTag: { tags.add($0) },
             onRemoveTag: { tags.remove($0) },

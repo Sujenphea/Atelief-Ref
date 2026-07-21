@@ -176,6 +176,56 @@ struct DetailBucketTests {
     }
 }
 
+// MARK: - Display decode decision (036 §3 B3)
+
+@Suite("detailDisplayDecode: preview ≤1280, FIT ladder above, zoom→native")
+struct DetailDisplayDecodeTests {
+
+    @Test("the preview tier constant is the first FIT bucket (1280)")
+    func previewTier() {
+        #expect(detailPreviewTierPx == 1280)
+        #expect(detailPreviewTierPx == detailPixelBuckets[0])
+    }
+
+    @Test("a ≤1280 viewport at 1× reuses the preview — no blob decode")
+    func previewBranch() {
+        #expect(detailDisplayDecode(fitLongSidePx: 640, zoom: 1) == .preview)
+        #expect(detailDisplayDecode(fitLongSidePx: 1000, zoom: 1) == .preview)
+        // Boundary: exactly the preview tier is still covered by the preview.
+        #expect(detailDisplayDecode(fitLongSidePx: 1280, zoom: 1) == .preview)
+    }
+
+    @Test("not-yet-measured / degenerate sizes stay on the preview — never eager native")
+    func degenerateIsPreview() {
+        #expect(detailDisplayDecode(fitLongSidePx: 0, zoom: 1) == .preview)
+        #expect(detailDisplayDecode(fitLongSidePx: -5, zoom: 1) == .preview)
+        #expect(detailDisplayDecode(fitLongSidePx: .nan, zoom: 1) == .preview)
+        #expect(detailDisplayDecode(fitLongSidePx: .infinity, zoom: 1) == .preview)
+    }
+
+    @Test("above 1280 at 1× is a FIT decode; the loader snaps the raw px up the ladder")
+    func fitBranch() {
+        // The decision passes the RAW measured px; `detailPixelBucket` quantizes it.
+        #expect(detailDisplayDecode(fitLongSidePx: 1281, zoom: 1) == .decode(targetLongSidePx: 1281))
+        #expect(detailDisplayDecode(fitLongSidePx: 2000, zoom: 1) == .decode(targetLongSidePx: 2000))
+        #expect(detailDisplayDecode(fitLongSidePx: 3072, zoom: 1) == .decode(targetLongSidePx: 3072))
+        // …and the buckets those raw sizes resolve to (the snap-up boundaries):
+        #expect(detailPixelBucket(longSidePx: 1281) == 2048)
+        #expect(detailPixelBucket(longSidePx: 2000) == 2048)
+        #expect(detailPixelBucket(longSidePx: 3072) == 3072)
+        #expect(detailPixelBucket(longSidePx: 3073) == detailNativeBucket)
+    }
+
+    @Test("zoom>1 is ALWAYS native regardless of viewport — one crisp decode for 1×…6×")
+    func zoomBranch() {
+        #expect(detailDisplayDecode(fitLongSidePx: 800, zoom: 1.01) == .decode(targetLongSidePx: nil))
+        #expect(detailDisplayDecode(fitLongSidePx: 2400, zoom: 2) == .decode(targetLongSidePx: nil))
+        #expect(detailDisplayDecode(fitLongSidePx: 5000, zoom: 6) == .decode(targetLongSidePx: nil))
+        // Exactly 1 is NOT zoomed — the size rule governs (a small viewport → preview).
+        #expect(detailDisplayDecode(fitLongSidePx: 800, zoom: 1) == .preview)
+    }
+}
+
 // MARK: - Loader
 
 @Suite("DetailImageLoader: coalescing, promotion, retainOnly")
