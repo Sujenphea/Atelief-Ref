@@ -470,6 +470,11 @@ final class IngestionModel: ObservableObject {
             await snapshots.snapshotIfStale()
 
             await refreshFolders()
+            // Spaces load here too — the sidebar's `.task` can run BEFORE this
+            // bootstrap slice sets `services` (observed in practice), in which case
+            // its `refreshSpaces()` silently no-ops; bootstrap owns the load so the
+            // list can't depend on task-scheduling order.
+            await refreshSpaces()
             loadContents(of: selectedFolderID)
             await startCaptureEndpoint(coordinator: coordinator, services: services)
 
@@ -1642,6 +1647,11 @@ final class IngestionModel: ObservableObject {
     @Published private(set) var spaces: [Space] = []
     /// Cover blob-hash per space id, for the Spaces-list cards.
     @Published private(set) var spaceCovers: [UUID: String] = [:]
+    /// Whether a `refreshSpaces` has completed against an OPEN library. Until then
+    /// an empty `spaces` means "not loaded yet", NOT "no spaces" — the sidebar shows
+    /// a skeleton, not the empty state (034 P2 loading-flash). Lives on the model
+    /// (not view `@State`) because a pre-bootstrap call no-ops on the guard below.
+    @Published private(set) var spacesLoaded = false
 
     /// Reload the spaces list + their cover map.
     func refreshSpaces() async {
@@ -1653,6 +1663,7 @@ final class IngestionModel: ObservableObject {
         } catch {
             lastError = Self.message(for: error)
         }
+        spacesLoaded = true
     }
 
     /// Create an empty space, refresh the list, and return its id (so the caller

@@ -68,6 +68,18 @@ struct AppShellView: View {
             didLoadSeededCollection = true
             syncActiveCollection()
         }
+        // Fall back to Home when the selected space disappears (deleting the open
+        // space): nothing else resets a dangling `.space` selection, which left the
+        // sidebar highlight-less and the panel on a zombie board. The last guard
+        // skips the pre-first-load empty list — prune only when the space was just
+        // removed, or a real (non-empty) load shows it missing.
+        .onChange(of: model.spaces) { old, spaces in
+            guard case .space(let id) = nav.sidebarSelection,
+                  !spaces.contains(where: { $0.id == id }),
+                  old.contains(where: { $0.id == id }) || !spaces.isEmpty
+            else { return }
+            nav.selectSidebar(.home)
+        }
         // The active collection = the drilled-into subfolder (path) or the selected
         // one (sidebar). Load its contents on every change of either — push and pop
         // alike — deferred a runloop turn so a publish doesn't land mid-nav-update.
@@ -176,6 +188,11 @@ struct AppShellView: View {
     private func spaceDestination(_ id: UUID) -> some View {
         if let services = model.services, let store = model.store {
             SpaceView(model: model, nav: nav, spaceID: id, services: services, store: store)
+                // Identity keyed to the space: `.space(A)` → `.space(B)` stays in the
+                // same ViewBuilder branch, and the `@StateObject` `SpaceModel` only
+                // builds on a fresh identity — without this the panel keeps showing
+                // the previous space.
+                .id(id)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
