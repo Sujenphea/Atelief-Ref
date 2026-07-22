@@ -106,7 +106,7 @@ enum Theme {
         /// Inspector section headers ("Data", "Source", "Details") — 20pt.
         static let sectionTitle = Font.system(size: 20, weight: .regular)
         /// Sidebar top-nav rows ("Home", "Search", …) — 17pt medium.
-        static let navItem = Font.system(size: 17, weight: .medium)
+        static let navItem = Font.system(size: 16, weight: .medium)
         /// Sidebar collection rows, chip / field text — 14pt.
         static let row = Font.system(size: 14, weight: .regular)
         /// Metadata labels + values, captions — 12pt.

@@ -17,6 +17,27 @@ struct FloatingAddItem {
     let action: () -> Void
 }
 
+/// A square `NSButton` that stays perfectly circular: it reports a square intrinsic
+/// size and re-derives `cornerRadius` from its height on every layout pass (a fixed
+/// radius went stale whenever the laid-out height drifted from the nominal diameter).
+private final class RoundButton: NSButton {
+    var diameter: CGFloat = 40
+
+    override var intrinsicContentSize: NSSize { NSSize(width: diameter, height: diameter) }
+
+    override func layout() {
+        super.layout()
+        // Round from the SMALLER side so a non-square laid-out bounds never leaves a
+        // flat edge; on a 40×40 frame both sides match and this is a full circle.
+        layer?.cornerRadius = min(bounds.width, bounds.height) / 2
+        // Pin the shadow to the CIRCLE. Without an explicit path, Core Animation
+        // derives the shadow silhouette from the layer's opaque content — the cell
+        // fills its SQUARE bounds — so the drop-shadow rendered with sharp top/bottom
+        // corners even though the fill was round. An ellipse path makes it round.
+        layer?.shadowPath = CGPath(ellipseIn: bounds, transform: nil)
+    }
+}
+
 /// A circular ink-on-white `NSButton` that pops an `NSMenu` built from `items`.
 struct FloatingAddButton: NSViewRepresentable {
     var diameter: CGFloat = 40
@@ -25,7 +46,8 @@ struct FloatingAddButton: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSButton {
-        let button = NSButton()
+        let button = RoundButton()
+        button.diameter = diameter
         button.title = ""
         button.isBordered = false
         button.bezelStyle = .regularSquare
@@ -53,18 +75,12 @@ struct FloatingAddButton: NSViewRepresentable {
 
         button.target = context.coordinator
         button.action = #selector(Coordinator.clicked(_:))
-
-        button.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: diameter),
-            button.heightAnchor.constraint(equalToConstant: diameter),
-        ])
         return button
     }
 
     func updateNSView(_ button: NSButton, context: Context) {
         context.coordinator.items = items
-        button.layer?.cornerRadius = diameter / 2
+        (button as? RoundButton)?.diameter = diameter
     }
 
     final class Coordinator: NSObject {
@@ -79,10 +95,24 @@ struct FloatingAddButton: NSViewRepresentable {
                 mi.representedObject = item.action
                 menu.addItem(mi)
             }
-            // Pop from the button's top edge; AppKit flips it upward automatically when
-            // there isn't room below (the button lives at the panel's bottom-right).
-            let origin = NSPoint(x: 0, y: sender.bounds.height + 4)
-            menu.popUp(positioning: nil, at: origin, in: sender)
+
+            // Anchor the menu's BOTTOM-RIGHT to the button's TOP-RIGHT (opens upward,
+            // right edges flush) — a fixed, predictable FAB position computed in screen
+            // space rather than left to `positioning:`-item guesswork. `popUp(in: nil)`
+            // places the menu's top-left at the given SCREEN point; the menu draws
+            // downward from there, so top-left.y must be raised by the menu's height so
+            // its bottom lands just above the button.
+            guard let window = sender.window else {
+                menu.popUp(positioning: nil, at: .zero, in: sender)
+                return
+            }
+            let onScreen = window.convertToScreen(sender.convert(sender.bounds, to: nil))
+            let size = menu.size
+            let gap: CGFloat = 8
+            let topLeft = NSPoint(
+                x: onScreen.maxX - size.width,
+                y: onScreen.maxY + size.height + gap)
+            menu.popUp(positioning: nil, at: topLeft, in: nil)
         }
 
         @objc func fire(_ sender: NSMenuItem) {
