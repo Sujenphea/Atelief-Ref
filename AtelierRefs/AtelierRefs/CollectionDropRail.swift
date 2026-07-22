@@ -17,6 +17,7 @@
 
 import AtelierCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct CollectionDropRail: View {
     let targets: MoveTargets
@@ -58,12 +59,15 @@ struct CollectionDropRail: View {
         .padding(.trailing, 10)
         .animation(.spring(response: 0.28, dampingFraction: 0.82), value: isExpanded)
         // Proximity trigger (3A): a drag anywhere over the rail expands it; the
-        // per-row targets below take the actual drop. Returning false here means a
-        // drop on the rail's padding (not a row) is simply refused.
-        .dropDestination(for: AssetDragPayload.self) { _, _ in false } isTargeted: { over in
-            isExpanded = over
-            if !over { targetedRow = nil }
-        }
+        // per-row targets below take the actual drop. Accepts nothing itself (a
+        // drop on the rail's padding, not a row, is refused). `.onDrop` (not
+        // `.dropDestination`) so the AppKit grid drag is recognised at all.
+        .onDrop(of: [.assetIDs], isTargeted: Binding(
+            get: { isExpanded },
+            set: { over in
+                isExpanded = over
+                if !over { targetedRow = nil }
+            })) { _ in false }
     }
 
     private var divider: some View {
@@ -93,13 +97,15 @@ struct CollectionDropRail: View {
         }
         .buttonStyle(.plain)
         .help(isExpanded ? "Move here — hold ⌥ to copy" : collection.name)
-        .dropDestination(for: AssetDragPayload.self) { payloads, _ in
-            guard let payload = payloads.first else { return false }
-            let accepted = onDrop(payload, collection.id)
-            targetedRow = nil
-            return accepted
-        } isTargeted: { over in
-            targetedRow = over ? collection.id : (targetedRow == collection.id ? nil : targetedRow)
+        .onDrop(of: [.assetIDs], isTargeted: Binding(
+            get: { targetedRow == collection.id },
+            set: { over in
+                targetedRow = over ? collection.id : (targetedRow == collection.id ? nil : targetedRow)
+            })) { providers in
+            AssetDragPayload.fromDrop(providers) { payload in
+                _ = onDrop(payload, collection.id)
+                targetedRow = nil
+            }
         }
     }
 

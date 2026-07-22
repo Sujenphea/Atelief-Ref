@@ -50,6 +50,12 @@ struct ItemDetailView: View {
     let source: Source?
     /// Full-resolution blob URL, decoded off-main; `nil` → preview/spinner only.
     let blobURL: URL?
+    /// The internal identity this view's drag-out carries alongside the file (192):
+    /// lets in-app drop targets recognise the drag as internal — the import guard
+    /// refuses it rather than re-ingesting the app's own file. Hosts that know the
+    /// shown item's collection pass a real payload (asset + source collection);
+    /// the membership-less hosts (search, Space) leave the semantics-free marker.
+    var dragPayload: AssetDragPayload = .internalMarker
     /// An instant placeholder (e.g. the 1280 tier) shown while full-res decodes.
     let previewImage: NSImage?
     /// The LRU-cached full-res image supplied by ``DetailSession`` (036 §3 B2),
@@ -88,6 +94,12 @@ struct ItemDetailView: View {
     /// out non-trackpad users). Reset on navigation in `loadMedia`.
     @State private var zoom: CGFloat = 1
     @State private var pan: CGSize = .zero
+
+    /// The drag-out export item (011 · Cluster A) — the original blob + human
+    /// filename this item drops as. Computed ONCE per asset in `loadMedia` (not per
+    /// body pass, so no repeated `stat` during zoom/pan), `nil` for a media-less
+    /// kind or a missing blob. Consumed by the media area's `.onDrag` at fit.
+    @State private var exportItem: AssetExportItem?
 
     /// The media area's long side in POINTS, measured via `onGeometryChange` (036 §3
     /// B3). Combined with ``displayScale`` into the FIT pixel size reported through
@@ -318,6 +330,12 @@ struct ItemDetailView: View {
             }
         }
         .padding()
+        // Drag-out (011 · Cluster A): drag the media pane to export the original
+        // file to Finder / Figma / …. Gated to fit (`zoom == 1`) so it never fights
+        // the zoom-in pan gesture — and because `zoom` commits only at gesture END,
+        // this toggles between gestures, never mid-pinch (no remount hitch).
+        .modifier(DetailDragOutModifier(
+            item: zoom == 1 ? exportItem : nil, payload: dragPayload))
     }
 
     /// Reset zoom, (re)build the video player, and — on the non-loader path only —
@@ -335,6 +353,9 @@ struct ItemDetailView: View {
         pan = .zero
         player?.pause()
         player = nil
+        // Drag-out export item (011 · Cluster A): the original blob + human name for
+        // this asset. Computed once here, `nil` for a media-less kind / missing blob.
+        exportItem = source.flatMap { AssetExport.exportItem(asset: asset, source: $0, blobURL: blobURL) }
         // Media-less kinds (003 · O1) have no blob — nothing to load off-disk.
         guard let url = blobURL else { return }
         switch asset.kind {
@@ -524,6 +545,26 @@ private struct ColorDetailView: View {
 /// double-click snaps back to fit. Zoom/pan are OWNED by the caller
 /// (``ItemDetailView``) so the top-bar buttons + ⌘± / ⌘0 drive the same state the
 /// pinch does; the caller resets them on navigation.
+/// Adds the drag-out `.onDrag` when an ``AssetExportItem`` is present, else leaves
+/// the content untouched (011 · Cluster A). A single `NSItemProvider(contentsOf:)`
+/// vends the original blob file; `suggestedName` gives the drop the human filename
+/// (shared with the grid via `AssetExport`). Passing `nil` (media-less, or zoomed
+/// in) removes the drag entirely, so the zoom pan gesture is never contested.
+private struct DetailDragOutModifier: ViewModifier {
+    let item: AssetExportItem?
+    /// Registered on the provider as `.assetIDs` so an in-app drop knows this
+    /// drag is internal (192) — see `AssetExport.dragProvider`.
+    let payload: AssetDragPayload
+
+    func body(content: Content) -> some View {
+        if let item {
+            content.onDrag { AssetExport.dragProvider(item: item, payload: payload) }
+        } else {
+            content
+        }
+    }
+}
+
 private struct ZoomableImage: View {
     let image: Image
     @Binding var zoom: CGFloat

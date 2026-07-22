@@ -71,6 +71,25 @@ struct DropRouterTests {
         #expect(outcome == .reorder(assetIDs: ids))
     }
 
+    // MARK: - Internal marker (192 — the semantics-free detail-drag identity)
+
+    @Test("the internal marker is rejected at EVERY target — it only marks, never acts")
+    func internalMarkerRoutesNowhere() {
+        let marker = AssetDragPayload.internalMarker
+        #expect(routeDrop(
+            marker, onto: .cell(collectionID: colA, sortMode: .manual),
+            optionDown: false) == .reject)
+        #expect(routeDrop(marker, onto: .collection(colA), optionDown: false) == .reject)
+        #expect(routeDrop(marker, onto: .collection(colA), optionDown: true) == .reject)
+    }
+
+    @Test("the marker's source id is the nil UUID — impossible for a real collection")
+    func internalMarkerSourceIsNilUUID() {
+        #expect(AssetDragPayload.internalMarker.assetIDs.isEmpty)
+        #expect(AssetDragPayload.internalMarker.sourceCollectionID
+            == UUID(uuidString: "00000000-0000-0000-0000-000000000000"))
+    }
+
     // MARK: - Collection drop (move / copy)
 
     @Test("plain collection drop moves from source to target")

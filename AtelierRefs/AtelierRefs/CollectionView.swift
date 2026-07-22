@@ -587,6 +587,18 @@ struct CollectionView: View {
     /// ``DirectInputReader`` seam (the same decision order as the pasteboard path),
     /// then dispatch. Returns `true` synchronously to claim the drop.
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        // An INTERNAL drag also carries file promises since drag-out (011 ·
+        // Cluster A), so it now matches this import target's [.image, .fileURL,
+        // .url] via the promise machinery — importing our own promised file
+        // would duplicate the asset. Anything carrying the app-private
+        // `.assetIDs` payload is an internal drag: refuse it here. Checked on
+        // BOTH channels because a promise drag's bridged provider registers no
+        // types at all (193): the drag pasteboard catches the AppKit grid drag,
+        // the provider check catches a SwiftUI-native `.assetIDs` drag.
+        guard AssetDragPayload.fromDragPasteboard() == nil,
+              !providers.contains(where: {
+                  $0.hasItemConformingToTypeIdentifier(UTType.assetIDs.identifier)
+              }) else { return false }
         guard model.isReady else { return false }
         let target = collectionID
         Task {
@@ -703,6 +715,11 @@ private struct CollectionDetailHost: View {
             asset: detail.asset,
             source: detail.source,
             blobURL: model.blobURL(for: detail),
+            // The real internal identity (192): this host KNOWS the shown item's
+            // collection, so its drag-out is a first-class internal drag (the
+            // import guard refuses it; routing rules see the true source).
+            dragPayload: AssetDragPayload(
+                assetIDs: [detail.asset.id], sourceCollectionID: detail.item.collectionID),
             previewImage: state.previewImage,
             // 036 §3 B2: consume the loader's LRU-cached full-res image instead of
             // decoding our own per-step — `usesExternalImageLoader` suppresses

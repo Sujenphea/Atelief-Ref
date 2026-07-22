@@ -25,6 +25,7 @@ import AppKit
 import AtelierCore
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Configuration
 
@@ -146,6 +147,18 @@ protocol MasonryGridViewEvents: AnyObject {
     /// Build the right-click / Menu-key context menu for `event`, hit-testing its
     /// location against the analytic frames (036 §4 A3 — native `menu(for:)`).
     func gridMenu(for event: NSEvent) -> NSMenu?
+
+    // MARK: A3 — drop reception (NSView-level, not the NSCollectionView delegate)
+
+    /// A same-app asset drag hovering the grid: the drag operation to show
+    /// (`.move` over a cell, `[]` over a gap). Handled at the `NSView`
+    /// dragging-destination level because `NSCollectionView`'s own
+    /// `validateDrop`/`acceptDrop` delegate translation does NOT fire for our
+    /// manually-started `beginDraggingSession` (011 — the reorder/move regression).
+    func gridDraggingOperation(_ info: NSDraggingInfo) -> NSDragOperation
+    /// A drop landed on the grid: decode `.assetIDs`, hit-test the target cell, and
+    /// route it (same-collection manual reorder; everything else refused downstream).
+    func gridPerformDrop(_ info: NSDraggingInfo) -> Bool
 }
 
 /// `NSCollectionView` subclass. A1 turned native selection off; A2 makes it a
@@ -206,6 +219,27 @@ final class MasonryNSCollectionView: NSCollectionView {
     /// resolved to a target cell by the coordinator; `nil` over a true gap so empty
     /// space shows no menu (parity with the SwiftUI container menu).
     override func menu(for event: NSEvent) -> NSMenu? { events?.gridMenu(for: event) }
+
+    // A3 — drop reception at the NSView level (011). `NSCollectionView`'s own
+    // `validateDrop`/`acceptDrop` delegate methods do not fire for a drag started
+    // via `beginDraggingSession` (bypassing the native item-drag data source), so
+    // an intra-app reorder / move silently no-op'd. Overriding the
+    // `NSDraggingDestination` methods (registered for `.assetIDs` in `makeScrollView`)
+    // handles them ourselves; we intentionally do NOT call `super` (there is no
+    // native item drop to run — the grid is manual end to end).
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        events?.gridDraggingOperation(sender) ?? []
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        events?.gridDraggingOperation(sender) ?? []
+    }
+    // Always proceed to `performDragOperation` — `NSCollectionView`'s own
+    // `prepareForDragOperation` (geared to native item drops we don't use) could
+    // otherwise refuse and swallow the drop.
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        events?.gridPerformDrop(sender) ?? false
+    }
 }
 
 // MARK: - The representable
@@ -268,6 +302,12 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// The membership id under the pointer, if any (A2 hover). The circle shows on
     /// this cell while idle; driven by the one tracking area, re-hit on scroll.
     private var hoveredID: UUID?
+
+    /// Whether the in-flight drag session carries file promises (011 · Cluster A).
+    /// Read by ``draggingSession(_:sourceOperationMaskFor:)`` to allow an external
+    /// `.copy` (drag-out) only when there are byte-backed assets to export; a
+    /// media-less-only drag stays internal (reorder / move) exactly as before.
+    private var draggingHasFilePromise = false
 
     init(configuration: GridHostConfiguration) {
         self.configuration = configuration
@@ -677,12 +717,21 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         }
     }
 
-    /// Start the `NSDraggingSource` session for a drag classified above (036 §4 A3).
-    /// The pasteboard carries the JSON-encoded `AssetDragPayload` under the SAME
-    /// `.assetIDs` type the SwiftUI `.draggable` wrote — byte-compatible, so the
-    /// still-SwiftUI drop rail / stack row / Spaces accept it unchanged. A selected
-    /// cell drags the whole selection (via `dragPayload`); the image is the existing
-    /// `dragPreview` rendered by `ImageRenderer`, centred on the pointer.
+    /// Start the `NSDraggingSource` session for a drag classified above (036 §4 A3 +
+    /// 011 · Cluster A drag-out). Two things ride the session:
+    ///
+    /// - **Internal payload** — the JSON-encoded `AssetDragPayload` under the
+    ///   `.assetIDs` type, byte-compatible with the SwiftUI `.draggable`, so the
+    ///   drop rail / stack row / Spaces accept an intra-app drop unchanged.
+    /// - **External file promises** — one `AssetFilePromiseProvider` per byte-backed
+    ///   asset (via ``gridExportPlan(assetIDs:details:blobURL:)``), so dropping OUT
+    ///   to Finder / Figma writes the original file with a human name. The PRIMARY
+    ///   provider also carries the `.assetIDs` payload (2A), so one session serves
+    ///   both. A media-less-only drag has no promises and keeps the internal-only
+    ///   `NSPasteboardItem` path.
+    ///
+    /// A selected cell drags the whole selection (via `dragPayload`); the drag image
+    /// is the existing `dragPreview`, on the primary item only (14A).
     private func beginDragHandoff(id: UUID, downEvent: NSEvent) {
         guard let collectionView, let index = idToIndex[id],
               items.indices.contains(index) else { return }
@@ -690,23 +739,45 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         let payload = configuration.dragPayload(id)
             ?? AssetDragPayload(
                 assetIDs: [detail.asset.id], sourceCollectionID: configuration.collectionID)
-        guard let pasteboardItem = payload.makePasteboardItem() else { return }
+        guard let payloadData = try? payload.pasteboardData() else { return }
 
-        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        let plan = gridExportPlan(
+            assetIDs: payload.assetIDs, details: items, blobURL: configuration.blobURL)
+        draggingHasFilePromise = !plan.isEmpty
+
+        let draggingItems: [NSDraggingItem]
+        if plan.isEmpty {
+            // Media-less selection — internal reorder / move only (prior behaviour).
+            let pasteboardItem = NSPasteboardItem()
+            pasteboardItem.setData(payloadData, forType: AssetDragPayload.pasteboardType)
+            draggingItems = [NSDraggingItem(pasteboardWriter: pasteboardItem)]
+        } else {
+            // One file promise per byte-backed asset, in grid order; the primary
+            // provider also vends the internal `.assetIDs` payload.
+            draggingItems = plan.enumerated().map { offset, export in
+                let provider = AssetFilePromiseProvider(
+                    fileType: export.utType.identifier, delegate: AssetFilePromiseDelegate.shared)
+                provider.exportItem = export
+                if offset == 0 { provider.assetPayloadData = payloadData }
+                return NSDraggingItem(pasteboardWriter: provider)
+            }
+        }
+
+        // One drag image (the count-badged preview) on the primary item, centred on
+        // the pointer in the flipped content space (the classic coordinate-bug spot,
+        // 036 §A-risks; a small offset is cosmetic). Extra promise items stack
+        // invisibly under it (14A).
         let image = configuration.dragImage(id)
         let size = image?.size ?? CGSize(width: 84, height: 84)
-        // Centre the image on the pointer in the flipped content space the drag
-        // frame is interpreted in. The flipped-origin is the classic place a
-        // coordinate bug hides (036 §A-risks) — a small offset is cosmetic and can't
-        // change what the drop receives; the byte-exact payload is what matters.
         let point = contentPoint(for: downEvent)
         let frame = CGRect(
             x: point.x - size.width / 2, y: point.y - size.height / 2,
             width: size.width, height: size.height)
-        draggingItem.setDraggingFrame(frame, contents: image)
+        draggingItems.first?.setDraggingFrame(frame, contents: image)
+        for extra in draggingItems.dropFirst() { extra.setDraggingFrame(frame, contents: nil) }
 
         collectionView.beginDraggingSession(
-            with: [draggingItem], event: downEvent, source: self)
+            with: draggingItems, event: downEvent, source: self)
     }
 
     // MARK: NSDraggingSource
@@ -714,9 +785,17 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     func draggingSession(
         _ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext
     ) -> NSDragOperation {
-        // Intra-app only: move or copy (⌥) within the window; nothing dragged out to
-        // Finder. Matches the SwiftUI `.draggable`, which never exported files.
-        context == .withinApplication ? [.move, .copy] : []
+        switch context {
+        case .withinApplication:
+            // Move or copy (⌥) within the window — reorder / cross-collection move.
+            return [.move, .copy]
+        case .outsideApplication:
+            // Drag-out (011 · Cluster A): copy the original file(s) to the external
+            // destination, but ONLY when the drag actually carries file promises.
+            return draggingHasFilePromise ? .copy : []
+        @unknown default:
+            return []
+        }
     }
 
     func gridCellCircleClicked(id: UUID) {
@@ -833,35 +912,36 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// `CollectionView.countSuffix`.
     private static func countSuffix(_ n: Int) -> String { n > 1 ? " (\(n))" : "" }
 
-    // MARK: Drop onto a cell (036 §4 A3 — NSCollectionViewDelegate)
+    // MARK: Drop onto a cell (036 §4 A3 · 011 — NSView-level reception)
 
-    /// Force `.on` a cell hit-tested from the drag location; a drag over a GAP
-    /// returns `[]` (rejected) so an internal reorder dropped on empty space no-ops,
-    /// exactly as it did in SwiftUI (the pane `.onDrop` doesn't accept `.assetIDs`).
-    func collectionView(
-        _ collectionView: NSCollectionView, validateDrop draggingInfo: NSDraggingInfo,
-        proposedIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
-        dropOperation proposedDropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>
-    ) -> NSDragOperation {
-        let point = collectionView.convert(draggingInfo.draggingLocation, from: nil)
-        guard let index = layout.hitTestIndex(at: point) else { return [] }
-        proposedIndexPath.pointee = IndexPath(item: index, section: 0) as NSIndexPath
-        proposedDropOperation.pointee = .on
-        return .move
+    /// Validate a same-app asset drag hovering the grid (from
+    /// ``MasonryNSCollectionView/draggingEntered(_:)``/`draggingUpdated`). `.move`
+    /// when the pointer is over a cell (hit-tested on the analytic frames — the same
+    /// query the marquee / context menu use), `[]` over a gap so a reorder dropped
+    /// on empty space no-ops. A non-`.assetIDs` drag never reaches here (the grid
+    /// only registers that type; an external file/URL drag falls through to the
+    /// pane-level SwiftUI import `.onDrop`).
+    func gridDraggingOperation(_ info: NSDraggingInfo) -> NSDragOperation {
+        guard let collectionView,
+              info.draggingPasteboard.availableType(
+                from: [AssetDragPayload.pasteboardType]) != nil else { return [] }
+        let point = collectionView.convert(info.draggingLocation, from: nil)
+        return layout.hitTestIndex(at: point) != nil ? .move : []
     }
 
-    /// Decode the byte-compatible payload and route it through the unchanged
-    /// `handleCellDrop`/`routeDrop` (only a same-collection manual-sort drop is a
-    /// reorder — everything else is refused there).
-    func collectionView(
-        _ collectionView: NSCollectionView, acceptDrop draggingInfo: NSDraggingInfo,
-        indexPath: IndexPath, dropOperation: NSCollectionView.DropOperation
-    ) -> Bool {
-        guard let data = draggingInfo.draggingPasteboard.data(
-                forType: AssetDragPayload.pasteboardType),
-              let payload = AssetDragPayload.decode(from: data),
-              items.indices.contains(indexPath.item) else { return false }
-        return configuration.onCellDrop(payload, items[indexPath.item].asset.id)
+    /// Accept a drop: decode the `.assetIDs` payload, hit-test the target cell, and
+    /// route it through the unchanged `onCellDrop` → `handleCellDrop`/`routeDrop`
+    /// (only a same-collection, manual-sort drop is a reorder; anything else is
+    /// refused there — cross-collection moves go via the rail / stack row).
+    func gridPerformDrop(_ info: NSDraggingInfo) -> Bool {
+        guard let collectionView,
+              let data = info.draggingPasteboard.data(forType: AssetDragPayload.pasteboardType),
+              let payload = AssetDragPayload.decode(from: data) else { return false }
+        let point = collectionView.convert(info.draggingLocation, from: nil)
+        guard let index = layout.hitTestIndex(at: point), items.indices.contains(index) else {
+            return false
+        }
+        return configuration.onCellDrop(payload, items[index].asset.id)
     }
 
     // MARK: Effects
@@ -1024,6 +1104,24 @@ func gridThumbnailBucket(frame: CGRect?, columnWidth: CGFloat, scale: CGFloat) -
 /// The snapshot's item identifiers: membership `item.id` in display order.
 func gridSnapshotIDs(for items: [CollectionItemDetail]) -> [UUID] {
     items.map { $0.item.id }
+}
+
+/// The export plan for a drag (011 · Cluster A): the ``AssetExportItem`` for every
+/// dragged asset that has an exportable file, in GRID order (15A). Iterates
+/// `details` once, keeping those whose `asset.id` is in the dragged set — so the
+/// exported files come out in the same order they appear in the grid, and a
+/// media-less / missing-blob asset is simply dropped (via
+/// ``AssetExport/exportItem(asset:source:blobURL:)`` returning `nil`). An empty
+/// result means "nothing to export" → the drag stays internal-only.
+func gridExportPlan(
+    assetIDs: [UUID], details: [CollectionItemDetail], blobURL: (CollectionItemDetail) -> URL?
+) -> [AssetExportItem] {
+    let wanted = Set(assetIDs)
+    return details.compactMap { detail in
+        guard wanted.contains(detail.asset.id) else { return nil }
+        return AssetExport.exportItem(
+            asset: detail.asset, source: detail.source, blobURL: blobURL(detail))
+    }
 }
 
 /// The id → row index map the coordinator keeps for A2 selection reconciliation.

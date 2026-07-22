@@ -11,6 +11,7 @@
 
 import AtelierCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Deterministic per-layer fan tilts (degrees, within ±`maxDegrees`) derived from
 /// a collection's UUID (009 · N4). PURE and process-stable: it reads the raw uuid
@@ -126,9 +127,10 @@ struct StackDropTarget: View {
         }
         .buttonStyle(.plain)
         .help("Move here — hold ⌥ to copy")
-        .dropDestination(for: AssetDragPayload.self) { payloads, _ in
-            guard let payload = payloads.first else { return false }
-            return onDrop(payload)
-        } isTargeted: { isTargeted = $0 }
+        // `.onDrop` (not `.dropDestination`) so the AppKit grid's NSDraggingSession
+        // is actually recognised — the Transferable bridge silently never was.
+        .onDrop(of: [.assetIDs], isTargeted: $isTargeted) { providers in
+            AssetDragPayload.fromDrop(providers) { _ = onDrop($0) }
+        }
     }
 }

@@ -139,6 +139,80 @@ struct GridThumbnailBucketTests {
     }
 }
 
+// MARK: - Export plan (drag-out, 011 · Cluster A)
+
+@Suite("Grid host: export plan (drag-out)")
+struct GridExportPlanTests {
+
+    /// A temp file backing one detail's blob; caller removes it. `Data([1])` is
+    /// enough for the existence check `exportItem` performs.
+    private func tempFile() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
+        FileManager.default.createFile(atPath: url.path, contents: Data([1]))
+        return url
+    }
+
+    @Test("byte-backed assets in the drag → export items in grid order")
+    func byteBackedInOrder() {
+        let a = detail(kind: .image, title: "Alpha")
+        let b = detail(kind: .image, title: "Beta")
+        let urls = [a.item.id: tempFile(), b.item.id: tempFile()]
+        defer { urls.values.forEach { try? FileManager.default.removeItem(at: $0) } }
+
+        let plan = gridExportPlan(
+            assetIDs: [a.asset.id, b.asset.id], details: [a, b], blobURL: { urls[$0.item.id] })
+        #expect(plan.count == 2)
+        #expect(plan[0].filename.hasPrefix("Alpha-"))   // grid order preserved
+        #expect(plan[1].filename.hasPrefix("Beta-"))
+    }
+
+    @Test("order follows the GRID, not the id list, and excludes undragged ids")
+    func gridOrderExcludesUndragged() {
+        let a = detail(kind: .image, title: "Alpha")
+        let b = detail(kind: .image, title: "Beta")
+        let c = detail(kind: .image, title: "Gamma")
+        let urls = [a.item.id: tempFile(), b.item.id: tempFile(), c.item.id: tempFile()]
+        defer { urls.values.forEach { try? FileManager.default.removeItem(at: $0) } }
+
+        // Drag c then a (id order c,a); grid order is a,b,c → plan is [a, c], b excluded.
+        let plan = gridExportPlan(
+            assetIDs: [c.asset.id, a.asset.id], details: [a, b, c], blobURL: { urls[$0.item.id] })
+        #expect(plan.map { String($0.filename.prefix(5)) } == ["Alpha", "Gamma"])
+    }
+
+    @Test("media-less assets are skipped")
+    func mediaLessSkipped() {
+        let img = detail(kind: .image, title: "Pic")
+        let link = detail(kind: .link, title: "Link")   // no blob hash
+        let url = tempFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let plan = gridExportPlan(
+            assetIDs: [img.asset.id, link.asset.id], details: [img, link],
+            blobURL: { $0.item.id == img.item.id ? url : nil })
+        #expect(plan.count == 1)
+        #expect(plan[0].filename.hasPrefix("Pic-"))
+    }
+
+    @Test("an asset whose blob file is missing on disk is skipped (5A)")
+    func missingFileSkipped() {
+        let d = detail(kind: .image, title: "Pic")
+        let ghost = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
+        let plan = gridExportPlan(assetIDs: [d.asset.id], details: [d], blobURL: { _ in ghost })
+        #expect(plan.isEmpty)
+    }
+
+    @Test("an all-media-less drag yields an empty plan (internal-only drag)")
+    func allMediaLessEmpty() {
+        let l1 = detail(kind: .link), l2 = detail(kind: .tweet)
+        let plan = gridExportPlan(
+            assetIDs: [l1.asset.id, l2.asset.id], details: [l1, l2], blobURL: { _ in nil })
+        #expect(plan.isEmpty)
+    }
+}
+
 // MARK: - Accessibility label (shared pure function)
 
 @Suite("Grid host: accessibility label")
