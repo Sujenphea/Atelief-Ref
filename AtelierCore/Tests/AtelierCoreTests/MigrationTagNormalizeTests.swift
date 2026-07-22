@@ -37,6 +37,22 @@ struct MigrationTagNormalizeTests {
             createdAt: Date(timeIntervalSince1970: 1_700_000_111.25), sourceId: sourceId)
     }
 
+    /// Insert an asset row using ONLY the columns present at v8 — this test seeds a
+    /// pre-v9 schema, so it must not write through the current-schema `Asset`
+    /// record (which carries v10's `name`/`note`). A raw insert of the required
+    /// NOT NULL columns is enough; the assets are just FK anchors for the tags.
+    private func insertV8Asset(_ db: Database, _ asset: Asset) throws {
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, blob_hash, mime_type, width, height,
+                               file_size, download_state, created_at, source_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """, arguments: [
+                asset.id.uuidString.lowercased(), asset.kind.rawValue, asset.blobHash,
+                asset.mimeType, asset.width, asset.height, asset.fileSize,
+                asset.downloadState.rawValue, asset.createdAt, asset.sourceId.uuidString.lowercased(),
+            ])
+    }
+
     @Test("v9 renames, merges onto a twin, drops garbage, keeps non-leading and source distinctness")
     func normalizes() throws {
         let queue = try makeQueueUpToV8()
@@ -53,7 +69,7 @@ struct MigrationTagNormalizeTests {
 
         try queue.write { db in
             try source.insert(db)
-            try a1.insert(db); try a2.insert(db)
+            try insertV8Asset(db, a1); try insertV8Asset(db, a2)
             for t in [hashedSF, canonOak, hashedOak, garbage, nonLeading, agentSF] {
                 try t.insert(db)
             }
@@ -121,7 +137,7 @@ struct MigrationTagNormalizeTests {
         let hashed = Tag(id: UUID(), name: "#sf", source: .user)
         try queue.write { db in
             try source.insert(db)
-            try a1.insert(db)
+            try insertV8Asset(db, a1)
             try hashed.insert(db)
             try AssetTag(assetID: a1.id, tagID: hashed.id).insert(db)
         }

@@ -548,6 +548,9 @@ private struct CollectionDetailHost: View {
         _model = ObservedObject(wrappedValue: model)
         _nav = ObservedObject(wrappedValue: nav)
         let tagStore = AssetTagsStore(services: services)
+        // Collection chips mutate through the shared store, not `model` — bridge
+        // the change back so the grid + counts refresh (041 · not just the chips).
+        tagStore.onMembershipChanged = { [weak model] in model?.reloadAfterMembershipChange() }
         _tags = StateObject(wrappedValue: tagStore)
         _session = StateObject(wrappedValue: DetailSession(
             tags: tagStore,
@@ -641,6 +644,12 @@ private struct CollectionDetailHost: View {
             tags: tags.tags,
             onAddTag: { tags.add($0) },
             onRemoveTag: { tags.remove($0) },
+            collections: tags.collections,
+            allCollections: tags.allCollections,
+            onAddToCollection: { tags.addToCollection($0) },
+            onRemoveFromCollection: { tags.removeFromCollection($0) },
+            onSetName: { tags.setName($0) },
+            onSetNote: { tags.setNote($0) },
             actions: ItemDetailActions(
                 openSource: hasSource ? { model.openSource(detail) } : nil,
                 openBlob: hasBlob ? { model.openBlob(detail) } : nil,

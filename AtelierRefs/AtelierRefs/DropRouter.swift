@@ -55,7 +55,11 @@ func routeDrop(
         return .reorder(assetIDs: payload.assetIDs)
     case let .collection(targetID):
         guard targetID != payload.sourceCollectionID else { return .reject } // from == to
-        return optionDown
+        // A membership-less drag (the sentinel source — library search results / a
+        // Space board) has no collection to move OUT of, so it can only COPY (add).
+        // A real source moves by default, copies with ⌥.
+        let sourceless = payload.sourceCollectionID == AssetDragPayload.nilSourceID
+        return optionDown || sourceless
             ? .copy(assetIDs: payload.assetIDs, to: targetID)
             : .move(assetIDs: payload.assetIDs, from: payload.sourceCollectionID, to: targetID)
     }

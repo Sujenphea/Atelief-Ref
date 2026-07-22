@@ -115,6 +115,17 @@ struct DropRouterTests {
         #expect(routeDrop(payload, onto: .collection(colA), optionDown: true) == .reject)
     }
 
+    @Test("a sourceless (search / board) collection drop copies, never moves")
+    func collectionSourcelessCopies() {
+        let ids = assets(2)
+        let payload = AssetDragPayload(assetIDs: ids, sourceCollectionID: AssetDragPayload.nilSourceID)
+        // No source to move OUT of → always a copy (add), with or without ⌥.
+        #expect(routeDrop(payload, onto: .collection(colA), optionDown: false)
+            == .copy(assetIDs: ids, to: colA))
+        #expect(routeDrop(payload, onto: .collection(colA), optionDown: true)
+            == .copy(assetIDs: ids, to: colA))
+    }
+
     // MARK: - Degenerate payloads
 
     @Test("an empty payload is always refused, whatever the target")

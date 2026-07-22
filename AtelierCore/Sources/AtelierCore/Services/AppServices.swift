@@ -1758,6 +1758,54 @@ public final class AppServices: Sendable {
         }
     }
 
+    // MARK: - Asset details (041 · Name / Note / Collections)
+
+    /// Set (or clear) an asset's user-given display name. Trims; an empty result
+    /// stores `NULL` (the "unnamed" state). `.notFound` if the asset is absent.
+    /// Through the write funnel.
+    public func setName(_ name: String?, for assetID: UUID) async throws {
+        try await write { db in
+            guard var asset = try Asset.fetchOne(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            asset.name = (trimmed?.isEmpty ?? true) ? nil : trimmed
+            try asset.update(db)
+        }
+    }
+
+    /// Set (or clear) an asset's free-form note. Trims; empty → `NULL`.
+    /// `.notFound` if the asset is absent. Through the write funnel.
+    public func setNote(_ note: String?, for assetID: UUID) async throws {
+        try await write { db in
+            guard var asset = try Asset.fetchOne(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            let trimmed = note?.trimmingCharacters(in: .whitespacesAndNewlines)
+            asset.note = (trimmed?.isEmpty ?? true) ? nil : trimmed
+            try asset.update(db)
+        }
+    }
+
+    /// The collections an asset is a direct member of, name-ordered — the reverse
+    /// of ``addAssets(_:to:)``. Powers the Item Detail "Collections" chips; kept
+    /// off the joined grid read (``collectionItems``) so the hot path stays a
+    /// single round-trip. Empty if the asset has no memberships.
+    public func collections(for assetID: UUID) async throws -> [Collection] {
+        try await read { db in
+            let collectionIDs = try CollectionItem
+                .filter(Column("asset_id") == Self.key(assetID))
+                .fetchAll(db)
+                .map(\.collectionID)
+            guard !collectionIDs.isEmpty else { return [] }
+            let keys = collectionIDs.map(Self.key)
+            return try Collection
+                .filter(keys.contains(Column("id")))
+                .order(Column("name"), Column("id"))
+                .fetchAll(db)
+        }
+    }
+
     // MARK: - Tags (schema-reserved; the agent interface needs these)
 
     /// Apply a tag to an asset. Validates + trims the name (C8); finds-or-creates

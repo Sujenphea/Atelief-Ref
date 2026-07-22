@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -99,6 +99,13 @@ enum Migrator {
         // twin where one exists. SHIPPED once released: never edit this body.
         migrator.registerMigration("v9") { db in
             try normalizeV9TagNames(db)
+        }
+
+        // v10 — user-editable Name + Note on an asset (041 · item-detail
+        // redesign). Two additive, nullable TEXT columns — no rebuild (like v5).
+        // SHIPPED once released: never edit this body.
+        migrator.registerMigration("v10") { db in
+            try createV10Schema(db)
         }
 
         return migrator
@@ -398,6 +405,17 @@ enum Migrator {
         try db.execute(sql: """
             CREATE INDEX index_asset_on_view_count ON asset(view_count);
             """)
+    }
+
+    // MARK: - v10
+
+    /// User-editable Name + Note on an asset (041). Two additive, nullable TEXT
+    /// columns — no default, no rebuild; existing rows read `NULL` (the "unnamed
+    /// / no note" state the UI already handles). Kept last so v6's rebuild copies
+    /// nothing new and older DBs upgrade with a plain ALTER.
+    private static func createV10Schema(_ db: Database) throws {
+        try db.execute(sql: "ALTER TABLE asset ADD COLUMN name TEXT;")
+        try db.execute(sql: "ALTER TABLE asset ADD COLUMN note TEXT;")
     }
 
     // MARK: - v6

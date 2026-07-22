@@ -245,6 +245,12 @@ struct SpaceView: View {
                 tags: tagStore.tags,
                 onAddTag: { tagStore.add($0) },
                 onRemoveTag: { tagStore.remove($0) },
+                collections: tagStore.collections,
+                allCollections: tagStore.allCollections,
+                onAddToCollection: { tagStore.addToCollection($0) },
+                onRemoveFromCollection: { tagStore.removeFromCollection($0) },
+                onSetName: { tagStore.setName($0) },
+                onSetNote: { tagStore.setNote($0) },
                 actions: ItemDetailActions(
                     openSource: hasSource ? { model.openSourceURL(sourceURL) } : nil,
                     openBlob: hasBlob ? { model.openBlob(asset: asset) } : nil,

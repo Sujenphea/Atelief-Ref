@@ -8,6 +8,12 @@
 //  context menus cover rename / delete / new subfolder. New root collections /
 //  spaces are created from the sidebar's section "+".
 //
+//  009 · N6 — a marquee (drag-rectangle) selects cards across both sections; the
+//  selection is deletable via ⌫ / a contextual bar, through ONE confirmation.
+//  Unsorted is never selectable (it can't be deleted). The marquee reuses the
+//  pure ``marqueeRect``/``marqueeIndices`` geometry; card frames are captured with
+//  `onGeometryChange` in a shared named coordinate space.
+//
 
 import AtelierCore
 import SwiftUI
@@ -23,21 +29,46 @@ struct CollectionsGalleryView: View {
     @State private var spaceRenameTarget: Space?
     @State private var spaceRenameText = ""
 
+    // Marquee selection (009 · N6).
+    @State private var selectedCardIDs: Set<UUID> = []
+    @State private var cardFrames: [UUID: CGRect] = [:]
+    @State private var marqueeStart: CGPoint?
+    @State private var marqueeCurrent: CGPoint?
+    @State private var showBatchDelete = false
+    @FocusState private var galleryFocused: Bool
+
+    private static let gallerySpace = "galleryContent"
+
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16)]
 
     var body: some View {
         // 006 shell — the top-level Home overview. Search is a sidebar destination;
         // New Collection / New Space are the sidebar sections' "+".
         ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Spacing.xxl) {
-                collectionsSection
-                // Spaces are additive — hidden entirely until the user has one, so
-                // Home stays collection-focused for a fresh library.
-                if !model.spaces.isEmpty {
-                    spacesSection
+            ZStack(alignment: .topLeading) {
+                // The drag catcher sits BEHIND the cards, so a drag on empty grid
+                // area starts a marquee while a tap on a card still navigates.
+                marqueeCatcher
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxl) {
+                    collectionsSection
+                    // Spaces are additive — hidden entirely until the user has one,
+                    // so Home stays collection-focused for a fresh library.
+                    if !model.spaces.isEmpty {
+                        spacesSection
+                    }
                 }
+                .padding(Theme.Spacing.xl)
+                marqueeOverlay
             }
-            .padding(Theme.Spacing.xl)
+            .coordinateSpace(.named(Self.gallerySpace))
+        }
+        .focusable()
+        .focusEffectDisabled()
+        .focused($galleryFocused)
+        .onDeleteCommand { requestBatchDelete() }
+        .onExitCommand { clearSelection() }
+        .overlay(alignment: .bottom) {
+            if !selectedCardIDs.isEmpty { selectionBar }
         }
         .task {
             await model.refreshFolders()
@@ -79,6 +110,16 @@ struct CollectionsGalleryView: View {
             .disabled(spaceRenameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { spaceRenameTarget = nil }
         }
+        // Batch delete confirmation (one dialog for the whole marquee selection).
+        .confirmationDialog(
+            "Delete \(selectedCardIDs.count) \(selectedCardIDs.count == 1 ? "item" : "items")?",
+            isPresented: $showBatchDelete, titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { performBatchDelete() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(batchDeleteBreakdown)
+        }
     }
 
     // MARK: - Collections section
@@ -94,6 +135,10 @@ struct CollectionsGalleryView: View {
                         collectionCard(collection)
                     }
                     .buttonStyle(.plain)
+                    .overlay { selectionRing(for: collection.id) }
+                    .modifier(CardFrameReporter(id: collection.id, space: Self.gallerySpace) {
+                        cardFrames[collection.id] = $0
+                    })
                     .contextMenu { cardMenu(for: collection) }
                 }
             }
@@ -138,6 +183,10 @@ struct CollectionsGalleryView: View {
                         spaceCard(space)
                     }
                     .buttonStyle(.plain)
+                    .overlay { selectionRing(for: space.id) }
+                    .modifier(CardFrameReporter(id: space.id, space: Self.gallerySpace) {
+                        cardFrames[space.id] = $0
+                    })
                     .contextMenu { spaceMenu(for: space) }
                 }
             }
@@ -162,6 +211,122 @@ struct CollectionsGalleryView: View {
                 coverURL: spaceCoverURL(for: space.id),
                 placeholderSymbol: "square.on.square.dashed")
         }
+    }
+
+    // MARK: - Marquee (009 · N6)
+
+    /// The transparent background layer that begins a marquee on an empty-area drag
+    /// and clears the selection on an empty-area click.
+    private var marqueeCatcher: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.gallerySpace))
+                    .onChanged { value in
+                        galleryFocused = true
+                        marqueeStart = value.startLocation
+                        marqueeCurrent = value.location
+                        updateMarqueeSelection()
+                    }
+                    .onEnded { _ in
+                        marqueeStart = nil
+                        marqueeCurrent = nil
+                    })
+            .onTapGesture { clearSelection() }
+    }
+
+    @ViewBuilder
+    private var marqueeOverlay: some View {
+        if let start = marqueeStart, let current = marqueeCurrent {
+            let rect = marqueeRect(from: start, to: current)
+            Rectangle()
+                .fill(Color.accentColor.opacity(0.12))
+                .overlay(Rectangle().stroke(Color.accentColor, lineWidth: 1))
+                .frame(width: rect.width, height: rect.height)
+                .offset(x: rect.minX, y: rect.minY)
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder
+    private func selectionRing(for id: UUID) -> some View {
+        if selectedCardIDs.contains(id) {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color.accentColor, lineWidth: 3)
+        }
+    }
+
+    /// The floating "N selected · Clear · Delete" bar, shown while a marquee
+    /// selection is active.
+    private var selectionBar: some View {
+        HStack(spacing: 12) {
+            Text("\(selectedCardIDs.count) selected")
+                .font(.callout.weight(.medium))
+            Button("Clear") { clearSelection() }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            Button(role: .destructive) { requestBatchDelete() } label: {
+                Label("Delete \(selectedCardIDs.count)", systemImage: "trash")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.primary.opacity(0.08)))
+        .shadow(radius: 8, y: 2)
+        .padding(.bottom, 16)
+    }
+
+    /// The ids the marquee may select: every root collection EXCEPT Unsorted, plus
+    /// every space. Recomputed each hit so a deleted card can't linger selected.
+    private var selectableIDs: Set<UUID> {
+        var ids = Set(orderedRoots.map(\.id))
+        ids.remove(model.unsortedFolderID)
+        ids.formUnion(model.spaces.map(\.id))
+        return ids
+    }
+
+    private func updateMarqueeSelection() {
+        guard let start = marqueeStart, let current = marqueeCurrent else { return }
+        let rect = marqueeRect(from: start, to: current)
+        let valid = selectableIDs
+        let entries = cardFrames.filter { valid.contains($0.key) }
+        let ids = Array(entries.keys)
+        let frames = ids.map { entries[$0]! }
+        selectedCardIDs = Set(marqueeIndices(in: rect, frames: frames).map { ids[$0] })
+    }
+
+    private func clearSelection() {
+        if !selectedCardIDs.isEmpty { selectedCardIDs = [] }
+    }
+
+    private func requestBatchDelete() {
+        guard !selectedCardIDs.isEmpty else { return }
+        showBatchDelete = true
+    }
+
+    private func performBatchDelete() {
+        model.deleteCards(collectionIDs: selectedCollectionIDs, spaceIDs: selectedSpaceIDs)
+        clearSelection()
+    }
+
+    private var selectedCollectionIDs: [UUID] {
+        let valid = Set(orderedRoots.map(\.id)).subtracting([model.unsortedFolderID])
+        return Array(selectedCardIDs.filter { valid.contains($0) })
+    }
+
+    private var selectedSpaceIDs: [UUID] {
+        let valid = Set(model.spaces.map(\.id))
+        return Array(selectedCardIDs.filter { valid.contains($0) })
+    }
+
+    private var batchDeleteBreakdown: String {
+        let c = selectedCollectionIDs.count
+        let s = selectedSpaceIDs.count
+        var parts: [String] = []
+        if c > 0 { parts.append("\(c) collection\(c == 1 ? "" : "s")") }
+        if s > 0 { parts.append("\(s) space\(s == 1 ? "" : "s")") }
+        return parts.isEmpty ? "This can’t be undone for collections." : parts.joined(separator: ", ")
     }
 
     // MARK: - Section header
@@ -232,5 +397,22 @@ struct CollectionsGalleryView: View {
 
     private var spaceRenameBinding: Binding<Bool> {
         Binding(get: { spaceRenameTarget != nil }, set: { if !$0 { spaceRenameTarget = nil } })
+    }
+}
+
+/// Publishes a card's frame in the shared gallery coordinate space (009 · N6), so
+/// the marquee can hit-test against every card without a per-cell GeometryReader
+/// in the layout. Split into a modifier to keep the grid `ForEach` readable.
+private struct CardFrameReporter: ViewModifier {
+    let id: UUID
+    let space: String
+    let report: (CGRect) -> Void
+
+    func body(content: Content) -> some View {
+        content.onGeometryChange(for: CGRect.self) {
+            $0.frame(in: .named(space))
+        } action: {
+            report($0)
+        }
     }
 }

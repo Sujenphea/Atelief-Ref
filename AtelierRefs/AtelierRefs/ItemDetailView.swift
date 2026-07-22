@@ -78,6 +78,17 @@ struct ItemDetailView: View {
     let tags: [Tag]
     let onAddTag: (String) -> Void
     let onRemoveTag: (Tag) -> Void
+    /// The asset's collection memberships + the full library list for the "Add"
+    /// picker, plus their editors (041 · Details "Collections" chips). A host with
+    /// no collection context (none today — all three load them) passes `[]`.
+    var collections: [Collection] = []
+    var allCollections: [Collection] = []
+    var onAddToCollection: (Collection) -> Void = { _ in }
+    var onRemoveFromCollection: (Collection) -> Void = { _ in }
+    /// Persist the item's Name / Note (041 · Details). Default no-ops keep older
+    /// call sites compiling; every real host wires them to the funnel.
+    var onSetName: (String) -> Void = { _ in }
+    var onSetNote: (String) -> Void = { _ in }
     /// Source / lifecycle actions (each optional — omitted ones disable/hide).
     let actions: ItemDetailActions
     /// Optional prev/next; `nil` hides the navigator (no ordered set).
@@ -139,11 +150,21 @@ struct ItemDetailView: View {
                         reportDisplayTarget()
                     }
                     .onChange(of: zoom) { _, _ in reportDisplayTarget() }
+                    // Zoom controls float over the media (image only) — the top bar
+                    // is Back + pager only now (041), matching the Figma frame.
+                    .overlay(alignment: .bottomTrailing) {
+                        if isImage { zoomControls.padding(Theme.Spacing.md) }
+                    }
                 Divider()
                 DetailSidebar(
                     asset: asset, source: source, tags: tags,
-                    onAddTag: onAddTag, onRemoveTag: onRemoveTag, actions: actions)
-                    .frame(width: 300)
+                    onAddTag: onAddTag, onRemoveTag: onRemoveTag,
+                    collections: collections, allCollections: allCollections,
+                    onAddToCollection: onAddToCollection,
+                    onRemoveFromCollection: onRemoveFromCollection,
+                    onSetName: onSetName, onSetNote: onSetNote,
+                    onOpenSource: actions.openSource)
+                    .frame(width: 298)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -159,51 +180,92 @@ struct ItemDetailView: View {
     // MARK: - Top bar
 
     private var topBar: some View {
-        HStack(spacing: 12) {
-            Button {
-                onClose()
-            } label: {
-                Label("Back", systemImage: "chevron.left")
+        // Back pill (leading) · centered pager · overflow menu (trailing). Zoom
+        // moved onto the media; the source title is dropped (041 · Figma `6:4`).
+        ZStack {
+            HStack {
+                backButton
+                Spacer()
+                overflowMenu
             }
-            .keyboardShortcut(.cancelAction)
+            if let navigator { pager(navigator) }
+        }
+        .padding(Theme.Spacing.md)
+    }
 
-            Spacer()
+    /// A rounded, hairline-bordered "Back" pill (⌘/Escape closes).
+    private var backButton: some View {
+        Button(action: onClose) {
+            Label("Back", systemImage: "chevron.left")
+                .font(Theme.Typography.row)
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, Theme.Spacing.xs + 2)
+        }
+        .buttonStyle(.plain)
+        .background(Theme.Colors.filmstrip, in: Capsule())
+        .overlay(Capsule().stroke(Theme.Colors.hairlineStrong, lineWidth: 1))
+        .keyboardShortcut(.cancelAction)
+    }
 
-            if let navigator {
-                Button {
-                    navigator.step(-1)
-                } label: {
-                    Image(systemName: "chevron.left")
-                }
+    /// The centered `N / count` pager in a hairline pill, chevrons flanking it.
+    private func pager(_ navigator: ItemDetailNavigator) -> some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            Button { navigator.step(-1) } label: { Image(systemName: "chevron.left") }
                 .keyboardShortcut(.leftArrow, modifiers: [])
                 .disabled(navigator.index <= 0)
 
-                Text("\(navigator.index + 1) / \(navigator.count)")
-                    .font(.callout).monospacedDigit()
-                    .foregroundStyle(.secondary)
+            Text("\(navigator.index + 1) / \(navigator.count)")
+                .font(Theme.Typography.row).monospacedDigit()
+                .foregroundStyle(Theme.Colors.inkPrimary)
 
-                Button {
-                    navigator.step(1)
-                } label: {
-                    Image(systemName: "chevron.right")
-                }
+            Button { navigator.step(1) } label: { Image(systemName: "chevron.right") }
                 .keyboardShortcut(.rightArrow, modifiers: [])
                 .disabled(navigator.index >= navigator.count - 1)
-            }
-
-            Spacer()
-
-            if isImage {
-                zoomControls
-            }
-
-            Text(source?.title ?? "")
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: 240, alignment: .trailing)
         }
-        .padding()
+        .buttonStyle(.plain)
+        .padding(.horizontal, Theme.Spacing.md)
+        .padding(.vertical, Theme.Spacing.xs + 2)
+        .background(Theme.Colors.filmstrip, in: Capsule())
+        .overlay(Capsule().stroke(Theme.Colors.hairlineStrong, lineWidth: 1))
+    }
+
+    /// The source / lifecycle actions the Figma panel drops, relocated to a
+    /// trailing overflow menu so nothing (Delete, Reveal, …) is lost (041). Each
+    /// item renders only when its closure was supplied.
+    private var overflowMenu: some View {
+        Menu {
+            if let openSource = actions.openSource {
+                Button { openSource() } label: { Label("Open Original Source", systemImage: "safari") }
+            }
+            if let openBlob = actions.openBlob {
+                Button { openBlob() } label: { Label("Open Full Resolution", systemImage: "photo") }
+            }
+            if let revealInFinder = actions.revealInFinder {
+                Button { revealInFinder() } label: { Label("Reveal in Finder", systemImage: "folder") }
+            }
+            if let copySourceLink = actions.copySourceLink {
+                Button { copySourceLink() } label: { Label("Copy Source Link", systemImage: "link") }
+            }
+            if actions.removeFromFolder != nil || actions.requestDelete != nil {
+                Divider()
+            }
+            if let removeFromFolder = actions.removeFromFolder {
+                Button { removeFromFolder() } label: { Label("Remove from Folder", systemImage: "minus.circle") }
+            }
+            if let requestDelete = actions.requestDelete {
+                Button(role: .destructive) { requestDelete() } label: { Label("Delete", systemImage: "trash") }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(Theme.Typography.row)
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, Theme.Spacing.xs + 2)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .background(Theme.Colors.filmstrip, in: Capsule())
+        .overlay(Capsule().stroke(Theme.Colors.hairlineStrong, lineWidth: 1))
     }
 
     /// Zoom out / percentage-reset / zoom in for image assets. The percentage
@@ -618,205 +680,338 @@ private struct ZoomableImage: View {
     }
 }
 
-/// The right-hand details column: a thin stack of the metadata, provenance, and
-/// source-action sections (ported from the former `InspectorView`, minus the
-/// small preview). Each section is its own subview so the column stays a clean
-/// seam — the tags editor slots in between provenance and actions.
+/// The right-hand details column (041 · Figma `6:4`): three sections — **Data**
+/// (saved + dimensions), **Source** (platform / author / title + Visit), and
+/// **Details** (Name, Note, Collections, Tags). The former in-panel Actions block
+/// moved to the top-bar overflow menu.
 private struct DetailSidebar: View {
     let asset: Asset
     let source: Source?
     let tags: [Tag]
     let onAddTag: (String) -> Void
     let onRemoveTag: (Tag) -> Void
-    let actions: ItemDetailActions
+    let collections: [Collection]
+    let allCollections: [Collection]
+    let onAddToCollection: (Collection) -> Void
+    let onRemoveFromCollection: (Collection) -> Void
+    let onSetName: (String) -> Void
+    let onSetNote: (String) -> Void
+    let onOpenSource: (() -> Void)?
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                MetadataSection(asset: asset)
+            VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
+                DataSection(asset: asset)
                 if let source {
-                    ProvenanceSection(source: source)
+                    SourceSection(source: source, onOpenSource: onOpenSource)
                 }
-                TagsSection(tags: tags, onAddTag: onAddTag, onRemoveTag: onRemoveTag)
-                ActionsSection(actions: actions)
+                DetailsSection(
+                    asset: asset, tags: tags, onAddTag: onAddTag, onRemoveTag: onRemoveTag,
+                    collections: collections, allCollections: allCollections,
+                    onAddToCollection: onAddToCollection,
+                    onRemoveFromCollection: onRemoveFromCollection,
+                    onSetName: onSetName, onSetNote: onSetNote)
             }
-            .padding()
+            .padding(Theme.Spacing.lg)
         }
     }
 }
 
 // MARK: - Sections
 
-/// Kind / dimensions / (duration) / size / type / captured-at.
-private struct MetadataSection: View {
+/// "Data" — saved date + dimensions only (041; the richer metadata rows moved
+/// off the panel to match the Figma frame).
+private struct DataSection: View {
     let asset: Asset
 
     var body: some View {
-        DetailSection("Details") {
-            DetailRow("Kind", DetailFormat.kind(asset.kind))
-            // Byte-backed metadata is present only for image/video (003 · O1).
+        DetailSection("Data") {
+            DetailRow("Saved", DetailFormat.savedDate(asset.createdAt))
             if let w = asset.width, let h = asset.height {
-                DetailRow("Dimensions", "\(w) × \(h)")
+                DetailRow("Dimensions", "\(w)px x \(h)px")
             }
-            if asset.kind == .video, let duration = asset.duration {
-                DetailRow("Duration", DetailFormat.duration(duration))
-            }
-            if case let .color(hex) = asset.content {
-                DetailRow("Hex", hex.uppercased())
-            }
-            if let size = asset.fileSize {
-                DetailRow("Size", DetailFormat.size(size))
-            }
-            if let mime = asset.mimeType {
-                DetailRow("Type", mime)
-            }
-            DetailRow("Captured", DetailFormat.date(asset.createdAt))
         }
     }
 }
 
-/// Capture provenance — platform, author, title, and the original URL.
-private struct ProvenanceSection: View {
+/// "Source" — platform / author / title, then a full-width Visit button that
+/// opens the original URL (041; the raw-URL + handle rows are gone).
+private struct SourceSection: View {
     let source: Source
+    let onOpenSource: (() -> Void)?
+
+    /// "Name (@handle)" when both are present; whichever exists otherwise.
+    private var author: String? {
+        let name = source.authorName?.trimmingCharacters(in: .whitespaces)
+        let handle = source.authorHandle?.trimmingCharacters(in: .whitespaces)
+        switch (name?.isEmpty == false ? name : nil, handle?.isEmpty == false ? handle : nil) {
+        case let (n?, h?): return "\(n) (\(h))"
+        case let (n?, nil): return n
+        case let (nil, h?): return h
+        default: return nil
+        }
+    }
 
     var body: some View {
         DetailSection("Source") {
             DetailRow("Platform", DetailFormat.platform(source.platform))
-            if let name = source.authorName, !name.isEmpty {
-                DetailRow("Author", name)
-            }
-            if let handle = source.authorHandle, !handle.isEmpty {
-                DetailRow("Handle", handle)
-            }
+            if let author { DetailRow("Author", author) }
             if let title = source.title, !title.isEmpty {
                 DetailRow("Title", title)
             }
-            if let url = source.originalURL, !url.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Original URL").foregroundStyle(.secondary).font(.callout)
-                    Text(url)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                        .lineLimit(3)
-                        .truncationMode(.middle)
-                }
-            } else {
-                DetailRow("Original URL", "—")
+            if let onOpenSource {
+                VisitButton(action: onOpenSource)
+                    .padding(.top, Theme.Spacing.xs)
             }
         }
     }
 }
 
-/// Source actions + the membership-only / library-wide delete pair. Each button
-/// renders only when its action was supplied — a disabled `openSource` (no URL)
-/// passes `nil`, and a Space board omits the folder-scoped remove/delete pair.
-private struct ActionsSection: View {
-    let actions: ItemDetailActions
+/// A full-width field-styled "Visit ↗" button (041 · Source / links).
+private struct VisitButton: View {
+    let action: () -> Void
 
     var body: some View {
-        VStack(spacing: 8) {
-            actionButton(actions.openSource, "Open Original Source", "safari")
-            actionButton(actions.openBlob, "Open Full Resolution", "photo")
-            actionButton(actions.revealInFinder, "Reveal in Finder", "folder")
-            actionButton(actions.copySourceLink, "Copy Source Link", "link")
-
-            if actions.removeFromFolder != nil || actions.requestDelete != nil {
-                Divider().padding(.vertical, 2)
+        Button(action: action) {
+            HStack(spacing: Theme.Spacing.sm) {
+                Text("Visit").font(Theme.Typography.label)
+                Image(systemName: "arrow.up.right").font(.system(size: 11))
             }
-            // Membership-only (reversible) vs library-wide (destructive) delete.
-            // Both are hidden (not just disabled) where they don't apply, e.g. on
-            // a Space board where the placement — not a folder membership — is the
-            // unit of removal.
-            if let removeFromFolder = actions.removeFromFolder {
-                Button(action: removeFromFolder) {
-                    Label("Remove from Folder", systemImage: "minus.circle")
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            if let requestDelete = actions.requestDelete {
-                Button(role: .destructive, action: requestDelete) {
-                    Label("Delete", systemImage: "trash")
-                        .frame(maxWidth: .infinity)
-                }
-            }
+            .foregroundStyle(Theme.Colors.inkSecondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, Theme.Spacing.xs + 2)
+            .background(Theme.Colors.field, in: RoundedRectangle(cornerRadius: Theme.Radius.field))
         }
-        .controlSize(.large)
-    }
-
-    /// A full-width labelled button, disabled (greyed, still visible) when its
-    /// action is absent — matches the old "no source URL" affordance.
-    @ViewBuilder
-    private func actionButton(
-        _ action: (() -> Void)?, _ title: String, _ symbol: String
-    ) -> some View {
-        Button {
-            action?()
-        } label: {
-            Label(title, systemImage: symbol)
-                .frame(maxWidth: .infinity)
-        }
-        .disabled(action == nil)
+        .buttonStyle(.plain)
     }
 }
 
-/// The item's tags as removable chips plus an add field — the app's first tags
-/// surface. User vs agent tags are visually distinguished (agent tags carry a
-/// sparkle + tint) so agent-written organization stays reviewable.
-private struct TagsSection: View {
+/// "Details" — the item's editable surface: Name, Note, Collections, Tags (041).
+private struct DetailsSection: View {
+    let asset: Asset
     let tags: [Tag]
     let onAddTag: (String) -> Void
     let onRemoveTag: (Tag) -> Void
-    @State private var draft = ""
+    let collections: [Collection]
+    let allCollections: [Collection]
+    let onAddToCollection: (Collection) -> Void
+    let onRemoveFromCollection: (Collection) -> Void
+    let onSetName: (String) -> Void
+    let onSetNote: (String) -> Void
 
     var body: some View {
-        DetailSection("Tags") {
-            if !tags.isEmpty {
-                TagFlowLayout(spacing: 6) {
-                    ForEach(tags) { tag in
-                        TagChip(tag: tag) { onRemoveTag(tag) }
-                    }
-                }
-            }
-            TextField("Add tag…", text: $draft)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(commitDraft)
+        DetailSection("Details", spacing: Theme.Spacing.lg) {
+            // `.id(asset.id)` re-seeds the draft when prev/next swaps the item.
+            DetailField(label: "Name", placeholder: "Name this item",
+                        initial: asset.name, onCommit: onSetName)
+                .id(asset.id)
+            DetailField(label: "Note", placeholder: "Add a note",
+                        initial: asset.note, onCommit: onSetNote)
+                .id(asset.id)
+            CollectionsField(
+                collections: collections, allCollections: allCollections,
+                onAdd: onAddToCollection, onRemove: onRemoveFromCollection)
+            TagsField(tags: tags, onAddTag: onAddTag, onRemoveTag: onRemoveTag)
         }
-    }
-
-    /// Commit the field on Return; the funnel trims + validates, so we only guard
-    /// the trivially-empty case here and clear on submit.
-    private func commitDraft() {
-        let name = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        onAddTag(name)
-        draft = ""
     }
 }
 
-/// A single tag pill with a remove button.
-private struct TagChip: View {
-    let tag: Tag
-    let onRemove: () -> Void
+// MARK: - Details fields
 
-    private var isAgent: Bool { tag.source == .agent }
+/// A labelled, field-styled text input that seeds from `initial` and commits on
+/// Return or focus loss (041 · Name / Note).
+private struct DetailField: View {
+    let label: String
+    let placeholder: String
+    let initial: String?
+    let onCommit: (String) -> Void
+
+    @State private var draft = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
-        HStack(spacing: 4) {
-            if isAgent {
-                Image(systemName: "sparkles").font(.caption2)
-            }
-            Text(tag.name).font(.callout)
-            Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill").font(.caption)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Remove tag")
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs + 2) {
+            Text(label).font(Theme.Typography.label).foregroundStyle(Theme.Colors.inkSecondary)
+            TextField(placeholder, text: $draft)
+                .textFieldStyle(.plain)
+                .font(Theme.Typography.label)
+                .foregroundStyle(Theme.Colors.inkPrimary)
+                .padding(.horizontal, Theme.Spacing.sm)
+                .padding(.vertical, Theme.Spacing.xs + 2)
+                .background(Theme.Colors.field, in: RoundedRectangle(cornerRadius: Theme.Radius.field))
+                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.field)
+                    .stroke(Theme.Colors.hairline, lineWidth: 1))
+                .focused($focused)
+                .onSubmit { onCommit(draft) }
+                .onChange(of: focused) { _, isFocused in
+                    if !isFocused { onCommit(draft) }
+                }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(
-            (isAgent ? Color.purple : Color.secondary).opacity(0.15), in: Capsule())
+        .onAppear { draft = initial ?? "" }
+    }
+}
+
+/// The asset's collection memberships as removable chips, plus an "Add" menu of
+/// the collections it is NOT yet in (041 · Details / Collections).
+private struct CollectionsField: View {
+    let collections: [Collection]
+    let allCollections: [Collection]
+    let onAdd: (Collection) -> Void
+    let onRemove: (Collection) -> Void
+
+    private var addable: [Collection] {
+        let current = Set(collections.map(\.id))
+        return allCollections.filter { !current.contains($0.id) }
+    }
+
+    /// A real collection is ALWAYS removable — dropping its last real membership
+    /// re-homes the asset to Unsorted (handled in the store), so it never orphans.
+    /// Only the Unsorted home itself is non-removable when it is the sole
+    /// membership (there is nothing to fall back to).
+    private func removable(_ c: Collection) -> Bool {
+        c.id != Collection.unsortedID || collections.count > 1
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs + 2) {
+            Text("Collections").font(Theme.Typography.label).foregroundStyle(Theme.Colors.inkSecondary)
+            TagFlowLayout(spacing: Theme.Spacing.sm) {
+                Menu {
+                    if addable.isEmpty {
+                        Text("No other collections")
+                    } else {
+                        ForEach(addable) { c in Button(c.name) { onAdd(c) } }
+                    }
+                } label: {
+                    DetailChip("Add", trailing: .add)
+                }
+                // `.button` + `.plain` so the Menu adds NO chrome of its own — the
+                // DetailChip defines the pill, aligning it with the membership chips
+                // (borderlessButton added an inset that broke the alignment).
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+
+                ForEach(collections) { c in
+                    DetailChip(c.name, trailing: removable(c) ? .remove { onRemove(c) } : .none)
+                }
+            }
+        }
+    }
+}
+
+/// The item's tags as removable chips plus a manual add affordance (041 · the ✦
+/// icon and the "Add" chip both reveal an inline field — user-driven tagging, no
+/// auto-tag service). Agent-written tags keep a leading ✦ inside the chip.
+private struct TagsField: View {
+    let tags: [Tag]
+    let onAddTag: (String) -> Void
+    let onRemoveTag: (Tag) -> Void
+
+    @State private var adding = false
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs + 2) {
+            HStack(spacing: Theme.Spacing.md) {
+                Text("Tags").font(Theme.Typography.label).foregroundStyle(Theme.Colors.inkSecondary)
+                Button(action: startAdding) {
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.Colors.inkSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Add a tag")
+            }
+            TagFlowLayout(spacing: Theme.Spacing.sm) {
+                Button(action: startAdding) { DetailChip("Add", trailing: .add) }
+                    .buttonStyle(.plain)
+                ForEach(tags) { tag in
+                    DetailChip(tag.name, sparkle: tag.source == .agent,
+                               trailing: .remove { onRemoveTag(tag) })
+                }
+            }
+            if adding {
+                TextField("Add tag…", text: $draft)
+                    .textFieldStyle(.plain)
+                    .font(Theme.Typography.label)
+                    .foregroundStyle(Theme.Colors.inkPrimary)
+                    .padding(.horizontal, Theme.Spacing.sm)
+                    .padding(.vertical, Theme.Spacing.xs + 2)
+                    .background(Theme.Colors.field, in: RoundedRectangle(cornerRadius: Theme.Radius.field))
+                    .overlay(RoundedRectangle(cornerRadius: Theme.Radius.field)
+                        .stroke(Theme.Colors.hairline, lineWidth: 1))
+                    .focused($focused)
+                    .onSubmit(commit)
+                    .onChange(of: focused) { _, isFocused in
+                        if !isFocused { adding = false; draft = "" }
+                    }
+            }
+        }
+    }
+
+    private func startAdding() {
+        adding = true
+        focused = true
+    }
+
+    /// Commit on Return; the funnel trims + validates, so we only guard the
+    /// trivially-empty case and clear the field.
+    private func commit() {
+        let name = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { onAddTag(name) }
+        draft = ""
+        adding = false
+    }
+}
+
+// MARK: - Chip
+
+/// A bordered rounded-6px pill (041 chip style) — the shared Collections / Tags
+/// chip. Optional leading ✦ (agent tags) and a trailing `+`/`×` affordance.
+private struct DetailChip: View {
+    enum Trailing {
+        case none
+        case add
+        case remove(() -> Void)
+    }
+
+    let text: String
+    let sparkle: Bool
+    let trailing: Trailing
+
+    init(_ text: String, sparkle: Bool = false, trailing: Trailing = .none) {
+        self.text = text
+        self.sparkle = sparkle
+        self.trailing = trailing
+    }
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            if sparkle {
+                Image(systemName: "sparkles").font(.system(size: 10))
+                    .foregroundStyle(Theme.Colors.inkSecondary)
+            }
+            Text(text).font(Theme.Typography.label).foregroundStyle(Theme.Colors.inkSecondary)
+            switch trailing {
+            case .none:
+                EmptyView()
+            case .add:
+                Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.inkSecondary)
+            case let .remove(action):
+                Button(action: action) {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.inkSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Remove")
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.sm)
+        .padding(.vertical, Theme.Spacing.xs + 2)
+        .background(Theme.Colors.field, in: RoundedRectangle(cornerRadius: Theme.Radius.chip))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.chip)
+            .stroke(Theme.Colors.hairline, lineWidth: 1))
     }
 }
 
@@ -872,25 +1067,31 @@ private struct TagFlowLayout: Layout {
 
 // MARK: - Shared building blocks
 
-/// A titled group in the detail sidebar.
+/// A titled group in the detail sidebar (041 · 20pt ink title over its rows).
 private struct DetailSection<Content: View>: View {
     let title: String
+    let spacing: CGFloat
     @ViewBuilder let content: Content
 
-    init(_ title: String, @ViewBuilder content: () -> Content) {
+    init(_ title: String, spacing: CGFloat = Theme.Spacing.sm, @ViewBuilder content: () -> Content) {
         self.title = title
+        self.spacing = spacing
         self.content = content()
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.headline)
-            content
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text(title)
+                .font(Theme.Typography.sectionTitle)
+                .foregroundStyle(Theme.Colors.inkPrimary)
+            VStack(alignment: .leading, spacing: spacing) {
+                content
+            }
         }
     }
 }
 
-/// A label-on-the-left, selectable-value-on-the-right metadata row.
+/// A label-on-the-left, selectable-value-on-the-right metadata row (041 · 12pt).
 private struct DetailRow: View {
     let label: String
     let value: String
@@ -902,41 +1103,23 @@ private struct DetailRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(label).foregroundStyle(.secondary)
+            Text(label).foregroundStyle(Theme.Colors.inkSecondary)
             Spacer(minLength: 12)
             Text(value)
+                .foregroundStyle(Theme.Colors.inkPrimary)
                 .multilineTextAlignment(.trailing)
                 .textSelection(.enabled)
         }
-        .font(.callout)
+        .font(Theme.Typography.label)
     }
 }
 
 /// Value formatting for the detail sidebar.
 private enum DetailFormat {
-    static func size(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-    }
-
-    static func date(_ date: Date) -> String {
-        date.formatted(date: .abbreviated, time: .shortened)
-    }
-
-    /// `m:ss` for a video's playback duration (seconds).
-    static func duration(_ seconds: Double) -> String {
-        let total = Int(seconds.rounded())
-        return String(format: "%d:%02d", total / 60, total % 60)
-    }
-
-    /// A human-facing label for an asset kind (003 · O1).
-    static func kind(_ kind: AssetKind) -> String {
-        switch kind {
-        case .image: "Image"
-        case .video: "Video"
-        case .tweet: "Tweet"
-        case .link: "Link"
-        case .color: "Color"
-        }
+    /// `dd/MM/yyyy` — the Figma "Saved" format (041), locale-independent.
+    static func savedDate(_ date: Date) -> String {
+        let c = Calendar.current.dateComponents([.day, .month, .year], from: date)
+        return String(format: "%02d/%02d/%04d", c.day ?? 0, c.month ?? 0, c.year ?? 0)
     }
 
     /// A human-facing label for a capture platform.

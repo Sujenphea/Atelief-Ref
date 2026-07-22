@@ -63,30 +63,32 @@ struct NavBreadcrumbTests {
 @Suite("Nav: route intents")
 struct NavRouteTests {
 
-    @Test("openCollection / openSpace push; goBack pops; goToRoot clears")
-    func pushPop() {
+    @Test("openCollection / openSpace select the sidebar destination + clear drill-down")
+    func sidebarSelection() {
         let nav = NavModel(initialPath: [])
         let c = UUID(), s = UUID()
+        nav.drillIntoCollection(UUID())          // seed some drill-down
         nav.openCollection(c)
-        #expect(nav.path == [.collection(c)])
+        #expect(nav.sidebarSelection == .collection(c))
+        #expect(nav.path.isEmpty)                // a sidebar selection resets path
         nav.openSpace(s)
-        #expect(nav.path == [.collection(c), .space(s)])
-        nav.goBack()
-        #expect(nav.path == [.collection(c)])
-        nav.goToRoot()
+        #expect(nav.sidebarSelection == .space(s))
         #expect(nav.path.isEmpty)
     }
 
-    @Test("pushing the same route twice is idempotent")
-    func idempotentPush() {
+    @Test("drillIntoCollection pushes; idempotent; goBack pops; goToRoot clears")
+    func drillPushPop() {
         let nav = NavModel(initialPath: [])
-        let c = UUID()
-        nav.openCollection(c)
-        nav.openCollection(c)
-        #expect(nav.path == [.collection(c)])
-        nav.openSpaces()
-        nav.openSpaces()
-        #expect(nav.path == [.collection(c), .spaces])
+        let a = UUID(), b = UUID()
+        nav.drillIntoCollection(a)
+        nav.drillIntoCollection(a)               // same id twice is idempotent
+        #expect(nav.path == [.collection(a)])
+        nav.drillIntoCollection(b)
+        #expect(nav.path == [.collection(a), .collection(b)])
+        nav.goBack()
+        #expect(nav.path == [.collection(a)])
+        nav.goToRoot()
+        #expect(nav.path.isEmpty)
     }
 
     @Test("goBack at the root gallery is a no-op")

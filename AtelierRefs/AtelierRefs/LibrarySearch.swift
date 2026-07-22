@@ -243,6 +243,13 @@ private struct LibrarySearchResults: View {
     @State private var hoveredID: UUID?
     @Environment(\.displayScale) private var displayScale
 
+    // Marquee drag-select (009 · N6): result-cell frames captured in a shared named
+    // coordinate space, hit-tested by the pure `marqueeRect`/`marqueeIndices`.
+    @State private var cardFrames: [UUID: CGRect] = [:]
+    @State private var marqueeStart: CGPoint?
+    @State private var marqueeCurrent: CGPoint?
+    private static let gridSpace = "searchResultsContent"
+
     /// The widest a result cell can draw — the `columns` maximum below. Kept next
     /// to it so the thumbnail bucket can't drift from the layout that sets it.
     private static let maxCellSide: CGFloat = 140
@@ -279,15 +286,25 @@ private struct LibrarySearchResults: View {
 
     private var resultsGrid: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(search.results, id: \.asset.id) { detail in
-                    resultCell(detail)
+            ZStack(alignment: .topLeading) {
+                // The drag catcher sits BEHIND the cells: a drag on empty area starts
+                // a marquee; a drag on a cell drags the asset(s) out (see resultCell).
+                marqueeCatcher
+                LazyVGrid(columns: columns, spacing: 8) {
+                    ForEach(search.results, id: \.asset.id) { detail in
+                        resultCell(detail)
+                    }
                 }
+                .padding(12)
+                marqueeOverlay
             }
-            .padding(12)
+            .coordinateSpace(.named(Self.gridSpace))
         }
         .focusable()
         .focusEffectDisabled()
+        .overlay(alignment: .bottom) {
+            if selection.isSelecting { selectionBar }
+        }
         // Prune a stale multi-selection whenever the query's results change.
         .onChange(of: search.resultsVersion) { _, _ in
             selection = selection.pruned(to: orderIDs)
@@ -357,7 +374,92 @@ private struct LibrarySearchResults: View {
             else if hoveredID == id { hoveredID = nil }
         }
         .animation(.easeInOut(duration: 0.12), value: showsCircle)
+        // Drag the asset(s) OUT onto a sidebar collection/space row. A selected cell
+        // carries the whole selection; an unselected cell carries just itself. Search
+        // hits are membership-less, so the sentinel source makes every drop a COPY
+        // (add) — never a move (009 · N3 / N6).
+        .draggable(dragPayload(for: id))
+        // Publish this cell's frame for the marquee hit-test.
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.gridSpace)) } action: {
+            cardFrames[id] = $0
+        }
         .contextMenu { cellMenu(for: detail) }
+    }
+
+    // MARK: - Marquee + action bar (009 · N6)
+
+    /// The transparent layer behind the cells that begins a marquee on an empty-area
+    /// drag and clears the selection on an empty-area click.
+    private var marqueeCatcher: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.gridSpace))
+                    .onChanged { value in
+                        marqueeStart = value.startLocation
+                        marqueeCurrent = value.location
+                        updateMarqueeSelection()
+                    }
+                    .onEnded { _ in
+                        marqueeStart = nil
+                        marqueeCurrent = nil
+                    })
+            .onTapGesture { if selection.isSelecting { apply(.clear) } }
+    }
+
+    @ViewBuilder
+    private var marqueeOverlay: some View {
+        if let start = marqueeStart, let current = marqueeCurrent {
+            let rect = marqueeRect(from: start, to: current)
+            Rectangle()
+                .fill(Color.accentColor.opacity(0.12))
+                .overlay(Rectangle().stroke(Color.accentColor, lineWidth: 1))
+                .frame(width: rect.width, height: rect.height)
+                .offset(x: rect.minX, y: rect.minY)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func updateMarqueeSelection() {
+        guard let start = marqueeStart, let current = marqueeCurrent else { return }
+        let rect = marqueeRect(from: start, to: current)
+        let valid = Set(orderIDs)
+        let entries = cardFrames.filter { valid.contains($0.key) }
+        let ids = Array(entries.keys)
+        let frames = ids.map { entries[$0]! }
+        let hits = Set(marqueeIndices(in: rect, frames: frames).map { ids[$0] })
+        apply(.marquee(hits: hits, base: []))
+    }
+
+    /// The floating "N selected · Clear · Delete" bar, shown while a selection is
+    /// active. Delete routes through the same staged/undoable asset delete as the
+    /// keyboard and context menu.
+    private var selectionBar: some View {
+        HStack(spacing: 12) {
+            Text("\(selection.ids.count) selected")
+                .font(.callout.weight(.medium))
+            Button("Clear") { apply(.clear) }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            Button(role: .destructive) { requestDeleteTargets() } label: {
+                Label("Delete \(selection.ids.count)", systemImage: "trash")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.primary.opacity(0.08)))
+        .shadow(radius: 8, y: 2)
+        .padding(.bottom, 16)
+    }
+
+    /// The payload a cell drag carries: the whole selection when the dragged cell is
+    /// part of it, else just that cell. The sentinel source marks it membership-less
+    /// so drops COPY (add) rather than move (009 · N3).
+    private func dragPayload(for id: UUID) -> AssetDragPayload {
+        let ids = (selection.isSelecting && selection.ids.contains(id))
+            ? Array(selection.ids) : [id]
+        return AssetDragPayload(assetIDs: ids, sourceCollectionID: AssetDragPayload.nilSourceID)
     }
 
     private func selectionCircle(id: UUID, isSelected: Bool) -> some View {
@@ -471,6 +573,12 @@ private struct SearchDetailOverlay: View {
                     tags: tags.tags,
                     onAddTag: { tags.add($0) },
                     onRemoveTag: { tags.remove($0) },
+                    collections: tags.collections,
+                    allCollections: tags.allCollections,
+                    onAddToCollection: { tags.addToCollection($0) },
+                    onRemoveFromCollection: { tags.removeFromCollection($0) },
+                    onSetName: { tags.setName($0) },
+                    onSetNote: { tags.setNote($0) },
                     actions: ItemDetailActions(
                         openSource: hasSource ? { model.openSourceURL(sourceURL) } : nil,
                         openBlob: hasBlob ? { model.openBlob(asset: asset) } : nil,

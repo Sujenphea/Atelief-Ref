@@ -1364,6 +1364,18 @@ final class IngestionModel: ObservableObject {
         announceUndoable(message)
     }
 
+    /// Reload the current folder + folder list after an EXTERNAL membership change
+    /// (the Item Detail "Collections" chips, 041 — which mutate through the shared
+    /// asset store, not this model). Refreshes the grid + sidebar counts so the
+    /// edit is reflected behind the overlay; if the change dropped the shown item
+    /// from the current folder, the `contentsVersion` bump drives the overlay's
+    /// auto-dismiss, matching ``removeFromFolder(assetIDs:)``.
+    func reloadAfterMembershipChange() {
+        guard services != nil else { return }
+        Task { await refreshFolders() }
+        loadContents(of: selectedFolderID)
+    }
+
     /// MOVE assets out of the current folder into `targetID` — the atomic triage
     /// verb (009 · N1). One transaction; the moved items leave this folder, so the
     /// reload prunes them from the selection. A `from == to` / empty set is a
@@ -1728,14 +1740,20 @@ final class IngestionModel: ObservableObject {
     /// board). The underlying assets are never touched, so a restore reinstates the
     /// placements exactly. Clears the pending state first so the dialog dismisses.
     func confirmSpaceDeletion() {
-        guard let services, let pending = pendingSpaceDeletion else { return }
+        guard let pending = pendingSpaceDeletion else { return }
         pendingSpaceDeletion = nil
-        let id = pending.id
-        let name = pending.name
+        deleteSpaceRecoverableWithUndo(id: pending.id, name: pending.name)
+    }
+
+    /// Delete ONE space recoverably + register its ⌘Z undo. Shared by the single
+    /// confirmed delete and the Home marquee batch delete (below).
+    private func deleteSpaceRecoverableWithUndo(id: UUID, name: String) {
+        guard let services else { return }
         enqueueUndoable {
             do {
                 let backup = try await services.deleteSpaceRecoverable(id: id)
                 await self.refreshSpaces()
+                await self.refreshSpaceStackPreviews()
                 self.status = "Deleted space “\(name).”"
                 self.registerReversible("Delete Space",
                     primary: { self.enqueueUndoable { await self.applyDeleteSpaceAgain(id) } },
@@ -1743,6 +1761,19 @@ final class IngestionModel: ObservableObject {
             } catch {
                 self.lastError = Self.message(for: error)
             }
+        }
+    }
+
+    /// Delete a marquee selection of Home cards (009 · N6) after a single
+    /// confirmation. Collections are removed fire-and-forget (``deleteFolder``
+    /// already guards Unsorted); each space is removed recoverably with its own
+    /// ⌘Z undo, mirroring the single-space delete. The grids refresh via those
+    /// paths (`perform` for folders, `refreshSpaces` for spaces).
+    func deleteCards(collectionIDs: [UUID], spaceIDs: [UUID]) {
+        for id in collectionIDs { deleteFolder(id: id) }
+        for id in spaceIDs {
+            let name = spaces.first { $0.id == id }?.name ?? ""
+            deleteSpaceRecoverableWithUndo(id: id, name: name)
         }
     }
 

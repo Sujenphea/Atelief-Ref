@@ -39,6 +39,13 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
     public var downloadState: DownloadState
     /// When captured.
     public var createdAt: Date
+    /// A user-given display name for the item (041 · Details). `nil` until the
+    /// user names it — the UI falls back to the source title / kind. Added by
+    /// migration v10.
+    public var name: String?
+    /// A free-form user note on the item (041 · Details). `nil` until written.
+    /// Added by migration v10.
+    public var note: String?
     /// FK → ``Source``. **Required** — where the asset came from.
     public var sourceId: UUID
     /// How many times this asset's detail page has been opened (007 · sort). A
@@ -69,6 +76,7 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         case fileSize = "file_size"
         case downloadState = "download_state"
         case createdAt = "created_at"
+        case name, note
         case sourceId = "source_id"
         case viewCount = "view_count"
         case lastViewedAt = "last_viewed_at"
@@ -88,6 +96,8 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         fileSize: Int?,
         downloadState: DownloadState,
         createdAt: Date,
+        name: String? = nil,
+        note: String? = nil,
         sourceId: UUID,
         viewCount: Int = 0,
         lastViewedAt: Date? = nil,
@@ -105,6 +115,8 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         self.fileSize = fileSize
         self.downloadState = downloadState
         self.createdAt = createdAt
+        self.name = name
+        self.note = note
         self.sourceId = sourceId
         self.viewCount = viewCount
         self.lastViewedAt = lastViewedAt

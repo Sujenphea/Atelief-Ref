@@ -17,8 +17,19 @@ import Foundation
 final class AssetTagsStore: ObservableObject {
     /// The bound asset's tags (name-ordered), refreshed after every edit.
     @Published private(set) var tags: [Tag] = []
+    /// The collections the bound asset belongs to (name-ordered), refreshed after
+    /// every membership edit (041 · Details "Collections" chips).
+    @Published private(set) var collections: [Collection] = []
+    /// Every collection in the library — the "Add" picker's menu (041). Loaded on
+    /// bind; a small query, and collections rarely change while a page is open.
+    @Published private(set) var allCollections: [Collection] = []
     /// The last write/read failure, for the host to surface on its alert.
     @Published var lastError: String?
+    /// Fired (on the main actor) after a collection membership add/remove commits,
+    /// so the host can refresh state the store doesn't own — the collection grid,
+    /// sidebar counts, stack previews (041). Without it the chips update but the
+    /// grid behind the overlay goes stale, reading as "the edit didn't take."
+    var onMembershipChanged: (() -> Void)?
 
     private let services: AppServices
     /// The asset the store currently reflects; `nil` when unbound.
@@ -28,10 +39,12 @@ final class AssetTagsStore: ObservableObject {
         self.services = services
     }
 
-    /// Point the store at `assetID` (or clear with `nil`) and load its tags.
+    /// Point the store at `assetID` (or clear with `nil`) and load its tags +
+    /// collection memberships.
     func bind(to assetID: UUID?) {
         self.assetID = assetID
         tags = []
+        collections = []
         guard let assetID else { return }
         refresh(assetID)
     }
@@ -63,6 +76,64 @@ final class AssetTagsStore: ObservableObject {
         }
     }
 
+    // MARK: - Name / Note (041)
+
+    /// Persist the asset's display name (empty → cleared). Fire-and-forget; the
+    /// view's local draft is the edit source of truth, so no reload is needed.
+    func setName(_ name: String) {
+        guard let assetID else { return }
+        Task {
+            do { try await services.setName(name, for: assetID) }
+            catch { lastError = "\(error)" }
+        }
+    }
+
+    /// Persist the asset's note (empty → cleared). Fire-and-forget, as `setName`.
+    func setNote(_ note: String) {
+        guard let assetID else { return }
+        Task {
+            do { try await services.setNote(note, for: assetID) }
+            catch { lastError = "\(error)" }
+        }
+    }
+
+    // MARK: - Collections (041)
+
+    /// Add the bound asset to `collection`, then reload the membership chips.
+    /// Idempotent — an already-member asset is a no-op in the funnel.
+    func addToCollection(_ collection: Collection) {
+        guard let assetID else { return }
+        Task {
+            do {
+                try await services.addAssets([assetID], to: collection.id)
+                reloadIfCurrent(assetID)
+                onMembershipChanged?()
+            } catch {
+                lastError = "\(error)"
+            }
+        }
+    }
+
+    /// Remove the bound asset from `collection`, then reload the chips. Never
+    /// orphans: if that was the asset's LAST membership, it falls back to the
+    /// Unsorted home (mirroring move/ingest semantics), so a removed real
+    /// collection re-homes to Unsorted rather than vanishing from every folder.
+    func removeFromCollection(_ collection: Collection) {
+        guard let assetID else { return }
+        Task {
+            do {
+                try await services.removeAssets([assetID], from: collection.id)
+                if try await services.collections(for: assetID).isEmpty {
+                    try await services.addAssets([assetID], to: Collection.unsortedID)
+                }
+                reloadIfCurrent(assetID)
+                onMembershipChanged?()
+            } catch {
+                lastError = "\(error)"
+            }
+        }
+    }
+
     /// Reload only if `assetID` is still the bound asset (an edit that lands after
     /// the page was closed / re-bound must not repopulate a stale asset).
     private func reloadIfCurrent(_ assetID: UUID) {
@@ -73,9 +144,13 @@ final class AssetTagsStore: ObservableObject {
     private func refresh(_ assetID: UUID) {
         Task {
             do {
-                let loaded = try await services.tags(for: assetID)
+                let loadedTags = try await services.tags(for: assetID)
+                let loadedCollections = try await services.collections(for: assetID)
+                let loadedAll = try await services.listCollections()
                 guard self.assetID == assetID else { return }
-                tags = loaded
+                tags = loadedTags
+                collections = loadedCollections
+                allCollections = loadedAll
             } catch {
                 lastError = "\(error)"
             }

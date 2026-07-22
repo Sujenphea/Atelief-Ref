@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -108,7 +108,10 @@ struct MigrationAppendOnlyTests {
                 db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier"
             )
         }
-        #expect(applied == Self.committedIdentifiers)
+        // Compare as sets: grdb_migrations orders identifiers lexically, where
+        // "v10" falls between "v1" and "v2" — the applied SET, not its string
+        // order, is what must equal the committed list.
+        #expect(Set(applied) == Set(Self.committedIdentifiers))
     }
 }
 
