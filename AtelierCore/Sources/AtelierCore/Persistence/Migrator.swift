@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -91,6 +91,14 @@ enum Migrator {
         // released: never edit this body.
         migrator.registerMigration("v8") { db in
             try createV8Schema(db)
+        }
+
+        // v9 — normalize tag names: strip a leading `#` from stored `tag.name`
+        // (a UI affordance that used to leak into the name, making `sf` search
+        // miss a `#sf` tag). Data-only, no schema change; merges onto a canonical
+        // twin where one exists. SHIPPED once released: never edit this body.
+        migrator.registerMigration("v9") { db in
+            try normalizeV9TagNames(db)
         }
 
         return migrator
@@ -553,6 +561,66 @@ enum Migrator {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            """)
+    }
+
+    // MARK: - v9
+
+    /// Data-only: normalize `tag.name` by dropping a single leading `#` (matching
+    /// `Validation.normalizedTagName`). `trim(substr(name, 2))` computes the
+    /// canonical form. Because `(name, source)` has no unique constraint, a hashed
+    /// tag may collide with an existing canonical twin — those are merged (join
+    /// rows repointed, hashed row deleted) before renaming the rest. Idempotent:
+    /// after it runs no `tag.name` begins with `#`, so a re-run is a no-op.
+    /// Internal (not private) so the migration test can re-invoke it for the
+    /// idempotency assertion; not part of the public surface.
+    static func normalizeV9TagNames(_ db: Database) throws {
+        // A hashed tag is "removable" when it either normalizes to empty ("#"
+        // garbage) or has a canonical twin (same source, same normalized name) to
+        // merge into. NB: foreign keys are OFF during a GRDB migration (a full
+        // `foreign_key_check` runs afterward), so ON DELETE CASCADE does NOT fire
+        // here — join rows must be deleted EXPLICITLY or the post-migration check
+        // would flag them as dangling.
+        let removableHashed = """
+            SELECT hashed.id FROM tag hashed
+            WHERE hashed.name LIKE '#%'
+              AND (
+                trim(substr(hashed.name, 2)) = ''
+                OR EXISTS (
+                    SELECT 1 FROM tag canon
+                    WHERE canon.source = hashed.source
+                      AND canon.name = trim(substr(hashed.name, 2))
+                      AND canon.id <> hashed.id
+                )
+              )
+            """
+
+        // 1. Merge: point each hashed tag's assets at its canonical twin.
+        //    INSERT OR IGNORE respects the composite PK, so an asset already
+        //    carrying the twin is untouched.
+        try db.execute(sql: """
+            INSERT OR IGNORE INTO asset_tag (asset_id, tag_id)
+            SELECT at.asset_id, canon.id
+            FROM asset_tag at
+            JOIN tag hashed ON hashed.id = at.tag_id
+            JOIN tag canon
+              ON canon.source = hashed.source
+             AND canon.name = trim(substr(hashed.name, 2))
+             AND canon.id <> hashed.id
+            WHERE hashed.name LIKE '#%';
+            """)
+
+        // 2. Explicitly drop the join rows of every removable hashed tag.
+        try db.execute(sql: "DELETE FROM asset_tag WHERE tag_id IN (\(removableHashed));")
+
+        // 3. Delete the removable hashed tags themselves (twin-merged or garbage).
+        try db.execute(sql: "DELETE FROM tag WHERE id IN (\(removableHashed));")
+
+        // 4. Rename the remaining hashed tags (no twin, non-empty) in place.
+        try db.execute(sql: """
+            UPDATE tag
+            SET name = trim(substr(name, 2))
+            WHERE name LIKE '#%';
             """)
     }
 }

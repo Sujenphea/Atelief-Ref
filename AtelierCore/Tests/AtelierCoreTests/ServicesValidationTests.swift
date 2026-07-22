@@ -25,6 +25,28 @@ struct ServicesValidationTests {
         }
     }
 
+    // MARK: tagName — leading '#' is a UI affordance, not part of the name
+
+    @Test("tagName strips a leading '#' and trims", arguments: [
+        ("#sf", "sf"), ("# sf", "sf"), ("  #sf  ", "sf"), ("sf", "sf"),
+        ("c#", "c#"),               // a non-leading '#' is preserved
+    ] as [(String, String)])
+    func tagNameStripsHash(_ input: String, _ expected: String) throws {
+        #expect(try Validation.tagName(input) == expected)
+    }
+
+    @Test("tagName rejects empty / '#'-only", arguments: ["", "  ", "#", "#  "])
+    func tagNameRejectsEmpty(_ input: String) {
+        #expect(throws: AtelierError.invalidName) { try Validation.tagName(input) }
+    }
+
+    @Test("normalizedTagName is non-throwing and may return empty")
+    func normalizedTagNameEmpty() {
+        #expect(Validation.normalizedTagName("#") == "")
+        #expect(Validation.normalizedTagName("#sf") == "sf")
+        #expect(Validation.normalizedTagName("  plain ") == "plain")
+    }
+
     // MARK: dimensions
 
     @Test("dimensions accepts strictly positive")

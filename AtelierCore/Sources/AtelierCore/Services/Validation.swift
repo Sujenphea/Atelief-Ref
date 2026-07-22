@@ -24,11 +24,24 @@ enum Validation {
         return trimmed
     }
 
-    /// Trim a tag name and reject empty/whitespace-only (`.invalidName`).
-    /// Returns the trimmed name to persist (mirrors ``collectionName``).
+    /// Normalize a tag name for persist/lookup: trim, drop a single leading `#`
+    /// (a UI affordance — the search prompt reads "…or #tag" — not part of the
+    /// stored name), then trim again (handles "# sf"). Non-throwing; may return
+    /// empty. Keeps case (search LIKE/FTS are ASCII-case-insensitive).
+    static func normalizedTagName(_ name: String) -> String {
+        var s = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("#") {
+            s = String(s.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return s
+    }
+
+    /// Trim + normalize a tag name and reject empty/whitespace-only
+    /// (`.invalidName`). Strips a leading `#` so `#sf` and `sf` are one tag and
+    /// the `sf` search-vocabulary prefix resolves it. Returns the name to persist.
     @discardableResult
     static func tagName(_ name: String) throws -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = normalizedTagName(name)
         guard !trimmed.isEmpty else { throw AtelierError.invalidName }
         return trimmed
     }

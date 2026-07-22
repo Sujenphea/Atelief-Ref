@@ -215,6 +215,58 @@ struct ServicesTagSearchTests {
         #expect(Set(collected) == Set(tagged))            // exactly the tagged set
     }
 
+    // MARK: free text matches tag names (the "#sf" search miss)
+
+    @Test("free text matches an asset by its tag name (typed, not tokenized)")
+    func freeTextMatchesTagName() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let tagged = try await seed(services, into: c.id, title: "Untitled")
+        _ = try await seed(services, into: c.id, title: "Untitled")   // untagged noise
+        _ = try await services.applyTag("sf", to: tagged, source: .user)
+
+        // Typing the tag as free text (no token selection) finds the tagged item…
+        #expect(try await services.searchAssets(text: "sf").map(\.asset.id) == [tagged])
+        // …and a leading '#' in the query is stripped, so "#sf" finds it too.
+        #expect(try await services.searchAssets(text: "#sf").map(\.asset.id) == [tagged])
+        // A non-matching term still returns nothing.
+        #expect(try await services.searchAssets(text: "zzz").isEmpty)
+    }
+
+    @Test("applyTag strips a leading '#' so 'sf' finds a '#sf'-entered tag")
+    func applyTagNormalizesHash() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let a = try await seed(services, into: c.id)
+        let tag = try await services.applyTag("#sf", to: a, source: .user)
+        #expect(tag.name == "sf")   // stored without the '#'
+        #expect(try await services.searchAssets(text: "sf").map(\.asset.id) == [a])
+        // The '#' and bare forms fold into ONE tag row (find-or-create by name).
+        let again = try await services.applyTag("sf", to: a, source: .user)
+        #expect(again.id == tag.id)
+        #expect(try await services.tags(for: a).count == 1)
+    }
+
+    @Test("free text tag match still finds a legacy '#'-in-name tag")
+    func freeTextMatchesLegacyHashName() async throws {
+        // A tag row whose stored name still carries '#' (pre-fix data): the
+        // CONTAINS match means "sf" and "#sf" both surface it, no rename needed.
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let a = try await seed(services, into: c.id)
+        // Insert the row directly to simulate a name that kept its '#'.
+        try temp.database.write { db in
+            let tag = Tag(id: UUID(), name: "#sf", source: .user)
+            try tag.insert(db)
+            try AssetTag(assetID: a, tagID: tag.id).insert(db)
+        }
+        #expect(try await services.searchAssets(text: "sf").map(\.asset.id) == [a])
+        #expect(try await services.searchAssets(text: "#sf").map(\.asset.id) == [a])
+    }
+
     // MARK: vocabulary
 
     @Test("tagVocabulary prefix-matches case-insensitively, includes both sources")

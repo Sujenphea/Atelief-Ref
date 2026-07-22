@@ -1604,8 +1604,18 @@ public final class AppServices: Sendable {
             // rowid → id.
             if let trimmedText, !trimmedText.isEmpty {
                 let match = Self.ftsMatchQuery(trimmedText)
-                request = request.filter(sql: """
-                    (source_id IN (
+                // Tags are not in any FTS index (their text never enters
+                // `search_text`), so free text alone used to miss a tagged item
+                // entirely — the user had to select the tag as a token. A LIKE
+                // CONTAINS match on `tag.name` folds tag names into free text.
+                // The needle is normalized the same way tags are (`#` stripped),
+                // so querying "sf" or "#sf" both find a tag stored as "sf" (and,
+                // via CONTAINS, a legacy "#sf" too). A `#`-only query normalizes
+                // to empty → the tag branch is dropped (no match-everything).
+                // Leading-wildcard LIKE can't use an index — fine at this scale.
+                let tagNeedle = Validation.normalizedTagName(trimmedText)
+                var sql = """
+                    source_id IN (
                         SELECT source.id FROM source
                         JOIN source_fts ON source_fts.rowid = source.rowid
                         WHERE source_fts MATCH ?
@@ -1619,8 +1629,21 @@ public final class AppServices: Sendable {
                         SELECT an.asset_id FROM asset_analysis an
                         JOIN analysis_fts ON analysis_fts.rowid = an.rowid
                         WHERE analysis_fts MATCH ?
-                     ))
-                    """, arguments: [match, match, match])
+                     )
+                    """
+                var args: [String] = [match, match, match]
+                if !tagNeedle.isEmpty {
+                    sql += """
+                    \n OR asset.id IN (
+                        SELECT atag.asset_id FROM asset_tag atag
+                        JOIN tag ON tag.id = atag.tag_id
+                        WHERE tag.name LIKE ? ESCAPE '\\'
+                     )
+                    """
+                    args.append("%" + Self.escapeLikePrefix(tagNeedle) + "%")
+                }
+                request = request.filter(sql: "(\(sql))",
+                                         arguments: StatementArguments(args))
             }
 
             // Collection scope (007 · S3): membership subquery. Composes as a
@@ -1715,7 +1738,9 @@ public final class AppServices: Sendable {
     /// is absent (the tag row itself is left intact for other assets). Through
     /// the write funnel.
     public func removeTag(_ name: String, from assetID: UUID, source: TagSource) async throws {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Same normalization as apply — so removing by a typed "#sf" matches the
+        // stored "sf" (chips already pass the normalized name; this is robustness).
+        let trimmed = Validation.normalizedTagName(name)
         try await write { db in
             guard let tag = try Tag
                 .filter(Column("name") == trimmed)
