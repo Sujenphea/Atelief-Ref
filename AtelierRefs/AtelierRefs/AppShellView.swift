@@ -13,6 +13,7 @@
 //  sidebar destinations; Sweeps / Snapshots stay as sheets.
 //
 
+import AppKit
 import AtelierCore
 import AtelierIngestion
 import SwiftUI
@@ -128,34 +129,48 @@ struct AppShellView: View {
         }
     }
 
-    /// The floating circular add affordance (Figma) — white glyph on ink.
+    /// The floating circular add affordance (Figma) — white glyph on ink. The circle
+    /// is a ZStack SIBLING behind the menu (drawn directly, so it always renders); the
+    /// `Menu` above it carries only the glyph — a `.background`/label fill on a
+    /// `.borderlessButton` menu doesn't render, which left it a bare plus.
     private var floatingAdd: some View {
-        Menu {
-            if case .collection(let id) = nav.sidebarSelection {
-                Button("New Space from Collection") {
-                    Task {
-                        if let sid = await model.newSpaceFromCollection(id) { nav.openSpace(sid) }
+        ZStack {
+            // Both visuals are ZStack SIBLINGS drawn directly — nothing depends on the
+            // borderless `Menu` rendering its label (it renders neither fill nor glyph
+            // reliably). The Menu sits on top with a clear label as the click target.
+            Circle()
+                .fill(Theme.Colors.inkPrimary)
+                .frame(width: 40, height: 40)
+                .elevation(.hover)
+
+            Image(systemName: "plus")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Color(hex: 0x141416))
+
+            Menu {
+                if case .collection(let id) = nav.sidebarSelection {
+                    Button("New Space from Collection") {
+                        Task {
+                            if let sid = await model.newSpaceFromCollection(id) { nav.openSpace(sid) }
+                        }
                     }
                 }
+                Button("Add Color…") {
+                    // Adds a neutral placeholder swatch to the active collection; the
+                    // detail/inspector edits the hex. (Add-Color/Link pickers relocate
+                    // here from the old toolbar — a follow-up wires the pickers.)
+                    model.addColor(hex: "#2C2C30")
+                }
+            } label: {
+                Color.clear
+                    .frame(width: 40, height: 40)
+                    .contentShape(Circle())
             }
-            Button("Add Color…") {
-                // Adds a neutral placeholder swatch to the active collection; the
-                // detail/inspector edits the hex. (Add-Color/Link pickers relocate
-                // here from the old toolbar — a follow-up wires the pickers.)
-                model.addColor(hex: "#2C2C30")
-            }
-        } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(Color(hex: 0x141416))
-                .frame(width: 44, height: 44)
-                .background(Circle().fill(Theme.Colors.inkPrimary))
-                .elevation(.hover)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .padding(Theme.Spacing.xl)
+        .padding(Theme.Spacing.xxl)
     }
 
     // MARK: - Routing

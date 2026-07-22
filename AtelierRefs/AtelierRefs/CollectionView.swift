@@ -169,14 +169,10 @@ struct CollectionView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            // The stack row is the Unsorted screen's triage surface (009 · N4):
-            // drop the selection onto a root collection to move it out of Unsorted.
-            // Gate the data-bearing rows on `isLoaded` too: they read the same
-            // shared model state as the grid, so showing them mid-switch would flash
-            // the PREVIOUS collection's stacks / subfolders alongside the grid.
-            if isLoaded, collectionID == model.unsortedFolderID, !model.stackPreviews.isEmpty {
-                stackRow
-            }
+            // Gate the subfolder chips on `isLoaded`: they read the same shared model
+            // state as the grid, so showing them mid-switch would flash the PREVIOUS
+            // collection's subfolders alongside the grid. (The Unsorted stack row was
+            // removed — drops still route out of Unsorted via the trailing drop rail.)
             if isLoaded, !model.subfolders.isEmpty {
                 subfolderChips
             }
@@ -202,24 +198,6 @@ struct CollectionView: View {
                     .padding(4)
                     .allowsHitTesting(false)
             }
-        }
-    }
-
-    /// The Unsorted-only horizontal row of collection stacks (009 · N4). Each card
-    /// is a drop target that MOVES (⌥ copies) the dragged selection out of Unsorted
-    /// into that collection, and navigates into it on a plain click.
-    private var stackRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(model.stackPreviews, id: \.collection.id) { preview in
-                    StackDropTarget(
-                        preview: preview,
-                        thumbnailURL: { model.thumbnailURL(forBlobHash: $0) },
-                        onNavigate: { nav.openCollection(preview.collection.id) },
-                        onDrop: { handleCollectionDrop($0, into: preview.collection.id) })
-                }
-            }
-            .padding(.vertical, 2)
         }
     }
 
@@ -275,19 +253,21 @@ struct CollectionView: View {
                 .redacted(reason: isLoaded ? [] : .placeholder)
             importStatus
             Spacer()
-            Button {
-                paste()
-            } label: {
-                Label("Paste", systemImage: "doc.on.clipboard")
-            }
-            .keyboardShortcut("v", modifiers: .command)
-            .disabled(!model.isReady)
+        }
+        // The visible Paste button was removed; ⌘V still pastes into this collection
+        // via this hidden shortcut-only button.
+        .background {
+            Button("Paste", action: paste)
+                .keyboardShortcut("v", modifiers: .command)
+                .disabled(!model.isReady)
+                .hidden()
         }
     }
 
-    /// Live import feedback, re-homed from the old dropzone (3A): a compact
-    /// progress bar + count while a drop/paste batch runs, else the latest status
-    /// line. Browser/Instagram sweeps report separately via `BulkSweepsView`.
+    /// Live import feedback, re-homed from the old dropzone (3A): a compact progress
+    /// bar + count while a drop/paste batch runs. The idle status line ("Library
+    /// ready…") was removed — only active-batch progress shows now. Browser/Instagram
+    /// sweeps report separately via `BulkSweepsView`.
     @ViewBuilder
     private var importStatus: some View {
         if let progress = model.progress {
@@ -299,10 +279,6 @@ struct CollectionView: View {
                 Text("\(progress.completed) / \(progress.total)")
                     .font(.caption).monospacedDigit().foregroundStyle(.secondary)
             }
-        } else if let status = model.status {
-            Text(status)
-                .font(.caption).foregroundStyle(.secondary)
-                .lineLimit(1).truncationMode(.tail)
         }
     }
 
