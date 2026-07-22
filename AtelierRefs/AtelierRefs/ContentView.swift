@@ -5,6 +5,8 @@
 //  Created by Sujen Phea on 30/06/2026.
 //
 
+import AppKit
+import AtelierCore
 import SwiftUI
 
 // The app root: owns the shared ``IngestionModel`` and ``NavModel`` and hosts the
@@ -28,6 +30,15 @@ struct ContentView: View {
 
     var body: some View {
         AppShellView(model: model, nav: nav, gridPrefs: gridPrefs)
+            // Dark-studio identity (D1): commit to a dark appearance so the app's
+            // system semantic colours resolve to their dark variants for free, and
+            // the AppKit grid inherits the window appearance.
+            .preferredColorScheme(.dark)
+            // Keep the native translucent window (D1b): a behind-window material
+            // ground so the desktop shows through the window's margins + the sidebar
+            // rail. Opaque studio panels are drawn on top of this.
+            .background(VisualEffectBackground().ignoresSafeArea())
+            .onAppear { NSApp.appearance = NSAppearance(named: .darkAqua) }
             // First-run setup guide — surfaces the (previously undiscoverable)
             // extension-pairing flow. Gated so it shows once, replayable from ⌘,.
             .sheet(isPresented: Binding(

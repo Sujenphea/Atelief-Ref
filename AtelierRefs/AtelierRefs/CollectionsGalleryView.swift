@@ -26,35 +26,28 @@ struct CollectionsGalleryView: View {
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16)]
 
     var body: some View {
-        LibrarySearchable(model: model, collectionID: nil) {
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(orderedRoots) { collection in
-                        Button {
-                            nav.openCollection(collection.id)
-                        } label: {
-                            CoverCard(
-                                title: collection.name,
-                                subtitle: nil,
-                                coverHash: model.collectionCovers[collection.id],
-                                coverURL: coverURL(for: collection.id),
-                                placeholderSymbol: "folder",
-                                accent: collection.id == model.unsortedFolderID)
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu { cardMenu(for: collection) }
+        // 006 shell — the top-level Home overview. The old `.searchable` field +
+        // "New Collection" toolbar button are gone: Search is a sidebar destination
+        // and New Collection is the sidebar's Collections "+".
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(orderedRoots) { collection in
+                    Button {
+                        nav.openCollection(collection.id)
+                    } label: {
+                        CoverCard(
+                            title: collection.name,
+                            subtitle: nil,
+                            coverHash: model.collectionCovers[collection.id],
+                            coverURL: coverURL(for: collection.id),
+                            placeholderSymbol: "folder",
+                            accent: collection.id == model.unsortedFolderID)
                     }
-                }
-                .padding(16)
-            }
-        }
-        .navigationTitle("Collections")
-        .toolbar {
-            ToolbarItem {
-                Button { showNewCollection = true } label: {
-                    Label("New Collection", systemImage: "folder.badge.plus")
+                    .buttonStyle(.plain)
+                    .contextMenu { cardMenu(for: collection) }
                 }
             }
+            .padding(Theme.Spacing.xl)
         }
         .task {
             await model.refreshFolders()

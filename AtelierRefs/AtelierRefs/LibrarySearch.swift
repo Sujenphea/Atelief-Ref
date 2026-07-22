@@ -153,8 +153,10 @@ final class LibrarySearchModel: ObservableObject {
 
 // MARK: - Searchable container
 
-/// Wraps a screen's `content`, adds the token search field, and swaps in the
-/// results grid (with an asset-scoped detail overlay) while a search is active.
+/// Wraps a screen's `content`, adds the NATIVE `.searchable` token field (in the window
+/// toolbar), and swaps in the results grid (with an asset-scoped detail overlay) while a
+/// search is active. Native means Esc-to-clear, the focus ring, the cancel button, and
+/// the standard scope bar all come for free.
 struct LibrarySearchable<Content: View>: View {
     @ObservedObject var model: IngestionModel
     /// The screen's collection, or `nil` for the global gallery.
@@ -166,14 +168,25 @@ struct LibrarySearchable<Content: View>: View {
 
     var body: some View {
         ZStack {
-            if search.isActive {
-                LibrarySearchResults(model: model, search: search) { asset in
-                    model.recordView(assetID: asset.asset.id)
-                    detail = asset
+            Group {
+                if search.isActive {
+                    LibrarySearchResults(model: model, search: search) { asset in
+                        model.recordView(assetID: asset.asset.id)
+                        detail = asset
+                    }
+                } else {
+                    content()
                 }
-            } else {
-                content()
             }
+            // URL-bar behaviour: clicking anywhere in the content — including empty
+            // space — blurs the native search field. Guarded to `NSText` (the field
+            // editor) so it only fires while a text field is being edited, never
+            // interfering with grid selection / keyboard nav.
+            .simultaneousGesture(TapGesture().onEnded {
+                if let window = NSApp.keyWindow, window.firstResponder is NSText {
+                    window.makeFirstResponder(nil)
+                }
+            })
 
             if let services = model.services, detail != nil {
                 SearchDetailOverlay(
@@ -192,13 +205,13 @@ struct LibrarySearchable<Content: View>: View {
     }
 }
 
-/// Applies `.searchable` (+ scopes when the screen is collection-scoped). A
-/// separate modifier so the scope toggle can be applied conditionally.
+/// Applies the native `.searchable` token field. No scope bar — on a Collection the
+/// search stays scoped to that collection (the model's default); elsewhere it's global.
 private struct SearchFieldModifier: ViewModifier {
     @ObservedObject var search: LibrarySearchModel
 
     func body(content: Content) -> some View {
-        let field = content
+        content
             .searchable(
                 text: $search.text,
                 tokens: $search.tokens,
@@ -208,14 +221,6 @@ private struct SearchFieldModifier: ViewModifier {
                 Label(token.tag.name,
                       systemImage: token.tag.source == .agent ? "sparkles" : "tag")
             }
-        if search.showsScopeToggle {
-            field.searchScopes($search.scope) {
-                Text("This Collection").tag(SearchScope.thisCollection)
-                Text("All").tag(SearchScope.all)
-            }
-        } else {
-            field
-        }
     }
 }
 
@@ -267,6 +272,9 @@ private struct LibrarySearchResults: View {
                 resultsGrid
             }
         }
+        // Center the empty / failed / searching states in the full panel rather than
+        // sizing to the text.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var resultsGrid: some View {

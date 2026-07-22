@@ -79,55 +79,30 @@ struct CollectionView: View {
     private var isLoaded: Bool { model.loadedCollectionID == collectionID }
 
     var body: some View {
-        LibrarySearchable(model: model, collectionID: collectionID) {
-            ZStack {
-                content
-                // The floating drop rail (009 · N5) — every collection screen EXCEPT
-                // Unsorted, and hidden while the detail page covers the grid.
-                if collectionID != model.unsortedFolderID, nav.presentedItemID == nil {
-                    dropRail
-                }
-                // Full-window detail page for the presented item, hosted in its own
-                // child (036 §3 B1). The host owns the `DetailSession` + tag store,
-                // so opening / prev-next / tag edits publish only to the host — this
-                // `CollectionView` body (and the grid it renders) never observes
-                // that state and is not re-run per step. The host raises the overlay
-                // off `NavModel.presentedItemID` (the shared route the grid click,
-                // the Return key, and the Space canvas all funnel through) and
-                // auto-dismisses when the shown item is deleted.
-                if let services = model.services {
-                    CollectionDetailHost(model: model, nav: nav, services: services)
-                }
+        // 006 shell — the grid fills the detail panel; the old `.searchable` field +
+        // toolbar (density / sort / add / new-space) are gone. Sort lives in the
+        // sidebar rail, add / new-space in the floating "+", density on ⌘± / ⌘−.
+        ZStack {
+            content
+            // The floating drop rail (009 · N5) — every collection screen EXCEPT
+            // Unsorted, and hidden while the detail page covers the grid.
+            if collectionID != model.unsortedFolderID, nav.presentedItemID == nil {
+                dropRail
+            }
+            // Full-window detail page for the presented item, hosted in its own
+            // child (036 §3 B1). The host owns the `DetailSession` + tag store, so
+            // opening / prev-next / tag edits publish only to the host — this
+            // `CollectionView` body (and the grid it renders) never observes that
+            // state. The host raises the overlay off `NavModel.presentedItemID`.
+            if let services = model.services {
+                CollectionDetailHost(model: model, nav: nav, services: services)
             }
         }
-        // Loading this collection's items into the shared model is owned by the
-        // shell (`AppShellView.syncActiveCollection`), driven off the nav path so a
-        // POP reloads too — a per-view `.task(id:)` fires only on a fresh push, so
-        // on back the reappearing view's `model.items` used to stay on the deeper
-        // folder even though the title updated (the "back shows wrong items" bug).
-        // This task only refreshes the covers the drop rail's mini thumbnails need.
+        // Loading this collection's items is owned by the shell
+        // (`AppShellView.syncActiveCollection`); this task only refreshes the covers
+        // the drop rail's mini thumbnails need.
         .task(id: collectionID) {
             await model.refreshCollectionCovers()
-        }
-        .navigationTitle(model.name(for: collectionID))
-        .toolbar {
-            ToolbarItem { densityControls }
-            ToolbarItem { sortMenu }
-            ToolbarItem { AddColorButton { model.addColor(hex: $0) } }
-            ToolbarItem { AddLinkButton { model.addLink(url: $0) } }
-            ToolbarItem {
-                Button {
-                    Task {
-                        if let id = await model.newSpaceFromCollection(collectionID) {
-                            nav.openSpace(id)
-                        }
-                    }
-                } label: {
-                    Label("New Space from Collection", systemImage: "square.on.square.dashed")
-                }
-                .help("Create a space seeded from this collection's arrangement")
-                .disabled(model.items.isEmpty)
-            }
         }
     }
 
@@ -336,7 +311,7 @@ struct CollectionView: View {
             HStack(spacing: 8) {
                 ForEach(model.subfolders) { folder in
                     Button {
-                        nav.openCollection(folder.id)
+                        nav.drillIntoCollection(folder.id)
                     } label: {
                         Label(folder.name, systemImage: "folder")
                             .padding(.horizontal, 10)

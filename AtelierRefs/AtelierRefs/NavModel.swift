@@ -14,14 +14,28 @@ import AtelierCore
 import Combine
 import Foundation
 
-/// A screen in the top-bar navigation. The gallery of collections is the
-/// UNPUSHED root, so it has no case here; everything else is a pushed route.
+/// A screen pushed onto the detail panel's WITHIN-collection drill-down stack
+/// (006 shell). Top-level destinations now live in ``SidebarItem``; `path` carries
+/// only subfolder drill-down (so ⌘[ back still works) and nothing else.
 enum AppRoute: Hashable {
-    /// One collection's items (drill-down from the gallery or a subfolder chip).
+    /// A deeper collection drilled into from a subfolder chip.
     case collection(UUID)
-    /// The list of spaces.
+    /// The list of spaces (legacy route; retained for compatibility).
     case spaces
     /// One open space (freeform board).
+    case space(UUID)
+}
+
+/// A top-level sidebar destination (006 split-view shell). The sidebar owns this
+/// selection; `NavModel.path` is kept only for within-collection drill-down.
+enum SidebarItem: Hashable {
+    case home
+    case search
+    case capture
+    case settings
+    /// A collection selected in the sidebar tree (the panel shows its grid).
+    case collection(UUID)
+    /// A space selected in the sidebar's Spaces section.
     case space(UUID)
 }
 
@@ -40,10 +54,25 @@ final class NavModel: ObservableObject {
     /// against the real folder list once it loads (`pruneRestoredPathIfMissing`).
     @Published var path: [AppRoute]
 
-    /// - Parameter initialPath: the starting nav path. Defaults to the relaunch
-    ///   restore (the last-opened collection); tests pass `[]` for a clean root.
-    init(initialPath: [AppRoute] = NavModel.restoredInitialPath()) {
+    /// The selected top-level sidebar destination — the primary navigation state
+    /// (006 shell). Seeded from the relaunch restore (last-opened collection).
+    @Published var sidebarSelection: SidebarItem
+
+    /// Whether the sidebar is collapsed to the 60pt icon rail (frames 1:3 / 5:92 /
+    /// 6:4 — the rail = the traffic-light footprint). Auto-set true while the
+    /// item-detail overlay is up.
+    @Published var sidebarCollapsed = false
+
+    /// - Parameters:
+    ///   - initialPath: the within-collection drill-down stack; tests pass `[]`.
+    ///   - initialSelection: the starting sidebar destination. Defaults to the
+    ///     relaunch restore (the last-opened collection, else Home).
+    init(
+        initialPath: [AppRoute] = [],
+        initialSelection: SidebarItem = NavModel.restoredSelection()
+    ) {
         self.path = initialPath
+        self.sidebarSelection = initialSelection
     }
 
     /// The membership id of the item shown in the full-window detail overlay, or
@@ -61,56 +90,61 @@ final class NavModel: ObservableObject {
 
     // MARK: - Navigation intents
 
-    /// Push a collection screen (drill-down). A no-op if it's already on top.
-    func openCollection(_ id: UUID) {
+    /// Select a top-level sidebar destination — resets the within-collection
+    /// drill-down `path` so the destination renders as the panel root.
+    func selectSidebar(_ item: SidebarItem) {
+        sidebarSelection = item
+        if !path.isEmpty { path = [] }
+        if case .collection(let id) = item {
+            UserDefaults.standard.set(id.uuidString, forKey: Self.lastCollectionKey)
+        }
+    }
+
+    /// Open a collection as a sidebar selection (gallery card tap, capture Jump).
+    /// Resets drill-down — distinct from ``drillIntoCollection(_:)``.
+    func openCollection(_ id: UUID) { selectSidebar(.collection(id)) }
+
+    /// Drill into a subfolder from a collection screen — a PUSH onto the panel's
+    /// within-collection stack (keeps ⌘[ back), not a sidebar selection.
+    func drillIntoCollection(_ id: UUID) {
         if path.last != .collection(id) { path.append(.collection(id)) }
         UserDefaults.standard.set(id.uuidString, forKey: Self.lastCollectionKey)
     }
 
-    /// Push the spaces list (idempotent if already on top).
-    func openSpaces() {
-        if path.last != .spaces { path.append(.spaces) }
-    }
+    /// Select an open space in the sidebar's Spaces section.
+    func openSpace(_ id: UUID) { selectSidebar(.space(id)) }
 
-    /// Push an open space (idempotent if already on top).
-    func openSpace(_ id: UUID) {
-        if path.last != .space(id) { path.append(.space(id)) }
-    }
-
-    /// Go back one screen (⌘[ / toolbar back). A no-op at the root gallery.
+    /// Go back one drill-down step (⌘[). A no-op at a sidebar root.
     func goBack() {
         guard !path.isEmpty else { return }
         path.removeLast()
     }
 
-    /// Return to the Collections gallery.
+    /// Clear the within-collection drill-down back to the sidebar root.
     func goToRoot() { path.removeAll() }
 
     // MARK: - Relaunch restore (004 Q3)
 
-    /// The nav path to START at: the last-opened collection, seeded as the initial
-    /// value so relaunch shows it WITHOUT a runtime push during launch. UI smoke
-    /// tests launch at a clean gallery root. Existence is validated later, once the
-    /// folder list loads (`pruneRestoredPathIfMissing`) — at construction we can't
-    /// yet know whether the collection survives.
-    nonisolated private static func restoredInitialPath() -> [AppRoute] {
+    /// The sidebar destination to START at: the last-opened collection, else Home.
+    /// UI smoke tests launch at Home (`-uitest-fresh-nav`). Existence is validated
+    /// later, once the folder list loads (`pruneRestoredPathIfMissing`).
+    nonisolated private static func restoredSelection() -> SidebarItem {
         guard
             !ProcessInfo.processInfo.arguments.contains("-uitest-fresh-nav"),
             let stored = UserDefaults.standard.string(forKey: lastCollectionKey),
             let id = UUID(uuidString: stored)
-        else { return [] }
-        return [.collection(id)]
+        else { return .home }
+        return .collection(id)
     }
 
-    /// Clear a seeded restore whose collection no longer exists, once the folder
-    /// list has loaded. Runs at most once; a no-op for the common case (the
-    /// collection still exists) and whenever the user has already navigated away —
-    /// so the common launch performs NO path mutation, which is the whole point.
+    /// Fall back to Home if the restored sidebar collection no longer exists, once
+    /// the folder list has loaded. Runs at most once; a no-op for the common case.
+    /// (Name kept for the `ContentView` call site.)
     func pruneRestoredPathIfMissing(using collections: [Collection]) {
         guard !didValidateRestore, !collections.isEmpty else { return }
         didValidateRestore = true
-        guard path.count == 1, case .collection(let id)? = path.first else { return }
-        if !collections.contains(where: { $0.id == id }) { path = [] }
+        guard case .collection(let id) = sidebarSelection else { return }
+        if !collections.contains(where: { $0.id == id }) { sidebarSelection = .home }
     }
 }
 

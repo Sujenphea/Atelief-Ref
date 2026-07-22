@@ -22,6 +22,9 @@ struct AtelierRefsApp: App {
         WindowGroup {
             ContentView(model: model)
         }
+        // 006 — content runs full-height with the traffic lights overlaying the
+        // sidebar rail (Figma); the standard title bar is hidden.
+        .windowStyle(.hiddenTitleBar)
         // 004-P1 — a menu Back command (⌘[) that pops the current NavModel,
         // reaching it through the focused-scene value the shell publishes.
         .commands {
