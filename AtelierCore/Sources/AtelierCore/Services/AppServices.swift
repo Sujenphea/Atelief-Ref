@@ -1196,21 +1196,24 @@ public final class AppServices: Sendable {
         }
     }
 
-    /// The Unsorted screen's stack-row data (009 · N4): every ROOT collection
-    /// EXCEPT Unsorted (the row lives ON the Unsorted screen — its drop targets
-    /// are the other roots), ordered `name, id` (stable, matching
-    /// ``listCollections()``). Each entry carries the collection, its DIRECT
-    /// item count, and the blob hashes of its `limit` most recently added
-    /// byte-backed items (newest first) for the fanned thumbnails — one
-    /// window-function query, not a per-collection N+1. Media-less kinds
-    /// (003 · O1) have no thumbnail so they are skipped in the hashes but
-    /// still counted; a collection with no byte-backed items simply fans
-    /// nothing.
-    public func collectionStackPreviews(limit: Int = 3) async throws -> [CollectionStackPreview] {
+    /// Fanned "stack" previews for the Collections gallery cards (009 · N4): every
+    /// ROOT collection, ordered `name, id` (stable, matching ``listCollections()``).
+    /// Each entry carries the collection, its DIRECT item count, and the blob
+    /// hashes of its `limit` most recently added byte-backed items (newest first)
+    /// for the fanned thumbnails — one window-function query, not a per-collection
+    /// N+1. Media-less kinds (003 · O1) have no thumbnail so they are skipped in
+    /// the hashes but still counted; a collection with no byte-backed items simply
+    /// fans nothing. `includeUnsorted` toggles the protected Unsorted root: the
+    /// gallery shows a card for it, so it opts in.
+    public func collectionStackPreviews(
+        limit: Int = 3, includeUnsorted: Bool = false
+    ) async throws -> [CollectionStackPreview] {
         try await read { db in
-            let roots = try Collection
-                .filter(Column("parent_collection_id") == nil)
-                .filter(Column("id") != Self.key(Collection.unsortedID))
+            var query = Collection.filter(Column("parent_collection_id") == nil)
+            if !includeUnsorted {
+                query = query.filter(Column("id") != Self.key(Collection.unsortedID))
+            }
+            let roots = try query
                 .order(Column("name"), Column("id"))
                 .fetchAll(db)
             guard !roots.isEmpty else { return [] }
@@ -1393,6 +1396,63 @@ public final class AppServices: Sendable {
                 covers[sid] = row["hash"]
             }
             return covers
+        }
+    }
+
+    /// Fanned "stack" previews for the Home Spaces cards (009 · N4), the space
+    /// analog of ``collectionStackPreviews(limit:includeUnsorted:)``: every space,
+    /// ordered `created_at DESC, id` (matching ``listSpaces()``). Each entry carries
+    /// the space, its placed-item count, and the blob hashes of its `limit` most
+    /// recently added asset items (newest first) for the fan — one window-function
+    /// query, not a per-space N+1. Element rows (NULL `asset_id`) and media-less
+    /// assets have no thumbnail so they are skipped in the hashes but still counted;
+    /// a space with no byte-backed items simply fans nothing.
+    public func spaceStackPreviews(limit: Int = 3) async throws -> [SpaceStackPreview] {
+        try await read { db in
+            let spaces = try Space
+                .order(Column("created_at").desc, Column("id"))
+                .fetchAll(db)
+            guard !spaces.isEmpty else { return [] }
+
+            var counts: [UUID: Int] = [:]
+            let countRows = try Row.fetchAll(db, sql: """
+                SELECT space_id AS sid, COUNT(*) AS cnt
+                FROM space_item GROUP BY space_id
+                """)
+            for row in countRows {
+                guard let sid = UUID(uuidString: row["sid"]) else { continue }
+                counts[sid] = row["cnt"]
+            }
+
+            var hashes: [UUID: [String]] = [:]
+            if limit > 0 {
+                // `created_at DESC, id DESC` — the id tie-break keeps a
+                // same-instant batch deterministic.
+                let hashRows = try Row.fetchAll(db, sql: """
+                    SELECT sid, hash FROM (
+                        SELECT si.space_id AS sid, a.blob_hash AS hash,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY si.space_id
+                                   ORDER BY si.created_at DESC, si.id DESC
+                               ) AS rn
+                        FROM space_item si
+                        JOIN asset a ON a.id = si.asset_id
+                        WHERE a.blob_hash IS NOT NULL
+                    ) WHERE rn <= ?
+                    ORDER BY sid, rn
+                    """, arguments: [limit])
+                for row in hashRows {
+                    guard let sid = UUID(uuidString: row["sid"]) else { continue }
+                    hashes[sid, default: []].append(row["hash"])
+                }
+            }
+
+            return spaces.map {
+                SpaceStackPreview(
+                    space: $0,
+                    itemCount: counts[$0.id] ?? 0,
+                    recentBlobHashes: hashes[$0.id] ?? [])
+            }
         }
     }
 

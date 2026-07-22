@@ -1665,6 +1665,24 @@ final class IngestionModel: ObservableObject {
         spacesLoaded = true
     }
 
+    /// The Home Spaces cards' fanned "stack" previews (009 · N4): placed-item count
+    /// + newest asset thumbnail hashes per space. Keyed by space id; an absent id ⇒
+    /// the card falls back to its cover.
+    @Published private(set) var spaceStackPreviews: [UUID: SpaceStackPreview] = [:]
+
+    /// Reload every space's fan preview for the Home Spaces section.
+    func refreshSpaceStackPreviews() async {
+        guard let services else { return }
+        do {
+            let previews = try await services.spaceStackPreviews()
+            let lookup = Dictionary(
+                previews.map { ($0.space.id, $0) }, uniquingKeysWith: { first, _ in first })
+            if spaceStackPreviews != lookup { spaceStackPreviews = lookup }
+        } catch {
+            lastError = Self.message(for: error)
+        }
+    }
+
     /// Create an empty space, refresh the list, and return its id (so the caller
     /// can open it). Surfaces failures via ``lastError``.
     @discardableResult

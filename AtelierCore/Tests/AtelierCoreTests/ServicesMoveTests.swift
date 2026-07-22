@@ -373,6 +373,19 @@ struct ServicesStackPreviewTests {
         #expect(!previews.contains { $0.collection.id == Collection.unsortedID })
     }
 
+    @Test("includeUnsorted: the Unsorted root gets its own card")
+    func includeUnsortedRoot() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let a = try await services.createCollection(name: "Alpha")
+
+        let previews = try await services.collectionStackPreviews(includeUnsorted: true)
+        let ids = previews.map { $0.collection.id }
+
+        #expect(ids.contains(Collection.unsortedID))
+        #expect(ids.contains(a.id))
+    }
+
     @Test("a media-less item is counted but fans no thumbnail")
     func mediaLessCountedNotFanned() async throws {
         let (services, temp) = try makeServices()

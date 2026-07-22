@@ -2,11 +2,11 @@
 //  CollectionsGalleryView.swift
 //  AtelierRefs
 //
-//  004-P2 — the app's home screen: a gallery of the ROOT collections as cover
-//  cards (the persistent folder tree is gone; drilling in reuses subfolder chips
-//  + grid). The protected "Unsorted" folder is pinned as the first card (004 Q2).
-//  Card context menus cover rename / delete / new subfolder; a toolbar "+" makes
-//  a new root collection. Tapping a card pushes its `CollectionView`.
+//  004-P2 / 009 · N4 — the app's Home overview. Two sections of fanned "stack"
+//  cards (``FanCard``): the ROOT collections (Unsorted pinned first) and, below,
+//  the Spaces. Tapping a card pushes its `CollectionView` / `SpaceView`; card
+//  context menus cover rename / delete / new subfolder. New root collections /
+//  spaces are created from the sidebar's section "+".
 //
 
 import AtelierCore
@@ -16,44 +16,25 @@ struct CollectionsGalleryView: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
 
-    @State private var showNewCollection = false
-    @State private var newCollectionName = ""
     @State private var renameTarget: Collection?
     @State private var renameText = ""
     @State private var subfolderParent: Collection?
     @State private var subfolderName = ""
+    @State private var spaceRenameTarget: Space?
+    @State private var spaceRenameText = ""
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16)]
 
     var body: some View {
-        // 006 shell — the top-level Home overview. The old `.searchable` field +
-        // "New Collection" toolbar button are gone: Search is a sidebar destination
-        // and New Collection is the sidebar's Collections "+".
+        // 006 shell — the top-level Home overview. Search is a sidebar destination;
+        // New Collection / New Space are the sidebar sections' "+".
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 16) {
-                ForEach(orderedRoots) { collection in
-                    Button {
-                        nav.openCollection(collection.id)
-                    } label: {
-                        // The fanned "stack" preview (009 · N4) once loaded; the flat
-                        // cover card is the pre-load fallback.
-                        if let preview = model.stackPreviews[collection.id] {
-                            CollectionFanCard(
-                                preview: preview,
-                                thumbnailURL: { model.thumbnailURL(forBlobHash: $0) },
-                                accent: collection.id == model.unsortedFolderID)
-                        } else {
-                            CoverCard(
-                                title: collection.name,
-                                subtitle: nil,
-                                coverHash: model.collectionCovers[collection.id],
-                                coverURL: coverURL(for: collection.id),
-                                placeholderSymbol: "folder",
-                                accent: collection.id == model.unsortedFolderID)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu { cardMenu(for: collection) }
+            VStack(alignment: .leading, spacing: Theme.Spacing.xxl) {
+                collectionsSection
+                // Spaces are additive — hidden entirely until the user has one, so
+                // Home stays collection-focused for a fresh library.
+                if !model.spaces.isEmpty {
+                    spacesSection
                 }
             }
             .padding(Theme.Spacing.xl)
@@ -62,19 +43,10 @@ struct CollectionsGalleryView: View {
             await model.refreshFolders()
             await model.refreshCollectionCovers()
             await model.refreshStackPreviews()
+            await model.refreshSpaces()
+            await model.refreshSpaceStackPreviews()
         }
-        // New root collection.
-        .alert("New Collection", isPresented: $showNewCollection) {
-            TextField("Name", text: $newCollectionName)
-            Button("Create") {
-                let name = newCollectionName
-                newCollectionName = ""
-                model.createFolder(name: name, parent: nil)
-            }
-            .disabled(newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { newCollectionName = "" }
-        }
-        // Rename.
+        // Rename collection.
         .alert("Rename Collection", isPresented: renameBinding) {
             TextField("Name", text: $renameText)
             Button("Rename") {
@@ -97,6 +69,107 @@ struct CollectionsGalleryView: View {
             .disabled(subfolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { subfolderName = ""; subfolderParent = nil }
         }
+        // Rename space.
+        .alert("Rename Space", isPresented: spaceRenameBinding) {
+            TextField("Name", text: $spaceRenameText)
+            Button("Rename") {
+                if let target = spaceRenameTarget { model.renameSpace(id: target.id, to: spaceRenameText) }
+                spaceRenameTarget = nil
+            }
+            .disabled(spaceRenameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) { spaceRenameTarget = nil }
+        }
+    }
+
+    // MARK: - Collections section
+
+    private var collectionsSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            sectionHeader("Collections")
+            LazyVGrid(columns: columns, spacing: 6) {
+                ForEach(orderedRoots) { collection in
+                    Button {
+                        nav.openCollection(collection.id)
+                    } label: {
+                        collectionCard(collection)
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu { cardMenu(for: collection) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func collectionCard(_ collection: Collection) -> some View {
+        let isUnsorted = collection.id == model.unsortedFolderID
+        // The fanned "stack" preview (009 · N4) once loaded; the flat cover card is
+        // the pre-load fallback.
+        if let preview = model.stackPreviews[collection.id] {
+            FanCard(
+                title: collection.name,
+                itemCount: preview.itemCount,
+                seed: collection.id,
+                recentBlobHashes: preview.recentBlobHashes,
+                thumbnailURL: { model.thumbnailURL(forBlobHash: $0) },
+                accent: isUnsorted,
+                placeholderSymbol: isUnsorted ? "tray" : "folder")
+        } else {
+            CoverCard(
+                title: collection.name,
+                subtitle: nil,
+                coverHash: model.collectionCovers[collection.id],
+                coverURL: coverURL(for: collection.id),
+                placeholderSymbol: "folder",
+                accent: isUnsorted)
+        }
+    }
+
+    // MARK: - Spaces section
+
+    private var spacesSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            sectionHeader("Spaces")
+            LazyVGrid(columns: columns, spacing: 6) {
+                ForEach(model.spaces) { space in
+                    Button {
+                        nav.openSpace(space.id)
+                    } label: {
+                        spaceCard(space)
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu { spaceMenu(for: space) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func spaceCard(_ space: Space) -> some View {
+        if let preview = model.spaceStackPreviews[space.id] {
+            FanCard(
+                title: space.name,
+                itemCount: preview.itemCount,
+                seed: space.id,
+                recentBlobHashes: preview.recentBlobHashes,
+                thumbnailURL: { model.thumbnailURL(forBlobHash: $0) },
+                placeholderSymbol: "square.on.square.dashed")
+        } else {
+            CoverCard(
+                title: space.name,
+                subtitle: nil,
+                coverHash: model.spaceCovers[space.id],
+                coverURL: spaceCoverURL(for: space.id),
+                placeholderSymbol: "square.on.square.dashed")
+        }
+    }
+
+    // MARK: - Section header
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(.primary)
     }
 
     // MARK: - Ordering (Unsorted pinned first)
@@ -111,6 +184,13 @@ struct CollectionsGalleryView: View {
         guard let hash = model.collectionCovers[id] else { return nil }
         return model.thumbnailURL(forBlobHash: hash)
     }
+
+    private func spaceCoverURL(for id: UUID) -> URL? {
+        guard let hash = model.spaceCovers[id] else { return nil }
+        return model.thumbnailURL(forBlobHash: hash)
+    }
+
+    // MARK: - Context menus
 
     @ViewBuilder
     private func cardMenu(for collection: Collection) -> some View {
@@ -130,11 +210,27 @@ struct CollectionsGalleryView: View {
         }
     }
 
+    @ViewBuilder
+    private func spaceMenu(for space: Space) -> some View {
+        Button("Rename…") {
+            spaceRenameText = space.name
+            spaceRenameTarget = space
+        }
+        Divider()
+        Button("Delete…", role: .destructive) {
+            model.requestDeleteSpace(id: space.id, name: space.name)
+        }
+    }
+
     private var renameBinding: Binding<Bool> {
         Binding(get: { renameTarget != nil }, set: { if !$0 { renameTarget = nil } })
     }
 
     private var subfolderBinding: Binding<Bool> {
         Binding(get: { subfolderParent != nil }, set: { if !$0 { subfolderParent = nil } })
+    }
+
+    private var spaceRenameBinding: Binding<Bool> {
+        Binding(get: { spaceRenameTarget != nil }, set: { if !$0 { spaceRenameTarget = nil } })
     }
 }

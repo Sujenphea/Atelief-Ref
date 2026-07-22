@@ -116,6 +116,31 @@ struct ServicesSpaceTests {
         #expect(details[0].source != nil)
     }
 
+    @Test("spaceStackPreviews: counts every row, fans asset hashes, skips elements")
+    func stackPreviews() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let board = try await services.createSpace(name: "Board")
+        let empty = try await services.createSpace(name: "Empty")
+        let a1 = try await makeAsset(services, hash: "abc123", url: "https://example.com/1")
+        let a2 = try await makeAsset(services, hash: "def456", url: "https://example.com/2")
+        _ = try await services.addAssetToSpace(assetID: a1, to: board.id, x: 0, y: 0, w: 10, h: 10, z: 0)
+        _ = try await services.addAssetToSpace(assetID: a2, to: board.id, x: 20, y: 0, w: 10, h: 10, z: 1)
+        // An element row: counted, but NULL asset_id so it fans no thumbnail.
+        _ = try await services.addElement(
+            to: board.id, kind: .text,
+            style: ElementStyle(text: "Note", fontSize: 18, textColor: "#000000"),
+            x: 0, y: 40, w: 100, h: 40, z: 2)
+
+        let previews = try await services.spaceStackPreviews()
+        let byID = Dictionary(uniqueKeysWithValues: previews.map { ($0.space.id, $0) })
+
+        #expect(byID[board.id]?.itemCount == 3)                          // 2 assets + 1 element
+        #expect(Set(byID[board.id]?.recentBlobHashes ?? []) == ["abc123", "def456"])
+        #expect(byID[empty.id]?.itemCount == 0)
+        #expect(byID[empty.id]?.recentBlobHashes == [])
+    }
+
     @Test("the same asset may be added twice — each row has its own id")
     func addAssetTwice() async throws {
         let (services, temp) = try makeServices()

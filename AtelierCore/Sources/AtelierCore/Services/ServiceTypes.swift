@@ -250,6 +250,27 @@ public struct CollectionStackPreview: Sendable, Equatable {
     }
 }
 
+/// One Home "Spaces" card (009 · N4), the space analog of
+/// ``CollectionStackPreview``: the space, its placed-item count, and the blob
+/// hashes of its most recently added asset items (newest first, at most the
+/// read's `limit`) for the fanned pile. `Equatable` so the view model can skip
+/// republishing an unchanged set.
+public struct SpaceStackPreview: Sendable, Equatable {
+    /// The space this card represents.
+    public let space: Space
+    /// The space's placed-item count (element rows included).
+    public let itemCount: Int
+    /// Newest-first thumbnail hashes for the fan; element rows and media-less
+    /// assets are skipped, so this can be shorter than the limit (or empty).
+    public let recentBlobHashes: [String]
+
+    public init(space: Space, itemCount: Int, recentBlobHashes: [String]) {
+        self.space = space
+        self.itemCount = itemCount
+        self.recentBlobHashes = recentBlobHashes
+    }
+}
+
 /// One row of a ``Space`` board joined to its media (005). For an ASSET row the
 /// `asset` + `source` are present; for a freeform ELEMENT row (`kind ==
 /// .frame/.text`) both are `nil` and the row's ``ElementStyle`` lives in
