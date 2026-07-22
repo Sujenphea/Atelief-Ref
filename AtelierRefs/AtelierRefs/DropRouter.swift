@@ -18,9 +18,9 @@ import Foundation
 enum DropTarget: Equatable {
     /// A cell in a collection's grid: only a SAME-collection, manual-sort drop is
     /// a reorder; anything else is refused (cross-collection moves go via the
-    /// rail / stack row, not by dropping onto a thumbnail).
+    /// sidebar rows / "Move to" menus, not by dropping onto a thumbnail).
     case cell(collectionID: UUID, sortMode: SortMode)
-    /// A collection drop target (a stack card or a rail row): a move, or a copy
+    /// A collection drop target (a sidebar collection row): a move, or a copy
     /// when ⌥ is held; a `from == to` drop is refused.
     case collection(UUID)
 }

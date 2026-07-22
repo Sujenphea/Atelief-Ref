@@ -35,13 +35,22 @@ struct CollectionsGalleryView: View {
                     Button {
                         nav.openCollection(collection.id)
                     } label: {
-                        CoverCard(
-                            title: collection.name,
-                            subtitle: nil,
-                            coverHash: model.collectionCovers[collection.id],
-                            coverURL: coverURL(for: collection.id),
-                            placeholderSymbol: "folder",
-                            accent: collection.id == model.unsortedFolderID)
+                        // The fanned "stack" preview (009 · N4) once loaded; the flat
+                        // cover card is the pre-load fallback.
+                        if let preview = model.stackPreviews[collection.id] {
+                            CollectionFanCard(
+                                preview: preview,
+                                thumbnailURL: { model.thumbnailURL(forBlobHash: $0) },
+                                accent: collection.id == model.unsortedFolderID)
+                        } else {
+                            CoverCard(
+                                title: collection.name,
+                                subtitle: nil,
+                                coverHash: model.collectionCovers[collection.id],
+                                coverURL: coverURL(for: collection.id),
+                                placeholderSymbol: "folder",
+                                accent: collection.id == model.unsortedFolderID)
+                        }
                     }
                     .buttonStyle(.plain)
                     .contextMenu { cardMenu(for: collection) }
@@ -52,6 +61,7 @@ struct CollectionsGalleryView: View {
         .task {
             await model.refreshFolders()
             await model.refreshCollectionCovers()
+            await model.refreshStackPreviews()
         }
         // New root collection.
         .alert("New Collection", isPresented: $showNewCollection) {
@@ -93,7 +103,7 @@ struct CollectionsGalleryView: View {
 
     private var orderedRoots: [Collection] {
         // The ONE definition of collection ordering (009 · 6B) — shared with the
-        // Move/Add menus and the drop rail so the three can never drift apart.
+        // Move/Add menus and the sidebar rows so they can never drift apart.
         CollectionTargets.galleryRoots(model.folders, unsortedID: model.unsortedFolderID)
     }
 

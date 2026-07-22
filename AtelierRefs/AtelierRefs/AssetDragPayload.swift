@@ -2,8 +2,8 @@
 //  AssetDragPayload.swift
 //  AtelierRefs
 //
-//  009 · N3 — the ONE drag payload shared by in-grid reorder, the Unsorted stack
-//  row, the drop rail, and (future) the gallery. Carries the dragged asset ids
+//  009 · N3 — the ONE drag payload shared by in-grid reorder, the sidebar
+//  space/collection rows, and (future) the gallery. Carries the dragged asset ids
 //  PLUS their source collection, so a drop can tell a same-collection reorder
 //  from a cross-collection move without guessing. Replaces the old bare-UUID
 //  `String` payload everywhere.
@@ -46,8 +46,8 @@ struct AssetDragPayload: Codable, Equatable, Transferable {
 extension AssetDragPayload {
     /// The pasteboard type the AppKit drag writes under — the SAME identifier the
     /// `.assetIDs` `UTType` (and therefore the SwiftUI `CodableRepresentation`)
-    /// uses, so a drag started on the AppKit grid lands on the still-SwiftUI drop
-    /// rail / stack row / Spaces exactly as the SwiftUI `.draggable` did.
+    /// uses, so a drag started on the AppKit grid lands on the still-SwiftUI
+    /// sidebar rows / Spaces exactly as the SwiftUI `.draggable` did.
     static let pasteboardType = NSPasteboard.PasteboardType(UTType.assetIDs.identifier)
 
     /// The wire bytes for this payload — plain `JSONEncoder`, which is precisely
@@ -103,8 +103,8 @@ extension AssetDragPayload {
         return decode(from: data)
     }
 
-    /// The drop-target entry point shared by the drop rail and the Unsorted stack
-    /// cards: the drag pasteboard first (AppKit grid drags — promise-shaped or
+    /// The drop-target entry point shared by the sidebar space/collection rows:
+    /// the drag pasteboard first (AppKit grid drags — promise-shaped or
     /// plain), then the provider bridge (a SwiftUI-native drag whose provider DOES
     /// carry `.assetIDs`). Returns whether a payload was found — the `.onDrop`
     /// accept result. `completion` runs on the main queue: synchronously for the

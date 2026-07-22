@@ -4,7 +4,7 @@
 //
 //  009 · N2/N5/N6 — the ONE definition of "how collections are ordered" for the
 //  UI. The Collections gallery (Unsorted-pinned roots), the batch Move to ▸ /
-//  Add to ▸ menus, and the floating drop rail all resolve their list here so the
+//  Add to ▸ menus, and the sidebar rows all resolve their list here so the
 //  ordering rules can never drift apart (DRY). Pure + SwiftUI-free, so the split
 //  and ordering are unit-tested directly.
 //
@@ -63,8 +63,8 @@ struct MoveTargets: Equatable {
 /// A tiny memo for a collection screen's move/copy targets (012 · CQ 1A). The
 /// context menu builds EAGERLY for each visible cell, so without this every cell
 /// recomputes the IDENTICAL folder target list on every render (measured
-/// ~326ms/pass). Keyed on `(from, unsortedID, folders)`: the drop rail plus each
-/// cell menu in a render share one computation, and the list also survives across
+/// ~326ms/pass). Keyed on `(from, unsortedID, folders)`: each cell menu in a
+/// render shares one computation, and the list also survives across
 /// renders while the folder tree is unchanged. Held in plain `@State` (not
 /// observed), mirroring ``MasonryLayoutCache``'s discipline.
 @MainActor

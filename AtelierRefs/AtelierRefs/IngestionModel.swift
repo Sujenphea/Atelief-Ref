@@ -77,12 +77,6 @@ final class IngestionModel: ObservableObject {
     /// The selected folder's immediate subfolders (navigable).
     @Published private(set) var subfolders: [Collection] = []
 
-    /// The Unsorted screen's stack-row cards (009 · N4): one per root collection
-    /// (Unsorted excluded), each with its count + recent thumbnail hashes. Loaded
-    /// ONLY while the Unsorted folder is selected (empty otherwise), refreshed via
-    /// the same `loadContents` funnel so a move keeps it live.
-    @Published private(set) var stackPreviews: [CollectionStackPreview] = []
-
     // MARK: - Selected item (inspector)
 
     /// The grid's multi-selection (009 · N2), extracted onto its own observable
@@ -1044,20 +1038,14 @@ final class IngestionModel: ObservableObject {
         contentsLoadID &+= 1
         let loadID = contentsLoadID
         let sort = sortMode(for: id)
-        // The stack row is shown only on the Unsorted screen (009 · N4), so its
-        // preview read is skipped for every other folder.
-        let loadsStacks = id == unsortedFolderID
         Task {
             do {
-                // The three reads are independent — run them concurrently so the
+                // The two reads are independent — run them concurrently so the
                 // reload latency is the slowest ONE, not their sum (009 · 16A).
                 async let itemsRead = services.collectionItems(in: id, sort: sort)
                 async let subfoldersRead = services.childCollections(of: id)
-                async let stacksRead: [CollectionStackPreview] =
-                    loadsStacks ? services.collectionStackPreviews() : []
                 let loadedItems = try await itemsRead
                 let loadedSubfolders = try await subfoldersRead
-                let loadedStacks = try await stacksRead
                 // A newer load has superseded this one — the reads can finish out
                 // of order, so a stale read must NOT overwrite the current
                 // folder's content. Bail before publishing anything.
@@ -1074,13 +1062,6 @@ final class IngestionModel: ObservableObject {
                 // instead of this (still-stale-until-now) content mid-switch.
                 loadedCollectionID = id
                 subfolders = loadedSubfolders
-                // Republish the stack row only when it actually changed — an
-                // unchanged set never re-renders or re-decodes its fans (009 · 15A).
-                if loadsStacks {
-                    if stackPreviews != loadedStacks { stackPreviews = loadedStacks }
-                } else if !stackPreviews.isEmpty {
-                    stackPreviews = []
-                }
                 // Prune the selection to ids that survive the reloaded set
                 // (folder switch, move-away, or delete). A removed lead falls back
                 // to `nil`; the detail overlay's own state now lives in
@@ -1628,6 +1609,24 @@ final class IngestionModel: ObservableObject {
         guard let services else { return }
         do {
             collectionCovers = try await services.collectionCovers(folders.map(\.id))
+        } catch {
+            lastError = Self.message(for: error)
+        }
+    }
+
+    /// The gallery cards' fanned "stack" previews (009 · N4): item count + newest
+    /// thumbnail hashes per ROOT collection, Unsorted included. Keyed by
+    /// collection id; an absent id ⇒ the card falls back to its cover.
+    @Published private(set) var stackPreviews: [UUID: CollectionStackPreview] = [:]
+
+    /// Reload every root collection's fan preview for the Collections gallery.
+    func refreshStackPreviews() async {
+        guard let services else { return }
+        do {
+            let previews = try await services.collectionStackPreviews(includeUnsorted: true)
+            let lookup = Dictionary(
+                previews.map { ($0.collection.id, $0) }, uniquingKeysWith: { first, _ in first })
+            if stackPreviews != lookup { stackPreviews = lookup }
         } catch {
             lastError = Self.message(for: error)
         }

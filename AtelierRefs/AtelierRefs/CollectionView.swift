@@ -52,9 +52,9 @@ struct CollectionView: View {
     private static let gridSpacing: CGFloat = 8
     private static let gridTopInset: CGFloat = 4
 
-    // Move/copy targets, memoized (012 · CQ 1A): the drop rail and the eager
-    // per-cell context menus share ONE computation instead of recomputing the
-    // identical folder list per cell. Plain `@State`; not observed.
+    // Move/copy targets, memoized (012 · CQ 1A): the eager per-cell context menus
+    // share ONE computation instead of recomputing the identical folder list per
+    // cell. Plain `@State`; not observed.
     @State private var moveTargetsCache = MoveTargetsCache()
 
     /// The backing scale the grid draws at — the other half of the thumbnail
@@ -84,11 +84,6 @@ struct CollectionView: View {
         // sidebar rail, add / new-space in the floating "+", density on ⌘± / ⌘−.
         ZStack {
             content
-            // The floating drop rail (009 · N5) — every collection screen EXCEPT
-            // Unsorted, and hidden while the detail page covers the grid.
-            if collectionID != model.unsortedFolderID, nav.presentedItemID == nil {
-                dropRail
-            }
             // Full-window detail page for the presented item, hosted in its own
             // child (036 §3 B1). The host owns the `DetailSession` + tag store, so
             // opening / prev-next / tag edits publish only to the host — this
@@ -97,12 +92,6 @@ struct CollectionView: View {
             if let services = model.services {
                 CollectionDetailHost(model: model, nav: nav, services: services)
             }
-        }
-        // Loading this collection's items is owned by the shell
-        // (`AppShellView.syncActiveCollection`); this task only refreshes the covers
-        // the drop rail's mini thumbnails need.
-        .task(id: collectionID) {
-            await model.refreshCollectionCovers()
         }
     }
 
@@ -171,8 +160,8 @@ struct CollectionView: View {
             header
             // Gate the subfolder chips on `isLoaded`: they read the same shared model
             // state as the grid, so showing them mid-switch would flash the PREVIOUS
-            // collection's subfolders alongside the grid. (The Unsorted stack row was
-            // removed — drops still route out of Unsorted via the trailing drop rail.)
+            // collection's subfolders alongside the grid. (Drops route out of a
+            // collection via the sidebar rows and per-cell "Add to" context menus.)
             if isLoaded, !model.subfolders.isEmpty {
                 subfolderChips
             }
@@ -201,45 +190,11 @@ struct CollectionView: View {
         }
     }
 
-    /// This screen's move/copy targets, memoized (012 · CQ 1A) so the drop rail and
-    /// every eager per-cell context menu share ONE computation, not N.
+    /// This screen's move/copy targets, memoized (012 · CQ 1A) so every eager
+    /// per-cell context menu shares ONE computation, not N.
     private var moveTargets: MoveTargets {
         moveTargetsCache.targets(
             from: collectionID, folders: model.folders, unsortedID: model.unsortedFolderID)
-    }
-
-    /// The floating trailing drop rail (009 · N5), materialized only when there
-    /// are reachable targets. Aligned to the trailing edge over the grid.
-    @ViewBuilder
-    private var dropRail: some View {
-        let dests = moveTargets
-        if !dests.isEmpty {
-            HStack(spacing: 0) {
-                Spacer(minLength: 0)
-                CollectionDropRail(
-                    targets: dests,
-                    coverHash: { model.collectionCovers[$0] },
-                    thumbnailURL: { model.thumbnailURL(forBlobHash: $0) },
-                    onNavigate: { nav.openCollection($0) },
-                    onDrop: { handleCollectionDrop($0, into: $1) })
-            }
-        }
-    }
-
-    /// Route a payload dropped onto a collection target (stack card / rail row)
-    /// and apply the move or copy. Shared by the stack row and the drop rail.
-    private func handleCollectionDrop(_ payload: AssetDragPayload, into targetID: UUID) -> Bool {
-        switch routeDrop(
-            payload, onto: .collection(targetID), optionDown: Self.modifierReader.isOptionDown) {
-        case let .move(assetIDs, _, to):
-            model.moveToCollection(assetIDs: assetIDs, to: to)
-            return true
-        case let .copy(assetIDs, to):
-            model.copyToCollection(assetIDs: assetIDs, to: to)
-            return true
-        case .reject, .reorder:
-            return false
-        }
     }
 
     private var header: some View {
@@ -308,8 +263,8 @@ struct CollectionView: View {
                     // 036 §2 A4 — the AppKit `NSCollectionView` grid, now the
                     // ONLY grid path: the old SwiftUI windowed path was deleted
                     // once AppKit became the default (`AtelierUseAppKitGrid`).
-                    // Everything OUTSIDE `grid` (header, toolbar, drop rail, stack
-                    // row, chips, detail overlay, pane `.onDrop`) is unchanged.
+                    // Everything OUTSIDE `grid` (header, toolbar, chips, detail
+                    // overlay, pane `.onDrop`) is unchanged.
                     appKitGrid(geo: geo)
                 } else {
                     // This collection's load hasn't resolved — show a masonry
@@ -477,7 +432,7 @@ struct CollectionView: View {
     /// Handle a payload dropped onto the cell for `targetAssetID`: route it (only
     /// a same-collection, manual-sort drop is a reorder) and apply the multi-block
     /// move. Cross-collection / non-manual drops are refused here — those moves go
-    /// through the stack row / rail.
+    /// through the sidebar rows / "Move to" menus.
     private func handleCellDrop(_ payloads: [AssetDragPayload], onto targetAssetID: UUID) -> Bool {
         guard let payload = payloads.first else { return false }
         let target = DropTarget.cell(

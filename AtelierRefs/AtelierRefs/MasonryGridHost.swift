@@ -722,7 +722,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     ///
     /// - **Internal payload** — the JSON-encoded `AssetDragPayload` under the
     ///   `.assetIDs` type, byte-compatible with the SwiftUI `.draggable`, so the
-    ///   drop rail / stack row / Spaces accept an intra-app drop unchanged.
+    ///   sidebar rows / Spaces accept an intra-app drop unchanged.
     /// - **External file promises** — one `AssetFilePromiseProvider` per byte-backed
     ///   asset (via ``gridExportPlan(assetIDs:details:blobURL:)``), so dropping OUT
     ///   to Finder / Figma writes the original file with a human name. The PRIMARY
@@ -932,7 +932,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// Accept a drop: decode the `.assetIDs` payload, hit-test the target cell, and
     /// route it through the unchanged `onCellDrop` → `handleCellDrop`/`routeDrop`
     /// (only a same-collection, manual-sort drop is a reorder; anything else is
-    /// refused there — cross-collection moves go via the rail / stack row).
+    /// refused there — cross-collection moves go via the sidebar rows / menus).
     func gridPerformDrop(_ info: NSDraggingInfo) -> Bool {
         guard let collectionView,
               let data = info.draggingPasteboard.data(forType: AssetDragPayload.pasteboardType),

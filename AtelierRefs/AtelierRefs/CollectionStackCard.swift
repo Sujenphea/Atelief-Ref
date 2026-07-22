@@ -2,16 +2,15 @@
 //  CollectionStackCard.swift
 //  AtelierRefs
 //
-//  009 · N4 — the Unsorted screen's "collection stack" drop target: a Procreate-
-//  style fanned pile of a collection's most-recent thumbnails, its name + count
-//  below, and a drop target that MOVES (⌥ copies) the dragged selection into that
-//  collection. The fan tilt is SEEDED by the collection's UUID so it is stable
-//  across refreshes (no jitter) — "random" only in appearance.
+//  009 · N4 — the Collections gallery card's "stack" preview: a Procreate-style
+//  fanned pile of a collection's most-recent thumbnails, its name + count below.
+//  Drawn in `CollectionsGalleryView` in place of the flat cover when the
+//  collection has a fan preview. The fan tilt is SEEDED by the collection's UUID
+//  so it is stable across refreshes (no jitter) — "random" only in appearance.
 //
 
 import AtelierCore
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// Deterministic per-layer fan tilts (degrees, within ±`maxDegrees`) derived from
 /// a collection's UUID (009 · N4). PURE and process-stable: it reads the raw uuid
@@ -27,110 +26,83 @@ func fanRotations(seed: UUID, count: Int, maxDegrees: Double = 8) -> [Double] {
     }
 }
 
-struct CollectionStackCard: View {
+/// A Collections gallery card that draws a collection's recent thumbnails as a
+/// fanned pile (009 · N4), sized to fill the adaptive gallery grid cell. Matches
+/// ``CoverCard``'s outer chrome (padding, background, title) so the two read as
+/// one grid; the fan replaces the single flat cover.
+struct CollectionFanCard: View {
     let preview: CollectionStackPreview
-    /// Resolve a blob hash to its on-disk 512-tier thumbnail URL.
+    /// Resolve a blob hash to its on-disk thumbnail URL.
     let thumbnailURL: (String) -> URL?
-    /// Highlighted because a drag is hovering (the Procreate "drop here" cue).
-    var isTargeted: Bool = false
+    /// The protected Unsorted card, tinted like ``CoverCard``'s accent.
+    var accent: Bool = false
 
     @Environment(\.displayScale) private var displayScale
 
-    private static let side: CGFloat = 92
-
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 6) {
             fan
-                .frame(width: Self.side, height: Self.side)
-                .scaleEffect(isTargeted ? 1.06 : 1)
-                .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isTargeted)
+                .aspectRatio(1, contentMode: .fit)
+                .frame(maxWidth: .infinity)
             Text(preview.collection.name)
-                .font(.caption).fontWeight(.medium)
+                .font(.callout).fontWeight(.medium)
                 .lineLimit(1)
-            Text("\(preview.itemCount)")
-                .font(.caption2).monospacedDigit()
+                .foregroundStyle(.primary)
+            Text("\(preview.itemCount) items")
+                .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
-        .frame(width: 112)
-        .padding(.vertical, 4)
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color(.controlBackgroundColor).opacity(0.5)))
+        .contentShape(RoundedRectangle(cornerRadius: 14))
     }
 
     /// The fanned pile: up to three thumbnails, back-to-front, each tilted by its
-    /// seeded angle; the front (last) sits uprightish on top. An empty collection
-    /// fans a single folder-glyph placeholder.
-    @ViewBuilder
+    /// seeded angle; the front (last) sits upright on top. A collection with no
+    /// byte-backed items fans a single folder-glyph placeholder.
     private var fan: some View {
-        let hashes = preview.recentBlobHashes
-        let angles = fanRotations(seed: preview.collection.id, count: max(hashes.count, 1))
-        ZStack {
-            if hashes.isEmpty {
-                placeholder
-                    .rotationEffect(.degrees(angles.first ?? 0))
-            } else {
-                ForEach(Array(hashes.enumerated().reversed()), id: \.offset) { index, hash in
-                    tile(hash: hash)
-                        // The front tile (index 0) rides on top with the least tilt.
-                        .rotationEffect(.degrees(index == 0 ? 0 : angles[index]))
-                        .zIndex(Double(hashes.count - index))
+        GeometryReader { geo in
+            let box = min(geo.size.width, geo.size.height)
+            // The fanned tiles inset from the card so the outer tilts don't clip.
+            let tile = box * 0.76
+            let hashes = preview.recentBlobHashes
+            let angles = fanRotations(seed: preview.collection.id, count: max(hashes.count, 1))
+            ZStack {
+                if hashes.isEmpty {
+                    placeholder(side: tile)
+                        .rotationEffect(.degrees(angles.first ?? 0))
+                } else {
+                    ForEach(Array(hashes.enumerated().reversed()), id: \.offset) { index, hash in
+                        tile(hash: hash, side: tile)
+                            // The front tile (index 0) rides on top with no tilt.
+                            .rotationEffect(.degrees(index == 0 ? 0 : angles[index]))
+                            .zIndex(Double(hashes.count - index))
+                    }
                 }
             }
-        }
-        .overlay {
-            if isTargeted {
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(Color.accentColor, lineWidth: 2)
-            }
+            .frame(width: geo.size.width, height: geo.size.height)
         }
     }
 
-    private func tile(hash: String) -> some View {
-        // 92 pt → 184 px at 2× → the 192 bucket. The `scaleEffect(1.06)` drop cue
-        // is transient and well inside the round-up headroom, so it doesn't
-        // warrant the next bucket up.
+    private func tile(hash: String, side: CGFloat) -> some View {
         AsyncThumbnail(
-            hash: hash, url: thumbnailURL(hash), isSelected: false, cornerRadius: 10,
-            bucket: thumbnailPixelBucket(pointLongSide: Self.side, scale: displayScale))
-            .frame(width: Self.side, height: Self.side)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color(.windowBackgroundColor)))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .shadow(color: .black.opacity(0.18), radius: 2, x: 0, y: 1)
+            hash: hash, url: thumbnailURL(hash), cornerRadius: 12,
+            bucket: thumbnailPixelBucket(pointLongSide: side, scale: displayScale))
+            .frame(width: side, height: side)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(.windowBackgroundColor)))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .shadow(color: .black.opacity(0.2), radius: 3, x: 0, y: 2)
     }
 
-    private var placeholder: some View {
-        RoundedRectangle(cornerRadius: 10)
-            .fill(.quaternary)
+    private func placeholder(side: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 12)
+            .fill(accent ? Color.accentColor.opacity(0.12) : Color(.quaternaryLabelColor).opacity(0.4))
             .overlay {
-                Image(systemName: "folder")
-                    .font(.system(size: 26))
-                    .foregroundStyle(.secondary)
+                Image(systemName: accent ? "tray" : "folder")
+                    .font(.system(size: 30))
+                    .foregroundStyle(accent ? Color.accentColor : .secondary)
             }
-            .frame(width: Self.side, height: Self.side)
-    }
-}
-
-/// A stack card wired as a drop target (009 · N4): owns its own `isTargeted`
-/// state (so only the hovered card scales), moves/copies the dragged payload on
-/// drop, and navigates into the collection on a plain click.
-struct StackDropTarget: View {
-    let preview: CollectionStackPreview
-    let thumbnailURL: (String) -> URL?
-    let onNavigate: () -> Void
-    /// Route + apply the drop; returns whether it was accepted.
-    let onDrop: (AssetDragPayload) -> Bool
-
-    @State private var isTargeted = false
-
-    var body: some View {
-        Button(action: onNavigate) {
-            CollectionStackCard(
-                preview: preview, thumbnailURL: thumbnailURL, isTargeted: isTargeted)
-        }
-        .buttonStyle(.plain)
-        .help("Move here — hold ⌥ to copy")
-        // `.onDrop` (not `.dropDestination`) so the AppKit grid's NSDraggingSession
-        // is actually recognised — the Transferable bridge silently never was.
-        .onDrop(of: [.assetIDs], isTargeted: $isTargeted) { providers in
-            AssetDragPayload.fromDrop(providers) { _ = onDrop($0) }
-        }
+            .frame(width: side, height: side)
     }
 }

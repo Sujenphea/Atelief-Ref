@@ -31,8 +31,8 @@ struct AssetDragPayloadTests {
 
     // MARK: - NSPasteboard ↔ SwiftUI byte-compatibility (036 §4 A3)
     //
-    // The interop contract: the AppKit drag out writes bytes the still-SwiftUI drop
-    // rail / stack row / Spaces (each a `.dropDestination(for: AssetDragPayload.self)`)
+    // The interop contract: the AppKit drag out writes bytes the still-SwiftUI
+    // sidebar rows / Spaces (each a `.dropDestination(for: AssetDragPayload.self)`)
     // accept. SwiftUI's `CodableRepresentation(contentType:)` serializes with a plain
     // `JSONEncoder` under the content type's identifier, so proving byte-compat is
     // proving (a) `pasteboardData()` equals `JSONEncoder().encode`, (b) it decodes
