@@ -16,6 +16,7 @@
 
 import AtelierCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SidebarView: View {
     @ObservedObject var model: IngestionModel
@@ -27,6 +28,13 @@ struct SidebarView: View {
     @State private var newSpaceName = ""
     @State private var spacesExpanded = true
     @State private var collectionsExpanded = true
+    /// The sidebar row currently under an asset drag (space or collection id), for
+    /// the drop highlight. One id at a time — a drag hovers a single row.
+    @State private var dropTargetID: UUID?
+
+    /// The ⌥ (copy) read at drop time, shared with the collection drop rail
+    /// (009 · N3): a plain drop MOVES into a collection, ⌥ COPIES.
+    private static let modifierReader: ModifierReading = LiveModifierReader()
 
     /// The traffic lights overlay the top-left; inset content below them.
     private let trafficLightInset: CGFloat = 40
@@ -36,6 +44,9 @@ struct SidebarView: View {
             if nav.sidebarCollapsed { rail } else { full }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        // Redundant with bootstrap's own `refreshSpaces` (which owns the load —
+        // this can run first and no-op while `services` is still nil); kept so a
+        // re-mounted sidebar refreshes.
         .task { await model.refreshSpaces() }
         // New root collection.
         .alert("New Collection", isPresented: $showNewCollection) {
@@ -107,12 +118,12 @@ struct SidebarView: View {
                 Image(systemName: symbol)
                     .font(.system(size: 13))
                     .frame(width: 16)
-                Text(title).font(.system(size: 14, weight: .medium))
+                Text(title).font(.system(size: 14))
                 Spacer()
             }
             .foregroundStyle(Theme.Colors.inkPrimary)
             .padding(.horizontal, Theme.Spacing.sm)
-            .padding(.vertical, 5)
+            .padding(.vertical, 7)
             .background(rowHighlight(selected: nav.sidebarSelection == item))
             .contentShape(Rectangle())
         }
@@ -125,19 +136,47 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             sectionHeader("Spaces", expanded: $spacesExpanded) { showNewSpace = true }
             if spacesExpanded {
-                ForEach(model.spaces) { space in
-                    treeRow(
-                        title: space.name,
-                        selected: nav.sidebarSelection == .space(space.id),
-                        select: { nav.openSpace(space.id) })
-                        .contextMenu {
-                            Button("Delete…", role: .destructive) {
-                                model.requestDeleteSpace(id: space.id, name: space.name)
-                            }
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                    if model.spaces.isEmpty {
+                        if model.spacesLoaded { spacesEmptyRow } else { spacesLoadingRows }
+                    } else {
+                        ForEach(model.spaces) { space in
+                            treeRow(
+                                title: space.name,
+                                selected: nav.sidebarSelection == .space(space.id),
+                                dropID: space.id,
+                                select: { nav.openSpace(space.id) },
+                                onDrop: { handleSpaceDrop($0, into: space.id) })
+                                .contextMenu {
+                                    Button("Delete…", role: .destructive) {
+                                        model.requestDeleteSpace(id: space.id, name: space.name)
+                                    }
+                                }
                         }
+                    }
                 }
             }
         }
+    }
+
+    /// Skeleton rows while the first `refreshSpaces` is in flight.
+    private var spacesLoadingRows: some View {
+        ForEach(0..<2, id: \.self) { _ in
+            Text("Loading space")
+                .font(Theme.Typography.row)
+                .foregroundStyle(Theme.Colors.inkSecondary)
+                .redacted(reason: .placeholder)
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, 7)
+        }
+    }
+
+    private var spacesEmptyRow: some View {
+        Text("No spaces yet")
+            .font(Theme.Typography.row)
+            .foregroundStyle(Theme.Colors.inkSecondary)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, 7)
     }
 
     // MARK: - Collections
@@ -153,7 +192,9 @@ struct SidebarView: View {
                         treeRow(
                             title: collection.name,
                             selected: nav.sidebarSelection == .collection(collection.id),
-                            select: { nav.selectSidebar(.collection(collection.id)) })
+                            dropID: collection.id,
+                            select: { nav.selectSidebar(.collection(collection.id)) },
+                            onDrop: { handleCollectionDrop($0, into: collection.id) })
                             .contextMenu { collectionMenu(collection) }
                     }
                 }
@@ -198,10 +239,18 @@ struct SidebarView: View {
         }
     }
 
+    /// A space / collection row. When `dropID` and `onDrop` are supplied the row is
+    /// also an asset drop target: a drag over it highlights the row and the drop
+    /// moves/copies (collections) or adds (spaces) the dragged assets. `.onDrop`
+    /// (not `.dropDestination`) so the AppKit grid drag is recognised — see
+    /// ``CollectionDropRail``.
     private func treeRow(
-        title: String, selected: Bool, select: @escaping () -> Void
+        title: String, selected: Bool, dropID: UUID? = nil,
+        select: @escaping () -> Void,
+        onDrop: ((AssetDragPayload) -> Bool)? = nil
     ) -> some View {
-        Button(action: select) {
+        let targeted = dropID != nil && dropTargetID == dropID
+        return Button(action: select) {
             Text(title)
                 .font(Theme.Typography.row)
                 .foregroundStyle(Theme.Colors.inkPrimary)
@@ -209,18 +258,51 @@ struct SidebarView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Theme.Spacing.md)
                 .padding(.vertical, 7)
-                .background(rowHighlight(selected: selected))
+                .background(rowHighlight(selected: selected, targeted: targeted))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .modifier(RowDropModifier(dropID: dropID, dropTargetID: $dropTargetID, onDrop: onDrop))
     }
 
-    private func rowHighlight(selected: Bool) -> some View {
+    private func rowHighlight(selected: Bool, targeted: Bool = false) -> some View {
         RoundedRectangle(cornerRadius: 6)
-            .fill(selected ? Theme.Colors.selection : .clear)
+            .fill(targeted ? Theme.Colors.selection : (selected ? Theme.Colors.selection : .clear))
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(selected ? Theme.Colors.hairlineStrong : .clear, lineWidth: 1))
+                    .strokeBorder(
+                        targeted ? Color.accentColor
+                            : (selected ? Theme.Colors.hairlineStrong : .clear),
+                        lineWidth: targeted ? 1.5 : 1))
+    }
+
+    // MARK: - Drop routing
+
+    /// Move (⌥ = copy) the dragged assets into `collectionID`. Mirrors the collection
+    /// screen's rail drop (009 · N3): the same ``routeDrop`` decision so `from == to`
+    /// / empty are refused in ONE place. `moveToCollection` reads the source from the
+    /// model's `selectedFolderID`, which is the grid the drag came from.
+    private func handleCollectionDrop(_ payload: AssetDragPayload, into collectionID: UUID) -> Bool {
+        switch routeDrop(
+            payload, onto: .collection(collectionID),
+            optionDown: Self.modifierReader.isOptionDown) {
+        case let .move(assetIDs, _, to):
+            model.moveToCollection(assetIDs: assetIDs, to: to)
+            return true
+        case let .copy(assetIDs, to):
+            model.copyToCollection(assetIDs: assetIDs, to: to)
+            return true
+        case .reject, .reorder:
+            return false
+        }
+    }
+
+    /// ADD the dragged assets to `spaceID` (a space is a placement board — always
+    /// additive, never a move). An empty payload is refused.
+    private func handleSpaceDrop(_ payload: AssetDragPayload, into spaceID: UUID) -> Bool {
+        guard !payload.assetIDs.isEmpty else { return false }
+        model.addAssetsToSpace(assetIDs: payload.assetIDs, to: spaceID)
+        return true
     }
 
     // MARK: - Footer / rail controls
@@ -305,5 +387,34 @@ struct SidebarView: View {
             .padding(.bottom, Theme.Spacing.lg)
         }
         .frame(width: 60)
+    }
+}
+
+/// Attaches an asset-drop target to a sidebar row ONLY when it has a `dropID` +
+/// `onDrop` — nav rows (Home/Capture/Settings) opt out by passing neither, so a
+/// drag over them is a plain no-op. Kept as a modifier (not an inline `if`) so a
+/// row's identity is stable whether or not it accepts drops. `.onDrop` (not
+/// `.dropDestination`) recognises the AppKit grid drag — see ``CollectionDropRail``.
+private struct RowDropModifier: ViewModifier {
+    let dropID: UUID?
+    @Binding var dropTargetID: UUID?
+    let onDrop: ((AssetDragPayload) -> Bool)?
+
+    func body(content: Content) -> some View {
+        if let dropID, let onDrop {
+            content.onDrop(of: [.assetIDs], isTargeted: Binding(
+                get: { dropTargetID == dropID },
+                set: { over in
+                    if over { dropTargetID = dropID }
+                    else if dropTargetID == dropID { dropTargetID = nil }
+                })) { providers in
+                AssetDragPayload.fromDrop(providers) { payload in
+                    _ = onDrop(payload)
+                    if dropTargetID == dropID { dropTargetID = nil }
+                }
+            }
+        } else {
+            content
+        }
     }
 }

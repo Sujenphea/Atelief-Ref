@@ -1780,6 +1780,49 @@ final class IngestionModel: ObservableObject {
         }
     }
 
+    /// Add assets to an existing space BY ID — the sidebar drag-to-space drop, with
+    /// no open ``SpaceModel`` in play. The assets flow into justified rows BELOW the
+    /// space's current content (mirroring ``SpaceModel/addAssets(_:)``). A space is a
+    /// placement board, so this is always ADDITIVE — the source collection is never
+    /// touched. Refreshes the spaces list so the card cover/preview updates.
+    func addAssetsToSpace(assetIDs: [UUID], to spaceID: UUID) {
+        guard let services, !assetIDs.isEmpty else { return }
+        Task {
+            do {
+                // Where the current content ends, and the next free z.
+                let existing = try await services.spaceItems(in: spaceID)
+                let startY: Double = {
+                    let maxBottom = existing.map { $0.item.y + $0.item.h }.max() ?? 0
+                    return maxBottom > 0 ? maxBottom + SpaceLayout.spacing : 0
+                }()
+                let startZ = (existing.map(\.item.z).max() ?? -1) + 1
+                // Resolve the dragged ids to assets (for aspect-ratio flow-in),
+                // skipping any that no longer exist.
+                var assets: [Asset] = []
+                for id in assetIDs {
+                    if let detail = try? await services.getAsset(id: id) { assets.append(detail.asset) }
+                }
+                guard !assets.isEmpty else { return }
+                let rects = SpaceLayout.flowIn(
+                    aspects: assets.map(SpaceLayout.aspect), startY: startY, startZ: startZ)
+                for (asset, rect) in zip(assets, rects) {
+                    try await services.addAssetToSpace(
+                        assetID: asset.id, to: spaceID,
+                        x: rect.x, y: rect.y, w: rect.w, h: rect.h, z: rect.z)
+                }
+                // First content into an empty space → seed its cover.
+                if existing.isEmpty, let first = assets.first {
+                    try? await services.setSpaceCover(spaceID: spaceID, assetID: first.id)
+                }
+                await refreshSpaces()
+                let name = spaces.first(where: { $0.id == spaceID })?.name ?? ""
+                status = "Added \(Self.itemCount(assets.count)) to “\(name).”"
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
     /// Build a per-open-space view model against the shared Library (005-E2).
     /// `nil` before the Library opens.
     func makeSpaceModel(for spaceID: UUID) -> SpaceModel? {
