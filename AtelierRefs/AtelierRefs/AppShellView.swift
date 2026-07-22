@@ -146,8 +146,10 @@ struct AppShellView: View {
     /// fill / glyph under `.borderlessButton` and swallowed the click, so this is an
     /// `NSButton` + `NSMenu` instead.
     private var floatingAdd: some View {
+        // Sized entirely by AppKit — the button reports a square `intrinsicContentSize`
+        // and hugs it, so SwiftUI hosts it at 40×40 without a `.frame`.
         FloatingAddButton(diameter: 40, items: addMenuItems)
-            .frame(width: 40, height: 40)
+            .fixedSize()
             .padding(Theme.Spacing.xxl)
     }
 

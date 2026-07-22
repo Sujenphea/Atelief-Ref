@@ -21,7 +21,9 @@ struct FloatingAddItem {
 /// size and re-derives `cornerRadius` from its height on every layout pass (a fixed
 /// radius went stale whenever the laid-out height drifted from the nominal diameter).
 private final class RoundButton: NSButton {
-    var diameter: CGFloat = 40
+    var diameter: CGFloat = 40 {
+        didSet { invalidateIntrinsicContentSize() }
+    }
 
     override var intrinsicContentSize: NSSize { NSSize(width: diameter, height: diameter) }
 
@@ -55,6 +57,12 @@ struct FloatingAddButton: NSViewRepresentable {
         button.imagePosition = .imageOnly
         button.focusRingType = .none
         button.contentTintColor = NSColor(hex: 0x141416)
+        // AppKit owns the size: hug the square intrinsic size in both axes so the
+        // host can neither stretch nor squash it off 1:1.
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentHuggingPriority(.required, for: .vertical)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .vertical)
 
         let config = NSImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
         button.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add")?

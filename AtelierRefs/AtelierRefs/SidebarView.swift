@@ -32,8 +32,8 @@ struct SidebarView: View {
     /// the drop highlight. One id at a time — a drag hovers a single row.
     @State private var dropTargetID: UUID?
 
-    /// The ⌥ (copy) read at drop time, shared with the collection drop rail
-    /// (009 · N3): a plain drop MOVES into a collection, ⌥ COPIES.
+    /// The ⌥ (copy) read at drop time (009 · N3): a plain drop MOVES into a
+    /// collection, ⌥ COPIES.
     private static let modifierReader: ModifierReading = LiveModifierReader()
 
     /// The traffic lights overlay the top-left; inset content below them.
@@ -243,7 +243,7 @@ struct SidebarView: View {
     /// also an asset drop target: a drag over it highlights the row and the drop
     /// moves/copies (collections) or adds (spaces) the dragged assets. `.onDrop`
     /// (not `.dropDestination`) so the AppKit grid drag is recognised — see
-    /// ``CollectionDropRail``.
+    /// ``AssetDragPayload``.
     private func treeRow(
         title: String, selected: Bool, dropID: UUID? = nil,
         select: @escaping () -> Void,
@@ -369,24 +369,30 @@ struct SidebarView: View {
     // MARK: - Collapsed rail (60pt)
 
     private var rail: some View {
+        // Every control shares ONE centered column so the toggle, sort, and trash
+        // line up on the same vertical axis regardless of each glyph's intrinsic
+        // width (the sort `Menu` in particular carries its own chrome). Each is
+        // pinned to a fixed square so their centers coincide.
         VStack(spacing: 0) {
-            HStack {
-                Spacer()
-                collapseToggle
-            }
-            .frame(height: trafficLightInset, alignment: .center)
-            .padding(.horizontal, Theme.Spacing.md)
+            railIcon { collapseToggle }
+                .frame(height: trafficLightInset)
 
             Spacer()
 
-            VStack(alignment: .trailing, spacing: Theme.Spacing.lg) {
-                sortMenu
-                trashButton
+            VStack(spacing: Theme.Spacing.lg) {
+                railIcon { sortMenu }
+                railIcon { trashButton }
             }
-            .padding(.trailing, Theme.Spacing.md)
             .padding(.bottom, Theme.Spacing.lg)
         }
         .frame(width: 60)
+    }
+
+    /// A rail control centered in a fixed square, so all rail glyphs share one
+    /// vertical axis.
+    private func railIcon<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .frame(width: 28, height: 28)
     }
 }
 
@@ -394,7 +400,7 @@ struct SidebarView: View {
 /// `onDrop` — nav rows (Home/Capture/Settings) opt out by passing neither, so a
 /// drag over them is a plain no-op. Kept as a modifier (not an inline `if`) so a
 /// row's identity is stable whether or not it accepts drops. `.onDrop` (not
-/// `.dropDestination`) recognises the AppKit grid drag — see ``CollectionDropRail``.
+/// `.dropDestination`) recognises the AppKit grid drag — see ``AssetDragPayload``.
 private struct RowDropModifier: ViewModifier {
     let dropID: UUID?
     @Binding var dropTargetID: UUID?
