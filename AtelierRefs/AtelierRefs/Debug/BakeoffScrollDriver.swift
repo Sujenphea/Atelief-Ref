@@ -132,34 +132,7 @@ final class BakeoffScrollDriver {
     }
 }
 
-// MARK: - A ready-made SwiftUI conformance
-
-/// A ``BakeoffScrollTarget`` backed by SwiftUI's `ScrollPosition` (037) —
-/// supplied here so BOTH SwiftUI bake-off entries drive scroll IDENTICALLY
-/// instead of each inventing its own mechanism (which would reintroduce exactly
-/// the variability the scripted scroll exists to remove).
-///
-/// This works, and is not speculative: the shipping grid already scrolls itself
-/// programmatically through `ScrollPosition.scrollTo(y:)` for the marquee's edge
-/// auto-scroll (`CollectionView.swift` → `onAutoScroll: { gridScroll.scrollTo(y: $0) }`),
-/// which produces real, geometry-reported scrolling at up to 1080 pt/s. The
-/// bake-off drives the same call.
-///
-/// Why closures rather than a stored `Binding`: `ScrollPosition` lives in the
-/// grid view's `@State` and can only be mutated from that view. The view
-/// REFRESHES these closures on each body pass — the same discipline
-/// `MarqueeCaptureLayer` uses for `pump.onTick`. Everything they capture is a
-/// stable reference, so a closure one render stale stays correct.
-@MainActor
-final class SwiftUIScrollPositionTarget: BakeoffScrollTarget {
-    /// Refreshed by the grid view from its layout each body pass.
-    var contentHeight: CGFloat = 0
-    var viewportHeight: CGFloat = 0
-    /// Set by the grid view to `{ scrollPosition.scrollTo(y: $0) }`.
-    var scrollTo: (@MainActor (CGFloat) -> Void)?
-
-    func setScrollOffset(_ y: CGFloat) { scrollTo?(y) }
-}
+// MARK: - The AppKit conformance
 
 /// A ``BakeoffScrollTarget`` backed by an AppKit `NSScrollView` (037) —
 /// supplied so the AppKit entry needs no scrolling code of its own and is

@@ -340,6 +340,21 @@ New `AtelierRefs/GridSelectionStore.swift` — `@MainActor ObservableObject` wit
 > `GridContextMenu.swift`'s `GridContextMenuState`/`GridContextHighlightLayer`
 > (C4's SwiftUI menu — its pure fns stay tested). Retire with the same follow-up.
 >
+> **DONE (`189`).** The follow-up landed: the two Debug SwiftUI bake-off modes
+> (`swiftUIWindowed`/`swiftUIEquatable`) were retired and `GridBakeoffMode`
+> collapsed to `.appKit` (kept as the regression guard). With them gone,
+> `GridWindowing.swift` + `GridWindowingTests`, `CollectionCell` +
+> `PressReportingButtonStyle` + `MasonryCellEquatableTests`, the four dead
+> SwiftUI marquee layers in `GridMarquee.swift`
+> (`GridMarqueeState`/`MarqueeCaptureLayer`/`MarqueeRectangleLayer`/`DisplayLinkHost`,
+> `DisplayLinkPump` kept), and `GridContextMenuState`/`GridContextHighlightLayer`
+> were all deleted. Kept: `GridContextMenu`'s pure fns, and
+> `GridBakeoffWrapperConfig` (still referenced by the kept export provenance —
+> vestigial, not dead). `GridWindowingTests`' live `GifCoordinatorTests` suite was
+> extracted to `GifAnimationCoordinatorTests.swift`, not deleted. Test count
+> dropped 467 → 425 (−42, exactly the 7 dead suites); the deferred
+> "GridWindowingTests dies" is now honoured.
+>
 > **Flag:** the Settings toggle was removed and the `@AppStorage` read deleted;
 > the `AtelierUseAppKitGrid` UserDefaults key is left reserved (no migration). A
 > stale `false` can't resurrect anything — there is no `else` branch left.

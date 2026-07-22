@@ -151,7 +151,7 @@ struct GridBakeoffView: View {
     /// The bake-off's OWN model (see the file header) — never the app's.
     @StateObject private var model = IngestionModel()
 
-    @State private var mode: GridBakeoffMode = .swiftUIWindowed
+    @State private var mode: GridBakeoffMode = .appKit
     @State private var wrappers: GridBakeoffWrapperConfig = .full
     @State private var recorder = FrameTimeRecorder()
     @State private var driver = BakeoffScrollDriver()
@@ -183,7 +183,7 @@ struct GridBakeoffView: View {
         // Seed the pickers from the configuration so the requested grid is the
         // one that gets built — setting them after the first body pass would
         // measure a mode switch on the first ramp.
-        _mode = State(initialValue: autorun?.mode ?? .swiftUIWindowed)
+        _mode = State(initialValue: autorun?.mode ?? .appKit)
         _wrappers = State(initialValue: autorun?.wrappers ?? .full)
         _duration = State(initialValue: autorun?.duration ?? BakeoffScrollDriver.defaultDuration)
     }
@@ -285,10 +285,6 @@ struct GridBakeoffView: View {
 
         Group {
             switch mode {
-            case .swiftUIWindowed:
-                SwiftUIWindowedBakeoffGrid(context: context)
-            case .swiftUIEquatable:
-                SwiftUIEquatableBakeoffGrid(context: context)
             case .appKit:
                 AppKitBakeoffGrid(context: context)
             }

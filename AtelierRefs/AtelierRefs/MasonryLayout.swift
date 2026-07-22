@@ -15,8 +15,8 @@
 //  The windowed render (`CollectionView.masonryWindow`) places each visible cell
 //  ABSOLUTELY at its frame here, so render position == frame BY CONSTRUCTION, and
 //  the same frames drive the marquee — one geometry source, no drift.
-//  `MasonryLayoutTests` asserts the frame math; `GridWindowingTests` asserts the
-//  windowed slice is a pure filter that never re-maps a cell off its frame.
+//  `MasonryLayoutTests` asserts the frame math. (The old SwiftUI windowing slice
+//  and its `GridWindowingTests` were retired with the SwiftUI grid — 189.)
 //
 
 import AtelierCore

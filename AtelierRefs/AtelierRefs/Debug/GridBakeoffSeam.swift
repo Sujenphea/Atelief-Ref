@@ -26,20 +26,18 @@ import AtelierCore
 import CoreGraphics
 import SwiftUI
 
-/// The three grids under comparison (037).
+/// The grid(s) under comparison (037).
 ///
-///  • ``swiftUIWindowed`` — the CURRENT production path: banded windowing over
-///    absolutely-placed cells (`GridWindowing.swift` + `CollectionView.masonryWindow`).
-///    The baseline every other number is judged against.
-///  • ``swiftUIEquatable`` — 035 §5 Option A: the same windowing plus an
-///    `Equatable` cell wrapper, so a band crossing rebuilds ~a dozen cells
-///    instead of ~a hundred. The cheap fix (~half a day).
 ///  • ``appKit`` — 035 §5 Option B: `NSCollectionView` with native cell
-///    recycling. The expensive fix (1–2 weeks) this bake-off exists to justify
-///    or reject.
+///    recycling. The expensive fix (1–2 weeks) this bake-off existed to justify
+///    or reject, and the one that shipped (Workstreams A/B/C).
+///
+/// The two SwiftUI modes (`swiftUIWindowed` — the old banded-windowing production
+/// path — and `swiftUIEquatable` — 035 §5 Option A) were retired once the AppKit
+/// grid became the default; only the AppKit mode remains, as the scroll-perf
+/// regression guard (189). The enum keeps its `CaseIterable`/`Codable` shape so
+/// the harness, the autorun parser, and the exported provenance are unchanged.
 enum GridBakeoffMode: String, CaseIterable, Identifiable, Codable {
-    case swiftUIWindowed
-    case swiftUIEquatable
     case appKit
 
     var id: String { rawValue }
@@ -47,8 +45,6 @@ enum GridBakeoffMode: String, CaseIterable, Identifiable, Codable {
     /// Picker/report label.
     var title: String {
         switch self {
-        case .swiftUIWindowed: "SwiftUI · Windowed"
-        case .swiftUIEquatable: "SwiftUI · Equatable"
         case .appKit: "AppKit · NSCollectionView"
         }
     }
@@ -138,18 +134,15 @@ struct GridBakeoffContext {
 
 //
 //  ─────────────────────────────────────────────────────────────────────────
-//  THE THREE ENTRY POINTS
+//  THE ENTRY POINT
 //
-//  Each mode is one `View` struct with a fixed name and a single stored
+//  The surviving mode is one `View` struct with a fixed name and a single stored
 //  property `context`. The harness switches over `GridBakeoffMode` and
-//  constructs them by these exact signatures:
+//  constructs it by this exact signature:
 //
-//      SwiftUIWindowedBakeoffGrid(context: ctx)     // SwiftUIWindowedBakeoffGrid.swift
-//      SwiftUIEquatableBakeoffGrid(context: ctx)    // SwiftUIEquatableBakeoffGrid.swift
 //      AppKitBakeoffGrid(context: ctx)              // AppKitBakeoffGrid.swift
 //
-//  To implement a mode: open its file and replace the placeholder body. Do not
-//  rename the struct, change the initializer, or add stored properties without
-//  defaults — the harness constructs it positionally and will not compile.
+//  (The two SwiftUI entry points — `SwiftUIWindowedBakeoffGrid` and
+//  `SwiftUIEquatableBakeoffGrid` — were retired in 189.)
 //  ─────────────────────────────────────────────────────────────────────────
 //

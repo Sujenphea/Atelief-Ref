@@ -22,15 +22,17 @@
 //  sub-pixel from the analytic ones. The analytic frames are the single source
 //  of truth for geometry in this grid.
 //
-//  Kept SwiftUI-free above the state/layer types so the two decisions the menu
-//  makes — WHICH cell the cursor is over, and WHAT that cell's action scope is —
-//  are unit-tested without a running view.
+//  Now that the grid renders through `NSCollectionView`, the menu itself is the
+//  AppKit-native `menu(for:)` on the collection view (036 §4 A3); these functions
+//  are the pure decisions it reuses — WHICH cell the cursor is over, and WHAT that
+//  cell's action scope is — kept SwiftUI-free so they stay unit-tested without a
+//  running view. The C4 SwiftUI container menu, its `GridContextMenuState`, and
+//  the `GridContextHighlightLayer` it drove were retired with the SwiftUI grid
+//  (189); only these pure helpers remain.
 //
 
-import Combine
 import CoreGraphics
 import Foundation
-import SwiftUI
 
 // MARK: - Pure resolution
 
@@ -88,53 +90,4 @@ func gridActionTargets(
     if isSelected { return selectedAssetIDs }
     guard let cellAssetID else { return [] }
     return [cellAssetID]
-}
-
-// MARK: - Per-tick state
-
-/// The container context menu's cursor + highlight state (036 §4 C4).
-///
-/// A class held by the parent in plain `@State` — deliberately NOT
-/// `@StateObject` — for the same reason as ``GridMarqueeState``: `cursorViewport`
-/// is written on EVERY mouse-moved event, and subscribing `CollectionView` to
-/// that would re-render the whole screen per pointer pixel, which is precisely
-/// the churn C4 exists to remove. So:
-///
-/// - `cursorViewport` is a PLAIN var — never published, read only on demand when
-///   a menu is being built or opened.
-/// - `highlightFrame` IS published, because something must draw it; only the
-///   tiny ``GridContextHighlightLayer`` observes this object, so the publish
-///   costs one layer redraw and not a grid rebuild. It changes at most twice per
-///   right-click.
-final class GridContextMenuState: ObservableObject {
-    /// The pointer's last known position in VIEWPORT space (scroll-invariant —
-    /// see ``gridCursorContentPoint(viewport:contentOffset:)``). `nil` means the
-    /// pointer is not over the grid.
-    var cursorViewport: CGPoint?
-    /// The analytic frame of the cell the open menu is acting on, in content
-    /// space, or `nil` when no menu is open.
-    @Published var highlightFrame: CGRect?
-}
-
-/// The "this is the cell the menu will act on" outline, drawn ABOVE the grid in
-/// the same content space as the marquee rectangle (036 §4 C4).
-///
-/// A per-cell `.contextMenu` got this highlight for free from AppKit; one
-/// container-level menu does not, and without it the user has no idea which item
-/// "Delete (1)" means. Deliberately the SAME shape and stroke as
-/// `CollectionCell.cursorRing` (radius 8, 2 pt accent) so the grid has one
-/// visual vocabulary for "targeted", drawn at full opacity to read as stronger
-/// than the idle keyboard cursor it may sit on top of.
-struct GridContextHighlightLayer: View {
-    @ObservedObject var state: GridContextMenuState
-
-    var body: some View {
-        if let frame = state.highlightFrame {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.accentColor, lineWidth: 2)
-                .frame(width: frame.width, height: frame.height)
-                .offset(x: frame.minX, y: frame.minY)
-                .allowsHitTesting(false)
-        }
-    }
 }
