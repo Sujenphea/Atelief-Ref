@@ -2,9 +2,10 @@
 //  GridReorderTests.swift
 //  AtelierRefsTests
 //
-//  Guards the pure Library-grid drag-to-reorder math: dropping one thumbnail onto
-//  another moves the dragged id to the target's slot (before it). An off-by-one
-//  or a mishandled foreign/self drop here would scramble the persisted order.
+//  Guards the pure Library-grid drag-to-reorder math (040): a drag re-inserts the
+//  dragged block at the insertion SLOT the live preview chose. An off-by-one or a
+//  mishandled foreign/empty block here would scramble the persisted order or
+//  diverge from the on-screen preview.
 //
 
 import Foundation
@@ -18,131 +19,66 @@ struct GridReorderTests {
     private static let b = UUID()
     private static let c = UUID()
     private static let d = UUID()
-    private var ids: [UUID] { [Self.a, Self.b, Self.c, Self.d] }
-
-    @Test("move forward: dragged id lands just after the target")
-    func moveForward() {
-        // Drop A onto C (forward) → A lands right after C.
-        #expect(reorderedIDs(ids: ids, movingID: Self.a, toIndexOf: Self.c)
-                == [Self.b, Self.c, Self.a, Self.d])
-    }
-
-    @Test("move backward: dragged id lands just before the target")
-    func moveBackward() {
-        // Drop D onto B (backward) → D lands right before B.
-        #expect(reorderedIDs(ids: ids, movingID: Self.d, toIndexOf: Self.b)
-                == [Self.a, Self.d, Self.b, Self.c])
-    }
-
-    @Test("move to the first slot")
-    func moveToFront() {
-        #expect(reorderedIDs(ids: ids, movingID: Self.c, toIndexOf: Self.a)
-                == [Self.c, Self.a, Self.b, Self.d])
-    }
-
-    @Test("move onto the last item (forward) lands after it → new last")
-    func moveOntoLast() {
-        // Drop A onto D (forward) → A lands after D, becoming last.
-        #expect(reorderedIDs(ids: ids, movingID: Self.a, toIndexOf: Self.d)
-                == [Self.b, Self.c, Self.d, Self.a])
-    }
-
-    @Test("dropping onto itself is a no-op (nil)")
-    func selfDropIsNil() {
-        #expect(reorderedIDs(ids: ids, movingID: Self.b, toIndexOf: Self.b) == nil)
-    }
-
-    @Test("unknown moving id is a no-op (foreign drop)")
-    func unknownMovingIsNil() {
-        #expect(reorderedIDs(ids: ids, movingID: UUID(), toIndexOf: Self.b) == nil)
-    }
-
-    @Test("unknown target id is a no-op")
-    func unknownTargetIsNil() {
-        #expect(reorderedIDs(ids: ids, movingID: Self.a, toIndexOf: UUID()) == nil)
-    }
-
-    @Test("result is always a same-count permutation of the input")
-    func resultIsPermutation() {
-        let out = reorderedIDs(ids: ids, movingID: Self.a, toIndexOf: Self.d)
-        #expect(out?.count == ids.count)
-        #expect(out.map { Set($0) } == Set(ids))
-    }
-
-    @Test("adjacent forward swap")
-    func adjacentForward() {
-        // Drop A onto B → they swap.
-        #expect(reorderedIDs(ids: ids, movingID: Self.a, toIndexOf: Self.b)
-                == [Self.b, Self.a, Self.c, Self.d])
-    }
-
-    // MARK: - Multi-block reorder (009 · N3)
-
     private static let e = UUID()
     private static let f = UUID()
     private var six: [UUID] { [Self.a, Self.b, Self.c, Self.d, Self.e, Self.f] }
 
-    @Test("a contiguous block moves forward as one run, feed order preserved")
-    func blockContiguousForward() {
-        // Drag [A,B] onto E (forward) → they land just after E, order A,B.
-        #expect(reorderedIDs(ids: six, movingIDs: [Self.a, Self.b], toIndexOf: Self.e)
-                == [Self.c, Self.d, Self.e, Self.a, Self.b, Self.f])
+    // MARK: - Slot insertion (040 — the live-preview commit)
+
+    @Test("insertAt 0 puts the block first; the end slot puts it last")
+    func insertAtEnds() {
+        #expect(reorderedIDs(ids: six, movingIDs: [Self.c], insertAt: 0)
+                == [Self.c, Self.a, Self.b, Self.d, Self.e, Self.f])
+        #expect(reorderedIDs(ids: six, movingIDs: [Self.b], insertAt: 5)
+                == [Self.a, Self.c, Self.d, Self.e, Self.f, Self.b])
     }
 
-    @Test("a contiguous block moves backward as one run")
-    func blockContiguousBackward() {
-        // Drag [E,F] onto B (backward) → land just before B, order E,F.
-        #expect(reorderedIDs(ids: six, movingIDs: [Self.e, Self.f], toIndexOf: Self.b)
-                == [Self.a, Self.e, Self.f, Self.b, Self.c, Self.d])
+    @Test("insertAt a middle slot lands in the block-removed order")
+    func insertAtMiddle() {
+        // Remaining without B is [A,C,D,E,F]; slot 3 → after D.
+        #expect(reorderedIDs(ids: six, movingIDs: [Self.b], insertAt: 3)
+                == [Self.a, Self.c, Self.d, Self.b, Self.e, Self.f])
     }
 
-    @Test("a NON-contiguous selection is gathered into one run in feed order")
-    func blockNonContiguous() {
-        // Drag [A,C,E] onto F (forward) → gathered as A,C,E just after F.
-        #expect(reorderedIDs(ids: six, movingIDs: [Self.a, Self.c, Self.e], toIndexOf: Self.f)
-                == [Self.b, Self.d, Self.f, Self.a, Self.c, Self.e])
+    @Test("insertAt clamps at both ends instead of trapping")
+    func insertAtClamps() {
+        #expect(reorderedIDs(ids: six, movingIDs: [Self.b], insertAt: -2)
+                == [Self.b, Self.a, Self.c, Self.d, Self.e, Self.f])
+        #expect(reorderedIDs(ids: six, movingIDs: [Self.b], insertAt: 99)
+                == [Self.a, Self.c, Self.d, Self.e, Self.f, Self.b])
     }
 
-    @Test("reverse-picked selection still lands in feed order, not pick order")
-    func blockReversePickOrder() {
-        // Pick order [E,C,A] but feed order is A,C,E → result uses feed order.
-        #expect(reorderedIDs(ids: six, movingIDs: [Self.e, Self.c, Self.a], toIndexOf: Self.f)
-                == [Self.b, Self.d, Self.f, Self.a, Self.c, Self.e])
+    @Test("a non-contiguous, reverse-picked block is gathered in feed order")
+    func insertAtGathersFeedOrder() {
+        // Pick order [E,A], feed order A,E; remaining [B,C,D,F]; slot 2.
+        #expect(reorderedIDs(ids: six, movingIDs: [Self.e, Self.a], insertAt: 2)
+                == [Self.b, Self.c, Self.a, Self.e, Self.d, Self.f])
     }
 
-    @Test("dropping the block ONTO one of its own members is a no-op (nil)")
-    func blockOntoSelfIsNil() {
-        #expect(reorderedIDs(ids: six, movingIDs: [Self.a, Self.b], toIndexOf: Self.a) == nil)
-        #expect(reorderedIDs(ids: six, movingIDs: [Self.a, Self.c], toIndexOf: Self.c) == nil)
-    }
-
-    @Test("foreign ids in the block are ignored; a wholly-foreign block is nil")
-    func blockForeignIDs() {
+    @Test("foreign ids in the block are dropped; a wholly-foreign block is nil")
+    func insertAtForeignIDs() {
         let ghost = UUID()
-        // [A, ghost] onto D → only A moves (ghost dropped).
-        #expect(reorderedIDs(ids: six, movingIDs: [Self.a, ghost], toIndexOf: Self.d)
-                == [Self.b, Self.c, Self.d, Self.a, Self.e, Self.f])
-        // A block with no present member is a no-op.
-        #expect(reorderedIDs(ids: six, movingIDs: [ghost, UUID()], toIndexOf: Self.d) == nil)
+        #expect(reorderedIDs(ids: six, movingIDs: [Self.a, ghost], insertAt: 2)
+                == [Self.b, Self.c, Self.a, Self.d, Self.e, Self.f])
+        #expect(reorderedIDs(ids: six, movingIDs: [ghost, UUID()], insertAt: 0) == nil)
+        #expect(reorderedIDs(ids: six, movingIDs: [], insertAt: 0) == nil)
     }
 
-    @Test("an empty block is a no-op (nil)")
-    func blockEmptyIsNil() {
-        #expect(reorderedIDs(ids: six, movingIDs: [], toIndexOf: Self.d) == nil)
+    @Test("dropping the block back at its own slot is the IDENTITY, not nil")
+    func insertAtOwnSlotIsIdentity() {
+        // Unlike the onto-a-cell rule (self-drop → nil), a slot drop that lands
+        // where the block already sits is a valid no-change commit.
+        #expect(reorderedIDs(ids: six, movingIDs: [Self.a], insertAt: 0) == six)
+        #expect(reorderedIDs(ids: six, movingIDs: [Self.c, Self.d], insertAt: 2) == six)
     }
 
-    @Test("multi-block result is always a same-count permutation")
-    func blockPermutation() {
-        let out = reorderedIDs(ids: six, movingIDs: [Self.a, Self.c, Self.e], toIndexOf: Self.f)
-        #expect(out?.count == six.count)
-        #expect(out.map { Set($0) } == Set(six))
-    }
-
-    @Test("single-item block matches the single-id overload (regression)")
-    func blockSingleMatchesLegacy() {
-        for target in [Self.a, Self.c, Self.d] where target != Self.b {
-            #expect(reorderedIDs(ids: six, movingIDs: [Self.b], toIndexOf: target)
-                    == reorderedIDs(ids: six, movingID: Self.b, toIndexOf: target))
+    @Test("insertAt results are always same-count permutations")
+    func insertAtPermutation() {
+        for slot in -1...7 {
+            let out = reorderedIDs(
+                ids: six, movingIDs: [Self.e, Self.b], insertAt: slot)
+            #expect(out?.count == six.count)
+            #expect(out.map { Set($0) } == Set(six))
         }
     }
 

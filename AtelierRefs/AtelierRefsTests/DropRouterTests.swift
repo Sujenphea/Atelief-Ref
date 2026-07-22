@@ -32,43 +32,57 @@ struct DropRouterTests {
         #expect(decoded == original)
     }
 
-    // MARK: - Cell drop (reorder)
+    // MARK: - Slot drop (reorder — 040)
 
-    @Test("same-collection manual cell drop reorders")
-    func cellSameManualReorders() {
+    @Test("same-collection manual slot drop reorders, carrying the insertion slot")
+    func slotSameManualReorders() {
         let ids = assets(2)
         let payload = AssetDragPayload(assetIDs: ids, sourceCollectionID: colA)
         let outcome = routeDrop(
-            payload, onto: .cell(collectionID: colA, sortMode: .manual), optionDown: false)
-        #expect(outcome == .reorder(assetIDs: ids))
+            payload, onto: .slot(collectionID: colA, sortMode: .manual, index: 3),
+            optionDown: false)
+        #expect(outcome == .reorder(assetIDs: ids, insertAt: 3))
     }
 
-    @Test("cell drop in a non-manual sort is refused (reorder has no meaning)")
-    func cellNonManualRejects() {
+    @Test("the slot index passes through verbatim (the preview owns the position)")
+    func slotIndexPassesThrough() {
+        let ids = assets(1)
+        let payload = AssetDragPayload(assetIDs: ids, sourceCollectionID: colA)
+        for index in [0, 1, 7, 99] {
+            #expect(routeDrop(
+                payload, onto: .slot(collectionID: colA, sortMode: .manual, index: index),
+                optionDown: false) == .reorder(assetIDs: ids, insertAt: index))
+        }
+    }
+
+    @Test("slot drop in a non-manual sort is refused (reorder has no meaning)")
+    func slotNonManualRejects() {
         let payload = AssetDragPayload(assetIDs: assets(1), sourceCollectionID: colA)
         #expect(routeDrop(
-            payload, onto: .cell(collectionID: colA, sortMode: .newest),
+            payload, onto: .slot(collectionID: colA, sortMode: .newest, index: 0),
             optionDown: false) == .reject)
         #expect(routeDrop(
-            payload, onto: .cell(collectionID: colA, sortMode: .mostViewed),
+            payload, onto: .slot(collectionID: colA, sortMode: .mostViewed, index: 0),
             optionDown: false) == .reject)
     }
 
-    @Test("cross-collection cell drop is refused (moves go via the rail/stack)")
-    func cellCrossCollectionRejects() {
+    @Test("cross-collection slot drop is refused (moves go via the sidebar rows)")
+    func slotCrossCollectionRejects() {
         let payload = AssetDragPayload(assetIDs: assets(2), sourceCollectionID: colB)
         let outcome = routeDrop(
-            payload, onto: .cell(collectionID: colA, sortMode: .manual), optionDown: false)
+            payload, onto: .slot(collectionID: colA, sortMode: .manual, index: 1),
+            optionDown: false)
         #expect(outcome == .reject)
     }
 
-    @Test("⌥ does not turn a cell reorder into a copy")
-    func cellIgnoresOption() {
+    @Test("⌥ does not turn a slot reorder into a copy")
+    func slotIgnoresOption() {
         let ids = assets(2)
         let payload = AssetDragPayload(assetIDs: ids, sourceCollectionID: colA)
         let outcome = routeDrop(
-            payload, onto: .cell(collectionID: colA, sortMode: .manual), optionDown: true)
-        #expect(outcome == .reorder(assetIDs: ids))
+            payload, onto: .slot(collectionID: colA, sortMode: .manual, index: 2),
+            optionDown: true)
+        #expect(outcome == .reorder(assetIDs: ids, insertAt: 2))
     }
 
     // MARK: - Internal marker (192 — the semantics-free detail-drag identity)
@@ -77,7 +91,7 @@ struct DropRouterTests {
     func internalMarkerRoutesNowhere() {
         let marker = AssetDragPayload.internalMarker
         #expect(routeDrop(
-            marker, onto: .cell(collectionID: colA, sortMode: .manual),
+            marker, onto: .slot(collectionID: colA, sortMode: .manual, index: 0),
             optionDown: false) == .reject)
         #expect(routeDrop(marker, onto: .collection(colA), optionDown: false) == .reject)
         #expect(routeDrop(marker, onto: .collection(colA), optionDown: true) == .reject)
@@ -132,7 +146,7 @@ struct DropRouterTests {
     func emptyPayloadRejects() {
         let empty = AssetDragPayload(assetIDs: [], sourceCollectionID: colA)
         #expect(routeDrop(
-            empty, onto: .cell(collectionID: colA, sortMode: .manual),
+            empty, onto: .slot(collectionID: colA, sortMode: .manual, index: 0),
             optionDown: false) == .reject)
         #expect(routeDrop(empty, onto: .collection(colB), optionDown: false) == .reject)
         #expect(routeDrop(empty, onto: .collection(colB), optionDown: true) == .reject)

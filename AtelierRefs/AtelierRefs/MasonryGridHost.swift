@@ -87,10 +87,16 @@ struct GridHostConfiguration {
     /// `ImageRenderer` over the EXISTING `dragPreview` (thumbnail + count badge),
     /// so the AppKit drag looks identical to the SwiftUI one.
     var dragImage: (UUID) -> NSImage?
-    /// Route a payload dropped ONTO the cell for `targetAssetID` — wraps the
-    /// unchanged `handleCellDrop`/`routeDrop` (same-collection manual-sort reorder;
-    /// everything else refused). Returns whether the drop was accepted.
-    var onCellDrop: (AssetDragPayload, _ targetAssetID: UUID) -> Bool
+    /// Whether this collection can be reordered by dragging — `sortMode ==
+    /// .manual` (040). Gates the live reorder preview at `draggingEntered`: a
+    /// non-manual sort shows NO preview and reports "no drop" (`[]`), so the
+    /// cursor never lies about a reorder that would then be refused.
+    var canReorder: Bool
+    /// Commit a reorder previewed on the grid (040): the dragged payload and the
+    /// insertion `slot` the live preview settled on. Wraps `handleSlotDrop` →
+    /// `routeDrop` → `reorderItems(movingAssetIDs:insertAt:)`. Returns whether the
+    /// drop was accepted.
+    var onReorderCommit: (AssetDragPayload, _ insertAt: Int) -> Bool
 
     /// The assets a menu / drag acts on for the cell `itemID` — the Finder scope
     /// rule (`IngestionModel.actionTargets(forCellItemID:)`): a right-click INSIDE
@@ -156,8 +162,12 @@ protocol MasonryGridViewEvents: AnyObject {
     /// `validateDrop`/`acceptDrop` delegate translation does NOT fire for our
     /// manually-started `beginDraggingSession` (011 — the reorder/move regression).
     func gridDraggingOperation(_ info: NSDraggingInfo) -> NSDragOperation
-    /// A drop landed on the grid: decode `.assetIDs`, hit-test the target cell, and
-    /// route it (same-collection manual reorder; everything else refused downstream).
+    /// The drag left the grid without dropping here (040) — tear down any live
+    /// reorder preview so the cells slide back to the real order.
+    func gridDraggingExited()
+    /// A drop landed on the grid: commit the live reorder preview's slot
+    /// (same-collection manual reorder; everything else showed no preview and is
+    /// refused here).
     func gridPerformDrop(_ info: NSDraggingInfo) -> Bool
 }
 
@@ -232,6 +242,9 @@ final class MasonryNSCollectionView: NSCollectionView {
     }
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         events?.gridDraggingOperation(sender) ?? []
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        events?.gridDraggingExited()
     }
     // Always proceed to `performDragOperation` — `NSCollectionView`'s own
     // `prepareForDragOperation` (geared to native item drops we don't use) could
@@ -308,6 +321,34 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// `.copy` (drag-out) only when there are byte-backed assets to export; a
     /// media-less-only drag stays internal (reorder / move) exactly as before.
     private var draggingHasFilePromise = false
+
+    /// The live reorder drop preview (040) while an eligible same-collection drag
+    /// hovers the grid: the dragged block and the insertion slot it currently
+    /// previews. `nil` in the steady state. Drives `layout.preview`; the ghost
+    /// (dimmed block) is ``ghostBlockIDs``.
+    private struct ReorderPreviewState {
+        var payload: AssetDragPayload
+        /// The dragged block's DATA indices into `items`, feed (ascending) order.
+        var blockIndices: [Int]
+        /// The insertion slot in the block-removed order (`0...remaining.count`).
+        var slot: Int
+        /// The point the current slot was computed at — the hysteresis anchor.
+        var lastSlotPoint: CGPoint
+    }
+    private var reorderPreview: ReorderPreviewState?
+    /// The membership ids of the dragged block, dimmed as the ghost while a
+    /// preview is active. Re-applied in ``configure(_:at:)`` so a cell scrolled in
+    /// mid-drag dims correctly. Empty in the steady state.
+    private var ghostBlockIDs: Set<UUID> = []
+    /// Set the instant a grid drop commits: the model republish that follows
+    /// clears the preview in ``update(configuration:)`` (frame-identical to the
+    /// preview — 040 decision 7), so the drag-end / exit nets must NOT also clear
+    /// it and cause a snap-back.
+    private var awaitingReorderCommit = false
+    /// The ghost's dimmed opacity while dragging (040).
+    private static let ghostAlpha: CGFloat = 0.35
+    /// The reflow slide duration when the insertion slot changes (040 decision 8).
+    private static let reorderAnimationDuration: TimeInterval = 0.18
 
     init(configuration: GridHostConfiguration) {
         self.configuration = configuration
@@ -434,8 +475,25 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
 
         let collectionChanged = old.collectionID != configuration.collectionID
         let versionChanged = old.itemsVersion != configuration.itemsVersion
+        let dataChanged = collectionChanged || versionChanged
+            || items.count != configuration.items.count
 
-        if collectionChanged || versionChanged || items.count != configuration.items.count {
+        // A live reorder preview (040) is torn down the moment the data changes
+        // under it: a commit landing (the new order's real solve reproduces the
+        // preview frame-for-frame, so clearing here is jump-free — decision 7), or
+        // any mid-drag reload / collection switch. A cosmetic rebuild at an
+        // unchanged version leaves the preview alone (else it would flicker away
+        // on every unrelated body re-eval mid-hover). Cleared BEFORE `applyItems`
+        // re-solves, and never animated (the reflow already happened, or is a
+        // reset). `applyGhostDimming([])` restores any dimmed cell's alpha.
+        if reorderPreview != nil, dataChanged {
+            reorderPreview = nil
+            awaitingReorderCommit = false
+            setLayoutPreview(nil, animated: false)
+            applyGhostDimming(ids: [])
+        }
+
+        if dataChanged {
             applyItems(configuration.items, resetScroll: collectionChanged)
         } else if old.density != configuration.density {
             // A density step (⌘±) at an unchanged item set: re-solve the masonry,
@@ -536,6 +594,10 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         let selection = configuration.selectionStore.selection
         cell.applySelectionState(cellSelectionState(for: detail.item.id, selection: selection))
         cell.setHovered(hoveredID == detail.item.id)
+        // Ghost dimming while a reorder preview is active (040): a cell scrolled in
+        // mid-drag must show the dimmed state, and a normal (re)configure must not
+        // leave a stale alpha behind once the preview cleared.
+        cell.view.alphaValue = ghostBlockIDs.contains(detail.item.id) ? Self.ghostAlpha : 1
     }
 
     /// The per-cell selection inputs for `id` under `selection` — the pure mapping
@@ -798,6 +860,17 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         }
     }
 
+    /// The drag session ended (040 safety net): drop the file-promise flag and
+    /// tear down any stale preview left by a drag that ended WITHOUT a grid commit
+    /// (dropped on a sidebar row / outside / cancelled). A committed grid drop
+    /// clears via `update(configuration:)`, so it is skipped here.
+    func draggingSession(
+        _ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation
+    ) {
+        draggingHasFilePromise = false
+        if !awaitingReorderCommit { clearReorderPreview(animated: false) }
+    }
+
     func gridCellCircleClicked(id: UUID) {
         collectionView?.window?.makeFirstResponder(collectionView)
         execute(configuration.selectionStore.apply(.tapCircle(id), columns: currentColumns()))
@@ -915,33 +988,159 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     // MARK: Drop onto a cell (036 §4 A3 · 011 — NSView-level reception)
 
     /// Validate a same-app asset drag hovering the grid (from
-    /// ``MasonryNSCollectionView/draggingEntered(_:)``/`draggingUpdated`). `.move`
-    /// when the pointer is over a cell (hit-tested on the analytic frames — the same
-    /// query the marquee / context menu use), `[]` over a gap so a reorder dropped
-    /// on empty space no-ops. A non-`.assetIDs` drag never reaches here (the grid
-    /// only registers that type; an external file/URL drag falls through to the
-    /// pane-level SwiftUI import `.onDrop`).
+    /// ``MasonryNSCollectionView/draggingEntered(_:)``/`draggingUpdated`). An
+    /// ELIGIBLE reorder (same-collection, manual sort, the block resolves to
+    /// current rows) drives the live preview to the pointer's insertion slot and
+    /// returns `.move`; anything else clears any preview and returns `[]` — so the
+    /// cursor never promises a reorder that would then be refused (040). A
+    /// non-`.assetIDs` drag never reaches here (the grid only registers that type;
+    /// an external file/URL drag falls through to the pane-level import `.onDrop`).
     func gridDraggingOperation(_ info: NSDraggingInfo) -> NSDragOperation {
-        guard let collectionView,
-              info.draggingPasteboard.availableType(
-                from: [AssetDragPayload.pasteboardType]) != nil else { return [] }
+        guard let collectionView, configuration.canReorder,
+              let payload = reorderPayload(from: info),
+              payload.sourceCollectionID == configuration.collectionID,
+              let block = reorderBlockIndices(for: payload) else {
+            clearReorderPreview(animated: true)
+            return []
+        }
         let point = collectionView.convert(info.draggingLocation, from: nil)
-        return layout.hitTestIndex(at: point) != nil ? .move : []
+        updateReorderPreview(payload: payload, blockIndices: block, at: point)
+        return .move
     }
 
-    /// Accept a drop: decode the `.assetIDs` payload, hit-test the target cell, and
-    /// route it through the unchanged `onCellDrop` → `handleCellDrop`/`routeDrop`
-    /// (only a same-collection, manual-sort drop is a reorder; anything else is
-    /// refused there — cross-collection moves go via the sidebar rows / menus).
+    /// The drag left the grid without dropping here (040): slide the cells back to
+    /// the real order. Skipped while a grid commit is pending (the drop already
+    /// landed here — `update(configuration:)` will clear the preview instead).
+    func gridDraggingExited() {
+        guard !awaitingReorderCommit else { return }
+        clearReorderPreview(animated: true)
+    }
+
+    /// Accept a drop: commit the live preview's slot (040). Keeps the preview in
+    /// place and marks the commit pending, so the model republish clears it in
+    /// `update(configuration:)` frame-identically (no jump — decision 7); a
+    /// refused commit clears immediately. No active preview → nothing to commit.
     func gridPerformDrop(_ info: NSDraggingInfo) -> Bool {
-        guard let collectionView,
-              let data = info.draggingPasteboard.data(forType: AssetDragPayload.pasteboardType),
-              let payload = AssetDragPayload.decode(from: data) else { return false }
-        let point = collectionView.convert(info.draggingLocation, from: nil)
-        guard let index = layout.hitTestIndex(at: point), items.indices.contains(index) else {
-            return false
+        guard let state = reorderPreview else { return false }
+        awaitingReorderCommit = true
+        let accepted = configuration.onReorderCommit(state.payload, state.slot)
+        if !accepted { clearReorderPreview(animated: false) }
+        return accepted
+    }
+
+    // MARK: Live reorder preview (040)
+
+    /// Decode the `.assetIDs` payload off the drag pasteboard (the ONE reliable
+    /// read for an AppKit promise drag — the bridged provider registers nothing).
+    private func reorderPayload(from info: NSDraggingInfo) -> AssetDragPayload? {
+        guard let data = info.draggingPasteboard.data(
+            forType: AssetDragPayload.pasteboardType) else { return nil }
+        return AssetDragPayload.decode(from: data)
+    }
+
+    /// The dragged block's DATA indices into `items`, in feed (ascending) order —
+    /// `nil` if the payload is empty or no id is a current row (a foreign drop).
+    private func reorderBlockIndices(for payload: AssetDragPayload) -> [Int]? {
+        let ids = Set(payload.assetIDs)
+        guard !ids.isEmpty else { return nil }
+        let indices = items.indices.filter { ids.contains(items[$0].asset.id) }
+        return indices.isEmpty ? nil : Array(indices)
+    }
+
+    /// Establish or re-slot the preview for a hovering block. First entry seeds it
+    /// at the pointer's slot; later ticks re-slot only past the hysteresis
+    /// threshold and re-solve+animate only when the slot actually changes.
+    private func updateReorderPreview(
+        payload: AssetDragPayload, blockIndices: [Int], at point: CGPoint
+    ) {
+        if var state = reorderPreview {
+            guard masonryShouldReslot(from: state.lastSlotPoint, to: point) else { return }
+            let newSlot = reorderSlot(at: point, blockIndices: blockIndices, currentSlot: state.slot)
+            let changed = newSlot != state.slot
+            state.slot = newSlot
+            state.blockIndices = blockIndices
+            state.payload = payload
+            state.lastSlotPoint = point
+            reorderPreview = state
+            if changed { applyReorderPreview(animated: true) }
+        } else {
+            let slot = reorderSlot(at: point, blockIndices: blockIndices, currentSlot: nil)
+            reorderPreview = ReorderPreviewState(
+                payload: payload, blockIndices: blockIndices, slot: slot, lastSlotPoint: point)
+            applyReorderPreview(animated: true)
         }
-        return configuration.onCellDrop(payload, items[index].asset.id)
+    }
+
+    /// The insertion slot for `point`, hit-tested against the CURRENTLY displayed
+    /// frames (the preview when one is active — `layout.solvedFrames` reflects it),
+    /// under the display order the current slot implies (identity on first entry).
+    private func reorderSlot(at point: CGPoint, blockIndices: [Int], currentSlot: Int?) -> Int {
+        let count = items.count
+        let order = currentSlot.map {
+            previewDisplayOrder(count: count, blockIndices: blockIndices, slot: $0)
+        } ?? Array(0..<count)
+        return masonryInsertionSlot(
+            at: point, framesByDataIndex: layout.solvedFrames,
+            displayOrder: order, blockIndices: blockIndices)
+    }
+
+    /// Re-solve the permuted arrangement for the current slot and push it onto the
+    /// layout (animated when the slot changed), plus the ghost dimming.
+    private func applyReorderPreview(animated: Bool) {
+        guard let state = reorderPreview else { return }
+        let order = previewDisplayOrder(
+            count: items.count, blockIndices: state.blockIndices, slot: state.slot)
+        let preview = previewFrames(
+            displayOrder: order, aspects: layout.aspects,
+            availableWidth: layout.preparedWidth, columns: layout.solvedColumns,
+            spacing: layout.spacing, topInset: layout.topInset)
+        setLayoutPreview(preview, animated: animated)
+        applyGhostDimming(ids: Set(state.blockIndices.compactMap {
+            items.indices.contains($0) ? items[$0].item.id : nil
+        }))
+    }
+
+    /// Tear down any active preview (drag-exit / session-end / mid-drag reload).
+    private func clearReorderPreview(animated: Bool) {
+        guard reorderPreview != nil || layout.preview != nil || !ghostBlockIDs.isEmpty else {
+            return
+        }
+        reorderPreview = nil
+        awaitingReorderCommit = false
+        setLayoutPreview(nil, animated: animated)
+        applyGhostDimming(ids: [])
+    }
+
+    /// Push a preview (or `nil`) onto the layout and re-lay it out. An animated
+    /// change slides cells to their new slots via implicit animation (040 decision
+    /// 8; the step-3 spike's chosen mechanism — swap here for `performBatchUpdates`
+    /// if a build shows a teleport). A non-animated change (commit / cancel) snaps.
+    private func setLayoutPreview(_ preview: MasonryPreviewFrames?, animated: Bool) {
+        layout.preview = preview
+        guard let collectionView else { return }
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = Self.reorderAnimationDuration
+                context.allowsImplicitAnimation = true
+                layout.invalidateLayout()
+                collectionView.layoutSubtreeIfNeeded()
+            }
+        } else {
+            layout.invalidateLayout()
+        }
+    }
+
+    /// Dim the block cells to the ghost opacity, restore the rest. Records
+    /// `ghostBlockIDs` so ``configure(_:at:)`` re-dims a cell scrolled in mid-drag.
+    private func applyGhostDimming(ids: Set<UUID>) {
+        ghostBlockIDs = ids
+        guard let collectionView else { return }
+        for indexPath in collectionView.indexPathsForVisibleItems() {
+            guard items.indices.contains(indexPath.item),
+                  let cell = collectionView.item(at: indexPath) as? MasonryGridItem
+            else { continue }
+            cell.view.alphaValue = ids.contains(items[indexPath.item].item.id) ? Self.ghostAlpha : 1
+        }
     }
 
     // MARK: Effects

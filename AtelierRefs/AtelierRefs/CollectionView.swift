@@ -41,6 +41,9 @@ struct CollectionView: View {
     }
 
     @State private var isTargeted = false
+    /// Drives the selection bar's `…` overflow, shown as a popover so it opens
+    /// ABOVE the bar (a plain `Menu` opens downward and off the floating bar).
+    @State private var showMoreActions = false
     /// The live grid viewport width, captured from the grid's `GeometryReader`, so
     /// the toolbar / ⌘+/⌘− density controls can clamp against the current width
     /// (011-B2 · 16A) without their own geometry reader.
@@ -188,6 +191,12 @@ struct CollectionView: View {
                     .allowsHitTesting(false)
             }
         }
+        // Floating multi-select action bar (042). Sits BENEATH the full-window
+        // detail overlay (hosted later in `body`'s ZStack), so it's hidden while a
+        // detail page is open. Shown whenever the grid has a selection.
+        .overlay(alignment: .bottom) {
+            if model.selection.isSelecting { selectionBar }
+        }
     }
 
     /// This screen's move/copy targets, memoized (012 · CQ 1A) so every eager
@@ -195,6 +204,106 @@ struct CollectionView: View {
     private var moveTargets: MoveTargets {
         moveTargetsCache.targets(
             from: collectionID, folders: model.folders, unsortedID: model.unsortedFolderID)
+    }
+
+    /// The ASSET ids the selection bar's batch actions act on. `selection.ids` are
+    /// membership ids (`CollectionItem.id`); the model methods take asset ids, so
+    /// map through the current feed — the same lookup the detail / Quick Look path
+    /// (`presentQuickLook`) does.
+    private var selectedAssetIDs: [UUID] {
+        model.items
+            .filter { model.selection.ids.contains($0.item.id) }
+            .map(\.asset.id)
+    }
+
+    /// The floating bottom "N selected" action bar (042), shown whenever the grid
+    /// has a selection. An ADDITIVE second path to the grid's right-click menu:
+    /// Clear, an overflow (`…`) menu carrying Move to / Add to / Set as Cover, and
+    /// direct Remove / Delete buttons. Every button calls the SAME `IngestionModel`
+    /// method the native `buildContextMenu` does, so the two paths never diverge.
+    /// Styled to match Home / Search (`CollectionsGalleryView` / `LibrarySearch`).
+    private var selectionBar: some View {
+        let count = model.selection.ids.count
+        return HStack(spacing: 12) {
+            Text("\(count) selected")
+                .font(.callout.weight(.medium))
+            Button("Clear") { model.selectionStore.apply(.clear) }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            // Overflow as a popover so it opens ABOVE the bar (`arrowEdge: .top`),
+            // not clipped below the floating capsule the way a `Menu` would.
+            Button { showMoreActions.toggle() } label: {
+                Label("More", systemImage: "ellipsis.circle")
+            }
+            .labelStyle(.iconOnly)
+            .help("More actions")
+            .popover(isPresented: $showMoreActions, arrowEdge: .top) {
+                moreActionsMenu(count: count)
+            }
+            Button {
+                model.removeFromFolder(assetIDs: selectedAssetIDs)
+            } label: {
+                Label("Remove \(count)", systemImage: "folder.badge.minus")
+            }
+            .labelStyle(.iconOnly)
+            .help("Remove \(count) from collection")
+            // `requestDelete` runs its own confirmation, so no extra dialog here.
+            Button(role: .destructive) {
+                model.requestDelete(assetIDs: selectedAssetIDs)
+            } label: {
+                Label("Delete \(count)", systemImage: "trash")
+            }
+            .labelStyle(.iconOnly)
+            .help("Delete \(count)")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.primary.opacity(0.08)))
+        .shadow(radius: 8, y: 2)
+        .padding(.bottom, 16)
+    }
+
+    /// The `…` overflow contents: Move to / Add to (nested destination menus) and
+    /// Set as Cover (single-item only). Each action dismisses the popover.
+    private func moreActionsMenu(count: Int) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Menu("Move to") {
+                destinationButtons {
+                    model.moveToCollection(assetIDs: selectedAssetIDs, to: $0)
+                    showMoreActions = false
+                }
+            }
+            Menu("Add to") {
+                destinationButtons {
+                    model.copyToCollection(assetIDs: selectedAssetIDs, to: $0)
+                    showMoreActions = false
+                }
+            }
+            // Set as Cover is a single-item action (parity with the context menu's
+            // `n == 1` gate).
+            if count == 1, let assetID = selectedAssetIDs.first {
+                Button("Set as Cover") {
+                    model.setCollectionCover(collectionID: collectionID, assetID: assetID)
+                    showMoreActions = false
+                }
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
+        .padding(8)
+        .frame(minWidth: 160, alignment: .leading)
+    }
+
+    /// The Move-to / Add-to destination buttons for the overflow menu: subfolders
+    /// first, a divider, then roots — the same order as the native
+    /// `targetSubmenu` in `MasonryGridHost`.
+    @ViewBuilder
+    private func destinationButtons(_ action: @escaping (UUID) -> Void) -> some View {
+        let dests = moveTargets
+        ForEach(dests.subfolders) { c in Button(c.name) { action(c.id) } }
+        if !dests.subfolders.isEmpty, !dests.roots.isEmpty { Divider() }
+        ForEach(dests.roots) { c in Button(c.name) { action(c.id) } }
     }
 
     private var header: some View {
@@ -355,8 +464,9 @@ struct CollectionView: View {
                 renderer.scale = displayScale
                 return renderer.nsImage
             },
-            onCellDrop: { payload, targetAssetID in
-                handleCellDrop([payload], onto: targetAssetID)
+            canReorder: model.sortMode(for: collectionID) == .manual,
+            onReorderCommit: { payload, slot in
+                handleSlotDrop(payload, insertAt: slot)
             },
             actionTargets: { model.actionTargets(forCellItemID: $0) },
             moveTargets: moveTargets,
@@ -429,17 +539,17 @@ struct CollectionView: View {
             }
     }
 
-    /// Handle a payload dropped onto the cell for `targetAssetID`: route it (only
-    /// a same-collection, manual-sort drop is a reorder) and apply the multi-block
-    /// move. Cross-collection / non-manual drops are refused here — those moves go
-    /// through the sidebar rows / "Move to" menus.
-    private func handleCellDrop(_ payloads: [AssetDragPayload], onto targetAssetID: UUID) -> Bool {
-        guard let payload = payloads.first else { return false }
-        let target = DropTarget.cell(
-            collectionID: collectionID, sortMode: model.sortMode(for: collectionID))
+    /// Commit a reorder previewed on the grid (040): route the payload to the
+    /// `slot` chosen by the live preview and apply the multi-block move. Only a
+    /// same-collection, manual-sort drop is a reorder; cross-collection /
+    /// non-manual drops are refused here — those moves go through the sidebar rows
+    /// / "Move to" menus.
+    private func handleSlotDrop(_ payload: AssetDragPayload, insertAt slot: Int) -> Bool {
+        let target = DropTarget.slot(
+            collectionID: collectionID, sortMode: model.sortMode(for: collectionID), index: slot)
         switch routeDrop(payload, onto: target, optionDown: Self.modifierReader.isOptionDown) {
-        case let .reorder(assetIDs):
-            model.reorderItems(movingAssetIDs: assetIDs, toIndexOf: targetAssetID)
+        case let .reorder(assetIDs, insertAt):
+            model.reorderItems(movingAssetIDs: assetIDs, insertAt: insertAt)
             return true
         case .reject, .move, .copy:
             return false

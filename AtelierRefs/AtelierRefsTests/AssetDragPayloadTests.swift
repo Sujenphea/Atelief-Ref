@@ -46,14 +46,16 @@ struct AssetDragPayloadTests {
         #expect(AssetDragPayload.pasteboardType.rawValue == UTType.assetIDs.identifier)
     }
 
-    @Test("pasteboardData() bytes are exactly the SwiftUI CodableRepresentation wire form")
+    @Test("pasteboardData() interops with the SwiftUI CodableRepresentation wire form")
     func pasteboardBytesMatchCodableRepresentation() throws {
         let payload = AssetDragPayload(
             assetIDs: [UUID(), UUID(), UUID()], sourceCollectionID: UUID())
-        // The exact bytes SwiftUI's `CodableRepresentation` produces (plain JSON).
+        // The contract is CROSS-DECODABILITY, not byte identity: `JSONEncoder`
+        // promises no stable key order between instances, so comparing raw bytes
+        // of two independent encodes flakes. Each side must decode the OTHER
+        // side's bytes through the shared `Codable` form.
         let swiftUIBytes = try JSONEncoder().encode(payload)
-        #expect(try payload.pasteboardData() == swiftUIBytes)
-        // And they decode back through the same `Codable` form a SwiftUI drop uses.
+        #expect(AssetDragPayload.decode(from: swiftUIBytes) == payload)
         #expect(try JSONDecoder().decode(AssetDragPayload.self, from: payload.pasteboardData())
                 == payload)
     }
@@ -66,8 +68,9 @@ struct AssetDragPayloadTests {
         let data = try #require(item.data(forType: AssetDragPayload.pasteboardType))
         // Simulate the drop side: read the bytes off the pasteboard item, decode.
         #expect(AssetDragPayload.decode(from: data) == payload)
-        // And the bytes are the same wire form the SwiftUI drop targets expect.
-        #expect(data == (try payload.pasteboardData()))
+        // And a SwiftUI drop target's decoder accepts the same bytes (decode
+        // equivalence, not byte identity — JSON key order isn't stable).
+        #expect(try JSONDecoder().decode(AssetDragPayload.self, from: data) == payload)
     }
 
     @Test("decode rejects garbage bytes without crashing")

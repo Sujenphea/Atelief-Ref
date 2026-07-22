@@ -1198,20 +1198,20 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Reorder (drag-to-reorder)
 
-    /// Move the dragged BLOCK `movingAssetIDs` to the grid slot currently held by
-    /// `targetAssetID`, within the selected folder (009 · N3 — multi-select drag).
-    /// OPTIMISTIC: reorders the local ``items`` immediately for feedback, then
-    /// persists the new full order via `setGridOrder` (the write hops OFF the main
-    /// actor). On failure the message surfaces via ``lastError`` and the folder
-    /// reloads to the truth; on success it reloads too (core sorts by
-    /// `manual_order`, so state stays consistent). A no-op when the target is one
-    /// of the dragged items, no dragged id is a current item (foreign drop), or
+    /// Re-insert the dragged BLOCK `movingAssetIDs` at grid `slot` — the insertion
+    /// index in the block-removed order chosen by the live preview (040), within
+    /// the selected folder (009 · N3 — multi-select drag). OPTIMISTIC: reorders the
+    /// local ``items`` immediately for feedback, then persists the new full order
+    /// via `setGridOrder` (the write hops OFF the main actor). On failure the
+    /// message surfaces via ``lastError`` and the folder reloads to the truth; on
+    /// success it reloads too (core sorts by `manual_order`, so state stays
+    /// consistent). A no-op when no dragged id is a current item (foreign drop) or
     /// the folder isn't in `.manual` mode (reordering has no meaning there).
-    func reorderItems(movingAssetIDs: [UUID], toIndexOf targetAssetID: UUID) {
+    func reorderItems(movingAssetIDs: [UUID], insertAt slot: Int) {
         guard sortMode(for: selectedFolderID) == .manual, services != nil else { return }
         let currentIDs = items.map { $0.asset.id }
         guard let newOrder = reorderedIDs(
-            ids: currentIDs, movingIDs: movingAssetIDs, toIndexOf: targetAssetID)
+            ids: currentIDs, movingIDs: movingAssetIDs, insertAt: slot)
         else { return }
 
         // Optimistic local reorder — rebuild `items` in the new order.

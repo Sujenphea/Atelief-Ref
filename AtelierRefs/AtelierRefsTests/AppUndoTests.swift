@@ -111,8 +111,8 @@ struct AppUndoTests {
         try await primeItems(model, folder: folder.id, services)
         let before = try await members(of: folder.id, services)
 
-        // Move the last item to the front of the target (index of ids[0]).
-        model.reorderItems(movingAssetIDs: [ids[3]], toIndexOf: ids[0])
+        // Move the last item to the front (insertion slot 0).
+        model.reorderItems(movingAssetIDs: [ids[3]], insertAt: 0)
         await model.waitForWrites()
         let after = try await members(of: folder.id, services)
         #expect(after != before)

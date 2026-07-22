@@ -182,3 +182,140 @@ struct MasonryCollectionLayoutInvalidationTests {
             forBoundsChange: NSRect(x: 0, y: 0, width: 1000, height: 600)) == false)
     }
 }
+
+// MARK: - 040 · the reorder preview overrides the render
+
+@MainActor
+@Suite("MasonryCollectionLayout: reorder preview")
+struct MasonryCollectionLayoutPreviewTests {
+
+    /// A preview built by the SAME pure functions the coordinator will use, at
+    /// the layout's own solved width/columns — so the preview geometry is exactly
+    /// what a real drag would produce. Moves data item 0 to the given slot.
+    @MainActor
+    private func previewMovingFirstItem(
+        in layout: MasonryCollectionLayout, toSlot slot: Int
+    ) -> MasonryPreviewFrames {
+        let order = previewDisplayOrder(
+            count: layout.aspects.count, blockIndices: [0], slot: slot)
+        return previewFrames(
+            displayOrder: order, aspects: layout.aspects,
+            availableWidth: layout.preparedWidth, columns: layout.solvedColumns,
+            spacing: layout.spacing, topInset: layout.topInset)
+    }
+
+    @Test("an active preview drives attributes, analytic frames and content size")
+    func previewDrivesGeometry() {
+        let (layout, _) = makeLayout(itemCount: 6, width: 400, columns: 2)
+        let preview = previewMovingFirstItem(in: layout, toSlot: 5)   // to the end
+        layout.preview = preview
+        layout.prepare()
+
+        for index in 0..<6 {
+            #expect(layout.analyticFrame(at: index) == preview.framesByDataIndex[index])
+            #expect(layout.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame
+                    == preview.framesByDataIndex[index])
+        }
+        #expect(layout.solvedFrames == preview.framesByDataIndex)
+        #expect(layout.collectionViewContentSize.height == preview.contentHeight)
+        // The column geometry (width) is unchanged by the preview.
+        #expect(layout.collectionViewContentSize.width == layout.preparedWidth)
+    }
+
+    @Test("the rect query culls by PREVIEW position, not the real solve")
+    func rectQueryCullsByPreview() {
+        let (layout, _) = makeLayout(itemCount: 6, width: 400, columns: 2)
+        let preview = previewMovingFirstItem(in: layout, toSlot: 5)
+        layout.preview = preview
+        layout.prepare()
+
+        // Each cell is found by a rect at its OWN preview frame. For the moved
+        // item 0 (now at the end) this is the discriminator: a solved-order cull
+        // would return whatever sat at that slot originally, never index 0.
+        for index in 0..<6 {
+            let hits = layout.layoutAttributesForElements(in: preview.framesByDataIndex[index])
+                .compactMap(\.indexPath?.item)
+            #expect(hits.contains(index), "cell \(index) not found at its preview frame")
+        }
+        // The full content rect returns every cell exactly once, each carrying
+        // its preview frame.
+        let full = CGRect(
+            x: 0, y: 0, width: layout.collectionViewContentSize.width,
+            height: layout.collectionViewContentSize.height)
+        let attributes = layout.layoutAttributesForElements(in: full)
+        #expect(Set(attributes.compactMap(\.indexPath?.item)) == Set(0..<6))
+        for attribute in attributes {
+            guard let index = attribute.indexPath?.item else { continue }
+            #expect(attribute.frame == preview.framesByDataIndex[index])
+        }
+    }
+
+    @Test("hitTestIndex reflects the preview arrangement")
+    func hitTestReflectsPreview() {
+        let (layout, _) = makeLayout(itemCount: 6, width: 400, columns: 2)
+        let preview = previewMovingFirstItem(in: layout, toSlot: 5)
+        layout.preview = preview
+        layout.prepare()
+        // The center of item 0's PREVIEW frame hit-tests to item 0.
+        let center = CGPoint(
+            x: preview.framesByDataIndex[0].midX, y: preview.framesByDataIndex[0].midY)
+        #expect(layout.hitTestIndex(at: center) == 0)
+    }
+
+    @Test("clearing the preview restores the real solved frames")
+    func clearingRestoresSolve() {
+        let (layout, expected) = makeLayout(itemCount: 6, width: 400, columns: 2)
+        layout.preview = previewMovingFirstItem(in: layout, toSlot: 5)
+        layout.prepare()
+        #expect(layout.solvedFrames != expected.frames)   // preview diverged
+
+        layout.preview = nil
+        layout.prepare()
+        #expect(layout.solvedFrames == expected.frames)
+        #expect(layout.collectionViewContentSize.height == expected.contentHeight)
+        for index in 0..<6 {
+            #expect(layout.analyticFrame(at: index) == expected.frames[index])
+        }
+    }
+
+    @Test("an identity-order preview is indistinguishable from the plain solve")
+    func identityPreviewMatchesSolve() {
+        let (layout, expected) = makeLayout(itemCount: 6, width: 400, columns: 2)
+        let identity = previewFrames(
+            displayOrder: Array(0..<6), aspects: layout.aspects,
+            availableWidth: layout.preparedWidth, columns: layout.solvedColumns,
+            spacing: layout.spacing, topInset: layout.topInset)
+        layout.preview = identity
+        layout.prepare()
+        #expect(layout.solvedFrames == expected.frames)
+        #expect(layout.collectionViewContentSize.height == expected.contentHeight)
+    }
+
+    @Test("a preview whose item count disagrees with the solve is IGNORED")
+    func mismatchedCountPreviewIgnored() {
+        let (layout, expected) = makeLayout(itemCount: 6, width: 400, columns: 2)
+        // A stale 4-item preview (e.g. left across a reload) must not be rendered
+        // — the guard falls back to the real solve rather than building a
+        // mismatched attributes cache.
+        layout.preview = MasonryPreviewFrames(
+            framesByDataIndex: Array(repeating: .zero, count: 4), contentHeight: 999)
+        layout.prepare()
+        #expect(layout.solvedFrames == expected.frames)
+        #expect(layout.collectionViewContentSize.height == expected.contentHeight)
+        #expect(layout.layoutAttributesForItem(at: IndexPath(item: 0, section: 0))?.frame
+                == expected.frames[0])
+    }
+
+    @Test("width-only invalidation is unchanged while a preview is active")
+    func invalidationUnchangedUnderPreview() {
+        let (layout, _) = makeLayout(itemCount: 6, width: 400, columns: 2)
+        layout.preview = previewMovingFirstItem(in: layout, toSlot: 5)
+        layout.prepare()
+        // A scroll (origin move, same width) still never invalidates.
+        #expect(layout.shouldInvalidateLayout(
+            forBoundsChange: NSRect(x: 0, y: 300, width: 400, height: 600)) == false)
+        // A width change still does.
+        #expect(layout.shouldInvalidateLayout(
+            forBoundsChange: NSRect(x: 0, y: 0, width: 500, height: 600)) == true)
+    }
+}

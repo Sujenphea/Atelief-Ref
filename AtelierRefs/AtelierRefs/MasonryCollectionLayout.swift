@@ -54,6 +54,21 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     /// Production always reads the clip view instead.
     var explicitWidth: CGFloat?
 
+    /// A live reorder-drag preview (040): the frames to RENDER in place of the
+    /// real solve while an eligible drag hovers the grid, index-aligned to the
+    /// data source's items. The coordinator sets it (then `invalidateLayout()`)
+    /// and clears it on every drag-exit path; `nil` in the steady state. It is
+    /// read through ``activePreview``, which ignores a preview whose item count
+    /// disagrees with the current solve — so a stale preview left across a
+    /// reload can never build a mismatched attributes cache.
+    ///
+    /// The preview frames are in DATA order but sit at the dragged block's
+    /// PERMUTED display positions, so a data item may render in a different
+    /// column than `i % C`. That breaks the round-robin assumption the marquee
+    /// rect query relies on, which is why the preview cull path
+    /// (``layoutAttributesForElements(in:)``) is a plain intersection scan.
+    var preview: MasonryPreviewFrames?
+
     /// The SAME memo the SwiftUI grid uses — 036 §1 lists ``MasonryLayoutCache``
     /// among the framework-independent pieces to KEEP, so this pays its real cost,
     /// no more and no less.
@@ -67,23 +82,46 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     /// change is allowed to compare against.
     private(set) var preparedWidth: CGFloat = 0
 
+    /// The reorder preview to actually render — ``preview``, but only while it
+    /// still matches the solved item count. A stale preview (left across an
+    /// item-count change before the coordinator cleared it, 040 decision 10) is
+    /// ignored, so the geometry accessors and the attributes cache can never be
+    /// built from a mismatched frame array. `nil` in the steady state.
+    private var activePreview: MasonryPreviewFrames? {
+        guard let preview, preview.framesByDataIndex.count == solved.frames.count
+        else { return nil }
+        return preview
+    }
+
+    /// The frames currently DISPLAYED — the reorder preview when active, else the
+    /// real solve. Every geometry accessor rides this so what is shown, what
+    /// hit-tests, and what a drop commits stay one source (040 · WYSIWYG).
+    private var displayedFrames: [CGRect] {
+        activePreview?.framesByDataIndex ?? solved.frames
+    }
+
     /// The analytic frame for an index — the geometry A2/A3 hover / marquee /
-    /// selection rings must ride (the pixel-snap asterisk above).
+    /// selection rings must ride (the pixel-snap asterisk above). Reflects the
+    /// reorder preview while one is active (040), so a selection ring tracks the
+    /// cell to its previewed slot.
     func analyticFrame(at index: Int) -> CGRect? {
-        guard index >= 0, index < solved.frames.count else { return nil }
-        return solved.frames[index]
+        let frames = displayedFrames
+        guard index >= 0, index < frames.count else { return nil }
+        return frames[index]
     }
 
     /// The solved column width, for callers deriving a thumbnail bucket before a
-    /// frame exists.
+    /// frame exists. Unchanged by a preview — the column geometry is fixed; only
+    /// which slot a cell occupies moves.
     var solvedColumnWidth: CGFloat { solved.columnWidth }
 
     /// The full analytic frame array (all items, offscreen included), for the A3
     /// marquee's `masonryMarqueeIndices` rect query — the virtualization trap is
     /// that only VISIBLE cells are materialized, so a live-frame scan can't drive
     /// offscreen hit-testing; these computed frames must (038 §3.4). Index-aligned
-    /// to the data source's items.
-    var solvedFrames: [CGRect] { solved.frames }
+    /// to the data source's items. Reflects the reorder preview while one is
+    /// active (the marquee is inactive mid-drag, but hover rings stay consistent).
+    var solvedFrames: [CGRect] { displayedFrames }
 
     /// The solved column count at the current width — the ONE source A2 keyboard
     /// nav (`nextGridIndex`'s `± columns`) and the coordinator's arrow routing read,
@@ -95,7 +133,14 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     /// the pixel-snapped view frames (038 §3.4). `nil` in a gap between cells; the
     /// first hit wins (masonry cells never overlap, so there is at most one).
     func hitTestIndex(at point: CGPoint) -> Int? {
-        masonryMarqueeIndices(
+        if activePreview != nil {
+            // Preview frames don't obey the round-robin column structure the
+            // marquee query culls by, so hit-test with a plain scan (first hit
+            // wins — masonry cells never overlap). Rarely exercised: the mouse
+            // is captured by the drag session while a preview is up.
+            return displayedFrames.firstIndex { $0.contains(point) }
+        }
+        return masonryMarqueeIndices(
             in: CGRect(origin: point, size: .zero),
             frames: solved.frames, columns: solved.columns).first
     }
@@ -123,7 +168,9 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
             spacing: spacing, topInset: topInset,
             aspects: { [aspects] in aspects })
         preparedWidth = width
-        attributesCache = solved.frames.enumerated().map { index, frame in
+        // The reorder preview (040) renders in place of the real solve when set;
+        // `displayedFrames` picks it, guarded on a matching item count.
+        attributesCache = displayedFrames.enumerated().map { index, frame in
             let attributes = NSCollectionViewLayoutAttributes(
                 forItemWith: IndexPath(item: index, section: 0))
             // ZERO conversion — flipped content space is `MasonryLayout`'s space.
@@ -133,12 +180,20 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     }
 
     override var collectionViewContentSize: NSSize {
-        NSSize(width: preparedWidth, height: max(solved.contentHeight, 1))
+        let height = activePreview?.contentHeight ?? solved.contentHeight
+        return NSSize(width: preparedWidth, height: max(height, 1))
     }
 
     // MARK: Queries
 
     override func layoutAttributesForElements(in rect: NSRect) -> [NSCollectionViewLayoutAttributes] {
+        // While a reorder preview is active, a data item renders at its permuted
+        // slot's column, breaking the round-robin structure `masonryMarqueeIndices`
+        // culls by — so fall back to a plain intersection scan. It is O(N) like
+        // the prepare() solve itself, and only runs during an active drag.
+        if activePreview != nil {
+            return attributesCache.filter { $0.frame.intersects(rect) }
+        }
         // `masonryMarqueeIndices` (MarqueeMath.swift:77) IS this query: analytic
         // column membership culls whole columns in O(1), and the y-monotonic
         // stacking within a column makes the vertical span a binary search.
