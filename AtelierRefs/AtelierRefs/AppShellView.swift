@@ -129,48 +129,33 @@ struct AppShellView: View {
         }
     }
 
-    /// The floating circular add affordance (Figma) — white glyph on ink. The circle
-    /// is a ZStack SIBLING behind the menu (drawn directly, so it always renders); the
-    /// `Menu` above it carries only the glyph — a `.background`/label fill on a
-    /// `.borderlessButton` menu doesn't render, which left it a bare plus.
+    /// The floating circular add affordance (Figma) — white glyph on ink. Native
+    /// AppKit (`FloatingAddButton`): the SwiftUI `Menu` refused to render its label's
+    /// fill / glyph under `.borderlessButton` and swallowed the click, so this is an
+    /// `NSButton` + `NSMenu` instead.
     private var floatingAdd: some View {
-        ZStack {
-            // Both visuals are ZStack SIBLINGS drawn directly — nothing depends on the
-            // borderless `Menu` rendering its label (it renders neither fill nor glyph
-            // reliably). The Menu sits on top with a clear label as the click target.
-            Circle()
-                .fill(Theme.Colors.inkPrimary)
-                .frame(width: 40, height: 40)
-                .elevation(.hover)
+        FloatingAddButton(diameter: 40, items: addMenuItems)
+            .frame(width: 40, height: 40)
+            .padding(Theme.Spacing.xxl)
+    }
 
-            Image(systemName: "plus")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(Color(hex: 0x141416))
-
-            Menu {
-                if case .collection(let id) = nav.sidebarSelection {
-                    Button("New Space from Collection") {
-                        Task {
-                            if let sid = await model.newSpaceFromCollection(id) { nav.openSpace(sid) }
-                        }
-                    }
+    /// The add menu's items, rebuilt for the current selection.
+    private var addMenuItems: [FloatingAddItem] {
+        var items: [FloatingAddItem] = []
+        if case .collection(let id) = nav.sidebarSelection {
+            items.append(FloatingAddItem(title: "New Space from Collection") {
+                Task {
+                    if let sid = await model.newSpaceFromCollection(id) { nav.openSpace(sid) }
                 }
-                Button("Add Color…") {
-                    // Adds a neutral placeholder swatch to the active collection; the
-                    // detail/inspector edits the hex. (Add-Color/Link pickers relocate
-                    // here from the old toolbar — a follow-up wires the pickers.)
-                    model.addColor(hex: "#2C2C30")
-                }
-            } label: {
-                Color.clear
-                    .frame(width: 40, height: 40)
-                    .contentShape(Circle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
+            })
         }
-        .padding(Theme.Spacing.xxl)
+        // Adds a neutral placeholder swatch to the active collection; the
+        // detail/inspector edits the hex. (Add-Color/Link pickers relocate here from
+        // the old toolbar — a follow-up wires the pickers.)
+        items.append(FloatingAddItem(title: "Add Color…") {
+            model.addColor(hex: "#2C2C30")
+        })
+        return items
     }
 
     // MARK: - Routing
