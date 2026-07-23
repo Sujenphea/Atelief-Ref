@@ -74,8 +74,10 @@ struct CollectionsOutlineView: NSViewRepresentable {
             model: model, nav: nav,
             onNewSubfolder: onNewSubfolder, onRename: onRename
         ) { [$height] h in
-            // Defer the SwiftUI state write out of the AppKit layout pass.
-            DispatchQueue.main.async { if $height.wrappedValue != h { $height.wrappedValue = h } }
+            // Written synchronously from expand/collapse (a click event) so the
+            // frame grows in the SAME pass the rows appear — no one-frame glitch.
+            // The `update()` path defers this itself (it runs during a SwiftUI pass).
+            if $height.wrappedValue != h { $height.wrappedValue = h }
         }
     }
 
@@ -99,8 +101,8 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
     private let onRename: (UUID) -> Void
     private let reportHeight: (CGFloat) -> Void
 
-    private let outlineView = NSOutlineView()
-    private static let rowHeight: CGFloat = 26
+    private let outlineView = SidebarOutlineView()
+    private static let rowHeight: CGFloat = 32
     private static let columnID = NSUserInterfaceItemIdentifier("name")
 
     /// The current node tree + the snapshot it was built from — rebuilt only when
@@ -110,6 +112,11 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
     /// `true` while WE are programmatically syncing selection, so the resulting
     /// delegate callback doesn't echo back into `nav`.
     private var isSyncingSelection = false
+    /// The last selection we reconciled — so we only force-reveal ancestors when
+    /// the selection actually CHANGES, not on every reload. Without this, a user
+    /// collapsing a folder whose descendant is selected would be re-expanded on the
+    /// next update (the "fold when child is active doesn't work" bug).
+    private var lastSyncedSelection: SidebarItem?
     /// The dragged folder's descendant set, computed ONCE at drag start so
     /// `validateDrop` (fired per mouse-move) never rebuilds it (043 · 14A).
     private var dragDescendants: Set<UUID> = []
@@ -142,13 +149,25 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         outlineView.outlineTableColumn = column
         outlineView.headerView = nil
         outlineView.rowHeight = Self.rowHeight
-        outlineView.indentationPerLevel = 14
+        // Zero intercell spacing so the reported content height (`rows * rowHeight`)
+        // is EXACT — the default vertical spacing made the view under-report and
+        // shift rows on expand.
+        outlineView.intercellSpacing = NSSize(width: 0, height: 0)
+        // Native triangle hidden (SidebarOutlineView); the chevron is drawn on the
+        // RIGHT in the cell. Children still indent by level for depth.
+        outlineView.indentationPerLevel = 16
         outlineView.autoresizesOutlineColumn = true
         outlineView.backgroundColor = .clear
         outlineView.selectionHighlightStyle = .regular
-        outlineView.style = .sourceList
+        outlineView.focusRingType = .none
+        outlineView.style = .plain
         outlineView.dataSource = self
         outlineView.delegate = self
+        // A click anywhere on a parent row toggles its children (the whole row is
+        // the show/hide target, not just the chevron). Selection/nav is handled
+        // separately by `outlineViewSelectionDidChange`.
+        outlineView.target = self
+        outlineView.action = #selector(rowClicked)
         outlineView.autosaveExpandedItems = false
         outlineView.registerForDraggedTypes(
             [CollectionDragPayload.pasteboardType, AssetDragPayload.pasteboardType])
@@ -218,10 +237,15 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
             // expansion (preserved by id-equality) and only ensure roots are shown.
         }
         syncSelection(to: selection)
-        reportMeasuredHeight()
+        // This runs inside a SwiftUI update pass, so defer the height write to avoid
+        // "modifying state during view update" (the expand/collapse path writes it
+        // synchronously instead).
+        DispatchQueue.main.async { [weak self] in self?.reportMeasuredHeight() }
     }
 
     private func syncSelection(to selection: SidebarItem) {
+        defer { lastSyncedSelection = selection }
+        let changed = selection != lastSyncedSelection
         guard case let .collection(id) = selection else {
             if outlineView.selectedRow != -1 {
                 isSyncingSelection = true
@@ -231,8 +255,10 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
             return
         }
         guard let node = findNode(id, in: roots) else { return }
-        // Reveal ancestors so the row exists, then select it.
-        expandAncestors(of: node)
+        // Only force-reveal a collapsed ancestor chain when the selection actually
+        // CHANGED — otherwise a user collapsing this node's parent would be undone
+        // on the next reload. An unchanged selection that's now hidden stays hidden.
+        if changed { expandAncestors(of: node) }
         let row = outlineView.row(forItem: node)
         guard row >= 0, outlineView.selectedRow != row else { return }
         isSyncingSelection = true
@@ -267,37 +293,19 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
 
     func outlineView(_ ov: NSOutlineView, viewFor column: NSTableColumn?, item: Any) -> NSView? {
         guard let node = item as? CollectionNode else { return nil }
-        let id = Self.columnID
-        let cell = ov.makeView(withIdentifier: id, owner: self) as? NSTableCellView
-            ?? Self.makeCell(identifier: id)
-        cell.textField?.stringValue = node.name
-        cell.imageView?.image = NSImage(
-            systemSymbolName: node.isUnsorted ? "tray" : "folder", accessibilityDescription: nil)
+        let cell = ov.makeView(withIdentifier: Self.columnID, owner: self) as? SidebarCell
+            ?? SidebarCell(identifier: Self.columnID)
+        cell.configure(
+            name: node.name, expandable: !node.children.isEmpty,
+            expanded: ov.isItemExpanded(node))
         return cell
     }
 
-    private static func makeCell(identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
-        let cell = NSTableCellView()
-        cell.identifier = identifier
-        let image = NSImageView()
-        let text = NSTextField(labelWithString: "")
-        text.lineBreakMode = .byTruncatingTail
-        text.font = .systemFont(ofSize: 13)
-        image.translatesAutoresizingMaskIntoConstraints = false
-        text.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(image)
-        cell.addSubview(text)
-        cell.imageView = image
-        cell.textField = text
-        NSLayoutConstraint.activate([
-            image.leadingAnchor.constraint(equalTo: cell.leadingAnchor),
-            image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            image.widthAnchor.constraint(equalToConstant: 16),
-            text.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 6),
-            text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
-            text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
-        return cell
+    /// Borderless, Theme-tinted selection (no focus ring / emphasized blue).
+    func outlineView(_ ov: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+        let id = NSUserInterfaceItemIdentifier("row")
+        return ov.makeView(withIdentifier: id, owner: self) as? SidebarRowView
+            ?? { let v = SidebarRowView(); v.identifier = id; return v }()
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
@@ -309,6 +317,20 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
 
     func outlineViewItemDidExpand(_ notification: Notification) { reportMeasuredHeight() }
     func outlineViewItemDidCollapse(_ notification: Notification) { reportMeasuredHeight() }
+
+    /// A click anywhere on a parent row toggles its children (leaves just select).
+    /// The chevron glyph is refreshed directly so it never lags. Fires from a click
+    /// event, so the synchronous height report is safe.
+    @objc private func rowClicked() {
+        let row = outlineView.clickedRow
+        guard row >= 0, let node = outlineView.item(atRow: row) as? CollectionNode,
+              !node.children.isEmpty else { return }
+        let willExpand = !outlineView.isItemExpanded(node)
+        if willExpand { outlineView.expandItem(node) } else { outlineView.collapseItem(node) }
+        (outlineView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell)?
+            .setExpanded(willExpand)
+        reportMeasuredHeight()
+    }
 
     // MARK: - Drag source
 
@@ -438,6 +460,103 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         for id in chain.reversed() {
             if let ancestor = findNode(id, in: roots) { outlineView.expandItem(ancestor) }
         }
+    }
+}
+
+/// The outline view with the native LEFT disclosure triangle suppressed — the cell
+/// draws its own chevron on the right (043 · Phase C styling).
+final class SidebarOutlineView: NSOutlineView {
+    override func frameOfOutlineCell(atRow row: Int) -> NSRect { .zero }
+
+    /// NSOutlineView reserves a fixed leading gap for the (now-hidden) disclosure
+    /// triangle. Strip that constant gap so the cell's own 14pt inset is the only
+    /// leading padding, keeping ONLY the per-level indentation on top.
+    override func frameOfCell(atColumn column: Int, row: Int) -> NSRect {
+        var frame = super.frameOfCell(atColumn: column, row: row)
+        let indent = CGFloat(level(forRow: row)) * indentationPerLevel
+        let gap = frame.origin.x - indent
+        frame.origin.x -= gap
+        frame.size.width += gap
+        return frame
+    }
+
+    /// Without an enclosing scroll view the single column doesn't auto-fill; track
+    /// the view width so rows (and their selection / click target) span the sidebar.
+    override func layout() {
+        super.layout()
+        if let column = tableColumns.first, column.width != bounds.width {
+            column.width = bounds.width
+        }
+    }
+}
+
+/// A row whose selection is a flat, borderless Theme fill (no focus ring, no
+/// emphasized blue) — matches the SwiftUI sidebar's active-row look.
+final class SidebarRowView: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        guard isSelected else { return }
+        // Left-flush (roots have 0 x offset, so the fill must start at 0 too, else
+        // the name overhangs it); small right + vertical inset for the rounded look.
+        let rect = NSRect(x: 0, y: 2, width: bounds.width - 4, height: bounds.height - 4)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+        NSColor(hex: 0x3A3A40).setFill()                        // Theme.Colors.selection
+        path.fill()
+        NSColor.white.withAlphaComponent(0.14).setStroke()      // Theme.Colors.hairlineStrong
+        path.lineWidth = 1
+        path.stroke()
+    }
+    override var isEmphasized: Bool {
+        get { false }
+        set {}
+    }
+}
+
+/// A collection row cell: name text in the Theme row font, NO leading icon, and a
+/// right-aligned chevron that expands/collapses (shown only for parents).
+final class SidebarCell: NSTableCellView {
+    private let label = NSTextField(labelWithString: "")
+    private let chevron = NSImageView()   // indicator only — the row handles toggle
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+        label.font = .systemFont(ofSize: 13)              // Theme.Typography.row, snug
+        label.textColor = NSColor(hex: 0xF2F1EE)          // inkPrimary
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        chevron.contentTintColor = NSColor(hex: 0x9A9A9E) // inkSecondary
+        chevron.imageScaling = .scaleProportionallyDown
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        addSubview(chevron)
+        textField = label
+        NSLayoutConstraint.activate([
+            // Roots sit at 14pt; children add the outline view's per-level indent.
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: chevron.leadingAnchor, constant: -6),
+            chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 12),
+            chevron.heightAnchor.constraint(equalToConstant: 12),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(name: String, expandable: Bool, expanded: Bool) {
+        label.stringValue = name
+        chevron.isHidden = !expandable
+        setExpanded(expanded)
+    }
+
+    /// Flip the chevron glyph to match the expansion state — called immediately on
+    /// toggle so it never lags.
+    func setExpanded(_ expanded: Bool) {
+        chevron.image = NSImage(
+            systemSymbolName: expanded ? "chevron.down" : "chevron.right",
+            accessibilityDescription: nil)
     }
 }
 

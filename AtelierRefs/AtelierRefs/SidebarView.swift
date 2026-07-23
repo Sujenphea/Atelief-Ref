@@ -219,6 +219,9 @@ struct SidebarView: View {
                         renameTargetID = id
                     })
                     .frame(height: max(outlineHeight, 1))
+                    // Extend 8pt into the sidebar's right padding so the rows /
+                    // selection reach closer to the edge.
+                    .padding(.trailing, -8)
             }
         }
     }
