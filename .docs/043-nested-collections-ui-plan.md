@@ -85,13 +85,14 @@ collectionBreadcrumb helper (already removed).
 - Phase F ✅ — Perf confirm (15B): covers/previews are all single set-based
   queries, no per-collection N+1. Audit-only, no code change. Changelog 212.
 
-## Open items
+## Open items — RESOLVED
 
-1. Gallery reorder scope: decisions target the sidebar tree. Home cards are a
-   separate surface. Options: (a) also drag-reorder Home root cards, (b) keep Home
-   reparent-drop-only, (c) Home menu-only. Recommendation: (b).
-2. Duplicate-name policy (7A): trim decided; whether to reject duplicate sibling
-   names is open. Leaning allow + document.
+1. Gallery reorder scope → **(b) keep Home reparent-drop-only.** The sidebar tree
+   is the reorder surface; a sidebar reorder reflects on Home via shared
+   `sortIndex`. No code change.
+2. Duplicate-name policy → **(2c) Finder-style auto-disambiguate** ("Refs" →
+   "Refs 2"), applied on create + rename (not move — see changelog 213 for the
+   scope note). Changelog 213.
 
 ## Testing plan (consolidated)
 

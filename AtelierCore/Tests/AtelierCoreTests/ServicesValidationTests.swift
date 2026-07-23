@@ -25,6 +25,51 @@ struct ServicesValidationTests {
         }
     }
 
+    // MARK: uniqueCollectionName — Finder-style sibling disambiguation (043 · 2c)
+
+    @Test("no collision returns the name unchanged")
+    func uniqueNoCollision() {
+        #expect(Validation.uniqueCollectionName("Refs", among: ["Notes", "Art"]) == "Refs")
+        #expect(Validation.uniqueCollectionName("Refs", among: []) == "Refs")
+    }
+
+    @Test("a collision appends the smallest free ` N` (N ≥ 2)")
+    func uniqueFirstCollision() {
+        #expect(Validation.uniqueCollectionName("Refs", among: ["Refs"]) == "Refs 2")
+    }
+
+    @Test("numbering walks past taken ` N` slots")
+    func uniqueWalksSequence() {
+        #expect(
+            Validation.uniqueCollectionName("Refs", among: ["Refs", "Refs 2", "Refs 3"])
+                == "Refs 4")
+    }
+
+    @Test("a gap in the numbered family is filled")
+    func uniqueFillsGap() {
+        #expect(
+            Validation.uniqueCollectionName("Refs", among: ["Refs", "Refs 3"]) == "Refs 2")
+    }
+
+    @Test("an already-numbered desired name collapses onto its base, not `Refs 2 2`")
+    func uniqueCollapsesNumberedBase() {
+        #expect(
+            Validation.uniqueCollectionName("Refs 2", among: ["Refs", "Refs 2"]) == "Refs 3")
+    }
+
+    @Test("matching is case-insensitive; the desired name's casing is kept")
+    func uniqueCaseInsensitive() {
+        #expect(Validation.uniqueCollectionName("REFS", among: ["refs"]) == "REFS 2")
+        #expect(Validation.uniqueCollectionName("refs", among: ["Refs", "REFS 2"]) == "refs 3")
+    }
+
+    @Test("` 0` / ` 1` are below the numbering floor and treated as the whole base")
+    func uniqueLowIndexKeptAsBase() {
+        // "Refs 1" doesn't strip to "Refs" — it is its own base, so a collision
+        // becomes "Refs 1 2".
+        #expect(Validation.uniqueCollectionName("Refs 1", among: ["Refs 1"]) == "Refs 1 2")
+    }
+
     // MARK: tagName — leading '#' is a UI affordance, not part of the name
 
     @Test("tagName strips a leading '#' and trims", arguments: [

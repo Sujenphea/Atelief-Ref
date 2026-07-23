@@ -339,19 +339,21 @@ public final class AppServices: Sendable {
     ) async throws -> Collection {
         let trimmed = try Validation.collectionName(name)
         let now = Date()
-        let collection = Collection(
-            id: UUID(), name: trimmed, description: description,
-            coverAssetID: nil, createdAt: now, updatedAt: now,
-            parentCollectionID: parentID)
         return try await write { db in
             if let parentID {
                 guard try Collection.exists(db, key: Self.key(parentID)) else {
                     throw AtelierError.notFound(entity: "collection", id: parentID)
                 }
             }
+            // Auto-disambiguate a duplicate sibling name, Finder-style (043 · 2c).
+            let unique = Validation.uniqueCollectionName(
+                trimmed, among: try Self.siblingNames(parentID, in: db))
             // Append: the new folder lands after its existing siblings, keeping
             // the group dense at `0..<n` (043 · 2B).
-            var toInsert = collection
+            var toInsert = Collection(
+                id: UUID(), name: unique, description: description,
+                coverAssetID: nil, createdAt: now, updatedAt: now,
+                parentCollectionID: parentID)
             toInsert.sortIndex = try Self.childIDsOrdered(parentID, in: db).count
             try toInsert.insert(db)
             return toInsert
@@ -370,7 +372,12 @@ public final class AppServices: Sendable {
             guard var collection = try Collection.fetchOne(db, key: Self.key(id)) else {
                 throw AtelierError.notFound(entity: "collection", id: id)
             }
-            collection.name = trimmed
+            // Auto-disambiguate against the OTHER siblings (exclude self, so a
+            // no-op rename to the current name doesn't drift — 043 · 2c).
+            collection.name = Validation.uniqueCollectionName(
+                trimmed,
+                among: try Self.siblingNames(
+                    collection.parentCollectionID, excluding: id, in: db))
             collection.updatedAt = Date()
             try collection.update(db)
             return collection
@@ -509,6 +516,22 @@ public final class AppServices: Sendable {
         return try base
             .order(Column("sort_index"), Column("name"), Column("id"))
             .fetchAll(db).map(\.id)
+    }
+
+    /// The names of the folders under `parentID` (`nil` = roots), optionally
+    /// EXCLUDING one id (the folder being renamed, so it doesn't collide with its
+    /// own name). Feeds `Validation.uniqueCollectionName` (043 · policy 2c).
+    private static func siblingNames(
+        _ parentID: UUID?, excluding excludedID: UUID? = nil, in db: Database
+    ) throws -> [String] {
+        let base: QueryInterfaceRequest<Collection>
+        if let parentID {
+            base = Collection.filter(Column("parent_collection_id") == Self.key(parentID))
+        } else {
+            base = Collection.filter(Column("parent_collection_id") == nil)
+        }
+        let query = excludedID.map { base.filter(Column("id") != Self.key($0)) } ?? base
+        return try query.fetchAll(db).map(\.name)
     }
 
     /// Write a dense `0..<n` `sort_index` for `orderedIDs`, in order. A targeted

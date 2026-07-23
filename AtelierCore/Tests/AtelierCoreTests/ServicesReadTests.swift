@@ -62,12 +62,15 @@ struct ServicesReadTests {
     func listTieByID() async throws {
         let (services, temp) = try makeServices()
         defer { temp.cleanup() }
-        // Two collections with the same name → tie broken by id, stably.
-        let a = try await services.createCollection(name: "Dup")
-        let b = try await services.createCollection(name: "Dup")
-        // Exclude the seeded Unsorted folder; assert the two "Dup" rows order by id.
+        // Same-name ties still occur across DIFFERENT parents — create-time
+        // disambiguation is per-parent (043 · 2c), so two "Dup" folders under
+        // separate parents keep the name and must tie-break by id, stably.
+        let p1 = try await services.createCollection(name: "P1")
+        let p2 = try await services.createCollection(name: "P2")
+        let a = try await services.createCollection(name: "Dup", parent: p1.id)
+        let b = try await services.createCollection(name: "Dup", parent: p2.id)
         let ids = try await services.listCollections()
-            .filter { $0.id != Collection.unsortedID }
+            .filter { $0.name == "Dup" }
             .map(\.id)
         let expected = [a.id, b.id].sorted {
             $0.uuidString.lowercased() < $1.uuidString.lowercased()
