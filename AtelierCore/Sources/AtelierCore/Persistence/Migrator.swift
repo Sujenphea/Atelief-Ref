@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -113,6 +113,13 @@ enum Migrator {
         // SHIPPED once released: never edit this body.
         migrator.registerMigration("v11") { db in
             try createV11Schema(db)
+        }
+
+        // v12 — search covers user-given Name + Note (044/045 · search overhaul
+        // 1A): rebuild `asset_fts` with `name` / `note` columns so the v10 fields
+        // become searchable, kept fresh by the regenerated sync triggers.
+        migrator.registerMigration("v12") { db in
+            try createV12Schema(db)
         }
 
         return migrator
@@ -538,6 +545,42 @@ enum Migrator {
         try db.create(virtualTable: "asset_fts", using: FTS5()) { t in
             t.synchronize(withTable: "asset")
             t.column("search_text")
+        }
+    }
+
+    // MARK: - v12
+
+    /// Fold the v10 user-given `name` / `note` into the content FTS (044/045 · 1A).
+    ///
+    /// v6 built `asset_fts` over `search_text` alone, so naming or annotating an
+    /// asset left it unfindable by that name/note — the strongest user-supplied
+    /// signal was invisible to search. FTS5 columns are fixed at creation, so
+    /// widening the index means rebuilding the virtual table.
+    ///
+    /// The `asset` table itself is untouched (no rebuild, no FK dance): only the
+    /// derived index is dropped and recreated. GRDB's `synchronize(withTable:)`
+    /// regenerates the INSERT/UPDATE/DELETE triggers AND runs the `'rebuild'`
+    /// backfill, so every existing row's `search_text` / `name` / `note` is
+    /// re-indexed in one transactional step (15A) and future `setName`/`setNote`
+    /// writes stay searchable via the triggers — no derivation logic duplicated.
+    private static func createV12Schema(_ db: Database) throws {
+        // 1. Drop the old sync triggers first — a bare `DROP TABLE asset_fts`
+        //    leaves them dangling, and the next `asset` write would fire a trigger
+        //    referencing a table that no longer exists. GRDB names them
+        //    `__asset_fts_ai/ad/au`; this helper drops exactly those.
+        try db.dropFTS5SynchronizationTriggers(forTable: "asset_fts")
+
+        // 2. Drop the narrow index. External-content FTS5 stores no content of its
+        //    own (it shadows `asset`), so nothing but the index is lost.
+        try db.execute(sql: "DROP TABLE asset_fts;")
+
+        // 3. Recreate over the wider column set. `synchronize` re-establishes the
+        //    triggers and back-fills every existing asset from the content table.
+        try db.create(virtualTable: "asset_fts", using: FTS5()) { t in
+            t.synchronize(withTable: "asset")
+            t.column("search_text")
+            t.column("name")
+            t.column("note")
         }
     }
 

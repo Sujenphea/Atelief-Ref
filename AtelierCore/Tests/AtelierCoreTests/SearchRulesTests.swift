@@ -104,6 +104,29 @@ struct SearchRulesCodecTests {
         #expect(json.contains("\"tag_match\":\"any\""))
     }
 
+    /// The stored rule vocabulary is EXACTLY these keys — the drift guard (015 ·
+    /// "the drift risk lives in the mapping"). A saved search defines WHICH assets
+    /// match, never how a live search is ordered or its input-method sugar, so the
+    /// 044/045 `searchAssets` arguments `sort`, `tagNameContains`, and plural
+    /// `collectionIDs` are deliberately NOT rule fields (8A). Pinning the key set
+    /// makes any future attempt to serialize one of them fail loudly here.
+    @Test("the rule blob carries exactly the saved dimensions — no sort / tag: / plural scope")
+    func ruleVocabularyIsExactlyTheSavedDimensions() throws {
+        // A fully-populated rule so every representable key appears.
+        let json = try SearchRules(
+            text: "grid", platform: .pinterest, tagIDs: [UUID()],
+            tagMatch: .all, collectionID: UUID()).encoded()
+        let keys = Set(try #require(
+            try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        ).keys)
+        #expect(keys == ["version", "text", "platform", "tag_ids",
+                         "tag_match", "collection_id"])
+        // The excluded live-search concepts have no on-disk token.
+        for excluded in ["sort", "tag_name_contains", "collection_ids"] {
+            #expect(!keys.contains(excluded), "unexpected rule key: \(excluded)")
+        }
+    }
+
     // MARK: - Version
 
     @Test("a fresh rule is stamped with the current version")

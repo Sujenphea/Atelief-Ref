@@ -62,6 +62,12 @@ public enum AtelierError: Error, Equatable {
     /// so it cannot be evaluated (015). Distinct from `.notFound`: the search row
     /// exists, its rules don't parse.
     case invalidSavedSearchRules(id: UUID)
+    /// ``AppServices/searchAssets`` was asked for `.relevance` sort together with
+    /// a keyset `after:` cursor (044/045 · 3A). The cursor is defined on the
+    /// stable `(created_at, id)` recency order; relevance isn't that order, so a
+    /// cursor into it is meaningless. Explicit over silently returning a wrong or
+    /// duplicated page — relevance results are consumed whole (bounded by `limit`).
+    case relevanceSortUnpageable
     /// A database constraint (FK / NOT NULL / UNIQUE) was violated — mapped from
     /// GRDB so the raw `DatabaseError` never leaks (A2/C7).
     case constraintViolation

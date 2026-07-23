@@ -290,7 +290,10 @@ public final class AppServices: Sendable {
             platform: rules.platform,
             tagIDs: liveTagIDs,
             tagMatch: rules.tagMatch,
-            collectionID: rules.collectionID,
+            // A saved search carries a SINGLE collection scope (015); the plural
+            // `collectionIDs` search API takes it as a one-element list (044/045 ·
+            // 16A — plural scope is a live-query affordance, not saved).
+            collectionIDs: rules.collectionID.map { [$0] } ?? [],
             limit: limit,
             after: cursor)
     }
@@ -1699,23 +1702,34 @@ public final class AppServices: Sendable {
 
     /// Search assets library-wide, bounded (P16) and keyset-paged.
     ///
-    /// - `text`: when non-nil/non-empty, full-text matched against `source_fts`
-    ///   (the source `title` / `author_handle` / `author_name`); the matching
-    ///   sources' assets are returned. When nil/blank, lists all assets
-    ///   (optionally platform-filtered) — still bounded.
+    /// - `text`: when non-nil/non-empty, full-text matched (with a type-ahead
+    ///   PREFIX on the final term, see ``ftsMatchQuery(_:)``) against the source
+    ///   provenance (`source_fts`), the asset's own content INCLUDING its
+    ///   user-given `name` / `note` (`asset_fts`, 044/045 · 1A), and OCR text
+    ///   inside images (`analysis_fts`); a CONTAINS match also folds in tag names
+    ///   and collection names so free text finds an item by the tag it carries or
+    ///   the collection it lives in. When nil/blank, lists all assets (optionally
+    ///   platform-filtered) — still bounded.
     /// - `platform`: optional filter on the asset's source.
     /// - `tagIDs`: optional structured tag filter (007 · S1). Empty → no tag
     ///   conjunct. `tagMatch` chooses set semantics: `.all` requires EVERY tag
     ///   (dup-join-safe via `COUNT(DISTINCT tag_id) = N`), `.any` requires one.
     ///   Tag text never enters FTS — the caller resolves names → ids first.
-    /// - `collectionID`: optional scope — only assets that are members of this
-    ///   collection (a folder-scoped search).
-    /// - Ordered `created_at DESC, id DESC` (stable), so the keyset cursor is
-    ///   well-defined.
+    /// - `tagNameContains`: optional `tag:`-style filter (044/045 · 17A) — an
+    ///   AND conjunct restricting to assets carrying a tag whose name CONTAINS the
+    ///   needle (normalized `#`-stripped, like `tagIDs` names). Composes WITH
+    ///   `tagIDs` (both must hold). Blank/`#`-only → no conjunct.
+    /// - `collectionIDs`: optional scope (044/045 · 16A) — restrict to assets that
+    ///   are members of ANY listed collection (OR across the ids). Empty → whole
+    ///   library, no scope.
+    /// - `sort`: `.newest` (default) orders `created_at DESC, id DESC` — the
+    ///   stable order the keyset cursor is defined on. `.relevance` orders by
+    ///   best-of-arms `bm25()` (044/045 · 3A) and is NOT pageable (see `after`).
     /// - `limit` is clamped to `1...500`; at most `limit` rows are returned.
     /// - `after`: a keyset cursor (P16) — only rows STRICTLY after it in the
-    ///   order are returned (`(created_at, id) < (cursor.createdAt, cursor.id)`),
-    ///   so paging never drifts or repeats as new assets land (no OFFSET).
+    ///   `.newest` order are returned, so paging never drifts or repeats as new
+    ///   assets land (no OFFSET). Pairing a cursor with `.relevance` throws
+    ///   ``AtelierError/relevanceSortUnpageable`` (relevance isn't that order).
     ///
     /// Returns ``AssetDetail`` (asset + source) — metadata only, never blob
     /// bytes (P16).
@@ -1724,16 +1738,33 @@ public final class AppServices: Sendable {
         platform: Platform? = nil,
         tagIDs: [UUID] = [],
         tagMatch: TagMatch = .all,
-        collectionID: UUID? = nil,
+        tagNameContains: String? = nil,
+        collectionIDs: [UUID] = [],
+        sort: SearchSort = .newest,
         limit: Int = 50,
         after cursor: AssetPageCursor? = nil
     ) async throws -> [AssetDetail] {
+        // Relevance order isn't the stable `(created_at, id)` sequence the keyset
+        // cursor seeks into, so a cursor into it is meaningless (044/045 · 3A).
+        // Reject explicitly rather than silently return a wrong/duplicated page.
+        if sort == .relevance, cursor != nil {
+            throw AtelierError.relevanceSortUnpageable
+        }
+
         let clampedLimit = min(max(limit, 1), 500)
         let trimmedText = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasText = !(trimmedText?.isEmpty ?? true)
+        // The FTS5 MATCH string is built from the RAW (untrimmed) text so the
+        // trailing-whitespace signal survives — `ftsMatchQuery` reads it to decide
+        // whether the final term is a type-ahead prefix or a finished exact word
+        // (5A/14A). `nil` when there's no text to match. Computed once and reused
+        // by both the filter arm and the relevance ordering (no recompute drift).
+        let ftsMatch = hasText ? Self.ftsMatchQuery(text ?? "") : nil
         // Distinct ids only — a caller passing the same tag twice must not skew
         // the `.all` HAVING COUNT (that counts DISTINCT tag_id anyway, but the N
         // it is compared against must match the distinct set).
         let distinctTagIDs = Array(Set(tagIDs))
+        let distinctCollectionIDs = Array(Set(collectionIDs))
         return try await read { db in
             // The source is required and carries the platform filter when given,
             // so the included join doubles as the filter (inner join).
@@ -1746,24 +1777,22 @@ public final class AppServices: Sendable {
 
             // FTS5: an asset MATCHes when its PROVENANCE matches `source_fts`
             // (title/author) OR its own CONTENT matches `asset_fts` (003 · O1 —
-            // a tweet's text, a link's title/description, a color's name/hex) OR
-            // the text INSIDE it matches `analysis_fts` (012 · I2 — OCR of
-            // screenshots / type specimens). Three external-content indices, kept
-            // separate (provenance vs content vs derived OCR) and OR-combined here
-            // so both media-less items and image-only text are findable by
-            // substance. Each subquery maps `*_fts.rowid` → the base table's
-            // rowid → id.
-            if let trimmedText, !trimmedText.isEmpty {
-                let match = Self.ftsMatchQuery(trimmedText)
-                // Tags are not in any FTS index (their text never enters
-                // `search_text`), so free text alone used to miss a tagged item
-                // entirely — the user had to select the tag as a token. A LIKE
-                // CONTAINS match on `tag.name` folds tag names into free text.
-                // The needle is normalized the same way tags are (`#` stripped),
-                // so querying "sf" or "#sf" both find a tag stored as "sf" (and,
-                // via CONTAINS, a legacy "#sf" too). A `#`-only query normalizes
-                // to empty → the tag branch is dropped (no match-everything).
-                // Leading-wildcard LIKE can't use an index — fine at this scale.
+            // a tweet's text, a link's title/description, a color's name/hex, plus
+            // the user-given `name`/`note`, 1A) OR the text INSIDE it matches
+            // `analysis_fts` (012 · I2 — OCR of screenshots / type specimens).
+            // Three external-content indices, kept separate (provenance vs content
+            // vs derived OCR) and OR-combined here so both media-less items and
+            // image-only text are findable by substance. Each subquery maps
+            // `*_fts.rowid` → the base table's rowid → id.
+            //
+            // Two further OR arms fold tag names and collection names into free
+            // text (their text is in no FTS index): a leading-wildcard LIKE
+            // CONTAINS. The tag needle is normalized the same way tags are (`#`
+            // stripped), so "sf" / "#sf" both find a tag stored as "sf"; a
+            // `#`-only query normalizes to empty and drops that arm (no
+            // match-everything). Leading-wildcard LIKE can't use an index — fine
+            // at this scale (Phase 2 trigram is the designed replacement).
+            if let trimmedText, !trimmedText.isEmpty, let match = ftsMatch {
                 let tagNeedle = Validation.normalizedTagName(trimmedText)
                 var sql = """
                     source_id IN (
@@ -1781,8 +1810,14 @@ public final class AppServices: Sendable {
                         JOIN analysis_fts ON analysis_fts.rowid = an.rowid
                         WHERE analysis_fts MATCH ?
                      )
+                     OR asset.id IN (
+                        SELECT ci.asset_id FROM collection_item ci
+                        JOIN collection c ON c.id = ci.collection_id
+                        WHERE c.name LIKE ? ESCAPE '\\'
+                     )
                     """
-                var args: [String] = [match, match, match]
+                var args: [String] = [match, match, match,
+                                      Self.containsPattern(trimmedText)]
                 if !tagNeedle.isEmpty {
                     sql += """
                     \n OR asset.id IN (
@@ -1791,19 +1826,39 @@ public final class AppServices: Sendable {
                         WHERE tag.name LIKE ? ESCAPE '\\'
                      )
                     """
-                    args.append("%" + Self.escapeLikePrefix(tagNeedle) + "%")
+                    args.append(Self.containsPattern(tagNeedle))
                 }
                 request = request.filter(sql: "(\(sql))",
                                          arguments: StatementArguments(args))
             }
 
-            // Collection scope (007 · S3): membership subquery. Composes as a
-            // plain conjunct, so it AND-combines with FTS / tags / platform.
-            if let collectionID {
+            // `tag:`-style name filter (044/045 · 17A): an AND conjunct (composes
+            // with the structured `tagIDs` — both must hold), restricting to
+            // assets carrying a tag whose name CONTAINS the needle. Normalized
+            // like tag names; blank / `#`-only → no conjunct.
+            if let tagNameContains {
+                let needle = Validation.normalizedTagName(tagNameContains)
+                if !needle.isEmpty {
+                    request = request.filter(sql: """
+                        asset.id IN (
+                            SELECT atag.asset_id FROM asset_tag atag
+                            JOIN tag ON tag.id = atag.tag_id
+                            WHERE tag.name LIKE ? ESCAPE '\\'
+                        )
+                        """, arguments: [Self.containsPattern(needle)])
+                }
+            }
+
+            // Collection scope (007 · S3 / 044/045 · 16A): membership subquery,
+            // OR across the listed collections. Composes as a plain conjunct, so
+            // it AND-combines with FTS / tags / platform. Empty → no scope.
+            if !distinctCollectionIDs.isEmpty {
+                let placeholders = databaseQuestionMarks(count: distinctCollectionIDs.count)
+                let keys = distinctCollectionIDs.map(Self.key)
                 // Qualify `asset.id` — the source join makes a bare `id` ambiguous.
                 request = request.filter(sql: """
-                    asset.id IN (SELECT asset_id FROM collection_item WHERE collection_id = ?)
-                    """, arguments: [Self.key(collectionID)])
+                    asset.id IN (SELECT asset_id FROM collection_item WHERE collection_id IN (\(placeholders)))
+                    """, arguments: StatementArguments(keys))
             }
 
             // Structured tag filter (007 · S1). `.any` — a single IN subquery.
@@ -1832,6 +1887,7 @@ public final class AppServices: Sendable {
             // Keyset seek: rows strictly after the cursor in the DESC order.
             // GRDB qualifies these `Column`s to the base `asset` table; the Date
             // binds to the same sortable text encoding the column stores (C5).
+            // (Guarded to `.newest` above — relevance never reaches here.)
             if let cursor {
                 request = request.filter(
                     Column("created_at") < cursor.createdAt
@@ -1839,14 +1895,68 @@ public final class AppServices: Sendable {
                         && Column("id") < Self.key(cursor.id)))
             }
 
-            request = request
-                .order(Column("created_at").desc, Column("id").desc)
+            request = Self.ordered(request, by: sort, match: ftsMatch)
                 .limit(clampedLimit)
 
             return try AssetSourceRow.fetchAll(db, request).map {
                 AssetDetail(asset: $0.asset, source: $0.source)
             }
         }
+    }
+
+    /// Apply the ``SearchSort`` ordering to a built search request (044/045 · 3A).
+    ///
+    /// `.newest` (and `.relevance` with no `match` — nothing to rank) → the stable
+    /// `created_at DESC, id DESC` recency order. `.relevance` with text → a
+    /// correlated best-of-arms score, ascending (lower = better), `id` as a
+    /// deterministic tiebreak.
+    ///
+    /// The score is a scalar subquery over the same arms the WHERE clause filters
+    /// on, taking the `MIN` (best) across whichever matched. Raw `bm25()` is NOT
+    /// comparable across different FTS tables (each normalizes to its own column
+    /// count / average document length), so an OCR hit in a long scan could
+    /// otherwise outrank a title hit. We therefore TIER the arms with explicit
+    /// additive bases (lower base = stronger signal), and let `bm25()` order
+    /// finely WITHIN the two primary tiers:
+    ///
+    ///   • tier 0  — provenance (`source_fts`) and the item's own content +
+    ///     user-given name/note (`asset_fts`): `bm25` (a small negative).
+    ///   • tier `likeBase` — a match only via a tag- or collection-NAME LIKE arm
+    ///     (indirect, no bm25): a flat neutral score above every tier-0 hit.
+    ///   • tier `ocrBase` — derived OCR (`analysis_fts`): `bm25` shifted so even
+    ///     the best OCR hit ranks below any direct-field or name match.
+    ///
+    /// `likeBase`/`ocrBase` are chosen far above the bm25 range (always > -1000)
+    /// so the tiers never interleave. `COALESCE(…, likeBase)` scores a row that
+    /// matched ONLY via a LIKE arm; a row with no scored arm can't reach here (it
+    /// wouldn't have passed the WHERE). Correlation is by scalar subquery on the
+    /// base `asset` alias, so it doesn't depend on the association's join alias.
+    private static func ordered(
+        _ request: QueryInterfaceRequest<Asset>,
+        by sort: SearchSort,
+        match: String?
+    ) -> QueryInterfaceRequest<Asset> {
+        guard sort == .relevance, let match else {
+            return request.order(Column("created_at").desc, Column("id").desc)
+        }
+        let likeBase = 1_000_000.0   // above any bm25; below OCR.
+        let ocrBase = 2_000_000.0    // OCR always ranks last among the hits.
+        return request.order(sql: """
+            COALESCE((
+                SELECT MIN(score) FROM (
+                    SELECT bm25(source_fts) AS score FROM source_fts
+                        WHERE source_fts MATCH ?
+                          AND source_fts.rowid = (SELECT rowid FROM source WHERE source.id = asset.source_id)
+                    UNION ALL
+                    SELECT bm25(asset_fts) FROM asset_fts
+                        WHERE asset_fts MATCH ? AND asset_fts.rowid = asset.rowid
+                    UNION ALL
+                    SELECT \(ocrBase) + bm25(analysis_fts) FROM analysis_fts
+                        WHERE analysis_fts MATCH ?
+                          AND analysis_fts.rowid = (SELECT rowid FROM asset_analysis WHERE asset_analysis.asset_id = asset.id)
+                )
+            ), \(likeBase)) ASC, asset.id ASC
+            """, arguments: [match, match, match])
     }
 
     // MARK: - Asset details (041 · Name / Note / Collections)
@@ -2228,10 +2338,36 @@ public final class AppServices: Sendable {
     /// match) and punctuation / stray quotes can never form malformed MATCH
     /// syntax (no syntax-error throw). Quoting also neutralizes the FTS5
     /// operators (`*`, `:`, `^`, `-`, `(`, `OR`, …) as literal text.
+    ///
+    /// Type-ahead PREFIX (044/045 · 5A/14A): the FINAL term is emitted as an FTS5
+    /// prefix token (`"wo"*` matches "wood", "wool", …) so results appear as the
+    /// user types a word — BUT only when
+    ///   • the input has no trailing whitespace (a trailing space means the word
+    ///     is finished, so match it exactly), AND
+    ///   • that term is ≥2 characters (a 1-char prefix matches a huge slice of the
+    ///     index for no useful precision, and inflates the query).
+    /// Earlier terms always match exactly — only the word being typed is a prefix.
+    /// The `*` sits OUTSIDE the closing quote (`"wo"*`), which is the FTS5
+    /// quoted-prefix syntax; the quoting still neutralizes every operator inside.
     static func ftsMatchQuery(_ text: String) -> String {
-        text.split(whereSeparator: { $0.isWhitespace })
-            .map { term in "\"\(term.replacingOccurrences(of: "\"", with: "\"\""))\"" }
-            .joined(separator: " ")
+        let terms = text.split(whereSeparator: { $0.isWhitespace })
+        guard !terms.isEmpty else { return "" }
+        let starLast = !(text.last?.isWhitespace ?? true)
+        let lastIndex = terms.count - 1
+        return terms.enumerated().map { index, term in
+            let quoted = "\"\(term.replacingOccurrences(of: "\"", with: "\"\""))\""
+            let isPrefix = index == lastIndex && starLast && term.count >= 2
+            return isPrefix ? "\(quoted)*" : quoted
+        }.joined(separator: " ")
+    }
+
+    /// Wrap a needle as a `LIKE ? ESCAPE '\'` CONTAINS pattern (`%needle%`) with
+    /// its wildcards escaped (044/045 · 6A). Shared by every leading-wildcard arm
+    /// — the free-text tag / collection-name OR arms and the `tag:` conjunct — so
+    /// the escape (a miss here means a needle containing `%` matches everything)
+    /// lives in ONE place. The caller supplies the SQL `LIKE ? ESCAPE '\'`.
+    static func containsPattern(_ needle: String) -> String {
+        "%" + escapeLikePrefix(needle) + "%"
     }
 
     /// Escape a user prefix for a `LIKE ? ESCAPE '\'` pattern so its `%`, `_`, and

@@ -10,7 +10,16 @@
 // Deliberately NOT saved as rules (they're evaluation-time, not query identity):
 //   • paging (`limit` / `after` cursor) — a scroll position, re-supplied per read;
 //   • sort — the grid's display mode (015: default `.newest`, `.manual` excluded),
-//     a view concern the V2 grid owns, not a filter.
+//     a view concern the V2 grid owns, not a filter. The 044/045 `searchAssets`
+//     `sort: .newest | .relevance` argument is this same concern: a saved search
+//     defines WHICH assets match, never how they're ORDERED, so `sort` is not a
+//     rule field (the codec round-trip test asserts it is unrepresentable);
+//   • `tagNameContains` — the live `tag:` type-ahead needle (044/045 · 17A): a
+//     transient input-method affordance that resolves to a picked tag TOKEN
+//     (→ `tagIDs`, which IS saved) before a search is ever persisted;
+//   • plural collection scope — a saved search carries a SINGLE `collectionID`
+//     (below); the multi-collection `collectionIDs` search argument (044/045 ·
+//     16A) is a live-query affordance, collapsed to `[collectionID]` on evaluate.
 //
 // Storage is the `saved_search.rules` opaque TEXT column: this codec serializes to
 // a stable, versioned JSON blob and back. The `version` field is forward-compatible

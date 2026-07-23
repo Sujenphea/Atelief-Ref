@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -169,6 +169,97 @@ struct MigrationV11Tests {
         // Alpha's children by name: Mid, Zed — dense 0..1.
         #expect(alphaKids.map(\.0) == ["Mid", "Zed"])
         #expect(alphaKids.map(\.1) == [0, 1])
+    }
+}
+
+// MARK: - v12 · asset_fts covers name / note (044/045 · 1A)
+
+@Suite("Migration v12: asset_fts rebuild over name / note")
+struct MigrationV12Tests {
+
+    /// A migrator applied only THROUGH v11 — the state just before `asset_fts`
+    /// gains its `name` / `note` columns, so a test can seed a named/noted asset
+    /// (indexed by the OLD single-column FTS) and then migrate v12 over it.
+    private func makeQueueThroughV11() throws -> DatabaseQueue {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v11")
+        return dbQueue
+    }
+
+    /// Seed one source + one asset with `search_text` / `name` / `note` set, via
+    /// raw SQL (the funnel isn't available on a bare queue). Returns the asset id.
+    private func seedAsset(
+        _ db: Database, searchText: String, name: String?, note: String?
+    ) throws -> String {
+        let sourceID = newID(), assetID = newID()
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, captured_at, raw_metadata)
+            VALUES (?, 'web', ?, '{}');
+            """, arguments: [sourceID, ts])
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, download_state, created_at, source_id,
+                search_text, name, note)
+            VALUES (?, 'image', 'downloaded', ?, ?, ?, ?, ?);
+            """, arguments: [assetID, ts, sourceID, searchText, name, note])
+        return assetID
+    }
+
+    /// The asset ids whose `asset_fts` row matches `query` (FTS5 MATCH).
+    private func ftsMatches(_ db: Database, _ query: String) throws -> [String] {
+        try String.fetchAll(db, sql: """
+            SELECT a.id FROM asset a
+            JOIN asset_fts ON asset_fts.rowid = a.rowid
+            WHERE asset_fts MATCH ?
+            """, arguments: [query])
+    }
+
+    @Test("existing content re-indexes and pre-existing name/note back-fill")
+    func rebuildBackfillsNameAndNote() throws {
+        let dbQueue = try makeQueueThroughV11()
+        let assetID = try dbQueue.write { db in
+            try seedAsset(db, searchText: "alpha", name: "betaname", note: "gammanote")
+        }
+
+        // Before v12, only search_text is indexed — name / note miss.
+        let before = try dbQueue.read { db in
+            (alpha: try ftsMatches(db, "alpha"),
+             beta: try ftsMatches(db, "betaname"),
+             gamma: try ftsMatches(db, "gammanote"))
+        }
+        #expect(before.alpha == [assetID])
+        #expect(before.beta.isEmpty)
+        #expect(before.gamma.isEmpty)
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v12
+
+        // After v12: old content still matches (rebuild), and the pre-existing
+        // name / note are now indexed (back-fill from the content table).
+        let after = try dbQueue.read { db in
+            (alpha: try ftsMatches(db, "alpha"),
+             beta: try ftsMatches(db, "betaname"),
+             gamma: try ftsMatches(db, "gammanote"))
+        }
+        #expect(after.alpha == [assetID])
+        #expect(after.beta == [assetID])
+        #expect(after.gamma == [assetID])
+    }
+
+    @Test("post-migration name/note writes stay searchable (sync triggers)")
+    func triggersReindexAfterMigration() throws {
+        let dbQueue = try makeQueueThroughV11()
+        let assetID = try dbQueue.write { db in
+            try seedAsset(db, searchText: "alpha", name: nil, note: nil)
+        }
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v12
+
+        // A NEW name written after the rebuild must be indexed by the regenerated
+        // AFTER UPDATE trigger — the whole point of synchronize().
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE asset SET name = 'deltaname' WHERE id = ?",
+                           arguments: [assetID])
+        }
+        let matches = try dbQueue.read { db in try ftsMatches(db, "deltaname") }
+        #expect(matches == [assetID])
     }
 }
 

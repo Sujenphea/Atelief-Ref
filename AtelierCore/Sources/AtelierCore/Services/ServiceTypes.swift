@@ -206,6 +206,25 @@ public enum TagMatch: String, Sendable, Equatable, Hashable, Codable, CaseIterab
     case any
 }
 
+/// How ``AppServices/searchAssets`` orders its results (044/045 · 3A).
+///
+/// Deliberately NOT a ``SearchRules`` field: sort is a VIEW concern (the grid's
+/// display mode), not query identity — two searches that differ only in sort are
+/// the same saved search (015). It is a per-call, evaluation-time argument.
+///
+/// - `.newest`: `created_at DESC, id DESC` — the stable order the keyset
+///   ``AssetPageCursor`` is defined on, so only this mode is pageable.
+/// - `.relevance`: best-of-arms `bm25()` ascending (SQLite ranks better matches
+///   MORE negative), `id` as a deterministic tiebreak. Requires free text —
+///   with no text every row scores equally, so it degenerates to the `id` order;
+///   callers wanting a recency list should use `.newest`. Not pageable (relevance
+///   isn't a stable `(created_at, id)` sequence): pairing it with an `after:`
+///   cursor throws ``AtelierError/relevanceSortUnpageable``.
+public enum SearchSort: Sendable, Equatable, Hashable {
+    case newest
+    case relevance
+}
+
 // MARK: - Read outputs (GRDB-free, A2)
 
 /// One membership of a collection joined to its full ``Asset`` and that asset's
