@@ -16,14 +16,50 @@
 import AppKit
 import AtelierCore
 import Combine
+import os
 import SwiftUI
 
 // MARK: - Token + scope
 
-/// One selected tag filter in the search field.
-struct TagToken: Identifiable, Hashable {
-    let tag: Tag
-    var id: UUID { tag.id }
+/// One selected filter chip in the search field (044/045 · 16A/17A). A tag
+/// narrows by structured id; a collection scopes to its membership. Multiple
+/// collection tokens OR (member of ANY); tags AND. Selecting a suggested token
+/// resolves free text to one of these before it ever reaches FTS.
+enum SearchToken: Identifiable, Hashable {
+    case tag(Tag)
+    case collection(Collection)
+
+    var id: UUID {
+        switch self {
+        case .tag(let tag): return tag.id
+        case .collection(let collection): return collection.id
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .tag(let tag): return tag.name
+        case .collection(let collection): return collection.name
+        }
+    }
+}
+
+/// The parameters of one search execution — the seam (12A) between the model's
+/// input state and the service call, so a test can inject a runner and assert
+/// exactly what the model asked for.
+struct LibrarySearchQuery: Equatable {
+    /// The FTS free text (raw, so the type-ahead prefix survives). Empty when the
+    /// query is a `tag:` directive or tokens-only.
+    var text: String
+    /// Structured tag ids from `.tag` tokens (ANDed).
+    var tagIDs: [UUID]
+    /// An unresolved `tag:` needle → a tag-name CONTAINS filter (17A), or `nil`.
+    var tagNameContains: String?
+    /// Collection scope from `.collection` tokens plus the This-collection scope,
+    /// ORed (16A). Empty = whole library.
+    var collectionIDs: [UUID]
+    /// `.relevance` when there's free text to rank, else `.newest`.
+    var sort: SearchSort
 }
 
 /// The Collection-screen scope toggle. Ignored on the global gallery.
@@ -38,12 +74,12 @@ enum SearchScope: Hashable {
 final class LibrarySearchModel: ObservableObject {
     /// The free-text (FTS) query; also the live prefix that drives suggestions.
     @Published var text = ""
-    /// The selected tag filters (ANDed).
-    @Published var tokens: [TagToken] = []
+    /// The selected filter tokens — tags (ANDed) and collection scopes (ORed).
+    @Published var tokens: [SearchToken] = []
     /// Collection-screen scope. Defaults per screen in `configure`.
     @Published var scope: SearchScope = .all
-    /// Prefix-matched tag suggestions for the current `text`.
-    @Published private(set) var suggestions: [TagToken] = []
+    /// Prefix-matched tag / collection suggestions for the current `text`.
+    @Published private(set) var suggestions: [SearchToken] = []
     /// The current result set (bounded, newest-first).
     @Published private(set) var results: [AssetDetail] = []
     /// Bumped every time `results` is (re)assigned, so the results grid can prune a
@@ -61,6 +97,36 @@ final class LibrarySearchModel: ObservableObject {
     private var collectionID: UUID?
     private var queryTask: Task<Void, Never>?
     private var suggestTask: Task<Void, Never>?
+
+    private static let logger = Logger(subsystem: "so.atelier.refs", category: "search")
+
+    /// The query executor — the injectable seam (12A). Defaults to the live
+    /// service call; tests replace it to drive success / failure / cancellation
+    /// paths without a database.
+    var runQuery: (LibrarySearchQuery) async throws -> [AssetDetail] = { _ in [] }
+    /// The suggestion fetcher — the sibling seam. `includeCollections` is false
+    /// while a `tag:` directive narrows suggestions to tags only (17A).
+    var fetchSuggestions: (_ prefix: String, _ includeCollections: Bool) async throws -> [SearchToken] = { _, _ in [] }
+
+    init() {
+        // Wire the seams to the live services by default (self is needed, so this
+        // can't be a property initializer). Tests overwrite these after `init`.
+        runQuery = { [weak self] query in
+            try await self?.liveQuery(query) ?? []
+        }
+        fetchSuggestions = { [weak self] prefix, includeCollections in
+            try await self?.liveSuggestions(prefix: prefix, includeCollections: includeCollections) ?? []
+        }
+    }
+
+    /// The structured tag ids among the selected tokens (ANDed).
+    private var selectedTagIDs: [UUID] {
+        tokens.compactMap { if case .tag(let tag) = $0 { tag.id } else { nil } }
+    }
+    /// The collection ids among the selected tokens (ORed scope).
+    private var selectedCollectionIDs: [UUID] {
+        tokens.compactMap { if case .collection(let c) = $0 { c.id } else { nil } }
+    }
 
     /// Whether a query is worth running / results should replace the content.
     var isActive: Bool {
@@ -106,28 +172,49 @@ final class LibrarySearchModel: ObservableObject {
 
     private func runSearch() {
         queryTask?.cancel()
-        guard let services, isActive else {
+        guard isActive else {
             results = []; resultsVersion &+= 1; isRunning = false; queryFailed = false
             return
         }
-        let text = self.text
-        let tagIDs = tokens.map(\.tag.id)
-        let scoped = (collectionID != nil && scope == .thisCollection) ? collectionID : nil
+        let (fts, tagNeedle) = Self.parse(query: text)
+        let hasFTS = !fts.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Collection scope = the `.collection` tokens (16A) plus the
+        // This-collection toggle when active, de-duplicated (a screen scoped to a
+        // collection the user ALSO tokenized shouldn't list it twice).
+        var scopeIDs = selectedCollectionIDs
+        if let collectionID, scope == .thisCollection { scopeIDs.append(collectionID) }
+        scopeIDs = Array(NSOrderedSet(array: scopeIDs).array as? [UUID] ?? scopeIDs)
+        let query = LibrarySearchQuery(
+            text: fts,
+            tagIDs: selectedTagIDs,
+            tagNameContains: tagNeedle,
+            collectionIDs: scopeIDs,
+            // Rank by relevance while there's text to rank; a tokens-only /
+            // `tag:`-only query has nothing to score, so keep the recency order.
+            sort: hasFTS ? .relevance : .newest)
+        let run = runQuery
         isRunning = true
         queryTask = Task {
             try? await Task.sleep(for: .milliseconds(220))
             guard !Task.isCancelled else { return }
             do {
-                let hits = try await services.searchAssets(
-                    text: text, tagIDs: tagIDs, tagMatch: .all,
-                    collectionID: scoped, limit: 500)
+                let hits = try await run(query)
                 guard !Task.isCancelled else { return }
                 results = hits
                 resultsVersion &+= 1
                 queryFailed = false
+            } catch is CancellationError {
+                return  // a superseded query — leave state for the live one.
             } catch {
-                // Surface the failure distinctly — an empty `results` alone reads as
-                // "no matches" and hides that the search actually errored.
+                guard !Task.isCancelled else { return }
+                // A relevance/cursor misuse is OUR bug (the UI never pages
+                // relevance), so trap it in debug; other errors are runtime DB
+                // failures — log and surface distinctly (an empty `results` alone
+                // reads as "no matches" and hides that the search errored).
+                Self.logger.error("search query failed: \(String(describing: error))")
+                if case AtelierError.relevanceSortUnpageable = error {
+                    assertionFailure("relevance sort must never be paged from the search UI")
+                }
                 results = []
                 resultsVersion &+= 1
                 queryFailed = true
@@ -138,16 +225,72 @@ final class LibrarySearchModel: ObservableObject {
 
     private func refreshSuggestions() {
         suggestTask?.cancel()
-        let prefix = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let services, !prefix.isEmpty else { suggestions = []; return }
+        let (_, tagNeedle) = Self.parse(query: text)
+        // A `tag:` directive narrows suggestions to tags only (17A); otherwise the
+        // raw prefix suggests both tags and collections.
+        let includeCollections = tagNeedle == nil
+        let prefix = (tagNeedle ?? text).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prefix.isEmpty else { suggestions = []; return }
         let selected = Set(tokens.map(\.id))
+        let fetch = fetchSuggestions
         suggestTask = Task {
             try? await Task.sleep(for: .milliseconds(120))
             guard !Task.isCancelled else { return }
-            let tags = (try? await services.tagVocabulary(prefix: prefix, limit: 8)) ?? []
-            guard !Task.isCancelled else { return }
-            suggestions = tags.map(TagToken.init).filter { !selected.contains($0.id) }
+            do {
+                let found = try await fetch(prefix, includeCollections)
+                guard !Task.isCancelled else { return }
+                suggestions = found.filter { !selected.contains($0.id) }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                Self.logger.error("suggestion fetch failed: \(String(describing: error))")
+                suggestions = []
+            }
         }
+    }
+
+    // MARK: seam implementations (12A)
+
+    /// The live query: forward to the service. `collectionIDs` empty = no scope.
+    private func liveQuery(_ query: LibrarySearchQuery) async throws -> [AssetDetail] {
+        guard let services else { return [] }
+        return try await services.searchAssets(
+            text: query.text,
+            tagIDs: query.tagIDs,
+            tagMatch: .all,
+            tagNameContains: query.tagNameContains,
+            collectionIDs: query.collectionIDs,
+            sort: query.sort,
+            limit: 500)
+    }
+
+    /// The live suggestions: tag vocabulary always, plus name-matching collections
+    /// unless a `tag:` directive narrows to tags. The collection inventory is small
+    /// and bounded (`listCollections`), so a case-insensitive CONTAINS in memory is
+    /// fine; capped so suggestions stay a short list.
+    private func liveSuggestions(prefix: String, includeCollections: Bool) async throws -> [SearchToken] {
+        guard let services else { return [] }
+        let tagTokens = try await services.tagVocabulary(prefix: prefix, limit: 8)
+            .map(SearchToken.tag)
+        guard includeCollections else { return tagTokens }
+        let collectionTokens = try await services.listCollections()
+            .filter { $0.name.localizedCaseInsensitiveContains(prefix) }
+            .prefix(5)
+            .map(SearchToken.collection)
+        return tagTokens + collectionTokens
+    }
+
+    /// Split the raw query into its FTS text and an optional `tag:` needle (17A).
+    /// A leading `tag:` directive routes the remainder to tag-name matching, with
+    /// NO FTS text; everything else is plain FTS text returned VERBATIM (untrimmed)
+    /// so the type-ahead trailing-space signal survives to `ftsMatchQuery`.
+    static func parse(query: String) -> (fts: String, tagNeedle: String?) {
+        let leading = query.drop(while: { $0.isWhitespace })
+        guard leading.lowercased().hasPrefix("tag:") else { return (query, nil) }
+        let needle = leading.dropFirst("tag:".count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return ("", needle.isEmpty ? nil : needle)
     }
 }
 
@@ -216,10 +359,15 @@ private struct SearchFieldModifier: ViewModifier {
                 text: $search.text,
                 tokens: $search.tokens,
                 suggestedTokens: Binding(get: { search.suggestions }, set: { _ in }),
-                prompt: "Search title, author, or #tag"
+                prompt: "Search title, name, note, text, or tag: / collection"
             ) { token in
-                Label(token.tag.name,
-                      systemImage: token.tag.source == .agent ? "sparkles" : "tag")
+                switch token {
+                case .tag(let tag):
+                    Label(tag.name,
+                          systemImage: tag.source == .agent ? "sparkles" : "tag")
+                case .collection(let collection):
+                    Label(collection.name, systemImage: "folder")
+                }
             }
     }
 }
@@ -435,22 +583,15 @@ private struct LibrarySearchResults: View {
     /// active. Delete routes through the same staged/undoable asset delete as the
     /// keyboard and context menu.
     private var selectionBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 2) {
             Text("\(selection.ids.count) selected")
                 .font(.callout.weight(.medium))
-            Button("Clear") { apply(.clear) }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-            Button(role: .destructive) { requestDeleteTargets() } label: {
-                Label("Delete \(selection.ids.count)", systemImage: "trash")
-            }
+                .padding(.trailing, 10)
+            SelectionBarButton("xmark", help: "Clear selection") { apply(.clear) }
+            SelectionBarButton("trash", help: "Delete \(selection.ids.count)",
+                               role: .destructive) { requestDeleteTargets() }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.primary.opacity(0.08)))
-        .shadow(radius: 8, y: 2)
-        .padding(.bottom, 16)
+        .selectionBarChrome()
     }
 
     /// The payload a cell drag carries: the whole selection when the dragged cell is
