@@ -34,23 +34,13 @@ struct SidebarView: View {
     @State private var newSpaceName = ""
     @State private var spacesExpanded = true
     @State private var collectionsExpanded = true
-    /// Which tree folders are expanded to reveal their subfolders (043). In-memory
-    /// (not persisted): the tree opens collapsed each launch except where a fresh
-    /// subfolder auto-expands its parent.
-    @State private var expandedFolderIDs: Set<UUID> = []
-    /// The sidebar row currently under an asset drag (space or collection id), for
-    /// the drop highlight. One id at a time — a drag hovers a single row.
+    /// The AppKit collections tree's measured content height (043 · Phase C), so
+    /// the non-scrolling outline view can be framed inside the sidebar ScrollView.
+    @State private var outlineHeight: CGFloat = 0
+    /// The sidebar row currently under an asset drag (a space id), for the drop
+    /// highlight. One id at a time — a drag hovers a single row. (Collections now
+    /// handle their own drops in the outline view.)
     @State private var dropTargetID: UUID?
-    /// The tree row currently under a FOLDER-reparent drag (043), separate from the
-    /// asset `dropTargetID` so an asset hover and a folder hover never collide.
-    @State private var reparentTargetID: UUID?
-    /// Whether a folder-reparent drag is over the "Collections" header — the
-    /// un-nest (move-to-top-level) drop zone (043).
-    @State private var unNestTargeted = false
-
-    /// The ⌥ (copy) read at drop time (009 · N3): a plain drop MOVES into a
-    /// collection, ⌥ COPIES.
-    private static let modifierReader: ModifierReading = LiveModifierReader()
 
     /// The traffic lights overlay the top-left; inset content below them.
     private let trafficLightInset: CGFloat = 40
@@ -73,8 +63,6 @@ struct SidebarView: View {
                 let parent = newFolderParentID
                 newFolderName = ""
                 model.createFolder(name: name, parent: parent)
-                // Reveal the freshly-created child under its parent.
-                if let parent { expandedFolderIDs.insert(parent) }
             }
             .disabled(newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { newFolderName = "" }
@@ -216,155 +204,22 @@ struct SidebarView: View {
             sectionHeader("Collections", expanded: $collectionsExpanded) {
                 startNewFolder(parentID: nil)
             }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(unNestTargeted ? Theme.Colors.selection : .clear)
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(
-                        unNestTargeted ? Color.accentColor : .clear, lineWidth: 1.5)))
-            // Drop a nested collection onto the header to move it back to top level
-            // (043 un-nest zone). Row drops (nesting) take precedence within their
-            // own frames, so this only fires on the header itself.
-            .dropDestination(for: CollectionDragPayload.self) { payloads, _ in
-                defer { unNestTargeted = false }
-                guard let dragged = payloads.first?.collectionID,
-                      CollectionTargets.canReparent(
-                        dragged, into: nil,
-                        folders: model.folders, unsortedID: model.unsortedFolderID)
-                else { return false }
-                model.moveFolder(id: dragged, toParent: nil)
-                return true
-            } isTargeted: { unNestTargeted = $0 }
-
             if collectionsExpanded {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    ForEach(flattenedRows) { row in
-                        collectionRow(row)
-                    }
-                }
+                // The AppKit NSOutlineView tree (043 · Phase C): native disclosure
+                // + live drag reorder/nest, plus asset drops onto rows. Non-scrolling
+                // — framed to its reported content height so it sits inside the
+                // sidebar's own ScrollView. Row context menu (New Subfolder / Rename
+                // / Move to / Delete) lives in the coordinator; the two text-entry
+                // actions call back into the alerts below.
+                CollectionsOutlineView(
+                    model: model, nav: nav, height: $outlineHeight,
+                    onNewSubfolder: { startNewFolder(parentID: $0) },
+                    onRename: { id in
+                        renameText = model.folders.first { $0.id == id }?.name ?? ""
+                        renameTargetID = id
+                    })
+                    .frame(height: max(outlineHeight, 1))
             }
-        }
-    }
-
-    /// A single flattened tree row: a collection plus its depth and whether it has
-    /// children — the recursive `FolderNode` tree walked into a flat list so ONE
-    /// `ForEach` can render it (a recursive `some View` builder can't type-check).
-    private struct TreeRow: Identifiable {
-        let id: UUID
-        let name: String
-        let depth: Int
-        let hasChildren: Bool
-    }
-
-    /// The visible rows in display order: the root→leaf tree, Unsorted pinned
-    /// first, descending only into expanded folders.
-    private var flattenedRows: [TreeRow] {
-        let tree = FolderNode.tree(from: model.folders)
-        let unsortedID = model.unsortedFolderID
-        let ordered = tree.filter { $0.id == unsortedID } + tree.filter { $0.id != unsortedID }
-        var rows: [TreeRow] = []
-        func walk(_ nodes: [FolderNode], depth: Int) {
-            for node in nodes {
-                let hasChildren = node.children?.isEmpty == false
-                rows.append(TreeRow(
-                    id: node.id, name: node.name, depth: depth, hasChildren: hasChildren))
-                if hasChildren, expandedFolderIDs.contains(node.id) {
-                    walk(node.children ?? [], depth: depth + 1)
-                }
-            }
-        }
-        walk(ordered, depth: 0)
-        return rows
-    }
-
-    /// One tree row: the selectable/droppable/draggable collection row, with its
-    /// expand/collapse chevron overlaid on the RIGHT edge (043). No depth indent —
-    /// hierarchy reads through expand/collapse, not leading insets.
-    private func collectionRow(_ row: TreeRow) -> some View {
-        collectionTreeRow(id: row.id, name: row.name, hasChildren: row.hasChildren)
-            .overlay(alignment: .trailing) {
-                if row.hasChildren { chevronToggle(row) }
-            }
-    }
-
-    /// The trailing expand/collapse control — its own hit target (over the row's
-    /// select button), so tapping the chevron toggles while tapping the name selects.
-    private func chevronToggle(_ row: TreeRow) -> some View {
-        Button {
-            withAnimation(Theme.Motion.snappy) {
-                if expandedFolderIDs.contains(row.id) { expandedFolderIDs.remove(row.id) }
-                else { expandedFolderIDs.insert(row.id) }
-            }
-        } label: {
-            Image(systemName: expandedFolderIDs.contains(row.id) ? "chevron.down" : "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(Theme.Colors.inkSecondary)
-                .frame(width: 22, height: 26)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.trailing, 4)
-    }
-
-    /// The tappable collection row — selection highlight, asset drop (move/copy),
-    /// folder-reparent drag source + drop target (043), and the context menu. When
-    /// `hasChildren`, the trailing edge reserves room for the overlaid chevron so
-    /// the name never underlaps it. The protected Unsorted folder is neither a
-    /// reparent drag source nor a reparent drop target (it can't be moved, and
-    /// folders aren't filed under it).
-    @ViewBuilder
-    private func collectionTreeRow(id: UUID, name: String, hasChildren: Bool) -> some View {
-        let isUnsorted = id == model.unsortedFolderID
-        let base = Button {
-            nav.selectSidebar(.collection(id))
-        } label: {
-            Text(name)
-                .font(Theme.Typography.row)
-                .foregroundStyle(Theme.Colors.inkPrimary)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, Theme.Spacing.md)
-                .padding(.trailing, hasChildren ? 30 : Theme.Spacing.md)
-                .padding(.vertical, 7)
-                .background(rowHighlight(
-                    selected: nav.sidebarSelection == .collection(id),
-                    targeted: dropTargetID == id || reparentTargetID == id))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .modifier(RowDropModifier(
-            dropID: id, dropTargetID: $dropTargetID,
-            onDrop: { handleCollectionDrop($0, into: id) }))
-        .contextMenu { collectionMenu(id: id, isUnsorted: isUnsorted) }
-
-        if isUnsorted {
-            base
-        } else {
-            base
-                .draggable(CollectionDragPayload(collectionID: id))
-                .dropDestination(for: CollectionDragPayload.self) { payloads, _ in
-                    acceptReparent(payloads, onto: id)
-                } isTargeted: { over in
-                    if over { reparentTargetID = id }
-                    else if reparentTargetID == id { reparentTargetID = nil }
-                }
-        }
-    }
-
-    @ViewBuilder
-    private func collectionMenu(id: UUID, isUnsorted: Bool) -> some View {
-        Button("New Subfolder…") { startNewFolder(parentID: id) }
-        if !isUnsorted {
-            Button("Rename…") {
-                renameText = model.folders.first { $0.id == id }?.name ?? ""
-                renameTargetID = id
-            }
-            CollectionMoveToMenu(
-                folderID: id, folders: model.folders, unsortedID: model.unsortedFolderID
-            ) { model.moveFolder(id: id, toParent: $0) }
-            Divider()
-            Button("Delete", role: .destructive) { model.deleteFolder(id: id) }
         }
     }
 
@@ -372,21 +227,6 @@ struct SidebarView: View {
         newFolderName = ""
         newFolderParentID = parentID
         showNewFolder = true
-    }
-
-    /// Accept a folder-reparent drop onto `parentID`, gated by the shared
-    /// ``CollectionTargets/canReparent(_:into:folders:unsortedID:)`` predicate
-    /// (043 · 5A) so self / descendant / protected cases are refused in ONE place.
-    /// Clears the highlight.
-    private func acceptReparent(_ payloads: [CollectionDragPayload], onto parentID: UUID) -> Bool {
-        defer { if reparentTargetID == parentID { reparentTargetID = nil } }
-        guard let dragged = payloads.first?.collectionID,
-              CollectionTargets.canReparent(
-                dragged, into: parentID,
-                folders: model.folders, unsortedID: model.unsortedFolderID)
-        else { return false }
-        model.moveFolder(id: dragged, toParent: parentID)
-        return true
     }
 
     private var renameBinding: Binding<Bool> {
@@ -457,25 +297,6 @@ struct SidebarView: View {
     }
 
     // MARK: - Drop routing
-
-    /// Move (⌥ = copy) the dragged assets into `collectionID`. Mirrors the collection
-    /// screen's rail drop (009 · N3): the same ``routeDrop`` decision so `from == to`
-    /// / empty are refused in ONE place. `moveToCollection` reads the source from the
-    /// model's `selectedFolderID`, which is the grid the drag came from.
-    private func handleCollectionDrop(_ payload: AssetDragPayload, into collectionID: UUID) -> Bool {
-        switch routeDrop(
-            payload, onto: .collection(collectionID),
-            optionDown: Self.modifierReader.isOptionDown) {
-        case let .move(assetIDs, _, to):
-            model.moveToCollection(assetIDs: assetIDs, to: to)
-            return true
-        case let .copy(assetIDs, to):
-            model.copyToCollection(assetIDs: assetIDs, to: to)
-            return true
-        case .reject, .reorder:
-            return false
-        }
-    }
 
     /// ADD the dragged assets to `spaceID` (a space is a placement board — always
     /// additive, never a move). An empty payload is refused.

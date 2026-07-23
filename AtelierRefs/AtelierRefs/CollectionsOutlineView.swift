@@ -150,7 +150,8 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.autosaveExpandedItems = false
-        outlineView.registerForDraggedTypes([CollectionDragPayload.pasteboardType])
+        outlineView.registerForDraggedTypes(
+            [CollectionDragPayload.pasteboardType, AssetDragPayload.pasteboardType])
         outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
         let menu = NSMenu()
         menu.delegate = self
@@ -341,16 +342,56 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         _ ov: NSOutlineView, validateDrop info: NSDraggingInfo,
         proposedItem item: Any?, proposedChildIndex index: Int
     ) -> NSDragOperation {
-        route(item: item, index: index) == nil ? [] : .move
+        let pb = info.draggingPasteboard
+        // Folder reparent / reorder (our own drag).
+        if pb.data(forType: CollectionDragPayload.pasteboardType) != nil {
+            return route(item: item, index: index) == nil ? [] : .move
+        }
+        // Asset move/copy (a grid drag onto a collection — 009 · N3): only valid
+        // dropped ONTO a collection row, so retarget the whole row.
+        if pb.data(forType: AssetDragPayload.pasteboardType) != nil {
+            guard let node = item as? CollectionNode else { return [] }
+            ov.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
+            return optionDown ? .copy : .move
+        }
+        return []
     }
 
     func outlineView(
         _ ov: NSOutlineView, acceptDrop info: NSDraggingInfo,
         item: Any?, childIndex index: Int
     ) -> Bool {
-        guard let (dragged, drop) = route(item: item, index: index) else { return false }
-        model.applyCollectionDrop(drop, dragged: dragged)
-        return true
+        let pb = info.draggingPasteboard
+        if pb.data(forType: CollectionDragPayload.pasteboardType) != nil {
+            guard let (dragged, drop) = route(item: item, index: index) else { return false }
+            model.applyCollectionDrop(drop, dragged: dragged)
+            return true
+        }
+        if let data = pb.data(forType: AssetDragPayload.pasteboardType),
+           let payload = AssetDragPayload.decode(from: data),
+           let node = item as? CollectionNode {
+            return applyAssetDrop(payload, onto: node.id)
+        }
+        return false
+    }
+
+    /// The ⌥-at-drop-time read (009 · N3): a plain drop MOVES assets into a
+    /// collection, ⌥ COPIES.
+    private var optionDown: Bool { NSEvent.modifierFlags.contains(.option) }
+
+    /// Route an asset drag dropped onto a collection row — the same `routeDrop`
+    /// decision the SwiftUI sidebar rows used, so move/copy parity is structural.
+    private func applyAssetDrop(_ payload: AssetDragPayload, onto collectionID: UUID) -> Bool {
+        switch routeDrop(payload, onto: .collection(collectionID), optionDown: optionDown) {
+        case let .move(assetIDs, _, to):
+            model.moveToCollection(assetIDs: assetIDs, to: to)
+            return true
+        case let .copy(assetIDs, to):
+            model.copyToCollection(assetIDs: assetIDs, to: to)
+            return true
+        case .reject, .reorder:
+            return false
+        }
     }
 
     /// Resolve the current drop target into `(dragged, move)` via the pure router,
