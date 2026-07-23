@@ -60,21 +60,30 @@ collectionBreadcrumb helper (already removed).
 
 ## Build sequence (each phase shippable + tested)
 
-- Phase A — Data foundation (2B/9A/16A): Collection.sortIndex; migration +
+> **All phases A–F landed** on `feat/collection-manual-order` (commits
+> `83cfdc7` → `7418efb`). Changelogs 203–212. Full suite green: 559 app +
+> 440 AtelierCore tests. Remaining work is the two product decisions in
+> *Open items* below, not build tasks.
+
+- Phase A ✅ — Data foundation (2B/9A/16A): Collection.sortIndex; migration +
   deterministic seed; service create(append)/delete(close gap)/move(append)/
   reorderCollections maintaining dense gapless order; tree/gallery sort by
   (parent, sortIndex). -> 9A invariant suite.
-- Phase B — Pure helpers (5A/7A/10A): canReparent(...); trim in createFolder/
-  renameFolder. -> 10A table tests.
-- Phase C — NSOutlineView sidebar (1C/13A/14A/12A): NSViewRepresentable +
+- Phase B ✅ — Pure helpers (5A/7A/10A): canReparent(...); trim in createFolder/
+  renameFolder (7A was moot — `Validation.collectionName` already trims). -> 10A
+  table tests.
+- Phase C ✅ — NSOutlineView sidebar (1C/13A/14A/12A): NSViewRepresentable +
   coordinator mirroring MasonryGridHost; live reparent + reorder; extracted pure
-  drop-routing funcs; memoized tree; drag-session cache. -> 12A tests. Retire the
-  SwiftUI tree.
-- Phase D — Nav reconcile (3A/11A): NavModel<->IngestionModel reconcile on
-  delete/reparent. -> 11A tests.
-- Phase E — Dedupe (6A/8A): shared NameEntryAlert; unify the two SwiftUI
-  move-target menu builders (AppKit NSMenu builder stays separate).
-- Phase F — Perf confirm (15B): verify covers/previews aren't per-collection N+1.
+  drop-routing funcs; memoized tree; drag-session cache. -> 12A tests. SwiftUI
+  tree retired.
+- Phase D ✅ — Nav reconcile (3A/11A): `NavModel.reconcile(using:)` on every
+  folder refresh drops routes to a deleted collection back to Home / a valid path
+  prefix; subsumed the one-shot restore validator. -> 11A tests (changelog 210).
+- Phase E ✅ — Dedupe (6A/8A): shared `nameEntryAlert` modifier (8 prompts → 1);
+  8A already satisfied (both SwiftUI move-to sites use `CollectionMoveToMenu`; the
+  AppKit NSMenu builder stays separate). Changelog 211.
+- Phase F ✅ — Perf confirm (15B): covers/previews are all single set-based
+  queries, no per-collection N+1. Audit-only, no code change. Changelog 212.
 
 ## Open items
 
