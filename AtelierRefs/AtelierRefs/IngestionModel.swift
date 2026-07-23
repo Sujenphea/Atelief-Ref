@@ -34,7 +34,12 @@ struct FolderNode: Identifiable, Hashable {
         func nodes(under parent: UUID?) -> [FolderNode]? {
             guard let kids = byParent[parent], !kids.isEmpty else { return nil }
             return kids
-                .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
+                // Manual order (043 · 2B): persisted `sortIndex`, tie-broken by
+                // `(name, id)` so equal indices (unmigrated fixtures) stay stable.
+                .sorted {
+                    ($0.sortIndex, $0.name, $0.id.uuidString)
+                        < ($1.sortIndex, $1.name, $1.id.uuidString)
+                }
                 .map { FolderNode(id: $0.id, name: $0.name, children: nodes(under: $0.id)) }
         }
         return nodes(under: nil) ?? []

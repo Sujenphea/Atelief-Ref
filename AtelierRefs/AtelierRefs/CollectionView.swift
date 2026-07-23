@@ -52,6 +52,14 @@ struct CollectionView: View {
     // The native Quick Look panel driver (011-B3): spacebar peeks the selection.
     @State private var quickLook = QuickLookController()
 
+    // Subfolder create / rename from this screen (043). `newSubfolderParentID` is
+    // this collection for the header action, or a chip's folder for its menu.
+    @State private var showNewSubfolder = false
+    @State private var newSubfolderName = ""
+    @State private var newSubfolderParentID: UUID?
+    @State private var renameTargetID: UUID?
+    @State private var renameText = ""
+
     private static let gridSpacing: CGFloat = 8
     private static let gridTopInset: CGFloat = 4
 
@@ -171,6 +179,28 @@ struct CollectionView: View {
             grid
         }
         .padding()
+        // New subfolder (from the header action or a chip's context menu).
+        .alert("New Subfolder", isPresented: $showNewSubfolder) {
+            TextField("Name", text: $newSubfolderName)
+            Button("Create") {
+                let name = newSubfolderName
+                let parent = newSubfolderParentID ?? collectionID
+                newSubfolderName = ""
+                model.createFolder(name: name, parent: parent)
+            }
+            .disabled(newSubfolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) { newSubfolderName = "" }
+        }
+        // Rename a subfolder.
+        .alert("Rename Collection", isPresented: renameBinding) {
+            TextField("Name", text: $renameText)
+            Button("Rename") {
+                if let id = renameTargetID { model.renameFolder(id: id, to: renameText) }
+                renameTargetID = nil
+            }
+            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) { renameTargetID = nil }
+        }
         // The whole collection pane is the drop target (the explicit dropzone is
         // gone): a Finder file, a browser image, or a dragged web URL dropped
         // anywhere here imports into this collection. Internal reorder drags carry
@@ -306,6 +336,10 @@ struct CollectionView: View {
         ForEach(dests.roots) { c in Button(c.name) { action(c.id) } }
     }
 
+    private var renameBinding: Binding<Bool> {
+        Binding(get: { renameTargetID != nil }, set: { if !$0 { renameTargetID = nil } })
+    }
+
     private var header: some View {
         HStack(spacing: 10) {
             Text(model.name(for: collectionID)).font(.title2).bold()
@@ -317,6 +351,19 @@ struct CollectionView: View {
                 .redacted(reason: isLoaded ? [] : .placeholder)
             importStatus
             Spacer()
+            // Create a subfolder under THIS collection (043) — the always-available
+            // entry point (the chips only render once subfolders exist).
+            Button {
+                newSubfolderName = ""
+                newSubfolderParentID = collectionID
+                showNewSubfolder = true
+            } label: {
+                Label("New Subfolder", systemImage: "folder.badge.plus")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("New subfolder in this collection")
         }
         // The visible Paste button was removed; ⌘V still pastes into this collection
         // via this hidden shortcut-only button.
@@ -359,10 +406,31 @@ struct CollectionView: View {
                             .background(.quaternary, in: Capsule())
                     }
                     .buttonStyle(.plain)
+                    .contextMenu { subfolderMenu(folder) }
                 }
             }
             .padding(.vertical, 2)
         }
+    }
+
+    /// The context menu for a subfolder chip (043): manage the subfolder without
+    /// leaving this screen. A subfolder is never Unsorted, so all actions apply.
+    @ViewBuilder
+    private func subfolderMenu(_ folder: Collection) -> some View {
+        Button("New Subfolder…") {
+            newSubfolderName = ""
+            newSubfolderParentID = folder.id
+            showNewSubfolder = true
+        }
+        Button("Rename…") {
+            renameText = folder.name
+            renameTargetID = folder.id
+        }
+        CollectionMoveToMenu(
+            folderID: folder.id, folders: model.folders, unsortedID: model.unsortedFolderID
+        ) { model.moveFolder(id: folder.id, toParent: $0) }
+        Divider()
+        Button("Delete", role: .destructive) { model.deleteFolder(id: folder.id) }
     }
 
     private var grid: some View {

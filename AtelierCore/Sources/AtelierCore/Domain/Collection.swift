@@ -35,6 +35,13 @@ public struct Collection: Sendable, Equatable, Hashable, Codable, Identifiable {
     /// preference is backed up / exported / per-collection. Added by migration
     /// v5, `DEFAULT 'manual'`.
     public var sortMode: SortMode
+    /// Manual position among its siblings (siblings share one `parentCollectionID`;
+    /// roots share the `nil` group), maintained DENSE and gapless as `0..<n` by
+    /// `AppServices` on create/delete/move (043 · decision 2B/16A). Added by
+    /// migration v11, `DEFAULT 0`, back-filled deterministically. Drives the
+    /// sidebar tree + gallery order (tie-broken by `(name, id)` so equal indices —
+    /// e.g. unmigrated test fixtures — stay stable).
+    public var sortIndex: Int
 
     /// Explicit snake_case column/coding names (exact acronym mapping, e.g.
     /// `coverAssetID` ⇄ `cover_asset_id`).
@@ -45,6 +52,7 @@ public struct Collection: Sendable, Equatable, Hashable, Codable, Identifiable {
         case updatedAt = "updated_at"
         case parentCollectionID = "parent_collection_id"
         case sortMode = "sort_mode"
+        case sortIndex = "sort_index"
     }
 
     public init(
@@ -55,7 +63,8 @@ public struct Collection: Sendable, Equatable, Hashable, Codable, Identifiable {
         createdAt: Date,
         updatedAt: Date,
         parentCollectionID: UUID? = nil,
-        sortMode: SortMode = .manual
+        sortMode: SortMode = .manual,
+        sortIndex: Int = 0
     ) {
         self.id = id
         self.name = name
@@ -65,5 +74,6 @@ public struct Collection: Sendable, Equatable, Hashable, Codable, Identifiable {
         self.updatedAt = updatedAt
         self.parentCollectionID = parentCollectionID
         self.sortMode = sortMode
+        self.sortIndex = sortIndex
     }
 }

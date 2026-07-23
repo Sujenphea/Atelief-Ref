@@ -35,6 +35,8 @@ struct CollectionsGalleryView: View {
     @State private var marqueeStart: CGPoint?
     @State private var marqueeCurrent: CGPoint?
     @State private var showBatchDelete = false
+    /// The card currently under a folder-reparent drag (043), for the drop ring.
+    @State private var reparentTargetID: UUID?
     @FocusState private var galleryFocused: Bool
 
     private static let gallerySpace = "galleryContent"
@@ -136,10 +138,18 @@ struct CollectionsGalleryView: View {
                     }
                     .buttonStyle(.plain)
                     .overlay { selectionRing(for: collection.id) }
+                    .overlay { reparentRing(for: collection.id) }
                     .modifier(CardFrameReporter(id: collection.id, space: Self.gallerySpace) {
                         cardFrames[collection.id] = $0
                     })
                     .contextMenu { cardMenu(for: collection) }
+                    .modifier(CollectionReparentDnD(
+                        collectionID: collection.id,
+                        enabled: collection.id != model.unsortedFolderID,
+                        folders: model.folders,
+                        unsortedID: model.unsortedFolderID,
+                        targetID: $reparentTargetID,
+                        onReparent: { model.moveFolder(id: $0, toParent: $1) }))
                 }
             }
         }
@@ -256,6 +266,18 @@ struct CollectionsGalleryView: View {
         }
     }
 
+    /// The drop ring shown while a folder-reparent drag hovers this card (043) — a
+    /// dashed accent border so it reads as "drop to nest here", distinct from the
+    /// solid marquee-selection ring.
+    @ViewBuilder
+    private func reparentRing(for id: UUID) -> some View {
+        if reparentTargetID == id {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(
+                    Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+        }
+    }
+
     /// The floating "N selected · Clear · Delete" bar, shown while a marquee
     /// selection is active.
     private var selectionBar: some View {
@@ -368,6 +390,10 @@ struct CollectionsGalleryView: View {
                 renameText = collection.name
                 renameTarget = collection
             }
+            CollectionMoveToMenu(
+                folderID: collection.id, folders: model.folders,
+                unsortedID: model.unsortedFolderID
+            ) { model.moveFolder(id: collection.id, toParent: $0) }
             Divider()
             Button("Delete", role: .destructive) {
                 model.deleteFolder(id: collection.id)
@@ -413,6 +439,46 @@ private struct CardFrameReporter: ViewModifier {
             $0.frame(in: .named(space))
         } action: {
             report($0)
+        }
+    }
+}
+
+/// Makes a collection card a folder-reparent drag SOURCE and drop TARGET (043):
+/// drag a card onto another to nest it under that one. Disabled (`enabled == false`)
+/// for the protected Unsorted card — it can't be moved, and folders aren't filed
+/// under it. A drop is refused when it would form a cycle (dropping a folder onto
+/// itself or one of its own descendants); `IngestionModel.moveFolder` guards the
+/// same case server-side, so an escaped invalid drop is still safe.
+private struct CollectionReparentDnD: ViewModifier {
+    let collectionID: UUID
+    let enabled: Bool
+    let folders: [Collection]
+    let unsortedID: UUID
+    @Binding var targetID: UUID?
+    /// `(dragged, newParent)`.
+    let onReparent: (UUID, UUID) -> Void
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .draggable(CollectionDragPayload(collectionID: collectionID))
+                .dropDestination(for: CollectionDragPayload.self) { payloads, _ in
+                    defer { if targetID == collectionID { targetID = nil } }
+                    // Gated by the shared predicate (043 · 5A) — the same rule the
+                    // sidebar uses, so the two surfaces can't diverge.
+                    guard let dragged = payloads.first?.collectionID,
+                          CollectionTargets.canReparent(
+                            dragged, into: collectionID,
+                            folders: folders, unsortedID: unsortedID)
+                    else { return false }
+                    onReparent(dragged, collectionID)
+                    return true
+                } isTargeted: { over in
+                    if over { targetID = collectionID }
+                    else if targetID == collectionID { targetID = nil }
+                }
+        } else {
+            content
         }
     }
 }

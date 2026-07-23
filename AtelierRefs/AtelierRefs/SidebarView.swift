@@ -22,15 +22,31 @@ struct SidebarView: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
 
-    @State private var showNewCollection = false
-    @State private var newCollectionName = ""
+    /// New folder (root when `newFolderParentID == nil`, else a subfolder). One
+    /// alert serves both the section "+" and the row "New Subfolder…" (043).
+    @State private var showNewFolder = false
+    @State private var newFolderName = ""
+    @State private var newFolderParentID: UUID?
+    /// Rename a collection from the tree row's context menu (043).
+    @State private var renameTargetID: UUID?
+    @State private var renameText = ""
     @State private var showNewSpace = false
     @State private var newSpaceName = ""
     @State private var spacesExpanded = true
     @State private var collectionsExpanded = true
+    /// Which tree folders are expanded to reveal their subfolders (043). In-memory
+    /// (not persisted): the tree opens collapsed each launch except where a fresh
+    /// subfolder auto-expands its parent.
+    @State private var expandedFolderIDs: Set<UUID> = []
     /// The sidebar row currently under an asset drag (space or collection id), for
     /// the drop highlight. One id at a time — a drag hovers a single row.
     @State private var dropTargetID: UUID?
+    /// The tree row currently under a FOLDER-reparent drag (043), separate from the
+    /// asset `dropTargetID` so an asset hover and a folder hover never collide.
+    @State private var reparentTargetID: UUID?
+    /// Whether a folder-reparent drag is over the "Collections" header — the
+    /// un-nest (move-to-top-level) drop zone (043).
+    @State private var unNestTargeted = false
 
     /// The ⌥ (copy) read at drop time (009 · N3): a plain drop MOVES into a
     /// collection, ⌥ COPIES.
@@ -48,16 +64,30 @@ struct SidebarView: View {
         // this can run first and no-op while `services` is still nil); kept so a
         // re-mounted sidebar refreshes.
         .task { await model.refreshSpaces() }
-        // New root collection.
-        .alert("New Collection", isPresented: $showNewCollection) {
-            TextField("Name", text: $newCollectionName)
+        // New collection (root) or subfolder — one alert, titled by target.
+        .alert(newFolderParentID == nil ? "New Collection" : "New Subfolder",
+               isPresented: $showNewFolder) {
+            TextField("Name", text: $newFolderName)
             Button("Create") {
-                let name = newCollectionName
-                newCollectionName = ""
-                model.createFolder(name: name, parent: nil)
+                let name = newFolderName
+                let parent = newFolderParentID
+                newFolderName = ""
+                model.createFolder(name: name, parent: parent)
+                // Reveal the freshly-created child under its parent.
+                if let parent { expandedFolderIDs.insert(parent) }
             }
-            .disabled(newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { newCollectionName = "" }
+            .disabled(newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) { newFolderName = "" }
+        }
+        // Rename a collection.
+        .alert("Rename Collection", isPresented: renameBinding) {
+            TextField("Name", text: $renameText)
+            Button("Rename") {
+                if let id = renameTargetID { model.renameFolder(id: id, to: renameText) }
+                renameTargetID = nil
+            }
+            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) { renameTargetID = nil }
         }
         // New space.
         .alert("New Space", isPresented: $showNewSpace) {
@@ -184,33 +214,183 @@ struct SidebarView: View {
     private var collectionsSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             sectionHeader("Collections", expanded: $collectionsExpanded) {
-                showNewCollection = true
+                startNewFolder(parentID: nil)
             }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(unNestTargeted ? Theme.Colors.selection : .clear)
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(
+                        unNestTargeted ? Color.accentColor : .clear, lineWidth: 1.5)))
+            // Drop a nested collection onto the header to move it back to top level
+            // (043 un-nest zone). Row drops (nesting) take precedence within their
+            // own frames, so this only fires on the header itself.
+            .dropDestination(for: CollectionDragPayload.self) { payloads, _ in
+                defer { unNestTargeted = false }
+                guard let dragged = payloads.first?.collectionID,
+                      CollectionTargets.canReparent(
+                        dragged, into: nil,
+                        folders: model.folders, unsortedID: model.unsortedFolderID)
+                else { return false }
+                model.moveFolder(id: dragged, toParent: nil)
+                return true
+            } isTargeted: { unNestTargeted = $0 }
+
             if collectionsExpanded {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    ForEach(roots) { collection in
-                        treeRow(
-                            title: collection.name,
-                            selected: nav.sidebarSelection == .collection(collection.id),
-                            dropID: collection.id,
-                            select: { nav.selectSidebar(.collection(collection.id)) },
-                            onDrop: { handleCollectionDrop($0, into: collection.id) })
-                            .contextMenu { collectionMenu(collection) }
+                    ForEach(flattenedRows) { row in
+                        collectionRow(row)
                     }
                 }
             }
         }
     }
 
-    private var roots: [Collection] {
-        CollectionTargets.galleryRoots(model.folders, unsortedID: model.unsortedFolderID)
+    /// A single flattened tree row: a collection plus its depth and whether it has
+    /// children — the recursive `FolderNode` tree walked into a flat list so ONE
+    /// `ForEach` can render it (a recursive `some View` builder can't type-check).
+    private struct TreeRow: Identifiable {
+        let id: UUID
+        let name: String
+        let depth: Int
+        let hasChildren: Bool
+    }
+
+    /// The visible rows in display order: the root→leaf tree, Unsorted pinned
+    /// first, descending only into expanded folders.
+    private var flattenedRows: [TreeRow] {
+        let tree = FolderNode.tree(from: model.folders)
+        let unsortedID = model.unsortedFolderID
+        let ordered = tree.filter { $0.id == unsortedID } + tree.filter { $0.id != unsortedID }
+        var rows: [TreeRow] = []
+        func walk(_ nodes: [FolderNode], depth: Int) {
+            for node in nodes {
+                let hasChildren = node.children?.isEmpty == false
+                rows.append(TreeRow(
+                    id: node.id, name: node.name, depth: depth, hasChildren: hasChildren))
+                if hasChildren, expandedFolderIDs.contains(node.id) {
+                    walk(node.children ?? [], depth: depth + 1)
+                }
+            }
+        }
+        walk(ordered, depth: 0)
+        return rows
+    }
+
+    /// One tree row: the selectable/droppable/draggable collection row, with its
+    /// expand/collapse chevron overlaid on the RIGHT edge (043). No depth indent —
+    /// hierarchy reads through expand/collapse, not leading insets.
+    private func collectionRow(_ row: TreeRow) -> some View {
+        collectionTreeRow(id: row.id, name: row.name, hasChildren: row.hasChildren)
+            .overlay(alignment: .trailing) {
+                if row.hasChildren { chevronToggle(row) }
+            }
+    }
+
+    /// The trailing expand/collapse control — its own hit target (over the row's
+    /// select button), so tapping the chevron toggles while tapping the name selects.
+    private func chevronToggle(_ row: TreeRow) -> some View {
+        Button {
+            withAnimation(Theme.Motion.snappy) {
+                if expandedFolderIDs.contains(row.id) { expandedFolderIDs.remove(row.id) }
+                else { expandedFolderIDs.insert(row.id) }
+            }
+        } label: {
+            Image(systemName: expandedFolderIDs.contains(row.id) ? "chevron.down" : "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Theme.Colors.inkSecondary)
+                .frame(width: 22, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, 4)
+    }
+
+    /// The tappable collection row — selection highlight, asset drop (move/copy),
+    /// folder-reparent drag source + drop target (043), and the context menu. When
+    /// `hasChildren`, the trailing edge reserves room for the overlaid chevron so
+    /// the name never underlaps it. The protected Unsorted folder is neither a
+    /// reparent drag source nor a reparent drop target (it can't be moved, and
+    /// folders aren't filed under it).
+    @ViewBuilder
+    private func collectionTreeRow(id: UUID, name: String, hasChildren: Bool) -> some View {
+        let isUnsorted = id == model.unsortedFolderID
+        let base = Button {
+            nav.selectSidebar(.collection(id))
+        } label: {
+            Text(name)
+                .font(Theme.Typography.row)
+                .foregroundStyle(Theme.Colors.inkPrimary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, Theme.Spacing.md)
+                .padding(.trailing, hasChildren ? 30 : Theme.Spacing.md)
+                .padding(.vertical, 7)
+                .background(rowHighlight(
+                    selected: nav.sidebarSelection == .collection(id),
+                    targeted: dropTargetID == id || reparentTargetID == id))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .modifier(RowDropModifier(
+            dropID: id, dropTargetID: $dropTargetID,
+            onDrop: { handleCollectionDrop($0, into: id) }))
+        .contextMenu { collectionMenu(id: id, isUnsorted: isUnsorted) }
+
+        if isUnsorted {
+            base
+        } else {
+            base
+                .draggable(CollectionDragPayload(collectionID: id))
+                .dropDestination(for: CollectionDragPayload.self) { payloads, _ in
+                    acceptReparent(payloads, onto: id)
+                } isTargeted: { over in
+                    if over { reparentTargetID = id }
+                    else if reparentTargetID == id { reparentTargetID = nil }
+                }
+        }
     }
 
     @ViewBuilder
-    private func collectionMenu(_ collection: Collection) -> some View {
-        if collection.id != model.unsortedFolderID {
-            Button("Delete", role: .destructive) { model.deleteFolder(id: collection.id) }
+    private func collectionMenu(id: UUID, isUnsorted: Bool) -> some View {
+        Button("New Subfolder…") { startNewFolder(parentID: id) }
+        if !isUnsorted {
+            Button("Rename…") {
+                renameText = model.folders.first { $0.id == id }?.name ?? ""
+                renameTargetID = id
+            }
+            CollectionMoveToMenu(
+                folderID: id, folders: model.folders, unsortedID: model.unsortedFolderID
+            ) { model.moveFolder(id: id, toParent: $0) }
+            Divider()
+            Button("Delete", role: .destructive) { model.deleteFolder(id: id) }
         }
+    }
+
+    private func startNewFolder(parentID: UUID?) {
+        newFolderName = ""
+        newFolderParentID = parentID
+        showNewFolder = true
+    }
+
+    /// Accept a folder-reparent drop onto `parentID`, gated by the shared
+    /// ``CollectionTargets/canReparent(_:into:folders:unsortedID:)`` predicate
+    /// (043 · 5A) so self / descendant / protected cases are refused in ONE place.
+    /// Clears the highlight.
+    private func acceptReparent(_ payloads: [CollectionDragPayload], onto parentID: UUID) -> Bool {
+        defer { if reparentTargetID == parentID { reparentTargetID = nil } }
+        guard let dragged = payloads.first?.collectionID,
+              CollectionTargets.canReparent(
+                dragged, into: parentID,
+                folders: model.folders, unsortedID: model.unsortedFolderID)
+        else { return false }
+        model.moveFolder(id: dragged, toParent: parentID)
+        return true
+    }
+
+    private var renameBinding: Binding<Bool> {
+        Binding(get: { renameTargetID != nil }, set: { if !$0 { renameTargetID = nil } })
     }
 
     // MARK: - Shared rows

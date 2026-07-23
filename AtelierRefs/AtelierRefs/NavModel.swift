@@ -147,24 +147,3 @@ final class NavModel: ObservableObject {
         if !collections.contains(where: { $0.id == id }) { sidebarSelection = .home }
     }
 }
-
-// MARK: - Pure breadcrumb helper (SwiftUI-free, unit-testable)
-
-/// The root→leaf ancestor chain of `collectionID` within the flat `collections`
-/// list (004-P1 breadcrumb). Walks UP via `parentCollectionID` collecting each
-/// ancestor, then reverses to root-first. **Cycle-safe**: a already-visited id
-/// terminates the walk (a corrupt parent cycle can't hang the UI), mirroring
-/// `FolderNode.tree`'s defensive posture. Returns `[]` if `collectionID` isn't
-/// in the list.
-func collectionBreadcrumb(for collectionID: UUID, in collections: [Collection]) -> [Collection] {
-    let byID = Dictionary(collections.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-    guard var current = byID[collectionID] else { return [] }
-    var chain: [Collection] = [current]
-    var visited: Set<UUID> = [current.id]
-    while let parentID = current.parentCollectionID, let parent = byID[parentID] {
-        if !visited.insert(parent.id).inserted { break } // cycle guard
-        chain.append(parent)
-        current = parent
-    }
-    return chain.reversed()
-}

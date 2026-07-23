@@ -349,8 +349,12 @@ public final class AppServices: Sendable {
                     throw AtelierError.notFound(entity: "collection", id: parentID)
                 }
             }
-            try collection.insert(db)
-            return collection
+            // Append: the new folder lands after its existing siblings, keeping
+            // the group dense at `0..<n` (043 · 2B).
+            var toInsert = collection
+            toInsert.sortIndex = try Self.childIDsOrdered(parentID, in: db).count
+            try toInsert.insert(db)
+            return toInsert
         }
     }
 
@@ -398,18 +402,34 @@ public final class AppServices: Sendable {
             throw AtelierError.protectedCollection(id: id)
         }
         try await write { db in
-            guard try Collection.deleteOne(db, key: Self.key(id)) else {
+            guard let doomed = try Collection.fetchOne(db, key: Self.key(id)) else {
                 throw AtelierError.notFound(entity: "collection", id: id)
             }
+            let formerParentID = doomed.parentCollectionID
+            _ = try Collection.deleteOne(db, key: Self.key(id))
+            // The cascade drops this folder's whole subtree; only the FORMER
+            // parent's remaining children need renumbering to stay dense (043 · 2B).
+            let remaining = try Self.childIDsOrdered(formerParentID, in: db)
+            try Self.applyDenseOrder(remaining, in: db)
         }
     }
 
-    /// Reparent a folder (decision F6). Rejects the protected Unsorted folder
-    /// (`.protectedCollection`, F3); the folder must exist (`.notFound`). When
-    /// `newParentID` is non-nil it must exist (`.notFound`) and must NOT be `id`
-    /// nor a descendant of `id` — else `.folderCycle`. `nil` ⇒ the folder
-    /// becomes a root. Bumps `updatedAt`.
-    public func moveCollection(id: UUID, toParent newParentID: UUID?) async throws {
+    /// Reparent AND/OR reposition a folder (decision F6 · 043 · 2B). Rejects the
+    /// protected Unsorted folder (`.protectedCollection`, F3); the folder must
+    /// exist (`.notFound`). When `newParentID` is non-nil it must exist
+    /// (`.notFound`) and must NOT be `id` nor a descendant of `id` — else
+    /// `.folderCycle`. `nil` ⇒ the folder becomes a root.
+    ///
+    /// `index` is the destination position among the destination group's children
+    /// **with the moved folder removed** (`0` = first, `nil` = append last); it is
+    /// clamped to a valid range. Both the destination group and — when the parent
+    /// changed — the former group are renumbered to a dense `0..<n`. Bumps
+    /// `updatedAt` (a user-visible change). This single op backs the "Move to ▸"
+    /// menu (append via `index: nil`), a same-parent drag reorder (same parent,
+    /// explicit `index`), and a reparent-with-position drag.
+    public func moveCollection(
+        id: UUID, toParent newParentID: UUID?, index: Int? = nil
+    ) async throws {
         if id == Collection.unsortedID {
             throw AtelierError.protectedCollection(id: id)
         }
@@ -417,6 +437,7 @@ public final class AppServices: Sendable {
             guard var collection = try Collection.fetchOne(db, key: Self.key(id)) else {
                 throw AtelierError.notFound(entity: "collection", id: id)
             }
+            let oldParentID = collection.parentCollectionID
             if let newParentID {
                 guard try Collection.exists(db, key: Self.key(newParentID)) else {
                     throw AtelierError.notFound(entity: "collection", id: newParentID)
@@ -441,12 +462,26 @@ public final class AppServices: Sendable {
             collection.parentCollectionID = newParentID
             collection.updatedAt = Date()
             try collection.update(db)
+            // Insert `id` at `index` among the destination group and renumber it
+            // dense. The moved row still carries its stale old index, so strip +
+            // reinsert rather than trust its position.
+            var siblings = try Self.childIDsOrdered(newParentID, in: db)
+            siblings.removeAll { $0 == id }
+            let target = min(max(index ?? siblings.count, 0), siblings.count)
+            siblings.insert(id, at: target)
+            try Self.applyDenseOrder(siblings, in: db)
+            // A parent change leaves a gap in the former group — close it too.
+            if oldParentID != newParentID {
+                let formerSiblings = try Self.childIDsOrdered(oldParentID, in: db)
+                try Self.applyDenseOrder(formerSiblings, in: db)
+            }
         }
     }
 
-    /// The DIRECT children of a folder (decision F5/P13), ordered by `name` then
-    /// `id` (stable). `nil` ⇒ the root folders (`parent_collection_id IS NULL`,
-    /// including the protected Unsorted folder). Read.
+    /// The DIRECT children of a folder (decision F5/P13), in manual order —
+    /// persisted `sort_index`, tie-broken by `(name, id)` (043 · 2B). `nil` ⇒ the
+    /// root folders (`parent_collection_id IS NULL`, including the protected
+    /// Unsorted folder). Read.
     public func childCollections(of parentID: UUID?) async throws -> [Collection] {
         try await read { db in
             let filter: QueryInterfaceRequest<Collection>
@@ -455,7 +490,35 @@ public final class AppServices: Sendable {
             } else {
                 filter = Collection.filter(Column("parent_collection_id") == nil)
             }
-            return try filter.order(Column("name"), Column("id")).fetchAll(db)
+            return try filter
+                .order(Column("sort_index"), Column("name"), Column("id"))
+                .fetchAll(db)
+        }
+    }
+
+    /// A parent's child ids in canonical order — persisted `sort_index`,
+    /// tie-broken by `(name, id)`. `nil` parent = the roots. The single seam used
+    /// to renumber a sibling group after a create / delete / move (043 · 2B).
+    private static func childIDsOrdered(_ parentID: UUID?, in db: Database) throws -> [UUID] {
+        let base: QueryInterfaceRequest<Collection>
+        if let parentID {
+            base = Collection.filter(Column("parent_collection_id") == Self.key(parentID))
+        } else {
+            base = Collection.filter(Column("parent_collection_id") == nil)
+        }
+        return try base
+            .order(Column("sort_index"), Column("name"), Column("id"))
+            .fetchAll(db).map(\.id)
+    }
+
+    /// Write a dense `0..<n` `sort_index` for `orderedIDs`, in order. A targeted
+    /// column UPDATE (not a record `update`) so it does NOT bump `updated_at` — a
+    /// renumber is structural bookkeeping, not a user edit.
+    private static func applyDenseOrder(_ orderedIDs: [UUID], in db: Database) throws {
+        for (position, id) in orderedIDs.enumerated() {
+            try db.execute(
+                sql: "UPDATE collection SET sort_index = ? WHERE id = ?",
+                arguments: [position, Self.key(id)])
         }
     }
 
@@ -1099,6 +1162,11 @@ public final class AppServices: Sendable {
     /// inventory (P16 — only the unbounded library-wide reads are paged).
     public func listCollections() async throws -> [Collection] {
         try await read { db in
+            // Flat `(name, id)` order — a stable, documented contract. Manual
+            // sibling order (`sort_index`) is NOT applied here: the UI regroups
+            // this flat list into the tree and sorts each parent group itself
+            // (`FolderNode.tree` / `CollectionTargets`), so a global sort_index —
+            // which repeats across parents — would be meaningless here anyway.
             try Collection.order(Column("name"), Column("id")).fetchAll(db)
         }
     }
