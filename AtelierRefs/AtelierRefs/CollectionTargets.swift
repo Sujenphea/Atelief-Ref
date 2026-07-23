@@ -73,6 +73,52 @@ enum CollectionTargets {
             .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
     }
 
+    /// A collection's siblings (children of `parent`, `nil` = roots) in manual
+    /// order — `sortIndex`, tie-broken by `(name, id)`. The order the outline view
+    /// renders and the drop router indexes against.
+    static func orderedChildren(of parent: UUID?, in folders: [Collection]) -> [Collection] {
+        folders.filter { $0.parentCollectionID == parent }.sorted(by: byManualOrder)
+    }
+
+    /// Resolve an `NSOutlineView` drop into a concrete move (043 · Phase C · 12A).
+    /// Pure + AppKit-free so the drag brain is unit-tested without a live view.
+    ///
+    /// The coordinator translates the AppKit drop into these terms:
+    ///   • `childIndex == nil` — dropped ON the `proposedParent` row: NEST the
+    ///     dragged folder into it and append (`NSOutlineViewDropOnItemIndex`).
+    ///   • `childIndex == i` — dropped BETWEEN rows, as the i-th child of
+    ///     `proposedParent` (`nil` = the root group). `i` counts positions in the
+    ///     parent's CURRENT child list, which INCLUDES the dragged folder when it
+    ///     is already a child there.
+    ///
+    /// Returns `.reject` when the move is structurally invalid (via
+    /// ``canReparent(_:into:folders:unsortedID:)``), else a `.move(toParent:index:)`
+    /// that feeds straight into `moveCollection` — both a reparent and a
+    /// same-parent reorder are the same op. For a same-parent reorder the index is
+    /// normalized to the service's "position with the dragged item removed"
+    /// contract (drop below the current slot shifts down by one).
+    static func routeOutlineDrop(
+        dragged: UUID, into proposedParent: UUID?, childIndex: Int?,
+        folders: [Collection], unsortedID: UUID
+    ) -> CollectionDrop {
+        guard canReparent(dragged, into: proposedParent, folders: folders, unsortedID: unsortedID)
+        else { return .reject }
+        // Dropped onto the row itself → nest + append.
+        guard let childIndex else { return .move(toParent: proposedParent, index: nil) }
+        // Dropped between rows. Normalize only when it's a same-parent reorder:
+        // the incoming index counts the dragged item's own slot, but the service
+        // indexes the list with it removed.
+        let currentParent = folders.first { $0.id == dragged }?.parentCollectionID
+        var index = max(childIndex, 0)
+        if currentParent == proposedParent {
+            let siblings = orderedChildren(of: proposedParent, in: folders).map(\.id)
+            if let current = siblings.firstIndex(of: dragged), childIndex > current {
+                index -= 1
+            }
+        }
+        return .move(toParent: proposedParent, index: index)
+    }
+
     /// Whether `dragged` may be REPARENTED under `newParent` (043 · 5A) — the ONE
     /// structural gate shared by every drag surface (the sidebar tree, the Home
     /// gallery) so the "valid drop" rule can't drift between them. Validates
