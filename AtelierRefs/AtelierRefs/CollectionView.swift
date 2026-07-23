@@ -246,75 +246,74 @@ struct CollectionView: View {
     /// Styled to match Home / Search (`CollectionsGalleryView` / `LibrarySearch`).
     private var selectionBar: some View {
         let count = model.selection.ids.count
-        return HStack(spacing: 12) {
+        return HStack(spacing: 2) {
             Text("\(count) selected")
                 .font(.callout.weight(.medium))
-            Button("Clear") { model.selectionStore.apply(.clear) }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .padding(.trailing, 10)
+            SelectionBarButton("xmark", help: "Clear selection") {
+                model.selectionStore.apply(.clear)
+            }
+            // `requestDelete` runs its own confirmation, so no extra dialog here.
+            SelectionBarButton("trash", help: "Delete \(count)", role: .destructive) {
+                model.requestDelete(assetIDs: selectedAssetIDs)
+            }
+            SelectionBarButton("folder.badge.minus",
+                               help: "Remove \(count) from collection") {
+                model.removeFromFolder(assetIDs: selectedAssetIDs)
+            }
             // Overflow as a popover so it opens ABOVE the bar (`arrowEdge: .top`),
             // not clipped below the floating capsule the way a `Menu` would.
             Button { showMoreActions.toggle() } label: {
-                Label("More", systemImage: "ellipsis.circle")
+                SelectionBarIcon(systemName: "ellipsis")
             }
-            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
             .help("More actions")
             .popover(isPresented: $showMoreActions, arrowEdge: .top) {
                 moreActionsMenu(count: count)
             }
-            Button {
-                model.removeFromFolder(assetIDs: selectedAssetIDs)
-            } label: {
-                Label("Remove \(count)", systemImage: "folder.badge.minus")
-            }
-            .labelStyle(.iconOnly)
-            .help("Remove \(count) from collection")
-            // `requestDelete` runs its own confirmation, so no extra dialog here.
-            Button(role: .destructive) {
-                model.requestDelete(assetIDs: selectedAssetIDs)
-            } label: {
-                Label("Delete \(count)", systemImage: "trash")
-            }
-            .labelStyle(.iconOnly)
-            .help("Delete \(count)")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.primary.opacity(0.08)))
-        .shadow(radius: 8, y: 2)
-        .padding(.bottom, 16)
+        .selectionBarChrome()
     }
 
     /// The `…` overflow contents: Move to / Add to (nested destination menus) and
     /// Set as Cover (single-item only). Each action dismisses the popover.
     private func moreActionsMenu(count: Int) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Menu("Move to") {
+        VStack(alignment: .leading, spacing: 1) {
+            Menu {
                 destinationButtons {
                     model.moveToCollection(assetIDs: selectedAssetIDs, to: $0)
                     showMoreActions = false
                 }
+            } label: {
+                Label("Move to…", systemImage: "arrow.right.to.line")
             }
-            Menu("Add to") {
+            Menu {
                 destinationButtons {
                     model.copyToCollection(assetIDs: selectedAssetIDs, to: $0)
                     showMoreActions = false
                 }
+            } label: {
+                Label("Add to…", systemImage: "plus.rectangle.on.rectangle")
             }
             // Set as Cover is a single-item action (parity with the context menu's
             // `n == 1` gate).
             if count == 1, let assetID = selectedAssetIDs.first {
-                Button("Set as Cover") {
+                Divider().padding(.vertical, 3)
+                Button {
                     model.setCollectionCover(collectionID: collectionID, assetID: assetID)
                     showMoreActions = false
+                } label: {
+                    Label("Set as Cover", systemImage: "photo")
                 }
             }
         }
+        .labelStyle(.titleAndIcon)
         .menuStyle(.borderlessButton)
         .buttonStyle(.plain)
-        .padding(8)
-        .frame(minWidth: 160, alignment: .leading)
+        .font(.callout)
+        .padding(6)
+        .frame(minWidth: 190, alignment: .leading)
     }
 
     /// The Move-to / Add-to destination buttons for the overflow menu: subfolders

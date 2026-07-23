@@ -275,22 +275,15 @@ struct CollectionsGalleryView: View {
     /// The floating "N selected · Clear · Delete" bar, shown while a marquee
     /// selection is active.
     private var selectionBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 2) {
             Text("\(selectedCardIDs.count) selected")
                 .font(.callout.weight(.medium))
-            Button("Clear") { clearSelection() }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-            Button(role: .destructive) { requestBatchDelete() } label: {
-                Label("Delete \(selectedCardIDs.count)", systemImage: "trash")
-            }
+                .padding(.trailing, 10)
+            SelectionBarButton("xmark", help: "Clear selection") { clearSelection() }
+            SelectionBarButton("trash", help: "Delete \(selectedCardIDs.count)",
+                               role: .destructive) { requestBatchDelete() }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.primary.opacity(0.08)))
-        .shadow(radius: 8, y: 2)
-        .padding(.bottom, 16)
+        .selectionBarChrome()
     }
 
     /// The ids the marquee may select: every root collection EXCEPT Unsorted, plus
