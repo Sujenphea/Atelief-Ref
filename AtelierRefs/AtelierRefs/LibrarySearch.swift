@@ -583,15 +583,22 @@ private struct LibrarySearchResults: View {
     /// active. Delete routes through the same staged/undoable asset delete as the
     /// keyboard and context menu.
     private var selectionBar: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 12) {
             Text("\(selection.ids.count) selected")
                 .font(.callout.weight(.medium))
-                .padding(.trailing, 10)
-            SelectionBarButton("xmark", help: "Clear selection") { apply(.clear) }
-            SelectionBarButton("trash", help: "Delete \(selection.ids.count)",
-                               role: .destructive) { requestDeleteTargets() }
+            Button("Clear") { apply(.clear) }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            Button(role: .destructive) { requestDeleteTargets() } label: {
+                Label("Delete \(selection.ids.count)", systemImage: "trash")
+            }
         }
-        .selectionBarChrome()
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.primary.opacity(0.08)))
+        .shadow(radius: 8, y: 2)
+        .padding(.bottom, 16)
     }
 
     /// The payload a cell drag carries: the whole selection when the dragged cell is
