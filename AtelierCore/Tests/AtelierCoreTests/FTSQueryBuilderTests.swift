@@ -83,4 +83,60 @@ struct FTSQueryBuilderTests {
         #expect(AppServices.containsPattern("a_b") == "%a\\_b%")
         #expect(AppServices.containsPattern("c\\d") == "%c\\\\d%")
     }
+
+    // MARK: trigramMatchQuery — substring MATCH, ≥3-char eligibility (046 Phase 2)
+
+    @Test("empty / whitespace-only input → nil (no trigram arm)")
+    func trigramEmptyInputs() {
+        #expect(AppServices.trigramMatchQuery("") == nil)
+        #expect(AppServices.trigramMatchQuery("   ") == nil)
+        #expect(AppServices.trigramMatchQuery("\t\n ") == nil)
+    }
+
+    @Test("a single ≥3-char term is one quoted phrase (substring, no prefix star)")
+    func trigramSingleTerm() {
+        #expect(AppServices.trigramMatchQuery("chair") == "\"chair\"")
+        // Exactly 3 chars is the minimum eligible length (one trigram).
+        #expect(AppServices.trigramMatchQuery("air") == "\"air\"")
+    }
+
+    @Test("a <3-char term makes the WHOLE query ineligible → nil (AND stays exact)")
+    func trigramShortTermIneligible() {
+        #expect(AppServices.trigramMatchQuery("ab") == nil)
+        #expect(AppServices.trigramMatchQuery("a") == nil)
+        // One short term among long ones disqualifies the whole query — the caller
+        // falls back to unicode61 rather than dropping "ui" and loosening the AND.
+        #expect(AppServices.trigramMatchQuery("modern ui") == nil)
+    }
+
+    @Test("multiple ≥3-char terms AND-join their quoted phrases")
+    func trigramMultiTermAnd() {
+        #expect(AppServices.trigramMatchQuery("brut concrete")
+                == "\"brut\" AND \"concrete\"")
+        #expect(AppServices.trigramMatchQuery("art deco poster")
+                == "\"art\" AND \"deco\" AND \"poster\"")
+    }
+
+    @Test("embedded quotes are doubled (FTS5 escaping) and never break out")
+    func trigramQuotesEscaped() {
+        #expect(AppServices.trigramMatchQuery("a\"bc") == "\"a\"\"bc\"")
+    }
+
+    @Test("FTS5 operators inside a term are neutralized as literal substring text")
+    func trigramOperatorsNeutralized() {
+        // A bare 2-char "OR" disqualifies the whole query (the <3-char rule) —
+        // it never reaches FTS5 as an operator.
+        #expect(AppServices.trigramMatchQuery("foo OR bar") == nil)
+        // A ≥3-char literal "AND" is a QUOTED substring phrase (neutralized),
+        // distinct from the real AND that joins the phrases.
+        #expect(AppServices.trigramMatchQuery("foo AND bar")
+                == "\"foo\" AND \"AND\" AND \"bar\"")
+    }
+
+    @Test("multibyte / unicode terms count graphemes for the 3-char rule")
+    func trigramUnicode() {
+        #expect(AppServices.trigramMatchQuery("café") == "\"café\"")
+        // "de" (2 graphemes) is ineligible even though bytes are more.
+        #expect(AppServices.trigramMatchQuery("de") == nil)
+    }
 }

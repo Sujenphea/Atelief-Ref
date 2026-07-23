@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -120,6 +120,14 @@ enum Migrator {
         // become searchable, kept fresh by the regenerated sync triggers.
         migrator.registerMigration("v12") { db in
             try createV12Schema(db)
+        }
+
+        // v13 — substring search (044 · 046 search overhaul Phase 2): four
+        // `trigram`-tokenized indexes over the SHORT human fields so "air" finds
+        // "chair" and the tag-/collection-name arms stop leaning on un-indexed
+        // leading-wildcard LIKE scans.
+        migrator.registerMigration("v13") { db in
+            try createV13Schema(db)
         }
 
         return migrator
@@ -581,6 +589,60 @@ enum Migrator {
             t.column("search_text")
             t.column("name")
             t.column("note")
+        }
+    }
+
+    // MARK: - v13
+
+    /// Substring search over the short human fields (044 · 046 Phase 2).
+    ///
+    /// The v1/v6/v12 indexes use the `unicode61` tokenizer, which matches whole
+    /// WORDS only: "air" cannot find "chair", and tag/collection names lived in no
+    /// index at all — the query layer fell back to un-indexed leading-wildcard
+    /// `LIKE '%…%'` scans. FTS5's `trigram` tokenizer indexes every 3-character
+    /// window, so `MATCH '"air"'` is a true (indexed) substring test.
+    ///
+    /// Four SEPARATE trigram tables (a tokenizer is table-wide, so trigram can't
+    /// share the unicode61 tables) mirror the external-content pattern — each
+    /// `synchronize(withTable:)` regenerates INSERT/UPDATE/DELETE triggers and
+    /// back-fills existing rows in one transactional step, so future writes stay
+    /// indexed with no derivation logic duplicated:
+    ///   • `source_trigram`  — title / author (provenance short fields)
+    ///   • `asset_trigram`   — the user-given `name`
+    ///   • `tag_trigram`     — tag name
+    ///   • `collection_trigram` — collection name
+    ///
+    /// Scope is deliberately the SHORT fields only. OCR (`analysis_fts`) and the
+    /// asset's `note` / `search_text` stay unicode61: a trigram index over long
+    /// prose bloats ~1 row per character for no substring-recall win a user asks
+    /// for. `case_sensitive 0` + `remove_diacritics 1` match the unicode61 indexes'
+    /// folding, so "cafe" finds "Café" here too. Trigram needs ≥3 characters; the
+    /// query layer keeps a unicode61 / LIKE fallback for 1–2 char queries.
+    private static func createV13Schema(_ db: Database) throws {
+        let trigram = FTS5TokenizerDescriptor(
+            components: ["trigram", "case_sensitive", "0", "remove_diacritics", "1"])
+
+        try db.create(virtualTable: "source_trigram", using: FTS5()) { t in
+            t.tokenizer = trigram
+            t.synchronize(withTable: "source")
+            t.column("title")
+            t.column("author_handle")
+            t.column("author_name")
+        }
+        try db.create(virtualTable: "asset_trigram", using: FTS5()) { t in
+            t.tokenizer = trigram
+            t.synchronize(withTable: "asset")
+            t.column("name")
+        }
+        try db.create(virtualTable: "tag_trigram", using: FTS5()) { t in
+            t.tokenizer = trigram
+            t.synchronize(withTable: "tag")
+            t.column("name")
+        }
+        try db.create(virtualTable: "collection_trigram", using: FTS5()) { t in
+            t.tokenizer = trigram
+            t.synchronize(withTable: "collection")
+            t.column("name")
         }
     }
 

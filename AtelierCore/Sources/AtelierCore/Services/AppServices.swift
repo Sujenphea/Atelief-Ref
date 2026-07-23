@@ -1708,8 +1708,11 @@ public final class AppServices: Sendable {
     ///   user-given `name` / `note` (`asset_fts`, 044/045 · 1A), and OCR text
     ///   inside images (`analysis_fts`); a CONTAINS match also folds in tag names
     ///   and collection names so free text finds an item by the tag it carries or
-    ///   the collection it lives in. When nil/blank, lists all assets (optionally
-    ///   platform-filtered) — still bounded.
+    ///   the collection it lives in. For queries ≥3 chars (and without a trailing
+    ///   space, which signals a finished word), the SHORT human fields (title /
+    ///   author / name / tag / collection) also SUBSTRING-match via trigram
+    ///   (046 Phase 2, see ``trigramMatchQuery(_:)``) — "air" finds "chair". When
+    ///   nil/blank, lists all assets (optionally platform-filtered) — bounded.
     /// - `platform`: optional filter on the asset's source.
     /// - `tagIDs`: optional structured tag filter (007 · S1). Empty → no tag
     ///   conjunct. `tagMatch` chooses set semantics: `.all` requires EVERY tag
@@ -1760,6 +1763,18 @@ public final class AppServices: Sendable {
         // (5A/14A). `nil` when there's no text to match. Computed once and reused
         // by both the filter arm and the relevance ordering (no recompute drift).
         let ftsMatch = hasText ? Self.ftsMatchQuery(text ?? "") : nil
+        // Trigram substring match (046 Phase 2). `nil` when substring search is off:
+        //   • trailing whitespace — the same FINISHED-word signal `ftsMatchQuery`
+        //     reads (5A): "typo " means the word is done → EXACT, so no substring
+        //     arm (else "typo " would still surface "Typography"); OR
+        //   • no term is ≥3 chars (trigram needs a 3-char window) — short queries
+        //     keep the unicode61 prefix / LIKE fallback.
+        // Computed once from the trimmed text, reused by the free-text arms and the
+        // relevance ordering. The tag arm re-derives its own trigram from the
+        // `#`-normalized needle (gated on this being enabled).
+        let trailingSpace = text?.last?.isWhitespace ?? false
+        let trigramMatch = (hasText && !trailingSpace)
+            ? Self.trigramMatchQuery(trimmedText ?? "") : nil
         // Distinct ids only — a caller passing the same tag twice must not skew
         // the `.all` HAVING COUNT (that counts DISTINCT tag_id anyway, but the N
         // it is compared against must match the distinct set).
@@ -1785,15 +1800,24 @@ public final class AppServices: Sendable {
             // image-only text are findable by substance. Each subquery maps
             // `*_fts.rowid` → the base table's rowid → id.
             //
-            // Two further OR arms fold tag names and collection names into free
-            // text (their text is in no FTS index): a leading-wildcard LIKE
-            // CONTAINS. The tag needle is normalized the same way tags are (`#`
-            // stripped), so "sf" / "#sf" both find a tag stored as "sf"; a
-            // `#`-only query normalizes to empty and drops that arm (no
-            // match-everything). Leading-wildcard LIKE can't use an index — fine
-            // at this scale (Phase 2 trigram is the designed replacement).
+            // Substring arms (046 Phase 2): title / author (`source_trigram`) and
+            // the user-given name (`asset_trigram`) fold in as ADDITIONAL OR arms
+            // when the query is trigram-eligible (every term ≥3 chars), so a
+            // mid-word "air" surfaces "chair" while the unicode61 arms above still
+            // rank whole-word / prefix hits by bm25.
+            //
+            // Tag names and collection names (in no unicode61 index) fold in via a
+            // final CONTAINS arm each: `*_trigram MATCH` when trigram-eligible,
+            // else the leading-wildcard LIKE fallback for 1–2 char queries. The tag
+            // needle is normalized the way tags are (`#` stripped), so "sf" / "#sf"
+            // both find a tag stored as "sf"; a `#`-only query normalizes to empty
+            // and drops that arm (no match-everything).
             if let trimmedText, !trimmedText.isEmpty, let match = ftsMatch {
                 let tagNeedle = Validation.normalizedTagName(trimmedText)
+                // Gated on trigram being enabled overall (respects trailing space),
+                // then on the `#`-stripped needle's own ≥3-char eligibility.
+                let tagTrigram = (trigramMatch != nil && !tagNeedle.isEmpty)
+                    ? Self.trigramMatchQuery(tagNeedle) : nil
                 var sql = """
                     source_id IN (
                         SELECT source.id FROM source
@@ -1810,23 +1834,70 @@ public final class AppServices: Sendable {
                         JOIN analysis_fts ON analysis_fts.rowid = an.rowid
                         WHERE analysis_fts MATCH ?
                      )
+                    """
+                var args: [String] = [match, match, match]
+
+                // Direct-field substring arms (only when trigram-eligible).
+                if let trigramMatch {
+                    sql += """
+                    \n OR source_id IN (
+                        SELECT s.id FROM source s
+                        JOIN source_trigram ON source_trigram.rowid = s.rowid
+                        WHERE source_trigram MATCH ?
+                     )
                      OR asset.id IN (
+                        SELECT a.id FROM asset a
+                        JOIN asset_trigram ON asset_trigram.rowid = a.rowid
+                        WHERE asset_trigram MATCH ?
+                     )
+                    """
+                    args.append(trigramMatch); args.append(trigramMatch)
+                }
+
+                // Collection-name CONTAINS arm: trigram, else LIKE fallback.
+                if let trigramMatch {
+                    sql += """
+                    \n OR asset.id IN (
+                        SELECT ci.asset_id FROM collection_item ci
+                        JOIN collection c ON c.id = ci.collection_id
+                        JOIN collection_trigram ON collection_trigram.rowid = c.rowid
+                        WHERE collection_trigram MATCH ?
+                     )
+                    """
+                    args.append(trigramMatch)
+                } else {
+                    sql += """
+                    \n OR asset.id IN (
                         SELECT ci.asset_id FROM collection_item ci
                         JOIN collection c ON c.id = ci.collection_id
                         WHERE c.name LIKE ? ESCAPE '\\'
                      )
                     """
-                var args: [String] = [match, match, match,
-                                      Self.containsPattern(trimmedText)]
+                    args.append(Self.containsPattern(trimmedText))
+                }
+
+                // Tag-name CONTAINS arm: trigram, else LIKE fallback (normalized).
                 if !tagNeedle.isEmpty {
-                    sql += """
-                    \n OR asset.id IN (
-                        SELECT atag.asset_id FROM asset_tag atag
-                        JOIN tag ON tag.id = atag.tag_id
-                        WHERE tag.name LIKE ? ESCAPE '\\'
-                     )
-                    """
-                    args.append(Self.containsPattern(tagNeedle))
+                    if let tagTrigram {
+                        sql += """
+                        \n OR asset.id IN (
+                            SELECT atag.asset_id FROM asset_tag atag
+                            JOIN tag ON tag.id = atag.tag_id
+                            JOIN tag_trigram ON tag_trigram.rowid = tag.rowid
+                            WHERE tag_trigram MATCH ?
+                         )
+                        """
+                        args.append(tagTrigram)
+                    } else {
+                        sql += """
+                        \n OR asset.id IN (
+                            SELECT atag.asset_id FROM asset_tag atag
+                            JOIN tag ON tag.id = atag.tag_id
+                            WHERE tag.name LIKE ? ESCAPE '\\'
+                         )
+                        """
+                        args.append(Self.containsPattern(tagNeedle))
+                    }
                 }
                 request = request.filter(sql: "(\(sql))",
                                          arguments: StatementArguments(args))
@@ -1839,13 +1910,24 @@ public final class AppServices: Sendable {
             if let tagNameContains {
                 let needle = Validation.normalizedTagName(tagNameContains)
                 if !needle.isEmpty {
-                    request = request.filter(sql: """
-                        asset.id IN (
-                            SELECT atag.asset_id FROM asset_tag atag
-                            JOIN tag ON tag.id = atag.tag_id
-                            WHERE tag.name LIKE ? ESCAPE '\\'
-                        )
-                        """, arguments: [Self.containsPattern(needle)])
+                    if let tagTrigram = Self.trigramMatchQuery(needle) {
+                        request = request.filter(sql: """
+                            asset.id IN (
+                                SELECT atag.asset_id FROM asset_tag atag
+                                JOIN tag ON tag.id = atag.tag_id
+                                JOIN tag_trigram ON tag_trigram.rowid = tag.rowid
+                                WHERE tag_trigram MATCH ?
+                            )
+                            """, arguments: [tagTrigram])
+                    } else {
+                        request = request.filter(sql: """
+                            asset.id IN (
+                                SELECT atag.asset_id FROM asset_tag atag
+                                JOIN tag ON tag.id = atag.tag_id
+                                WHERE tag.name LIKE ? ESCAPE '\\'
+                            )
+                            """, arguments: [Self.containsPattern(needle)])
+                    }
                 }
             }
 
@@ -1895,7 +1977,8 @@ public final class AppServices: Sendable {
                         && Column("id") < Self.key(cursor.id)))
             }
 
-            request = Self.ordered(request, by: sort, match: ftsMatch)
+            request = Self.ordered(request, by: sort, match: ftsMatch,
+                                   trigramMatch: trigramMatch)
                 .limit(clampedLimit)
 
             return try AssetSourceRow.fetchAll(db, request).map {
@@ -1917,46 +2000,78 @@ public final class AppServices: Sendable {
     /// count / average document length), so an OCR hit in a long scan could
     /// otherwise outrank a title hit. We therefore TIER the arms with explicit
     /// additive bases (lower base = stronger signal), and let `bm25()` order
-    /// finely WITHIN the two primary tiers:
+    /// finely WITHIN the primary tier:
     ///
-    ///   • tier 0  — provenance (`source_fts`) and the item's own content +
-    ///     user-given name/note (`asset_fts`): `bm25` (a small negative).
-    ///   • tier `likeBase` — a match only via a tag- or collection-NAME LIKE arm
-    ///     (indirect, no bm25): a flat neutral score above every tier-0 hit.
+    ///   • tier 0  — a WHOLE-WORD / prefix hit in provenance (`source_fts`) or the
+    ///     item's own content + user-given name/note (`asset_fts`): `bm25`.
+    ///   • tier `substringBase` — a SUBSTRING-only hit: a direct-field trigram
+    ///     match (`source_trigram` title/author, `asset_trigram` name) OR an
+    ///     indirect tag-/collection-name match (trigram or the <3-char LIKE
+    ///     fallback). A flat neutral score above every tier-0 hit (046 · 4A).
     ///   • tier `ocrBase` — derived OCR (`analysis_fts`): `bm25` shifted so even
-    ///     the best OCR hit ranks below any direct-field or name match.
+    ///     the best OCR hit ranks below any word OR substring field match.
     ///
-    /// `likeBase`/`ocrBase` are chosen far above the bm25 range (always > -1000)
-    /// so the tiers never interleave. `COALESCE(…, likeBase)` scores a row that
-    /// matched ONLY via a LIKE arm; a row with no scored arm can't reach here (it
-    /// wouldn't have passed the WHERE). Correlation is by scalar subquery on the
-    /// base `asset` alias, so it doesn't depend on the association's join alias.
+    /// The direct-field trigram arms are listed EXPLICITLY (not left to the
+    /// `COALESCE` fallback) so a row that matches BOTH a name substring and OCR
+    /// still scores `substringBase`, not `ocrBase` — a substring name hit must
+    /// outrank OCR. Indirect tag/collection substring hits rely on the fallback
+    /// (matching Phase 1's LIKE-tier precedent). The trigram arms are present only
+    /// when `trigramMatch` is non-nil (the query is ≥3-char eligible).
+    ///
+    /// `substringBase`/`ocrBase` are chosen far above the bm25 range (always
+    /// > -1000) so the tiers never interleave. `COALESCE(…, substringBase)` scores
+    /// a row that matched ONLY via an indirect / fallback arm; a row with no scored
+    /// arm can't reach here (it wouldn't have passed the WHERE). Correlation is by
+    /// scalar subquery on the base `asset` alias, independent of the join alias.
     private static func ordered(
         _ request: QueryInterfaceRequest<Asset>,
         by sort: SearchSort,
-        match: String?
+        match: String?,
+        trigramMatch: String?
     ) -> QueryInterfaceRequest<Asset> {
         guard sort == .relevance, let match else {
             return request.order(Column("created_at").desc, Column("id").desc)
         }
-        let likeBase = 1_000_000.0   // above any bm25; below OCR.
-        let ocrBase = 2_000_000.0    // OCR always ranks last among the hits.
+        let substringBase = 1_000_000.0   // above any bm25; below OCR.
+        let ocrBase = 2_000_000.0         // OCR always ranks last among the hits.
+
+        // Tier-0 word arms (always) + the analysis/OCR arm; the direct-field
+        // trigram arms slot in only when the query is trigram-eligible.
+        var arms = [
+            """
+            SELECT bm25(source_fts) AS score FROM source_fts
+                WHERE source_fts MATCH ?
+                  AND source_fts.rowid = (SELECT rowid FROM source WHERE source.id = asset.source_id)
+            """,
+            """
+            SELECT bm25(asset_fts) FROM asset_fts
+                WHERE asset_fts MATCH ? AND asset_fts.rowid = asset.rowid
+            """,
+        ]
+        var args: [String] = [match, match]
+        if let trigramMatch {
+            arms.append("""
+                SELECT \(substringBase) FROM source_trigram
+                    WHERE source_trigram MATCH ?
+                      AND source_trigram.rowid = (SELECT rowid FROM source WHERE source.id = asset.source_id)
+                """)
+            arms.append("""
+                SELECT \(substringBase) FROM asset_trigram
+                    WHERE asset_trigram MATCH ? AND asset_trigram.rowid = asset.rowid
+                """)
+            args.append(trigramMatch); args.append(trigramMatch)
+        }
+        arms.append("""
+            SELECT \(ocrBase) + bm25(analysis_fts) FROM analysis_fts
+                WHERE analysis_fts MATCH ?
+                  AND analysis_fts.rowid = (SELECT rowid FROM asset_analysis WHERE asset_analysis.asset_id = asset.id)
+            """)
+        args.append(match)
+
+        let union = arms.joined(separator: "\n UNION ALL \n")
         return request.order(sql: """
-            COALESCE((
-                SELECT MIN(score) FROM (
-                    SELECT bm25(source_fts) AS score FROM source_fts
-                        WHERE source_fts MATCH ?
-                          AND source_fts.rowid = (SELECT rowid FROM source WHERE source.id = asset.source_id)
-                    UNION ALL
-                    SELECT bm25(asset_fts) FROM asset_fts
-                        WHERE asset_fts MATCH ? AND asset_fts.rowid = asset.rowid
-                    UNION ALL
-                    SELECT \(ocrBase) + bm25(analysis_fts) FROM analysis_fts
-                        WHERE analysis_fts MATCH ?
-                          AND analysis_fts.rowid = (SELECT rowid FROM asset_analysis WHERE asset_analysis.asset_id = asset.id)
-                )
-            ), \(likeBase)) ASC, asset.id ASC
-            """, arguments: [match, match, match])
+            COALESCE((SELECT MIN(score) FROM (\(union))), \(substringBase)) ASC, asset.id ASC
+            """, arguments: StatementArguments(args))
     }
 
     // MARK: - Asset details (041 · Name / Note / Collections)
@@ -2359,6 +2474,29 @@ public final class AppServices: Sendable {
             let isPrefix = index == lastIndex && starLast && term.count >= 2
             return isPrefix ? "\(quoted)*" : quoted
         }.joined(separator: " ")
+    }
+
+    /// Build a `trigram`-tokenizer MATCH query for SUBSTRING search (046 Phase 2),
+    /// or `nil` when the text isn't trigram-eligible.
+    ///
+    /// The trigram tokenizer indexes 3-character windows, so a term needs ≥3
+    /// characters to form any trigram. To keep the multi-term AND semantics of the
+    /// unicode61 arms EXACT, the whole query is trigram-eligible only when EVERY
+    /// term is ≥3 chars — otherwise this returns `nil` and the caller falls back to
+    /// the unicode61 / LIKE path for the entire query (rather than silently
+    /// dropping the short term and loosening the AND to a partial match).
+    ///
+    /// Each eligible term is wrapped as a quoted FTS5 phrase (doubling embedded `"`
+    /// per FTS5's escaping rule, neutralizing every operator as literal text) and
+    /// the phrases are AND-joined, so `brut concrete` → `"brut" AND "concrete"`
+    /// (both substrings must appear). A single term → just its quoted phrase.
+    /// Empty / all-short input → `nil`.
+    static func trigramMatchQuery(_ text: String) -> String? {
+        let terms = text.split(whereSeparator: { $0.isWhitespace })
+        guard !terms.isEmpty, terms.allSatisfy({ $0.count >= 3 }) else { return nil }
+        return terms.map { term in
+            "\"\(term.replacingOccurrences(of: "\"", with: "\"\""))\""
+        }.joined(separator: " AND ")
     }
 
     /// Wrap a needle as a `LIKE ? ESCAPE '\'` CONTAINS pattern (`%needle%`) with
