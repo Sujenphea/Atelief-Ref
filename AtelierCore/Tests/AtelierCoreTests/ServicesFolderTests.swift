@@ -53,6 +53,51 @@ struct ServicesFolderTests {
         }
     }
 
+    // MARK: duplicate-name auto-disambiguation (043 · 2c)
+
+    @Test("a duplicate sibling name is auto-suffixed on create")
+    func createDisambiguatesSibling() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let a = try await services.createCollection(name: "Refs")
+        let b = try await services.createCollection(name: "Refs")
+        let c = try await services.createCollection(name: "refs")   // case-insensitive
+        #expect(a.name == "Refs")
+        #expect(b.name == "Refs 2")
+        #expect(c.name == "refs 3")
+    }
+
+    @Test("the same name under DIFFERENT parents does not collide")
+    func createNoCollisionAcrossParents() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let p1 = try await services.createCollection(name: "P1")
+        let p2 = try await services.createCollection(name: "P2")
+        let a = try await services.createCollection(name: "Refs", parent: p1.id)
+        let b = try await services.createCollection(name: "Refs", parent: p2.id)
+        #expect(a.name == "Refs")
+        #expect(b.name == "Refs")           // sibling scope is per-parent
+    }
+
+    @Test("rename onto a sibling name is auto-suffixed")
+    func renameDisambiguatesSibling() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        _ = try await services.createCollection(name: "Refs")
+        let other = try await services.createCollection(name: "Notes")
+        let renamed = try await services.renameCollection(id: other.id, to: "Refs")
+        #expect(renamed.name == "Refs 2")
+    }
+
+    @Test("renaming a folder to its OWN current name is a no-op, not a drift to ` 2`")
+    func renameToSelfDoesNotDrift() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let f = try await services.createCollection(name: "Refs")
+        let renamed = try await services.renameCollection(id: f.id, to: "Refs")
+        #expect(renamed.name == "Refs")     // excludes self → no self-collision
+    }
+
     // MARK: protected Unsorted (F3)
 
     @Test("the protected Unsorted folder exists on a fresh store")

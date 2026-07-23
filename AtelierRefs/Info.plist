@@ -25,6 +25,24 @@
 			<key>UTTypeTagSpecification</key>
 			<dict/>
 		</dict>
+		<!--
+		  043 — the folder-reparent drag type (a collection dragged onto another to
+		  nest it). Declared for the same reason as the asset type above: without
+		  this the OS doesn't recognize `com.ref-atelier.collection-id` at the drop
+		  destination and the drag snaps back. See ``CollectionDragPayload``.
+		-->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.ref-atelier.collection-id</string>
+			<key>UTTypeDescription</key>
+			<string>Atelier collection</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict/>
+		</dict>
 	</array>
 </dict>
 </plist>

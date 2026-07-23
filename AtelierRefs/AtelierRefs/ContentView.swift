@@ -74,14 +74,14 @@ struct ContentView: View {
             // The 3-pane split's 960 minimum no longer applies — the new shell is
             // a single navigation column.
             .frame(minWidth: 860, minHeight: 600)
-            // The last-opened collection is restored by seeding `NavModel.path`'s
-            // INITIAL value (004 Q3) — no launch-time push. Here we only VALIDATE it
-            // once folders load: drop the seeded path if that collection was deleted
-            // since last launch. The common case (it still exists) mutates nothing,
-            // so launch performs no `nav.path` change and the NavigationStack observer
-            // stays quiet.
+            // Reconcile route state whenever the folder list changes (043 · 3A):
+            // validates the seeded restore at launch AND, after a delete removes a
+            // subtree, drops a drill-down path / sidebar selection that points at a
+            // now-gone collection back to a valid target. The common case (nothing
+            // missing) mutates nothing, so launch performs no `nav.path` change and
+            // the NavigationStack observer stays quiet.
             .onReceive(model.$folders) { folders in
-                nav.pruneRestoredPathIfMissing(using: folders)
+                nav.reconcile(using: folders)
             }
             // App-shell alert so bootstrap / capture / space errors surface from
             // any screen.

@@ -106,4 +106,147 @@ struct CollectionTargetsTests {
         #expect(targets.subfolders.map(\.name) == ["Leaf"])
         #expect(targets.roots.map(\.name) == ["Unsorted", "Root"])
     }
+
+    // MARK: - Folder reparent targets (043)
+
+    @Test("reparent targets exclude self, descendants, current parent, and Unsorted")
+    func reparentExclusions() {
+        let unsorted = collection("Unsorted", id: unsortedID)
+        let root = collection("Root")
+        let mover = collection("Mover", parent: root.id)   // current parent = Root
+        let child = collection("Child", parent: mover.id)  // descendant
+        let grandchild = collection("Grandchild", parent: child.id)
+        let other = collection("Other")
+
+        let targets = CollectionTargets.folderMoveTargets(
+            for: mover.id,
+            folders: [unsorted, root, mover, child, grandchild, other],
+            unsortedID: unsortedID)
+
+        // Root (current parent), Mover (self), Child + Grandchild (descendants),
+        // and Unsorted are all excluded — only the unrelated Other remains.
+        #expect(targets.map(\.name) == ["Other"])
+    }
+
+    @Test("reparent targets are name-then-id ordered")
+    func reparentOrder() {
+        let unsorted = collection("Unsorted", id: unsortedID)
+        let mover = collection("Mover")           // top level: no current parent
+        let zed = collection("Zed")
+        let alpha = collection("Alpha")
+
+        let targets = CollectionTargets.folderMoveTargets(
+            for: mover.id,
+            folders: [unsorted, mover, zed, alpha],
+            unsortedID: unsortedID)
+
+        #expect(targets.map(\.name) == ["Alpha", "Zed"])
+    }
+
+    @Test("descendantIDs walks the whole subtree, excluding the root itself")
+    func descendants() {
+        let root = collection("Root")
+        let a = collection("A", parent: root.id)
+        let b = collection("B", parent: a.id)
+        let c = collection("C", parent: root.id)
+        let unrelated = collection("Unrelated")
+
+        let ids = CollectionTargets.descendantIDs(
+            of: root.id, in: [root, a, b, c, unrelated])
+
+        #expect(ids == Set([a.id, b.id, c.id]))
+    }
+
+    @Test("descendantIDs is cycle-safe (a corrupt parent loop terminates)")
+    func descendantsCycleSafe() {
+        let aID = UUID(), bID = UUID()
+        // A ↔ B parent each other — a corrupt cycle that must not hang the walk.
+        // The `visited` guard bounds it: each id is enqueued at most once, so the
+        // walk terminates (reaching both nodes) instead of looping forever.
+        let a = collection("A", id: aID, parent: bID)
+        let b = collection("B", id: bID, parent: aID)
+
+        let ids = CollectionTargets.descendantIDs(of: aID, in: [a, b])
+
+        #expect(ids == Set([aID, bID]))
+    }
+
+    // MARK: - canReparent (043 · 5A)
+
+    @Test("canReparent rejects moving into self")
+    func reparentRejectsSelf() {
+        let a = collection("A")
+        #expect(!CollectionTargets.canReparent(
+            a.id, into: a.id, folders: [a], unsortedID: unsortedID))
+    }
+
+    @Test("canReparent rejects moving into a direct child")
+    func reparentRejectsDirectChild() {
+        let parent = collection("Parent")
+        let child = collection("Child", parent: parent.id)
+        #expect(!CollectionTargets.canReparent(
+            parent.id, into: child.id, folders: [parent, child], unsortedID: unsortedID))
+    }
+
+    @Test("canReparent rejects moving into a deep descendant")
+    func reparentRejectsDeepDescendant() {
+        let root = collection("Root")
+        let mid = collection("Mid", parent: root.id)
+        let leaf = collection("Leaf", parent: mid.id)
+        #expect(!CollectionTargets.canReparent(
+            root.id, into: leaf.id, folders: [root, mid, leaf], unsortedID: unsortedID))
+    }
+
+    @Test("canReparent is cycle-safe on corrupt data and still rejects the cycle")
+    func reparentCycleSafe() {
+        let aID = UUID(), bID = UUID()
+        let a = collection("A", id: aID, parent: bID)
+        let b = collection("B", id: bID, parent: aID)
+        // `b` is (corruptly) a descendant of `a`, so a→b is refused; the walk
+        // must terminate rather than hang.
+        #expect(!CollectionTargets.canReparent(
+            aID, into: bID, folders: [a, b], unsortedID: unsortedID))
+    }
+
+    @Test("canReparent rejects filing a folder under the protected Unsorted")
+    func reparentRejectsIntoUnsorted() {
+        let unsorted = collection("Unsorted", id: unsortedID)
+        let a = collection("A")
+        #expect(!CollectionTargets.canReparent(
+            a.id, into: unsortedID, folders: [unsorted, a], unsortedID: unsortedID))
+    }
+
+    @Test("canReparent rejects moving the protected Unsorted itself")
+    func reparentRejectsMovingUnsorted() {
+        let unsorted = collection("Unsorted", id: unsortedID)
+        let a = collection("A")
+        #expect(!CollectionTargets.canReparent(
+            unsortedID, into: a.id, folders: [unsorted, a], unsortedID: unsortedID))
+    }
+
+    @Test("canReparent allows moving to top level (nil parent)")
+    func reparentAllowsTopLevel() {
+        let root = collection("Root")
+        let child = collection("Child", parent: root.id)
+        #expect(CollectionTargets.canReparent(
+            child.id, into: nil, folders: [root, child], unsortedID: unsortedID))
+    }
+
+    @Test("canReparent allows an unrelated destination")
+    func reparentAllowsUnrelated() {
+        let a = collection("A")
+        let b = collection("B")
+        #expect(CollectionTargets.canReparent(
+            a.id, into: b.id, folders: [a, b], unsortedID: unsortedID))
+    }
+
+    @Test("canReparent allows the SAME parent (a structural no-op — reorder is valid)")
+    func reparentAllowsSameParent() {
+        let parent = collection("Parent")
+        let child = collection("Child", parent: parent.id)
+        // Dropping back under the current parent is structurally fine; the drop
+        // coordinator treats it as a reorder, not a reparent.
+        #expect(CollectionTargets.canReparent(
+            child.id, into: parent.id, folders: [parent, child], unsortedID: unsortedID))
+    }
 }

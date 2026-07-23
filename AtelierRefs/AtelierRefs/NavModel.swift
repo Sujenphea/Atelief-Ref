@@ -84,10 +84,6 @@ final class NavModel: ObservableObject {
     /// "restore last collection only").
     nonisolated private static let lastCollectionKey = "AtelierLastCollectionID"
 
-    /// Whether the one-shot restore VALIDATION has run (so a later folder refresh
-    /// doesn't keep re-checking the seeded collection).
-    private var didValidateRestore = false
-
     // MARK: - Navigation intents
 
     /// Select a top-level sidebar destination — resets the within-collection
@@ -127,7 +123,7 @@ final class NavModel: ObservableObject {
 
     /// The sidebar destination to START at: the last-opened collection, else Home.
     /// UI smoke tests launch at Home (`-uitest-fresh-nav`). Existence is validated
-    /// later, once the folder list loads (`pruneRestoredPathIfMissing`).
+    /// later, once the folder list loads (``reconcile(using:)``).
     nonisolated private static func restoredSelection() -> SidebarItem {
         guard
             !ProcessInfo.processInfo.arguments.contains("-uitest-fresh-nav"),
@@ -137,34 +133,53 @@ final class NavModel: ObservableObject {
         return .collection(id)
     }
 
-    /// Fall back to Home if the restored sidebar collection no longer exists, once
-    /// the folder list has loaded. Runs at most once; a no-op for the common case.
-    /// (Name kept for the `ContentView` call site.)
-    func pruneRestoredPathIfMissing(using collections: [Collection]) {
-        guard !didValidateRestore, !collections.isEmpty else { return }
-        didValidateRestore = true
-        guard case .collection(let id) = sidebarSelection else { return }
-        if !collections.contains(where: { $0.id == id }) { sidebarSelection = .home }
-    }
-}
+    // MARK: - Route reconcile (043 · 3A)
 
-// MARK: - Pure breadcrumb helper (SwiftUI-free, unit-testable)
-
-/// The root→leaf ancestor chain of `collectionID` within the flat `collections`
-/// list (004-P1 breadcrumb). Walks UP via `parentCollectionID` collecting each
-/// ancestor, then reverses to root-first. **Cycle-safe**: a already-visited id
-/// terminates the walk (a corrupt parent cycle can't hang the UI), mirroring
-/// `FolderNode.tree`'s defensive posture. Returns `[]` if `collectionID` isn't
-/// in the list.
-func collectionBreadcrumb(for collectionID: UUID, in collections: [Collection]) -> [Collection] {
-    let byID = Dictionary(collections.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-    guard var current = byID[collectionID] else { return [] }
-    var chain: [Collection] = [current]
-    var visited: Set<UUID> = [current.id]
-    while let parentID = current.parentCollectionID, let parent = byID[parentID] {
-        if !visited.insert(parent.id).inserted { break } // cycle guard
-        chain.append(parent)
-        current = parent
+    /// Reconcile route state against the live collection set — run on every folder
+    /// refresh (launch restore-validation, and after a delete removes a subtree).
+    /// A drill-down `path` truncates at the first entry whose collection is gone;
+    /// a deleted sidebar collection falls back to Home. Non-collection routes
+    /// (Home/Search/…/Spaces) are a different domain and left untouched.
+    ///
+    /// No-op until folders load and no-op when nothing is missing — so the common
+    /// case (launch with the restored collection still present) mutates nothing,
+    /// and the `NavigationStack` observer stays quiet (004 launch semantics). An
+    /// empty list means "not yet loaded" (the DB always has Unsorted), never
+    /// "everything was deleted", so it is skipped.
+    ///
+    /// Falls back to Home rather than the deleted collection's PARENT: delete
+    /// removes the whole subtree, so the parent may be gone too, and it is no
+    /// longer in `collections` to consult. Home is the one always-valid target.
+    func reconcile(using collections: [Collection]) {
+        guard !collections.isEmpty else { return }
+        let ids = Set(collections.map(\.id))
+        let result = Self.reconciled(selection: sidebarSelection, path: path, existing: ids)
+        if result.path != path { path = result.path }
+        if result.selection != sidebarSelection { sidebarSelection = result.selection }
     }
-    return chain.reversed()
+
+    /// The pure core of ``reconcile(using:)`` — kept SwiftUI-free so the
+    /// truncate/fallback math is unit-tested directly (the `GridNavigation`
+    /// pattern). `existing` is the set of live collection ids.
+    nonisolated static func reconciled(
+        selection: SidebarItem,
+        path: [AppRoute],
+        existing ids: Set<UUID>
+    ) -> (selection: SidebarItem, path: [AppRoute]) {
+        // Truncate the drill-down at the first missing collection: anything deeper
+        // was reached THROUGH it, so those routes are invalid once it is gone.
+        var newPath = path
+        if let cut = path.firstIndex(where: {
+            if case .collection(let id) = $0 { return !ids.contains(id) }
+            return false
+        }) {
+            newPath = Array(path[..<cut])
+        }
+        // Fall a deleted sidebar collection back to Home.
+        var newSelection = selection
+        if case .collection(let id) = selection, !ids.contains(id) {
+            newSelection = .home
+        }
+        return (newSelection, newPath)
+    }
 }

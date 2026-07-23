@@ -34,7 +34,12 @@ struct FolderNode: Identifiable, Hashable {
         func nodes(under parent: UUID?) -> [FolderNode]? {
             guard let kids = byParent[parent], !kids.isEmpty else { return nil }
             return kids
-                .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
+                // Manual order (043 · 2B): persisted `sortIndex`, tie-broken by
+                // `(name, id)` so equal indices (unmigrated fixtures) stay stable.
+                .sorted {
+                    ($0.sortIndex, $0.name, $0.id.uuidString)
+                        < ($1.sortIndex, $1.name, $1.id.uuidString)
+                }
                 .map { FolderNode(id: $0.id, name: $0.name, children: nodes(under: $0.id)) }
         }
         return nodes(under: nil) ?? []
@@ -879,11 +884,12 @@ final class IngestionModel: ObservableObject {
         } catch { lastError = Self.message(for: error) }
     }
 
-    /// Reparent a folder, then refresh.
-    private func applyMoveFolder(id: UUID, toParent parent: UUID?) async {
+    /// Reparent and/or reposition a folder, then refresh. `index` is the destination
+    /// slot (nil = append); it flows straight to `moveCollection` (043 · Phase C).
+    private func applyMoveFolder(id: UUID, toParent parent: UUID?, index: Int? = nil) async {
         guard let services else { return }
         do {
-            try await services.moveCollection(id: id, toParent: parent)
+            try await services.moveCollection(id: id, toParent: parent, index: index)
             await refreshFolders()
             loadContents(of: selectedFolderID)
         } catch { lastError = Self.message(for: error) }
@@ -996,16 +1002,36 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Reparent a folder (`nil` ⇒ top level). Rejects cycles / Unsorted. Undoable.
-    func moveFolder(id: UUID, toParent parent: UUID?) {
+    /// Reparent and/or reposition a folder (`nil` parent ⇒ top level; `index` nil ⇒
+    /// append). Rejects cycles / Unsorted. Undoable — the inverse restores BOTH the
+    /// old parent AND the old slot (captured `sortIndex`), so undoing a drag puts
+    /// the folder back exactly where it was (043 · Phase C).
+    func moveFolder(id: UUID, toParent parent: UUID?, index: Int? = nil) {
         guard id != unsortedFolderID, services != nil else { return }
-        let oldParent = folders.first { $0.id == id }?.parentCollectionID
-        enqueueUndoable { await self.applyMoveFolder(id: id, toParent: parent) }
-        if oldParent != parent {
+        let old = folders.first { $0.id == id }
+        let oldParent = old?.parentCollectionID
+        let oldIndex = old?.sortIndex
+        enqueueUndoable { await self.applyMoveFolder(id: id, toParent: parent, index: index) }
+        if oldParent != parent || index != nil {
             registerReversible("Move Folder",
-                primary: { self.enqueueUndoable { await self.applyMoveFolder(id: id, toParent: parent) } },
-                inverse: { self.enqueueUndoable { await self.applyMoveFolder(id: id, toParent: oldParent) } })
+                primary: {
+                    self.enqueueUndoable {
+                        await self.applyMoveFolder(id: id, toParent: parent, index: index)
+                    }
+                },
+                inverse: {
+                    self.enqueueUndoable {
+                        await self.applyMoveFolder(id: id, toParent: oldParent, index: oldIndex)
+                    }
+                })
         }
+    }
+
+    /// Apply a routed outline-view drop (043 · Phase C). `.reject` is a no-op; a
+    /// `.move` funnels through the undoable ``moveFolder(id:toParent:index:)``.
+    func applyCollectionDrop(_ drop: CollectionDrop, dragged: UUID) {
+        guard case let .move(parent, index) = drop else { return }
+        moveFolder(id: dragged, toParent: parent, index: index)
     }
 
     /// Run a folder mutation, refresh the tree, and (optionally, when the

@@ -21,8 +21,19 @@ enum CollectionTargets {
         let unsorted = roots.filter { $0.id == unsortedID }
         let rest = roots
             .filter { $0.id != unsortedID }
-            .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
+            // Manual order (043 · 2B): persisted `sortIndex`, tie-broken by
+            // `(name, id)` so equal indices (unmigrated fixtures) stay stable.
+            .sorted { byManualOrder($0, $1) }
         return unsorted + rest
+    }
+
+    /// The shared sibling-order comparator (043 · 2B): persisted `sortIndex`
+    /// first, then `(name, id)` as a stable tiebreak. Used wherever one sibling
+    /// group is displayed in manual order (gallery roots, a collection's
+    /// subfolders); the flat cross-tree `folderMoveTargets` list stays alphabetical
+    /// because `sortIndex` is only meaningful within a single parent.
+    static func byManualOrder(_ a: Collection, _ b: Collection) -> Bool {
+        (a.sortIndex, a.name, a.id.uuidString) < (b.sortIndex, b.name, b.id.uuidString)
     }
 
     /// The move/copy targets reachable FROM `currentID` (009 · N5/N6): the
@@ -36,10 +47,113 @@ enum CollectionTargets {
     ) -> MoveTargets {
         let subfolders = folders
             .filter { $0.parentCollectionID == currentID }
-            .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
+            .sorted { byManualOrder($0, $1) }
         let roots = galleryRoots(folders, unsortedID: unsortedID)
             .filter { $0.id != currentID }
         return MoveTargets(subfolders: subfolders, roots: roots)
+    }
+
+    /// The collections `folderID` may be REPARENTED under (043). A valid new
+    /// parent is any collection EXCEPT: `folderID` itself, any of its descendants
+    /// (that would form a cycle — the service's `moveCollection` rejects it too),
+    /// its CURRENT parent (moving there is a no-op), and the protected Unsorted
+    /// root (you un-nest to top level via the separate "(Top Level)" action, and
+    /// Unsorted is not a user-facing folder to file things under). Ordered by
+    /// `(name, id)` for a stable menu. Pure — unit-tested directly.
+    static func folderMoveTargets(
+        for folderID: UUID, folders: [Collection], unsortedID: UUID
+    ) -> [Collection] {
+        let currentParent = folders.first { $0.id == folderID }?.parentCollectionID
+        var blocked = descendantIDs(of: folderID, in: folders)
+        blocked.insert(folderID)
+        blocked.insert(unsortedID)
+        if let currentParent { blocked.insert(currentParent) }
+        return folders
+            .filter { !blocked.contains($0.id) }
+            .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
+    }
+
+    /// A collection's siblings (children of `parent`, `nil` = roots) in manual
+    /// order — `sortIndex`, tie-broken by `(name, id)`. The order the outline view
+    /// renders and the drop router indexes against.
+    static func orderedChildren(of parent: UUID?, in folders: [Collection]) -> [Collection] {
+        folders.filter { $0.parentCollectionID == parent }.sorted(by: byManualOrder)
+    }
+
+    /// Resolve an `NSOutlineView` drop into a concrete move (043 · Phase C · 12A).
+    /// Pure + AppKit-free so the drag brain is unit-tested without a live view.
+    ///
+    /// The coordinator translates the AppKit drop into these terms:
+    ///   • `childIndex == nil` — dropped ON the `proposedParent` row: NEST the
+    ///     dragged folder into it and append (`NSOutlineViewDropOnItemIndex`).
+    ///   • `childIndex == i` — dropped BETWEEN rows, as the i-th child of
+    ///     `proposedParent` (`nil` = the root group). `i` counts positions in the
+    ///     parent's CURRENT child list, which INCLUDES the dragged folder when it
+    ///     is already a child there.
+    ///
+    /// Returns `.reject` when the move is structurally invalid (via
+    /// ``canReparent(_:into:folders:unsortedID:)``), else a `.move(toParent:index:)`
+    /// that feeds straight into `moveCollection` — both a reparent and a
+    /// same-parent reorder are the same op. For a same-parent reorder the index is
+    /// normalized to the service's "position with the dragged item removed"
+    /// contract (drop below the current slot shifts down by one).
+    static func routeOutlineDrop(
+        dragged: UUID, into proposedParent: UUID?, childIndex: Int?,
+        folders: [Collection], unsortedID: UUID
+    ) -> CollectionDrop {
+        guard canReparent(dragged, into: proposedParent, folders: folders, unsortedID: unsortedID)
+        else { return .reject }
+        // Dropped onto the row itself → nest + append.
+        guard let childIndex else { return .move(toParent: proposedParent, index: nil) }
+        // Dropped between rows. Normalize only when it's a same-parent reorder:
+        // the incoming index counts the dragged item's own slot, but the service
+        // indexes the list with it removed.
+        let currentParent = folders.first { $0.id == dragged }?.parentCollectionID
+        var index = max(childIndex, 0)
+        if currentParent == proposedParent {
+            let siblings = orderedChildren(of: proposedParent, in: folders).map(\.id)
+            if let current = siblings.firstIndex(of: dragged), childIndex > current {
+                index -= 1
+            }
+        }
+        return .move(toParent: proposedParent, index: index)
+    }
+
+    /// Whether `dragged` may be REPARENTED under `newParent` (043 · 5A) — the ONE
+    /// structural gate shared by every drag surface (the sidebar tree, the Home
+    /// gallery) so the "valid drop" rule can't drift between them. Validates
+    /// STRUCTURE only, not whether the move is a no-op: a same-parent drop is
+    /// structurally fine (the drop coordinator treats it as a reorder). A move is
+    /// rejected when `dragged` is the protected Unsorted folder (it can't be
+    /// moved), when `newParent` is Unsorted (folders aren't filed under it), or
+    /// when it would form a cycle (`newParent` is `dragged` itself or one of its
+    /// descendants). `newParent == nil` (top level) is always structurally valid.
+    /// The service's `moveCollection` re-checks the cycle as the authoritative
+    /// backstop; this mirrors it for the live drag cursor.
+    static func canReparent(
+        _ dragged: UUID, into newParent: UUID?, folders: [Collection], unsortedID: UUID
+    ) -> Bool {
+        if dragged == unsortedID { return false }
+        guard let newParent else { return true }
+        if newParent == unsortedID { return false }
+        if newParent == dragged { return false }
+        return !descendantIDs(of: dragged, in: folders).contains(newParent)
+    }
+
+    /// Every descendant id of `folderID` (its subfolders, their subfolders, …),
+    /// walked over the flat `folders` list. Cycle-safe via the `visited` set so a
+    /// corrupt parent loop can't spin. Excludes `folderID` itself.
+    static func descendantIDs(of folderID: UUID, in folders: [Collection]) -> Set<UUID> {
+        let childrenByParent = Dictionary(grouping: folders, by: { $0.parentCollectionID })
+        var result: Set<UUID> = []
+        var stack: [UUID] = [folderID]
+        while let id = stack.popLast() {
+            for child in childrenByParent[id] ?? [] where !result.contains(child.id) {
+                result.insert(child.id)
+                stack.append(child.id)
+            }
+        }
+        return result
     }
 }
 

@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -112,6 +112,63 @@ struct MigrationAppendOnlyTests {
         // "v10" falls between "v1" and "v2" — the applied SET, not its string
         // order, is what must equal the committed list.
         #expect(Set(applied) == Set(Self.committedIdentifiers))
+    }
+}
+
+// MARK: - v11 · collection sort_index back-fill (043 · 2B)
+
+@Suite("Migration v11: collection sort_index back-fill")
+struct MigrationV11Tests {
+
+    /// A migrator applied only THROUGH v10 (pre `sort_index`), so a test can seed
+    /// unordered collections and then migrate v11 over them — the upgrade path.
+    private func makeQueueThroughV10() throws -> DatabaseQueue {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v10")
+        return dbQueue
+    }
+
+    @Test("v11 back-fills a dense per-parent sort_index in (name, id) order")
+    func backfillDensePerParent() throws {
+        let dbQueue = try makeQueueThroughV10()
+        // Seed roots + children with NO sort_index (the column doesn't exist yet),
+        // deliberately out of name order.
+        try dbQueue.write { db in
+            func insert(id: String, name: String, parent: String?) throws {
+                try db.execute(sql: """
+                    INSERT INTO collection (id, name, description, cover_asset_id,
+                        created_at, updated_at, parent_collection_id, sort_mode)
+                    VALUES (?, ?, NULL, NULL, '2024-01-01 00:00:00.000',
+                        '2024-01-01 00:00:00.000', ?, 'manual');
+                    """, arguments: [id, name, parent])
+            }
+            try insert(id: "r-b", name: "Beta", parent: nil)   // roots, reversed
+            try insert(id: "r-a", name: "Alpha", parent: nil)
+            try insert(id: "c-z", name: "Zed", parent: "r-a")  // Alpha's kids, reversed
+            try insert(id: "c-m", name: "Mid", parent: "r-a")
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v11
+
+        let (roots, alphaKids) = try dbQueue.read {
+            db -> ([(String, Int)], [(String, Int)]) in
+            let roots = try Row.fetchAll(db, sql: """
+                SELECT name, sort_index FROM collection
+                WHERE parent_collection_id IS NULL ORDER BY sort_index
+                """).map { row -> (String, Int) in (row["name"], row["sort_index"]) }
+            let kids = try Row.fetchAll(db, sql: """
+                SELECT name, sort_index FROM collection
+                WHERE parent_collection_id = 'r-a' ORDER BY sort_index
+                """).map { row -> (String, Int) in (row["name"], row["sort_index"]) }
+            return (roots, kids)
+        }
+
+        // Roots by (name, id): Alpha, Beta, then the seeded Unsorted — dense 0..2.
+        #expect(roots.map(\.0) == ["Alpha", "Beta", "Unsorted"])
+        #expect(roots.map(\.1) == [0, 1, 2])
+        // Alpha's children by name: Mid, Zed — dense 0..1.
+        #expect(alphaKids.map(\.0) == ["Mid", "Zed"])
+        #expect(alphaKids.map(\.1) == [0, 1])
     }
 }
 

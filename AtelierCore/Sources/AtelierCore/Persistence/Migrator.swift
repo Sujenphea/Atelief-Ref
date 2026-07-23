@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -106,6 +106,13 @@ enum Migrator {
         // SHIPPED once released: never edit this body.
         migrator.registerMigration("v10") { db in
             try createV10Schema(db)
+        }
+
+        // v11 — manual sibling order for collections (043 · decision 2B). One
+        // additive `sort_index` column, back-filled to a dense per-parent order.
+        // SHIPPED once released: never edit this body.
+        migrator.registerMigration("v11") { db in
+            try createV11Schema(db)
         }
 
         return migrator
@@ -416,6 +423,41 @@ enum Migrator {
     private static func createV10Schema(_ db: Database) throws {
         try db.execute(sql: "ALTER TABLE asset ADD COLUMN name TEXT;")
         try db.execute(sql: "ALTER TABLE asset ADD COLUMN note TEXT;")
+    }
+
+    // MARK: - v11
+
+    /// Manual sibling order for collections (043 · decision 2B). One additive
+    /// `sort_index` column (NOT NULL, constant `DEFAULT 0` so the ALTER is legal),
+    /// then a deterministic back-fill: within each parent group (roots share the
+    /// `NULL` group) each row's index becomes the count of siblings that sort
+    /// before it by `(name, id)` — i.e. a dense `0..<n` that reproduces the prior
+    /// `(name, id)` display order, so existing libraries keep their current order.
+    /// The correlated-subquery back-fill avoids depending on window-function
+    /// support (explicit over clever). A composite index backs the ordered reads.
+    private static func createV11Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            ALTER TABLE collection ADD COLUMN sort_index INTEGER NOT NULL DEFAULT 0;
+            """)
+        // Dense per-parent back-fill. The NULL-safe parent match keeps root
+        // folders in one group; the `(name, id)` predicate is the same order the
+        // UI used before manual order existed.
+        try db.execute(sql: """
+            UPDATE collection AS c
+            SET sort_index = (
+                SELECT COUNT(*)
+                FROM collection AS s
+                WHERE (
+                        (s.parent_collection_id IS NULL AND c.parent_collection_id IS NULL)
+                        OR s.parent_collection_id = c.parent_collection_id
+                      )
+                  AND (s.name < c.name OR (s.name = c.name AND s.id < c.id))
+            );
+            """)
+        try db.execute(sql: """
+            CREATE INDEX index_collection_on_parent_sort_index
+                ON collection(parent_collection_id, sort_index);
+            """)
     }
 
     // MARK: - v6

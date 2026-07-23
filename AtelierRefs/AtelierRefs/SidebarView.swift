@@ -22,19 +22,25 @@ struct SidebarView: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
 
-    @State private var showNewCollection = false
-    @State private var newCollectionName = ""
+    /// New folder (root when `newFolderParentID == nil`, else a subfolder). One
+    /// alert serves both the section "+" and the row "New Subfolder…" (043).
+    @State private var showNewFolder = false
+    @State private var newFolderName = ""
+    @State private var newFolderParentID: UUID?
+    /// Rename a collection from the tree row's context menu (043).
+    @State private var renameTargetID: UUID?
+    @State private var renameText = ""
     @State private var showNewSpace = false
     @State private var newSpaceName = ""
     @State private var spacesExpanded = true
     @State private var collectionsExpanded = true
-    /// The sidebar row currently under an asset drag (space or collection id), for
-    /// the drop highlight. One id at a time — a drag hovers a single row.
+    /// The AppKit collections tree's measured content height (043 · Phase C), so
+    /// the non-scrolling outline view can be framed inside the sidebar ScrollView.
+    @State private var outlineHeight: CGFloat = 0
+    /// The sidebar row currently under an asset drag (a space id), for the drop
+    /// highlight. One id at a time — a drag hovers a single row. (Collections now
+    /// handle their own drops in the outline view.)
     @State private var dropTargetID: UUID?
-
-    /// The ⌥ (copy) read at drop time (009 · N3): a plain drop MOVES into a
-    /// collection, ⌥ COPIES.
-    private static let modifierReader: ModifierReading = LiveModifierReader()
 
     /// The traffic lights overlay the top-left; inset content below them.
     private let trafficLightInset: CGFloat = 40
@@ -48,28 +54,27 @@ struct SidebarView: View {
         // this can run first and no-op while `services` is still nil); kept so a
         // re-mounted sidebar refreshes.
         .task { await model.refreshSpaces() }
-        // New root collection.
-        .alert("New Collection", isPresented: $showNewCollection) {
-            TextField("Name", text: $newCollectionName)
-            Button("Create") {
-                let name = newCollectionName
-                newCollectionName = ""
-                model.createFolder(name: name, parent: nil)
-            }
-            .disabled(newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { newCollectionName = "" }
-        }
+        // New collection (root) or subfolder — one alert, titled by target.
+        .nameEntryAlert(
+            newFolderParentID == nil ? "New Collection" : "New Subfolder",
+            isPresented: $showNewFolder, text: $newFolderName, confirmLabel: "Create",
+            onConfirm: { model.createFolder(name: $0, parent: newFolderParentID) })
+        // Rename a collection.
+        .nameEntryAlert(
+            "Rename Collection",
+            isPresented: renameBinding, text: $renameText, confirmLabel: "Rename",
+            onConfirm: { name in
+                if let id = renameTargetID { model.renameFolder(id: id, to: name) }
+                renameTargetID = nil
+            },
+            onCancel: { renameTargetID = nil })
         // New space.
-        .alert("New Space", isPresented: $showNewSpace) {
-            TextField("Name", text: $newSpaceName)
-            Button("Create") {
-                let name = newSpaceName
-                newSpaceName = ""
+        .nameEntryAlert(
+            "New Space",
+            isPresented: $showNewSpace, text: $newSpaceName, confirmLabel: "Create",
+            onConfirm: { name in
                 Task { if let id = await model.createSpace(name: name) { nav.openSpace(id) } }
-            }
-            .disabled(newSpaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { newSpaceName = "" }
-        }
+            })
     }
 
     // MARK: - Expanded (273pt)
@@ -184,33 +189,38 @@ struct SidebarView: View {
     private var collectionsSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             sectionHeader("Collections", expanded: $collectionsExpanded) {
-                showNewCollection = true
+                startNewFolder(parentID: nil)
             }
             if collectionsExpanded {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    ForEach(roots) { collection in
-                        treeRow(
-                            title: collection.name,
-                            selected: nav.sidebarSelection == .collection(collection.id),
-                            dropID: collection.id,
-                            select: { nav.selectSidebar(.collection(collection.id)) },
-                            onDrop: { handleCollectionDrop($0, into: collection.id) })
-                            .contextMenu { collectionMenu(collection) }
-                    }
-                }
+                // The AppKit NSOutlineView tree (043 · Phase C): native disclosure
+                // + live drag reorder/nest, plus asset drops onto rows. Non-scrolling
+                // — framed to its reported content height so it sits inside the
+                // sidebar's own ScrollView. Row context menu (New Subfolder / Rename
+                // / Move to / Delete) lives in the coordinator; the two text-entry
+                // actions call back into the alerts below.
+                CollectionsOutlineView(
+                    model: model, nav: nav, height: $outlineHeight,
+                    onNewSubfolder: { startNewFolder(parentID: $0) },
+                    onRename: { id in
+                        renameText = model.folders.first { $0.id == id }?.name ?? ""
+                        renameTargetID = id
+                    })
+                    .frame(height: max(outlineHeight, 1))
+                    // Extend 8pt into the sidebar's right padding so the rows /
+                    // selection reach closer to the edge.
+                    .padding(.trailing, -8)
             }
         }
     }
 
-    private var roots: [Collection] {
-        CollectionTargets.galleryRoots(model.folders, unsortedID: model.unsortedFolderID)
+    private func startNewFolder(parentID: UUID?) {
+        newFolderName = ""
+        newFolderParentID = parentID
+        showNewFolder = true
     }
 
-    @ViewBuilder
-    private func collectionMenu(_ collection: Collection) -> some View {
-        if collection.id != model.unsortedFolderID {
-            Button("Delete", role: .destructive) { model.deleteFolder(id: collection.id) }
-        }
+    private var renameBinding: Binding<Bool> {
+        Binding(get: { renameTargetID != nil }, set: { if !$0 { renameTargetID = nil } })
     }
 
     // MARK: - Shared rows
@@ -277,25 +287,6 @@ struct SidebarView: View {
     }
 
     // MARK: - Drop routing
-
-    /// Move (⌥ = copy) the dragged assets into `collectionID`. Mirrors the collection
-    /// screen's rail drop (009 · N3): the same ``routeDrop`` decision so `from == to`
-    /// / empty are refused in ONE place. `moveToCollection` reads the source from the
-    /// model's `selectedFolderID`, which is the grid the drag came from.
-    private func handleCollectionDrop(_ payload: AssetDragPayload, into collectionID: UUID) -> Bool {
-        switch routeDrop(
-            payload, onto: .collection(collectionID),
-            optionDown: Self.modifierReader.isOptionDown) {
-        case let .move(assetIDs, _, to):
-            model.moveToCollection(assetIDs: assetIDs, to: to)
-            return true
-        case let .copy(assetIDs, to):
-            model.copyToCollection(assetIDs: assetIDs, to: to)
-            return true
-        case .reject, .reorder:
-            return false
-        }
-    }
 
     /// ADD the dragged assets to `spaceID` (a space is a placement board — always
     /// additive, never a move). An empty payload is refused.

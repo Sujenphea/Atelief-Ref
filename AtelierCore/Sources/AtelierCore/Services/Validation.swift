@@ -24,6 +24,39 @@ enum Validation {
         return trimmed
     }
 
+    /// Disambiguate `desired` against its sibling names, Finder-style (043 · open
+    /// item 2 · policy 2c). A name with no collision is returned unchanged; a
+    /// collision appends the smallest ` N` (N ≥ 2) that is free — so a folder
+    /// named "Refs" created three times under one parent becomes "Refs",
+    /// "Refs 2", "Refs 3". An already-numbered desired name ("Refs 2") has its
+    /// trailing index stripped first so families collapse onto one base rather
+    /// than nesting ("Refs 2 2"). Matching is case-insensitive; the ORIGINAL
+    /// casing of the base is preserved.
+    ///
+    /// `desired` must already be trimmed/non-empty (run `collectionName` first).
+    /// `siblings` is the names of the folders the new/renamed folder will sit
+    /// beside — for a rename, EXCLUDING the folder itself (else it collides with
+    /// its own current name and drifts on every no-op rename).
+    static func uniqueCollectionName(_ desired: String, among siblings: [String]) -> String {
+        let taken = Set(siblings.map { $0.lowercased() })
+        guard taken.contains(desired.lowercased()) else { return desired }
+        let base = strippedTrailingIndex(desired)
+        var k = 2
+        while taken.contains("\(base) \(k)".lowercased()) { k += 1 }
+        return "\(base) \(k)"
+    }
+
+    /// Drop a trailing " N" (N an integer ≥ 2) so "Refs 2" → "Refs"; leaves a
+    /// name with no such suffix — and "Refs 0"/"Refs 1" (below the numbering
+    /// floor) — unchanged. Whitespace-only bases can't occur: `desired` is
+    /// pre-trimmed, so a match always leaves a non-empty base.
+    private static func strippedTrailingIndex(_ name: String) -> String {
+        guard let r = name.range(of: #"\s+\d+$"#, options: .regularExpression),
+              let n = Int(name[r].trimmingCharacters(in: .whitespaces)), n >= 2
+        else { return name }
+        return String(name[..<r.lowerBound])
+    }
+
     /// Normalize a tag name for persist/lookup: trim, drop a single leading `#`
     /// (a UI affordance — the search prompt reads "…or #tag" — not part of the
     /// stored name), then trim again (handles "# sf"). Non-throwing; may return
