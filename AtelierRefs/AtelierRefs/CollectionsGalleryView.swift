@@ -80,38 +80,32 @@ struct CollectionsGalleryView: View {
             await model.refreshSpaceStackPreviews()
         }
         // Rename collection.
-        .alert("Rename Collection", isPresented: renameBinding) {
-            TextField("Name", text: $renameText)
-            Button("Rename") {
-                if let target = renameTarget { model.renameFolder(id: target.id, to: renameText) }
+        .nameEntryAlert(
+            "Rename Collection",
+            isPresented: renameBinding, text: $renameText, confirmLabel: "Rename",
+            onConfirm: { name in
+                if let target = renameTarget { model.renameFolder(id: target.id, to: name) }
                 renameTarget = nil
-            }
-            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { renameTarget = nil }
-        }
+            },
+            onCancel: { renameTarget = nil })
         // New subfolder.
-        .alert("New Subfolder", isPresented: subfolderBinding) {
-            TextField("Name", text: $subfolderName)
-            Button("Create") {
-                if let parent = subfolderParent {
-                    model.createFolder(name: subfolderName, parent: parent.id)
-                }
-                subfolderName = ""
+        .nameEntryAlert(
+            "New Subfolder",
+            isPresented: subfolderBinding, text: $subfolderName, confirmLabel: "Create",
+            onConfirm: { name in
+                if let parent = subfolderParent { model.createFolder(name: name, parent: parent.id) }
                 subfolderParent = nil
-            }
-            .disabled(subfolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { subfolderName = ""; subfolderParent = nil }
-        }
+            },
+            onCancel: { subfolderParent = nil })
         // Rename space.
-        .alert("Rename Space", isPresented: spaceRenameBinding) {
-            TextField("Name", text: $spaceRenameText)
-            Button("Rename") {
-                if let target = spaceRenameTarget { model.renameSpace(id: target.id, to: spaceRenameText) }
+        .nameEntryAlert(
+            "Rename Space",
+            isPresented: spaceRenameBinding, text: $spaceRenameText, confirmLabel: "Rename",
+            onConfirm: { name in
+                if let target = spaceRenameTarget { model.renameSpace(id: target.id, to: name) }
                 spaceRenameTarget = nil
-            }
-            .disabled(spaceRenameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { spaceRenameTarget = nil }
-        }
+            },
+            onCancel: { spaceRenameTarget = nil })
         // Batch delete confirmation (one dialog for the whole marquee selection).
         .confirmationDialog(
             "Delete \(selectedCardIDs.count) \(selectedCardIDs.count == 1 ? "item" : "items")?",

@@ -55,39 +55,26 @@ struct SidebarView: View {
         // re-mounted sidebar refreshes.
         .task { await model.refreshSpaces() }
         // New collection (root) or subfolder — one alert, titled by target.
-        .alert(newFolderParentID == nil ? "New Collection" : "New Subfolder",
-               isPresented: $showNewFolder) {
-            TextField("Name", text: $newFolderName)
-            Button("Create") {
-                let name = newFolderName
-                let parent = newFolderParentID
-                newFolderName = ""
-                model.createFolder(name: name, parent: parent)
-            }
-            .disabled(newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { newFolderName = "" }
-        }
+        .nameEntryAlert(
+            newFolderParentID == nil ? "New Collection" : "New Subfolder",
+            isPresented: $showNewFolder, text: $newFolderName, confirmLabel: "Create",
+            onConfirm: { model.createFolder(name: $0, parent: newFolderParentID) })
         // Rename a collection.
-        .alert("Rename Collection", isPresented: renameBinding) {
-            TextField("Name", text: $renameText)
-            Button("Rename") {
-                if let id = renameTargetID { model.renameFolder(id: id, to: renameText) }
+        .nameEntryAlert(
+            "Rename Collection",
+            isPresented: renameBinding, text: $renameText, confirmLabel: "Rename",
+            onConfirm: { name in
+                if let id = renameTargetID { model.renameFolder(id: id, to: name) }
                 renameTargetID = nil
-            }
-            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { renameTargetID = nil }
-        }
+            },
+            onCancel: { renameTargetID = nil })
         // New space.
-        .alert("New Space", isPresented: $showNewSpace) {
-            TextField("Name", text: $newSpaceName)
-            Button("Create") {
-                let name = newSpaceName
-                newSpaceName = ""
+        .nameEntryAlert(
+            "New Space",
+            isPresented: $showNewSpace, text: $newSpaceName, confirmLabel: "Create",
+            onConfirm: { name in
                 Task { if let id = await model.createSpace(name: name) { nav.openSpace(id) } }
-            }
-            .disabled(newSpaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { newSpaceName = "" }
-        }
+            })
     }
 
     // MARK: - Expanded (273pt)

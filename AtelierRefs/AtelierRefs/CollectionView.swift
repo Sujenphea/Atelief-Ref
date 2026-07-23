@@ -180,27 +180,19 @@ struct CollectionView: View {
         }
         .padding()
         // New subfolder (from the header action or a chip's context menu).
-        .alert("New Subfolder", isPresented: $showNewSubfolder) {
-            TextField("Name", text: $newSubfolderName)
-            Button("Create") {
-                let name = newSubfolderName
-                let parent = newSubfolderParentID ?? collectionID
-                newSubfolderName = ""
-                model.createFolder(name: name, parent: parent)
-            }
-            .disabled(newSubfolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { newSubfolderName = "" }
-        }
+        .nameEntryAlert(
+            "New Subfolder",
+            isPresented: $showNewSubfolder, text: $newSubfolderName, confirmLabel: "Create",
+            onConfirm: { model.createFolder(name: $0, parent: newSubfolderParentID ?? collectionID) })
         // Rename a subfolder.
-        .alert("Rename Collection", isPresented: renameBinding) {
-            TextField("Name", text: $renameText)
-            Button("Rename") {
-                if let id = renameTargetID { model.renameFolder(id: id, to: renameText) }
+        .nameEntryAlert(
+            "Rename Collection",
+            isPresented: renameBinding, text: $renameText, confirmLabel: "Rename",
+            onConfirm: { name in
+                if let id = renameTargetID { model.renameFolder(id: id, to: name) }
                 renameTargetID = nil
-            }
-            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { renameTargetID = nil }
-        }
+            },
+            onCancel: { renameTargetID = nil })
         // The whole collection pane is the drop target (the explicit dropzone is
         // gone): a Finder file, a browser image, or a dragged web URL dropped
         // anywhere here imports into this collection. Internal reorder drags carry
