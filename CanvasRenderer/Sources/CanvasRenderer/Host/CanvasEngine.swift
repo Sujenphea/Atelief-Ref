@@ -557,6 +557,40 @@ public final class CanvasEngine {
             .max { $0.z < $1.z }
     }
 
+    /// The ids of every tile whose stored world frame intersects the marquee's
+    /// `worldRect` (049 · D2 / D14 — rubber-band selection). Hit-tests **all**
+    /// provider tiles, offscreen included — NOT just the culled-visible set — so a
+    /// marquee that grows under edge auto-pan still catches tiles the viewport has
+    /// not reached (a visible-only test would be fast but wrong at the edges). It
+    /// is z-independent (a box selects tiles at any stacking order) and skips
+    /// degenerate tiles (the culler drops them too). O(N) per call at board scale
+    /// — no spatial index (premature here). Pure + window-free, so the hit contract
+    /// is unit-testable like the grid's `marqueeIndices`.
+    public func tiles(inWorldRect worldRect: CGRect) -> Set<Int> {
+        var hits = Set<Int>()
+        for tile in provider.tiles where !tile.isDegenerate {
+            if Self.marqueeIntersects(worldRect, tile.worldFrame) { hits.insert(tile.id) }
+        }
+        return hits
+    }
+
+    /// Overlap between a marquee rect `a` and a tile frame `b`, boundary-aware —
+    /// the SAME rule the grid's `MarqueeMath.rectsIntersect` uses (replicated here,
+    /// not shared, to keep this package dependency-free — the predicate is five
+    /// lines and the two live in different modules):
+    ///
+    /// - A marquee WITH area uses STRICT overlap, so a drag stopping exactly on a
+    ///   tile edge doesn't sweep that neighbour in.
+    /// - A degenerate marquee (zero-area / axis-aligned thin, `isEmpty`) falls back
+    ///   to edge-INCLUSIVE overlap so it still registers the tile it lands inside
+    ///   (`CGRect.intersects` is false for a zero-area rect).
+    static func marqueeIntersects(_ a: CGRect, _ b: CGRect) -> Bool {
+        if a.isEmpty {
+            return a.minX <= b.maxX && b.minX <= a.maxX && a.minY <= b.maxY && b.minY <= a.maxY
+        }
+        return a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY
+    }
+
     /// Render the ▶ glyph once: a white triangle in a translucent dark disc.
     private static func makePlayBadgeImage() -> CGImage? {
         let side = 128

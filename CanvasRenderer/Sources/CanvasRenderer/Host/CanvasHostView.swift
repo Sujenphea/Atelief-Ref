@@ -60,6 +60,70 @@ public final class CanvasHostView: NSView {
     /// Screen-point movement before a press-and-move becomes a drag (not a click).
     static let dragThreshold: CGFloat = 3
 
+    // MARK: Marquee tracking (rubber-band selection — 049 · D2 / PR 2)
+
+    /// The marquee's anchor in **world** space, captured at the empty-space
+    /// `mouseDown`, or `nil` when no marquee is armed. World-anchored (not screen)
+    /// so edge auto-pan — which mutates the transform under a stationary pointer —
+    /// grows the box correctly: the anchor stays pinned to the world point where the
+    /// drag began while the opposite corner tracks the pointer through the new
+    /// transform.
+    private var marqueeAnchorWorld: CGPoint?
+    /// The latest pointer position in screen space during a marquee — the moving
+    /// corner, and the input the auto-pan ramp reads each vsync (the pointer doesn't
+    /// move on its own while auto-panning, so the tick reuses this).
+    private var marqueeCurrentScreen: CGPoint?
+    /// The selection captured when the marquee began: empty for a plain marquee, the
+    /// prior selection for a ⇧-additive one (`.marquee(hits:base:)` unions the two).
+    private var marqueeBase: Set<Int> = []
+    /// Whether the marquee has passed the drag threshold. Below it an empty-space
+    /// mouse-up is a click (the deferred click-to-clear), at/above it it's a marquee.
+    private var isMarqueeing = false
+    /// The translucent rubber-band overlay, in SCREEN space (like the create
+    /// preview). Created on the first marquee tick, removed on end.
+    private var marqueeLayer: CALayer?
+    /// The display link driving edge auto-pan while marqueeing. Vended off this view
+    /// (an `NSView` can vend its own link); a minimal peer of the grid's
+    /// `DisplayLinkPump`, inlined here to keep `CanvasRenderer` dependency-free.
+    private var autoPanLink: CADisplayLink?
+
+    /// Screen-point edge band within which a marquee triggers auto-pan, and the
+    /// pt/sec velocity ramp across it — mirrors the grid marquee's `edgeZone` /
+    /// `minSpeed` / `maxSpeed` so the feel matches.
+    static let autoPanEdgeZone: CGFloat = 28
+    static let autoPanMinSpeed: CGFloat = 180
+    static let autoPanMaxSpeed: CGFloat = 1080
+
+    /// The screen-space auto-pan velocity (pt/sec) for a marquee whose pointer sits
+    /// at `pointer` in a viewport of `size`. Zero when the pointer is clear of all
+    /// four edge zones; otherwise, per axis, it ramps from `autoPanMinSpeed` at the
+    /// zone's inner edge to `autoPanMaxSpeed` at (or past) the viewport edge.
+    ///
+    /// The SIGN pans so the world under the pointer EXTENDS toward that edge (content
+    /// shifts the opposite way, matching `pan(byScreenDelta:)`'s translation add):
+    /// near the LEFT/TOP edge the delta is positive (translation grows → the world
+    /// point under the pointer moves toward the origin → the box extends left/up);
+    /// near the RIGHT/BOTTOM edge it is negative. Pure + static so the ramp is
+    /// unit-testable without a window or display link.
+    static func marqueeAutoPanVelocity(pointer: CGPoint, in size: CGSize) -> CGSize {
+        func axis(_ p: CGFloat, _ extent: CGFloat) -> CGFloat {
+            if p < autoPanEdgeZone {
+                return autoPanSpeed(penetration: autoPanEdgeZone - p)          // toward origin
+            } else if p > extent - autoPanEdgeZone {
+                return -autoPanSpeed(penetration: p - (extent - autoPanEdgeZone)) // away from origin
+            }
+            return 0
+        }
+        return CGSize(width: axis(pointer.x, size.width), height: axis(pointer.y, size.height))
+    }
+
+    /// Velocity ramp (pt/sec): penetration 0 → `autoPanMinSpeed`, a full zone depth
+    /// (or past the viewport edge) → `autoPanMaxSpeed`. Matches the grid marquee.
+    private static func autoPanSpeed(penetration: CGFloat) -> CGFloat {
+        let t = min(max(penetration / autoPanEdgeZone, 0), 1)
+        return autoPanMinSpeed + t * (autoPanMaxSpeed - autoPanMinSpeed)
+    }
+
     /// Whether a cumulative press-move `delta` (screen points) is far enough to
     /// count as a drag rather than a click. Pure + static so it's unit-testable.
     static func exceedsDragThreshold(_ delta: CGSize, threshold: CGFloat = dragThreshold) -> Bool {
@@ -109,6 +173,13 @@ public final class CanvasHostView: NSView {
         }
     }
 
+    /// If the host leaves its window mid-gesture (e.g. a content reload rebuilds it
+    /// via `.id`), invalidate the auto-pan link so it can't retain a detached view.
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { endMarquee() }
+    }
+
     public override func scrollWheel(with event: NSEvent) {
         engine.pan(byScreenDelta: CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY))
     }
@@ -125,13 +196,14 @@ public final class CanvasHostView: NSView {
         // Become first responder so the ⌫ / Delete key reaches ``keyDown``.
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
+        resetGestureState()
 
-        // Create tools rubber-band a new element instead of selecting / dragging.
+        // Gesture precedence (049 · D8), highest to lowest:
+        //  1. A create tool (`.frame` / `.text`) → rubber-band a NEW element.
+        //  2. `.select` on a TILE → a drag candidate (press routing selects).
+        //  3. `.select` on EMPTY space → a marquee candidate (or click-to-clear).
         if tool != .select {
             createStartPoint = point
-            dragStartPoint = nil
-            dragCandidateTileID = nil
-            isDragging = false
             return
         }
 
@@ -142,7 +214,8 @@ public final class CanvasHostView: NSView {
         if let tileID {
             // Route the press through the selection reducer: ⇧/⌘ act on the down
             // edge; a plain press on a SELECTED tile defers (so a drag carries the
-            // whole selection), collapsing to one only if it stays a click.
+            // whole selection), collapsing to one only if it stays a click. Arm the
+            // tile as the drag candidate.
             let routing = canvasPressRouting(
                 tileID: tileID,
                 isSelected: engine.selectedTileIDs.contains(tileID),
@@ -150,17 +223,34 @@ public final class CanvasHostView: NSView {
             if let press = routing.pressAction { applySelection(press) }
             pendingClickAction = routing.clickAction
             if event.clickCount == 2 { onActivateTile?(tileID) }
+            dragStartPoint = point
+            dragCandidateTileID = tileID
         } else {
-            // Empty space: defer a click-to-clear to mouse-UP (so a future marquee
-            // drag from the void won't clear). No drag candidate — a plain drag over
-            // empty space does nothing today (panning stays on scroll).
-            pendingClickAction = engine.selectedTileIDs.isEmpty ? nil : .clear
+            // Empty space: arm a rubber-band marquee anchored in WORLD space (so
+            // edge auto-pan grows it correctly), and defer a click-to-clear to
+            // mouse-UP — applied only if the press never becomes a marquee. A ⇧
+            // press is additive: it neither clears on a bare click nor resets the
+            // base (the marquee unions its hits onto the current selection).
+            dragStartPoint = point
+            marqueeAnchorWorld = engine.transform.screenToWorld(point)
+            marqueeCurrentScreen = point
+            marqueeBase = shift ? engine.selectedTileIDs : []
+            pendingClickAction = (!shift && !engine.selectedTileIDs.isEmpty) ? .clear : nil
         }
+    }
 
-        // Arm click-vs-drag: a tile hit is a drag candidate; empty space isn't.
-        dragStartPoint = point
-        dragCandidateTileID = tileID
+    /// Clear all transient press/drag/marquee state so a fresh `mouseDown` never
+    /// inherits a stale candidate from an interrupted gesture.
+    private func resetGestureState() {
+        createStartPoint = nil
+        dragStartPoint = nil
+        dragCandidateTileID = nil
+        pendingClickAction = nil
         isDragging = false
+        marqueeAnchorWorld = nil
+        marqueeCurrentScreen = nil
+        marqueeBase = []
+        isMarqueeing = false
     }
 
     /// Once movement passes the threshold, begin (then continue) a live drag of
@@ -172,6 +262,22 @@ public final class CanvasHostView: NSView {
         // Rubber-band a new element under a create tool.
         if tool != .select, let start = createStartPoint {
             updateCreatePreview(from: start, to: point)
+            return
+        }
+
+        // Marquee on empty space: no tile candidate, but an armed world anchor.
+        // Once past the threshold it selects live and (if the pointer nears an
+        // edge) auto-pans; below the threshold it is still a pending click-to-clear.
+        if dragCandidateTileID == nil, marqueeAnchorWorld != nil, let start = dragStartPoint {
+            marqueeCurrentScreen = point
+            if !isMarqueeing {
+                let delta = CGSize(width: point.x - start.x, height: point.y - start.y)
+                guard Self.exceedsDragThreshold(delta) else { return }
+                isMarqueeing = true
+                pendingClickAction = nil // it became a marquee, not a click
+            }
+            updateMarquee()
+            updateAutoPan()
             return
         }
 
@@ -204,15 +310,20 @@ public final class CanvasHostView: NSView {
             return
         }
 
-        defer {
-            dragStartPoint = nil
-            dragCandidateTileID = nil
-            pendingClickAction = nil
-            isDragging = false
+        // A marquee applies its hits live on every tick, so mouse-UP only tears the
+        // gesture down. A below-threshold press (never a marquee) falls through to
+        // the plain-click handling below — its deferred click-to-clear.
+        if isMarqueeing {
+            endMarquee()
+            resetGestureState()
+            return
         }
+
+        defer { resetGestureState() }
         guard isDragging else {
             // A press with no drag is a plain click: apply the deferred selection
-            // action (collapse-a-selected-tile-to-one, or empty-space clear).
+            // action (collapse-a-selected-tile-to-one, or empty-space clear). This
+            // covers the below-threshold marquee press → click-to-clear too.
             if let action = pendingClickAction { applySelection(action) }
             return
         }
@@ -293,6 +404,96 @@ public final class CanvasHostView: NSView {
     /// Default world size for a click-placed (undragged) text box.
     static let defaultTextWorldWidth: CGFloat = 260
     static let defaultTextWorldHeight: CGFloat = 72
+
+    // MARK: Marquee (rubber-band selection → live hit set)
+
+    /// Recompute the marquee's WORLD rect from the pinned anchor + current pointer
+    /// under the CURRENT transform, apply the hit set through the reducer (unioned
+    /// with the ⇧-additive base), and redraw the screen-space overlay. Called on
+    /// every drag tick AND every auto-pan vsync — the transform can change between
+    /// them, so the world rect (and thus the hits and the overlay) is always derived
+    /// fresh, never cached in screen space.
+    private func updateMarquee() {
+        guard let anchorWorld = marqueeAnchorWorld, let screen = marqueeCurrentScreen else { return }
+        let currentWorld = engine.transform.screenToWorld(screen)
+        let worldRect = Self.normalizedRect(from: anchorWorld, to: currentWorld)
+        applySelection(.marquee(hits: engine.tiles(inWorldRect: worldRect), base: marqueeBase))
+        drawMarquee(worldRect: worldRect)
+    }
+
+    /// Draw / move the translucent rubber-band overlay. The world rect is mapped to
+    /// screen for display, so as auto-pan shifts the transform the box appears pinned
+    /// to the world while its on-screen frame tracks along. Actions are disabled so a
+    /// per-tick frame change never implicitly animates.
+    private func drawMarquee(worldRect: CGRect) {
+        let layer = marqueeLayer ?? makeMarqueeLayer()
+        marqueeLayer = layer
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.frame = engine.transform.worldToScreen(worldRect)
+        layer.isHidden = false
+        layer.zPosition = .greatestFiniteMagnitude
+        CATransaction.commit()
+    }
+
+    private func makeMarqueeLayer() -> CALayer {
+        let layer = CALayer()
+        layer.borderWidth = 1
+        layer.borderColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.7)
+        layer.backgroundColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.12)
+        engine.rootLayer.addSublayer(layer)
+        return layer
+    }
+
+    /// Tear down the marquee overlay + auto-pan link at the end (or cancel) of a
+    /// marquee. The selection was committed live on each tick, so nothing to persist.
+    private func endMarquee() {
+        stopAutoPan()
+        marqueeLayer?.removeFromSuperlayer()
+        marqueeLayer = nil
+    }
+
+    // MARK: Edge auto-pan (world-anchored marquee grows under a moving transform)
+
+    /// Start or stop the auto-pan link based on whether the pointer currently sits
+    /// in an edge zone. Cheap to call every drag tick (idempotent start/stop).
+    private func updateAutoPan() {
+        guard let screen = marqueeCurrentScreen,
+              Self.marqueeAutoPanVelocity(pointer: screen, in: bounds.size) != .zero
+        else { stopAutoPan(); return }
+        startAutoPan()
+    }
+
+    private func startAutoPan() {
+        guard autoPanLink == nil, window != nil else { return }
+        let link = displayLink(target: self, selector: #selector(autoPanStep(_:)))
+        link.add(to: .main, forMode: .common)
+        autoPanLink = link
+    }
+
+    private func stopAutoPan() {
+        autoPanLink?.invalidate()
+        autoPanLink = nil
+    }
+
+    /// The link fires on the main runloop; hop back into isolation to step the pan.
+    @objc nonisolated private func autoPanStep(_ link: CADisplayLink) {
+        let dt = link.targetTimestamp - link.timestamp
+        MainActor.assumeIsolated { self.performAutoPan(dt: dt) }
+    }
+
+    /// One auto-pan step: pan the transform by the ramped velocity × the frame's
+    /// real duration, then recompute the marquee against the NEW transform (the
+    /// pointer hasn't moved in screen space, but the world under it has). Stops when
+    /// the marquee ends or the pointer leaves every edge zone.
+    private func performAutoPan(dt: CFTimeInterval) {
+        guard isMarqueeing, let screen = marqueeCurrentScreen else { stopAutoPan(); return }
+        let velocity = Self.marqueeAutoPanVelocity(pointer: screen, in: bounds.size)
+        guard velocity != .zero else { stopAutoPan(); return }
+        engine.pan(byScreenDelta: CGSize(
+            width: velocity.width * CGFloat(dt), height: velocity.height * CGFloat(dt)))
+        updateMarquee()
+    }
 
     /// Right-click: select the tile under the cursor and offer Remove / Delete.
     /// Returns `nil` (no menu) over empty space.

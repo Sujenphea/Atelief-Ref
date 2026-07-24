@@ -121,11 +121,16 @@ review; every decision below is the reviewed-and-chosen option.
    batched multi-delete/multi-restack undo (D7) + model tests (D11); action-bar
    gating on `!isEmpty`.
 
-### PR 2 — Marquee (rubber-band)
-7. Canvas-native marquee (D2, D14): world-space box reusing `marqueeRect` +
-   `DisplayLinkPump`; all-world `tiles(inScreenRect:)`; edge auto-pan pans the
-   transform + pure hit-test tests (D10, hit-test half).
-8. Full gesture precedence branch (D8).
+### PR 2 — Marquee (rubber-band) — ✅ done (change-log `233`)
+7. Canvas-native marquee (D2, D14): **world**-anchored box (the `inScreenRect`
+   name in D14 was tentative — anchoring in world space is what keeps the box
+   correct while auto-pan mutates the transform); all-world
+   `CanvasEngine.tiles(inWorldRect:)` hit-test; edge auto-pan pans the transform via
+   a minimal in-renderer `CADisplayLink` (a `DisplayLinkPump` peer — inlined, not
+   imported, so `CanvasRenderer` stays dependency-free) + pure hit-test / auto-pan
+   ramp tests (D10, hit-test half).
+8. Full gesture precedence branch (D8) — one documented `mouseDown` branch +
+   `resetGestureState()`.
 
 ## Schema / migration impact
 
