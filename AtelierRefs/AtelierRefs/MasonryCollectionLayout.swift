@@ -47,6 +47,13 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     var density: GridDensity = .default
     var spacing: CGFloat = 8
     var topInset: CGFloat = 0
+    /// The height of the scroll-away boundary header (222). When > 0 the layout
+    /// reserves this band at the TOP of the content (above `topInset`) for a header
+    /// supplementary view and pushes every item down by it — so the header scrolls
+    /// away with the content instead of pinning. 0 = no header (search / the old
+    /// behaviour). The header is NOT pinned: it lives at content y ∈ [0, headerHeight]
+    /// and scrolls off the top like any other content.
+    var headerHeight: CGFloat = 0
     /// Bumped by the host when the item set changes, so the memo key moves and the
     /// masonry re-solves even at an unchanged width.
     var itemsVersion = 0
@@ -78,6 +85,9 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     /// One attributes object per index, rebuilt in `prepare()` (036 §2 A1). The
     /// rect query returns SLICES of this array, so scrolling allocates nothing.
     private var attributesCache: [NSCollectionViewLayoutAttributes] = []
+    /// The header supplementary's attributes (222), rebuilt in `prepare()`; `nil`
+    /// when `headerHeight == 0`. Included in the rect query when it intersects.
+    private var headerAttributes: NSCollectionViewLayoutAttributes?
     /// The width the current `solved` was computed at — the ONLY thing a bounds
     /// change is allowed to compare against.
     private(set) var preparedWidth: CGFloat = 0
@@ -163,11 +173,26 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
         super.prepare()
         let width = max(availableWidth(), 1)
         let columns = density.columns(forWidth: width)
+        // The header (222) reserves a band above `topInset`; every item frame is
+        // solved with that band folded into the top inset, so the marquee /
+        // hit-test / keyboard-nav math (all riding `solved.frames`) shift with it
+        // for free — no separate offset path to keep in sync.
         solved = cache.frames(
             version: itemsVersion, width: width, columns: columns,
-            spacing: spacing, topInset: topInset,
+            spacing: spacing, topInset: topInset + headerHeight,
             aspects: { [aspects] in aspects })
         preparedWidth = width
+        // The header sits at content y ∈ [0, headerHeight], full width — NOT pinned,
+        // so it scrolls off the top with the content (the point of 222).
+        if headerHeight > 0 {
+            let attr = NSCollectionViewLayoutAttributes(
+                forSupplementaryViewOfKind: masonryHeaderKind,
+                with: IndexPath(item: 0, section: 0))
+            attr.frame = CGRect(x: 0, y: 0, width: width, height: headerHeight)
+            headerAttributes = attr
+        } else {
+            headerAttributes = nil
+        }
         // The reorder preview (040) renders in place of the real solve when set;
         // `displayedFrames` picks it, guarded on a matching item count.
         attributesCache = displayedFrames.enumerated().map { index, frame in
@@ -187,21 +212,35 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     // MARK: Queries
 
     override func layoutAttributesForElements(in rect: NSRect) -> [NSCollectionViewLayoutAttributes] {
+        // The header (222) is a single band at the top — include it whenever the
+        // query rect reaches it (only near the scroll origin), prepended so it
+        // draws with the items in the same pass.
+        var extra: [NSCollectionViewLayoutAttributes] = []
+        if let headerAttributes, headerAttributes.frame.intersects(rect) {
+            extra.append(headerAttributes)
+        }
         // While a reorder preview is active, a data item renders at its permuted
         // slot's column, breaking the round-robin structure `masonryMarqueeIndices`
         // culls by — so fall back to a plain intersection scan. It is O(N) like
         // the prepare() solve itself, and only runs during an active drag.
         if activePreview != nil {
-            return attributesCache.filter { $0.frame.intersects(rect) }
+            return extra + attributesCache.filter { $0.frame.intersects(rect) }
         }
         // `masonryMarqueeIndices` (MarqueeMath.swift:77) IS this query: analytic
         // column membership culls whole columns in O(1), and the y-monotonic
         // stacking within a column makes the vertical span a binary search.
         let hits = masonryMarqueeIndices(
             in: rect, frames: solved.frames, columns: solved.columns)
-        return hits.compactMap { index in
+        return extra + hits.compactMap { index in
             index >= 0 && index < attributesCache.count ? attributesCache[index] : nil
         }
+    }
+
+    override func layoutAttributesForSupplementaryView(
+        ofKind elementKind: NSCollectionView.SupplementaryElementKind,
+        at indexPath: IndexPath
+    ) -> NSCollectionViewLayoutAttributes? {
+        elementKind == masonryHeaderKind ? headerAttributes : nil
     }
 
     override func layoutAttributesForItem(at indexPath: IndexPath) -> NSCollectionViewLayoutAttributes? {

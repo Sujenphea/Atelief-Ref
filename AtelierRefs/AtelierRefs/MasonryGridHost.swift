@@ -127,6 +127,45 @@ struct GridHostConfiguration {
     /// in the `.looseAssets` menu for a lone hit that has bytes on disk. A no-op
     /// by default (the collection menu has no Reveal verb).
     var onReveal: (UUID) -> Void = { _ in }
+
+    // MARK: 222 — scroll-away header
+
+    /// A header hosted INSIDE the grid's scroll region (222), so it scrolls away
+    /// with the content instead of pinning above the grid. `nil` = no header (the
+    /// search grid and every prior caller). Rebuilt each body pass like the rest of
+    /// the config; the coordinator pushes it onto the live header view on update.
+    var header: AnyView?
+    /// The header's fixed height in points; must be > 0 whenever `header != nil`.
+    /// The layout reserves this band at the top and offsets every item by it.
+    var headerHeight: CGFloat = 0
+}
+
+/// The one boundary supplementary kind — the scroll-away Collection header (222).
+let masonryHeaderKind = "MasonryHeaderKind"
+
+/// Hosts the SwiftUI Collection header inside the AppKit grid's scroll region (222)
+/// as a boundary supplementary view, so it scrolls away with the content. A thin
+/// `NSView` wrapper around an `NSHostingView`; the coordinator swaps its `rootView`
+/// as the collection name / count change (the diffable data source never re-invokes
+/// the supplementary provider for a live content edit).
+final class MasonryHeaderContainer: NSView, NSCollectionViewElement {
+    static let identifier = NSUserInterfaceItemIdentifier("MasonryHeaderContainer")
+    let host = NSHostingView(rootView: AnyView(EmptyView()))
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        host.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(host)
+        NSLayoutConstraint.activate([
+            host.leadingAnchor.constraint(equalTo: leadingAnchor),
+            host.trailingAnchor.constraint(equalTo: trailingAnchor),
+            host.topAnchor.constraint(equalTo: topAnchor),
+            host.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
 /// The context-menu vocabulary a grid host offers (048). The collection grid
@@ -316,6 +355,10 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     private var scrollView: NSScrollView?
     private var collectionView: MasonryNSCollectionView?
     private var dataSource: NSCollectionViewDiffableDataSource<Int, UUID>?
+    /// The live scroll-away header view (222), retained weakly so its SwiftUI
+    /// `rootView` can be refreshed on `update` (the diffable data source does not
+    /// re-invoke the supplementary provider for an in-place content edit).
+    private weak var headerContainer: MasonryHeaderContainer?
 
     /// The AppKit marquee (036 §4 A3): background rubber-band + edge auto-scroll +
     /// click-to-clear, drawing ONE `CALayer` and mutating only changed cells per
@@ -382,6 +425,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         layout.density = configuration.density
         layout.spacing = configuration.spacing
         layout.topInset = configuration.topInset
+        layout.headerHeight = configuration.headerHeight
 
         let collectionView = MasonryNSCollectionView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         // Native selection bypassed entirely (036 §2 A1) — and A1 is read-only.
@@ -392,6 +436,13 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         collectionView.collectionViewLayout = layout
         collectionView.register(
             MasonryGridItem.self, forItemWithIdentifier: MasonryGridItem.identifier)
+        // The scroll-away header supplementary (222) — only ever materialized when
+        // `headerHeight > 0` (the collection grid); search leaves it unregistered-but-
+        // harmless since the layout emits no header attributes there.
+        collectionView.register(
+            MasonryHeaderContainer.self,
+            forSupplementaryViewOfKind: masonryHeaderKind,
+            withIdentifier: MasonryHeaderContainer.identifier)
         collectionView.prefetchDataSource = self
         collectionView.delegate = self
         // Register ONLY the intra-app asset-ids type (036 §4 A3): an external
@@ -421,6 +472,18 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
                 self.configure(cell, at: indexPath.item)
             }
             return item
+        }
+        // Supply + retain the scroll-away header (222). The provider fires when the
+        // header first materializes; `update` refreshes its content thereafter.
+        dataSource.supplementaryViewProvider = { [weak self] collectionView, kind, indexPath in
+            guard kind == masonryHeaderKind,
+                  let container = collectionView.makeSupplementaryView(
+                    ofKind: kind, withIdentifier: MasonryHeaderContainer.identifier,
+                    for: indexPath) as? MasonryHeaderContainer
+            else { return nil }
+            container.host.rootView = self?.configuration.header ?? AnyView(EmptyView())
+            self?.headerContainer = container
+            return container
         }
         collectionView.dataSource = dataSource
 
@@ -493,6 +556,15 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         layout.density = configuration.density
         layout.spacing = configuration.spacing
         layout.topInset = configuration.topInset
+
+        // Refresh the scroll-away header (222): push the latest SwiftUI content onto
+        // the live view (name / count edits never re-invoke the supplementary
+        // provider), and re-solve if the reserved band changed height.
+        headerContainer?.host.rootView = configuration.header ?? AnyView(EmptyView())
+        if layout.headerHeight != configuration.headerHeight {
+            layout.headerHeight = configuration.headerHeight
+            layout.invalidateLayout()
+        }
 
         let collectionChanged = old.collectionID != configuration.collectionID
         let versionChanged = old.itemsVersion != configuration.itemsVersion

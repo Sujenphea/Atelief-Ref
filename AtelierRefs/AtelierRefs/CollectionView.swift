@@ -68,7 +68,16 @@ struct CollectionView: View {
     @State private var renameText = ""
 
     private static let gridSpacing: CGFloat = Theme.Spacing.sm
-    private static let gridTopInset: CGFloat = Theme.Spacing.xs
+    // The gap between the scroll-away header band and the first row (222) — the
+    // layout solves items at `topInset + headerHeight`, so this IS the header→grid
+    // spacing, restored to the pre-222 12pt.
+    private static let gridTopInset: CGFloat = Theme.Spacing.md
+
+    /// The measured natural height of the header content (222), fed to the grid so
+    /// the reserved header band hugs the row instead of a fixed guess. Seeded near
+    /// the real value so the first solve doesn't overlap the top row before the
+    /// measurement settles.
+    @State private var headerHeight: CGFloat = 24
 
     // Move/copy targets, memoized (012 · CQ 1A): the eager per-cell context menus
     // share ONE computation instead of recomputing the identical folder list per
@@ -174,19 +183,32 @@ struct CollectionView: View {
     }
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            header
-            // Gate the subfolder chips on `isLoaded`: they read the same shared model
-            // state as the grid, so showing them mid-switch would flash the PREVIOUS
-            // collection's subfolders alongside the grid. (Drops route out of a
-            // collection via the sidebar rows and per-cell "Add to" context menus.)
-            if isLoaded, !model.subfolders.isEmpty {
-                subfolderChips
+        // The title row now lives INSIDE the grid so it scrolls away with the
+        // content (222); subfolder navigation lives in the sidebar's collection tree
+        // (the in-page chip row was a duplicate, so it's gone).
+        grid
+            .padding(Theme.Spacing.xl)
+            // ⌘V pastes into this collection — a hidden shortcut-only button, kept in
+            // the SwiftUI key path (the header's create button is the other entry).
+            .background {
+                Button("Paste", action: paste)
+                    .keyboardShortcut("v", modifiers: .command)
+                    .disabled(!model.isReady)
+                    .hidden()
             }
-            grid
-        }
-        .padding(Theme.Spacing.xl)
-        // New subfolder (from the header action or a chip's context menu).
+            // Measure the header's natural height off-screen so the AppKit header
+            // band (222) hugs the row; hidden + non-interactive.
+            .background(alignment: .topLeading) {
+                headerContent
+                    .fixedSize(horizontal: false, vertical: true)
+                    .hidden()
+                    .allowsHitTesting(false)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                        let next = h.rounded(.up)
+                        if abs(headerHeight - next) > 0.5 { headerHeight = next }
+                    }
+            }
+        // New subfolder (from the header action).
         .nameEntryAlert(
             "New Subfolder",
             isPresented: $showNewSubfolder, text: $newSubfolderName, confirmLabel: "Create",
@@ -222,9 +244,16 @@ struct CollectionView: View {
         }
         // Floating multi-select action bar (042). Sits BENEATH the full-window
         // detail overlay (hosted later in `body`'s ZStack), so it's hidden while a
-        // detail page is open. Shown whenever the grid has a selection.
+        // detail page is open. The import indicator floats just above it, so an
+        // in-flight batch never reflows the header (222).
         .overlay(alignment: .bottom) {
-            if model.selection.isSelecting { selectionBar }
+            VStack(spacing: Theme.Spacing.sm) {
+                importIndicator
+                if model.selection.isSelecting { selectionBar }
+            }
+            // The selection bar's own chrome supplies the bottom inset when it's up;
+            // otherwise the lone import pill needs its own.
+            .padding(.bottom, model.selection.isSelecting ? 0 : Theme.Spacing.lg)
         }
     }
 
@@ -382,19 +411,26 @@ struct CollectionView: View {
         Binding(get: { renameTargetID != nil }, set: { if !$0 { renameTargetID = nil } })
     }
 
-    private var header: some View {
+    /// The title row. Hosted INSIDE the grid's scroll region (222) so it scrolls
+    /// away with the content like Home, instead of pinning above the grid. Natural
+    /// height — the band is sized to it (see `headerHeight`), not a fixed guess. The
+    /// ⌘V paste hook lives on `content`, not here — a shortcut button embedded in the
+    /// AppKit-hosted header wouldn't be in the key path.
+    private var headerContent: some View {
         HStack(spacing: 10) {
-            Text(model.name(for: collectionID)).font(Theme.Typography.sectionTitle)
+            Text(model.name(for: collectionID))
+                .font(Theme.Typography.sectionTitle)
+                .lineLimit(1)
+                .truncationMode(.tail)
             // The title tracks `collectionID` and is always correct, but the count
             // reads the shared `items` — redact it until this collection's load
             // resolves so it can't show the previous collection's count on switch.
             Text("\(isLoaded ? model.items.count : 0) items")
                 .font(.callout).foregroundStyle(.secondary)
                 .redacted(reason: isLoaded ? [] : .placeholder)
-            importStatus
             Spacer()
             // Create a subfolder under THIS collection (043) — the always-available
-            // entry point (the chips only render once subfolders exist).
+            // entry point.
             Button {
                 newSubfolderName = ""
                 newSubfolderParentID = collectionID
@@ -407,24 +443,16 @@ struct CollectionView: View {
             .foregroundStyle(.secondary)
             .help("New subfolder in this collection")
         }
-        // The visible Paste button was removed; ⌘V still pastes into this collection
-        // via this hidden shortcut-only button.
-        .background {
-            Button("Paste", action: paste)
-                .keyboardShortcut("v", modifiers: .command)
-                .disabled(!model.isReady)
-                .hidden()
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Live import feedback, re-homed from the old dropzone (3A): a compact progress
-    /// bar + count while a drop/paste batch runs. The idle status line ("Library
-    /// ready…") was removed — only active-batch progress shows now. Browser/Instagram
-    /// sweeps report separately via `BulkSweepsView`.
+    /// Live import feedback as a FLOATING pill (222), so a drop/paste batch's
+    /// progress no longer reflows the header. Only active-batch progress shows;
+    /// browser/Instagram sweeps report separately via `BulkSweepsView`.
     @ViewBuilder
-    private var importStatus: some View {
+    private var importIndicator: some View {
         if let progress = model.progress {
-            HStack(spacing: 6) {
+            HStack(spacing: Theme.Spacing.sm) {
                 ProgressView(
                     value: Double(progress.completed),
                     total: Double(max(progress.total, 1)))
@@ -432,48 +460,15 @@ struct CollectionView: View {
                 Text("\(progress.completed) / \(progress.total)")
                     .font(.caption).monospacedDigit().foregroundStyle(.secondary)
             }
+            .padding(.leading, 16)
+            .padding(.trailing, 16)
+            .padding(.vertical, Theme.Spacing.sm)
+            .background(Theme.Colors.field, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.35), radius: 14, y: 5)
         }
     }
 
-    private var subfolderChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(model.subfolders) { folder in
-                    Button {
-                        nav.drillIntoCollection(folder.id)
-                    } label: {
-                        Label(folder.name, systemImage: "folder")
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(.quaternary, in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu { subfolderMenu(folder) }
-                }
-            }
-            .padding(.vertical, 2)
-        }
-    }
-
-    /// The context menu for a subfolder chip (043): manage the subfolder without
-    /// leaving this screen. A subfolder is never Unsorted, so all actions apply.
-    @ViewBuilder
-    private func subfolderMenu(_ folder: Collection) -> some View {
-        Button("New Subfolder…") {
-            newSubfolderName = ""
-            newSubfolderParentID = folder.id
-            showNewSubfolder = true
-        }
-        Button("Rename…") {
-            renameText = folder.name
-            renameTargetID = folder.id
-        }
-        CollectionMoveToMenu(
-            folderID: folder.id, folders: model.folders, unsortedID: model.unsortedFolderID
-        ) { model.moveFolder(id: folder.id, toParent: $0) }
-        Divider()
-        Button("Delete", role: .destructive) { model.deleteFolder(id: folder.id) }
-    }
 
     private var grid: some View {
         GeometryReader { geo in
@@ -487,8 +482,16 @@ struct CollectionView: View {
                     appKitGrid(geo: geo)
                 } else {
                     // This collection's load hasn't resolved — show a masonry
-                    // skeleton, never the previous collection's items.
-                    ScrollView { gridSkeleton(width: geo.size.width) }
+                    // skeleton, never the previous collection's items. The header
+                    // rides above it (in SwiftUI here; it moves into the grid's own
+                    // scroll region once loaded) so the title never blinks out on a
+                    // collection switch (222).
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: Self.gridTopInset) {
+                            headerContent
+                            gridSkeleton(width: geo.size.width)
+                        }
+                    }
                 }
             }
             // Capture the width for the toolbar/⌘ density clamp. Guarded to a real
@@ -586,7 +589,11 @@ struct CollectionView: View {
             onCopyToCollection: { model.copyToCollection(assetIDs: $0, to: $1) },
             onSetCover: { model.setCollectionCover(collectionID: collectionID, assetID: $0) },
             onRemoveFromCollection: { model.removeFromFolder(assetIDs: $0) },
-            onDelete: { model.requestDelete(assetIDs: $0) }))
+            onDelete: { model.requestDelete(assetIDs: $0) },
+            // 222 — the title row scrolls away inside the grid's own scroll region,
+            // its band sized to the row's measured natural height.
+            header: AnyView(headerContent),
+            headerHeight: headerHeight))
     }
 
     /// Open the full-window detail page for `detail`: make it the grid lead cursor
