@@ -115,6 +115,27 @@ struct GridHostConfiguration {
     var onRemoveFromCollection: (_ assetIDs: [UUID]) -> Void
     /// Delete the given assets from the library entirely (menu "Delete", confirmed).
     var onDelete: (_ assetIDs: [UUID]) -> Void
+
+    // MARK: 048 — membership-less (search) reuse
+
+    /// Which context-menu verbs the grid offers. `.collection` is the full
+    /// membership menu; `.looseAssets` is for membership-less hits (search),
+    /// where Move / Set Cover / Remove don't apply — see ``GridMenuStyle``.
+    /// Defaulted so the collection grid's call site is unchanged (048).
+    var menuStyle: GridMenuStyle = .collection
+    /// Reveal a single byte-backed asset (cell `itemID`) in Finder — offered only
+    /// in the `.looseAssets` menu for a lone hit that has bytes on disk. A no-op
+    /// by default (the collection menu has no Reveal verb).
+    var onReveal: (UUID) -> Void = { _ in }
+}
+
+/// The context-menu vocabulary a grid host offers (048). The collection grid
+/// shows the full membership menu; a membership-less surface (search results)
+/// can only Add (copy), Reveal a lone byte-backed hit, and Delete — Move / Set
+/// Cover / Remove have no meaning without a collection membership to act on.
+enum GridMenuStyle {
+    case collection
+    case looseAssets
 }
 
 // MARK: - The collection view subclass (A2 seam)
@@ -936,32 +957,55 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         let dests = configuration.moveTargets
         let menu = NSMenu()
 
-        let moveItem = NSMenuItem(title: "Move to", action: nil, keyEquivalent: "")
-        moveItem.submenu = targetSubmenu(dests) { [weak self] target in
-            self?.configuration.onMoveToCollection(targets, target)
-        }
-        menu.addItem(moveItem)
+        switch configuration.menuStyle {
+        case .collection:
+            let moveItem = NSMenuItem(title: "Move to", action: nil, keyEquivalent: "")
+            moveItem.submenu = targetSubmenu(dests) { [weak self] target in
+                self?.configuration.onMoveToCollection(targets, target)
+            }
+            menu.addItem(moveItem)
 
-        let addItem = NSMenuItem(title: "Add to", action: nil, keyEquivalent: "")
-        addItem.submenu = targetSubmenu(dests) { [weak self] target in
-            self?.configuration.onCopyToCollection(targets, target)
-        }
-        menu.addItem(addItem)
+            let addItem = NSMenuItem(title: "Add to", action: nil, keyEquivalent: "")
+            addItem.submenu = targetSubmenu(dests) { [weak self] target in
+                self?.configuration.onCopyToCollection(targets, target)
+            }
+            menu.addItem(addItem)
 
-        if n == 1 {
-            menu.addItem(BlockMenuItem(title: "Set as Cover") { [weak self] in
-                self?.configuration.onSetCover(targets[0])
+            if n == 1 {
+                menu.addItem(BlockMenuItem(title: "Set as Cover") { [weak self] in
+                    self?.configuration.onSetCover(targets[0])
+                })
+            }
+            menu.addItem(.separator())
+            menu.addItem(BlockMenuItem(
+                title: "Remove from Collection\(Self.countSuffix(n))"
+            ) { [weak self] in
+                self?.configuration.onRemoveFromCollection(targets)
+            })
+            menu.addItem(BlockMenuItem(title: "Delete\(Self.countSuffix(n))") { [weak self] in
+                self?.configuration.onDelete(targets)
+            })
+
+        case .looseAssets:
+            // Membership-less hits (search): Add (copy), Reveal a lone byte-backed
+            // hit, Delete. No Move / Set Cover / Remove — there's no membership.
+            let addItem = NSMenuItem(title: "Add to Collection", action: nil, keyEquivalent: "")
+            addItem.submenu = targetSubmenu(dests) { [weak self] target in
+                self?.configuration.onCopyToCollection(targets, target)
+            }
+            menu.addItem(addItem)
+
+            if n == 1, let idx = idToIndex[itemID], items.indices.contains(idx),
+               configuration.blobURL(items[idx]) != nil {
+                menu.addItem(BlockMenuItem(title: "Reveal in Finder") { [weak self] in
+                    self?.configuration.onReveal(itemID)
+                })
+            }
+            menu.addItem(.separator())
+            menu.addItem(BlockMenuItem(title: "Delete\(Self.countSuffix(n))") { [weak self] in
+                self?.configuration.onDelete(targets)
             })
         }
-        menu.addItem(.separator())
-        menu.addItem(BlockMenuItem(
-            title: "Remove from Collection\(Self.countSuffix(n))"
-        ) { [weak self] in
-            self?.configuration.onRemoveFromCollection(targets)
-        })
-        menu.addItem(BlockMenuItem(title: "Delete\(Self.countSuffix(n))") { [weak self] in
-            self?.configuration.onDelete(targets)
-        })
         return menu
     }
 
