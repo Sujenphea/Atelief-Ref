@@ -6,6 +6,7 @@
 // and GRDB errors are mapped to `AtelierError` on the way out (C7) so the
 // toolkit never leaks. Reads / search are a separate chunk; this is writes only.
 
+import Accelerate
 import Foundation
 import GRDB
 
@@ -174,6 +175,246 @@ public final class AppServices: Sendable {
                 ])
             return ids.compactMap { UUID(uuidString: $0) }
         }
+    }
+
+    // MARK: - Semantic embeddings (047 · Phase 3a)
+
+    /// Insert or replace an asset's semantic text embedding (047 · 3a). `vector` is
+    /// the model's `[Float]` output (already L2-normalized at the analyzer seam, so
+    /// cosine reduces to a dot product); it is packed to the opaque BLOB here.
+    /// `embeddedAt` is stamped server-side. Upsert by the `asset_id` PK, mirroring
+    /// ``upsertAnalysis``. The asset must exist (`.notFound`).
+    @discardableResult
+    public func upsertEmbedding(
+        assetID: UUID,
+        modelVersion: Int,
+        contentHash: String,
+        vector: [Float]
+    ) async throws -> AssetEmbedding {
+        let row = AssetEmbedding(
+            assetID: assetID, modelVersion: modelVersion, contentHash: contentHash,
+            vector: AssetEmbedding.encode(vector), embeddedAt: Date())
+        return try await write { db in
+            guard try Asset.exists(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            let exists = try AssetEmbedding
+                .filter(Column("asset_id") == Self.key(assetID))
+                .fetchCount(db) > 0
+            if exists { try row.update(db) } else { try row.insert(db) }
+            return row
+        }
+    }
+
+    /// The embedding row for `assetID`, or `nil` when not yet embedded.
+    public func embedding(for assetID: UUID) async throws -> AssetEmbedding? {
+        try await read { db in
+            try AssetEmbedding
+                .filter(Column("asset_id") == Self.key(assetID))
+                .fetchOne(db)
+        }
+    }
+
+    /// The next batch of assets whose text embedding is stale at `modelVersion` —
+    /// the resumable backfill query (047 · 3a). An asset qualifies when its
+    /// embedding is MISSING, was produced by an OLDER model, or its OCR arrived /
+    /// changed AFTER the embedding (`asset_analysis.analyzed_at > embedded_at`).
+    /// Assets with no human text at all are excluded so they never linger pending.
+    ///
+    /// Each candidate carries its raw text fields + the existing embedding's
+    /// `(modelVersion, contentHash)`, so the analyzer can build the corpus, hash
+    /// it, and SKIP re-embedding when an OCR re-run left the text unchanged (the
+    /// 4A content-hash guard). Name/note edits (no `asset.updated_at`) are caught
+    /// by ``embeddingsToReverify(modelVersion:limit:)``.
+    public func assetsNeedingEmbedding(
+        modelVersion: Int, limit: Int
+    ) async throws -> [EmbeddingCandidate] {
+        let clampedLimit = min(max(limit, 1), 1000)
+        return try await read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT a.id AS asset_id, s.title AS title, a.name AS name,
+                       a.note AS note, an.ocr_text AS ocr_text,
+                       e.model_version AS model_version, e.content_hash AS content_hash
+                FROM asset a
+                JOIN source s ON s.id = a.source_id
+                LEFT JOIN asset_analysis an ON an.asset_id = a.id
+                LEFT JOIN asset_embedding e ON e.asset_id = a.id
+                WHERE (COALESCE(s.title,'') || COALESCE(a.name,'')
+                       || COALESCE(a.note,'') || COALESCE(an.ocr_text,'')) <> ''
+                  AND (e.asset_id IS NULL
+                       OR e.model_version < ?
+                       OR (an.analyzed_at IS NOT NULL AND an.analyzed_at > e.embedded_at))
+                ORDER BY a.created_at DESC
+                LIMIT ?
+                """, arguments: [modelVersion, clampedLimit])
+            return rows.compactMap(Self.embeddingCandidate)
+        }
+    }
+
+    /// A batch of already-embedded assets to RE-VERIFY for text drift (047 · 4A),
+    /// oldest-embedded first. Because `asset` carries no `updated_at`, a rename or
+    /// note edit leaves no timestamp; the analyzer re-hashes each returned asset's
+    /// corpus and re-embeds only on a content-hash mismatch. Paged by `embedded_at`
+    /// so a periodic sweep covers the whole library over time. Only rows AT the
+    /// current `modelVersion` (older ones are already caught by
+    /// ``assetsNeedingEmbedding(modelVersion:limit:)``).
+    public func embeddingsToReverify(
+        modelVersion: Int, limit: Int
+    ) async throws -> [EmbeddingCandidate] {
+        let clampedLimit = min(max(limit, 1), 1000)
+        return try await read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT a.id AS asset_id, s.title AS title, a.name AS name,
+                       a.note AS note, an.ocr_text AS ocr_text,
+                       e.model_version AS model_version, e.content_hash AS content_hash
+                FROM asset_embedding e
+                JOIN asset a ON a.id = e.asset_id
+                JOIN source s ON s.id = a.source_id
+                LEFT JOIN asset_analysis an ON an.asset_id = a.id
+                WHERE e.model_version = ?
+                ORDER BY e.embedded_at ASC
+                LIMIT ?
+                """, arguments: [modelVersion, clampedLimit])
+            return rows.compactMap(Self.embeddingCandidate)
+        }
+    }
+
+    /// Bump an embedding's `embedded_at` to now WITHOUT re-embedding — a re-verify
+    /// (047 · 4A) that found the text unchanged. Rotates the row out of the
+    /// oldest-first re-verify window so the sweep advances. No-op if absent.
+    public func markEmbeddingVerified(assetID: UUID) async throws {
+        try await write { db in
+            try db.execute(sql: """
+                UPDATE asset_embedding SET embedded_at = ? WHERE asset_id = ?
+                """, arguments: [Date(), Self.key(assetID)])
+        }
+    }
+
+    /// Semantic (meaning-based) search over the library (047 · 3a). Ranks assets
+    /// by cosine similarity between `queryVector` and each asset's stored text
+    /// embedding, respecting the same structured scope as keyword search.
+    ///
+    /// - `queryVector`: the search text ALREADY embedded into the model's space by
+    ///   the caller (the embedder lives in AtelierIngestion; AtelierCore can't turn
+    ///   a string into a vector). Empty → empty result (no match-everything).
+    /// - `modelVersion`: only embeddings at this version are comparable to the
+    ///   query (a mixed-version library is mid-backfill); others are ignored.
+    /// - `platform` / `tagIDs` / `tagMatch` / `collectionIDs`: structured filters,
+    ///   applied in SQL FIRST (8A) so cosine ranks only in-scope candidates — a
+    ///   nearer match outside the scope never displaces a real one.
+    ///
+    /// Ranking is Swift-side brute-force cosine (SQLite has no vector index): load
+    /// the in-scope `(id, vector)` pairs, dot-product each against the query
+    /// (vectors are L2-normalized, so dot == cosine), take the top `limit`. This is
+    /// bounded for library-scale collections (≤ tens of thousands); a vector index
+    /// / ANN is the escape hatch if profiling ever demands it. NOT keyset-pageable
+    /// (relevance order isn't the recency cursor's order) — `limit` only.
+    public func semanticSearchAssets(
+        queryVector: [Float],
+        modelVersion: Int,
+        platform: Platform? = nil,
+        tagIDs: [UUID] = [],
+        tagMatch: TagMatch = .all,
+        collectionIDs: [UUID] = [],
+        limit: Int = 50
+    ) async throws -> [AssetDetail] {
+        guard !queryVector.isEmpty else { return [] }
+        let clampedLimit = min(max(limit, 1), 500)
+        let distinctTagIDs = Array(Set(tagIDs))
+        let distinctCollectionIDs = Array(Set(collectionIDs))
+
+        return try await read { db in
+            // 1. In-scope candidates (8A). These structured predicates mirror the
+            //    same filters in `searchAssets` (platform / collection membership /
+            //    tag set semantics) — kept as focused SQL here rather than sharing
+            //    the FTS query builder, since this path has no text arms.
+            var sql = """
+                SELECT e.asset_id AS asset_id, e.vector AS vector
+                FROM asset_embedding e
+                JOIN asset a ON a.id = e.asset_id
+                """
+            var conditions = ["e.model_version = ?"]
+            var args: [DatabaseValueConvertible] = [modelVersion]
+            if let platform {
+                sql += "\n                JOIN source s ON s.id = a.source_id"
+                conditions.append("s.platform = ?")
+                args.append(platform.rawValue)
+            }
+            if !distinctCollectionIDs.isEmpty {
+                let placeholders = databaseQuestionMarks(count: distinctCollectionIDs.count)
+                conditions.append(
+                    "a.id IN (SELECT asset_id FROM collection_item WHERE collection_id IN (\(placeholders)))")
+                args.append(contentsOf: distinctCollectionIDs.map(Self.key))
+            }
+            if !distinctTagIDs.isEmpty {
+                let placeholders = databaseQuestionMarks(count: distinctTagIDs.count)
+                switch tagMatch {
+                case .any:
+                    conditions.append(
+                        "a.id IN (SELECT asset_id FROM asset_tag WHERE tag_id IN (\(placeholders)))")
+                    args.append(contentsOf: distinctTagIDs.map(Self.key))
+                case .all:
+                    conditions.append("""
+                        a.id IN (SELECT asset_id FROM asset_tag WHERE tag_id IN (\(placeholders)) \
+                        GROUP BY asset_id HAVING COUNT(DISTINCT tag_id) = ?)
+                        """)
+                    args.append(contentsOf: distinctTagIDs.map(Self.key))
+                    args.append(distinctTagIDs.count)
+                }
+            }
+            sql += "\n                WHERE " + conditions.joined(separator: " AND ")
+
+            let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+
+            // 2. Cosine = dot product (both sides L2-normalized). Query normalization
+            //    only scales all scores by |query|, which doesn't change the ranking,
+            //    so a non-unit query still orders correctly. Skip any dimension
+            //    mismatch defensively (a stale-shape vector never crashes the sort).
+            let dims = queryVector.count
+            var scored: [(id: UUID, score: Float)] = []
+            scored.reserveCapacity(rows.count)
+            for row in rows {
+                guard let idString: String = row["asset_id"],
+                      let id = UUID(uuidString: idString),
+                      let data: Data = row["vector"] else { continue }
+                let vector = AssetEmbedding.vectorFloats(data)
+                guard vector.count == dims else { continue }
+                var score: Float = 0
+                vDSP_dotpr(queryVector, 1, vector, 1, &score, vDSP_Length(dims))
+                scored.append((id, score))
+            }
+            // Nearest first; ascending-id tiebreak so equal scores are deterministic.
+            scored.sort {
+                $0.score != $1.score ? $0.score > $1.score
+                    : $0.id.uuidString < $1.id.uuidString
+            }
+            let topIDs = scored.prefix(clampedLimit).map(\.id)
+            guard !topIDs.isEmpty else { return [] }
+
+            // 3. Hydrate details and restore the ranked order (the IN fetch is
+            //    unordered; the dictionary reorders by rank).
+            let keys = topIDs.map(Self.key)
+            let request = Asset
+                .filter(keys.contains(Column("id")))
+                .including(required: Asset.source)
+            let details = try AssetSourceRow.fetchAll(db, request)
+                .map { AssetDetail(asset: $0.asset, source: $0.source) }
+            let byID = Dictionary(uniqueKeysWithValues: details.map { ($0.asset.id, $0) })
+            return topIDs.compactMap { byID[$0] }
+        }
+    }
+
+    /// Decode a candidate row (shared by the two backfill queries).
+    private static func embeddingCandidate(_ row: Row) -> EmbeddingCandidate? {
+        guard let idString: String = row["asset_id"], let id = UUID(uuidString: idString) else {
+            return nil
+        }
+        return EmbeddingCandidate(
+            assetID: id,
+            title: row["title"], name: row["name"], note: row["note"],
+            ocrText: row["ocr_text"],
+            existingModelVersion: row["model_version"],
+            existingContentHash: row["content_hash"])
     }
 
     // MARK: - Smart collections (saved searches, 015)

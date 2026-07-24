@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -128,6 +128,13 @@ enum Migrator {
         // leading-wildcard LIKE scans.
         migrator.registerMigration("v13") { db in
             try createV13Schema(db)
+        }
+
+        // v14 — semantic search (044 · 047 search overhaul Phase 3a): one dense
+        // text-embedding vector per asset, stored for cosine kNN. Additive table,
+        // populated lazily by the embedding backfill (independent model_version).
+        migrator.registerMigration("v14") { db in
+            try createV14Schema(db)
         }
 
         return migrator
@@ -644,6 +651,47 @@ enum Migrator {
             t.synchronize(withTable: "collection")
             t.column("name")
         }
+    }
+
+    // MARK: - v14
+
+    /// Semantic text search index (044 · 047 Phase 3a).
+    ///
+    /// One dense embedding vector per asset, capturing the MEANING of its human
+    /// text (title / name / note / OCR) so search can rank by concept, not just
+    /// keyword. Additive and independent of `asset_analysis`:
+    ///
+    /// - `asset_id` is PK and FK → `asset(id) ON DELETE CASCADE` — one embedding
+    ///   per asset, dropped with the asset (no orphan sweep, mirrors v7).
+    /// - `vector` is the opaque BLOB (512 × Float32 little-endian); AtelierCore
+    ///   never interprets it — the analyzer (AtelierIngestion) owns the encoding.
+    /// - `content_hash` is a hash of the exact embedded text; the backfill re-embeds
+    ///   on a mismatch, so a rename / late-arriving OCR re-indexes even though
+    ///   `asset` carries no `updated_at` (047 · 4A staleness signal).
+    /// - `model_version` records the embedding model; an upgrade re-embeds via a
+    ///   `WHERE model_version < …` scan (the indexed access path), not a schema
+    ///   change — decoupled from `asset_analysis.analyzer_version`.
+    ///
+    /// No FTS here: semantic ranking is Swift-side cosine kNN over these vectors
+    /// (SQLite has no vector index), so the vectors are a plain BLOB column.
+    private static func createV14Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE asset_embedding (
+                asset_id      TEXT    NOT NULL PRIMARY KEY
+                    REFERENCES asset(id) ON DELETE CASCADE,
+                model_version INTEGER NOT NULL,
+                content_hash  TEXT    NOT NULL,
+                vector        BLOB    NOT NULL,
+                embedded_at   TEXT    NOT NULL
+            );
+            """)
+
+        // Backfill access path (047): "rows produced by an older model" is a
+        // version comparison, so a model upgrade is a WHERE-clause scan.
+        try db.execute(sql: """
+            CREATE INDEX index_asset_embedding_on_model_version
+                ON asset_embedding(model_version);
+            """)
     }
 
     // MARK: - v7

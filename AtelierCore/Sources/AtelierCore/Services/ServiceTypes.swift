@@ -357,3 +357,42 @@ public struct IngestResult: Sendable, Equatable {
         self.wasDeduplicated = wasDeduplicated
     }
 }
+
+/// One asset's raw text + existing-embedding metadata, as the semantic backfill
+/// query returns it (047 · 3a). The analyzer builds the embedding CORPUS from the
+/// text fields (title + name + note + OCR) and hashes it; comparing that hash to
+/// `existingContentHash` (at `existingModelVersion`) decides whether a re-embed is
+/// actually needed — so an OCR re-run that didn't change the text is a no-op.
+public struct EmbeddingCandidate: Sendable, Equatable {
+    public let assetID: UUID
+    /// Source-provided title (provenance), if any.
+    public let title: String?
+    /// User-given display name, if any.
+    public let name: String?
+    /// User free-form note, if any.
+    public let note: String?
+    /// OCR text recognized inside the image, if analyzed.
+    public let ocrText: String?
+    /// The model version of the existing embedding, or `nil` if never embedded.
+    public let existingModelVersion: Int?
+    /// The content hash of the existing embedding, or `nil` if never embedded.
+    public let existingContentHash: String?
+
+    public init(
+        assetID: UUID,
+        title: String?,
+        name: String?,
+        note: String?,
+        ocrText: String?,
+        existingModelVersion: Int?,
+        existingContentHash: String?
+    ) {
+        self.assetID = assetID
+        self.title = title
+        self.name = name
+        self.note = note
+        self.ocrText = ocrText
+        self.existingModelVersion = existingModelVersion
+        self.existingContentHash = existingContentHash
+    }
+}

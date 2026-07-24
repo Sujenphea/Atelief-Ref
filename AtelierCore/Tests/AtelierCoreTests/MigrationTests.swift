@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -413,6 +413,71 @@ struct MigrationV13Tests {
         }
         #expect(afterRename.newName == [tagID])
         #expect(afterRename.oldName.isEmpty)  // old name no longer indexed
+    }
+}
+
+// MARK: - v14 (semantic embedding table)
+
+@Suite("Migration v14: asset_embedding table")
+struct MigrationV14Tests {
+
+    private func seedAsset(_ db: Database) throws -> String {
+        let sourceID = newID(), assetID = newID()
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, captured_at, raw_metadata)
+            VALUES (?, 'web', ?, '{}');
+            """, arguments: [sourceID, ts])
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, blob_hash, mime_type, width, height,
+                file_size, download_state, created_at, source_id, search_text)
+            VALUES (?, 'image', 'h', 'image/png', 1, 1, 1, 'downloaded', ?, ?, '');
+            """, arguments: [assetID, ts, sourceID])
+        return assetID
+    }
+
+    @Test("the asset_embedding table + model_version index exist after v14")
+    func schemaExists() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue)
+        let shape = try dbQueue.read { db in
+            (table: try Bool.fetchOne(db, sql: """
+                SELECT count(*) > 0 FROM sqlite_master WHERE type='table' AND name='asset_embedding'
+                """) ?? false,
+             index: try Bool.fetchOne(db, sql: """
+                SELECT count(*) > 0 FROM sqlite_master WHERE type='index'
+                AND name='index_asset_embedding_on_model_version'
+                """) ?? false)
+        }
+        #expect(shape.table)
+        #expect(shape.index)
+    }
+
+    @Test("deleting an asset cascades away its embedding row")
+    func fkCascade() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue)
+        let assetID = try dbQueue.write { db -> String in
+            let id = try seedAsset(db)
+            try db.execute(sql: """
+                INSERT INTO asset_embedding (asset_id, model_version, content_hash, vector, embedded_at)
+                VALUES (?, 1, 'hash', X'00000000', ?);
+                """, arguments: [id, ts])
+            return id
+        }
+        let before = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT count(*) FROM asset_embedding WHERE asset_id = ?",
+                             arguments: [assetID]) ?? -1
+        }
+        #expect(before == 1)
+
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM asset WHERE id = ?", arguments: [assetID])
+        }
+        let after = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT count(*) FROM asset_embedding WHERE asset_id = ?",
+                             arguments: [assetID]) ?? -1
+        }
+        #expect(after == 0)  // ON DELETE CASCADE
     }
 }
 
