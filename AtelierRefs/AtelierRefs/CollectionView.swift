@@ -67,8 +67,8 @@ struct CollectionView: View {
     @State private var renameTargetID: UUID?
     @State private var renameText = ""
 
-    private static let gridSpacing: CGFloat = 8
-    private static let gridTopInset: CGFloat = 4
+    private static let gridSpacing: CGFloat = Theme.Spacing.sm
+    private static let gridTopInset: CGFloat = Theme.Spacing.xs
 
     // Move/copy targets, memoized (012 · CQ 1A): the eager per-cell context menus
     // share ONE computation instead of recomputing the identical folder list per
@@ -174,7 +174,7 @@ struct CollectionView: View {
     }
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             header
             // Gate the subfolder chips on `isLoaded`: they read the same shared model
             // state as the grid, so showing them mid-switch would flash the PREVIOUS
@@ -185,7 +185,7 @@ struct CollectionView: View {
             }
             grid
         }
-        .padding()
+        .padding(Theme.Spacing.xl)
         // New subfolder (from the header action or a chip's context menu).
         .nameEntryAlert(
             "New Subfolder",
@@ -212,11 +212,11 @@ struct CollectionView: View {
         // drag hover — the grid subtree and its cells are untouched (perf).
         .overlay {
             if isTargeted {
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: Theme.Radius.card)
                     .strokeBorder(
                         Color.accentColor,
                         style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
-                    .padding(4)
+                    .padding(Theme.Spacing.xs)
                     .allowsHitTesting(false)
             }
         }
@@ -384,7 +384,7 @@ struct CollectionView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Text(model.name(for: collectionID)).font(.title2).bold()
+            Text(model.name(for: collectionID)).font(Theme.Typography.sectionTitle)
             // The title tracks `collectionID` and is always correct, but the count
             // reads the shared `items` — redact it until this collection's load
             // resolves so it can't show the previous collection's count on switch.
@@ -500,8 +500,10 @@ struct CollectionView: View {
         }
         .overlay {
             if isLoaded, model.items.isEmpty {
-                Text("No items in this collection yet.")
-                    .foregroundStyle(.tertiary)
+                ContentUnavailableView(
+                    "No items yet",
+                    systemImage: "photo.on.rectangle.angled",
+                    description: Text("Drop or paste images to add them to this collection."))
             }
         }
     }
@@ -522,7 +524,7 @@ struct CollectionView: View {
                 VStack(spacing: Self.gridSpacing) {
                     ForEach(0..<5, id: \.self) { row in
                         let aspect = aspects[(col * 5 + row) % aspects.count]
-                        RoundedRectangle(cornerRadius: 8)
+                        RoundedRectangle(cornerRadius: Theme.Radius.tile)
                             .fill(.quaternary)
                             .frame(width: columnWidth, height: columnWidth / aspect)
                     }

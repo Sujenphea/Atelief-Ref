@@ -364,6 +364,9 @@ final class LibrarySearchModel: ObservableObject {
 /// of the results grid (not a native scope bar) — see `LibrarySearchResults.modePicker`.
 struct LibrarySearchable<Content: View>: View {
     @ObservedObject var model: IngestionModel
+    /// The global grid density notch — search results honour the SAME persisted
+    /// density (and zoom controls) as the collection grid, instead of a fixed 4-up.
+    @ObservedObject var gridPrefs: GridViewPreferences
     /// The screen's collection, or `nil` for the global gallery.
     let collectionID: UUID?
     @ViewBuilder let content: () -> Content
@@ -375,7 +378,7 @@ struct LibrarySearchable<Content: View>: View {
         ZStack {
             Group {
                 if search.isActive {
-                    LibrarySearchResults(model: model, search: search) { asset in
+                    LibrarySearchResults(model: model, search: search, gridPrefs: gridPrefs) { asset in
                         model.recordView(assetID: asset.asset.id)
                         detail = asset
                     }
@@ -442,7 +445,12 @@ private struct SearchFieldModifier: ViewModifier {
 private struct LibrarySearchResults: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var search: LibrarySearchModel
+    @ObservedObject var gridPrefs: GridViewPreferences
     let onOpen: (AssetDetail) -> Void
+
+    /// The live grid width, captured for the ⌘± density clamp (mirrors
+    /// `CollectionView.gridWidth`), so zoom respects the 512px cell cap.
+    @State private var gridWidth: CGFloat = 1
 
     // 048 — search now renders through the SAME AppKit `MasonryGridHost` as the
     // collection grid instead of a bespoke SwiftUI `LazyVGrid`. This gives search
@@ -529,14 +537,32 @@ private struct LibrarySearchResults: View {
             .labelsHidden()
             .fixedSize()
             Spacer(minLength: 0)
+            // The result count, styled like every other page's "N items" subtitle
+            // so search reads as another counted surface.
+            if !search.results.isEmpty {
+                Text("\(search.results.count) results")
+                    .font(.callout)
+                    .foregroundStyle(Theme.Colors.inkSecondary)
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 12)
-        .padding(.bottom, 4)
+        // Share the collection grid's 24pt content margin so the mode toggle's left
+        // edge aligns with the grid below it.
+        .padding(.horizontal, Theme.Spacing.xl)
+        .padding(.top, Theme.Spacing.md)
+        .padding(.bottom, Theme.Spacing.xs)
     }
 
     private var resultsGrid: some View {
         MasonryGridHost(configuration: gridConfiguration)
+            // Match the collection grid's 24pt horizontal content margin (the
+            // collection grid inherits it from its surrounding VStack padding; the
+            // search grid is placed directly, so it sets the inset itself).
+            .padding(.horizontal, Theme.Spacing.xl)
+            // Track the grid width so ⌘± zoom clamps against the live viewport, the
+            // same guard the collection grid applies.
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { w in
+                if abs(gridWidth - w) > 0.5 { gridWidth = w }
+            }
             .overlay(alignment: .bottom) {
                 if selectionStore.selection.isSelecting { selectionBar }
             }
@@ -559,9 +585,9 @@ private struct LibrarySearchResults: View {
         GridHostConfiguration(
             items: items,
             itemsVersion: search.resultsVersion,
-            density: .default,
-            spacing: 8,
-            topInset: 12,
+            density: gridPrefs.density,
+            spacing: Theme.Spacing.sm,
+            topInset: Theme.Spacing.md,
             collectionID: Self.searchScopeID,
             displayScale: displayScale,
             thumbnailURL: { model.thumbnailURL(forAsset: $0.asset) },
@@ -572,8 +598,10 @@ private struct LibrarySearchResults: View {
             },
             onRequestDelete: { requestDeleteTargets() },
             onQuickLook: {},   // search has no Quick Look plumbing yet (parity gap, not lag)
-            onZoomIn: {},      // search has no per-surface density control
-            onZoomOut: {},
+            // ⌘± drives the SAME global density notch as the collection grid, so a
+            // zoom in search persists everywhere (011-B2).
+            onZoomIn: { gridPrefs.zoomIn(forWidth: gridWidth) },
+            onZoomOut: { gridPrefs.zoomOut(forWidth: gridWidth) },
             dragPayload: { dragPayload(for: $0) },
             dragImage: { dragImage(for: $0) },
             canReorder: false,
@@ -671,22 +699,20 @@ private struct LibrarySearchResults: View {
     /// active. Delete routes through the same staged/undoable asset delete as the
     /// keyboard and context menu.
     private var selectionBar: some View {
-        HStack(spacing: 12) {
-            Text("\(selectionStore.selection.ids.count) selected")
+        let count = selectionStore.selection.ids.count
+        return HStack(spacing: 2) {
+            Text("\(count) selected")
                 .font(.callout.weight(.medium))
-            Button("Clear") { selectionStore.apply(.clear) }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-            Button(role: .destructive) { requestDeleteTargets() } label: {
-                Label("Delete \(selectionStore.selection.ids.count)", systemImage: "trash")
+                .padding(.trailing, 10)
+            SelectionBarButton("xmark", help: "Clear selection") {
+                selectionStore.apply(.clear)
+            }
+            // `requestDelete` runs its own confirmation, so no extra dialog here.
+            SelectionBarButton("trash", help: "Delete \(count)", role: .destructive) {
+                requestDeleteTargets()
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.primary.opacity(0.08)))
-        .shadow(radius: 8, y: 2)
-        .padding(.bottom, 16)
+        .selectionBarChrome()
     }
 }
 

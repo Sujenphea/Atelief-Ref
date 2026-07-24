@@ -49,7 +49,8 @@ struct SpaceView: View {
                     .transition(.opacity)
             }
         }
-        .navigationTitle(space.name)
+        // The space name lives in the in-content header only (parity with Collection);
+        // the native window-toolbar title is dropped so the name isn't shown twice.
         .toolbar {
             ToolbarItemGroup {
                 Button { space.undo() } label: {
@@ -109,8 +110,8 @@ struct SpaceView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            Text(space.name).font(.headline)
+        HStack(spacing: Theme.Spacing.md) {
+            Text(space.name).font(Theme.Typography.sectionTitle)
             Text("\(space.items.count) items")
                 .font(.callout).foregroundStyle(.secondary)
             toolPicker
@@ -119,8 +120,8 @@ struct SpaceView: View {
             Text("Drag to place · pinch to zoom")
                 .font(.caption).foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, Theme.Spacing.md)
+        .padding(.vertical, Theme.Spacing.sm)
     }
 
     /// Select / Frame / Text. A create tool rubber-bands a new element, then the
@@ -270,15 +271,11 @@ struct SpaceView: View {
     /// A non-blocking hint over the (empty) canvas — the tools + toolbar stay
     /// live, so the first frame / text / library add still works.
     private var emptyHint: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "square.on.square.dashed")
-                .font(.largeTitle).foregroundStyle(.tertiary)
-            Text("This space is empty").font(.headline)
-            Text("Add references from your library, or draw a Frame / Text with the tools above.")
-                .font(.callout).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .padding(24)
-        .allowsHitTesting(false)
+        ContentUnavailableView(
+            "This space is empty",
+            systemImage: "square.on.square.dashed",
+            description: Text(
+                "Add references from your library, or draw a Frame / Text with the tools above."))
+            .allowsHitTesting(false)
     }
 }

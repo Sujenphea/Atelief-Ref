@@ -139,7 +139,7 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// another cell is already a no-op in the coordinator).
     private var animatingGifID: UUID?
 
-    private let cornerRadius: CGFloat = 8
+    private let cornerRadius: CGFloat = Theme.Radius.tile
 
     /// The membership id this cell is currently bound to — the coordinator reads it
     /// back when the cell reports a mouse-down / circle click (A2). Set in

@@ -122,24 +122,24 @@ struct AppShellView: View {
         // nil`) except on a Collection, which scopes it.
         switch nav.sidebarSelection {
         case .home, .search:
-            LibrarySearchable(model: model, collectionID: nil) {
+            LibrarySearchable(model: model, gridPrefs: gridPrefs, collectionID: nil) {
                 CollectionsGalleryView(model: model, nav: nav)
             }
         case .capture:
-            LibrarySearchable(model: model, collectionID: nil) {
+            LibrarySearchable(model: model, gridPrefs: gridPrefs, collectionID: nil) {
                 CapturePane(model: model, onOpenSweeps: { showSweeps = true })
             }
         case .settings:
-            LibrarySearchable(model: model, collectionID: nil) {
+            LibrarySearchable(model: model, gridPrefs: gridPrefs, collectionID: nil) {
                 SettingsView(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case let .collection(id):
-            LibrarySearchable(model: model, collectionID: id) {
+            LibrarySearchable(model: model, gridPrefs: gridPrefs, collectionID: id) {
                 CollectionView(model: model, nav: nav, gridPrefs: gridPrefs, collectionID: id)
             }
         case let .space(id):
-            LibrarySearchable(model: model, collectionID: nil) {
+            LibrarySearchable(model: model, gridPrefs: gridPrefs, collectionID: nil) {
                 spaceDestination(id)
             }
         }

@@ -132,8 +132,8 @@ struct CollectionsGalleryView: View {
     // MARK: - Collections section
 
     private var collectionsSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            sectionHeader("Collections")
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            sectionHeader("Collections", count: orderedRoots.count)
             LazyVGrid(columns: columns, spacing: 6) {
                 ForEach(orderedRoots) { collection in
                     let isUnsorted = collection.id == model.unsortedFolderID
@@ -195,8 +195,8 @@ struct CollectionsGalleryView: View {
     // MARK: - Spaces section
 
     private var spacesSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            sectionHeader("Spaces")
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            sectionHeader("Spaces", count: model.spaces.count)
             LazyVGrid(columns: columns, spacing: 6) {
                 ForEach(model.spaces) { space in
                     Button {
@@ -279,7 +279,9 @@ struct CollectionsGalleryView: View {
     @ViewBuilder
     private func selectionRing(for id: UUID) -> some View {
         if selection.ids.contains(id) {
-            RoundedRectangle(cornerRadius: 14)
+            // Ring radius = the card's own `cover` radius, so the selection outline
+            // hugs the card shape (the app-wide rule: rings match their surface).
+            RoundedRectangle(cornerRadius: Theme.Radius.cover)
                 .stroke(Color.accentColor, lineWidth: 3)
         }
     }
@@ -290,7 +292,7 @@ struct CollectionsGalleryView: View {
     @ViewBuilder
     private func reparentRing(for id: UUID) -> some View {
         if reparentTargetID == id {
-            RoundedRectangle(cornerRadius: 14)
+            RoundedRectangle(cornerRadius: Theme.Radius.cover)
                 .strokeBorder(
                     Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
         }
@@ -393,10 +395,17 @@ struct CollectionsGalleryView: View {
 
     // MARK: - Section header
 
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.title3.weight(.semibold))
-            .foregroundStyle(.primary)
+    private func sectionHeader(_ title: String, count: Int) -> some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            Text(title)
+                .font(Theme.Typography.sectionTitle)
+                .foregroundStyle(Theme.Colors.inkPrimary)
+            // The section count, styled like every other page's "N items" subtitle
+            // (`.callout`, secondary ink) so counts read the same app-wide.
+            Text("\(count)")
+                .font(.callout)
+                .foregroundStyle(Theme.Colors.inkSecondary)
+        }
     }
 
     // MARK: - Ordering (Unsorted pinned first)

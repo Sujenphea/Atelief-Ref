@@ -168,7 +168,9 @@ struct ItemDetailView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.background)
+        // Sit on the same panel tone as every other pane, so opening an item is no
+        // longer a jump to the system background.
+        .background(Theme.Colors.panel)
         // Reload media whenever the shown asset changes (open + prev/next).
         .task(id: asset.id) { await loadMedia() }
         .onDisappear {

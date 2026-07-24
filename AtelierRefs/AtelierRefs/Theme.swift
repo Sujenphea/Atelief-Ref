@@ -103,8 +103,11 @@ enum Theme {
     // MARK: - Typography (the Figma's fixed roles)
 
     enum Typography {
-        /// Inspector section headers ("Data", "Source", "Details") — 20pt.
-        static let sectionTitle = Font.system(size: 20, weight: .regular)
+        /// The ONE page / section title role — 15pt semibold. Home section headers
+        /// ("Collections", "Spaces"), the Collection + Space page titles, and the
+        /// detail inspector section headers ("Data", "Source", "Details") all share
+        /// this so no page title drifts to its own `.title2`/`.title3`/`.headline`.
+        static let sectionTitle = Font.system(size: 15, weight: .semibold)
         /// Sidebar top-nav rows ("Home", "Search", …) — 17pt medium.
         static let navItem = Font.system(size: 16, weight: .medium)
         /// Sidebar collection rows, chip / field text — 14pt.
