@@ -37,7 +37,40 @@ private final class RoundButton: NSButton {
     /// The "+" glyph, drawn above `disc`.
     let glyph = CALayer()
 
+    private var hoverTracking: NSTrackingArea?
+
     override var intrinsicContentSize: NSSize { NSSize(width: diameter, height: diameter) }
+
+    // MARK: Hover — a subtle lift (stronger shadow + slight scale), the AppKit analogue
+    // of the SwiftUI chrome buttons' `HoverButtonStyle` fill. `.inVisibleRect` tracks the
+    // live bounds so we never restate the rect on resize.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = hoverTracking { removeTrackingArea(existing) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil)
+        addTrackingArea(area)
+        hoverTracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { setHovered(true) }
+    override func mouseExited(with event: NSEvent) { setHovered(false) }
+
+    private func setHovered(_ hovered: Bool) {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.12)
+        disc.shadowRadius = hovered ? 16 : 12
+        disc.shadowOpacity = hovered ? 0.7 : 0.55
+        // Scale about each layer's center (default anchor 0.5,0.5) so the disc + glyph
+        // grow in place; `layout()` only rewrites frames, never the transform.
+        let t = CATransform3DMakeScale(hovered ? 1.06 : 1, hovered ? 1.06 : 1, 1)
+        disc.transform = t
+        glyph.transform = t
+        CATransaction.commit()
+    }
 
     override func layout() {
         super.layout()

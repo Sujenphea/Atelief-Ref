@@ -95,14 +95,13 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Traffic-light space + the collapse toggle, trailing.
             HStack {
-                Spacer()
                 collapseToggle
             }
             .frame(height: trafficLightInset, alignment: .center)
             .padding(.horizontal, Theme.Spacing.lg)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
                     navSection
                     spacesSection
                     collectionsSection
@@ -115,7 +114,7 @@ struct SidebarView: View {
                 .padding(.horizontal, Theme.Spacing.lg)
                 .padding(.bottom, Theme.Spacing.lg)
         }
-        .frame(width: 273)
+        .frame(width: 250)
     }
 
     private var navSection: some View {
@@ -145,12 +144,15 @@ struct SidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Hover sits BEHIND the row's own selection fill (padding 0 → same rect), so it
+        // only reads on non-selected rows; the opaque `selection` fill covers it when active.
+        .hoverHighlight(cornerRadius: 6, opacity: 0.06, padding: 0)
     }
 
     // MARK: - Spaces
 
     private var spacesSection: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             sectionHeader("Spaces", expanded: $spacesExpanded) { nav.sidebarDraft = .space }
             if spacesExpanded {
                 VStack(alignment: .leading, spacing: 0) {
@@ -202,7 +204,7 @@ struct SidebarView: View {
     // MARK: - Collections
 
     private var collectionsSection: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             sectionHeader("Collections", expanded: $collectionsExpanded) {
                 nav.sidebarDraft = .collection(parent: nil)
             }
@@ -252,13 +254,13 @@ struct SidebarView: View {
                 }
                 .foregroundStyle(Theme.Colors.inkPrimary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(HoverButtonStyle(cornerRadius: 6, padding: 6))
             Spacer()
             Button(action: add) {
                 Image(systemName: "plus").font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Theme.Colors.inkSecondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(HoverButtonStyle(cornerRadius: 6, padding: 6))
         }
     }
 
@@ -290,7 +292,7 @@ struct SidebarView: View {
                 .font(.system(size: 15))
                 .foregroundStyle(Theme.Colors.inkSecondary)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HoverButtonStyle(padding: 5))
         .help("Collapse sidebar")
     }
 
@@ -308,6 +310,7 @@ struct SidebarView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .hoverHighlight(padding: 5)
         .help("Sort the current collection")
     }
 
@@ -329,7 +332,7 @@ struct SidebarView: View {
                 .font(.system(size: 14))
                 .foregroundStyle(Theme.Colors.inkSecondary)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HoverButtonStyle(padding: 5))
         .help("Delete the selected items")
     }
 

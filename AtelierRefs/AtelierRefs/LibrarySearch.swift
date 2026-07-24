@@ -523,7 +523,7 @@ private struct SearchToolbarField: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.Colors.inkSecondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(HoverButtonStyle(cornerRadius: 5, padding: 3))
                 .help("Clear search")
             }
         }
@@ -596,7 +596,7 @@ private struct SearchTokenChip: View {
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(Theme.Colors.inkSecondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(HoverButtonStyle(cornerRadius: 4, opacity: 0.15, padding: 2))
             .help("Remove filter")
         }
         .foregroundStyle(Theme.Colors.inkPrimary)
@@ -891,8 +891,10 @@ private struct SearchModeToggle: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            segment("Keyword", value: .keyword)
-            segment("Meaning", value: .meaning)
+            ModeSegment(title: "Keyword", value: .keyword, mode: $mode,
+                        help: "Match keywords (title, name, note, text)")
+            ModeSegment(title: "Meaning", value: .meaning, mode: $mode,
+                        help: "Match meaning (semantic similarity)")
         }
         .padding(2)
         .background(Theme.Colors.field, in: Capsule())
@@ -900,19 +902,34 @@ private struct SearchModeToggle: View {
         .animation(Theme.Motion.gentle, value: mode)
     }
 
-    private func segment(_ title: String, value: SearchMode) -> some View {
-        let isSelected = mode == value
-        return Button { mode = value } label: {
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(isSelected ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(isSelected ? Theme.Colors.selection : .clear))
-                .contentShape(Capsule())
+    /// One pill of the toggle. The active pill raises to `selection`; an inactive pill
+    /// picks up a subtle hover fill so both segments give feedback, not just the active one.
+    private struct ModeSegment: View {
+        let title: String
+        let value: SearchMode
+        @Binding var mode: SearchMode
+        let help: String
+
+        @State private var isHovering = false
+
+        var body: some View {
+            let isSelected = mode == value
+            let fill: Color = isSelected
+                ? Theme.Colors.selection
+                : (isHovering ? Color.primary.opacity(0.06) : .clear)
+            return Button { mode = value } label: {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(isSelected ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(fill))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovering = $0 }
+            .help(help)
         }
-        .buttonStyle(.plain)
-        .help(value == .keyword ? "Match keywords (title, name, note, text)" : "Match meaning (semantic similarity)")
     }
 }
 
