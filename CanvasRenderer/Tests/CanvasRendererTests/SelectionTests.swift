@@ -96,4 +96,70 @@ struct SelectionTests {
         // Still exactly one highlight layer (3 tiles + 1).
         #expect((engine.rootLayer.sublayers?.count ?? 0) == 4)
     }
+
+    // MARK: - Multi-selection highlights (049 · D4 / D12 / D16)
+
+    @Test("selecting N visible tiles draws N highlight layers")
+    func multiSelectDrawsNHighlights() {
+        let engine = makeEngine()
+        engine.setSelected([0, 1, 2])
+        #expect(engine.selectedTileIDs == [0, 1, 2])
+        #expect(engine.selectionHighlightCount == 3)
+        // Single-select convenience is nil when the selection isn't exactly one.
+        #expect(engine.selectedTileID == nil)
+        // Three tiles + three highlights.
+        #expect((engine.rootLayer.sublayers?.count ?? 0) == 6)
+    }
+
+    @Test("partially deselecting drops exactly the deselected tiles' highlights")
+    func partialDeselectDropsRightLayers() {
+        let engine = makeEngine()
+        engine.setSelected([0, 1, 2])
+        #expect(engine.selectionHighlightCount == 3)
+        engine.setSelected([0, 2]) // drop tile 1
+        #expect(engine.selectedTileIDs == [0, 2])
+        #expect(engine.selectionHighlightCount == 2)
+        #expect((engine.rootLayer.sublayers?.count ?? 0) == 5) // 3 tiles + 2 highlights
+    }
+
+    @Test("an off-screen selected tile draws no highlight (bounded by the viewport)")
+    func offscreenSelectedDrawsNoHighlight() {
+        let engine = makeEngine()
+        engine.setSelected([0, 1, 2])
+        #expect(engine.selectionHighlightCount == 3)
+        // Push all content far off-screen: selection is retained, highlights are not
+        // drawn (layer count is bounded by the VISIBLE set, not the selection size).
+        engine.setTransform(CanvasTransform(scale: 1, translation: CGPoint(x: -100_000, y: -100_000)))
+        #expect(engine.selectedTileIDs == [0, 1, 2]) // retained…
+        #expect(engine.selectionHighlightCount == 0)  // …but nothing drawn
+        #expect(engine.isSelectionHighlightVisible == false)
+        // Panning back re-draws all three.
+        engine.setTransform(CanvasTransform())
+        #expect(engine.selectionHighlightCount == 3)
+    }
+
+    @Test("repeated select/deselect cycles do not leak highlight layers")
+    func selectDeselectDoesNotLeak() {
+        let engine = makeEngine()
+        engine.sync()
+        let baseline = engine.rootLayer.sublayers?.count ?? 0 // 3 tile layers, no highlights
+        for _ in 0..<50 {
+            engine.setSelected([0, 1, 2])
+            engine.setSelected([])
+        }
+        #expect(engine.selectionHighlightCount == 0)
+        // Back to the exact baseline — highlight layers were removed, not accreted.
+        #expect((engine.rootLayer.sublayers?.count ?? 0) == baseline)
+    }
+
+    @Test("clearing a multi-selection removes every highlight")
+    func clearMultiRemovesAll() {
+        let engine = makeEngine()
+        engine.setSelected([0, 1, 2])
+        engine.setSelected([])
+        #expect(engine.selectedTileIDs.isEmpty)
+        #expect(engine.selectionHighlightCount == 0)
+        #expect(engine.isSelectionHighlightVisible == false)
+        #expect((engine.rootLayer.sublayers?.count ?? 0) == 3) // just the tile layers
+    }
 }

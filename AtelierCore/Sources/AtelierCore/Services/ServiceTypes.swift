@@ -190,6 +190,29 @@ public struct CanvasPlacement: Sendable, Equatable {
     }
 }
 
+/// One tile's concrete target placement for the batch write
+/// ``AppServices/setSpaceItemPlacements(_:)`` (049 · D13). Unlike ``CanvasPlacement``
+/// (ingest-time, all-optional), every field is concrete: this addresses a KNOWN
+/// `space_item` row and moves it to an exact spot, so a multi-select drag / undo
+/// persists N tiles in ONE transaction instead of N round-trips.
+public struct SpaceItemPlacement: Sendable, Equatable {
+    public let itemID: UUID
+    public let x: Double
+    public let y: Double
+    public let w: Double
+    public let h: Double
+    public let z: Int
+
+    public init(itemID: UUID, x: Double, y: Double, w: Double, h: Double, z: Int) {
+        self.itemID = itemID
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+        self.z = z
+    }
+}
+
 // MARK: - Query inputs (GRDB-free, A2)
 
 /// How a multi-tag filter combines (007 · search). A query-only value (never

@@ -166,6 +166,70 @@ struct EngineVectorTests {
         #expect(e.currentDragOrigins().count == 1)
     }
 
+    // MARK: Multi-selection carry (049 · D3 / D7)
+
+    @Test("alsoCarry carries the whole selection; all move by the same delta")
+    func multiSelectCarriesSelection() {
+        let e = engine(VectorProvider(tiles: row))
+        e.sync()
+        let before1 = e.currentScreenFrame(forTileID: 1)!
+        let before2 = e.currentScreenFrame(forTileID: 2)!
+
+        // Grab tile 0, carrying a 3-tile selection {0,1,2}.
+        e.beginDrag(tileID: 0, alsoCarry: canvasDragCarry(grabbed: 0, selection: [0, 1, 2]))
+        e.updateDrag(byScreenDelta: CGSize(width: 100, height: 50))
+
+        #expect(Approx.equal(e.currentScreenFrame(forTileID: 1)!.origin,
+                             CGPoint(x: before1.origin.x + 100, y: before1.origin.y + 50)))
+        #expect(Approx.equal(e.currentScreenFrame(forTileID: 2)!.origin,
+                             CGPoint(x: before2.origin.x + 100, y: before2.origin.y + 50)))
+        let origins = e.currentDragOrigins()
+        #expect(origins.count == 3)
+        #expect(Set(origins.map(\.tileID)) == [0, 1, 2])
+    }
+
+    @Test("a selected tile inside a dragged frame is carried ONCE (de-dup)")
+    func selectionIntersectingFrameGroupDeDups() {
+        var p = VectorProvider(tiles: row)
+        p.frames = [0]
+        p.group = [0: [1, 2]] // frame 0 contains tiles 1 and 2
+        let e = engine(p)
+        e.sync()
+
+        // Grab the frame (0) while {1,2} are ALSO selected — so tile 1 and 2 are
+        // both frame-group members AND in the carried selection.
+        e.beginDrag(tileID: 0, alsoCarry: canvasDragCarry(grabbed: 0, selection: [0, 1, 2]))
+        e.updateDrag(byScreenDelta: CGSize(width: 30, height: 0))
+
+        let origins = e.currentDragOrigins()
+        // Exactly {0,1,2}, each once — no doubled move that would corrupt the undo.
+        #expect(origins.count == 3)
+        #expect(Set(origins.map(\.tileID)).count == origins.count)
+        #expect(Set(origins.map(\.tileID)) == [0, 1, 2])
+    }
+
+    @Test("grabbing an UNSELECTED tile carries only it, not the selection")
+    func unselectedGrabCarriesOne() {
+        let e = engine(VectorProvider(tiles: row))
+        e.sync()
+        // Selection is {2} but the grab lands on tile 0 (not selected).
+        e.beginDrag(tileID: 0, alsoCarry: canvasDragCarry(grabbed: 0, selection: [2]))
+        let origins = e.currentDragOrigins()
+        #expect(origins.count == 1)
+        #expect(origins.first?.tileID == 0)
+    }
+
+    @Test("the primary tile is never doubled even if alsoCarry includes it")
+    func primaryNeverDoubled() {
+        let e = engine(VectorProvider(tiles: row))
+        e.sync()
+        // canvasDragCarry returns a set that INCLUDES the grabbed tile.
+        e.beginDrag(tileID: 1, alsoCarry: canvasDragCarry(grabbed: 1, selection: [0, 1]))
+        let origins = e.currentDragOrigins()
+        #expect(origins.count == 2)
+        #expect(Set(origins.map(\.tileID)) == [0, 1])
+    }
+
     // MARK: Rubber-band normalization (pure)
 
     @Test("normalizedRect is corner-order independent and positive-size")

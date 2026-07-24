@@ -49,6 +49,14 @@ struct SidebarView: View {
             if nav.sidebarCollapsed { rail } else { full }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        // The collapse toggle is hoisted OUT of both `rail` and `full` into ONE
+        // persistent overlay pinned to the shared 60pt icon column (width 60, centered
+        // → x-center 30 in BOTH states). A single view instance that never swaps or
+        // shifts, so toggling collapsed⇆expanded can't wiggle its x offset.
+        .overlay(alignment: .topLeading) {
+            railIcon { collapseToggle }
+                .frame(width: 60, height: trafficLightInset)
+        }
         // Redundant with bootstrap's own `refreshSpaces` (which owns the load —
         // this can run first and no-op while `services` is still nil); kept so a
         // re-mounted sidebar refreshes.
@@ -93,16 +101,12 @@ struct SidebarView: View {
 
     private var full: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Traffic-light space + the collapse toggle, trailing.
-            HStack {
-                Spacer()
-                collapseToggle
-            }
-            .frame(height: trafficLightInset, alignment: .center)
-            .padding(.horizontal, Theme.Spacing.lg)
+            // Reserve the traffic-light band; the collapse toggle itself is drawn by the
+            // shared overlay in `body` (hoisted so its x can't wiggle on toggle).
+            Color.clear.frame(height: trafficLightInset)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
                     navSection
                     spacesSection
                     collectionsSection
@@ -115,7 +119,7 @@ struct SidebarView: View {
                 .padding(.horizontal, Theme.Spacing.lg)
                 .padding(.bottom, Theme.Spacing.lg)
         }
-        .frame(width: 273)
+        .frame(width: 250)
     }
 
     private var navSection: some View {
@@ -145,12 +149,15 @@ struct SidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Hover sits BEHIND the row's own selection fill (padding 0 → same rect), so it
+        // only reads on non-selected rows; the opaque `selection` fill covers it when active.
+        .hoverHighlight(cornerRadius: 6, opacity: 0.06, padding: 0)
     }
 
     // MARK: - Spaces
 
     private var spacesSection: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             sectionHeader("Spaces", expanded: $spacesExpanded) { nav.sidebarDraft = .space }
             if spacesExpanded {
                 VStack(alignment: .leading, spacing: 0) {
@@ -202,7 +209,7 @@ struct SidebarView: View {
     // MARK: - Collections
 
     private var collectionsSection: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             sectionHeader("Collections", expanded: $collectionsExpanded) {
                 nav.sidebarDraft = .collection(parent: nil)
             }
@@ -252,13 +259,13 @@ struct SidebarView: View {
                 }
                 .foregroundStyle(Theme.Colors.inkPrimary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(HoverButtonStyle(cornerRadius: 6, padding: 6))
             Spacer()
             Button(action: add) {
                 Image(systemName: "plus").font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Theme.Colors.inkSecondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(HoverButtonStyle(cornerRadius: 6, padding: 6))
         }
     }
 
@@ -290,7 +297,7 @@ struct SidebarView: View {
                 .font(.system(size: 15))
                 .foregroundStyle(Theme.Colors.inkSecondary)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HoverButtonStyle(padding: 5))
         .help("Collapse sidebar")
     }
 
@@ -308,6 +315,7 @@ struct SidebarView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .hoverHighlight(padding: 5)
         .help("Sort the current collection")
     }
 
@@ -329,7 +337,7 @@ struct SidebarView: View {
                 .font(.system(size: 14))
                 .foregroundStyle(Theme.Colors.inkSecondary)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HoverButtonStyle(padding: 5))
         .help("Delete the selected items")
     }
 
@@ -341,8 +349,9 @@ struct SidebarView: View {
         // width (the sort `Menu` in particular carries its own chrome). Each is
         // pinned to a fixed square so their centers coincide.
         VStack(spacing: 0) {
-            railIcon { collapseToggle }
-                .frame(height: trafficLightInset)
+            // Reserve the traffic-light band; the collapse toggle itself is drawn by the
+            // shared overlay in `body` (hoisted so its x can't wiggle on toggle).
+            Color.clear.frame(height: trafficLightInset)
 
             Spacer()
 

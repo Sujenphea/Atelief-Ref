@@ -233,6 +233,70 @@ struct ServicesSpaceTests {
         }
     }
 
+    @Test("setSpaceItemPlacements moves MANY rows in one transaction (049 · D13)")
+    func batchMove() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let space = try await services.createSpace(name: "Board")
+        let assetID = try await makeAsset(services)
+        let a = try await services.addAssetToSpace(assetID: assetID, to: space.id, x: 0, y: 0, w: 10, h: 10, z: 0)
+        let b = try await services.addAssetToSpace(assetID: assetID, to: space.id, x: 20, y: 0, w: 10, h: 10, z: 1)
+
+        try await services.setSpaceItemPlacements([
+            SpaceItemPlacement(itemID: a.id, x: 100, y: 100, w: 10, h: 10, z: 5),
+            SpaceItemPlacement(itemID: b.id, x: 200, y: 200, w: 10, h: 10, z: 6),
+        ])
+
+        let rows = try await services.spaceItems(in: space.id)
+        #expect(rows.first { $0.item.id == a.id }?.item.x == 100)
+        #expect(rows.first { $0.item.id == b.id }?.item.x == 200)
+        #expect(rows.first { $0.item.id == b.id }?.item.z == 6)
+    }
+
+    @Test("setSpaceItemPlacements is all-or-nothing: an unknown id rolls the batch back")
+    func batchMoveAtomic() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let space = try await services.createSpace(name: "Board")
+        let assetID = try await makeAsset(services)
+        let a = try await services.addAssetToSpace(assetID: assetID, to: space.id, x: 0, y: 0, w: 10, h: 10, z: 0)
+        let ghost = UUID()
+
+        // A batch with one valid + one missing id must throw AND leave `a` untouched.
+        await #expect(throws: AtelierError.notFound(entity: "space_item", id: ghost)) {
+            try await services.setSpaceItemPlacements([
+                SpaceItemPlacement(itemID: a.id, x: 999, y: 999, w: 10, h: 10, z: 9),
+                SpaceItemPlacement(itemID: ghost, x: 0, y: 0, w: 10, h: 10, z: 0),
+            ])
+        }
+        let rows = try await services.spaceItems(in: space.id)
+        #expect(rows.first { $0.item.id == a.id }?.item.x == 0) // rolled back, not 999
+    }
+
+    @Test("setSpaceItemPlacements rejects a non-finite / non-positive placement")
+    func batchMoveValidation() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let space = try await services.createSpace(name: "Board")
+        let assetID = try await makeAsset(services)
+        let a = try await services.addAssetToSpace(assetID: assetID, to: space.id, x: 0, y: 0, w: 10, h: 10, z: 0)
+
+        await #expect(throws: (any Error).self) {
+            try await services.setSpaceItemPlacements([
+                SpaceItemPlacement(itemID: a.id, x: .nan, y: 0, w: 10, h: 10, z: 0),
+            ])
+        }
+        // The row is untouched (validation ran before the write).
+        #expect(try await services.spaceItems(in: space.id).first?.item.x == 0)
+    }
+
+    @Test("setSpaceItemPlacements with an empty batch is a no-op")
+    func batchMoveEmpty() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        try await services.setSpaceItemPlacements([]) // must not throw
+    }
+
     @Test("removeSpaceItem drops one placement (idempotent) and leaves the asset")
     func remove() async throws {
         let (services, temp) = try makeServices()

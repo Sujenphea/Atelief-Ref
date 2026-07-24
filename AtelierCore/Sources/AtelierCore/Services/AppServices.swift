@@ -1922,14 +1922,33 @@ public final class AppServices: Sendable {
     public func setSpaceItemPlacement(
         itemID: UUID, x: Double, y: Double, w: Double, h: Double, z: Int
     ) async throws {
-        try Validation.canvasPlacement(x: x, y: y, w: w, h: h)
+        // Delegate to the batch write so the single- and multi-tile paths can never
+        // diverge on validation / update semantics (049 · D13, DRY).
+        try await setSpaceItemPlacements(
+            [SpaceItemPlacement(itemID: itemID, x: x, y: y, w: w, h: h, z: z)])
+    }
+
+    /// Persist MANY tile placements in ONE transaction (049 · D13) — a multi-select
+    /// drag (and its undo/redo) moves N tiles as a single atomic write, not N
+    /// round-trips through the serialized queue. Every placement is validated up
+    /// front; an unknown id throws `.notFound` and rolls the WHOLE batch back
+    /// (all-or-nothing, matching the single-item contract). An empty batch is a
+    /// no-op.
+    public func setSpaceItemPlacements(_ placements: [SpaceItemPlacement]) async throws {
+        guard !placements.isEmpty else { return }
+        for p in placements {
+            try Validation.canvasPlacement(x: p.x, y: p.y, w: p.w, h: p.h)
+        }
         try await write { db in
-            guard var item = try SpaceItem.fetchOne(db, key: Self.key(itemID)) else {
-                throw AtelierError.notFound(entity: "space_item", id: itemID)
+            let now = Date()
+            for p in placements {
+                guard var item = try SpaceItem.fetchOne(db, key: Self.key(p.itemID)) else {
+                    throw AtelierError.notFound(entity: "space_item", id: p.itemID)
+                }
+                item.x = p.x; item.y = p.y; item.w = p.w; item.h = p.h; item.z = p.z
+                item.updatedAt = now
+                try item.update(db)
             }
-            item.x = x; item.y = y; item.w = w; item.h = h; item.z = z
-            item.updatedAt = Date()
-            try item.update(db)
         }
     }
 

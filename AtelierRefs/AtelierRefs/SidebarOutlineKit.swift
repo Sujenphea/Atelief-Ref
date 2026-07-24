@@ -59,9 +59,21 @@ final class SidebarRowView: NSTableRowView {
         didSet { if forceSelected != oldValue { needsDisplay = true } }
     }
 
+    /// Pointer-over feedback for an unselected row — the AppKit analogue of the SwiftUI
+    /// nav rows' `.hoverHighlight`, so hovering a space / collection reads the same as
+    /// hovering Home / Capture / Settings. Suppressed under selection / force-select.
+    private var isHovered = false {
+        didSet { if isHovered != oldValue { needsDisplay = true } }
+    }
+    private var hoverTracking: NSTrackingArea?
+
     override func drawBackground(in dirtyRect: NSRect) {
         super.drawBackground(in: dirtyRect)
-        if forceSelected { drawHighlight() }
+        if forceSelected {
+            drawHighlight()
+        } else if isHovered && !isSelected {
+            drawHoverHighlight()
+        }
     }
 
     override func drawSelection(in dirtyRect: NSRect) {
@@ -71,15 +83,53 @@ final class SidebarRowView: NSTableRowView {
 
     /// Left-flush (roots have 0 x offset, so the fill must start at 0 too, else the
     /// name overhangs it); small right + vertical inset for the rounded look.
+    private var highlightRect: NSRect {
+        NSRect(x: 0, y: 2, width: bounds.width - 4, height: bounds.height - 4)
+    }
+
     private func drawHighlight() {
-        let rect = NSRect(x: 0, y: 2, width: bounds.width - 4, height: bounds.height - 4)
-        let path = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+        let path = NSBezierPath(roundedRect: highlightRect, xRadius: 6, yRadius: 6)
         NSColor(hex: 0x3A3A40).setFill()                        // Theme.Colors.selection
         path.fill()
         NSColor.white.withAlphaComponent(0.14).setStroke()      // Theme.Colors.hairlineStrong
         path.lineWidth = 1
         path.stroke()
     }
+
+    /// The subtle hover fill — white at 6% is `Color.primary.opacity(0.06)` on the dark
+    /// sidebar, matching the SwiftUI nav rows. Fill only (no border), so it reads as a
+    /// lighter step below the bordered `selection` state.
+    private func drawHoverHighlight() {
+        let path = NSBezierPath(roundedRect: highlightRect, xRadius: 6, yRadius: 6)
+        NSColor.white.withAlphaComponent(0.06).setFill()
+        path.fill()
+    }
+
+    // MARK: Hover tracking
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = hoverTracking { removeTrackingArea(existing) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil)
+        addTrackingArea(area)
+        hoverTracking = area
+        // Reconcile after reuse / scroll / relayout: `mouseEntered` won't fire if the
+        // pointer was already over the row before this tracking area existed, and a
+        // recycled row could otherwise keep a stale hover from its previous item.
+        if let window = window {
+            let inView = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            isHovered = bounds.contains(inView)
+        } else {
+            isHovered = false
+        }
+    }
+
+    override func mouseEntered(with event: NSEvent) { isHovered = true }
+    override func mouseExited(with event: NSEvent) { isHovered = false }
 
     override var isEmphasized: Bool {
         get { false }

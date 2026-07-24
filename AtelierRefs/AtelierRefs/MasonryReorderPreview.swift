@@ -57,16 +57,23 @@ func previewDisplayOrder(count: Int, blockIndices: [Int], slot: Int) -> [Int] {
 /// `displayOrder` must be a permutation of `aspects.indices` (the
 /// `previewDisplayOrder` contract); a stray out-of-range entry defensively
 /// solves as a square and maps nowhere rather than trapping.
+///
+/// `leadingInset` / `trailingInset` are the horizontal content margins (200) the
+/// real solve reserves; the preview MUST pass the same values or its columns pack
+/// edge-to-edge and the cells scale up mid-drag, snapping back on drop. Both
+/// default to 0 so the pre-inset call sites (and search) are unchanged.
 func previewFrames(
     displayOrder: [Int], aspects: [Double], availableWidth: CGFloat,
-    columns: Int, spacing: CGFloat, topInset: CGFloat
+    columns: Int, spacing: CGFloat, topInset: CGFloat,
+    leadingInset: CGFloat = 0, trailingInset: CGFloat = 0
 ) -> MasonryPreviewFrames {
     let permutedAspects = displayOrder.map { index in
         aspects.indices.contains(index) ? aspects[index] : 1
     }
     let solved = MasonryLayout.layout(
         aspects: permutedAspects, availableWidth: availableWidth,
-        columns: columns, spacing: spacing, topInset: topInset)
+        columns: columns, spacing: spacing, topInset: topInset,
+        leadingInset: leadingInset, trailingInset: trailingInset)
     var frames = [CGRect](repeating: .zero, count: aspects.count)
     for (position, dataIndex) in displayOrder.enumerated()
     where frames.indices.contains(dataIndex) {

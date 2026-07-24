@@ -114,8 +114,16 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// measured cost). `nil` until the first card kind lands in this cell.
     private var cardHost: NSHostingView<AnyView>?
 
+    /// A dim scrim painted over the thumbnail when selected — the Photos-style
+    /// "pull the image back" cue that makes the ring and checkmark pop AND signals
+    /// selection on its own. Sits below the rings/circle so those stay crisp.
+    private let selectionScrimLayer = CALayer()
     /// Inert-until-A2 selection ring (drawn when selected).
     private let selectionRingLayer = CALayer()
+    /// A translucent-dark hairline nested just INSIDE the accent selection ring so
+    /// the border keeps a luminance edge on light/bright images (the accent stroke
+    /// alone vanishes against a pale photo). Drawn only when selected.
+    private let selectionContrastLayer = CALayer()
     /// Inert-until-A2 keyboard-cursor ring (drawn when lead && !selected).
     private let cursorRingLayer = CALayer()
     /// Inert-until-A2 enter-selection circle affordance.
@@ -140,6 +148,8 @@ final class MasonryGridItem: NSCollectionViewItem {
     private var animatingGifID: UUID?
 
     private let cornerRadius: CGFloat = Theme.Radius.tile
+    /// The selected-cell accent border width. The contrast hairline nests inside it.
+    private let selectionRingWidth: CGFloat = 3
 
     /// The membership id this cell is currently bound to — the coordinator reads it
     /// back when the cell reports a mouse-down / circle click (A2). Set in
@@ -170,6 +180,14 @@ final class MasonryGridItem: NSCollectionViewItem {
             layer.backgroundColor = NSColor.quaternaryLabelColor.cgColor
         }
 
+        // Selected-cell dim scrim (below the rings so they stay crisp). Sized in
+        // `viewDidLayout`; opacity toggled in `applySelectionState`.
+        selectionScrimLayer.cornerRadius = cornerRadius
+        selectionScrimLayer.backgroundColor = NSColor.black.cgColor
+        selectionScrimLayer.opacity = 0
+        selectionScrimLayer.isHidden = true
+        container.layer?.addSublayer(selectionScrimLayer)
+
         // Rings: built now, hidden in A1. Sized in `viewDidLayout`.
         for ring in [selectionRingLayer, cursorRingLayer] {
             ring.cornerRadius = cornerRadius
@@ -179,6 +197,16 @@ final class MasonryGridItem: NSCollectionViewItem {
         }
         selectionRingLayer.borderColor = NSColor.controlAccentColor.cgColor
         cursorRingLayer.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.6).cgColor
+
+        // Contrast hairline nested just inside the accent ring (sized in
+        // `viewDidLayout`). Added last of the rings so it paints ABOVE the accent
+        // stroke's inner edge; a dark line reads on pale images and is invisible
+        // on dark ones.
+        selectionContrastLayer.cornerRadius = max(0, cornerRadius - selectionRingWidth)
+        selectionContrastLayer.borderColor = NSColor.black.withAlphaComponent(0.25).cgColor
+        selectionContrastLayer.borderWidth = 0
+        selectionContrastLayer.isHidden = true
+        container.layer?.addSublayer(selectionContrastLayer)
 
         // Circle affordance: the enter-selection toggle (A2). Hidden until the cell
         // is selecting or hovered (``updateCircleVisibility``); its click routes to
@@ -194,6 +222,13 @@ final class MasonryGridItem: NSCollectionViewItem {
         circleButton.setAccessibilityHidden(true)
         circleButton.target = self
         circleButton.action = #selector(circleClicked)
+        // Soft halo so the circle's edge survives any backing — a pale image would
+        // otherwise swallow the accent circle and the white empty-state ring.
+        circleButton.wantsLayer = true
+        circleButton.layer?.shadowColor = NSColor.black.cgColor
+        circleButton.layer?.shadowOpacity = 0.35
+        circleButton.layer?.shadowRadius = 2.5
+        circleButton.layer?.shadowOffset = .zero
         container.addSubview(circleButton)
 
         view = container
@@ -206,7 +241,9 @@ final class MasonryGridItem: NSCollectionViewItem {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let bounds = view.bounds
+        selectionScrimLayer.frame = bounds
         selectionRingLayer.frame = bounds
+        selectionContrastLayer.frame = bounds.insetBy(dx: selectionRingWidth, dy: selectionRingWidth)
         cursorRingLayer.frame = bounds
         cardHost?.frame = bounds
         gifSlot?.frame = bounds
@@ -272,16 +309,32 @@ final class MasonryGridItem: NSCollectionViewItem {
         currentSelection = state
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        selectionScrimLayer.isHidden = !state.isSelected
+        selectionScrimLayer.opacity = state.isSelected ? 0.18 : 0
         selectionRingLayer.isHidden = !state.isSelected
-        selectionRingLayer.borderWidth = state.isSelected ? 3 : 0
+        selectionRingLayer.borderWidth = state.isSelected ? selectionRingWidth : 0
+        selectionContrastLayer.isHidden = !state.isSelected
+        selectionContrastLayer.borderWidth = state.isSelected ? 1 : 0
         let showCursor = state.isCursor && !state.isSelected
         cursorRingLayer.isHidden = !showCursor
         cursorRingLayer.borderWidth = showCursor ? 2 : 0
         CATransaction.commit()
-        circleButton.image = NSImage(
-            systemSymbolName: state.isSelected ? "checkmark.circle.fill" : "circle",
-            accessibilityDescription: nil)
-        circleButton.contentTintColor = state.isSelected ? .controlAccentColor : .white
+        // Selected: a palette checkmark (BLACK tick on an accent-filled circle) so
+        // the tick has intrinsic contrast on any image, unlike a monochrome accent
+        // tint whose knocked-out check reads the backing photo. Unselected: the
+        // empty ring stays white (its halo carries it against pale images).
+        if state.isSelected {
+            let config = NSImage.SymbolConfiguration(
+                paletteColors: [.black, .controlAccentColor])
+            circleButton.image = NSImage(
+                systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)?
+                .withSymbolConfiguration(config)
+            circleButton.contentTintColor = nil
+        } else {
+            circleButton.image = NSImage(
+                systemSymbolName: "circle", accessibilityDescription: nil)
+            circleButton.contentTintColor = .white
+        }
         updateCircleVisibility()
     }
 

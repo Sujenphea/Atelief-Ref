@@ -59,11 +59,8 @@ struct CollectionView: View {
     // The native Quick Look panel driver (011-B3): spacebar peeks the selection.
     @State private var quickLook = QuickLookController()
 
-    // Subfolder create / rename from this screen (043). `newSubfolderParentID` is
-    // this collection for the header action, or a chip's folder for its menu.
-    @State private var showNewSubfolder = false
-    @State private var newSubfolderName = ""
-    @State private var newSubfolderParentID: UUID?
+    // Subfolder RENAME from this screen (043). Create now lives only in the sidebar
+    // collection tree's "New Subfolder…" (222) — the header button was removed (200).
     @State private var renameTargetID: UUID?
     @State private var renameText = ""
 
@@ -72,6 +69,12 @@ struct CollectionView: View {
     // layout solves items at `topInset + headerHeight`, so this IS the header→grid
     // spacing, restored to the pre-222 12pt.
     private static let gridTopInset: CGFloat = Theme.Spacing.md
+    // The 24pt content margin (200), folded into the grid layout as `contentInsets`
+    // (not a SwiftUI `.padding`) so the collection view spans the panel edge-to-edge
+    // and the marquee background covers the margins + the empty area below the grid.
+    // The skeleton path re-applies it as a plain padding; the width-keyed density /
+    // zoom clamps subtract it so column math is unchanged from the pre-200 inset.
+    private static let contentMargin: CGFloat = Theme.Spacing.xl
 
     /// The measured natural height of the header content (222), fed to the grid so
     /// the reserved header band hugs the row instead of a fixed guess. Seeded near
@@ -186,8 +189,12 @@ struct CollectionView: View {
         // The title row now lives INSIDE the grid so it scrolls away with the
         // content (222); subfolder navigation lives in the sidebar's collection tree
         // (the in-page chip row was a duplicate, so it's gone).
+        //
+        // No outer `.padding` here (200): the 24pt content margin is folded INTO the
+        // grid layout (`contentInsets`) so the collection view spans the panel edge-
+        // to-edge and the marquee background covers the margins + the empty area
+        // below a short grid. The skeleton path keeps an explicit padding of its own.
         grid
-            .padding(Theme.Spacing.xl)
             // ⌘V pastes into this collection — a hidden shortcut-only button, kept in
             // the SwiftUI key path (the header's create button is the other entry).
             .background {
@@ -208,11 +215,6 @@ struct CollectionView: View {
                         if abs(headerHeight - next) > 0.5 { headerHeight = next }
                     }
             }
-        // New subfolder (from the header action).
-        .nameEntryAlert(
-            "New Subfolder",
-            isPresented: $showNewSubfolder, text: $newSubfolderName, confirmLabel: "Create",
-            onConfirm: { model.createFolder(name: $0, parent: newSubfolderParentID ?? collectionID) })
         // Rename a subfolder.
         .nameEntryAlert(
             "Rename Collection",
@@ -413,9 +415,12 @@ struct CollectionView: View {
 
     /// The title row. Hosted INSIDE the grid's scroll region (222) so it scrolls
     /// away with the content like Home, instead of pinning above the grid. Natural
-    /// height — the band is sized to it (see `headerHeight`), not a fixed guess. The
-    /// ⌘V paste hook lives on `content`, not here — a shortcut button embedded in the
-    /// AppKit-hosted header wouldn't be in the key path.
+    /// height — the band is sized to it (see `headerHeight`), not a fixed guess.
+    ///
+    /// PURELY non-interactive display content (title + count): the New Subfolder
+    /// button was removed (200) so the whole header band can fall through to the
+    /// grid's marquee background (`MasonryHeaderContainer.hitTest` → nil). Subfolder
+    /// creation lives in the sidebar collection tree's "New Subfolder…" (222).
     private var headerContent: some View {
         HStack(spacing: 10) {
             Text(model.name(for: collectionID))
@@ -428,20 +433,6 @@ struct CollectionView: View {
             Text("\(isLoaded ? model.items.count : 0) items")
                 .font(.callout).foregroundStyle(.secondary)
                 .redacted(reason: isLoaded ? [] : .placeholder)
-            Spacer()
-            // Create a subfolder under THIS collection (043) — the always-available
-            // entry point.
-            Button {
-                newSubfolderName = ""
-                newSubfolderParentID = collectionID
-                showNewSubfolder = true
-            } label: {
-                Label("New Subfolder", systemImage: "folder.badge.plus")
-            }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("New subfolder in this collection")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -489,16 +480,23 @@ struct CollectionView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: Self.gridTopInset) {
                             headerContent
-                            gridSkeleton(width: geo.size.width)
+                            gridSkeleton(width: geo.size.width - 2 * Self.contentMargin)
                         }
+                        // The loaded grid folds the 24pt margin into its layout (200);
+                        // the skeleton is plain SwiftUI, so it re-applies it here to
+                        // match the inset content position.
+                        .padding(.horizontal, Self.contentMargin)
+                        .padding(.top, Self.contentMargin)
                     }
                 }
             }
-            // Capture the width for the toolbar/⌘ density clamp. Guarded to a real
-            // change (not subpixel wobble) so a geometry read inside a ScrollView
-            // can't feed a re-render → re-measure loop.
+            // Capture the CONTENT width (panel minus the 200 margins) for the toolbar
+            // / ⌘ density clamp, so it matches the width the grid lays columns out in.
+            // Guarded to a real change (not subpixel wobble) so a geometry read inside
+            // a ScrollView can't feed a re-render → re-measure loop.
             .onChange(of: geo.size.width, initial: true) { _, w in
-                if abs(gridWidth - w) > 0.5 { gridWidth = w }
+                let contentW = w - 2 * Self.contentMargin
+                if abs(gridWidth - contentW) > 0.5 { gridWidth = contentW }
             }
         }
         .overlay {
@@ -568,8 +566,8 @@ struct CollectionView: View {
             },
             onRequestDelete: { model.requestDeleteSelected() },
             onQuickLook: { presentQuickLook() },
-            onZoomIn: { gridPrefs.zoomIn(forWidth: geo.size.width) },
-            onZoomOut: { gridPrefs.zoomOut(forWidth: geo.size.width) },
+            onZoomIn: { gridPrefs.zoomIn(forWidth: geo.size.width - 2 * Self.contentMargin) },
+            onZoomOut: { gridPrefs.zoomOut(forWidth: geo.size.width - 2 * Self.contentMargin) },
             // A3 — drag out / drop / context menu. Every closure forwards to the
             // SAME model/view seams the SwiftUI grid used, so parity is structural.
             dragPayload: { model.dragPayload(forCellItemID: $0) },
@@ -593,7 +591,13 @@ struct CollectionView: View {
             // 222 — the title row scrolls away inside the grid's own scroll region,
             // its band sized to the row's measured natural height.
             header: AnyView(headerContent),
-            headerHeight: headerHeight))
+            headerHeight: headerHeight,
+            // 200 — the 24pt content margin lives in the layout (not a SwiftUI
+            // `.padding`), so the collection view fills the panel and the marquee
+            // background covers the margins + the empty area below the last row.
+            contentInsets: NSEdgeInsets(
+                top: Self.contentMargin, left: Self.contentMargin,
+                bottom: Self.contentMargin, right: Self.contentMargin)))
     }
 
     /// Open the full-window detail page for `detail`: make it the grid lead cursor
