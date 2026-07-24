@@ -152,6 +152,33 @@ final class SpaceModel: ObservableObject {
         await persistPlacements([(id, p)], reload: reload)
     }
 
+    /// The ONE placement-mutation path (051 · 4A): filter exact no-ops, persist the
+    /// forward batch, and register a single reversible undo group. Targets are
+    /// recomputed (never accumulated), so `new == old` is real equality with no
+    /// float drift (051 · 7A) — dropping unchanged edits avoids empty writes +
+    /// pointless undo entries; if nothing remains, this does nothing at all.
+    ///
+    /// `reload` governs only the FORWARD apply: geometry ops that already moved the
+    /// tiles in memory pass `false` (flicker-free, like a drag); z-ops pass `true`
+    /// (051 · 13A). Undo/redo always reload to resync ``items``.
+    ///
+    /// This is `async` and awaits the write INLINE, so a caller already running on
+    /// the serial queue (``flushMoves``) folds the write into its own task — an
+    /// inner `enqueue` awaiting the outer would deadlock the chain. OFF-queue
+    /// callers (restack / arrange) wrap the call in ``enqueue(_:)``.
+    private func applyPlacementEdit(name: String,
+                                    edits: [(id: UUID, old: Placement, new: Placement)],
+                                    reload: Bool) async {
+        let changed = edits.filter { $0.new != $0.old }
+        guard !changed.isEmpty else { return }
+        let forward = changed.map { (id: $0.id, p: $0.new) }
+        let backward = changed.map { (id: $0.id, p: $0.old) }
+        await persistPlacements(forward, reload: reload)
+        registerReversible(name,
+            primary: { self.enqueue { await self.persistPlacements(forward, reload: true) } },
+            inverse: { self.enqueue { await self.persistPlacements(backward, reload: true) } })
+    }
+
     private func performRestyle(_ id: UUID, _ style: ElementStyle) async {
         do {
             try await services.updateSpaceItemStyle(itemID: id, style: style)
@@ -262,16 +289,16 @@ final class SpaceModel: ObservableObject {
 
     /// Write the buffered move burst as a single batched placement write, then
     /// register ONE undo for it. Runs on the serial queue AFTER the synchronous
-    /// `moveTile` calls, so the buffer is complete.
+    /// `moveTile` calls, so the buffer is complete. The tiles already moved in
+    /// memory (see ``moveTile``), so the forward apply is `reload: false`.
     private func flushMoves() async {
         let moves = pendingMoves
         pendingMoves = []
         guard !moves.isEmpty else { return }
-        await persistPlacements(moves.map { (id: $0.id, p: $0.new) }, reload: false)
-        let name = moves.count > 1 ? "Move Group" : "Move"
-        registerReversible(name,
-            primary: { self.enqueue { await self.persistPlacements(moves.map { (id: $0.id, p: $0.new) }, reload: true) } },
-            inverse: { self.enqueue { await self.persistPlacements(moves.map { (id: $0.id, p: $0.old) }, reload: true) } })
+        await applyPlacementEdit(
+            name: moves.count > 1 ? "Move Group" : "Move",
+            edits: moves.map { (id: $0.id, old: $0.old, new: $0.new) },
+            reload: false)
     }
 
     // MARK: - Restack (z-order)
@@ -339,21 +366,57 @@ final class SpaceModel: ObservableObject {
         let othersZ = items.filter { !ids.contains($0.item.id) }.map(\.item.z)
         guard !selected.isEmpty, let edge = (toFront ? othersZ.max() : othersZ.min()) else { return }
 
-        var forward: [(id: UUID, p: Placement)] = []
-        var backward: [(id: UUID, p: Placement)] = []
-        for (offset, entry) in selected.enumerated() {
+        let edits: [(id: UUID, old: Placement, new: Placement)] = selected.enumerated().map { offset, entry in
             // Consecutive z's past the edge, preserving the block's internal order.
             let newZ = toFront ? edge + 1 + offset : edge - selected.count + offset
-            forward.append((id: entry.id, p: Placement(
-                x: entry.p.x, y: entry.p.y, w: entry.p.w, h: entry.p.h, z: newZ)))
-            backward.append((id: entry.id, p: entry.p))
+            return (id: entry.id, old: entry.p,
+                    new: Placement(x: entry.p.x, y: entry.p.y, w: entry.p.w, h: entry.p.h, z: newZ))
         }
-        // Already exactly in place → no write, no undo entry.
-        guard zip(forward, backward).contains(where: { $0.0.p.z != $0.1.p.z }) else { return }
-        enqueue { await self.persistPlacements(forward, reload: true) }
-        registerReversible(toFront ? "Bring to Front" : "Send to Back",
-            primary: { self.enqueue { await self.persistPlacements(forward, reload: true) } },
-            inverse: { self.enqueue { await self.persistPlacements(backward, reload: true) } })
+        // A z-op reloads to resync `items`; the helper drops an already-in-place
+        // selection (no write, no undo entry).
+        enqueue {
+            await self.applyPlacementEdit(
+                name: toFront ? "Bring to Front" : "Send to Back", edits: edits, reload: true)
+        }
+    }
+
+    // MARK: - Arrange (align + distribute, 051 Phase 1)
+
+    /// Align or distribute the current multi-selection (051 · E-3 — one method for
+    /// all 8 ops). The selection is filtered through ``items`` first (the
+    /// ``restackSelection`` pattern), which keeps ``livePlacement``'s force-unwrap
+    /// unreachable. Below the op's `minimumCount` this is a no-op (the bar also
+    /// gates the buttons). Live rects feed the pure ``CanvasArrange`` kernel; the
+    /// results zip back to ids by index, apply IN-MEMORY (flicker-free, like a
+    /// drag), and persist through the shared placement path as ONE undo step —
+    /// forward `reload: false` (tiles already moved), undo/redo `reload: true`
+    /// (051 · 3A / 13A). Only x/y change: w/h/z are carried from the live rect.
+    func arrange(_ op: CanvasArrange.Operation) {
+        let ids = selectedItemIDs
+        let selected = items.filter { ids.contains($0.item.id) }
+        guard selected.count >= op.minimumCount else { return }
+        let content = self.content()
+        // Live placements, index-aligned to the rects handed to the kernel.
+        let entries = selected.map { (id: $0.item.id, p: livePlacement($0.item.id, in: content)) }
+        let rects = entries.map { CGRect(x: $0.p.x, y: $0.p.y, width: $0.p.w, height: $0.p.h) }
+        let arranged = CanvasArrange.apply(op, to: rects)
+
+        var edits: [(id: UUID, old: Placement, new: Placement)] = []
+        for (index, entry) in entries.enumerated() {
+            let r = arranged[index]
+            // Only x/y move; w/h/z are preserved from the live placement (the kernel
+            // never sees them — 051 · 5A).
+            let new = Placement(x: Double(r.minX), y: Double(r.minY),
+                                w: entry.p.w, h: entry.p.h, z: entry.p.z)
+            guard new != entry.p else { continue }
+            edits.append((id: entry.id, old: entry.p, new: new))
+            // Move the tile in memory so the canvas shows the result immediately.
+            if let tid = content.tileID(forSpaceItemID: entry.id) {
+                content.setPlacement(tileID: tid, x: new.x, y: new.y)
+            }
+        }
+        guard !edits.isEmpty else { return } // already arranged → no write, no undo
+        enqueue { await self.applyPlacementEdit(name: op.actionName, edits: edits, reload: false) }
     }
 
     /// The freshest placement for `itemID`: the in-memory tile (which carries a

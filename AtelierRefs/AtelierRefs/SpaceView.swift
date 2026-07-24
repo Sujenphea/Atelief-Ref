@@ -14,6 +14,31 @@ import AtelierIngestion
 import CanvasRenderer
 import SwiftUI
 
+/// The context-aware action bar's mode, derived purely from the selection count
+/// (051 · 2A). Extracted + pure so the thresholds are unit-tested (051 · 12A) and
+/// the rendering stays compile-only. Selection drives it, never the active tool
+/// (051 · E-4).
+enum SpaceBarMode: Equatable {
+    case idle   // nothing selected → create tools
+    case single // one row → Edit + z-order
+    case multi  // 2+ rows → align + distribute + z-order
+
+    static func forSelection(count: Int) -> SpaceBarMode {
+        switch count {
+        case ..<1: .idle
+        case 1: .single
+        default: .multi
+        }
+    }
+}
+
+extension CanvasArrange.Operation {
+    /// Whether the bar enables this op for a selection of `selectionCount`: align
+    /// needs ≥2, distribute ≥3 — read straight off `minimumCount` so the threshold
+    /// lives in ONE place (051 · 12A/E-3). Pure; unit-tested for the off-by-ones.
+    func isEnabled(selectionCount: Int) -> Bool { selectionCount >= minimumCount }
+}
+
 struct SpaceView: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
@@ -62,13 +87,14 @@ struct SpaceView: View {
         }
     }
 
+    /// The header shrank to name + count once the tools moved into the context-aware
+    /// floating bar (051 · 8A); the create tools, Edit, and align/distribute all live
+    /// in `actionBar` now.
     private var header: some View {
         HStack(spacing: Theme.Spacing.md) {
             Text(space.name).font(Theme.Typography.sectionTitle)
             Text("\(space.items.count) items")
                 .font(.callout).foregroundStyle(.secondary)
-            toolPicker
-            editButton
             Spacer()
             Text("Drag to place · pinch to zoom")
                 .font(.caption).foregroundStyle(.tertiary)
@@ -77,8 +103,11 @@ struct SpaceView: View {
         .padding(.vertical, Theme.Spacing.sm)
     }
 
-    /// Select / Frame / Text. A create tool rubber-bands a new element, then the
-    /// canvas flips back to Select (see `onCreateElement`).
+    /// Select / Frame / Text, in the `.idle` sub-bar. A create tool rubber-bands a
+    /// new element, then the canvas flips back to Select (see `onCreateElement`).
+    /// The V/F/T shortcuts live on the canvas container (see `canvas`), NOT here —
+    /// they must keep firing when a selection swaps this picker out of the bar
+    /// (051 · E-2).
     private var toolPicker: some View {
         Picker("Tool", selection: $tool) {
             Image(systemName: "cursorarrow").tag(CanvasTool.select)
@@ -89,7 +118,6 @@ struct SpaceView: View {
         .labelsHidden()
         .fixedSize()
         .help("Select (V), Frame (F), or Text (T)")
-        .background(toolShortcuts)
     }
 
     /// V / F / T switch tools without reaching for the picker (design-tool muscle
@@ -106,20 +134,20 @@ struct SpaceView: View {
         .accessibilityHidden(true)
     }
 
-    /// Appears when a freeform element is selected; opens its inspector popover.
+    /// The `.single` bar's Edit glyph (051 · 8A — folded down from the header).
+    /// Shows only when the lone selected row is a freeform element; opens its
+    /// inspector popover. A selected asset has no style to edit, so it's absent.
     @ViewBuilder private var editButton: some View {
         if let element = space.selectedElement {
-            Button { showEditor = true } label: {
-                Label("Edit", systemImage: "slider.horizontal.3")
-            }
-            .popover(isPresented: $showEditor, arrowEdge: .bottom) {
-                ElementInspector(
-                    kind: element.item.kind,
-                    initialStyle: space.style(forItemID: element.item.id),
-                    onCommit: { style in space.updateStyle(itemID: element.item.id, style: style) },
-                    onDelete: { space.removeItem(element.item.id) })
-                .id(element.item.id)
-            }
+            SelectionBarButton("slider.horizontal.3", help: "Edit style") { showEditor = true }
+                .popover(isPresented: $showEditor, arrowEdge: .bottom) {
+                    ElementInspector(
+                        kind: element.item.kind,
+                        initialStyle: space.style(forItemID: element.item.id),
+                        onCommit: { style in space.updateStyle(itemID: element.item.id, style: style) },
+                        onDelete: { space.removeItem(element.item.id) })
+                    .id(element.item.id)
+                }
         }
     }
 
@@ -169,56 +197,109 @@ struct SpaceView: View {
 
             if space.items.isEmpty { emptyHint }
         }
+        // V/F/T ride the canvas container, NOT the `.idle` sub-bar (051 · E-2): a
+        // `keyboardShortcut` fires only while rendered, so keeping them here means
+        // the create tools stay reachable even when a selection swaps the tool
+        // picker out of the bar for `.single` / `.multi`.
+        .background(toolShortcuts)
         .overlay(alignment: .bottom) { actionBar }
     }
 
     // MARK: - Bottom action bar
 
-    /// The floating action pill over the canvas: undo/redo, z-order for the selected
-    /// tile, and add-from-library. Reuses the shared `SelectionBarButton` glyphs and
-    /// `selectionBarChrome()` capsule (parity with the Collection/Search selection
-    /// bar) — a flat `spacing: 2` row with no dividers, matching those bars. Keyboard
-    /// shortcuts ride the buttons, so ⌘Z / ⌘⇧] etc. still fire with the bar on screen.
-    /// Disabled glyphs dim rather than vanish so the row stays put. The trailing pad
-    /// balances the chrome's text-tuned leading inset (16) for this icon-only bar.
+    /// The bar's mode, derived PURELY from the selection count (051 · 2A). Selection
+    /// wins over any active create tool (051 · E-4) — the tools stay reachable via
+    /// the hoisted V/F/T shortcuts regardless of mode.
+    private var barMode: SpaceBarMode { .forSelection(count: space.selectedItemIDs.count) }
+
+    /// The floating action pill over the canvas, now context-aware (051 · 2A/E-2).
+    /// Undo/redo are MODE-INVARIANT — present in every mode, dimmed-not-hidden — so
+    /// ⌘Z / ⌘⇧Z always fire (a `keyboardShortcut` on an unrendered button is dead).
+    /// The mode-switched half is the tools (`.idle`) / Edit + z-order (`.single`) /
+    /// align + distribute + z-order (`.multi`). Reuses the shared `SelectionBarButton`
+    /// glyphs + `selectionBarChrome()` capsule (parity with the Collection/Search
+    /// bar) — a flat `spacing: 2` row. The trailing pad balances the chrome's
+    /// text-tuned leading inset (16) for this icon-only bar.
     private var actionBar: some View {
         HStack(spacing: 2) {
-            SelectionBarButton(
-                "arrow.uturn.backward",
-                help: space.canUndo ? "Undo \(space.undoActionName)" : "Nothing to undo"
-            ) { space.undo() }
-                .disabled(!space.canUndo)
-                .opacity(space.canUndo ? 1 : 0.35)
-                .keyboardShortcut("z", modifiers: .command)
-
-            SelectionBarButton(
-                "arrow.uturn.forward",
-                help: space.canRedo ? "Redo \(space.redoActionName)" : "Nothing to redo"
-            ) { space.redo() }
-                .disabled(!space.canRedo)
-                .opacity(space.canRedo ? 1 : 0.35)
-                .keyboardShortcut("z", modifiers: [.command, .shift])
-
-            // Z-order for the selection (034 P2 · 049 D7 — the whole selection,
-            // relative order preserved). Undoable via the space's own ⌘Z.
-            SelectionBarButton(
-                "square.3.layers.3d.top.filled",
-                help: "Bring the selected items to the front (⌘⇧])"
-            ) { space.bringSelectionToFront() }
-                .disabled(space.selectedItemIDs.isEmpty)
-                .opacity(space.selectedItemIDs.isEmpty ? 0.35 : 1)
-                .keyboardShortcut("]", modifiers: [.command, .shift])
-
-            SelectionBarButton(
-                "square.3.layers.3d.bottom.filled",
-                help: "Send the selected items to the back (⌘⇧[)"
-            ) { space.sendSelectionToBack() }
-                .disabled(space.selectedItemIDs.isEmpty)
-                .opacity(space.selectedItemIDs.isEmpty ? 0.35 : 1)
-                .keyboardShortcut("[", modifiers: [.command, .shift])
+            undoRedoBar // mode-invariant (051 · E-2)
+            switch barMode {
+            case .idle: toolPicker
+            case .single: singleBar
+            case .multi: multiBar
+            }
         }
         .padding(.trailing, 10)
         .selectionBarChrome()
+    }
+
+    /// Undo / redo — always on screen so their shortcuts never die (051 · E-2).
+    @ViewBuilder private var undoRedoBar: some View {
+        SelectionBarButton(
+            "arrow.uturn.backward",
+            help: space.canUndo ? "Undo \(space.undoActionName)" : "Nothing to undo"
+        ) { space.undo() }
+            .disabled(!space.canUndo)
+            .opacity(space.canUndo ? 1 : 0.35)
+            .keyboardShortcut("z", modifiers: .command)
+
+        SelectionBarButton(
+            "arrow.uturn.forward",
+            help: space.canRedo ? "Redo \(space.redoActionName)" : "Nothing to redo"
+        ) { space.redo() }
+            .disabled(!space.canRedo)
+            .opacity(space.canRedo ? 1 : 0.35)
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+    }
+
+    /// `.single`: Edit (elements only) + z-order for the lone selection.
+    @ViewBuilder private var singleBar: some View {
+        editButton
+        zOrderBar
+    }
+
+    /// `.multi`: the six aligns + two distributes, then z-order. Each op is gated on
+    /// its own `minimumCount` (align ≥2, distribute ≥3 — 051 · 12A/E-3), dimmed-not-
+    /// hidden below it, so at a 2-item selection the distributes read as "not yet".
+    @ViewBuilder private var multiBar: some View {
+        ForEach(CanvasArrange.Operation.allCases, id: \.self) { op in
+            let enabled = op.isEnabled(selectionCount: space.selectedItemIDs.count)
+            SelectionBarButton(Self.symbol(for: op), help: op.actionName) { space.arrange(op) }
+                .disabled(!enabled)
+                .opacity(enabled ? 1 : 0.35)
+        }
+        zOrderBar
+    }
+
+    /// Z-order for the whole selection (034 P2 · 049 D7 — relative order preserved),
+    /// shared by `.single` and `.multi`. Undoable via the space's own ⌘Z.
+    @ViewBuilder private var zOrderBar: some View {
+        SelectionBarButton(
+            "square.3.layers.3d.top.filled",
+            help: "Bring the selected items to the front (⌘⇧])"
+        ) { space.bringSelectionToFront() }
+            .keyboardShortcut("]", modifiers: [.command, .shift])
+
+        SelectionBarButton(
+            "square.3.layers.3d.bottom.filled",
+            help: "Send the selected items to the back (⌘⇧[)"
+        ) { space.sendSelectionToBack() }
+            .keyboardShortcut("[", modifiers: [.command, .shift])
+    }
+
+    /// The SF Symbol for each arrange op. Kept in the view layer so `CanvasArrange`
+    /// stays geometry-only (051 · 1A).
+    private static func symbol(for op: CanvasArrange.Operation) -> String {
+        switch op {
+        case .alignLeft: "align.horizontal.left"
+        case .alignHorizontalCenter: "align.horizontal.center"
+        case .alignRight: "align.horizontal.right"
+        case .alignTop: "align.vertical.top"
+        case .alignVerticalCenter: "align.vertical.center"
+        case .alignBottom: "align.vertical.bottom"
+        case .distributeHorizontal: "arrow.left.and.right"
+        case .distributeVertical: "arrow.up.and.down"
+        }
     }
 
     // MARK: - Asset detail overlay
@@ -278,7 +359,7 @@ struct SpaceView: View {
             "This space is empty",
             systemImage: "square.on.square.dashed",
             description: Text(
-                "Drag references in from a collection, or draw a Frame / Text with the tools above."))
+                "Drag references in from a collection, or draw a Frame / Text with the tools below."))
             .allowsHitTesting(false)
     }
 }
