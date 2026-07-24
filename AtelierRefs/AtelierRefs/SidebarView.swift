@@ -22,16 +22,16 @@ struct SidebarView: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
 
-    /// New folder (root when `newFolderParentID == nil`, else a subfolder). One
-    /// alert serves both the section "+" and the row "New Subfolder…" (043).
-    @State private var showNewFolder = false
-    @State private var newFolderName = ""
-    @State private var newFolderParentID: UUID?
     /// Rename a collection from the tree row's context menu (043).
     @State private var renameTargetID: UUID?
     @State private var renameText = ""
-    @State private var showNewSpace = false
-    @State private var newSpaceName = ""
+    /// The in-flight inline "new collection / subfolder" request handed to the
+    /// AppKit outline view (214). A fresh token each time re-triggers the draft.
+    @State private var collectionDraftRequest: CollectionDraftRequest?
+    /// Whether the inline "new space" draft row is showing, plus its live text (214).
+    @State private var spaceDraftActive = false
+    @State private var spaceDraftText = ""
+    @FocusState private var spaceDraftFocused: Bool
     @State private var spacesExpanded = true
     @State private var collectionsExpanded = true
     /// The AppKit collections tree's measured content height (043 · Phase C), so
@@ -54,12 +54,7 @@ struct SidebarView: View {
         // this can run first and no-op while `services` is still nil); kept so a
         // re-mounted sidebar refreshes.
         .task { await model.refreshSpaces() }
-        // New collection (root) or subfolder — one alert, titled by target.
-        .nameEntryAlert(
-            newFolderParentID == nil ? "New Collection" : "New Subfolder",
-            isPresented: $showNewFolder, text: $newFolderName, confirmLabel: "Create",
-            onConfirm: { model.createFolder(name: $0, parent: newFolderParentID) })
-        // Rename a collection.
+        // Rename a collection (inline creation replaced the create alerts — 214).
         .nameEntryAlert(
             "Rename Collection",
             isPresented: renameBinding, text: $renameText, confirmLabel: "Rename",
@@ -68,13 +63,21 @@ struct SidebarView: View {
                 renameTargetID = nil
             },
             onCancel: { renameTargetID = nil })
-        // New space.
-        .nameEntryAlert(
-            "New Space",
-            isPresented: $showNewSpace, text: $newSpaceName, confirmLabel: "Create",
-            onConfirm: { name in
-                Task { if let id = await model.createSpace(name: name) { nav.openSpace(id) } }
-            })
+        // Route a draft request (a "+" button or ⌘N) into the right inline row (214):
+        // collections go to the AppKit outline via a fresh token; spaces show the
+        // SwiftUI draft row. Consuming clears `nav.sidebarDraft` back to nil.
+        .onChange(of: nav.sidebarDraft) { _, draft in
+            guard let draft else { return }
+            switch draft {
+            case .collection(let parent):
+                collectionsExpanded = true
+                collectionDraftRequest = CollectionDraftRequest(parent: parent)
+            case .space:
+                spacesExpanded = true
+                startSpaceDraft()
+            }
+            nav.sidebarDraft = nil
+        }
     }
 
     // MARK: - Expanded (273pt)
@@ -139,10 +142,12 @@ struct SidebarView: View {
 
     private var spacesSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            sectionHeader("Spaces", expanded: $spacesExpanded) { showNewSpace = true }
+            sectionHeader("Spaces", expanded: $spacesExpanded) { nav.sidebarDraft = .space }
             if spacesExpanded {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    if model.spaces.isEmpty {
+                    // The empty-state row is suppressed while a draft is open so the
+                    // draft is the only row (no "No spaces yet" + draft together).
+                    if model.spaces.isEmpty && !spaceDraftActive {
                         if model.spacesLoaded { spacesEmptyRow } else { spacesLoadingRows }
                     } else {
                         ForEach(model.spaces) { space in
@@ -159,9 +164,52 @@ struct SidebarView: View {
                                 }
                         }
                     }
+                    if spaceDraftActive { spaceDraftRow }
                 }
             }
         }
+    }
+
+    /// The inline "new space" draft row (214) — a text field styled like ``treeRow``.
+    /// Enter commits (creates + opens the space), Escape or an empty commit cancels,
+    /// and losing focus commits a non-empty name / cancels an empty one (Finder-style).
+    private var spaceDraftRow: some View {
+        TextField("New Space", text: $spaceDraftText)
+            .textFieldStyle(.plain)
+            .font(Theme.Typography.row)
+            .foregroundStyle(Theme.Colors.inkPrimary)
+            .focused($spaceDraftFocused)
+            .lineLimit(1)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, 7)
+            .background(rowHighlight(selected: true))
+            .onSubmit { commitSpaceDraft() }
+            .onExitCommand { cancelSpaceDraft() }
+            .onChange(of: spaceDraftFocused) { _, focused in
+                // Focus loss while still drafting: commit non-empty, else cancel.
+                if !focused && spaceDraftActive { commitSpaceDraft() }
+            }
+    }
+
+    private func startSpaceDraft() {
+        spaceDraftText = ""
+        spaceDraftActive = true
+        // Focus once the row has been inserted.
+        DispatchQueue.main.async { spaceDraftFocused = true }
+    }
+
+    private func commitSpaceDraft() {
+        guard spaceDraftActive else { return }
+        let name = spaceDraftText.trimmingCharacters(in: .whitespacesAndNewlines)
+        spaceDraftActive = false
+        spaceDraftText = ""
+        guard !name.isEmpty else { return }
+        Task { if let id = await model.createSpace(name: name) { nav.openSpace(id) } }
+    }
+
+    private func cancelSpaceDraft() {
+        spaceDraftActive = false
+        spaceDraftText = ""
     }
 
     /// Skeleton rows while the first `refreshSpaces` is in flight.
@@ -189,18 +237,18 @@ struct SidebarView: View {
     private var collectionsSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             sectionHeader("Collections", expanded: $collectionsExpanded) {
-                startNewFolder(parentID: nil)
+                nav.sidebarDraft = .collection(parent: nil)
             }
             if collectionsExpanded {
                 // The AppKit NSOutlineView tree (043 · Phase C): native disclosure
                 // + live drag reorder/nest, plus asset drops onto rows. Non-scrolling
                 // — framed to its reported content height so it sits inside the
                 // sidebar's own ScrollView. Row context menu (New Subfolder / Rename
-                // / Move to / Delete) lives in the coordinator; the two text-entry
-                // actions call back into the alerts below.
+                // / Move to / Delete) lives in the coordinator; "New Subfolder" begins
+                // an inline draft there (214), Rename still uses the alert below.
                 CollectionsOutlineView(
                     model: model, nav: nav, height: $outlineHeight,
-                    onNewSubfolder: { startNewFolder(parentID: $0) },
+                    draftRequest: collectionDraftRequest,
                     onRename: { id in
                         renameText = model.folders.first { $0.id == id }?.name ?? ""
                         renameTargetID = id
@@ -211,12 +259,6 @@ struct SidebarView: View {
                     .padding(.trailing, -8)
             }
         }
-    }
-
-    private func startNewFolder(parentID: UUID?) {
-        newFolderName = ""
-        newFolderParentID = parentID
-        showNewFolder = true
     }
 
     private var renameBinding: Binding<Bool> {

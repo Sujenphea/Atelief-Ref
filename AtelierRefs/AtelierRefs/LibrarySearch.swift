@@ -15,15 +15,52 @@
 
 import AppKit
 import AtelierCore
+import AtelierIngestion
 import Combine
+import os
 import SwiftUI
 
 // MARK: - Token + scope
 
-/// One selected tag filter in the search field.
-struct TagToken: Identifiable, Hashable {
-    let tag: Tag
-    var id: UUID { tag.id }
+/// One selected filter chip in the search field (044/045 · 16A/17A). A tag
+/// narrows by structured id; a collection scopes to its membership. Multiple
+/// collection tokens OR (member of ANY); tags AND. Selecting a suggested token
+/// resolves free text to one of these before it ever reaches FTS.
+enum SearchToken: Identifiable, Hashable {
+    case tag(Tag)
+    case collection(Collection)
+
+    var id: UUID {
+        switch self {
+        case .tag(let tag): return tag.id
+        case .collection(let collection): return collection.id
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .tag(let tag): return tag.name
+        case .collection(let collection): return collection.name
+        }
+    }
+}
+
+/// The parameters of one search execution — the seam (12A) between the model's
+/// input state and the service call, so a test can inject a runner and assert
+/// exactly what the model asked for.
+struct LibrarySearchQuery: Equatable {
+    /// The FTS free text (raw, so the type-ahead prefix survives). Empty when the
+    /// query is a `tag:` directive or tokens-only.
+    var text: String
+    /// Structured tag ids from `.tag` tokens (ANDed).
+    var tagIDs: [UUID]
+    /// An unresolved `tag:` needle → a tag-name CONTAINS filter (17A), or `nil`.
+    var tagNameContains: String?
+    /// Collection scope from `.collection` tokens plus the This-collection scope,
+    /// ORed (16A). Empty = whole library.
+    var collectionIDs: [UUID]
+    /// `.relevance` when there's free text to rank, else `.newest`.
+    var sort: SearchSort
 }
 
 /// The Collection-screen scope toggle. Ignored on the global gallery.
@@ -32,18 +69,29 @@ enum SearchScope: Hashable {
     case all
 }
 
+/// How the free text is matched (047 · 3a · 10A). `.keyword` is the FTS keyword
+/// backbone (prefix / substring / relevance); `.meaning` embeds the text and
+/// ranks by semantic cosine similarity. Structured tag / collection scope applies
+/// in BOTH modes; only the free-text ranking differs.
+enum SearchMode: Hashable {
+    case keyword
+    case meaning
+}
+
 // MARK: - Model
 
 @MainActor
 final class LibrarySearchModel: ObservableObject {
     /// The free-text (FTS) query; also the live prefix that drives suggestions.
     @Published var text = ""
-    /// The selected tag filters (ANDed).
-    @Published var tokens: [TagToken] = []
+    /// The selected filter tokens — tags (ANDed) and collection scopes (ORed).
+    @Published var tokens: [SearchToken] = []
     /// Collection-screen scope. Defaults per screen in `configure`.
     @Published var scope: SearchScope = .all
-    /// Prefix-matched tag suggestions for the current `text`.
-    @Published private(set) var suggestions: [TagToken] = []
+    /// Free-text matching mode (047 · 3a): keyword FTS vs semantic meaning.
+    @Published var mode: SearchMode = .keyword
+    /// Prefix-matched tag / collection suggestions for the current `text`.
+    @Published private(set) var suggestions: [SearchToken] = []
     /// The current result set (bounded, newest-first).
     @Published private(set) var results: [AssetDetail] = []
     /// Bumped every time `results` is (re)assigned, so the results grid can prune a
@@ -61,6 +109,49 @@ final class LibrarySearchModel: ObservableObject {
     private var collectionID: UUID?
     private var queryTask: Task<Void, Never>?
     private var suggestTask: Task<Void, Never>?
+
+    private static let logger = Logger(subsystem: "so.atelier.refs", category: "search")
+
+    /// The query executor — the injectable seam (12A). Defaults to the live
+    /// service call; tests replace it to drive success / failure / cancellation
+    /// paths without a database.
+    var runQuery: (LibrarySearchQuery) async throws -> [AssetDetail] = { _ in [] }
+    /// The suggestion fetcher — the sibling seam. `includeCollections` is false
+    /// while a `tag:` directive narrows suggestions to tags only (17A).
+    var fetchSuggestions: (_ prefix: String, _ includeCollections: Bool) async throws -> [SearchToken] = { _, _ in [] }
+    /// The SEMANTIC query executor (047 · 3a) — the `.meaning`-mode seam. Defaults
+    /// to the live embed-then-kNN call; tests replace it to assert routing without
+    /// the model / a database.
+    var runSemanticQuery: (LibrarySearchQuery) async throws -> [AssetDetail] = { _ in [] }
+
+    /// The on-device sentence embedder for `.meaning` queries. Lazy so the NL model
+    /// only loads once a semantic search is actually run (never in `.keyword` use
+    /// or tests, which inject `runSemanticQuery`). `@unchecked Sendable`, so it's
+    /// safe to hand to a detached task for off-main embedding.
+    private lazy var embedder = NLSentenceEmbedder()
+
+    init() {
+        // Wire the seams to the live services by default (self is needed, so this
+        // can't be a property initializer). Tests overwrite these after `init`.
+        runQuery = { [weak self] query in
+            try await self?.liveQuery(query) ?? []
+        }
+        fetchSuggestions = { [weak self] prefix, includeCollections in
+            try await self?.liveSuggestions(prefix: prefix, includeCollections: includeCollections) ?? []
+        }
+        runSemanticQuery = { [weak self] query in
+            try await self?.liveSemanticQuery(query) ?? []
+        }
+    }
+
+    /// The structured tag ids among the selected tokens (ANDed).
+    private var selectedTagIDs: [UUID] {
+        tokens.compactMap { if case .tag(let tag) = $0 { tag.id } else { nil } }
+    }
+    /// The collection ids among the selected tokens (ORed scope).
+    private var selectedCollectionIDs: [UUID] {
+        tokens.compactMap { if case .collection(let c) = $0 { c.id } else { nil } }
+    }
 
     /// Whether a query is worth running / results should replace the content.
     var isActive: Bool {
@@ -91,6 +182,9 @@ final class LibrarySearchModel: ObservableObject {
         runSearch()
     }
 
+    /// The keyword/meaning mode changed: re-run (suggestions are keyword-only).
+    func modeChanged() { runSearch() }
+
     /// Reset everything (e.g. when a screen disappears).
     func reset() {
         queryTask?.cancel(); suggestTask?.cancel()
@@ -106,28 +200,63 @@ final class LibrarySearchModel: ObservableObject {
 
     private func runSearch() {
         queryTask?.cancel()
-        guard let services, isActive else {
+        guard isActive else {
             results = []; resultsVersion &+= 1; isRunning = false; queryFailed = false
             return
         }
-        let text = self.text
-        let tagIDs = tokens.map(\.tag.id)
-        let scoped = (collectionID != nil && scope == .thisCollection) ? collectionID : nil
+        let (fts, tagNeedle) = Self.parse(query: text)
+        let hasFTS = !fts.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Collection scope = the `.collection` tokens (16A) plus the
+        // This-collection toggle when active, de-duplicated (a screen scoped to a
+        // collection the user ALSO tokenized shouldn't list it twice).
+        var scopeIDs = selectedCollectionIDs
+        if let collectionID, scope == .thisCollection { scopeIDs.append(collectionID) }
+        scopeIDs = Array(NSOrderedSet(array: scopeIDs).array as? [UUID] ?? scopeIDs)
+
+        // `.meaning` mode ranks the WHOLE raw text by semantic similarity (no `tag:`
+        // parsing, no prefix/relevance sort — the embedder reads the concept), with
+        // the same structured tag / collection scope. It needs text to embed; a
+        // tokens-only query falls back to the keyword filter path.
+        let query: LibrarySearchQuery
+        let run: (LibrarySearchQuery) async throws -> [AssetDetail]
+        if mode == .meaning, hasFTS {
+            query = LibrarySearchQuery(
+                text: text, tagIDs: selectedTagIDs, tagNameContains: nil,
+                collectionIDs: scopeIDs, sort: .relevance)
+            run = runSemanticQuery
+        } else {
+            query = LibrarySearchQuery(
+                text: fts,
+                tagIDs: selectedTagIDs,
+                tagNameContains: tagNeedle,
+                collectionIDs: scopeIDs,
+                // Rank by relevance while there's text to rank; a tokens-only /
+                // `tag:`-only query has nothing to score, so keep the recency order.
+                sort: hasFTS ? .relevance : .newest)
+            run = runQuery
+        }
         isRunning = true
         queryTask = Task {
             try? await Task.sleep(for: .milliseconds(220))
             guard !Task.isCancelled else { return }
             do {
-                let hits = try await services.searchAssets(
-                    text: text, tagIDs: tagIDs, tagMatch: .all,
-                    collectionID: scoped, limit: 500)
+                let hits = try await run(query)
                 guard !Task.isCancelled else { return }
                 results = hits
                 resultsVersion &+= 1
                 queryFailed = false
+            } catch is CancellationError {
+                return  // a superseded query — leave state for the live one.
             } catch {
-                // Surface the failure distinctly — an empty `results` alone reads as
-                // "no matches" and hides that the search actually errored.
+                guard !Task.isCancelled else { return }
+                // A relevance/cursor misuse is OUR bug (the UI never pages
+                // relevance), so trap it in debug; other errors are runtime DB
+                // failures — log and surface distinctly (an empty `results` alone
+                // reads as "no matches" and hides that the search errored).
+                Self.logger.error("search query failed: \(String(describing: error))")
+                if case AtelierError.relevanceSortUnpageable = error {
+                    assertionFailure("relevance sort must never be paged from the search UI")
+                }
                 results = []
                 resultsVersion &+= 1
                 queryFailed = true
@@ -138,16 +267,91 @@ final class LibrarySearchModel: ObservableObject {
 
     private func refreshSuggestions() {
         suggestTask?.cancel()
-        let prefix = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let services, !prefix.isEmpty else { suggestions = []; return }
+        let (_, tagNeedle) = Self.parse(query: text)
+        // A `tag:` directive narrows suggestions to tags only (17A); otherwise the
+        // raw prefix suggests both tags and collections.
+        let includeCollections = tagNeedle == nil
+        let prefix = (tagNeedle ?? text).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prefix.isEmpty else { suggestions = []; return }
         let selected = Set(tokens.map(\.id))
+        let fetch = fetchSuggestions
         suggestTask = Task {
             try? await Task.sleep(for: .milliseconds(120))
             guard !Task.isCancelled else { return }
-            let tags = (try? await services.tagVocabulary(prefix: prefix, limit: 8)) ?? []
-            guard !Task.isCancelled else { return }
-            suggestions = tags.map(TagToken.init).filter { !selected.contains($0.id) }
+            do {
+                let found = try await fetch(prefix, includeCollections)
+                guard !Task.isCancelled else { return }
+                suggestions = found.filter { !selected.contains($0.id) }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                Self.logger.error("suggestion fetch failed: \(String(describing: error))")
+                suggestions = []
+            }
         }
+    }
+
+    // MARK: seam implementations (12A)
+
+    /// The live query: forward to the service. `collectionIDs` empty = no scope.
+    private func liveQuery(_ query: LibrarySearchQuery) async throws -> [AssetDetail] {
+        guard let services else { return [] }
+        return try await services.searchAssets(
+            text: query.text,
+            tagIDs: query.tagIDs,
+            tagMatch: .all,
+            tagNameContains: query.tagNameContains,
+            collectionIDs: query.collectionIDs,
+            sort: query.sort,
+            limit: 500)
+    }
+
+    /// The live SEMANTIC query (047 · 3a): embed the text off-main, then rank by
+    /// cosine kNN through the service, honouring the structured tag / collection
+    /// scope. An unavailable model or empty vector yields no results (the mode is
+    /// simply inert), never an error.
+    private func liveSemanticQuery(_ query: LibrarySearchQuery) async throws -> [AssetDetail] {
+        guard let services else { return [] }
+        let text = query.text
+        let embedder = self.embedder
+        let vector = await Task.detached(priority: .userInitiated) { embedder.embed(text) }.value
+        guard let vector else { return [] }
+        return try await services.semanticSearchAssets(
+            queryVector: vector,
+            modelVersion: NLSentenceEmbedder.currentModelVersion,
+            tagIDs: query.tagIDs,
+            tagMatch: .all,
+            collectionIDs: query.collectionIDs,
+            limit: 500)
+    }
+
+    /// The live suggestions: tag vocabulary always, plus name-matching collections
+    /// unless a `tag:` directive narrows to tags. The collection inventory is small
+    /// and bounded (`listCollections`), so a case-insensitive CONTAINS in memory is
+    /// fine; capped so suggestions stay a short list.
+    private func liveSuggestions(prefix: String, includeCollections: Bool) async throws -> [SearchToken] {
+        guard let services else { return [] }
+        let tagTokens = try await services.tagVocabulary(prefix: prefix, limit: 8)
+            .map(SearchToken.tag)
+        guard includeCollections else { return tagTokens }
+        let collectionTokens = try await services.listCollections()
+            .filter { $0.name.localizedCaseInsensitiveContains(prefix) }
+            .prefix(5)
+            .map(SearchToken.collection)
+        return tagTokens + collectionTokens
+    }
+
+    /// Split the raw query into its FTS text and an optional `tag:` needle (17A).
+    /// A leading `tag:` directive routes the remainder to tag-name matching, with
+    /// NO FTS text; everything else is plain FTS text returned VERBATIM (untrimmed)
+    /// so the type-ahead trailing-space signal survives to `ftsMatchQuery`.
+    static func parse(query: String) -> (fts: String, tagNeedle: String?) {
+        let leading = query.drop(while: { $0.isWhitespace })
+        guard leading.lowercased().hasPrefix("tag:") else { return (query, nil) }
+        let needle = leading.dropFirst("tag:".count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return ("", needle.isEmpty ? nil : needle)
     }
 }
 
@@ -201,6 +405,7 @@ struct LibrarySearchable<Content: View>: View {
         }
         .onChange(of: search.text) { _, _ in search.textChanged() }
         .onChange(of: search.tokens) { _, _ in search.tokensChanged() }
+        .onChange(of: search.mode) { _, _ in search.modeChanged() }
         .onChange(of: search.scope) { _, _ in search.configure(services: model.services, collectionID: collectionID) }
     }
 }
@@ -216,10 +421,21 @@ private struct SearchFieldModifier: ViewModifier {
                 text: $search.text,
                 tokens: $search.tokens,
                 suggestedTokens: Binding(get: { search.suggestions }, set: { _ in }),
-                prompt: "Search title, author, or #tag"
+                prompt: "Search title, name, note, text, or tag: / collection"
             ) { token in
-                Label(token.tag.name,
-                      systemImage: token.tag.source == .agent ? "sparkles" : "tag")
+                switch token {
+                case .tag(let tag):
+                    Label(tag.name,
+                          systemImage: tag.source == .agent ? "sparkles" : "tag")
+                case .collection(let collection):
+                    Label(collection.name, systemImage: "folder")
+                }
+            }
+            // Native segmented toggle under the field (047 · 3a · 10A): keyword FTS
+            // vs semantic meaning. Appears while the search field is active.
+            .searchScopes($search.mode) {
+                Text("Keyword").tag(SearchMode.keyword)
+                Text("Meaning").tag(SearchMode.meaning)
             }
     }
 }
@@ -231,32 +447,46 @@ private struct LibrarySearchResults: View {
     @ObservedObject var search: LibrarySearchModel
     let onOpen: (AssetDetail) -> Void
 
-    // Multi-select over the result set, reusing the pure grid reducer (asset ids as
-    // the selection universe — search hits have no folder membership). This closes
-    // the "triage dead-end": found items can be picked and acted on (007 G2 / 034
-    // P2). Arrow-cursor + marquee are intentionally NOT ported — the adaptive
-    // LazyVGrid has no analytic frames to drive them; click / ⌘ / ⇧ / ⌘A / Delete
-    // / Esc cover keyboard-and-mouse triage.
-    @State private var selection = GridSelection()
-    /// The hovered cell (drives the selection circle), keyed off the cell CONTAINER
-    /// so moving onto the circle doesn't flicker it away (see CollectionView 149).
-    @State private var hoveredID: UUID?
+    // 048 — search now renders through the SAME AppKit `MasonryGridHost` as the
+    // collection grid instead of a bespoke SwiftUI `LazyVGrid`. This gives search
+    // the native `NSDraggingSession` (no per-frame SwiftUI rebuild → the old drag
+    // lag is gone), the precomputed small drag image, and the full reducer
+    // behaviour — click / ⌘ / ⇧ / marquee / arrows / ⌘A / Delete / Esc — for free.
+    // Search hits are membership-less, so a synthetic `CollectionItemDetail` per
+    // hit (with `item.id == asset.id`) bridges the host, which is keyed on
+    // membership `item.id`; the sentinel scope id + `.looseAssets` menu keep every
+    // drop a COPY and hide the verbs that need a real membership.
+    @StateObject private var selectionStore = GridSelectionStore()
     @Environment(\.displayScale) private var displayScale
 
-    // Marquee drag-select (009 · N6): result-cell frames captured in a shared named
-    // coordinate space, hit-tested by the pure `marqueeRect`/`marqueeIndices`.
-    @State private var cardFrames: [UUID: CGRect] = [:]
-    @State private var marqueeStart: CGPoint?
-    @State private var marqueeCurrent: CGPoint?
-    private static let gridSpace = "searchResultsContent"
+    /// A stable, membership-less sentinel "collection" id for the host. Search hits
+    /// belong to no collection; a constant keeps the host from resetting scroll
+    /// between queries and marks every drag-out payload as a copy (009 · N3).
+    private static let searchScopeID = AssetDragPayload.nilSourceID
 
-    /// The widest a result cell can draw — the `columns` maximum below. Kept next
-    /// to it so the thumbnail bucket can't drift from the layout that sets it.
-    private static let maxCellSide: CGFloat = 140
-    private let columns = [GridItem(.adaptive(minimum: 112, maximum: maxCellSide), spacing: 8)]
+    /// The 84 pt / 192-bucket drag preview — the small precomputed image the AppKit
+    /// grid uses, NOT a snapshot of the full 384-bucket cell (048 · the old lag).
+    private static let dragPreviewSide: CGFloat = 84
 
     /// The result set's asset ids in display order — the reducer's `order`.
     private var orderIDs: [UUID] { search.results.map(\.asset.id) }
+
+    /// A synthetic membership per hit so the host (keyed on `item.id`) can render
+    /// search results. `item.id == asset.id` so every host closure keyed on the cell
+    /// id coincides with the asset id — no id mapping anywhere. `collectionID` is the
+    /// sentinel scope; placement fields are unused (no reorder, array order stands).
+    private var items: [CollectionItemDetail] {
+        search.results.map { detail in
+            CollectionItemDetail(
+                item: CollectionItem(
+                    id: detail.asset.id,
+                    collectionID: Self.searchScopeID,
+                    assetID: detail.asset.id,
+                    addedAt: detail.asset.createdAt),
+                asset: detail.asset,
+                source: detail.source)
+        }
+    }
 
     var body: some View {
         Group {
@@ -285,164 +515,149 @@ private struct LibrarySearchResults: View {
     }
 
     private var resultsGrid: some View {
-        ScrollView {
-            ZStack(alignment: .topLeading) {
-                // The drag catcher sits BEHIND the cells: a drag on empty area starts
-                // a marquee; a drag on a cell drags the asset(s) out (see resultCell).
-                marqueeCatcher
-                LazyVGrid(columns: columns, spacing: 8) {
-                    ForEach(search.results, id: \.asset.id) { detail in
-                        resultCell(detail)
-                    }
-                }
-                .padding(12)
-                marqueeOverlay
+        MasonryGridHost(configuration: gridConfiguration)
+            .overlay(alignment: .bottom) {
+                if selectionStore.selection.isSelecting { selectionBar }
             }
-            .coordinateSpace(.named(Self.gridSpace))
-        }
-        .focusable()
-        .focusEffectDisabled()
-        .overlay(alignment: .bottom) {
-            if selection.isSelecting { selectionBar }
-        }
-        // Prune a stale multi-selection whenever the query's results change.
-        .onChange(of: search.resultsVersion) { _, _ in
-            selection = selection.pruned(to: orderIDs)
-        }
-        // A triage delete removes a hit from the library — re-run the query so the
-        // stale card leaves the grid (contentsVersion bumps when the delete reloads).
-        .onChange(of: model.contentsVersion) { _, _ in search.rerun() }
-        .onDeleteCommand { requestDeleteTargets() }
-        .onKeyPress(.escape) {
-            guard selection.isSelecting else { return .ignored }
-            apply(.clear)
-            return .handled
-        }
-        .onKeyPress(keys: ["a"]) { press in
-            guard press.modifiers.contains(.command) else { return .ignored }
-            apply(.selectAll)
-            return .handled
-        }
-        .onKeyPress(.return) {
-            apply(.openLead)
-            return selection.lead == nil ? .ignored : .handled
-        }
+            // Keep the reducer's feed order in step with the results (the host does
+            // not push this itself — the collection grid's model does). Prune a stale
+            // multi-selection to the surviving ids whenever the query changes.
+            .onAppear { selectionStore.setOrder(orderIDs) }
+            .onChange(of: search.resultsVersion) { _, _ in
+                selectionStore.setOrder(orderIDs)
+                selectionStore.prune(to: orderIDs)
+            }
+            // A triage delete removes a hit from the library — re-run the query so the
+            // stale card leaves the grid (contentsVersion bumps when the delete reloads).
+            .onChange(of: model.contentsVersion) { _, _ in search.rerun() }
     }
 
-    /// One result cell: the thumbnail with a selection border + hover/selection
-    /// circle, click routing (plain opens / ⌘ / ⇧ select), and a batch context menu.
-    private func resultCell(_ detail: AssetDetail) -> some View {
-        let id = detail.asset.id
-        let isSelected = selection.ids.contains(id)
-        let showsCircle = selection.isSelecting || hoveredID == id
-        return ZStack(alignment: .topTrailing) {
-            Button {
-                let flags = NSEvent.modifierFlags
-                guard !flags.contains(.shift), !flags.contains(.command) else { return }
-                apply(gridClickAction(imageID: id, shift: false, command: false), open: detail)
-            } label: {
-                // 140 pt (the columns maximum) → 280 px at 2× → the 384 bucket.
-                AssetContentThumbnail(
-                    asset: detail.asset,
-                    url: model.thumbnailURL(forAsset: detail.asset),
-                    isSelected: isSelected,
-                    bucket: thumbnailPixelBucket(
-                        pointLongSide: Self.maxCellSide, scale: displayScale))
-            }
-            .buttonStyle(.plain)
-            // ⌘/⇧ clicks: a SwiftUI Button doesn't fire reliably on a modified click,
-            // so modifier-aware tap gestures own them (mirrors CollectionCell).
-            .simultaneousGesture(TapGesture().modifiers(.command).onEnded {
-                apply(.commandClick(id))
-            })
-            .simultaneousGesture(TapGesture().modifiers(.shift).onEnded {
-                apply(.shiftClick(id))
-            })
-            .overlay {
-                if selection.lead == id && !isSelected {
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 2)
-                        .allowsHitTesting(false)
+    // MARK: - Host configuration
+
+    private var gridConfiguration: GridHostConfiguration {
+        GridHostConfiguration(
+            items: items,
+            itemsVersion: search.resultsVersion,
+            density: .default,
+            spacing: 8,
+            topInset: 12,
+            collectionID: Self.searchScopeID,
+            displayScale: displayScale,
+            thumbnailURL: { model.thumbnailURL(forAsset: $0.asset) },
+            blobURL: { model.blobURL(forAsset: $0.asset) },
+            selectionStore: selectionStore,
+            onOpenDetail: { id in
+                if let hit = search.results.first(where: { $0.asset.id == id }) { onOpen(hit) }
+            },
+            onRequestDelete: { requestDeleteTargets() },
+            onQuickLook: {},   // search has no Quick Look plumbing yet (parity gap, not lag)
+            onZoomIn: {},      // search has no per-surface density control
+            onZoomOut: {},
+            dragPayload: { dragPayload(for: $0) },
+            dragImage: { dragImage(for: $0) },
+            canReorder: false,
+            onReorderCommit: { _, _ in false },
+            actionTargets: { actionTargets(for: $0) },
+            moveTargets: moveTargets,
+            onMoveToCollection: { _, _ in },   // membership-less: never moves
+            onCopyToCollection: { ids, target in model.copyToCollection(assetIDs: ids, to: target) },
+            onSetCover: { _ in },
+            onRemoveFromCollection: { _ in },
+            onDelete: { ids in model.requestDelete(assetIDs: ids) },
+            menuStyle: .looseAssets,
+            onReveal: { id in
+                if let hit = search.results.first(where: { $0.asset.id == id }) {
+                    model.revealInFinder(asset: hit.asset)
                 }
-            }
-            if showsCircle {
-                selectionCircle(id: id, isSelected: isSelected).transition(.opacity)
-            }
-        }
-        .onHover { hovering in
-            if hovering { hoveredID = id }
-            else if hoveredID == id { hoveredID = nil }
-        }
-        .animation(.easeInOut(duration: 0.12), value: showsCircle)
-        // Drag the asset(s) OUT onto a sidebar collection/space row. A selected cell
-        // carries the whole selection; an unselected cell carries just itself. Search
-        // hits are membership-less, so the sentinel source makes every drop a COPY
-        // (add) — never a move (009 · N3 / N6).
-        .draggable(dragPayload(for: id))
-        // Publish this cell's frame for the marquee hit-test.
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.gridSpace)) } action: {
-            cardFrames[id] = $0
-        }
-        .contextMenu { cellMenu(for: detail) }
+            })
     }
 
-    // MARK: - Marquee + action bar (009 · N6)
+    // MARK: - Finder-scope target rules (whole selection when the cell is in it)
 
-    /// The transparent layer behind the cells that begins a marquee on an empty-area
-    /// drag and clears the selection on an empty-area click.
-    private var marqueeCatcher: some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.gridSpace))
-                    .onChanged { value in
-                        marqueeStart = value.startLocation
-                        marqueeCurrent = value.location
-                        updateMarqueeSelection()
-                    }
-                    .onEnded { _ in
-                        marqueeStart = nil
-                        marqueeCurrent = nil
-                    })
-            .onTapGesture { if selection.isSelecting { apply(.clear) } }
+    /// The payload a cell drag carries: the whole selection when the dragged cell is
+    /// part of it, else just that cell. The sentinel source marks it membership-less
+    /// so drops COPY (add) rather than move (009 · N3).
+    private func dragPayload(for id: UUID) -> AssetDragPayload {
+        let selection = selectionStore.selection
+        let ids = (selection.isSelecting && selection.ids.contains(id))
+            ? Array(selection.ids) : [id]
+        return AssetDragPayload(assetIDs: ids, sourceCollectionID: AssetDragPayload.nilSourceID)
+    }
+
+    /// The asset ids a menu / drag acts on for the cell — the whole selection when
+    /// the cell is in it, else the one cell (the selection stays untouched).
+    private func actionTargets(for id: UUID) -> [UUID] {
+        let selection = selectionStore.selection
+        return (selection.isSelecting && selection.ids.contains(id))
+            ? Array(selection.ids) : [id]
+    }
+
+    /// The ids a keyboard/bar Delete acts on: the selection while selecting, else the
+    /// cursor's lone item.
+    private func requestDeleteTargets() {
+        let selection = selectionStore.selection
+        let targets = selection.isSelecting
+            ? Array(selection.ids) : (selection.lead.map { [$0] } ?? [])
+        guard !targets.isEmpty else { return }
+        model.requestDelete(assetIDs: targets)
+    }
+
+    /// Every collection as a copy target, Unsorted pinned first (search has no source
+    /// folder to exclude, so all are offered as roots — no subfolder grouping).
+    private var moveTargets: MoveTargets {
+        let unsorted = model.folders.filter { $0.id == model.unsortedFolderID }
+        let rest = model.folders
+            .filter { $0.id != model.unsortedFolderID }
+            .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
+        return MoveTargets(subfolders: [], roots: unsorted + rest)
+    }
+
+    // MARK: - Drag image (the small precomputed preview, 048)
+
+    @MainActor
+    private func dragImage(for id: UUID) -> NSImage? {
+        guard let hit = search.results.first(where: { $0.asset.id == id }) else { return nil }
+        let selection = selectionStore.selection
+        let count = (selection.isSelecting && selection.ids.contains(id))
+            ? max(selection.ids.count, 1) : 1
+        let renderer = ImageRenderer(content: dragPreview(asset: hit.asset, count: count))
+        renderer.scale = displayScale
+        return renderer.nsImage
     }
 
     @ViewBuilder
-    private var marqueeOverlay: some View {
-        if let start = marqueeStart, let current = marqueeCurrent {
-            let rect = marqueeRect(from: start, to: current)
-            Rectangle()
-                .fill(Color.accentColor.opacity(0.12))
-                .overlay(Rectangle().stroke(Color.accentColor, lineWidth: 1))
-                .frame(width: rect.width, height: rect.height)
-                .offset(x: rect.minX, y: rect.minY)
-                .allowsHitTesting(false)
-        }
+    private func dragPreview(asset: Asset, count: Int) -> some View {
+        AssetContentThumbnail(
+            asset: asset,
+            url: model.thumbnailURL(forAsset: asset),
+            bucket: thumbnailPixelBucket(pointLongSide: Self.dragPreviewSide, scale: displayScale))
+            .frame(width: Self.dragPreviewSide, height: Self.dragPreviewSide)
+            .overlay(alignment: .topTrailing) {
+                if count > 1 {
+                    Text("\(count)")
+                        .font(.caption2).bold().monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(Color.accentColor))
+                        .padding(4)
+                }
+            }
     }
 
-    private func updateMarqueeSelection() {
-        guard let start = marqueeStart, let current = marqueeCurrent else { return }
-        let rect = marqueeRect(from: start, to: current)
-        let valid = Set(orderIDs)
-        let entries = cardFrames.filter { valid.contains($0.key) }
-        let ids = Array(entries.keys)
-        let frames = ids.map { entries[$0]! }
-        let hits = Set(marqueeIndices(in: rect, frames: frames).map { ids[$0] })
-        apply(.marquee(hits: hits, base: []))
-    }
+    // MARK: - Selection bar
 
     /// The floating "N selected · Clear · Delete" bar, shown while a selection is
     /// active. Delete routes through the same staged/undoable asset delete as the
     /// keyboard and context menu.
     private var selectionBar: some View {
         HStack(spacing: 12) {
-            Text("\(selection.ids.count) selected")
+            Text("\(selectionStore.selection.ids.count) selected")
                 .font(.callout.weight(.medium))
-            Button("Clear") { apply(.clear) }
+            Button("Clear") { selectionStore.apply(.clear) }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
             Button(role: .destructive) { requestDeleteTargets() } label: {
-                Label("Delete \(selection.ids.count)", systemImage: "trash")
+                Label("Delete \(selectionStore.selection.ids.count)", systemImage: "trash")
             }
         }
         .padding(.horizontal, 16)
@@ -451,88 +666,6 @@ private struct LibrarySearchResults: View {
         .overlay(Capsule().stroke(Color.primary.opacity(0.08)))
         .shadow(radius: 8, y: 2)
         .padding(.bottom, 16)
-    }
-
-    /// The payload a cell drag carries: the whole selection when the dragged cell is
-    /// part of it, else just that cell. The sentinel source marks it membership-less
-    /// so drops COPY (add) rather than move (009 · N3).
-    private func dragPayload(for id: UUID) -> AssetDragPayload {
-        let ids = (selection.isSelecting && selection.ids.contains(id))
-            ? Array(selection.ids) : [id]
-        return AssetDragPayload(assetIDs: ids, sourceCollectionID: AssetDragPayload.nilSourceID)
-    }
-
-    private func selectionCircle(id: UUID, isSelected: Bool) -> some View {
-        Button {
-            apply(.tapCircle(id))
-        } label: {
-            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 20, weight: .medium))
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(
-                    isSelected ? Color.white : Color.white.opacity(0.95),
-                    isSelected ? Color.accentColor : Color.black.opacity(0.35))
-                .background(Circle().fill(.black.opacity(0.15)).padding(1))
-                .padding(6)
-        }
-        .buttonStyle(.plain)
-        .help(isSelected ? "Deselect" : "Select")
-        .accessibilityHidden(true)
-    }
-
-    /// Finder-scope batch menu: a right-click on a SELECTED cell acts on the whole
-    /// selection; on an unselected cell it acts on that one and leaves the selection
-    /// untouched. Only the verbs that make sense for a membership-less hit —
-    /// Add-to-Collection (copy) and Delete; Reveal in Finder for a lone byte-backed
-    /// item.
-    @ViewBuilder
-    private func cellMenu(for detail: AssetDetail) -> some View {
-        let id = detail.asset.id
-        let targets = (selection.isSelecting && selection.ids.contains(id))
-            ? Array(selection.ids) : [id]
-        let n = targets.count
-        Menu("Add to Collection") {
-            ForEach(addTargets) { c in
-                Button(c.name) { model.copyToCollection(assetIDs: targets, to: c.id) }
-            }
-        }
-        if n == 1, model.blobURL(forAsset: detail.asset) != nil {
-            Button("Reveal in Finder") { model.revealInFinder(asset: detail.asset) }
-        }
-        Divider()
-        Button("Delete\(n > 1 ? " (\(n))" : "")", role: .destructive) {
-            model.requestDelete(assetIDs: targets)
-        }
-    }
-
-    /// Every collection as a copy target, Unsorted pinned first (search has no
-    /// source folder to exclude, so all are offered).
-    private var addTargets: [Collection] {
-        let unsorted = model.folders.filter { $0.id == model.unsortedFolderID }
-        let rest = model.folders
-            .filter { $0.id != model.unsortedFolderID }
-            .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
-        return unsorted + rest
-    }
-
-    /// The ids a keyboard verb (Delete) acts on: the selection while selecting, else
-    /// the cursor's lone item.
-    private func requestDeleteTargets() {
-        let targets = selection.isSelecting
-            ? Array(selection.ids) : (selection.lead.map { [$0] } ?? [])
-        guard !targets.isEmpty else { return }
-        model.requestDelete(assetIDs: targets)
-    }
-
-    /// Apply a reducer action against the current result order; open the detail
-    /// page when the effect asks for it.
-    private func apply(_ action: GridSelectionAction, open detail: AssetDetail? = nil) {
-        let (next, effect) = selection.applying(action, order: orderIDs)
-        selection = next
-        if case let .openDetail(openID) = effect,
-           let hit = detail ?? search.results.first(where: { $0.asset.id == openID }) {
-            onOpen(hit)
-        }
     }
 }
 

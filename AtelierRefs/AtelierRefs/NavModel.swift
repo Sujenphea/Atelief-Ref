@@ -39,6 +39,17 @@ enum SidebarItem: Hashable {
     case space(UUID)
 }
 
+/// A pending inline-creation request the sidebar consumes, then clears (214). One
+/// source of truth for every entry point — the section "+" buttons, the outline
+/// row's "New Subfolder…", and the ⌘N command all set this; the sidebar renders the
+/// draft row from it. `nil` = no draft in flight.
+enum SidebarDraft: Equatable {
+    /// A new space (draft row at the end of the Spaces list).
+    case space
+    /// A new collection — `parent == nil` is a root, else a subfolder of `parent`.
+    case collection(parent: UUID?)
+}
+
 /// Route state for the app shell (004-P1). Holds the `NavigationStack` path and
 /// the detail-overlay selection; nothing else. `@MainActor` because it drives
 /// SwiftUI directly.
@@ -62,6 +73,10 @@ final class NavModel: ObservableObject {
     /// 6:4 — the rail = the traffic-light footprint). Auto-set true while the
     /// item-detail overlay is up.
     @Published var sidebarCollapsed = false
+
+    /// A pending inline-creation draft (214). Set by the section "+" buttons and the
+    /// ⌘N command; the sidebar starts the inline row and clears this back to `nil`.
+    @Published var sidebarDraft: SidebarDraft?
 
     /// - Parameters:
     ///   - initialPath: the within-collection drill-down stack; tests pass `[]`.

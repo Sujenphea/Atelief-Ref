@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -113,6 +113,28 @@ enum Migrator {
         // SHIPPED once released: never edit this body.
         migrator.registerMigration("v11") { db in
             try createV11Schema(db)
+        }
+
+        // v12 — search covers user-given Name + Note (044/045 · search overhaul
+        // 1A): rebuild `asset_fts` with `name` / `note` columns so the v10 fields
+        // become searchable, kept fresh by the regenerated sync triggers.
+        migrator.registerMigration("v12") { db in
+            try createV12Schema(db)
+        }
+
+        // v13 — substring search (044 · 046 search overhaul Phase 2): four
+        // `trigram`-tokenized indexes over the SHORT human fields so "air" finds
+        // "chair" and the tag-/collection-name arms stop leaning on un-indexed
+        // leading-wildcard LIKE scans.
+        migrator.registerMigration("v13") { db in
+            try createV13Schema(db)
+        }
+
+        // v14 — semantic search (044 · 047 search overhaul Phase 3a): one dense
+        // text-embedding vector per asset, stored for cosine kNN. Additive table,
+        // populated lazily by the embedding backfill (independent model_version).
+        migrator.registerMigration("v14") { db in
+            try createV14Schema(db)
         }
 
         return migrator
@@ -539,6 +561,137 @@ enum Migrator {
             t.synchronize(withTable: "asset")
             t.column("search_text")
         }
+    }
+
+    // MARK: - v12
+
+    /// Fold the v10 user-given `name` / `note` into the content FTS (044/045 · 1A).
+    ///
+    /// v6 built `asset_fts` over `search_text` alone, so naming or annotating an
+    /// asset left it unfindable by that name/note — the strongest user-supplied
+    /// signal was invisible to search. FTS5 columns are fixed at creation, so
+    /// widening the index means rebuilding the virtual table.
+    ///
+    /// The `asset` table itself is untouched (no rebuild, no FK dance): only the
+    /// derived index is dropped and recreated. GRDB's `synchronize(withTable:)`
+    /// regenerates the INSERT/UPDATE/DELETE triggers AND runs the `'rebuild'`
+    /// backfill, so every existing row's `search_text` / `name` / `note` is
+    /// re-indexed in one transactional step (15A) and future `setName`/`setNote`
+    /// writes stay searchable via the triggers — no derivation logic duplicated.
+    private static func createV12Schema(_ db: Database) throws {
+        // 1. Drop the old sync triggers first — a bare `DROP TABLE asset_fts`
+        //    leaves them dangling, and the next `asset` write would fire a trigger
+        //    referencing a table that no longer exists. GRDB names them
+        //    `__asset_fts_ai/ad/au`; this helper drops exactly those.
+        try db.dropFTS5SynchronizationTriggers(forTable: "asset_fts")
+
+        // 2. Drop the narrow index. External-content FTS5 stores no content of its
+        //    own (it shadows `asset`), so nothing but the index is lost.
+        try db.execute(sql: "DROP TABLE asset_fts;")
+
+        // 3. Recreate over the wider column set. `synchronize` re-establishes the
+        //    triggers and back-fills every existing asset from the content table.
+        try db.create(virtualTable: "asset_fts", using: FTS5()) { t in
+            t.synchronize(withTable: "asset")
+            t.column("search_text")
+            t.column("name")
+            t.column("note")
+        }
+    }
+
+    // MARK: - v13
+
+    /// Substring search over the short human fields (044 · 046 Phase 2).
+    ///
+    /// The v1/v6/v12 indexes use the `unicode61` tokenizer, which matches whole
+    /// WORDS only: "air" cannot find "chair", and tag/collection names lived in no
+    /// index at all — the query layer fell back to un-indexed leading-wildcard
+    /// `LIKE '%…%'` scans. FTS5's `trigram` tokenizer indexes every 3-character
+    /// window, so `MATCH '"air"'` is a true (indexed) substring test.
+    ///
+    /// Four SEPARATE trigram tables (a tokenizer is table-wide, so trigram can't
+    /// share the unicode61 tables) mirror the external-content pattern — each
+    /// `synchronize(withTable:)` regenerates INSERT/UPDATE/DELETE triggers and
+    /// back-fills existing rows in one transactional step, so future writes stay
+    /// indexed with no derivation logic duplicated:
+    ///   • `source_trigram`  — title / author (provenance short fields)
+    ///   • `asset_trigram`   — the user-given `name`
+    ///   • `tag_trigram`     — tag name
+    ///   • `collection_trigram` — collection name
+    ///
+    /// Scope is deliberately the SHORT fields only. OCR (`analysis_fts`) and the
+    /// asset's `note` / `search_text` stay unicode61: a trigram index over long
+    /// prose bloats ~1 row per character for no substring-recall win a user asks
+    /// for. `case_sensitive 0` + `remove_diacritics 1` match the unicode61 indexes'
+    /// folding, so "cafe" finds "Café" here too. Trigram needs ≥3 characters; the
+    /// query layer keeps a unicode61 / LIKE fallback for 1–2 char queries.
+    private static func createV13Schema(_ db: Database) throws {
+        let trigram = FTS5TokenizerDescriptor(
+            components: ["trigram", "case_sensitive", "0", "remove_diacritics", "1"])
+
+        try db.create(virtualTable: "source_trigram", using: FTS5()) { t in
+            t.tokenizer = trigram
+            t.synchronize(withTable: "source")
+            t.column("title")
+            t.column("author_handle")
+            t.column("author_name")
+        }
+        try db.create(virtualTable: "asset_trigram", using: FTS5()) { t in
+            t.tokenizer = trigram
+            t.synchronize(withTable: "asset")
+            t.column("name")
+        }
+        try db.create(virtualTable: "tag_trigram", using: FTS5()) { t in
+            t.tokenizer = trigram
+            t.synchronize(withTable: "tag")
+            t.column("name")
+        }
+        try db.create(virtualTable: "collection_trigram", using: FTS5()) { t in
+            t.tokenizer = trigram
+            t.synchronize(withTable: "collection")
+            t.column("name")
+        }
+    }
+
+    // MARK: - v14
+
+    /// Semantic text search index (044 · 047 Phase 3a).
+    ///
+    /// One dense embedding vector per asset, capturing the MEANING of its human
+    /// text (title / name / note / OCR) so search can rank by concept, not just
+    /// keyword. Additive and independent of `asset_analysis`:
+    ///
+    /// - `asset_id` is PK and FK → `asset(id) ON DELETE CASCADE` — one embedding
+    ///   per asset, dropped with the asset (no orphan sweep, mirrors v7).
+    /// - `vector` is the opaque BLOB (512 × Float32 little-endian); AtelierCore
+    ///   never interprets it — the analyzer (AtelierIngestion) owns the encoding.
+    /// - `content_hash` is a hash of the exact embedded text; the backfill re-embeds
+    ///   on a mismatch, so a rename / late-arriving OCR re-indexes even though
+    ///   `asset` carries no `updated_at` (047 · 4A staleness signal).
+    /// - `model_version` records the embedding model; an upgrade re-embeds via a
+    ///   `WHERE model_version < …` scan (the indexed access path), not a schema
+    ///   change — decoupled from `asset_analysis.analyzer_version`.
+    ///
+    /// No FTS here: semantic ranking is Swift-side cosine kNN over these vectors
+    /// (SQLite has no vector index), so the vectors are a plain BLOB column.
+    private static func createV14Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE asset_embedding (
+                asset_id      TEXT    NOT NULL PRIMARY KEY
+                    REFERENCES asset(id) ON DELETE CASCADE,
+                model_version INTEGER NOT NULL,
+                content_hash  TEXT    NOT NULL,
+                vector        BLOB    NOT NULL,
+                embedded_at   TEXT    NOT NULL
+            );
+            """)
+
+        // Backfill access path (047): "rows produced by an older model" is a
+        // version comparison, so a model upgrade is a WHERE-clause scan.
+        try db.execute(sql: """
+            CREATE INDEX index_asset_embedding_on_model_version
+                ON asset_embedding(model_version);
+            """)
     }
 
     // MARK: - v7

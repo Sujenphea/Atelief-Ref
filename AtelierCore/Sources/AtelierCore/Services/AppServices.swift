@@ -6,6 +6,7 @@
 // and GRDB errors are mapped to `AtelierError` on the way out (C7) so the
 // toolkit never leaks. Reads / search are a separate chunk; this is writes only.
 
+import Accelerate
 import Foundation
 import GRDB
 
@@ -176,6 +177,246 @@ public final class AppServices: Sendable {
         }
     }
 
+    // MARK: - Semantic embeddings (047 · Phase 3a)
+
+    /// Insert or replace an asset's semantic text embedding (047 · 3a). `vector` is
+    /// the model's `[Float]` output (already L2-normalized at the analyzer seam, so
+    /// cosine reduces to a dot product); it is packed to the opaque BLOB here.
+    /// `embeddedAt` is stamped server-side. Upsert by the `asset_id` PK, mirroring
+    /// ``upsertAnalysis``. The asset must exist (`.notFound`).
+    @discardableResult
+    public func upsertEmbedding(
+        assetID: UUID,
+        modelVersion: Int,
+        contentHash: String,
+        vector: [Float]
+    ) async throws -> AssetEmbedding {
+        let row = AssetEmbedding(
+            assetID: assetID, modelVersion: modelVersion, contentHash: contentHash,
+            vector: AssetEmbedding.encode(vector), embeddedAt: Date())
+        return try await write { db in
+            guard try Asset.exists(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            let exists = try AssetEmbedding
+                .filter(Column("asset_id") == Self.key(assetID))
+                .fetchCount(db) > 0
+            if exists { try row.update(db) } else { try row.insert(db) }
+            return row
+        }
+    }
+
+    /// The embedding row for `assetID`, or `nil` when not yet embedded.
+    public func embedding(for assetID: UUID) async throws -> AssetEmbedding? {
+        try await read { db in
+            try AssetEmbedding
+                .filter(Column("asset_id") == Self.key(assetID))
+                .fetchOne(db)
+        }
+    }
+
+    /// The next batch of assets whose text embedding is stale at `modelVersion` —
+    /// the resumable backfill query (047 · 3a). An asset qualifies when its
+    /// embedding is MISSING, was produced by an OLDER model, or its OCR arrived /
+    /// changed AFTER the embedding (`asset_analysis.analyzed_at > embedded_at`).
+    /// Assets with no human text at all are excluded so they never linger pending.
+    ///
+    /// Each candidate carries its raw text fields + the existing embedding's
+    /// `(modelVersion, contentHash)`, so the analyzer can build the corpus, hash
+    /// it, and SKIP re-embedding when an OCR re-run left the text unchanged (the
+    /// 4A content-hash guard). Name/note edits (no `asset.updated_at`) are caught
+    /// by ``embeddingsToReverify(modelVersion:limit:)``.
+    public func assetsNeedingEmbedding(
+        modelVersion: Int, limit: Int
+    ) async throws -> [EmbeddingCandidate] {
+        let clampedLimit = min(max(limit, 1), 1000)
+        return try await read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT a.id AS asset_id, s.title AS title, a.name AS name,
+                       a.note AS note, an.ocr_text AS ocr_text,
+                       e.model_version AS model_version, e.content_hash AS content_hash
+                FROM asset a
+                JOIN source s ON s.id = a.source_id
+                LEFT JOIN asset_analysis an ON an.asset_id = a.id
+                LEFT JOIN asset_embedding e ON e.asset_id = a.id
+                WHERE (COALESCE(s.title,'') || COALESCE(a.name,'')
+                       || COALESCE(a.note,'') || COALESCE(an.ocr_text,'')) <> ''
+                  AND (e.asset_id IS NULL
+                       OR e.model_version < ?
+                       OR (an.analyzed_at IS NOT NULL AND an.analyzed_at > e.embedded_at))
+                ORDER BY a.created_at DESC
+                LIMIT ?
+                """, arguments: [modelVersion, clampedLimit])
+            return rows.compactMap(Self.embeddingCandidate)
+        }
+    }
+
+    /// A batch of already-embedded assets to RE-VERIFY for text drift (047 · 4A),
+    /// oldest-embedded first. Because `asset` carries no `updated_at`, a rename or
+    /// note edit leaves no timestamp; the analyzer re-hashes each returned asset's
+    /// corpus and re-embeds only on a content-hash mismatch. Paged by `embedded_at`
+    /// so a periodic sweep covers the whole library over time. Only rows AT the
+    /// current `modelVersion` (older ones are already caught by
+    /// ``assetsNeedingEmbedding(modelVersion:limit:)``).
+    public func embeddingsToReverify(
+        modelVersion: Int, limit: Int
+    ) async throws -> [EmbeddingCandidate] {
+        let clampedLimit = min(max(limit, 1), 1000)
+        return try await read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT a.id AS asset_id, s.title AS title, a.name AS name,
+                       a.note AS note, an.ocr_text AS ocr_text,
+                       e.model_version AS model_version, e.content_hash AS content_hash
+                FROM asset_embedding e
+                JOIN asset a ON a.id = e.asset_id
+                JOIN source s ON s.id = a.source_id
+                LEFT JOIN asset_analysis an ON an.asset_id = a.id
+                WHERE e.model_version = ?
+                ORDER BY e.embedded_at ASC
+                LIMIT ?
+                """, arguments: [modelVersion, clampedLimit])
+            return rows.compactMap(Self.embeddingCandidate)
+        }
+    }
+
+    /// Bump an embedding's `embedded_at` to now WITHOUT re-embedding — a re-verify
+    /// (047 · 4A) that found the text unchanged. Rotates the row out of the
+    /// oldest-first re-verify window so the sweep advances. No-op if absent.
+    public func markEmbeddingVerified(assetID: UUID) async throws {
+        try await write { db in
+            try db.execute(sql: """
+                UPDATE asset_embedding SET embedded_at = ? WHERE asset_id = ?
+                """, arguments: [Date(), Self.key(assetID)])
+        }
+    }
+
+    /// Semantic (meaning-based) search over the library (047 · 3a). Ranks assets
+    /// by cosine similarity between `queryVector` and each asset's stored text
+    /// embedding, respecting the same structured scope as keyword search.
+    ///
+    /// - `queryVector`: the search text ALREADY embedded into the model's space by
+    ///   the caller (the embedder lives in AtelierIngestion; AtelierCore can't turn
+    ///   a string into a vector). Empty → empty result (no match-everything).
+    /// - `modelVersion`: only embeddings at this version are comparable to the
+    ///   query (a mixed-version library is mid-backfill); others are ignored.
+    /// - `platform` / `tagIDs` / `tagMatch` / `collectionIDs`: structured filters,
+    ///   applied in SQL FIRST (8A) so cosine ranks only in-scope candidates — a
+    ///   nearer match outside the scope never displaces a real one.
+    ///
+    /// Ranking is Swift-side brute-force cosine (SQLite has no vector index): load
+    /// the in-scope `(id, vector)` pairs, dot-product each against the query
+    /// (vectors are L2-normalized, so dot == cosine), take the top `limit`. This is
+    /// bounded for library-scale collections (≤ tens of thousands); a vector index
+    /// / ANN is the escape hatch if profiling ever demands it. NOT keyset-pageable
+    /// (relevance order isn't the recency cursor's order) — `limit` only.
+    public func semanticSearchAssets(
+        queryVector: [Float],
+        modelVersion: Int,
+        platform: Platform? = nil,
+        tagIDs: [UUID] = [],
+        tagMatch: TagMatch = .all,
+        collectionIDs: [UUID] = [],
+        limit: Int = 50
+    ) async throws -> [AssetDetail] {
+        guard !queryVector.isEmpty else { return [] }
+        let clampedLimit = min(max(limit, 1), 500)
+        let distinctTagIDs = Array(Set(tagIDs))
+        let distinctCollectionIDs = Array(Set(collectionIDs))
+
+        return try await read { db in
+            // 1. In-scope candidates (8A). These structured predicates mirror the
+            //    same filters in `searchAssets` (platform / collection membership /
+            //    tag set semantics) — kept as focused SQL here rather than sharing
+            //    the FTS query builder, since this path has no text arms.
+            var sql = """
+                SELECT e.asset_id AS asset_id, e.vector AS vector
+                FROM asset_embedding e
+                JOIN asset a ON a.id = e.asset_id
+                """
+            var conditions = ["e.model_version = ?"]
+            var args: [DatabaseValueConvertible] = [modelVersion]
+            if let platform {
+                sql += "\n                JOIN source s ON s.id = a.source_id"
+                conditions.append("s.platform = ?")
+                args.append(platform.rawValue)
+            }
+            if !distinctCollectionIDs.isEmpty {
+                let placeholders = databaseQuestionMarks(count: distinctCollectionIDs.count)
+                conditions.append(
+                    "a.id IN (SELECT asset_id FROM collection_item WHERE collection_id IN (\(placeholders)))")
+                args.append(contentsOf: distinctCollectionIDs.map(Self.key))
+            }
+            if !distinctTagIDs.isEmpty {
+                let placeholders = databaseQuestionMarks(count: distinctTagIDs.count)
+                switch tagMatch {
+                case .any:
+                    conditions.append(
+                        "a.id IN (SELECT asset_id FROM asset_tag WHERE tag_id IN (\(placeholders)))")
+                    args.append(contentsOf: distinctTagIDs.map(Self.key))
+                case .all:
+                    conditions.append("""
+                        a.id IN (SELECT asset_id FROM asset_tag WHERE tag_id IN (\(placeholders)) \
+                        GROUP BY asset_id HAVING COUNT(DISTINCT tag_id) = ?)
+                        """)
+                    args.append(contentsOf: distinctTagIDs.map(Self.key))
+                    args.append(distinctTagIDs.count)
+                }
+            }
+            sql += "\n                WHERE " + conditions.joined(separator: " AND ")
+
+            let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+
+            // 2. Cosine = dot product (both sides L2-normalized). Query normalization
+            //    only scales all scores by |query|, which doesn't change the ranking,
+            //    so a non-unit query still orders correctly. Skip any dimension
+            //    mismatch defensively (a stale-shape vector never crashes the sort).
+            let dims = queryVector.count
+            var scored: [(id: UUID, score: Float)] = []
+            scored.reserveCapacity(rows.count)
+            for row in rows {
+                guard let idString: String = row["asset_id"],
+                      let id = UUID(uuidString: idString),
+                      let data: Data = row["vector"] else { continue }
+                let vector = AssetEmbedding.vectorFloats(data)
+                guard vector.count == dims else { continue }
+                var score: Float = 0
+                vDSP_dotpr(queryVector, 1, vector, 1, &score, vDSP_Length(dims))
+                scored.append((id, score))
+            }
+            // Nearest first; ascending-id tiebreak so equal scores are deterministic.
+            scored.sort {
+                $0.score != $1.score ? $0.score > $1.score
+                    : $0.id.uuidString < $1.id.uuidString
+            }
+            let topIDs = scored.prefix(clampedLimit).map(\.id)
+            guard !topIDs.isEmpty else { return [] }
+
+            // 3. Hydrate details and restore the ranked order (the IN fetch is
+            //    unordered; the dictionary reorders by rank).
+            let keys = topIDs.map(Self.key)
+            let request = Asset
+                .filter(keys.contains(Column("id")))
+                .including(required: Asset.source)
+            let details = try AssetSourceRow.fetchAll(db, request)
+                .map { AssetDetail(asset: $0.asset, source: $0.source) }
+            let byID = Dictionary(uniqueKeysWithValues: details.map { ($0.asset.id, $0) })
+            return topIDs.compactMap { byID[$0] }
+        }
+    }
+
+    /// Decode a candidate row (shared by the two backfill queries).
+    private static func embeddingCandidate(_ row: Row) -> EmbeddingCandidate? {
+        guard let idString: String = row["asset_id"], let id = UUID(uuidString: idString) else {
+            return nil
+        }
+        return EmbeddingCandidate(
+            assetID: id,
+            title: row["title"], name: row["name"], note: row["note"],
+            ocrText: row["ocr_text"],
+            existingModelVersion: row["model_version"],
+            existingContentHash: row["content_hash"])
+    }
+
     // MARK: - Smart collections (saved searches, 015)
 
     /// Create a smart collection — a named saved search (015). Validates + trims
@@ -290,7 +531,10 @@ public final class AppServices: Sendable {
             platform: rules.platform,
             tagIDs: liveTagIDs,
             tagMatch: rules.tagMatch,
-            collectionID: rules.collectionID,
+            // A saved search carries a SINGLE collection scope (015); the plural
+            // `collectionIDs` search API takes it as a one-element list (044/045 ·
+            // 16A — plural scope is a live-query affordance, not saved).
+            collectionIDs: rules.collectionID.map { [$0] } ?? [],
             limit: limit,
             after: cursor)
     }
@@ -1699,23 +1943,37 @@ public final class AppServices: Sendable {
 
     /// Search assets library-wide, bounded (P16) and keyset-paged.
     ///
-    /// - `text`: when non-nil/non-empty, full-text matched against `source_fts`
-    ///   (the source `title` / `author_handle` / `author_name`); the matching
-    ///   sources' assets are returned. When nil/blank, lists all assets
-    ///   (optionally platform-filtered) — still bounded.
+    /// - `text`: when non-nil/non-empty, full-text matched (with a type-ahead
+    ///   PREFIX on the final term, see ``ftsMatchQuery(_:)``) against the source
+    ///   provenance (`source_fts`), the asset's own content INCLUDING its
+    ///   user-given `name` / `note` (`asset_fts`, 044/045 · 1A), and OCR text
+    ///   inside images (`analysis_fts`); a CONTAINS match also folds in tag names
+    ///   and collection names so free text finds an item by the tag it carries or
+    ///   the collection it lives in. For queries ≥3 chars (and without a trailing
+    ///   space, which signals a finished word), the SHORT human fields (title /
+    ///   author / name / tag / collection) also SUBSTRING-match via trigram
+    ///   (046 Phase 2, see ``trigramMatchQuery(_:)``) — "air" finds "chair". When
+    ///   nil/blank, lists all assets (optionally platform-filtered) — bounded.
     /// - `platform`: optional filter on the asset's source.
     /// - `tagIDs`: optional structured tag filter (007 · S1). Empty → no tag
     ///   conjunct. `tagMatch` chooses set semantics: `.all` requires EVERY tag
     ///   (dup-join-safe via `COUNT(DISTINCT tag_id) = N`), `.any` requires one.
     ///   Tag text never enters FTS — the caller resolves names → ids first.
-    /// - `collectionID`: optional scope — only assets that are members of this
-    ///   collection (a folder-scoped search).
-    /// - Ordered `created_at DESC, id DESC` (stable), so the keyset cursor is
-    ///   well-defined.
+    /// - `tagNameContains`: optional `tag:`-style filter (044/045 · 17A) — an
+    ///   AND conjunct restricting to assets carrying a tag whose name CONTAINS the
+    ///   needle (normalized `#`-stripped, like `tagIDs` names). Composes WITH
+    ///   `tagIDs` (both must hold). Blank/`#`-only → no conjunct.
+    /// - `collectionIDs`: optional scope (044/045 · 16A) — restrict to assets that
+    ///   are members of ANY listed collection (OR across the ids). Empty → whole
+    ///   library, no scope.
+    /// - `sort`: `.newest` (default) orders `created_at DESC, id DESC` — the
+    ///   stable order the keyset cursor is defined on. `.relevance` orders by
+    ///   best-of-arms `bm25()` (044/045 · 3A) and is NOT pageable (see `after`).
     /// - `limit` is clamped to `1...500`; at most `limit` rows are returned.
     /// - `after`: a keyset cursor (P16) — only rows STRICTLY after it in the
-    ///   order are returned (`(created_at, id) < (cursor.createdAt, cursor.id)`),
-    ///   so paging never drifts or repeats as new assets land (no OFFSET).
+    ///   `.newest` order are returned, so paging never drifts or repeats as new
+    ///   assets land (no OFFSET). Pairing a cursor with `.relevance` throws
+    ///   ``AtelierError/relevanceSortUnpageable`` (relevance isn't that order).
     ///
     /// Returns ``AssetDetail`` (asset + source) — metadata only, never blob
     /// bytes (P16).
@@ -1724,16 +1982,45 @@ public final class AppServices: Sendable {
         platform: Platform? = nil,
         tagIDs: [UUID] = [],
         tagMatch: TagMatch = .all,
-        collectionID: UUID? = nil,
+        tagNameContains: String? = nil,
+        collectionIDs: [UUID] = [],
+        sort: SearchSort = .newest,
         limit: Int = 50,
         after cursor: AssetPageCursor? = nil
     ) async throws -> [AssetDetail] {
+        // Relevance order isn't the stable `(created_at, id)` sequence the keyset
+        // cursor seeks into, so a cursor into it is meaningless (044/045 · 3A).
+        // Reject explicitly rather than silently return a wrong/duplicated page.
+        if sort == .relevance, cursor != nil {
+            throw AtelierError.relevanceSortUnpageable
+        }
+
         let clampedLimit = min(max(limit, 1), 500)
         let trimmedText = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasText = !(trimmedText?.isEmpty ?? true)
+        // The FTS5 MATCH string is built from the RAW (untrimmed) text so the
+        // trailing-whitespace signal survives — `ftsMatchQuery` reads it to decide
+        // whether the final term is a type-ahead prefix or a finished exact word
+        // (5A/14A). `nil` when there's no text to match. Computed once and reused
+        // by both the filter arm and the relevance ordering (no recompute drift).
+        let ftsMatch = hasText ? Self.ftsMatchQuery(text ?? "") : nil
+        // Trigram substring match (046 Phase 2). `nil` when substring search is off:
+        //   • trailing whitespace — the same FINISHED-word signal `ftsMatchQuery`
+        //     reads (5A): "typo " means the word is done → EXACT, so no substring
+        //     arm (else "typo " would still surface "Typography"); OR
+        //   • no term is ≥3 chars (trigram needs a 3-char window) — short queries
+        //     keep the unicode61 prefix / LIKE fallback.
+        // Computed once from the trimmed text, reused by the free-text arms and the
+        // relevance ordering. The tag arm re-derives its own trigram from the
+        // `#`-normalized needle (gated on this being enabled).
+        let trailingSpace = text?.last?.isWhitespace ?? false
+        let trigramMatch = (hasText && !trailingSpace)
+            ? Self.trigramMatchQuery(trimmedText ?? "") : nil
         // Distinct ids only — a caller passing the same tag twice must not skew
         // the `.all` HAVING COUNT (that counts DISTINCT tag_id anyway, but the N
         // it is compared against must match the distinct set).
         let distinctTagIDs = Array(Set(tagIDs))
+        let distinctCollectionIDs = Array(Set(collectionIDs))
         return try await read { db in
             // The source is required and carries the platform filter when given,
             // so the included join doubles as the filter (inner join).
@@ -1746,25 +2033,32 @@ public final class AppServices: Sendable {
 
             // FTS5: an asset MATCHes when its PROVENANCE matches `source_fts`
             // (title/author) OR its own CONTENT matches `asset_fts` (003 · O1 —
-            // a tweet's text, a link's title/description, a color's name/hex) OR
-            // the text INSIDE it matches `analysis_fts` (012 · I2 — OCR of
-            // screenshots / type specimens). Three external-content indices, kept
-            // separate (provenance vs content vs derived OCR) and OR-combined here
-            // so both media-less items and image-only text are findable by
-            // substance. Each subquery maps `*_fts.rowid` → the base table's
-            // rowid → id.
-            if let trimmedText, !trimmedText.isEmpty {
-                let match = Self.ftsMatchQuery(trimmedText)
-                // Tags are not in any FTS index (their text never enters
-                // `search_text`), so free text alone used to miss a tagged item
-                // entirely — the user had to select the tag as a token. A LIKE
-                // CONTAINS match on `tag.name` folds tag names into free text.
-                // The needle is normalized the same way tags are (`#` stripped),
-                // so querying "sf" or "#sf" both find a tag stored as "sf" (and,
-                // via CONTAINS, a legacy "#sf" too). A `#`-only query normalizes
-                // to empty → the tag branch is dropped (no match-everything).
-                // Leading-wildcard LIKE can't use an index — fine at this scale.
+            // a tweet's text, a link's title/description, a color's name/hex, plus
+            // the user-given `name`/`note`, 1A) OR the text INSIDE it matches
+            // `analysis_fts` (012 · I2 — OCR of screenshots / type specimens).
+            // Three external-content indices, kept separate (provenance vs content
+            // vs derived OCR) and OR-combined here so both media-less items and
+            // image-only text are findable by substance. Each subquery maps
+            // `*_fts.rowid` → the base table's rowid → id.
+            //
+            // Substring arms (046 Phase 2): title / author (`source_trigram`) and
+            // the user-given name (`asset_trigram`) fold in as ADDITIONAL OR arms
+            // when the query is trigram-eligible (every term ≥3 chars), so a
+            // mid-word "air" surfaces "chair" while the unicode61 arms above still
+            // rank whole-word / prefix hits by bm25.
+            //
+            // Tag names and collection names (in no unicode61 index) fold in via a
+            // final CONTAINS arm each: `*_trigram MATCH` when trigram-eligible,
+            // else the leading-wildcard LIKE fallback for 1–2 char queries. The tag
+            // needle is normalized the way tags are (`#` stripped), so "sf" / "#sf"
+            // both find a tag stored as "sf"; a `#`-only query normalizes to empty
+            // and drops that arm (no match-everything).
+            if let trimmedText, !trimmedText.isEmpty, let match = ftsMatch {
                 let tagNeedle = Validation.normalizedTagName(trimmedText)
+                // Gated on trigram being enabled overall (respects trailing space),
+                // then on the `#`-stripped needle's own ≥3-char eligibility.
+                let tagTrigram = (trigramMatch != nil && !tagNeedle.isEmpty)
+                    ? Self.trigramMatchQuery(tagNeedle) : nil
                 var sql = """
                     source_id IN (
                         SELECT source.id FROM source
@@ -1783,27 +2077,111 @@ public final class AppServices: Sendable {
                      )
                     """
                 var args: [String] = [match, match, match]
-                if !tagNeedle.isEmpty {
+
+                // Direct-field substring arms (only when trigram-eligible).
+                if let trigramMatch {
                     sql += """
-                    \n OR asset.id IN (
-                        SELECT atag.asset_id FROM asset_tag atag
-                        JOIN tag ON tag.id = atag.tag_id
-                        WHERE tag.name LIKE ? ESCAPE '\\'
+                    \n OR source_id IN (
+                        SELECT s.id FROM source s
+                        JOIN source_trigram ON source_trigram.rowid = s.rowid
+                        WHERE source_trigram MATCH ?
+                     )
+                     OR asset.id IN (
+                        SELECT a.id FROM asset a
+                        JOIN asset_trigram ON asset_trigram.rowid = a.rowid
+                        WHERE asset_trigram MATCH ?
                      )
                     """
-                    args.append("%" + Self.escapeLikePrefix(tagNeedle) + "%")
+                    args.append(trigramMatch); args.append(trigramMatch)
+                }
+
+                // Collection-name CONTAINS arm: trigram, else LIKE fallback.
+                if let trigramMatch {
+                    sql += """
+                    \n OR asset.id IN (
+                        SELECT ci.asset_id FROM collection_item ci
+                        JOIN collection c ON c.id = ci.collection_id
+                        JOIN collection_trigram ON collection_trigram.rowid = c.rowid
+                        WHERE collection_trigram MATCH ?
+                     )
+                    """
+                    args.append(trigramMatch)
+                } else {
+                    sql += """
+                    \n OR asset.id IN (
+                        SELECT ci.asset_id FROM collection_item ci
+                        JOIN collection c ON c.id = ci.collection_id
+                        WHERE c.name LIKE ? ESCAPE '\\'
+                     )
+                    """
+                    args.append(Self.containsPattern(trimmedText))
+                }
+
+                // Tag-name CONTAINS arm: trigram, else LIKE fallback (normalized).
+                if !tagNeedle.isEmpty {
+                    if let tagTrigram {
+                        sql += """
+                        \n OR asset.id IN (
+                            SELECT atag.asset_id FROM asset_tag atag
+                            JOIN tag ON tag.id = atag.tag_id
+                            JOIN tag_trigram ON tag_trigram.rowid = tag.rowid
+                            WHERE tag_trigram MATCH ?
+                         )
+                        """
+                        args.append(tagTrigram)
+                    } else {
+                        sql += """
+                        \n OR asset.id IN (
+                            SELECT atag.asset_id FROM asset_tag atag
+                            JOIN tag ON tag.id = atag.tag_id
+                            WHERE tag.name LIKE ? ESCAPE '\\'
+                         )
+                        """
+                        args.append(Self.containsPattern(tagNeedle))
+                    }
                 }
                 request = request.filter(sql: "(\(sql))",
                                          arguments: StatementArguments(args))
             }
 
-            // Collection scope (007 · S3): membership subquery. Composes as a
-            // plain conjunct, so it AND-combines with FTS / tags / platform.
-            if let collectionID {
+            // `tag:`-style name filter (044/045 · 17A): an AND conjunct (composes
+            // with the structured `tagIDs` — both must hold), restricting to
+            // assets carrying a tag whose name CONTAINS the needle. Normalized
+            // like tag names; blank / `#`-only → no conjunct.
+            if let tagNameContains {
+                let needle = Validation.normalizedTagName(tagNameContains)
+                if !needle.isEmpty {
+                    if let tagTrigram = Self.trigramMatchQuery(needle) {
+                        request = request.filter(sql: """
+                            asset.id IN (
+                                SELECT atag.asset_id FROM asset_tag atag
+                                JOIN tag ON tag.id = atag.tag_id
+                                JOIN tag_trigram ON tag_trigram.rowid = tag.rowid
+                                WHERE tag_trigram MATCH ?
+                            )
+                            """, arguments: [tagTrigram])
+                    } else {
+                        request = request.filter(sql: """
+                            asset.id IN (
+                                SELECT atag.asset_id FROM asset_tag atag
+                                JOIN tag ON tag.id = atag.tag_id
+                                WHERE tag.name LIKE ? ESCAPE '\\'
+                            )
+                            """, arguments: [Self.containsPattern(needle)])
+                    }
+                }
+            }
+
+            // Collection scope (007 · S3 / 044/045 · 16A): membership subquery,
+            // OR across the listed collections. Composes as a plain conjunct, so
+            // it AND-combines with FTS / tags / platform. Empty → no scope.
+            if !distinctCollectionIDs.isEmpty {
+                let placeholders = databaseQuestionMarks(count: distinctCollectionIDs.count)
+                let keys = distinctCollectionIDs.map(Self.key)
                 // Qualify `asset.id` — the source join makes a bare `id` ambiguous.
                 request = request.filter(sql: """
-                    asset.id IN (SELECT asset_id FROM collection_item WHERE collection_id = ?)
-                    """, arguments: [Self.key(collectionID)])
+                    asset.id IN (SELECT asset_id FROM collection_item WHERE collection_id IN (\(placeholders)))
+                    """, arguments: StatementArguments(keys))
             }
 
             // Structured tag filter (007 · S1). `.any` — a single IN subquery.
@@ -1832,6 +2210,7 @@ public final class AppServices: Sendable {
             // Keyset seek: rows strictly after the cursor in the DESC order.
             // GRDB qualifies these `Column`s to the base `asset` table; the Date
             // binds to the same sortable text encoding the column stores (C5).
+            // (Guarded to `.newest` above — relevance never reaches here.)
             if let cursor {
                 request = request.filter(
                     Column("created_at") < cursor.createdAt
@@ -1839,14 +2218,101 @@ public final class AppServices: Sendable {
                         && Column("id") < Self.key(cursor.id)))
             }
 
-            request = request
-                .order(Column("created_at").desc, Column("id").desc)
+            request = Self.ordered(request, by: sort, match: ftsMatch,
+                                   trigramMatch: trigramMatch)
                 .limit(clampedLimit)
 
             return try AssetSourceRow.fetchAll(db, request).map {
                 AssetDetail(asset: $0.asset, source: $0.source)
             }
         }
+    }
+
+    /// Apply the ``SearchSort`` ordering to a built search request (044/045 · 3A).
+    ///
+    /// `.newest` (and `.relevance` with no `match` — nothing to rank) → the stable
+    /// `created_at DESC, id DESC` recency order. `.relevance` with text → a
+    /// correlated best-of-arms score, ascending (lower = better), `id` as a
+    /// deterministic tiebreak.
+    ///
+    /// The score is a scalar subquery over the same arms the WHERE clause filters
+    /// on, taking the `MIN` (best) across whichever matched. Raw `bm25()` is NOT
+    /// comparable across different FTS tables (each normalizes to its own column
+    /// count / average document length), so an OCR hit in a long scan could
+    /// otherwise outrank a title hit. We therefore TIER the arms with explicit
+    /// additive bases (lower base = stronger signal), and let `bm25()` order
+    /// finely WITHIN the primary tier:
+    ///
+    ///   • tier 0  — a WHOLE-WORD / prefix hit in provenance (`source_fts`) or the
+    ///     item's own content + user-given name/note (`asset_fts`): `bm25`.
+    ///   • tier `substringBase` — a SUBSTRING-only hit: a direct-field trigram
+    ///     match (`source_trigram` title/author, `asset_trigram` name) OR an
+    ///     indirect tag-/collection-name match (trigram or the <3-char LIKE
+    ///     fallback). A flat neutral score above every tier-0 hit (046 · 4A).
+    ///   • tier `ocrBase` — derived OCR (`analysis_fts`): `bm25` shifted so even
+    ///     the best OCR hit ranks below any word OR substring field match.
+    ///
+    /// The direct-field trigram arms are listed EXPLICITLY (not left to the
+    /// `COALESCE` fallback) so a row that matches BOTH a name substring and OCR
+    /// still scores `substringBase`, not `ocrBase` — a substring name hit must
+    /// outrank OCR. Indirect tag/collection substring hits rely on the fallback
+    /// (matching Phase 1's LIKE-tier precedent). The trigram arms are present only
+    /// when `trigramMatch` is non-nil (the query is ≥3-char eligible).
+    ///
+    /// `substringBase`/`ocrBase` are chosen far above the bm25 range (always
+    /// > -1000) so the tiers never interleave. `COALESCE(…, substringBase)` scores
+    /// a row that matched ONLY via an indirect / fallback arm; a row with no scored
+    /// arm can't reach here (it wouldn't have passed the WHERE). Correlation is by
+    /// scalar subquery on the base `asset` alias, independent of the join alias.
+    private static func ordered(
+        _ request: QueryInterfaceRequest<Asset>,
+        by sort: SearchSort,
+        match: String?,
+        trigramMatch: String?
+    ) -> QueryInterfaceRequest<Asset> {
+        guard sort == .relevance, let match else {
+            return request.order(Column("created_at").desc, Column("id").desc)
+        }
+        let substringBase = 1_000_000.0   // above any bm25; below OCR.
+        let ocrBase = 2_000_000.0         // OCR always ranks last among the hits.
+
+        // Tier-0 word arms (always) + the analysis/OCR arm; the direct-field
+        // trigram arms slot in only when the query is trigram-eligible.
+        var arms = [
+            """
+            SELECT bm25(source_fts) AS score FROM source_fts
+                WHERE source_fts MATCH ?
+                  AND source_fts.rowid = (SELECT rowid FROM source WHERE source.id = asset.source_id)
+            """,
+            """
+            SELECT bm25(asset_fts) FROM asset_fts
+                WHERE asset_fts MATCH ? AND asset_fts.rowid = asset.rowid
+            """,
+        ]
+        var args: [String] = [match, match]
+        if let trigramMatch {
+            arms.append("""
+                SELECT \(substringBase) FROM source_trigram
+                    WHERE source_trigram MATCH ?
+                      AND source_trigram.rowid = (SELECT rowid FROM source WHERE source.id = asset.source_id)
+                """)
+            arms.append("""
+                SELECT \(substringBase) FROM asset_trigram
+                    WHERE asset_trigram MATCH ? AND asset_trigram.rowid = asset.rowid
+                """)
+            args.append(trigramMatch); args.append(trigramMatch)
+        }
+        arms.append("""
+            SELECT \(ocrBase) + bm25(analysis_fts) FROM analysis_fts
+                WHERE analysis_fts MATCH ?
+                  AND analysis_fts.rowid = (SELECT rowid FROM asset_analysis WHERE asset_analysis.asset_id = asset.id)
+            """)
+        args.append(match)
+
+        let union = arms.joined(separator: "\n UNION ALL \n")
+        return request.order(sql: """
+            COALESCE((SELECT MIN(score) FROM (\(union))), \(substringBase)) ASC, asset.id ASC
+            """, arguments: StatementArguments(args))
     }
 
     // MARK: - Asset details (041 · Name / Note / Collections)
@@ -2228,10 +2694,59 @@ public final class AppServices: Sendable {
     /// match) and punctuation / stray quotes can never form malformed MATCH
     /// syntax (no syntax-error throw). Quoting also neutralizes the FTS5
     /// operators (`*`, `:`, `^`, `-`, `(`, `OR`, …) as literal text.
+    ///
+    /// Type-ahead PREFIX (044/045 · 5A/14A): the FINAL term is emitted as an FTS5
+    /// prefix token (`"wo"*` matches "wood", "wool", …) so results appear as the
+    /// user types a word — BUT only when
+    ///   • the input has no trailing whitespace (a trailing space means the word
+    ///     is finished, so match it exactly), AND
+    ///   • that term is ≥2 characters (a 1-char prefix matches a huge slice of the
+    ///     index for no useful precision, and inflates the query).
+    /// Earlier terms always match exactly — only the word being typed is a prefix.
+    /// The `*` sits OUTSIDE the closing quote (`"wo"*`), which is the FTS5
+    /// quoted-prefix syntax; the quoting still neutralizes every operator inside.
     static func ftsMatchQuery(_ text: String) -> String {
-        text.split(whereSeparator: { $0.isWhitespace })
-            .map { term in "\"\(term.replacingOccurrences(of: "\"", with: "\"\""))\"" }
-            .joined(separator: " ")
+        let terms = text.split(whereSeparator: { $0.isWhitespace })
+        guard !terms.isEmpty else { return "" }
+        let starLast = !(text.last?.isWhitespace ?? true)
+        let lastIndex = terms.count - 1
+        return terms.enumerated().map { index, term in
+            let quoted = "\"\(term.replacingOccurrences(of: "\"", with: "\"\""))\""
+            let isPrefix = index == lastIndex && starLast && term.count >= 2
+            return isPrefix ? "\(quoted)*" : quoted
+        }.joined(separator: " ")
+    }
+
+    /// Build a `trigram`-tokenizer MATCH query for SUBSTRING search (046 Phase 2),
+    /// or `nil` when the text isn't trigram-eligible.
+    ///
+    /// The trigram tokenizer indexes 3-character windows, so a term needs ≥3
+    /// characters to form any trigram. To keep the multi-term AND semantics of the
+    /// unicode61 arms EXACT, the whole query is trigram-eligible only when EVERY
+    /// term is ≥3 chars — otherwise this returns `nil` and the caller falls back to
+    /// the unicode61 / LIKE path for the entire query (rather than silently
+    /// dropping the short term and loosening the AND to a partial match).
+    ///
+    /// Each eligible term is wrapped as a quoted FTS5 phrase (doubling embedded `"`
+    /// per FTS5's escaping rule, neutralizing every operator as literal text) and
+    /// the phrases are AND-joined, so `brut concrete` → `"brut" AND "concrete"`
+    /// (both substrings must appear). A single term → just its quoted phrase.
+    /// Empty / all-short input → `nil`.
+    static func trigramMatchQuery(_ text: String) -> String? {
+        let terms = text.split(whereSeparator: { $0.isWhitespace })
+        guard !terms.isEmpty, terms.allSatisfy({ $0.count >= 3 }) else { return nil }
+        return terms.map { term in
+            "\"\(term.replacingOccurrences(of: "\"", with: "\"\""))\""
+        }.joined(separator: " AND ")
+    }
+
+    /// Wrap a needle as a `LIKE ? ESCAPE '\'` CONTAINS pattern (`%needle%`) with
+    /// its wildcards escaped (044/045 · 6A). Shared by every leading-wildcard arm
+    /// — the free-text tag / collection-name OR arms and the `tag:` conjunct — so
+    /// the escape (a miss here means a needle containing `%` matches everything)
+    /// lives in ONE place. The caller supplies the SQL `LIKE ? ESCAPE '\'`.
+    static func containsPattern(_ needle: String) -> String {
+        "%" + escapeLikePrefix(needle) + "%"
     }
 
     /// Escape a user prefix for a `LIKE ? ESCAPE '\'` pattern so its `%`, `_`, and

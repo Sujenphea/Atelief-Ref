@@ -38,6 +38,10 @@ struct AppShellView: View {
         // Publish the model as a focused OBJECT too (010 · Phase 1 undo): the Edit
         // menu observes it via `@FocusedObject`.
         .focusedSceneObject(model)
+        // Publish the nav model as a focused OBJECT (214) so the File ▸ New command
+        // re-renders its enabled state / title as the sidebar selection changes —
+        // `@FocusedValue` doesn't observe (same reason undo/redo uses the object).
+        .focusedSceneObject(nav)
         .sheet(isPresented: $showSweeps) { sweepsSheet }
         .sheet(isPresented: $model.showSnapshots) { SnapshotsSheet(model: model) }
         .alert(
@@ -101,8 +105,8 @@ struct AppShellView: View {
         }
         .background(Theme.Colors.panel)
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.panel))
-        .padding(.trailing, Theme.Spacing.lg)
-        .padding(.vertical, Theme.Spacing.lg)
+        .padding(.trailing, Theme.Spacing.md)
+        .padding(.bottom, Theme.Spacing.md)
         .overlay(alignment: .bottomTrailing) { floatingAdd }
     }
 

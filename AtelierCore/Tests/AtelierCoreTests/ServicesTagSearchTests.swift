@@ -165,7 +165,7 @@ struct ServicesTagSearchTests {
 
         let hits = try await services.searchAssets(
             text: "sunset", platform: .pinterest,
-            tagIDs: [brass], tagMatch: .all, collectionID: refs.id)
+            tagIDs: [brass], tagMatch: .all, collectionIDs: [refs.id])
         #expect(hits.map(\.asset.id) == [target])
     }
 
@@ -177,7 +177,7 @@ struct ServicesTagSearchTests {
         let other = try await services.createCollection(name: "Other")
         let inRefs = try await seed(services, into: refs.id)
         _ = try await seed(services, into: other.id)
-        #expect(try await services.searchAssets(collectionID: refs.id).map(\.asset.id) == [inRefs])
+        #expect(try await services.searchAssets(collectionIDs: [refs.id]).map(\.asset.id) == [inRefs])
     }
 
     @Test("keyset paging with a tag filter covers every match once, no drift")

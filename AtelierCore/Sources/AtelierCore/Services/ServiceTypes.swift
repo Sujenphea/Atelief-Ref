@@ -206,6 +206,25 @@ public enum TagMatch: String, Sendable, Equatable, Hashable, Codable, CaseIterab
     case any
 }
 
+/// How ``AppServices/searchAssets`` orders its results (044/045 · 3A).
+///
+/// Deliberately NOT a ``SearchRules`` field: sort is a VIEW concern (the grid's
+/// display mode), not query identity — two searches that differ only in sort are
+/// the same saved search (015). It is a per-call, evaluation-time argument.
+///
+/// - `.newest`: `created_at DESC, id DESC` — the stable order the keyset
+///   ``AssetPageCursor`` is defined on, so only this mode is pageable.
+/// - `.relevance`: best-of-arms `bm25()` ascending (SQLite ranks better matches
+///   MORE negative), `id` as a deterministic tiebreak. Requires free text —
+///   with no text every row scores equally, so it degenerates to the `id` order;
+///   callers wanting a recency list should use `.newest`. Not pageable (relevance
+///   isn't a stable `(created_at, id)` sequence): pairing it with an `after:`
+///   cursor throws ``AtelierError/relevanceSortUnpageable``.
+public enum SearchSort: Sendable, Equatable, Hashable {
+    case newest
+    case relevance
+}
+
 // MARK: - Read outputs (GRDB-free, A2)
 
 /// One membership of a collection joined to its full ``Asset`` and that asset's
@@ -336,5 +355,44 @@ public struct IngestResult: Sendable, Equatable {
     public init(asset: Asset, wasDeduplicated: Bool) {
         self.asset = asset
         self.wasDeduplicated = wasDeduplicated
+    }
+}
+
+/// One asset's raw text + existing-embedding metadata, as the semantic backfill
+/// query returns it (047 · 3a). The analyzer builds the embedding CORPUS from the
+/// text fields (title + name + note + OCR) and hashes it; comparing that hash to
+/// `existingContentHash` (at `existingModelVersion`) decides whether a re-embed is
+/// actually needed — so an OCR re-run that didn't change the text is a no-op.
+public struct EmbeddingCandidate: Sendable, Equatable {
+    public let assetID: UUID
+    /// Source-provided title (provenance), if any.
+    public let title: String?
+    /// User-given display name, if any.
+    public let name: String?
+    /// User free-form note, if any.
+    public let note: String?
+    /// OCR text recognized inside the image, if analyzed.
+    public let ocrText: String?
+    /// The model version of the existing embedding, or `nil` if never embedded.
+    public let existingModelVersion: Int?
+    /// The content hash of the existing embedding, or `nil` if never embedded.
+    public let existingContentHash: String?
+
+    public init(
+        assetID: UUID,
+        title: String?,
+        name: String?,
+        note: String?,
+        ocrText: String?,
+        existingModelVersion: Int?,
+        existingContentHash: String?
+    ) {
+        self.assetID = assetID
+        self.title = title
+        self.name = name
+        self.note = note
+        self.ocrText = ocrText
+        self.existingModelVersion = existingModelVersion
+        self.existingContentHash = existingContentHash
     }
 }

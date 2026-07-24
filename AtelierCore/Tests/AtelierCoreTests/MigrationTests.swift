@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -169,6 +169,315 @@ struct MigrationV11Tests {
         // Alpha's children by name: Mid, Zed — dense 0..1.
         #expect(alphaKids.map(\.0) == ["Mid", "Zed"])
         #expect(alphaKids.map(\.1) == [0, 1])
+    }
+}
+
+// MARK: - v12 · asset_fts covers name / note (044/045 · 1A)
+
+@Suite("Migration v12: asset_fts rebuild over name / note")
+struct MigrationV12Tests {
+
+    /// A migrator applied only THROUGH v11 — the state just before `asset_fts`
+    /// gains its `name` / `note` columns, so a test can seed a named/noted asset
+    /// (indexed by the OLD single-column FTS) and then migrate v12 over it.
+    private func makeQueueThroughV11() throws -> DatabaseQueue {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v11")
+        return dbQueue
+    }
+
+    /// Seed one source + one asset with `search_text` / `name` / `note` set, via
+    /// raw SQL (the funnel isn't available on a bare queue). Returns the asset id.
+    private func seedAsset(
+        _ db: Database, searchText: String, name: String?, note: String?
+    ) throws -> String {
+        let sourceID = newID(), assetID = newID()
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, captured_at, raw_metadata)
+            VALUES (?, 'web', ?, '{}');
+            """, arguments: [sourceID, ts])
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, download_state, created_at, source_id,
+                search_text, name, note)
+            VALUES (?, 'image', 'downloaded', ?, ?, ?, ?, ?);
+            """, arguments: [assetID, ts, sourceID, searchText, name, note])
+        return assetID
+    }
+
+    /// The asset ids whose `asset_fts` row matches `query` (FTS5 MATCH).
+    private func ftsMatches(_ db: Database, _ query: String) throws -> [String] {
+        try String.fetchAll(db, sql: """
+            SELECT a.id FROM asset a
+            JOIN asset_fts ON asset_fts.rowid = a.rowid
+            WHERE asset_fts MATCH ?
+            """, arguments: [query])
+    }
+
+    @Test("existing content re-indexes and pre-existing name/note back-fill")
+    func rebuildBackfillsNameAndNote() throws {
+        let dbQueue = try makeQueueThroughV11()
+        let assetID = try dbQueue.write { db in
+            try seedAsset(db, searchText: "alpha", name: "betaname", note: "gammanote")
+        }
+
+        // Before v12, only search_text is indexed — name / note miss.
+        let before = try dbQueue.read { db in
+            (alpha: try ftsMatches(db, "alpha"),
+             beta: try ftsMatches(db, "betaname"),
+             gamma: try ftsMatches(db, "gammanote"))
+        }
+        #expect(before.alpha == [assetID])
+        #expect(before.beta.isEmpty)
+        #expect(before.gamma.isEmpty)
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v12
+
+        // After v12: old content still matches (rebuild), and the pre-existing
+        // name / note are now indexed (back-fill from the content table).
+        let after = try dbQueue.read { db in
+            (alpha: try ftsMatches(db, "alpha"),
+             beta: try ftsMatches(db, "betaname"),
+             gamma: try ftsMatches(db, "gammanote"))
+        }
+        #expect(after.alpha == [assetID])
+        #expect(after.beta == [assetID])
+        #expect(after.gamma == [assetID])
+    }
+
+    @Test("post-migration name/note writes stay searchable (sync triggers)")
+    func triggersReindexAfterMigration() throws {
+        let dbQueue = try makeQueueThroughV11()
+        let assetID = try dbQueue.write { db in
+            try seedAsset(db, searchText: "alpha", name: nil, note: nil)
+        }
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v12
+
+        // A NEW name written after the rebuild must be indexed by the regenerated
+        // AFTER UPDATE trigger — the whole point of synchronize().
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE asset SET name = 'deltaname' WHERE id = ?",
+                           arguments: [assetID])
+        }
+        let matches = try dbQueue.read { db in try ftsMatches(db, "deltaname") }
+        #expect(matches == [assetID])
+    }
+}
+
+// MARK: - v13 (trigram substring indexes)
+
+@Suite("Migration v13: trigram substring indexes")
+struct MigrationV13Tests {
+
+    /// A migrator applied only THROUGH v12 — the state just before the four
+    /// trigram tables exist, so a test can seed rows (indexed only by the
+    /// unicode61 tables) and then migrate v13 over them to prove the back-fill.
+    private func makeQueueThroughV12() throws -> DatabaseQueue {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v12")
+        return dbQueue
+    }
+
+    private func seedSource(_ db: Database, title: String, author: String) throws -> String {
+        let id = newID()
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, captured_at, raw_metadata, title, author_name)
+            VALUES (?, 'web', ?, '{}', ?, ?);
+            """, arguments: [id, ts, title, author])
+        return id
+    }
+
+    private func seedAsset(_ db: Database, name: String, sourceID: String) throws -> String {
+        let id = newID()
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, download_state, created_at, source_id, search_text, name)
+            VALUES (?, 'image', 'downloaded', ?, ?, '', ?);
+            """, arguments: [id, ts, sourceID, name])
+        return id
+    }
+
+    private func seedTag(_ db: Database, name: String) throws -> String {
+        let id = newID()
+        try db.execute(sql: "INSERT INTO tag (id, name, source) VALUES (?, ?, 'user');",
+                       arguments: [id, name])
+        return id
+    }
+
+    private func seedCollection(_ db: Database, name: String) throws -> String {
+        let id = newID()
+        try db.execute(sql: """
+            INSERT INTO collection (id, name, created_at, updated_at)
+            VALUES (?, ?, ?, ?);
+            """, arguments: [id, name, ts, ts])
+        return id
+    }
+
+    /// Ids from `<entity>_trigram` whose row substring-matches `needle`.
+    private func trigramMatches(
+        _ db: Database, table: String, base: String, idColumn: String, _ needle: String
+    ) throws -> [String] {
+        try String.fetchAll(db, sql: """
+            SELECT b.\(idColumn) FROM \(base) b
+            JOIN \(table) ON \(table).rowid = b.rowid
+            WHERE \(table) MATCH ?
+            """, arguments: [needle])
+    }
+
+    @Test("the four trigram tables exist after v13")
+    func tablesExist() throws {
+        let dbQueue = try makeQueueThroughV12()
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v13
+        let present = try dbQueue.read { db -> [Bool] in
+            try ["source_trigram", "asset_trigram", "tag_trigram", "collection_trigram"].map {
+                try Bool.fetchOne(db, sql: """
+                    SELECT count(*) > 0 FROM sqlite_master WHERE type='table' AND name=?
+                    """, arguments: [$0]) ?? false
+            }
+        }
+        #expect(present == [true, true, true, true])
+    }
+
+    @Test("pre-existing rows back-fill and substring-match after v13")
+    func backfillSubstringMatches() throws {
+        let dbQueue = try makeQueueThroughV12()
+        let ids = try dbQueue.write { db -> (source: String, asset: String, tag: String, collection: String) in
+            let s = try seedSource(db, title: "Typography Poster", author: "swissdesign")
+            let a = try seedAsset(db, name: "Brutalism Study", sourceID: s)
+            let t = try seedTag(db, name: "modernism")
+            let c = try seedCollection(db, name: "Interiors")
+            return (s, a, t, c)
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v13
+
+        // Mid-word substrings each surface their row (the whole point of trigram).
+        // Fetch inside `read`, assert outside (a throwing call can't sit in #expect).
+        let hits = try dbQueue.read { db in
+            (title: try trigramMatches(db, table: "source_trigram", base: "source",
+                                       idColumn: "id", "\"pograph\""),
+             author: try trigramMatches(db, table: "source_trigram", base: "source",
+                                        idColumn: "id", "\"design\""),
+             name: try trigramMatches(db, table: "asset_trigram", base: "asset",
+                                      idColumn: "id", "\"utal\""),
+             tag: try trigramMatches(db, table: "tag_trigram", base: "tag",
+                                     idColumn: "id", "\"dern\""),
+             collection: try trigramMatches(db, table: "collection_trigram", base: "collection",
+                                            idColumn: "id", "\"erior\""))
+        }
+        #expect(hits.title == [ids.source])
+        #expect(hits.author == [ids.source])
+        #expect(hits.name == [ids.asset])
+        #expect(hits.tag == [ids.tag])
+        #expect(hits.collection == [ids.collection])
+    }
+
+    @Test("trigram folding is case-insensitive and diacritic-insensitive")
+    func foldingMatchesUnicode61() throws {
+        let dbQueue = try makeQueueThroughV12()
+        let assetID = try dbQueue.write { db -> String in
+            let s = try seedSource(db, title: "t", author: "a")
+            return try seedAsset(db, name: "Café Modé", sourceID: s)
+        }
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v13
+        // lowercase + no diacritics still finds "Café Modé" mid-string.
+        let hits = try dbQueue.read { db in
+            (cafe: try trigramMatches(db, table: "asset_trigram", base: "asset",
+                                      idColumn: "id", "\"cafe\""),
+             mode: try trigramMatches(db, table: "asset_trigram", base: "asset",
+                                      idColumn: "id", "\"mode\""))
+        }
+        #expect(hits.cafe == [assetID])
+        #expect(hits.mode == [assetID])
+    }
+
+    @Test("post-migration writes stay indexed (sync triggers)")
+    func triggersReindexAfterMigration() throws {
+        let dbQueue = try makeQueueThroughV12()
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v13 first
+
+        // A tag inserted AFTER the rebuild must be indexed by the regenerated
+        // AFTER INSERT trigger; a rename must be picked up by AFTER UPDATE.
+        let tagID = try dbQueue.write { db in try seedTag(db, name: "helvetica") }
+        let afterInsert = try dbQueue.read { db in
+            try trigramMatches(db, table: "tag_trigram", base: "tag", idColumn: "id", "\"lvet\"")
+        }
+        #expect(afterInsert == [tagID])
+
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE tag SET name = 'univers' WHERE id = ?", arguments: [tagID])
+        }
+        let afterRename = try dbQueue.read { db in
+            (newName: try trigramMatches(db, table: "tag_trigram", base: "tag",
+                                         idColumn: "id", "\"nive\""),
+             oldName: try trigramMatches(db, table: "tag_trigram", base: "tag",
+                                         idColumn: "id", "\"lvet\""))
+        }
+        #expect(afterRename.newName == [tagID])
+        #expect(afterRename.oldName.isEmpty)  // old name no longer indexed
+    }
+}
+
+// MARK: - v14 (semantic embedding table)
+
+@Suite("Migration v14: asset_embedding table")
+struct MigrationV14Tests {
+
+    private func seedAsset(_ db: Database) throws -> String {
+        let sourceID = newID(), assetID = newID()
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, captured_at, raw_metadata)
+            VALUES (?, 'web', ?, '{}');
+            """, arguments: [sourceID, ts])
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, blob_hash, mime_type, width, height,
+                file_size, download_state, created_at, source_id, search_text)
+            VALUES (?, 'image', 'h', 'image/png', 1, 1, 1, 'downloaded', ?, ?, '');
+            """, arguments: [assetID, ts, sourceID])
+        return assetID
+    }
+
+    @Test("the asset_embedding table + model_version index exist after v14")
+    func schemaExists() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue)
+        let shape = try dbQueue.read { db in
+            (table: try Bool.fetchOne(db, sql: """
+                SELECT count(*) > 0 FROM sqlite_master WHERE type='table' AND name='asset_embedding'
+                """) ?? false,
+             index: try Bool.fetchOne(db, sql: """
+                SELECT count(*) > 0 FROM sqlite_master WHERE type='index'
+                AND name='index_asset_embedding_on_model_version'
+                """) ?? false)
+        }
+        #expect(shape.table)
+        #expect(shape.index)
+    }
+
+    @Test("deleting an asset cascades away its embedding row")
+    func fkCascade() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue)
+        let assetID = try dbQueue.write { db -> String in
+            let id = try seedAsset(db)
+            try db.execute(sql: """
+                INSERT INTO asset_embedding (asset_id, model_version, content_hash, vector, embedded_at)
+                VALUES (?, 1, 'hash', X'00000000', ?);
+                """, arguments: [id, ts])
+            return id
+        }
+        let before = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT count(*) FROM asset_embedding WHERE asset_id = ?",
+                             arguments: [assetID]) ?? -1
+        }
+        #expect(before == 1)
+
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM asset WHERE id = ?", arguments: [assetID])
+        }
+        let after = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT count(*) FROM asset_embedding WHERE asset_id = ?",
+                             arguments: [assetID]) ?? -1
+        }
+        #expect(after == 0)  // ON DELETE CASCADE
     }
 }
 

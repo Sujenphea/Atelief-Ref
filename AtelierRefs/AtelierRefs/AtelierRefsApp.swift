@@ -40,6 +40,12 @@ struct AtelierRefsApp: App {
             CommandGroup(after: .toolbar) {
                 SortCommands()
             }
+            // File ▸ New (⌘N, 214) — begins an inline draft in the sidebar: a new
+            // collection when one is active, a new space when a space is active,
+            // disabled otherwise. Replaces the default "New Window".
+            CommandGroup(replacing: .newItem) {
+                NewItemCommand()
+            }
             CommandGroup(after: .sidebar) {
                 BackCommand()
             }
@@ -124,6 +130,49 @@ private struct SnapshotCommands: View {
             .disabled(model?.snapshotManager == nil)
         Button("Restore from Snapshot…") { model?.showSnapshots = true }
             .disabled(model?.snapshotManager == nil)
+    }
+}
+
+/// File ▸ New (⌘N, 214) — starts an inline sidebar draft keyed to the active
+/// sidebar destination. Observes ``NavModel`` as a focused OBJECT so its title and
+/// enabled state track `sidebarSelection` (a `@FocusedValue` wouldn't re-render).
+private struct NewItemCommand: View {
+    @FocusedObject private var nav: NavModel?
+
+    var body: some View {
+        Button(title) { begin() }
+            .keyboardShortcut("n", modifiers: .command)
+            .disabled(!enabled)
+    }
+
+    /// Enabled only when a collection or a space is the active sidebar destination.
+    private var enabled: Bool {
+        switch nav?.sidebarSelection {
+        case .collection, .space: return true
+        default: return false
+        }
+    }
+
+    private var title: String {
+        switch nav?.sidebarSelection {
+        case .space: return "New Space"
+        default: return "New Collection"
+        }
+    }
+
+    private func begin() {
+        guard let nav else { return }
+        // Reveal the sidebar first so the draft row is visible when the rail is
+        // collapsed (e.g. while the item-detail overlay is up).
+        nav.sidebarCollapsed = false
+        switch nav.sidebarSelection {
+        case .space:
+            nav.sidebarDraft = .space
+        case .collection:
+            nav.sidebarDraft = .collection(parent: nil)
+        default:
+            break
+        }
     }
 }
 
