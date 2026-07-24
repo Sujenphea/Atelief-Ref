@@ -153,6 +153,19 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     /// so the index math matches the frames (mirrors `CollectionView.gridColumns`).
     var solvedColumns: Int { max(1, solved.columns) }
 
+    /// The exact top inset `prepare()` solves items at — the top content margin
+    /// (200), the scroll-away header band (222) and `topInset`, folded together.
+    /// The reorder preview (040) MUST solve at this same value or its frames drift
+    /// vertically from the real grid the instant a drag starts.
+    var solvedTopInset: CGFloat { contentInsets.top + headerHeight + topInset }
+
+    /// The horizontal content margins (200) `prepare()` reserves within the width,
+    /// exposed so the reorder preview packs its columns into the SAME content
+    /// width as the real solve — without them the preview widens edge-to-edge and
+    /// the cells visibly scale up mid-drag, then snap back on drop.
+    var solvedLeadingInset: CGFloat { contentInsets.left }
+    var solvedTrailingInset: CGFloat { contentInsets.right }
+
     /// The item index at a content-space `point` (A2 mouse / hover hit-testing), via
     /// a zero-size ``masonryMarqueeIndices`` query over the ANALYTIC frames — never
     /// the pixel-snapped view frames (038 §3.4). `nil` in a gap between cells; the

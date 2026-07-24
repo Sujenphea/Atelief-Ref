@@ -1237,7 +1237,9 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         let preview = previewFrames(
             displayOrder: order, aspects: layout.aspects,
             availableWidth: layout.preparedWidth, columns: layout.solvedColumns,
-            spacing: layout.spacing, topInset: layout.topInset)
+            spacing: layout.spacing, topInset: layout.solvedTopInset,
+            leadingInset: layout.solvedLeadingInset,
+            trailingInset: layout.solvedTrailingInset)
         setLayoutPreview(preview, animated: animated)
         applyGhostDimming(ids: Set(state.blockIndices.compactMap {
             items.indices.contains($0) ? items[$0].item.id : nil
