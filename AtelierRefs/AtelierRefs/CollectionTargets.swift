@@ -53,6 +53,28 @@ enum CollectionTargets {
         return MoveTargets(subfolders: subfolders, roots: roots)
     }
 
+    /// The WHOLE collection hierarchy flattened for the selection bar's Move to /
+    /// Add to lists — every collection as an indented node (roots in gallery order:
+    /// Unsorted first, then manual; children in manual order), so items can be filed
+    /// into ANY collection, nested included. The collection currently on screen is
+    /// included too (the caller greys it out and disables it — filing where the
+    /// items already live is a no-op), so the list reads as the complete tree.
+    static func moveTargetTree(
+        folders: [Collection], unsortedID: UUID
+    ) -> [MoveTargetNode] {
+        let childrenByParent = Dictionary(grouping: folders, by: { $0.parentCollectionID })
+        var out: [MoveTargetNode] = []
+        func walk(_ siblings: [Collection], depth: Int) {
+            for c in siblings {
+                out.append(MoveTargetNode(collection: c, depth: depth))
+                walk((childrenByParent[c.id] ?? []).sorted(by: byManualOrder),
+                     depth: depth + 1)
+            }
+        }
+        walk(galleryRoots(folders, unsortedID: unsortedID), depth: 0)
+        return out
+    }
+
     /// The collections `folderID` may be REPARENTED under (043). A valid new
     /// parent is any collection EXCEPT: `folderID` itself, any of its descendants
     /// (that would form a cycle — the service's `moveCollection` rejects it too),
@@ -155,6 +177,14 @@ enum CollectionTargets {
         }
         return result
     }
+}
+
+/// One collection in a flattened, indented move/copy destination tree — the
+/// collection plus its `depth` (0 = root) so the UI can indent nested folders.
+struct MoveTargetNode: Equatable, Identifiable {
+    var collection: Collection
+    var depth: Int
+    var id: UUID { collection.id }
 }
 
 /// The two ordered groups of a move/copy target list, kept separate so the UI can

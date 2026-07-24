@@ -84,4 +84,135 @@ extension View {
             .shadow(color: .black.opacity(0.35), radius: 14, y: 5)
             .padding(.bottom, 16)
     }
+
+    /// Wrap the `…` overflow popover's content in the design-system container — a
+    /// `surface` card with `card` (12pt) corners + a hairline border — and make the
+    /// host popover's own chrome transparent so ONLY this card shows. Fixed width so
+    /// the section headers and rows all align. Replaces the raw system-menu look.
+    func selectionMenuChrome() -> some View {
+        self
+            .padding(Theme.Spacing.xs)
+            .frame(width: 220)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                    .fill(Theme.Colors.surface))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                    .strokeBorder(Theme.Colors.hairline))
+            .elevation(.hover)
+            .presentationBackground(.clear)
+    }
+}
+
+// MARK: - Overflow popover atoms
+
+/// Carries a destination list's measured natural height up so its capped
+/// `ScrollView` can size to `min(content, cap)` (a bare ScrollView collapses to
+/// zero in a content-sized popover).
+struct MenuListHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// A collapsible section header for the selection bar's `…` overflow popover (e.g.
+/// "Move to" / "Add to"). Mirrors the sidebar's `sectionHeader` idiom — a leading
+/// glyph + title with a trailing chevron that swaps open/closed — so the popover
+/// reads as part of the design system rather than a raw menu.
+struct SelectionMenuSectionHeader: View {
+    let title: String
+    let systemImage: String?
+    let isExpanded: Bool
+    var action: () -> Void
+
+    @State private var isHovering = false
+
+    init(_ title: String, systemImage: String? = nil, isExpanded: Bool,
+         action: @escaping () -> Void) {
+        self.title = title
+        self.systemImage = systemImage
+        self.isExpanded = isExpanded
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Theme.Spacing.sm) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 16)
+                }
+                Text(title)
+                    .font(Theme.Typography.row)
+                Spacer(minLength: Theme.Spacing.sm)
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.inkSecondary)
+            }
+            .foregroundStyle(Theme.Colors.inkPrimary)
+            .padding(.horizontal, Theme.Spacing.sm)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(isHovering ? 0.06 : 0)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+    }
+}
+
+/// One tappable row in the overflow popover — a destination collection or a leaf
+/// action (Set as Cover). Full-width with the app's radius-6 `selection` hover fill
+/// (the `SidebarView.rowHighlight` idiom), 14pt ink. Pass `isEnabled: false` for a
+/// non-tappable empty-state row ("No collections").
+struct SelectionMenuRow: View {
+    let title: String
+    let systemImage: String?
+    let indent: Int
+    let isEnabled: Bool
+    var action: () -> Void
+
+    @State private var isHovering = false
+
+    init(_ title: String, systemImage: String? = nil, indent: Int = 0,
+         isEnabled: Bool = true, action: @escaping () -> Void = {}) {
+        self.title = title
+        self.systemImage = systemImage
+        self.indent = indent
+        self.isEnabled = isEnabled
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Theme.Spacing.sm) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12, weight: .regular))
+                        .frame(width: 16)
+                }
+                Text(title)
+                    .font(Theme.Typography.row)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(isEnabled ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
+            .padding(.leading, Theme.Spacing.sm + CGFloat(indent + 1) * 8)
+            .padding(.trailing, Theme.Spacing.sm)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isEnabled && isHovering ? Theme.Colors.selection : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .onHover { if isEnabled { isHovering = $0 } }
+    }
 }

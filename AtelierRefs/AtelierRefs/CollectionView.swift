@@ -44,6 +44,13 @@ struct CollectionView: View {
     /// Drives the selection bar's `…` overflow, shown as a popover so it opens
     /// ABOVE the bar (a plain `Menu` opens downward and off the floating bar).
     @State private var showMoreActions = false
+    /// Which overflow section is expanded (accordion — at most one). `nil` = both
+    /// collapsed, the state the popover reopens in.
+    @State private var expandedMoreSection: MoreSection?
+    /// The natural height of the currently-expanded destination list, measured so
+    /// the capped `ScrollView` can size to `min(content, 240)` — a bare `ScrollView`
+    /// reports no ideal height in a content-sized popover and collapses to zero.
+    @State private var destListHeight: CGFloat = 0
     /// The live grid viewport width, captured from the grid's `GeometryReader`, so
     /// the toolbar / ⌘+/⌘− density controls can clamp against the current width
     /// (011-B2 · 16A) without their own geometry reader.
@@ -263,7 +270,11 @@ struct CollectionView: View {
             }
             // Overflow as a popover so it opens ABOVE the bar (`arrowEdge: .top`),
             // not clipped below the floating capsule the way a `Menu` would.
-            Button { showMoreActions.toggle() } label: {
+            Button {
+                // Reopen collapsed every time (accordion resets on open).
+                if !showMoreActions { expandedMoreSection = nil }
+                showMoreActions.toggle()
+            } label: {
                 SelectionBarIcon(systemName: "ellipsis")
             }
             .buttonStyle(.plain)
@@ -276,55 +287,95 @@ struct CollectionView: View {
         .selectionBarChrome()
     }
 
-    /// The `…` overflow contents: Move to / Add to (nested destination menus) and
-    /// Set as Cover (single-item only). Each action dismisses the popover.
+    /// Which overflow destination section is open. Accordion — at most one.
+    private enum MoreSection { case move, add }
+
+    /// The `…` overflow contents: collapsible Move to / Add to accordion sections
+    /// (each a scrollable, height-capped destination list) and a single-item Set as
+    /// Cover. Both sections start collapsed; opening one collapses the other. Every
+    /// action still calls the SAME `IngestionModel` method as the context menu.
     private func moreActionsMenu(count: Int) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Menu {
-                destinationButtons {
-                    model.moveToCollection(assetIDs: selectedAssetIDs, to: $0)
-                    showMoreActions = false
-                }
-            } label: {
-                Label("Move to…", systemImage: "arrow.right.to.line")
-            }
-            Menu {
-                destinationButtons {
-                    model.copyToCollection(assetIDs: selectedAssetIDs, to: $0)
-                    showMoreActions = false
-                }
-            } label: {
-                Label("Add to…", systemImage: "plus.rectangle.on.rectangle")
-            }
+        VStack(alignment: .leading, spacing: 2) {
+            SelectionMenuSectionHeader(
+                "Move to", isExpanded: expandedMoreSection == .move) { toggleSection(.move) }
+            if expandedMoreSection == .move { destinationList(copy: false) }
+
+            SelectionMenuSectionHeader(
+                "Add to", isExpanded: expandedMoreSection == .add) { toggleSection(.add) }
+            if expandedMoreSection == .add { destinationList(copy: true) }
+
             // Set as Cover is a single-item action (parity with the context menu's
-            // `n == 1` gate).
+            // `n == 1` gate) — a leaf row, always visible, never collapsed.
             if count == 1, let assetID = selectedAssetIDs.first {
-                Divider().padding(.vertical, 3)
-                Button {
+                Rectangle().fill(Theme.Colors.hairline)
+                    .frame(height: 1).padding(.vertical, 3)
+                SelectionMenuRow("Set as Cover", systemImage: "photo") {
                     model.setCollectionCover(collectionID: collectionID, assetID: assetID)
                     showMoreActions = false
-                } label: {
-                    Label("Set as Cover", systemImage: "photo")
                 }
             }
         }
-        .labelStyle(.titleAndIcon)
-        .menuStyle(.borderlessButton)
-        .buttonStyle(.plain)
-        .font(.callout)
-        .padding(6)
-        .frame(minWidth: 190, alignment: .leading)
+        .selectionMenuChrome()
     }
 
-    /// The Move-to / Add-to destination buttons for the overflow menu: subfolders
-    /// first, a divider, then roots — the same order as the native
-    /// `targetSubmenu` in `MasonryGridHost`.
+    /// Accordion toggle: collapse if already open, else open this one (which closes
+    /// the other). Animated with the app's standard expand/collapse spring.
+    private func toggleSection(_ section: MoreSection) {
+        withAnimation(Theme.Motion.snappy) {
+            expandedMoreSection = expandedMoreSection == section ? nil : section
+        }
+    }
+
+    /// The whole collection hierarchy, flattened + indented — every collection is a
+    /// Move to / Add to target (roots in gallery order, children in manual order).
+    /// The current collection is included but rendered disabled (greyed) below.
+    private var moveTargetTree: [MoveTargetNode] {
+        CollectionTargets.moveTargetTree(
+            folders: model.folders, unsortedID: model.unsortedFolderID)
+    }
+
+    /// One section's destination list: the full collection tree as indented rows.
+    /// Capped at 240pt and scrolled, since the library's collection count is
+    /// unbounded.
     @ViewBuilder
-    private func destinationButtons(_ action: @escaping (UUID) -> Void) -> some View {
-        let dests = moveTargets
-        ForEach(dests.subfolders) { c in Button(c.name) { action(c.id) } }
-        if !dests.subfolders.isEmpty, !dests.roots.isEmpty { Divider() }
-        ForEach(dests.roots) { c in Button(c.name) { action(c.id) } }
+    private func destinationList(copy: Bool) -> some View {
+        let nodes = moveTargetTree
+        if nodes.isEmpty {
+            SelectionMenuRow("No collections", isEnabled: false)
+        } else {
+            // A bare `ScrollView` reports no ideal height in a content-sized popover
+            // and collapses to zero (no rows show). Measure the content's natural
+            // height (it lays out full-size on the unbounded scroll axis regardless
+            // of the ScrollView's own frame) and pin the ScrollView to
+            // `min(content, 240)` — shrink-to-fit for short lists, scroll past 240.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(nodes) { node in
+                        SelectionMenuRow(
+                            node.collection.name, indent: node.depth,
+                            isEnabled: node.collection.id != collectionID) {
+                            moveOrCopy(copy: copy, to: node.collection.id)
+                        }
+                    }
+                }
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: MenuListHeightKey.self, value: g.size.height)
+                })
+            }
+            .frame(height: min(destListHeight, 240))
+            .scrollBounceBehavior(.basedOnSize)
+            .onPreferenceChange(MenuListHeightKey.self) { destListHeight = $0 }
+        }
+    }
+
+    /// Run the chosen destination action on the current selection and dismiss.
+    private func moveOrCopy(copy: Bool, to id: UUID) {
+        if copy {
+            model.copyToCollection(assetIDs: selectedAssetIDs, to: id)
+        } else {
+            model.moveToCollection(assetIDs: selectedAssetIDs, to: id)
+        }
+        showMoreActions = false
     }
 
     private var renameBinding: Binding<Bool> {
