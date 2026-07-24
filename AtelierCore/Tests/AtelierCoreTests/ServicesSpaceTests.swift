@@ -71,7 +71,7 @@ struct ServicesSpaceTests {
         }
     }
 
-    @Test("listSpaces returns every space, newest first")
+    @Test("listSpaces returns every space in manual (append) order")
     func list() async throws {
         let (services, temp) = try makeServices()
         defer { temp.cleanup() }
@@ -79,9 +79,11 @@ struct ServicesSpaceTests {
         let second = try await services.createSpace(name: "Second")
         let spaces = try await services.listSpaces()
         #expect(spaces.count == 2)
-        // created_at DESC — the later-created space sorts first.
-        #expect(spaces.first?.id == second.id)
-        #expect(spaces.last?.id == first.id)
+        // Manual order (043 · 2B): `createSpace` APPENDS, so the earlier-created
+        // space keeps the lower `sort_index` and sorts first (parity with folders).
+        #expect(spaces.first?.id == first.id)
+        #expect(spaces.last?.id == second.id)
+        #expect(spaces.map(\.sortIndex) == [0, 1])
     }
 
     @Test("deleteSpace removes it; a second delete throws notFound")

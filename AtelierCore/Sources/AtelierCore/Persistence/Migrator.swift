@@ -36,7 +36,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -135,6 +135,13 @@ enum Migrator {
         // populated lazily by the embedding backfill (independent model_version).
         migrator.registerMigration("v14") { db in
             try createV14Schema(db)
+        }
+
+        // v15 — manual order for spaces (043 · decision 2B, extended to spaces).
+        // One additive `sort_index` column, back-filled dense from the prior
+        // `created_at DESC` order so existing libraries keep their arrangement.
+        migrator.registerMigration("v15") { db in
+            try createV15Schema(db)
         }
 
         return migrator
@@ -479,6 +486,37 @@ enum Migrator {
         try db.execute(sql: """
             CREATE INDEX index_collection_on_parent_sort_index
                 ON collection(parent_collection_id, sort_index);
+            """)
+    }
+
+    // MARK: - v15
+
+    /// Manual order for spaces (043 · decision 2B, extended to the flat space
+    /// list). One additive `sort_index` column (NOT NULL, constant `DEFAULT 0` so
+    /// the ALTER is legal), then a deterministic back-fill: each row's index
+    /// becomes the count of spaces that sorted before it under the prior
+    /// `created_at DESC, id` order — a dense `0..<n` that reproduces the old
+    /// newest-first arrangement, so existing libraries are visually unchanged.
+    /// The correlated-subquery back-fill avoids depending on window-function
+    /// support (explicit over clever). An index backs the ordered read.
+    private static func createV15Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            ALTER TABLE space ADD COLUMN sort_index INTEGER NOT NULL DEFAULT 0;
+            """)
+        // `s` sorts before `c` when it is NEWER (created_at DESC), the id ASC
+        // tie-break settling a same-instant batch — the exact order `listSpaces`
+        // used before manual order existed.
+        try db.execute(sql: """
+            UPDATE space AS c
+            SET sort_index = (
+                SELECT COUNT(*)
+                FROM space AS s
+                WHERE s.created_at > c.created_at
+                   OR (s.created_at = c.created_at AND s.id < c.id)
+            );
+            """)
+        try db.execute(sql: """
+            CREATE INDEX index_space_on_sort_index ON space(sort_index);
             """)
     }
 

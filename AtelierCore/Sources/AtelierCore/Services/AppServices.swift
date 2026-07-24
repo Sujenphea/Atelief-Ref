@@ -1603,8 +1603,11 @@ public final class AppServices: Sendable {
     public func createSpace(name: String) async throws -> Space {
         let trimmed = try Validation.spaceName(name)
         let now = Date()
-        let space = Space(id: UUID(), name: trimmed, createdAt: now, updatedAt: now)
         return try await write { db in
+            // Append: the new space lands after the existing ones, keeping the flat
+            // list dense at `0..<n` (043 · 2B, extended to spaces).
+            var space = Space(id: UUID(), name: trimmed, createdAt: now, updatedAt: now)
+            space.sortIndex = try Self.spaceIDsOrdered(in: db).count
             try space.insert(db)
             return space
         }
@@ -1650,6 +1653,51 @@ public final class AppServices: Sendable {
             guard try Space.deleteOne(db, key: Self.key(id)) else {
                 throw AtelierError.notFound(entity: "space", id: id)
             }
+            // Close the gap the delete left so the list stays dense (043 · 2B).
+            try Self.applyDenseSpaceOrder(try Self.spaceIDsOrdered(in: db), in: db)
+        }
+    }
+
+    /// Reposition a space in the flat manual order (043 · 2B, the space analog of
+    /// ``moveCollection(id:toParent:index:)``). The space must exist (`.notFound`).
+    /// `index` is the destination slot **with the moved space removed** (`0` =
+    /// first, `nil` = append last); it is clamped to a valid range. The whole list
+    /// is renumbered to a dense `0..<n`. Bumps `updatedAt` (a user-visible change).
+    public func moveSpace(id: UUID, index: Int? = nil) async throws {
+        try await write { db in
+            guard var space = try Space.fetchOne(db, key: Self.key(id)) else {
+                throw AtelierError.notFound(entity: "space", id: id)
+            }
+            space.updatedAt = Date()
+            try space.update(db)
+            // The moved row still carries its stale index, so strip + reinsert at
+            // the target slot rather than trust its position.
+            var ordered = try Self.spaceIDsOrdered(in: db)
+            ordered.removeAll { $0 == id }
+            let target = min(max(index ?? ordered.count, 0), ordered.count)
+            ordered.insert(id, at: target)
+            try Self.applyDenseSpaceOrder(ordered, in: db)
+        }
+    }
+
+    /// The space ids in canonical manual order — persisted `sort_index`, tie-broken
+    /// by `(created_at DESC, id)` (matching ``listSpaces()``). The single seam used
+    /// to renumber the list after a create / delete / move (043 · 2B).
+    private static func spaceIDsOrdered(in db: Database) throws -> [UUID] {
+        try Space
+            .order(Column("sort_index"), Column("created_at").desc, Column("id"))
+            .fetchAll(db).map(\.id)
+    }
+
+    /// Write a dense `0..<n` `sort_index` for `orderedIDs`, in order. A targeted
+    /// column UPDATE (not a record `update`) so it does NOT bump `updated_at` — a
+    /// renumber is structural bookkeeping, not a user edit. Mirrors the collection
+    /// ``applyDenseOrder(_:in:)``.
+    private static func applyDenseSpaceOrder(_ orderedIDs: [UUID], in db: Database) throws {
+        for (position, id) in orderedIDs.enumerated() {
+            try db.execute(
+                sql: "UPDATE space SET sort_index = ? WHERE id = ?",
+                arguments: [position, Self.key(id)])
         }
     }
 
@@ -1669,6 +1717,9 @@ public final class AppServices: Sendable {
             guard try Space.deleteOne(db, key: Self.key(id)) else {
                 throw AtelierError.notFound(entity: "space", id: id)
             }
+            // Close the gap so the remaining spaces stay dense; the backup keeps
+            // the deleted space's own `sortIndex` for `restoreDeletedSpace` (043 · 2B).
+            try Self.applyDenseSpaceOrder(try Self.spaceIDsOrdered(in: db), in: db)
             return DeletedSpaceBackup(space: space, items: items)
         }
     }
@@ -1690,6 +1741,13 @@ public final class AppServices: Sendable {
                     restored.coverAssetID = nil
                 }
                 try restored.insert(db)
+                // Put it back at (close to) its former slot: reinsert at the stored
+                // index among the now-dense survivors, then renumber (043 · 2B).
+                var ordered = try Self.spaceIDsOrdered(in: db)
+                ordered.removeAll { $0 == restored.id }
+                let target = min(max(restored.sortIndex, 0), ordered.count)
+                ordered.insert(restored.id, at: target)
+                try Self.applyDenseSpaceOrder(ordered, in: db)
             }
             for item in backup.items {
                 guard try !SpaceItem.exists(db, key: Self.key(item.id)) else { continue }
@@ -1702,11 +1760,15 @@ public final class AppServices: Sendable {
         }
     }
 
-    /// Every space, newest first (`created_at DESC`, then `id`). The space count
-    /// is small and bounded, so this returns the full inventory (P16).
+    /// Every space in manual order — persisted `sort_index`, tie-broken by
+    /// `(created_at DESC, id)` so equal indices (unmigrated fixtures) keep the prior
+    /// newest-first order (043 · 2B). The space count is small and bounded, so this
+    /// returns the full inventory (P16).
     public func listSpaces() async throws -> [Space] {
         try await read { db in
-            try Space.order(Column("created_at").desc, Column("id")).fetchAll(db)
+            try Space
+                .order(Column("sort_index"), Column("created_at").desc, Column("id"))
+                .fetchAll(db)
         }
     }
 
@@ -1736,7 +1798,8 @@ public final class AppServices: Sendable {
 
     /// Fanned "stack" previews for the Home Spaces cards (009 · N4), the space
     /// analog of ``collectionStackPreviews(limit:includeUnsorted:)``: every space,
-    /// ordered `created_at DESC, id` (matching ``listSpaces()``). Each entry carries
+    /// in manual order (`sort_index`, tie-broken `created_at DESC, id` — matching
+    /// ``listSpaces()`` so Home and the sidebar share ONE order). Each entry carries
     /// the space, its placed-item count, and the blob hashes of its `limit` most
     /// recently added asset items (newest first) for the fan — one window-function
     /// query, not a per-space N+1. Element rows (NULL `asset_id`) and media-less
@@ -1745,7 +1808,7 @@ public final class AppServices: Sendable {
     public func spaceStackPreviews(limit: Int = 3) async throws -> [SpaceStackPreview] {
         try await read { db in
             let spaces = try Space
-                .order(Column("created_at").desc, Column("id"))
+                .order(Column("sort_index"), Column("created_at").desc, Column("id"))
                 .fetchAll(db)
             guard !spaces.isEmpty else { return [] }
 

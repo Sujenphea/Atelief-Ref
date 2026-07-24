@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -169,6 +169,74 @@ struct MigrationV11Tests {
         // Alpha's children by name: Mid, Zed — dense 0..1.
         #expect(alphaKids.map(\.0) == ["Mid", "Zed"])
         #expect(alphaKids.map(\.1) == [0, 1])
+    }
+}
+
+// MARK: - v15 · space sort_index back-fill (043 · 2B, spaces)
+
+@Suite("Migration v15: space sort_index back-fill")
+struct MigrationV15Tests {
+
+    /// A migrator applied only THROUGH v14 (pre space `sort_index`), so a test can
+    /// seed unordered spaces and then migrate v15 over them — the upgrade path.
+    private func makeQueueThroughV14() throws -> DatabaseQueue {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v14")
+        return dbQueue
+    }
+
+    @Test("v15 back-fills a dense sort_index reproducing the created_at DESC order")
+    func backfillDenseNewestFirst() throws {
+        let dbQueue = try makeQueueThroughV14()
+        // Seed spaces with NO sort_index (the column doesn't exist yet), out of
+        // creation order. The prior list order was `created_at DESC, id`, so the
+        // NEWEST space must end up at index 0.
+        try dbQueue.write { db in
+            func insert(id: String, name: String, createdAt: String) throws {
+                try db.execute(sql: """
+                    INSERT INTO space (id, name, cover_asset_id, created_at, updated_at)
+                    VALUES (?, ?, NULL, ?, ?);
+                    """, arguments: [id, name, createdAt, createdAt])
+            }
+            try insert(id: "s-old", name: "Oldest", createdAt: "2024-01-01 00:00:00.000")
+            try insert(id: "s-new", name: "Newest", createdAt: "2024-03-01 00:00:00.000")
+            try insert(id: "s-mid", name: "Middle", createdAt: "2024-02-01 00:00:00.000")
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v15
+
+        let rows = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: "SELECT name, sort_index FROM space ORDER BY sort_index")
+                .map { row -> (String, Int) in (row["name"], row["sort_index"]) }
+        }
+        // Newest first, dense 0..2 — the exact pre-migration `created_at DESC` order.
+        #expect(rows.map(\.0) == ["Newest", "Middle", "Oldest"])
+        #expect(rows.map(\.1) == [0, 1, 2])
+    }
+
+    @Test("v15 tie-breaks a same-instant batch by id ASC, staying dense")
+    func backfillTieBreaksById() throws {
+        let dbQueue = try makeQueueThroughV14()
+        try dbQueue.write { db in
+            func insert(id: String, name: String) throws {
+                try db.execute(sql: """
+                    INSERT INTO space (id, name, cover_asset_id, created_at, updated_at)
+                    VALUES (?, ?, NULL, '2024-01-01 00:00:00.000', '2024-01-01 00:00:00.000');
+                    """, arguments: [id, name])
+            }
+            try insert(id: "s-c", name: "C")   // same instant — id ASC decides
+            try insert(id: "s-a", name: "A")
+            try insert(id: "s-b", name: "B")
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v15
+
+        let rows = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: "SELECT id, sort_index FROM space ORDER BY sort_index")
+                .map { row -> (String, Int) in (row["id"], row["sort_index"]) }
+        }
+        #expect(rows.map(\.0) == ["s-a", "s-b", "s-c"])
+        #expect(rows.map(\.1) == [0, 1, 2])
     }
 }
 

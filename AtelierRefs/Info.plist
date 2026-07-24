@@ -43,6 +43,24 @@
 			<key>UTTypeTagSpecification</key>
 			<dict/>
 		</dict>
+		<!--
+		  043 (spaces) — the space-reorder drag type (a space dragged between rows in
+		  the sidebar). Declared for the same reason as the types above: without it
+		  the OS doesn't recognize `com.ref-atelier.space-id` at the drop destination
+		  and the drag snaps back. See ``SpaceDragPayload``.
+		-->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.ref-atelier.space-id</string>
+			<key>UTTypeDescription</key>
+			<string>Atelier space</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict/>
+		</dict>
 	</array>
 </dict>
 </plist>

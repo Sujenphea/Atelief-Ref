@@ -28,19 +28,18 @@ struct SidebarView: View {
     /// The in-flight inline "new collection / subfolder" request handed to the
     /// AppKit outline view (214). A fresh token each time re-triggers the draft.
     @State private var collectionDraftRequest: CollectionDraftRequest?
-    /// Whether the inline "new space" draft row is showing, plus its live text (214).
-    @State private var spaceDraftActive = false
-    @State private var spaceDraftText = ""
-    @FocusState private var spaceDraftFocused: Bool
+    /// The in-flight inline "new space" request handed to the AppKit spaces outline
+    /// view (214) — the flat analog of `collectionDraftRequest`.
+    @State private var spaceDraftRequest: SpaceDraftRequest?
+    /// Rename a space from its outline-row context menu (043 · spaces).
+    @State private var spaceRenameTargetID: UUID?
+    @State private var spaceRenameText = ""
     @State private var spacesExpanded = true
     @State private var collectionsExpanded = true
-    /// The AppKit collections tree's measured content height (043 · Phase C), so
-    /// the non-scrolling outline view can be framed inside the sidebar ScrollView.
+    /// The AppKit outline trees' measured content heights (043 · Phase C), so each
+    /// non-scrolling outline view can be framed inside the sidebar's own ScrollView.
     @State private var outlineHeight: CGFloat = 0
-    /// The sidebar row currently under an asset drag (a space id), for the drop
-    /// highlight. One id at a time — a drag hovers a single row. (Collections now
-    /// handle their own drops in the outline view.)
-    @State private var dropTargetID: UUID?
+    @State private var spaceOutlineHeight: CGFloat = 0
 
     /// The traffic lights overlay the top-left; inset content below them.
     private let trafficLightInset: CGFloat = 40
@@ -63,9 +62,19 @@ struct SidebarView: View {
                 renameTargetID = nil
             },
             onCancel: { renameTargetID = nil })
+        // Rename a space (its outline-row menu — 043 · spaces), mirroring the
+        // collection rename alert above.
+        .nameEntryAlert(
+            "Rename Space",
+            isPresented: spaceRenameBinding, text: $spaceRenameText, confirmLabel: "Rename",
+            onConfirm: { name in
+                if let id = spaceRenameTargetID { model.renameSpace(id: id, to: name) }
+                spaceRenameTargetID = nil
+            },
+            onCancel: { spaceRenameTargetID = nil })
         // Route a draft request (a "+" button or ⌘N) into the right inline row (214):
-        // collections go to the AppKit outline via a fresh token; spaces show the
-        // SwiftUI draft row. Consuming clears `nav.sidebarDraft` back to nil.
+        // both collections and spaces now hand a fresh token to their AppKit outline
+        // view. Consuming clears `nav.sidebarDraft` back to nil.
         .onChange(of: nav.sidebarDraft) { _, draft in
             guard let draft else { return }
             switch draft {
@@ -74,7 +83,7 @@ struct SidebarView: View {
                 collectionDraftRequest = CollectionDraftRequest(parent: parent)
             case .space:
                 spacesExpanded = true
-                startSpaceDraft()
+                spaceDraftRequest = SpaceDraftRequest()
             }
             nav.sidebarDraft = nil
         }
@@ -144,72 +153,30 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             sectionHeader("Spaces", expanded: $spacesExpanded) { nav.sidebarDraft = .space }
             if spacesExpanded {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    // The empty-state row is suppressed while a draft is open so the
-                    // draft is the only row (no "No spaces yet" + draft together).
-                    if model.spaces.isEmpty && !spaceDraftActive {
+                VStack(alignment: .leading, spacing: 0) {
+                    // The AppKit NSOutlineView list (043 · spaces): live drag reorder
+                    // + inline draft (214) + asset drops onto rows, sharing every
+                    // primitive with the Collections tree. Non-scrolling — framed to
+                    // its reported content height inside the sidebar's ScrollView.
+                    // Row context menu (Rename / Delete) lives in the coordinator.
+                    SpacesOutlineView(
+                        model: model, nav: nav, height: $spaceOutlineHeight,
+                        draftRequest: spaceDraftRequest,
+                        onRename: { id in
+                            spaceRenameText = model.spaces.first { $0.id == id }?.name ?? ""
+                            spaceRenameTargetID = id
+                        })
+                        .frame(height: max(spaceOutlineHeight, 1))
+                        .padding(.trailing, -8)
+                    // Empty / loading state lives in SwiftUI — shown only when there
+                    // are no spaces AND the outline reports no rows (so an open draft,
+                    // which gives the outline a row's worth of height, hides it).
+                    if model.spaces.isEmpty && spaceOutlineHeight < 1 {
                         if model.spacesLoaded { spacesEmptyRow } else { spacesLoadingRows }
-                    } else {
-                        ForEach(model.spaces) { space in
-                            treeRow(
-                                title: space.name,
-                                selected: nav.sidebarSelection == .space(space.id),
-                                dropID: space.id,
-                                select: { nav.openSpace(space.id) },
-                                onDrop: { handleSpaceDrop($0, into: space.id) })
-                                .contextMenu {
-                                    Button("Delete…", role: .destructive) {
-                                        model.requestDeleteSpace(id: space.id, name: space.name)
-                                    }
-                                }
-                        }
                     }
-                    if spaceDraftActive { spaceDraftRow }
                 }
             }
         }
-    }
-
-    /// The inline "new space" draft row (214) — a text field styled like ``treeRow``.
-    /// Enter commits (creates + opens the space), Escape or an empty commit cancels,
-    /// and losing focus commits a non-empty name / cancels an empty one (Finder-style).
-    private var spaceDraftRow: some View {
-        TextField("New Space", text: $spaceDraftText)
-            .textFieldStyle(.plain)
-            .font(Theme.Typography.row)
-            .foregroundStyle(Theme.Colors.inkPrimary)
-            .focused($spaceDraftFocused)
-            .lineLimit(1)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, 7)
-            .background(rowHighlight(selected: true))
-            .onSubmit { commitSpaceDraft() }
-            .onExitCommand { cancelSpaceDraft() }
-            .onChange(of: spaceDraftFocused) { _, focused in
-                // Focus loss while still drafting: commit non-empty, else cancel.
-                if !focused && spaceDraftActive { commitSpaceDraft() }
-            }
-    }
-
-    private func startSpaceDraft() {
-        spaceDraftText = ""
-        spaceDraftActive = true
-        // Focus once the row has been inserted.
-        DispatchQueue.main.async { spaceDraftFocused = true }
-    }
-
-    private func commitSpaceDraft() {
-        guard spaceDraftActive else { return }
-        let name = spaceDraftText.trimmingCharacters(in: .whitespacesAndNewlines)
-        spaceDraftActive = false
-        spaceDraftText = ""
-        guard !name.isEmpty else { return }
-        Task { if let id = await model.createSpace(name: name) { nav.openSpace(id) } }
-    }
-
-    private func cancelSpaceDraft() {
-        spaceDraftActive = false
-        spaceDraftText = ""
     }
 
     /// Skeleton rows while the first `refreshSpaces` is in flight.
@@ -265,6 +232,10 @@ struct SidebarView: View {
         Binding(get: { renameTargetID != nil }, set: { if !$0 { renameTargetID = nil } })
     }
 
+    private var spaceRenameBinding: Binding<Bool> {
+        Binding(get: { spaceRenameTargetID != nil }, set: { if !$0 { spaceRenameTargetID = nil } })
+    }
+
     // MARK: - Shared rows
 
     private func sectionHeader(
@@ -291,51 +262,14 @@ struct SidebarView: View {
         }
     }
 
-    /// A space / collection row. When `dropID` and `onDrop` are supplied the row is
-    /// also an asset drop target: a drag over it highlights the row and the drop
-    /// moves/copies (collections) or adds (spaces) the dragged assets. `.onDrop`
-    /// (not `.dropDestination`) so the AppKit grid drag is recognised — see
-    /// ``AssetDragPayload``.
-    private func treeRow(
-        title: String, selected: Bool, dropID: UUID? = nil,
-        select: @escaping () -> Void,
-        onDrop: ((AssetDragPayload) -> Bool)? = nil
-    ) -> some View {
-        let targeted = dropID != nil && dropTargetID == dropID
-        return Button(action: select) {
-            Text(title)
-                .font(Theme.Typography.row)
-                .foregroundStyle(Theme.Colors.inkPrimary)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, 7)
-                .background(rowHighlight(selected: selected, targeted: targeted))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .modifier(RowDropModifier(dropID: dropID, dropTargetID: $dropTargetID, onDrop: onDrop))
-    }
-
-    private func rowHighlight(selected: Bool, targeted: Bool = false) -> some View {
+    /// The nav rows' active-row fill (Home / Capture / Settings). Space and
+    /// collection rows draw their own selection inside their AppKit outline views.
+    private func rowHighlight(selected: Bool) -> some View {
         RoundedRectangle(cornerRadius: 6)
-            .fill(targeted ? Theme.Colors.selection : (selected ? Theme.Colors.selection : .clear))
+            .fill(selected ? Theme.Colors.selection : .clear)
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(
-                        targeted ? Color.accentColor
-                            : (selected ? Theme.Colors.hairlineStrong : .clear),
-                        lineWidth: targeted ? 1.5 : 1))
-    }
-
-    // MARK: - Drop routing
-
-    /// ADD the dragged assets to `spaceID` (a space is a placement board — always
-    /// additive, never a move). An empty payload is refused.
-    private func handleSpaceDrop(_ payload: AssetDragPayload, into spaceID: UUID) -> Bool {
-        guard !payload.assetIDs.isEmpty else { return false }
-        model.addAssetsToSpace(assetIDs: payload.assetIDs, to: spaceID)
-        return true
+                    .strokeBorder(selected ? Theme.Colors.hairlineStrong : .clear, lineWidth: 1))
     }
 
     // MARK: - Footer / rail controls
@@ -426,34 +360,5 @@ struct SidebarView: View {
     private func railIcon<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         content()
             .frame(width: 28, height: 28)
-    }
-}
-
-/// Attaches an asset-drop target to a sidebar row ONLY when it has a `dropID` +
-/// `onDrop` — nav rows (Home/Capture/Settings) opt out by passing neither, so a
-/// drag over them is a plain no-op. Kept as a modifier (not an inline `if`) so a
-/// row's identity is stable whether or not it accepts drops. `.onDrop` (not
-/// `.dropDestination`) recognises the AppKit grid drag — see ``AssetDragPayload``.
-private struct RowDropModifier: ViewModifier {
-    let dropID: UUID?
-    @Binding var dropTargetID: UUID?
-    let onDrop: ((AssetDragPayload) -> Bool)?
-
-    func body(content: Content) -> some View {
-        if let dropID, let onDrop {
-            content.onDrop(of: [.assetIDs], isTargeted: Binding(
-                get: { dropTargetID == dropID },
-                set: { over in
-                    if over { dropTargetID = dropID }
-                    else if dropTargetID == dropID { dropTargetID = nil }
-                })) { providers in
-                AssetDragPayload.fromDrop(providers) { payload in
-                    _ = onDrop(payload)
-                    if dropTargetID == dropID { dropTargetID = nil }
-                }
-            }
-        } else {
-            content
-        }
     }
 }

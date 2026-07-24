@@ -1747,6 +1747,36 @@ final class IngestionModel: ObservableObject {
         }
     }
 
+    /// Reposition a space in the flat manual order (`index` nil ⇒ append). Undoable
+    /// — the inverse restores the old slot (captured `sortIndex`), so undoing a drag
+    /// puts the space back exactly where it was (the space analog of ``moveFolder``).
+    func moveSpace(id: UUID, index: Int? = nil) {
+        guard services != nil else { return }
+        let oldIndex = spaces.first { $0.id == id }?.sortIndex
+        enqueueUndoable { await self.applyMoveSpace(id: id, index: index) }
+        registerReversible("Move Space",
+            primary: { self.enqueueUndoable { await self.applyMoveSpace(id: id, index: index) } },
+            inverse: { self.enqueueUndoable { await self.applyMoveSpace(id: id, index: oldIndex) } })
+    }
+
+    /// Reposition a space, then refresh the list + Home stack previews (both share
+    /// the one manual order). `index` flows straight to `moveSpace` (043 · 2B).
+    private func applyMoveSpace(id: UUID, index: Int? = nil) async {
+        guard let services else { return }
+        do {
+            try await services.moveSpace(id: id, index: index)
+            await refreshSpaces()
+            await refreshSpaceStackPreviews()
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Apply a routed spaces outline-view drop (043 · Phase C, spaces). `.reject` is
+    /// a no-op; a `.move` funnels through the undoable ``moveSpace(id:index:)``.
+    func applySpaceDrop(_ drop: SpaceDrop, dragged: UUID) {
+        guard case let .move(index) = drop else { return }
+        moveSpace(id: dragged, index: index)
+    }
+
     /// Rename a space, then refresh the list.
     func renameSpace(id: UUID, to name: String) {
         guard let services else { return }

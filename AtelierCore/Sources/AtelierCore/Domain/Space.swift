@@ -23,6 +23,13 @@ public struct Space: Sendable, Equatable, Hashable, Codable, Identifiable {
     public var createdAt: Date
     /// When last modified.
     public var updatedAt: Date
+    /// Manual position among the (flat) space list, maintained DENSE and gapless as
+    /// `0..<n` by `AppServices` on create/delete/move — the space analog of
+    /// ``Collection/sortIndex`` (043 · 2B). Added by migration v15, `DEFAULT 0`,
+    /// back-filled deterministically from the prior `created_at DESC` order so
+    /// existing installs keep their current arrangement. Drives the sidebar order
+    /// (tie-broken by `(created_at DESC, id)` so equal indices stay stable).
+    public var sortIndex: Int
 
     /// Explicit snake_case column/coding names (exact acronym mapping, e.g.
     /// `coverAssetID` ⇄ `cover_asset_id`).
@@ -31,6 +38,7 @@ public struct Space: Sendable, Equatable, Hashable, Codable, Identifiable {
         case coverAssetID = "cover_asset_id"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case sortIndex = "sort_index"
     }
 
     public init(
@@ -38,12 +46,14 @@ public struct Space: Sendable, Equatable, Hashable, Codable, Identifiable {
         name: String,
         coverAssetID: UUID? = nil,
         createdAt: Date,
-        updatedAt: Date
+        updatedAt: Date,
+        sortIndex: Int = 0
     ) {
         self.id = id
         self.name = name
         self.coverAssetID = coverAssetID
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.sortIndex = sortIndex
     }
 }
