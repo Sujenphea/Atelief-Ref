@@ -116,10 +116,11 @@ struct AppShellView: View {
     /// collection-scoped on a Collection.
     @ViewBuilder
     private var rootContent: some View {
-        // Every pane is wrapped in `LibrarySearchable`, so the native `.searchable`
-        // field is ALWAYS in the toolbar — the toolbar height (and thus the traffic
-        // lights) then never shifts between panes. Search is global (`collectionID:
-        // nil`) except on a Collection, which scopes it.
+        // Every pane is wrapped in `LibrarySearchable`, so the custom
+        // `SearchToolbarField` is ALWAYS in the window toolbar (trailing) — the
+        // toolbar height (and thus the traffic lights) then never shifts between
+        // panes. Search is global (`collectionID: nil`) except on a Collection,
+        // which scopes it.
         switch nav.sidebarSelection {
         case .home, .search:
             LibrarySearchable(model: model, gridPrefs: gridPrefs, collectionID: nil) {
@@ -150,11 +151,16 @@ struct AppShellView: View {
     /// fill / glyph under `.borderlessButton` and swallowed the click, so this is an
     /// `NSButton` + `NSMenu` instead.
     private var floatingAdd: some View {
-        // Sized entirely by AppKit — the button reports a square `intrinsicContentSize`
-        // and hugs it, so SwiftUI hosts it at 40×40 without a `.frame`.
+        // Pin the SwiftUI frame to a hard 40×40 square. Relying on `.fixedSize()` let
+        // SwiftUI adopt the `NSButton` cell's own (non-square) fitting size, which
+        // rendered the layer's rounded corners as a rounded RECTANGLE. An explicit
+        // square frame forces square bounds so `cornerRadius` reads as a full circle.
         FloatingAddButton(diameter: 40, items: addMenuItems)
-            .fixedSize()
-            .padding(Theme.Spacing.xxl)
+            .frame(width: 40, height: 40)
+            .padding(.trailing, Theme.Spacing.xl)
+            // Match the floating action bar's baseline (`selectionBarChrome`'s bottom
+            // inset) so the two share a bottom edge when both are on screen.
+            .padding(.bottom, 26)
     }
 
     /// The add menu's items, rebuilt for the current selection.
