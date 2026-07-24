@@ -138,6 +138,15 @@ struct GridHostConfiguration {
     /// The header's fixed height in points; must be > 0 whenever `header != nil`.
     /// The layout reserves this band at the top and offsets every item by it.
     var headerHeight: CGFloat = 0
+
+    // MARK: 200 — whole-panel marquee content margins
+
+    /// Content margins folded into the layout (not a SwiftUI `.padding` around the
+    /// grid), so the collection view spans the panel edge-to-edge and the marquee
+    /// background covers the margins + the empty area below a short grid (200).
+    /// Defaulted to zero so the search grid — which keeps its own SwiftUI padding
+    /// for now — and every prior caller are unchanged.
+    var contentInsets = NSEdgeInsets()
 }
 
 /// The one boundary supplementary kind — the scroll-away Collection header (222).
@@ -166,6 +175,16 @@ final class MasonryHeaderContainer: NSView, NSCollectionViewElement {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Fall through to the collection view's background `mouseDown` (200), so a
+    /// press anywhere on the scroll-away header band starts a marquee / click-to-
+    /// clear like the rest of the panel — the whole-panel marquee. Safe as a blanket
+    /// `nil` because the header hosts PURELY non-interactive content (title + count;
+    /// the New Subfolder button was removed). NSHostingView reports `host` for ANY
+    /// point with content — empty OR a control — so identity can't distinguish them;
+    /// if an interactive control is ever added back, this must carve out its frame
+    /// explicitly rather than return a blanket `nil`.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// The context-menu vocabulary a grid host offers (048). The collection grid
@@ -426,6 +445,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         layout.spacing = configuration.spacing
         layout.topInset = configuration.topInset
         layout.headerHeight = configuration.headerHeight
+        layout.contentInsets = configuration.contentInsets
 
         let collectionView = MasonryNSCollectionView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         // Native selection bypassed entirely (036 §2 A1) — and A1 is read-only.
@@ -561,8 +581,10 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         // the live view (name / count edits never re-invoke the supplementary
         // provider), and re-solve if the reserved band changed height.
         headerContainer?.host.rootView = configuration.header ?? AnyView(EmptyView())
-        if layout.headerHeight != configuration.headerHeight {
+        if layout.headerHeight != configuration.headerHeight
+            || !NSEdgeInsetsEqual(layout.contentInsets, configuration.contentInsets) {
             layout.headerHeight = configuration.headerHeight
+            layout.contentInsets = configuration.contentInsets
             layout.invalidateLayout()
         }
 
@@ -736,8 +758,14 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// waiting for its bounds to move is circular), hence the explicit
     /// invalidation off the clip view.
     @objc private func clipFrameChanged() {
-        guard let width = scrollView?.contentSize.width, width > 0 else { return }
-        if abs(width - layout.preparedWidth) > 0.5 {
+        guard let size = scrollView?.contentSize, size.width > 0 else { return }
+        // A WIDTH change re-solves the masonry (the real cost). A HEIGHT change only
+        // needs `collectionViewContentSize` re-read so the short-grid viewport floor
+        // (200) tracks the new viewport — `prepare()`'s masonry solve is a memo hit
+        // when the width held, so this stays cheap. Height alone never moves
+        // `preparedWidth`, so `shouldInvalidateLayout` would otherwise miss it.
+        if abs(size.width - layout.preparedWidth) > 0.5
+            || abs(size.height - layout.preparedViewportHeight) > 0.5 {
             layout.invalidateLayout()
         }
     }

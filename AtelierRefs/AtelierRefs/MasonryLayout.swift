@@ -66,16 +66,25 @@ enum MasonryLayout {
     /// its column. `columns` clamps to ≥ 1; an empty input yields no frames and a
     /// content height of `topInset`.
     ///
+    /// `leadingInset` / `trailingInset` reserve horizontal margins WITHIN
+    /// `availableWidth`: the columns pack into `availableWidth - leadingInset -
+    /// trailingInset` and every frame's `x` is offset by `leadingInset`. The
+    /// collection view can then span the panel edge-to-edge (so the marquee
+    /// background covers the margins) while the content still sits inset (200).
+    /// Both default to 0, so the pre-inset call sites (and search) are unchanged.
+    ///
     /// A non-finite or non-positive aspect is defensively treated as `1` so a
     /// stray value can never produce an infinite / NaN height (callers should
     /// pass ``aspect(for:)``, which already clamps).
     static func layout(
         aspects: [Double], availableWidth: CGFloat, columns: Int,
-        spacing: CGFloat, topInset: CGFloat = 0
+        spacing: CGFloat, topInset: CGFloat = 0,
+        leadingInset: CGFloat = 0, trailingInset: CGFloat = 0
     ) -> MasonryFrames {
         let cols = max(1, columns)
+        let contentWidth = availableWidth - leadingInset - trailingInset
         let colWidth = columnWidth(
-            availableWidth: availableWidth, columns: cols, spacing: spacing)
+            availableWidth: contentWidth, columns: cols, spacing: spacing)
         let strideX = colWidth + spacing
 
         // Each column's running pen-y (the next cell's top), seeded at the inset.
@@ -88,7 +97,9 @@ enum MasonryLayout {
             let aspect = rawAspect.isFinite && rawAspect > 0 ? rawAspect : 1
             let height = colWidth / CGFloat(aspect)
             let y = penY[col]
-            frames.append(CGRect(x: CGFloat(col) * strideX, y: y, width: colWidth, height: height))
+            frames.append(CGRect(
+                x: leadingInset + CGFloat(col) * strideX, y: y,
+                width: colWidth, height: height))
             penY[col] = y + height + spacing
         }
 

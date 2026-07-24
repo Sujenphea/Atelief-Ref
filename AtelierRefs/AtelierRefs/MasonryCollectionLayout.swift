@@ -47,6 +47,15 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     var density: GridDensity = .default
     var spacing: CGFloat = 8
     var topInset: CGFloat = 0
+    /// Content margins folded INTO the layout rather than the scroll view (200), so
+    /// the collection view spans the panel edge-to-edge: `left`/`right` inset every
+    /// column and the header band, `top` sits above the header, `bottom` pads below
+    /// the last row. The point is the marquee — the background `mouseDown` only
+    /// fires inside the collection view, so folding the margins in here (instead of
+    /// a SwiftUI `.padding` around the whole grid) is what lets a rubber-band start
+    /// in the margins and the empty area below a short grid. Zero = edge-to-edge
+    /// content (search keeps its own SwiftUI padding for now).
+    var contentInsets = NSEdgeInsets()
     /// The height of the scroll-away boundary header (222). When > 0 the layout
     /// reserves this band at the TOP of the content (above `topInset`) for a header
     /// supplementary view and pushes every item down by it — so the header scrolls
@@ -91,6 +100,12 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     /// The width the current `solved` was computed at — the ONLY thing a bounds
     /// change is allowed to compare against.
     private(set) var preparedWidth: CGFloat = 0
+    /// The viewport (clip) height at the last `prepare()` (200). `collectionViewContentSize`
+    /// floors the document height to the viewport so a short grid still fills it —
+    /// the coordinator watches this to re-read the floored size when only the
+    /// viewport height changes (a vertical resize doesn't move `preparedWidth`, so
+    /// `shouldInvalidateLayout` alone would leave the floor stale).
+    private(set) var preparedViewportHeight: CGFloat = 0
 
     /// The reorder preview to actually render — ``preview``, but only while it
     /// still matches the solved item count. A stale preview (left across an
@@ -172,23 +187,32 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     override func prepare() {
         super.prepare()
         let width = max(availableWidth(), 1)
-        let columns = density.columns(forWidth: width)
+        // Column COUNT and cell width both key off the CONTENT width (the panel
+        // minus the horizontal margins, 200), so folding the margins into the
+        // layout doesn't change how many columns a given panel width yields.
+        let contentWidth = max(width - contentInsets.left - contentInsets.right, 1)
+        let columns = density.columns(forWidth: contentWidth)
         // The header (222) reserves a band above `topInset`; every item frame is
-        // solved with that band folded into the top inset, so the marquee /
-        // hit-test / keyboard-nav math (all riding `solved.frames`) shift with it
-        // for free — no separate offset path to keep in sync.
+        // solved with that band — plus the top content margin (200) — folded into
+        // the top inset, so the marquee / hit-test / keyboard-nav math (all riding
+        // `solved.frames`) shift with it for free — no separate offset path.
         solved = cache.frames(
             version: itemsVersion, width: width, columns: columns,
-            spacing: spacing, topInset: topInset + headerHeight,
+            spacing: spacing, topInset: contentInsets.top + headerHeight + topInset,
+            leadingInset: contentInsets.left, trailingInset: contentInsets.right,
             aspects: { [aspects] in aspects })
         preparedWidth = width
-        // The header sits at content y ∈ [0, headerHeight], full width — NOT pinned,
-        // so it scrolls off the top with the content (the point of 222).
+        preparedViewportHeight = collectionView?.enclosingScrollView?.contentSize.height ?? 0
+        // The header sits at content y ∈ [top margin, top margin + headerHeight],
+        // inset to the content width — NOT pinned, so it scrolls off the top with
+        // the content (the point of 222). Its left edge aligns with the columns.
         if headerHeight > 0 {
             let attr = NSCollectionViewLayoutAttributes(
                 forSupplementaryViewOfKind: masonryHeaderKind,
                 with: IndexPath(item: 0, section: 0))
-            attr.frame = CGRect(x: 0, y: 0, width: width, height: headerHeight)
+            attr.frame = CGRect(
+                x: contentInsets.left, y: contentInsets.top,
+                width: contentWidth, height: headerHeight)
             headerAttributes = attr
         } else {
             headerAttributes = nil
@@ -205,8 +229,14 @@ final class MasonryCollectionLayout: NSCollectionViewLayout {
     }
 
     override var collectionViewContentSize: NSSize {
-        let height = activePreview?.contentHeight ?? solved.contentHeight
-        return NSSize(width: preparedWidth, height: max(height, 1))
+        let solvedHeight = activePreview?.contentHeight ?? solved.contentHeight
+        // Add the bottom content margin (200), then FLOOR to the viewport so a short
+        // grid's document view still fills the clip view — the marquee background
+        // `mouseDown` then covers the empty area below the last row, not just the
+        // cells. When content overflows the viewport this floor is inert.
+        let height = solvedHeight + contentInsets.bottom
+        let viewportHeight = collectionView?.enclosingScrollView?.contentSize.height ?? 0
+        return NSSize(width: preparedWidth, height: max(height, viewportHeight, 1))
     }
 
     // MARK: Queries

@@ -23,6 +23,8 @@ final class MasonryLayoutCache {
         var columns: Int
         var spacing: CGFloat
         var topInset: CGFloat
+        var leadingInset: CGFloat
+        var trailingInset: CGFloat
     }
 
     private var key: Key?
@@ -30,17 +32,22 @@ final class MasonryLayoutCache {
 
     /// The memoized frames for the given inputs. `aspects` is invoked ONLY on a
     /// miss, so the O(N) per-item aspect derivation never runs on a cache hit.
+    /// `leadingInset` / `trailingInset` are the horizontal content margins (200),
+    /// defaulted to 0 so the search grid's call site is unchanged.
     func frames(
         version: Int, width: CGFloat, columns: Int, spacing: CGFloat,
-        topInset: CGFloat, aspects: () -> [Double]
+        topInset: CGFloat, leadingInset: CGFloat = 0, trailingInset: CGFloat = 0,
+        aspects: () -> [Double]
     ) -> MasonryFrames {
         let k = Key(
             version: version, width: width, columns: columns,
-            spacing: spacing, topInset: topInset)
+            spacing: spacing, topInset: topInset,
+            leadingInset: leadingInset, trailingInset: trailingInset)
         if key == k { return value }
         value = MasonryLayout.layout(
             aspects: aspects(), availableWidth: width, columns: columns,
-            spacing: spacing, topInset: topInset)
+            spacing: spacing, topInset: topInset,
+            leadingInset: leadingInset, trailingInset: trailingInset)
         key = k
         return value
     }
