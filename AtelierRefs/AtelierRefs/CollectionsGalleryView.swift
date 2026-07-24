@@ -15,6 +15,7 @@
 //  `onGeometryChange` in a shared named coordinate space.
 //
 
+import AppKit
 import AtelierCore
 import SwiftUI
 
@@ -29,8 +30,13 @@ struct CollectionsGalleryView: View {
     @State private var spaceRenameTarget: Space?
     @State private var spaceRenameText = ""
 
-    // Marquee selection (009 · N6).
-    @State private var selectedCardIDs: Set<UUID> = []
+    // Home-card multi-selection via the shared grid reducer (048 · work item B):
+    // cmd-click toggles, shift-click ranges over `orderIDs`, marquee replaces, ⌘A
+    // selects all. Home cards now select like the collection grid instead of the
+    // old marquee-only `Set`. Held as plain `@State` (a `GridSelectionStore` is
+    // only needed for the AppKit host's Combine subscription — pure SwiftUI
+    // re-renders on the value change). Unsorted is never selectable.
+    @State private var selection = GridSelection()
     @State private var cardFrames: [UUID: CGRect] = [:]
     @State private var marqueeStart: CGPoint?
     @State private var marqueeCurrent: CGPoint?
@@ -69,8 +75,13 @@ struct CollectionsGalleryView: View {
         .focused($galleryFocused)
         .onDeleteCommand { requestBatchDelete() }
         .onExitCommand { clearSelection() }
+        .onKeyPress(keys: ["a"]) { press in
+            guard press.modifiers.contains(.command) else { return .ignored }
+            apply(.selectAll)
+            return .handled
+        }
         .overlay(alignment: .bottom) {
-            if !selectedCardIDs.isEmpty { selectionBar }
+            if selection.isSelecting { selectionBar }
         }
         .task {
             await model.refreshFolders()
@@ -108,7 +119,7 @@ struct CollectionsGalleryView: View {
             onCancel: { spaceRenameTarget = nil })
         // Batch delete confirmation (one dialog for the whole marquee selection).
         .confirmationDialog(
-            "Delete \(selectedCardIDs.count) \(selectedCardIDs.count == 1 ? "item" : "items")?",
+            "Delete \(selection.ids.count) \(selection.ids.count == 1 ? "item" : "items")?",
             isPresented: $showBatchDelete, titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) { performBatchDelete() }
@@ -125,12 +136,19 @@ struct CollectionsGalleryView: View {
             sectionHeader("Collections")
             LazyVGrid(columns: columns, spacing: 6) {
                 ForEach(orderedRoots) { collection in
+                    let isUnsorted = collection.id == model.unsortedFolderID
                     Button {
-                        nav.openCollection(collection.id)
+                        plainCardClick(id: collection.id, unsorted: isUnsorted) {
+                            nav.openCollection(collection.id)
+                        }
                     } label: {
                         collectionCard(collection)
                     }
                     .buttonStyle(.plain)
+                    .modifier(CardSelectionGestures(
+                        selectable: !isUnsorted,
+                        onCommand: { apply(.commandClick(collection.id)) },
+                        onShift: { apply(.shiftClick(collection.id)) }))
                     .overlay { selectionRing(for: collection.id) }
                     .overlay { reparentRing(for: collection.id) }
                     .modifier(CardFrameReporter(id: collection.id, space: Self.gallerySpace) {
@@ -182,11 +200,17 @@ struct CollectionsGalleryView: View {
             LazyVGrid(columns: columns, spacing: 6) {
                 ForEach(model.spaces) { space in
                     Button {
-                        nav.openSpace(space.id)
+                        plainCardClick(id: space.id, unsorted: false) {
+                            nav.openSpace(space.id)
+                        }
                     } label: {
                         spaceCard(space)
                     }
                     .buttonStyle(.plain)
+                    .modifier(CardSelectionGestures(
+                        selectable: true,
+                        onCommand: { apply(.commandClick(space.id)) },
+                        onShift: { apply(.shiftClick(space.id)) }))
                     .overlay { selectionRing(for: space.id) }
                     .modifier(CardFrameReporter(id: space.id, space: Self.gallerySpace) {
                         cardFrames[space.id] = $0
@@ -254,7 +278,7 @@ struct CollectionsGalleryView: View {
 
     @ViewBuilder
     private func selectionRing(for id: UUID) -> some View {
-        if selectedCardIDs.contains(id) {
+        if selection.ids.contains(id) {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(Color.accentColor, lineWidth: 3)
         }
@@ -276,13 +300,13 @@ struct CollectionsGalleryView: View {
     /// selection is active.
     private var selectionBar: some View {
         HStack(spacing: 12) {
-            Text("\(selectedCardIDs.count) selected")
+            Text("\(selection.ids.count) selected")
                 .font(.callout.weight(.medium))
             Button("Clear") { clearSelection() }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
             Button(role: .destructive) { requestBatchDelete() } label: {
-                Label("Delete \(selectedCardIDs.count)", systemImage: "trash")
+                Label("Delete \(selection.ids.count)", systemImage: "trash")
             }
         }
         .padding(.horizontal, 16)
@@ -302,6 +326,34 @@ struct CollectionsGalleryView: View {
         return ids
     }
 
+    /// The selectable cards in DISPLAY order — the reducer's `order` for ⇧-range
+    /// and ⌘A. Roots first (Unsorted excluded — it can't be deleted or selected),
+    /// then spaces, matching the on-screen top-to-bottom card order.
+    private var orderIDs: [UUID] {
+        orderedRoots.map(\.id).filter { $0 != model.unsortedFolderID }
+            + model.spaces.map(\.id)
+    }
+
+    /// Apply a reducer action against the selectable order; run `navigate` when the
+    /// reducer resolves to an "open" (a plain click on an idle card pushes its
+    /// screen — the gallery's analog of the grid's open-detail effect, 048).
+    private func apply(_ action: GridSelectionAction, navigate: (() -> Void)? = nil) {
+        let (next, effect) = selection.applying(action, order: orderIDs)
+        if next != selection { selection = next }
+        if case .openDetail = effect { navigate?() }
+    }
+
+    /// A plain (no-modifier) card click: navigate when idle, toggle when selecting
+    /// — Finder parity with the collection grid. Unsorted always navigates (it's
+    /// never selectable). ⌘/⇧ clicks are owned by ``CardSelectionGestures`` because
+    /// a SwiftUI `Button` doesn't fire reliably on a modified click.
+    private func plainCardClick(id: UUID, unsorted: Bool, navigate: @escaping () -> Void) {
+        let flags = NSEvent.modifierFlags
+        guard !flags.contains(.shift), !flags.contains(.command) else { return }
+        if unsorted { navigate(); return }
+        apply(gridClickAction(imageID: id, shift: false, command: false), navigate: navigate)
+    }
+
     private func updateMarqueeSelection() {
         guard let start = marqueeStart, let current = marqueeCurrent else { return }
         let rect = marqueeRect(from: start, to: current)
@@ -309,15 +361,16 @@ struct CollectionsGalleryView: View {
         let entries = cardFrames.filter { valid.contains($0.key) }
         let ids = Array(entries.keys)
         let frames = ids.map { entries[$0]! }
-        selectedCardIDs = Set(marqueeIndices(in: rect, frames: frames).map { ids[$0] })
+        let hits = Set(marqueeIndices(in: rect, frames: frames).map { ids[$0] })
+        apply(.marquee(hits: hits, base: []))
     }
 
     private func clearSelection() {
-        if !selectedCardIDs.isEmpty { selectedCardIDs = [] }
+        if selection.isSelecting { apply(.clear) }
     }
 
     private func requestBatchDelete() {
-        guard !selectedCardIDs.isEmpty else { return }
+        guard selection.isSelecting else { return }
         showBatchDelete = true
     }
 
@@ -328,12 +381,12 @@ struct CollectionsGalleryView: View {
 
     private var selectedCollectionIDs: [UUID] {
         let valid = Set(orderedRoots.map(\.id)).subtracting([model.unsortedFolderID])
-        return Array(selectedCardIDs.filter { valid.contains($0) })
+        return Array(selection.ids.filter { valid.contains($0) })
     }
 
     private var selectedSpaceIDs: [UUID] {
         let valid = Set(model.spaces.map(\.id))
-        return Array(selectedCardIDs.filter { valid.contains($0) })
+        return Array(selection.ids.filter { valid.contains($0) })
     }
 
     private var batchDeleteBreakdown: String {
@@ -417,6 +470,26 @@ struct CollectionsGalleryView: View {
 
     private var spaceRenameBinding: Binding<Bool> {
         Binding(get: { spaceRenameTarget != nil }, set: { if !$0 { spaceRenameTarget = nil } })
+    }
+}
+
+/// The ⌘-click (toggle) and ⇧-click (range) selection gestures for a card (048).
+/// A SwiftUI `Button` doesn't fire its action on a modified click, so these
+/// modifier-aware tap gestures own the modifiers — the same pattern the grid and
+/// search cells use. Attached only when `selectable` (never on Unsorted).
+private struct CardSelectionGestures: ViewModifier {
+    let selectable: Bool
+    let onCommand: () -> Void
+    let onShift: () -> Void
+
+    func body(content: Content) -> some View {
+        if selectable {
+            content
+                .simultaneousGesture(TapGesture().modifiers(.command).onEnded(onCommand))
+                .simultaneousGesture(TapGesture().modifiers(.shift).onEnded(onShift))
+        } else {
+            content
+        }
     }
 }
 
