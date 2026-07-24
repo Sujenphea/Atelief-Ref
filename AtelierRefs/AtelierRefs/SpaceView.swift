@@ -4,9 +4,9 @@
 //
 //  005-E2 — one open space over the real renderer. Shows the space's asset rows
 //  on the infinite canvas (`CanvasView`) driven by `SpaceContent`, or an empty
-//  state. "Add from Library" opens a multi-select picker that flows the chosen
-//  assets into the board. The canvas host is rebuilt (via `.id`) whenever the
-//  space's rows change. Zero renderer changes — images ride the existing path.
+//  state. Assets enter the board by dragging them in from a collection. The canvas
+//  host is rebuilt (via `.id`) whenever the space's rows change. Zero renderer
+//  changes — images ride the existing path.
 //
 
 import AtelierCore
@@ -22,7 +22,6 @@ struct SpaceView: View {
     /// context, so it can't reuse `IngestionModel`'s selection-bound tags).
     @StateObject private var tagStore: AssetTagsStore
     @State private var quickLook = QuickLookController()
-    @State private var showAddSheet = false
     @State private var tool: CanvasTool = .select
     @State private var showEditor = false
     /// The asset row shown in the full-window detail overlay, or `nil`.
@@ -51,54 +50,8 @@ struct SpaceView: View {
         }
         // The space name lives in the in-content header only (parity with Collection);
         // the native window-toolbar title is dropped so the name isn't shown twice.
-        .toolbar {
-            ToolbarItemGroup {
-                Button { space.undo() } label: {
-                    Label("Undo", systemImage: "arrow.uturn.backward")
-                }
-                .disabled(!space.canUndo)
-                .help(space.canUndo ? "Undo \(space.undoActionName)" : "Nothing to undo")
-                .keyboardShortcut("z", modifiers: .command)
-
-                Button { space.redo() } label: {
-                    Label("Redo", systemImage: "arrow.uturn.forward")
-                }
-                .disabled(!space.canRedo)
-                .help(space.canRedo ? "Redo \(space.redoActionName)" : "Nothing to redo")
-                .keyboardShortcut("z", modifiers: [.command, .shift])
-            }
-            // Z-order for the selected tile (034 P2). Undoable via the space's own
-            // ⌘Z; disabled with nothing selected.
-            ToolbarItemGroup {
-                Button {
-                    if let id = space.selectedItemID { space.bringToFront(itemID: id) }
-                } label: {
-                    Label("Bring to Front", systemImage: "square.3.layers.3d.top.filled")
-                }
-                .disabled(space.selectedItemID == nil)
-                .help("Bring the selected item to the front (⌘⇧])")
-                .keyboardShortcut("]", modifiers: [.command, .shift])
-
-                Button {
-                    if let id = space.selectedItemID { space.sendToBack(itemID: id) }
-                } label: {
-                    Label("Send to Back", systemImage: "square.3.layers.3d.bottom.filled")
-                }
-                .disabled(space.selectedItemID == nil)
-                .help("Send the selected item to the back (⌘⇧[)")
-                .keyboardShortcut("[", modifiers: [.command, .shift])
-            }
-            ToolbarItem {
-                Button { showAddSheet = true } label: {
-                    Label("Add from Library", systemImage: "plus")
-                }
-            }
-        }
-        .sheet(isPresented: $showAddSheet) {
-            AddFromLibrarySheet(model: model) { assets in
-                space.addAssets(assets)
-            }
-        }
+        // Undo/redo and z-order live in the floating bottom action bar (`actionBar`,
+        // over the canvas) rather than the native window toolbar.
         // Surface space-level write failures on the shared app alert.
         .onChange(of: space.lastError) { _, message in
             if let message { model.lastError = message; space.lastError = nil }
@@ -216,6 +169,55 @@ struct SpaceView: View {
 
             if space.items.isEmpty { emptyHint }
         }
+        .overlay(alignment: .bottom) { actionBar }
+    }
+
+    // MARK: - Bottom action bar
+
+    /// The floating action pill over the canvas: undo/redo, z-order for the selected
+    /// tile, and add-from-library. Reuses the shared `SelectionBarButton` glyphs and
+    /// `selectionBarChrome()` capsule (parity with the Collection/Search selection
+    /// bar) — a flat `spacing: 2` row with no dividers, matching those bars. Keyboard
+    /// shortcuts ride the buttons, so ⌘Z / ⌘⇧] etc. still fire with the bar on screen.
+    /// Disabled glyphs dim rather than vanish so the row stays put. The trailing pad
+    /// balances the chrome's text-tuned leading inset (16) for this icon-only bar.
+    private var actionBar: some View {
+        HStack(spacing: 2) {
+            SelectionBarButton(
+                "arrow.uturn.backward",
+                help: space.canUndo ? "Undo \(space.undoActionName)" : "Nothing to undo"
+            ) { space.undo() }
+                .disabled(!space.canUndo)
+                .opacity(space.canUndo ? 1 : 0.35)
+                .keyboardShortcut("z", modifiers: .command)
+
+            SelectionBarButton(
+                "arrow.uturn.forward",
+                help: space.canRedo ? "Redo \(space.redoActionName)" : "Nothing to redo"
+            ) { space.redo() }
+                .disabled(!space.canRedo)
+                .opacity(space.canRedo ? 1 : 0.35)
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+
+            // Z-order for the selected tile (034 P2). Undoable via the space's own ⌘Z.
+            SelectionBarButton(
+                "square.3.layers.3d.top.filled",
+                help: "Bring the selected item to the front (⌘⇧])"
+            ) { if let id = space.selectedItemID { space.bringToFront(itemID: id) } }
+                .disabled(space.selectedItemID == nil)
+                .opacity(space.selectedItemID == nil ? 0.35 : 1)
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+
+            SelectionBarButton(
+                "square.3.layers.3d.bottom.filled",
+                help: "Send the selected item to the back (⌘⇧[)"
+            ) { if let id = space.selectedItemID { space.sendToBack(itemID: id) } }
+                .disabled(space.selectedItemID == nil)
+                .opacity(space.selectedItemID == nil ? 0.35 : 1)
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+        }
+        .padding(.trailing, 10)
+        .selectionBarChrome()
     }
 
     // MARK: - Asset detail overlay
@@ -268,14 +270,14 @@ struct SpaceView: View {
         }
     }
 
-    /// A non-blocking hint over the (empty) canvas — the tools + toolbar stay
-    /// live, so the first frame / text / library add still works.
+    /// A non-blocking hint over the (empty) canvas — the tools stay live, so drawing
+    /// the first Frame / Text still works.
     private var emptyHint: some View {
         ContentUnavailableView(
             "This space is empty",
             systemImage: "square.on.square.dashed",
             description: Text(
-                "Add references from your library, or draw a Frame / Text with the tools above."))
+                "Drag references in from a collection, or draw a Frame / Text with the tools above."))
             .allowsHitTesting(false)
     }
 }
