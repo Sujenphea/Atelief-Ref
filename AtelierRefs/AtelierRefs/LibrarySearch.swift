@@ -359,8 +359,9 @@ final class LibrarySearchModel: ObservableObject {
 
 /// Wraps a screen's `content`, adds the NATIVE `.searchable` token field (in the window
 /// toolbar), and swaps in the results grid (with an asset-scoped detail overlay) while a
-/// search is active. Native means Esc-to-clear, the focus ring, the cancel button, and
-/// the standard scope bar all come for free.
+/// search is active. Native means Esc-to-clear, the focus ring, and the cancel button
+/// all come for free. The keyword / meaning mode toggle is a custom control at the top
+/// of the results grid (not a native scope bar) — see `LibrarySearchResults.modePicker`.
 struct LibrarySearchable<Content: View>: View {
     @ObservedObject var model: IngestionModel
     /// The screen's collection, or `nil` for the global gallery.
@@ -412,6 +413,8 @@ struct LibrarySearchable<Content: View>: View {
 
 /// Applies the native `.searchable` token field. No scope bar — on a Collection the
 /// search stays scoped to that collection (the model's default); elsewhere it's global.
+/// The keyword / meaning mode toggle (047 · 3a) is NOT a native `.searchScopes` bar —
+/// it's a custom segmented control at the top of the results panel (`LibrarySearchResults`).
 private struct SearchFieldModifier: ViewModifier {
     @ObservedObject var search: LibrarySearchModel
 
@@ -430,12 +433,6 @@ private struct SearchFieldModifier: ViewModifier {
                 case .collection(let collection):
                     Label(collection.name, systemImage: "folder")
                 }
-            }
-            // Native segmented toggle under the field (047 · 3a · 10A): keyword FTS
-            // vs semantic meaning. Appears while the search field is active.
-            .searchScopes($search.mode) {
-                Text("Keyword").tag(SearchMode.keyword)
-                Text("Meaning").tag(SearchMode.meaning)
             }
     }
 }
@@ -489,29 +486,53 @@ private struct LibrarySearchResults: View {
     }
 
     var body: some View {
-        Group {
-            if search.results.isEmpty {
-                if search.queryFailed {
-                    ContentUnavailableView(
-                        "Search failed",
-                        systemImage: "exclamationmark.magnifyingglass",
-                        description: Text("Something went wrong running this search. "
-                            + "Adjust the query to try again."))
+        VStack(spacing: 0) {
+            modePicker
+            Group {
+                if search.results.isEmpty {
+                    if search.queryFailed {
+                        ContentUnavailableView(
+                            "Search failed",
+                            systemImage: "exclamationmark.magnifyingglass",
+                            description: Text("Something went wrong running this search. "
+                                + "Adjust the query to try again."))
+                    } else {
+                        ContentUnavailableView(
+                            search.isRunning ? "Searching…" : "No results",
+                            systemImage: search.isRunning ? "hourglass" : "magnifyingglass",
+                            description: Text(search.isRunning
+                                ? "Looking through your library."
+                                : "No items match this search."))
+                    }
                 } else {
-                    ContentUnavailableView(
-                        search.isRunning ? "Searching…" : "No results",
-                        systemImage: search.isRunning ? "hourglass" : "magnifyingglass",
-                        description: Text(search.isRunning
-                            ? "Looking through your library."
-                            : "No items match this search."))
+                    resultsGrid
                 }
-            } else {
-                resultsGrid
             }
+            // Center the empty / failed / searching states in the full panel rather than
+            // sizing to the text.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        // Center the empty / failed / searching states in the full panel rather than
-        // sizing to the text.
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The keyword / meaning mode toggle (047 · 3a · 10A), relocated out of the native
+    /// `.searchScopes` bar to the top of the results panel: `.keyword` runs FTS
+    /// prefix / substring / relevance, `.meaning` embeds the text and ranks by cosine
+    /// similarity. Leading-aligned and intrinsically sized so it reads as a control,
+    /// not a full-width bar. `search.mode`'s `onChange` (in `LibrarySearchable`) re-runs.
+    private var modePicker: some View {
+        HStack {
+            Picker("Search mode", selection: $search.mode) {
+                Text("Keyword").tag(SearchMode.keyword)
+                Text("Meaning").tag(SearchMode.meaning)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 4)
     }
 
     private var resultsGrid: some View {
