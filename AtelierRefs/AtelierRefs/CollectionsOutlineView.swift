@@ -58,21 +58,37 @@ final class CollectionNode: NSObject {
     }
 }
 
+/// A one-shot request to begin an inline collection draft (214). Carries a fresh
+/// `token` so `updateNSView` re-entry doesn't restart the draft — the coordinator
+/// begins a session only when the token changes.
+struct CollectionDraftRequest: Equatable {
+    let token: UUID
+    /// `nil` = a new root collection; else a subfolder of this parent.
+    let parent: UUID?
+
+    init(parent: UUID?) {
+        self.token = UUID()
+        self.parent = parent
+    }
+}
+
 struct CollectionsOutlineView: NSViewRepresentable {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
     /// The measured content height, pushed back so the SwiftUI wrapper can size
     /// this non-scrolling view inside the sidebar's own ScrollView.
     @Binding var height: CGFloat
-    /// Row context-menu actions that need SwiftUI text-entry alerts (create /
-    /// rename); move + delete are applied directly on the model by the coordinator.
-    let onNewSubfolder: (UUID) -> Void
+    /// A pending inline "new collection / subfolder" draft (214). The coordinator
+    /// begins the draft when the token changes; the section "+" and ⌘N set it, the
+    /// row's "New Subfolder…" begins one directly in the coordinator.
+    let draftRequest: CollectionDraftRequest?
+    /// Rename still uses a SwiftUI text-entry alert; move + delete are applied
+    /// directly on the model by the coordinator.
     let onRename: (UUID) -> Void
 
     func makeCoordinator() -> CollectionsOutlineCoordinator {
         CollectionsOutlineCoordinator(
-            model: model, nav: nav,
-            onNewSubfolder: onNewSubfolder, onRename: onRename
+            model: model, nav: nav, onRename: onRename
         ) { [$height] h in
             // Written synchronously from expand/collapse (a click event) so the
             // frame grows in the SAME pass the rows appear — no one-frame glitch.
@@ -89,6 +105,7 @@ struct CollectionsOutlineView: NSViewRepresentable {
         context.coordinator.update(
             folders: model.folders, unsortedID: model.unsortedFolderID,
             selection: nav.sidebarSelection)
+        context.coordinator.handleDraftRequest(draftRequest)
     }
 }
 
@@ -97,13 +114,34 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
 
     private let model: IngestionModel
     private let nav: NavModel
-    private let onNewSubfolder: (UUID) -> Void
     private let onRename: (UUID) -> Void
     private let reportHeight: (CGFloat) -> Void
 
     private let outlineView = SidebarOutlineView()
     private static let rowHeight: CGFloat = 32
     private static let columnID = NSUserInterfaceItemIdentifier("name")
+    private static let draftColumnID = NSUserInterfaceItemIdentifier("draft")
+
+    /// An in-flight inline-creation session (214), `nil` when idle. `text` mirrors
+    /// the field live so a mid-edit reload can restore it; `committedName` is set
+    /// after Enter so the row stays as a static label until the real folder lands.
+    private struct DraftState {
+        let parentID: UUID?
+        var text: String = ""
+        var committedName: String?
+    }
+    private var draft: DraftState?
+    /// The single sentinel row for the active draft — tracked by id-equality across
+    /// reloads. Never lives inside `roots`; appended by `children(of:)` on demand.
+    private let draftNode = CollectionNode(
+        id: UUID(), name: "", isUnsorted: false, children: [])
+    /// The last consumed draft-request token, so `updateNSView` re-entry is idempotent.
+    private var lastDraftToken: UUID?
+    /// A fallback work item that clears a committed-but-never-refreshed draft row if
+    /// `createFolder` fails silently (its `perform` only sets `lastError`).
+    private var draftCleanupWork: DispatchWorkItem?
+
+    private func isDraftNode(_ item: Any?) -> Bool { (item as? CollectionNode) === draftNode }
 
     /// The current node tree + the snapshot it was built from — rebuilt only when
     /// the folders actually change (043 · 13A memoization).
@@ -129,12 +167,11 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
 
     init(
         model: IngestionModel, nav: NavModel,
-        onNewSubfolder: @escaping (UUID) -> Void, onRename: @escaping (UUID) -> Void,
+        onRename: @escaping (UUID) -> Void,
         reportHeight: @escaping (CGFloat) -> Void
     ) {
         self.model = model
         self.nav = nav
-        self.onNewSubfolder = onNewSubfolder
         self.onRename = onRename
         self.reportHeight = reportHeight
         super.init()
@@ -185,9 +222,10 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let row = outlineView.clickedRow
-        guard row >= 0, let node = outlineView.item(atRow: row) as? CollectionNode else { return }
+        guard row >= 0, let node = outlineView.item(atRow: row) as? CollectionNode,
+              !isDraftNode(node) else { return }
         let id = node.id
-        menu.addItem(BlockMenuItem(title: "New Subfolder…") { [weak self] in self?.onNewSubfolder(id) })
+        menu.addItem(BlockMenuItem(title: "New Subfolder…") { [weak self] in self?.beginDraft(parentID: id) })
         guard !node.isUnsorted else { return }   // Unsorted: create-only
         menu.addItem(BlockMenuItem(title: "Rename…") { [weak self] in self?.onRename(id) })
         menu.addItem(moveToItem(for: id))
@@ -230,8 +268,27 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
             .sorted { $0.id.uuidString < $1.id.uuidString }
         if next != snapshot {
             snapshot = next
+            // A committed draft's real folder has now arrived (appended at the same
+            // sibling slot via sortIndex) — drop the placeholder so the reload swaps
+            // it in place with no visual jump.
+            if draft?.committedName != nil {
+                draft = nil
+                draftCleanupWork?.cancel()
+                draftCleanupWork = nil
+            }
             roots = CollectionNode.tree(from: folders, unsortedID: unsortedID)
-            outlineView.reloadData()
+            if draft != nil {
+                // A reload landed MID-EDIT (rare): rebuild, then re-focus a fresh
+                // draft cell restoring the in-progress text so no keystrokes are lost.
+                // Suspend the live cell first so the teardown's end-editing callback
+                // isn't misread as a commit.
+                let text = draft!.text
+                suspendDraftCell()
+                outlineView.reloadData()
+                focusDraftField(restoring: text)
+            } else {
+                outlineView.reloadData()
+            }
             // Newly-created folders' parents should reveal them; expand every node
             // that has children on first build is too aggressive, so leave prior
             // expansion (preserved by id-equality) and only ensure roots are shown.
@@ -271,6 +328,94 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         reportHeight(CGFloat(outlineView.numberOfRows) * Self.rowHeight)
     }
 
+    // MARK: - Inline draft (214)
+
+    /// Consume a SwiftUI draft request. Idempotent via the token so `updateNSView`
+    /// re-entry never restarts a session; the actual begin is hopped out of the
+    /// SwiftUI update pass (mirrors the deferred height write).
+    func handleDraftRequest(_ request: CollectionDraftRequest?) {
+        guard let request, request.token != lastDraftToken else { return }
+        lastDraftToken = request.token
+        DispatchQueue.main.async { [weak self] in self?.beginDraft(parentID: request.parent) }
+    }
+
+    /// Open an inline draft row under `parentID` (`nil` ⇒ a new root collection).
+    func beginDraft(parentID: UUID?) {
+        if draft != nil { endDraft(commit: nil) }        // one session at a time
+        draft = DraftState(parentID: parentID)
+        if let parentID, let parent = findNode(parentID, in: roots) {
+            expandAncestors(of: parent)
+        }
+        outlineView.reloadData()                          // draft row materializes
+        if let parentID, let parent = findNode(parentID, in: roots) {
+            outlineView.expandItem(parent)                // now reports expandable
+        }
+        reportMeasuredHeight()                            // event context → sync write is safe
+        focusDraftField(restoring: "")
+    }
+
+    /// Finish the active draft. `name != nil` commits (create + keep a static row
+    /// until the refresh lands); `nil` cancels (remove the row immediately).
+    private func endDraft(commit name: String?) {
+        guard draft != nil else { return }
+        if let name {
+            draft?.committedName = name
+            model.createFolder(name: name, parent: draft?.parentID ?? nil)
+            outlineView.reloadData()                      // draft cell → static label
+            // Safety net: if creation fails silently (no refresh), drop the lingering
+            // static row after a beat so it never sticks.
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.draft?.committedName != nil else { return }
+                self.draft = nil
+                self.outlineView.reloadData()
+                self.reportMeasuredHeight()
+            }
+            draftCleanupWork?.cancel()
+            draftCleanupWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+        } else {
+            draft = nil
+            outlineView.reloadData()
+            reportMeasuredHeight()
+        }
+        outlineView.window?.makeFirstResponder(outlineView)
+    }
+
+    /// Suspend the currently-visible draft cell so a programmatic teardown reload
+    /// doesn't fire a spurious commit from its end-editing callback.
+    private func suspendDraftCell() {
+        let row = outlineView.row(forItem: draftNode)
+        guard row >= 0,
+              let cell = outlineView.view(atColumn: 0, row: row, makeIfNecessary: false)
+                as? SidebarDraftCell else { return }
+        cell.isSuspended = true
+    }
+
+    /// Focus the draft field one tick after the reload, when the row's cell exists.
+    private func focusDraftField(restoring text: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.draft != nil, self.draft?.committedName == nil else { return }
+            let row = self.outlineView.row(forItem: self.draftNode)
+            guard row >= 0,
+                  let cell = self.outlineView.view(atColumn: 0, row: row, makeIfNecessary: true)
+                    as? SidebarDraftCell else { return }
+            cell.field.stringValue = text
+            self.outlineView.window?.makeFirstResponder(cell.field)
+            // The window's field editor is SHARED across every text field (e.g. the
+            // bezeled `.searchable` search field), and it keeps whatever background /
+            // focus-ring the last user set — our field's `drawsBackground = false`
+            // doesn't reliably reset the live editor, so it paints that leftover dark
+            // fill (and ring) inside our row. Force the editor transparent + ring-less
+            // so only the row highlight shows.
+            if let editor = cell.field.currentEditor() as? NSTextView {
+                editor.drawsBackground = false
+                editor.backgroundColor = .clear
+                editor.focusRingType = .none
+            }
+            cell.field.currentEditor()?.selectedRange = NSRange(location: text.count, length: 0)
+        }
+    }
+
     // MARK: - Data source
 
     func outlineView(_ ov: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
@@ -282,35 +427,77 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
     }
 
     func outlineView(_ ov: NSOutlineView, isItemExpandable item: Any?) -> Bool {
-        !((item as? CollectionNode)?.children.isEmpty ?? true)
+        // Not `node.children` directly: a leaf parent hosting the draft row must
+        // report expandable so the draft is reachable.
+        !children(of: item).isEmpty
     }
 
+    /// A node's children, plus the sentinel draft row appended last when a draft
+    /// targets this parent (`nil` parent ⇒ roots). Injecting here — the one funnel
+    /// every data-source call goes through — means the draft survives every reload
+    /// and memoized rebuild for free, without touching the immutable node tree.
     private func children(of item: Any?) -> [CollectionNode] {
-        (item as? CollectionNode)?.children ?? roots
+        let node = item as? CollectionNode
+        let base = node?.children ?? roots
+        guard let draft, !isDraftNode(node), draft.parentID == node?.id else { return base }
+        return base + [draftNode]
     }
 
     // MARK: - Delegate (cells + selection)
 
     func outlineView(_ ov: NSOutlineView, viewFor column: NSTableColumn?, item: Any) -> NSView? {
         guard let node = item as? CollectionNode else { return nil }
+        // The draft row: an editable field while typing, a plain label once committed
+        // (kept until the real folder lands, so the swap is jump-free).
+        if isDraftNode(node) {
+            if let committed = draft?.committedName {
+                let cell = ov.makeView(withIdentifier: Self.columnID, owner: self) as? SidebarCell
+                    ?? SidebarCell(identifier: Self.columnID)
+                cell.configure(name: committed, expandable: false, expanded: false)
+                return cell
+            }
+            let cell = ov.makeView(withIdentifier: Self.draftColumnID, owner: self) as? SidebarDraftCell
+                ?? SidebarDraftCell(identifier: Self.draftColumnID)
+            cell.prepareForEditing()
+            cell.placeholder = draft?.parentID == nil ? "New Collection" : "New Subfolder"
+            cell.field.stringValue = draft?.text ?? ""
+            cell.onTextChange = { [weak self] in self?.draft?.text = $0 }
+            cell.onCommit = { [weak self] name in
+                DispatchQueue.main.async { self?.endDraft(commit: name) }
+            }
+            cell.onCancel = { [weak self] in
+                DispatchQueue.main.async { self?.endDraft(commit: nil) }
+            }
+            return cell
+        }
         let cell = ov.makeView(withIdentifier: Self.columnID, owner: self) as? SidebarCell
             ?? SidebarCell(identifier: Self.columnID)
         cell.configure(
-            name: node.name, expandable: !node.children.isEmpty,
+            name: node.name, expandable: !children(of: node).isEmpty,
             expanded: ov.isItemExpanded(node))
         return cell
     }
 
-    /// Borderless, Theme-tinted selection (no focus ring / emphasized blue).
+    /// Borderless, Theme-tinted selection (no focus ring / emphasized blue). The
+    /// inline draft row (214) is never selectable, so force its highlight on so it
+    /// reads exactly like the active/selected row while typing.
     func outlineView(_ ov: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
         let id = NSUserInterfaceItemIdentifier("row")
-        return ov.makeView(withIdentifier: id, owner: self) as? SidebarRowView
+        let view = ov.makeView(withIdentifier: id, owner: self) as? SidebarRowView
             ?? { let v = SidebarRowView(); v.identifier = id; return v }()
+        view.forceSelected = isDraftNode(item)
+        return view
+    }
+
+    /// The draft placeholder is never selectable (its nav id isn't a real folder).
+    func outlineView(_ ov: NSOutlineView, shouldSelectItem item: Any) -> Bool {
+        !isDraftNode(item)
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !isSyncingSelection,
-              let node = outlineView.item(atRow: outlineView.selectedRow) as? CollectionNode
+              let node = outlineView.item(atRow: outlineView.selectedRow) as? CollectionNode,
+              !isDraftNode(node)
         else { return }
         nav.selectSidebar(.collection(node.id))
     }
@@ -324,7 +511,7 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
     @objc private func rowClicked() {
         let row = outlineView.clickedRow
         guard row >= 0, let node = outlineView.item(atRow: row) as? CollectionNode,
-              !node.children.isEmpty else { return }
+              !isDraftNode(node), !children(of: node).isEmpty else { return }
         let willExpand = !outlineView.isItemExpanded(node)
         if willExpand { outlineView.expandItem(node) } else { outlineView.collapseItem(node) }
         (outlineView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell)?
@@ -335,7 +522,9 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
     // MARK: - Drag source
 
     func outlineView(_ ov: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
-        guard let node = item as? CollectionNode, !node.isUnsorted else { return nil }
+        // No drags at all while a draft is open (avoids drop-index math against the
+        // phantom row), and the draft row itself is never draggable.
+        guard draft == nil, let node = item as? CollectionNode, !node.isUnsorted else { return nil }
         return CollectionDragPayload(collectionID: node.id).makePasteboardItem()
     }
 
@@ -364,6 +553,8 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         _ ov: NSOutlineView, validateDrop info: NSDraggingInfo,
         proposedItem item: Any?, proposedChildIndex index: Int
     ) -> NSDragOperation {
+        // Refuse every drop while an inline draft is open.
+        guard draft == nil else { return [] }
         let pb = info.draggingPasteboard
         // Folder reparent / reorder (our own drag).
         if pb.data(forType: CollectionDragPayload.pasteboardType) != nil {
@@ -493,10 +684,27 @@ final class SidebarOutlineView: NSOutlineView {
 /// A row whose selection is a flat, borderless Theme fill (no focus ring, no
 /// emphasized blue) — matches the SwiftUI sidebar's active-row look.
 final class SidebarRowView: NSTableRowView {
+    /// Draw the selection fill even when the row isn't selected — the inline draft
+    /// row (214) uses this so it matches the active/selected row while typing.
+    /// `drawSelection` isn't invoked for unselected rows, so the forced case draws
+    /// from `drawBackground` instead.
+    var forceSelected = false {
+        didSet { if forceSelected != oldValue { needsDisplay = true } }
+    }
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        super.drawBackground(in: dirtyRect)
+        if forceSelected { drawHighlight() }
+    }
+
     override func drawSelection(in dirtyRect: NSRect) {
         guard isSelected else { return }
-        // Left-flush (roots have 0 x offset, so the fill must start at 0 too, else
-        // the name overhangs it); small right + vertical inset for the rounded look.
+        drawHighlight()
+    }
+
+    /// Left-flush (roots have 0 x offset, so the fill must start at 0 too, else the
+    /// name overhangs it); small right + vertical inset for the rounded look.
+    private func drawHighlight() {
         let rect = NSRect(x: 0, y: 2, width: bounds.width - 4, height: bounds.height - 4)
         let path = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
         NSColor(hex: 0x3A3A40).setFill()                        // Theme.Colors.selection
@@ -505,6 +713,7 @@ final class SidebarRowView: NSTableRowView {
         path.lineWidth = 1
         path.stroke()
     }
+
     override var isEmphasized: Bool {
         get { false }
         set {}
@@ -557,6 +766,92 @@ final class SidebarCell: NSTableCellView {
         chevron.image = NSImage(
             systemSymbolName: expanded ? "chevron.down" : "chevron.right",
             accessibilityDescription: nil)
+    }
+}
+
+/// The inline draft row's editable cell (214): a borderless text field pixel-matched
+/// to ``SidebarCell``'s label. Enter / focus-loss commit, Escape cancels; a one-shot
+/// `finished` guard stops Enter's end-editing echo from committing twice.
+final class SidebarDraftCell: NSTableCellView, NSTextFieldDelegate {
+    // Built from `labelWithString:` (the plain, non-bezeled variant SidebarCell uses)
+    // then made editable — NOT `NSTextField(string:)`, whose bezel paints the dark
+    // control fill that no amount of `isBezeled`/`drawsBackground` toggling on an
+    // already-bezeled field reliably clears.
+    let field = NSTextField(labelWithString: "")
+    var onCommit: ((String) -> Void)?
+    var onCancel: (() -> Void)?
+    var onTextChange: ((String) -> Void)?
+    /// Set true around a programmatic teardown reload so the resulting end-editing
+    /// callback isn't misread as a user commit/cancel.
+    var isSuspended = false
+    private var finished = false
+
+    var placeholder: String {
+        get { field.placeholderString ?? "" }
+        set { field.placeholderString = newValue }
+    }
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+        field.font = .systemFont(ofSize: 13)              // matches SidebarCell label
+        field.textColor = NSColor(hex: 0xF2F1EE)          // inkPrimary
+        // A label is non-editable by default — flip it on. It stays visually plain
+        // (no bezel, no border, transparent), so the row highlight shows through and
+        // `drawsBackground = false` keeps the field editor transparent while editing.
+        field.isEditable = true
+        field.isSelectable = true
+        field.drawsBackground = false
+        field.backgroundColor = .clear
+        field.focusRingType = .none
+        field.lineBreakMode = .byTruncatingTail
+        field.cell?.usesSingleLineMode = true
+        field.cell?.isScrollable = true       // long names scroll while typing, not clip
+        field.delegate = self
+        field.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(field)
+        textField = field
+        NSLayoutConstraint.activate([
+            // Same 14pt leading inset as SidebarCell (per-level indent is added by
+            // the outline view on top), a small trailing gap, vertically centered.
+            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            field.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Re-arm a (possibly reused) cell for a fresh edit — clears the guards.
+    func prepareForEditing() {
+        finished = false
+        isSuspended = false
+    }
+
+    func controlTextDidChange(_ obj: Notification) { onTextChange?(field.stringValue) }
+
+    /// Focus loss (click elsewhere, row torn down): Finder-style commit-or-cancel.
+    func controlTextDidEndEditing(_ obj: Notification) { finish(cancelled: false) }
+
+    func control(_ control: NSControl, textView: NSTextView,
+                 doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            finish(cancelled: false); return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            // Catches Escape even with the field editor's completion popup up.
+            finish(cancelled: true); return true
+        default:
+            return false
+        }
+    }
+
+    private func finish(cancelled: Bool) {
+        guard !finished, !isSuspended else { return }
+        finished = true
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cancelled || name.isEmpty { onCancel?() } else { onCommit?(name) }
     }
 }
 
