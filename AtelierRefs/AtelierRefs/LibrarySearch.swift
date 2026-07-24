@@ -2,11 +2,12 @@
 //  LibrarySearch.swift
 //  AtelierRefs
 //
-//  007 G2 — the search surface: a `.searchable` token field where typed free
-//  text is FTS (source title / author) and selected tokens are structured tag
-//  filters (default AND). Global on the Collections gallery, collection-scoped
-//  (with a This-collection / All toggle) on a Collection screen. Results reuse
-//  the thumbnail grid and open the presentation-only `ItemDetailView`.
+//  007 G2 — the search surface: a custom toolbar token field (`SearchToolbarField`,
+//  styled to the app chrome) where typed free text is FTS (source title / author) and
+//  selected tokens are structured tag filters (default AND). Global on the
+//  Collections gallery, collection-scoped (with a This-collection / All toggle) on a
+//  Collection screen. Results reuse the thumbnail grid and open the presentation-only
+//  `ItemDetailView`.
 //
 //  Tag tokens resolve to ids before querying, so tag text never leaks into FTS
 //  (a silent miss). Agent-applied tags are suggestible too, distinguished by a
@@ -192,6 +193,38 @@ final class LibrarySearchModel: ObservableObject {
         queryFailed = false
     }
 
+    /// Dismiss the suggestion dropdown WITHOUT touching the query — e.g. the user
+    /// clicked away from the custom search field. The next keystroke refetches, so
+    /// this only hides the currently-open list (native `.searchable` did this on blur
+    /// for free; the custom field drives it explicitly).
+    func clearSuggestions() {
+        suggestTask?.cancel()
+        suggestions = []
+    }
+
+    /// Clear the free text and every selected token in one shot (the field's `×` /
+    /// Esc). Leaves scope + mode as-is; the `onChange` hooks re-run into the empty
+    /// (inactive) state, which drops the results grid back to the pane's content.
+    func clearQuery() {
+        text = ""; tokens = []
+        clearSuggestions()
+    }
+
+    /// Remove one selected token (the chip's `×`). Mutating `tokens` fires the
+    /// `onChange` re-run in `LibrarySearchable`.
+    func removeToken(_ token: SearchToken) {
+        tokens.removeAll { $0.id == token.id }
+    }
+
+    /// Promote a suggested token into the selected set and clear the matched text —
+    /// the same move the native token field made when a suggestion was picked.
+    func selectSuggestion(_ token: SearchToken) {
+        guard !tokens.contains(where: { $0.id == token.id }) else { return }
+        tokens.append(token)
+        text = ""
+        clearSuggestions()
+    }
+
     // MARK: queries
 
     /// Re-run the active query (e.g. after a triage delete removes a hit from the
@@ -357,11 +390,19 @@ final class LibrarySearchModel: ObservableObject {
 
 // MARK: - Searchable container
 
-/// Wraps a screen's `content`, adds the NATIVE `.searchable` token field (in the window
-/// toolbar), and swaps in the results grid (with an asset-scoped detail overlay) while a
-/// search is active. Native means Esc-to-clear, the focus ring, and the cancel button
-/// all come for free. The keyword / meaning mode toggle is a custom control at the top
-/// of the results grid (not a native scope bar) — see `LibrarySearchResults.modePicker`.
+/// Fixed compact width shared by the toolbar field and the floating suggestion
+/// dropdown, so the dropdown lines up under the field at the panel's trailing edge.
+private let searchFieldWidth: CGFloat = 360
+
+/// Wraps a screen's `content`, puts the custom `SearchToolbarField` in the WINDOW
+/// TOOLBAR (trailing), and swaps in the results grid (with an asset-scoped detail
+/// overlay) while a search is active. The field replaces the old native `.searchable`
+/// so the search chrome matches the app (the `field` capsule of the selection action
+/// bar); Esc-to-clear, ⌘F focus, removable token chips, and the suggestion dropdown are
+/// rebuilt on the model. The toolbar clips an attached overlay, so the suggestion
+/// dropdown floats at the top of the panel (trailing, under the field) instead. The
+/// keyword / meaning mode toggle stays a control at the top of the results grid — see
+/// `LibrarySearchResults.modePicker`.
 struct LibrarySearchable<Content: View>: View {
     @ObservedObject var model: IngestionModel
     /// The global grid density notch — search results honour the SAME persisted
@@ -375,7 +416,7 @@ struct LibrarySearchable<Content: View>: View {
     @State private var detail: AssetDetail?
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .topTrailing) {
             Group {
                 if search.isActive {
                     LibrarySearchResults(model: model, search: search, gridPrefs: gridPrefs) { asset in
@@ -386,24 +427,48 @@ struct LibrarySearchable<Content: View>: View {
                     content()
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             // URL-bar behaviour: clicking anywhere in the content — including empty
-            // space — blurs the native search field. Guarded to `NSText` (the field
-            // editor) so it only fires while a text field is being edited, never
-            // interfering with grid selection / keyboard nav.
+            // space — blurs the search field (guarded to `NSText`, the SwiftUI field
+            // editor, so it never interferes with grid selection / keyboard nav) and
+            // dismisses the suggestion dropdown.
             .simultaneousGesture(TapGesture().onEnded {
                 if let window = NSApp.keyWindow, window.firstResponder is NSText {
                     window.makeFirstResponder(nil)
                 }
+                search.clearSuggestions()
             })
+
+            // The toolbar clips an overlay hung off the field, so the suggestion list
+            // floats here — top of the panel, trailing edge, roughly under the field.
+            // Alignment is approximate; live typing keeps working (unlike a popover,
+            // which would steal first responder from the field).
+            if !search.suggestions.isEmpty {
+                SearchSuggestionsDropdown(search: search)
+                    .frame(width: searchFieldWidth)
+                    .padding(.trailing, Theme.Spacing.md)
+                    .padding(.top, Theme.Spacing.sm)
+                    .zIndex(2)
+            }
 
             if let services = model.services, detail != nil {
                 SearchDetailOverlay(
                     services: services, model: model,
                     results: search.results, current: $detail)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(.opacity)
             }
         }
-        .modifier(SearchFieldModifier(search: search))
+        .toolbar {
+            // A flexible spacer ahead of the field pushes it to the trailing edge —
+            // a lone `.primaryAction` item otherwise sits at the leading edge, right
+            // by the traffic lights.
+            ToolbarSpacer(.flexible)
+            ToolbarItem(placement: .primaryAction) {
+                SearchToolbarField(search: search)
+                    .frame(width: searchFieldWidth)
+            }
+        }
         .task(id: model.isReady) {
             search.configure(services: model.services, collectionID: collectionID)
         }
@@ -414,29 +479,131 @@ struct LibrarySearchable<Content: View>: View {
     }
 }
 
-/// Applies the native `.searchable` token field. No scope bar — on a Collection the
-/// search stays scoped to that collection (the model's default); elsewhere it's global.
-/// The keyword / meaning mode toggle (047 · 3a) is NOT a native `.searchScopes` bar —
-/// it's a custom segmented control at the top of the results panel (`LibrarySearchResults`).
-private struct SearchFieldModifier: ViewModifier {
+// MARK: - Custom search field (app chrome, in the window toolbar)
+
+/// The search input: a leading magnifying glass, inline removable token chips, the
+/// free-text field, and a trailing clear `×`. It draws NO background of its own — the
+/// macOS 26 toolbar item supplies the outer glass rect it sits in. Hosted as a
+/// `ToolbarItem` (trailing) by `LibrarySearchable`; the matching suggestion dropdown is
+/// a sibling (`SearchSuggestionsDropdown`) floated in the panel, since the toolbar would
+/// clip an attached overlay. Esc clears the query; ⌘F focuses the field.
+private struct SearchToolbarField: View {
+    @ObservedObject var search: LibrarySearchModel
+    @FocusState private var focused: Bool
+
+    private static let prompt = "Search"
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.Colors.inkSecondary)
+
+            ForEach(search.tokens) { token in
+                SearchTokenChip(token: token) { search.removeToken(token) }
+            }
+
+            TextField(Self.prompt, text: $search.text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.Colors.inkPrimary)
+                .focused($focused)
+                .onKeyPress(.escape) {
+                    guard search.isActive else { return .ignored }
+                    search.clearQuery()
+                    return .handled
+                }
+
+            if search.isActive {
+                Button {
+                    search.clearQuery()
+                    focused = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.Colors.inkSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.md)
+        .padding(.vertical, 3)
+        // No own capsule fill / border — the macOS 26 toolbar item already supplies the
+        // outer glass rect the field sits in; a second background just double-stacked.
+        // ⌘F focuses the field (parity with the old native search shortcut).
+        .background {
+            Button("") { focused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// The leading glyph for a token / suggestion — an agent-applied tag gets the
+    /// sparkles, a manual tag the tag glyph, a collection the folder.
+    static func icon(for token: SearchToken) -> String {
+        switch token {
+        case .tag(let tag): return tag.source == .agent ? "sparkles" : "tag"
+        case .collection: return "folder"
+        }
+    }
+}
+
+// MARK: - Suggestion dropdown
+
+/// The prefix-matched tag / collection suggestions, in the shared design-system card +
+/// rows. Picking one promotes it to a token and clears the matched text. Floated in the
+/// panel (not off the toolbar field) so the toolbar can't clip it.
+private struct SearchSuggestionsDropdown: View {
     @ObservedObject var search: LibrarySearchModel
 
-    func body(content: Content) -> some View {
-        content
-            .searchable(
-                text: $search.text,
-                tokens: $search.tokens,
-                suggestedTokens: Binding(get: { search.suggestions }, set: { _ in }),
-                prompt: "Search title, name, note, text, or tag: / collection"
-            ) { token in
-                switch token {
-                case .tag(let tag):
-                    Label(tag.name,
-                          systemImage: tag.source == .agent ? "sparkles" : "tag")
-                case .collection(let collection):
-                    Label(collection.name, systemImage: "folder")
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(search.suggestions) { token in
+                SelectionMenuRow(token.displayName, systemImage: SearchToolbarField.icon(for: token)) {
+                    search.selectSuggestion(token)
                 }
             }
+        }
+        .padding(Theme.Spacing.xs)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .fill(Theme.Colors.surface))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .strokeBorder(Theme.Colors.hairline))
+        .elevation(.hover)
+    }
+}
+
+/// One selected filter as a removable pill inside the search field — the `selection`
+/// fill (a step up from the field it sits in), ink label, and a trailing `×`.
+private struct SearchTokenChip: View {
+    let token: SearchToken
+    var onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            Image(systemName: SearchToolbarField.icon(for: token))
+                .font(.system(size: 10, weight: .medium))
+            Text(token.displayName)
+                .font(.system(size: 12))
+                .lineLimit(1)
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(Theme.Colors.inkSecondary)
+            }
+            .buttonStyle(.plain)
+            .help("Remove filter")
+        }
+        .foregroundStyle(Theme.Colors.inkPrimary)
+        .padding(.leading, Theme.Spacing.sm)
+        .padding(.trailing, 5)
+        .padding(.vertical, 3)
+        .background(Theme.Colors.selection, in: Capsule())
     }
 }
 
@@ -525,18 +692,12 @@ private struct LibrarySearchResults: View {
     /// The keyword / meaning mode toggle (047 · 3a · 10A), relocated out of the native
     /// `.searchScopes` bar to the top of the results panel: `.keyword` runs FTS
     /// prefix / substring / relevance, `.meaning` embeds the text and ranks by cosine
-    /// similarity. Leading-aligned and intrinsically sized so it reads as a control,
-    /// not a full-width bar. `search.mode`'s `onChange` (in `LibrarySearchable`) re-runs.
+    /// similarity. Trailing-aligned and styled with the app chrome (`SearchModeToggle`),
+    /// so it reads as part of the design system rather than a stock segmented control —
+    /// the result count now takes the leading slot. `search.mode`'s `onChange` (in
+    /// `LibrarySearchable`) re-runs.
     private var modePicker: some View {
         HStack {
-            Picker("Search mode", selection: $search.mode) {
-                Text("Keyword").tag(SearchMode.keyword)
-                Text("Meaning").tag(SearchMode.meaning)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            Spacer(minLength: 0)
             // The result count, styled like every other page's "N items" subtitle
             // so search reads as another counted surface.
             if !search.results.isEmpty {
@@ -544,9 +705,11 @@ private struct LibrarySearchResults: View {
                     .font(.callout)
                     .foregroundStyle(Theme.Colors.inkSecondary)
             }
+            Spacer(minLength: 0)
+            SearchModeToggle(mode: $search.mode)
         }
-        // Share the collection grid's 24pt content margin so the mode toggle's left
-        // edge aligns with the grid below it.
+        // Share the collection grid's 24pt content margin so the toggle's right edge
+        // and the count's left edge align with the grid below.
         .padding(.horizontal, Theme.Spacing.xl)
         .padding(.top, Theme.Spacing.md)
         .padding(.bottom, Theme.Spacing.xs)
@@ -713,6 +876,43 @@ private struct LibrarySearchResults: View {
             }
         }
         .selectionBarChrome()
+    }
+}
+
+// MARK: - Search mode toggle (app-chrome segmented control)
+
+/// The keyword / meaning switch, styled to match the app chrome instead of the stock
+/// macOS `.segmented` picker: a `field` capsule holding two pill segments, the active
+/// one raised to `selection` with `inkPrimary` text — the same monochrome language as
+/// the selection action bar (`.selectionBarChrome()`), so the search surface reads as
+/// one design system. Intrinsically sized so it hugs its two labels.
+private struct SearchModeToggle: View {
+    @Binding var mode: SearchMode
+
+    var body: some View {
+        HStack(spacing: 2) {
+            segment("Keyword", value: .keyword)
+            segment("Meaning", value: .meaning)
+        }
+        .padding(2)
+        .background(Theme.Colors.field, in: Capsule())
+        .overlay(Capsule().strokeBorder(Theme.Colors.hairline, lineWidth: 0.5))
+        .animation(Theme.Motion.gentle, value: mode)
+    }
+
+    private func segment(_ title: String, value: SearchMode) -> some View {
+        let isSelected = mode == value
+        return Button { mode = value } label: {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(isSelected ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(isSelected ? Theme.Colors.selection : .clear))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(value == .keyword ? "Match keywords (title, name, note, text)" : "Match meaning (semantic similarity)")
     }
 }
 
