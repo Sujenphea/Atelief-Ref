@@ -15,6 +15,7 @@
 
 import AppKit
 import AtelierCore
+import AtelierIngestion
 import Combine
 import os
 import SwiftUI
@@ -68,6 +69,15 @@ enum SearchScope: Hashable {
     case all
 }
 
+/// How the free text is matched (047 · 3a · 10A). `.keyword` is the FTS keyword
+/// backbone (prefix / substring / relevance); `.meaning` embeds the text and
+/// ranks by semantic cosine similarity. Structured tag / collection scope applies
+/// in BOTH modes; only the free-text ranking differs.
+enum SearchMode: Hashable {
+    case keyword
+    case meaning
+}
+
 // MARK: - Model
 
 @MainActor
@@ -78,6 +88,8 @@ final class LibrarySearchModel: ObservableObject {
     @Published var tokens: [SearchToken] = []
     /// Collection-screen scope. Defaults per screen in `configure`.
     @Published var scope: SearchScope = .all
+    /// Free-text matching mode (047 · 3a): keyword FTS vs semantic meaning.
+    @Published var mode: SearchMode = .keyword
     /// Prefix-matched tag / collection suggestions for the current `text`.
     @Published private(set) var suggestions: [SearchToken] = []
     /// The current result set (bounded, newest-first).
@@ -107,6 +119,16 @@ final class LibrarySearchModel: ObservableObject {
     /// The suggestion fetcher — the sibling seam. `includeCollections` is false
     /// while a `tag:` directive narrows suggestions to tags only (17A).
     var fetchSuggestions: (_ prefix: String, _ includeCollections: Bool) async throws -> [SearchToken] = { _, _ in [] }
+    /// The SEMANTIC query executor (047 · 3a) — the `.meaning`-mode seam. Defaults
+    /// to the live embed-then-kNN call; tests replace it to assert routing without
+    /// the model / a database.
+    var runSemanticQuery: (LibrarySearchQuery) async throws -> [AssetDetail] = { _ in [] }
+
+    /// The on-device sentence embedder for `.meaning` queries. Lazy so the NL model
+    /// only loads once a semantic search is actually run (never in `.keyword` use
+    /// or tests, which inject `runSemanticQuery`). `@unchecked Sendable`, so it's
+    /// safe to hand to a detached task for off-main embedding.
+    private lazy var embedder = NLSentenceEmbedder()
 
     init() {
         // Wire the seams to the live services by default (self is needed, so this
@@ -116,6 +138,9 @@ final class LibrarySearchModel: ObservableObject {
         }
         fetchSuggestions = { [weak self] prefix, includeCollections in
             try await self?.liveSuggestions(prefix: prefix, includeCollections: includeCollections) ?? []
+        }
+        runSemanticQuery = { [weak self] query in
+            try await self?.liveSemanticQuery(query) ?? []
         }
     }
 
@@ -157,6 +182,9 @@ final class LibrarySearchModel: ObservableObject {
         runSearch()
     }
 
+    /// The keyword/meaning mode changed: re-run (suggestions are keyword-only).
+    func modeChanged() { runSearch() }
+
     /// Reset everything (e.g. when a screen disappears).
     func reset() {
         queryTask?.cancel(); suggestTask?.cancel()
@@ -184,15 +212,29 @@ final class LibrarySearchModel: ObservableObject {
         var scopeIDs = selectedCollectionIDs
         if let collectionID, scope == .thisCollection { scopeIDs.append(collectionID) }
         scopeIDs = Array(NSOrderedSet(array: scopeIDs).array as? [UUID] ?? scopeIDs)
-        let query = LibrarySearchQuery(
-            text: fts,
-            tagIDs: selectedTagIDs,
-            tagNameContains: tagNeedle,
-            collectionIDs: scopeIDs,
-            // Rank by relevance while there's text to rank; a tokens-only /
-            // `tag:`-only query has nothing to score, so keep the recency order.
-            sort: hasFTS ? .relevance : .newest)
-        let run = runQuery
+
+        // `.meaning` mode ranks the WHOLE raw text by semantic similarity (no `tag:`
+        // parsing, no prefix/relevance sort — the embedder reads the concept), with
+        // the same structured tag / collection scope. It needs text to embed; a
+        // tokens-only query falls back to the keyword filter path.
+        let query: LibrarySearchQuery
+        let run: (LibrarySearchQuery) async throws -> [AssetDetail]
+        if mode == .meaning, hasFTS {
+            query = LibrarySearchQuery(
+                text: text, tagIDs: selectedTagIDs, tagNameContains: nil,
+                collectionIDs: scopeIDs, sort: .relevance)
+            run = runSemanticQuery
+        } else {
+            query = LibrarySearchQuery(
+                text: fts,
+                tagIDs: selectedTagIDs,
+                tagNameContains: tagNeedle,
+                collectionIDs: scopeIDs,
+                // Rank by relevance while there's text to rank; a tokens-only /
+                // `tag:`-only query has nothing to score, so keep the recency order.
+                sort: hasFTS ? .relevance : .newest)
+            run = runQuery
+        }
         isRunning = true
         queryTask = Task {
             try? await Task.sleep(for: .milliseconds(220))
@@ -262,6 +304,25 @@ final class LibrarySearchModel: ObservableObject {
             tagNameContains: query.tagNameContains,
             collectionIDs: query.collectionIDs,
             sort: query.sort,
+            limit: 500)
+    }
+
+    /// The live SEMANTIC query (047 · 3a): embed the text off-main, then rank by
+    /// cosine kNN through the service, honouring the structured tag / collection
+    /// scope. An unavailable model or empty vector yields no results (the mode is
+    /// simply inert), never an error.
+    private func liveSemanticQuery(_ query: LibrarySearchQuery) async throws -> [AssetDetail] {
+        guard let services else { return [] }
+        let text = query.text
+        let embedder = self.embedder
+        let vector = await Task.detached(priority: .userInitiated) { embedder.embed(text) }.value
+        guard let vector else { return [] }
+        return try await services.semanticSearchAssets(
+            queryVector: vector,
+            modelVersion: NLSentenceEmbedder.currentModelVersion,
+            tagIDs: query.tagIDs,
+            tagMatch: .all,
+            collectionIDs: query.collectionIDs,
             limit: 500)
     }
 
@@ -344,6 +405,7 @@ struct LibrarySearchable<Content: View>: View {
         }
         .onChange(of: search.text) { _, _ in search.textChanged() }
         .onChange(of: search.tokens) { _, _ in search.tokensChanged() }
+        .onChange(of: search.mode) { _, _ in search.modeChanged() }
         .onChange(of: search.scope) { _, _ in search.configure(services: model.services, collectionID: collectionID) }
     }
 }
@@ -368,6 +430,12 @@ private struct SearchFieldModifier: ViewModifier {
                 case .collection(let collection):
                     Label(collection.name, systemImage: "folder")
                 }
+            }
+            // Native segmented toggle under the field (047 · 3a · 10A): keyword FTS
+            // vs semantic meaning. Appears while the search field is active.
+            .searchScopes($search.mode) {
+                Text("Keyword").tag(SearchMode.keyword)
+                Text("Meaning").tag(SearchMode.meaning)
             }
     }
 }

@@ -192,6 +192,9 @@ final class IngestionModel: ObservableObject {
     private var coordinator: IngestCoordinator?
     private(set) var services: AppServices?
     private var captureServer: CaptureServer?
+    /// The idle on-device analysis + embedding backfill loop (047 · 3a). Held so it
+    /// can be cancelled; runs at `.background` for the app's lifetime.
+    private var analysisTask: Task<Void, Never>?
     /// Library snapshot orchestration (008 H3): daily-on-launch, pre-destructive,
     /// manual, and retention. `nil` until `bootstrap()` opens the library.
     private(set) var snapshotManager: SnapshotManager?
@@ -481,6 +484,14 @@ final class IngestionModel: ObservableObject {
             // delete-undo). Off-main, after the UI is up; the undo history is empty
             // at launch, so any unreferenced blob is unreachable.
             runOrphanBlobGC(services: services, store: store)
+
+            // Wire the (previously dormant) on-device analysis pipeline: an idle
+            // .background loop that drains OCR/colors/phash then the semantic
+            // embeddings, resumable across launches (047 · 3a · 6A).
+            let analysisCoordinator = AnalysisCoordinator(services: services, store: store)
+            analysisTask = Task.detached(priority: .background) {
+                await analysisCoordinator.run()
+            }
         } catch {
             self.lastError = "Failed to open library: \(error)"
             self.status = "Failed to open library."

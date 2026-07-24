@@ -104,6 +104,7 @@ struct LibrarySearchModelTests {
     /// Records what the model asked its injected seams to do.
     @MainActor private final class Recorder {
         var queries: [LibrarySearchQuery] = []
+        var semanticQueries: [LibrarySearchQuery] = []
         var suggestCalls: [(prefix: String, includeCollections: Bool)] = []
     }
 
@@ -230,6 +231,57 @@ struct LibrarySearchModelTests {
         m.text = "woo"; m.textChanged()
         await poll { recorder.suggestCalls.contains { $0.includeCollections } }
         #expect(recorder.suggestCalls.last?.includeCollections == true)
+    }
+
+    // MARK: - Semantic (meaning) mode (047 · 3a · 10A)
+
+    @Test("meaning mode with text routes to the semantic seam, carrying scope")
+    func meaningModeRoutesToSemantic() async {
+        let recorder = Recorder()
+        let m = LibrarySearchModel()
+        m.runQuery = { q in recorder.queries.append(q); return [] }
+        m.runSemanticQuery = { q in recorder.semanticQueries.append(q); return [] }
+        let wood = token("wood")
+        m.tokens = [wood]
+        m.mode = .meaning
+        m.text = "cozy reading nook"
+        m.textChanged()
+        await poll { !recorder.semanticQueries.isEmpty }
+
+        // Semantic seam ran; keyword seam did not.
+        let q = try? #require(recorder.semanticQueries.last)
+        #expect(q?.text == "cozy reading nook")   // raw text, no tag: parsing
+        #expect(q?.tagIDs == [wood.id])            // structured scope still applies
+        #expect(recorder.queries.isEmpty)
+    }
+
+    @Test("meaning mode with NO free text falls back to the keyword filter path")
+    func meaningModeNoTextFallsBack() async {
+        let recorder = Recorder()
+        let m = LibrarySearchModel()
+        m.runQuery = { q in recorder.queries.append(q); return [] }
+        m.runSemanticQuery = { q in recorder.semanticQueries.append(q); return [] }
+        m.mode = .meaning
+        m.tokens = [token("wood")]   // tokens only, nothing to embed
+        m.tokensChanged()
+        await poll { !recorder.queries.isEmpty }
+        #expect(recorder.semanticQueries.isEmpty)   // no text → not semantic
+    }
+
+    @Test("switching to meaning mode re-runs the active query semantically")
+    func switchingModeReruns() async {
+        let recorder = Recorder()
+        let m = LibrarySearchModel()
+        m.runQuery = { q in recorder.queries.append(q); return [] }
+        m.runSemanticQuery = { q in recorder.semanticQueries.append(q); return [] }
+        m.text = "brass"
+        m.textChanged()
+        await poll { !recorder.queries.isEmpty }   // keyword first
+
+        m.mode = .meaning
+        m.modeChanged()
+        await poll { !recorder.semanticQueries.isEmpty }
+        #expect(recorder.semanticQueries.last?.text == "brass")
     }
 
     @Test("an already-selected token is pruned from suggestions")
