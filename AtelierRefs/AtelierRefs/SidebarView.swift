@@ -49,6 +49,14 @@ struct SidebarView: View {
             if nav.sidebarCollapsed { rail } else { full }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        // The collapse toggle is hoisted OUT of both `rail` and `full` into ONE
+        // persistent overlay pinned to the shared 60pt icon column (width 60, centered
+        // → x-center 30 in BOTH states). A single view instance that never swaps or
+        // shifts, so toggling collapsed⇆expanded can't wiggle its x offset.
+        .overlay(alignment: .topLeading) {
+            railIcon { collapseToggle }
+                .frame(width: 60, height: trafficLightInset)
+        }
         // Redundant with bootstrap's own `refreshSpaces` (which owns the load —
         // this can run first and no-op while `services` is still nil); kept so a
         // re-mounted sidebar refreshes.
@@ -93,12 +101,9 @@ struct SidebarView: View {
 
     private var full: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Traffic-light space + the collapse toggle, trailing.
-            HStack {
-                collapseToggle
-            }
-            .frame(height: trafficLightInset, alignment: .center)
-            .padding(.horizontal, Theme.Spacing.lg)
+            // Reserve the traffic-light band; the collapse toggle itself is drawn by the
+            // shared overlay in `body` (hoisted so its x can't wiggle on toggle).
+            Color.clear.frame(height: trafficLightInset)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
@@ -344,8 +349,9 @@ struct SidebarView: View {
         // width (the sort `Menu` in particular carries its own chrome). Each is
         // pinned to a fixed square so their centers coincide.
         VStack(spacing: 0) {
-            railIcon { collapseToggle }
-                .frame(height: trafficLightInset)
+            // Reserve the traffic-light band; the collapse toggle itself is drawn by the
+            // shared overlay in `body` (hoisted so its x can't wiggle on toggle).
+            Color.clear.frame(height: trafficLightInset)
 
             Spacer()
 
