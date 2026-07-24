@@ -25,8 +25,15 @@ final class SpaceModel: ObservableObject {
     @Published private(set) var space: Space?
     /// The space's rows (asset + element), z-ordered.
     @Published private(set) var items: [SpaceItemDetail] = []
-    /// The selected row's space_item id, or `nil`.
-    @Published private(set) var selectedItemID: UUID?
+    /// The selected rows' space_item ids (049 · D1 — multi-select). Empty when
+    /// nothing is selected. The canvas engine owns the interaction-time set in
+    /// tile-index space; this is its persisted-identity mirror (delete / z-order /
+    /// action-bar gating).
+    @Published private(set) var selectedItemIDs: Set<UUID> = []
+    /// Single-selection convenience: the lone selected id, or `nil` when the
+    /// selection is empty OR holds more than one row. Derived, never stored — no
+    /// parallel state to drift (the inspector + single-item paths read this).
+    var selectedItemID: UUID? { selectedItemIDs.count == 1 ? selectedItemIDs.first : nil }
     /// Bumped whenever ``items`` change, so `SpaceView` rebuilds the canvas host.
     @Published private(set) var contentVersion = 0
     /// The last surfaced error, or `nil`.
@@ -124,13 +131,25 @@ final class SpaceModel: ObservableObject {
 
     // MARK: - Write primitives (used by ops + their inverses)
 
-    private func persistPlacement(_ id: UUID, _ p: Placement, reload: Bool) async {
+    /// Persist a batch of placements in ONE transaction (049 · D13); optionally
+    /// reload after. The live-drag flush passes `reload: false` (flicker-free — the
+    /// tiles already moved in memory); undo/redo pass `reload: true` to resync
+    /// ``items``. An empty batch is a no-op.
+    private func persistPlacements(_ placements: [(id: UUID, p: Placement)], reload: Bool) async {
+        guard !placements.isEmpty else { return }
         do {
-            try await services.setSpaceItemPlacement(itemID: id, x: p.x, y: p.y, w: p.w, h: p.h, z: p.z)
+            try await services.setSpaceItemPlacements(placements.map {
+                SpaceItemPlacement(itemID: $0.id, x: $0.p.x, y: $0.p.y, w: $0.p.w, h: $0.p.h, z: $0.p.z)
+            })
             if reload { await load() }
         } catch {
             lastError = Self.message(for: error)
         }
+    }
+
+    /// Single-placement convenience over ``persistPlacements(_:reload:)`` (DRY).
+    private func persistPlacement(_ id: UUID, _ p: Placement, reload: Bool) async {
+        await persistPlacements([(id, p)], reload: reload)
     }
 
     private func performRestyle(_ id: UUID, _ style: ElementStyle) async {
@@ -171,9 +190,11 @@ final class SpaceModel: ObservableObject {
             guard id == loadID else { return }
             self.space = space
             self.items = rows
-            if let selectedItemID, !rows.contains(where: { $0.item.id == selectedItemID }) {
-                self.selectedItemID = nil
-            }
+            // Prune the selection to ids that survived the reload (049 · D7) — the
+            // set peer of the old stale-single guard.
+            let present = Set(rows.map { $0.item.id })
+            let pruned = selectedItemIDs.intersection(present)
+            if pruned != selectedItemIDs { selectedItemIDs = pruned }
             contentVersion &+= 1
         } catch {
             guard id == loadID else { return }
@@ -195,27 +216,33 @@ final class SpaceModel: ObservableObject {
         return content
     }
 
-    /// The tile id matching the shared selection, so the canvas highlights the
-    /// same row the model has selected (or nothing when it isn't drawable).
-    func selectedTileID(in content: SpaceContent) -> Int? {
-        guard let selectedItemID else { return nil }
-        return content.tileID(forSpaceItemID: selectedItemID)
+    /// The tile ids matching the shared selection, so the canvas highlights the
+    /// same rows the model has selected (drawable ids only).
+    func selectedTileIDs(in content: SpaceContent) -> Set<Int> {
+        Set(selectedItemIDs.compactMap { content.tileID(forSpaceItemID: $0) })
     }
 
     // MARK: - Selection
 
-    /// Select the row a tile draws (or clear with a nil tile id).
+    /// Replace the selection with the rows the given tiles draw (049 · D1). An empty
+    /// set clears. Maps tile ids (canvas indices) → space_item ids, dropping any
+    /// that can't be resolved.
+    func select(tileIDs: Set<Int>, in content: SpaceContent) {
+        selectedItemIDs = Set(tileIDs.compactMap { content.spaceItemID(forTileID: $0) })
+    }
+
+    /// Single-tile convenience (nil clears) over ``select(tileIDs:in:)``.
     func select(tileID: Int?, in content: SpaceContent) {
-        selectedItemID = tileID.flatMap { content.spaceItemID(forTileID: $0) }
+        select(tileIDs: tileID.map { [$0] } ?? [], in: content)
     }
 
     // MARK: - Drag-to-place
 
     /// Move a tile to `worldOrigin` and PERSIST the placement (keeps w/h/z). The
-    /// in-memory update runs first so the tile stays put (no reload → no flicker);
-    /// the write is serialized and an undo to the old placement is registered.
-    /// During a frame group-move the host calls this once per carried tile, all
-    /// within one event, so `groupsByEvent` folds them into a single undo.
+    /// in-memory update runs first so the tile stays put (no reload → no flicker).
+    /// The host calls this once per carried tile within ONE synchronous event — a
+    /// frame + its group, OR a multi-select drag — so the whole burst is buffered
+    /// and flushed as a SINGLE batched write + a SINGLE undo step (049 · D13 / D7).
     func moveTile(tileID: Int, to worldOrigin: CGPoint, in content: SpaceContent) {
         guard content.tiles.indices.contains(tileID),
               let itemID = content.spaceItemID(forTileID: tileID) else { return }
@@ -224,39 +251,27 @@ final class SpaceModel: ObservableObject {
         let new = Placement(x: Double(worldOrigin.x), y: Double(worldOrigin.y), w: tile.w, h: tile.h, z: tile.z)
         guard old != new else { return }
         content.setPlacement(tileID: tileID, x: new.x, y: new.y)
-        enqueue { await self.persistPlacement(itemID, new, reload: false) }
         // Buffer this move; the first of a synchronous burst schedules the flush
-        // that folds the whole burst (a frame + its carried tiles) into ONE undo.
+        // that writes the whole burst as one transaction and folds it into ONE undo.
         let firstOfBurst = pendingMoves.isEmpty
         pendingMoves.append((itemID, old, new))
         if firstOfBurst {
-            enqueue { self.flushMoveUndo() }
+            enqueue { await self.flushMoves() }
         }
     }
 
-    /// Register a single undo for the buffered move burst (runs on the serial
-    /// queue AFTER the synchronous `moveTile` calls, so the buffer is complete).
-    private func flushMoveUndo() {
+    /// Write the buffered move burst as a single batched placement write, then
+    /// register ONE undo for it. Runs on the serial queue AFTER the synchronous
+    /// `moveTile` calls, so the buffer is complete.
+    private func flushMoves() async {
         let moves = pendingMoves
         pendingMoves = []
         guard !moves.isEmpty else { return }
+        await persistPlacements(moves.map { (id: $0.id, p: $0.new) }, reload: false)
         let name = moves.count > 1 ? "Move Group" : "Move"
         registerReversible(name,
-            primary: { self.enqueue { await self.applyMoves(moves, forward: true) } },
-            inverse: { self.enqueue { await self.applyMoves(moves, forward: false) } })
-    }
-
-    private func applyMoves(_ moves: [(id: UUID, old: Placement, new: Placement)], forward: Bool) async {
-        for move in moves {
-            let target = forward ? move.new : move.old
-            do {
-                try await services.setSpaceItemPlacement(
-                    itemID: move.id, x: target.x, y: target.y, w: target.w, h: target.h, z: target.z)
-            } catch {
-                lastError = Self.message(for: error)
-            }
-        }
-        await load()
+            primary: { self.enqueue { await self.persistPlacements(moves.map { (id: $0.id, p: $0.new) }, reload: true) } },
+            inverse: { self.enqueue { await self.persistPlacements(moves.map { (id: $0.id, p: $0.old) }, reload: true) } })
     }
 
     // MARK: - Restack (z-order)
@@ -300,6 +315,47 @@ final class SpaceModel: ObservableObject {
             inverse: { self.enqueue { await self.persistPlacement(itemID, old, reload: true) } })
     }
 
+    /// Bring the whole SELECTION to the front (or send it to the back), preserving
+    /// the selected tiles' relative stacking order, as ONE batched write + ONE undo
+    /// step (049 · D7). The block is lifted just past the extreme of the
+    /// NON-selected tiles, so a selection already sitting at that edge is a true
+    /// no-op (no z inflation on repeated clicks). No-op when nothing is selected or
+    /// everything is selected (there is no "other" to sit above/below).
+    func bringSelectionToFront() { restackSelection(toFront: true) }
+    func sendSelectionToBack() { restackSelection(toFront: false) }
+
+    private func restackSelection(toFront: Bool) {
+        let ids = selectedItemIDs
+        guard !ids.isEmpty else { return }
+        let content = self.content()
+        // Selected rows with their LIVE placement (a drag may not have reloaded),
+        // ordered by current z so relative stacking is preserved as the block moves.
+        let selected = items
+            .filter { ids.contains($0.item.id) }
+            .map { (id: $0.item.id, p: livePlacement($0.item.id, in: content)) }
+            .sorted { $0.p.z < $1.p.z }
+        // The extreme of the tiles NOT being restacked; nothing to sit relative to
+        // when the whole board is selected.
+        let othersZ = items.filter { !ids.contains($0.item.id) }.map(\.item.z)
+        guard !selected.isEmpty, let edge = (toFront ? othersZ.max() : othersZ.min()) else { return }
+
+        var forward: [(id: UUID, p: Placement)] = []
+        var backward: [(id: UUID, p: Placement)] = []
+        for (offset, entry) in selected.enumerated() {
+            // Consecutive z's past the edge, preserving the block's internal order.
+            let newZ = toFront ? edge + 1 + offset : edge - selected.count + offset
+            forward.append((id: entry.id, p: Placement(
+                x: entry.p.x, y: entry.p.y, w: entry.p.w, h: entry.p.h, z: newZ)))
+            backward.append((id: entry.id, p: entry.p))
+        }
+        // Already exactly in place → no write, no undo entry.
+        guard zip(forward, backward).contains(where: { $0.0.p.z != $0.1.p.z }) else { return }
+        enqueue { await self.persistPlacements(forward, reload: true) }
+        registerReversible(toFront ? "Bring to Front" : "Send to Back",
+            primary: { self.enqueue { await self.persistPlacements(forward, reload: true) } },
+            inverse: { self.enqueue { await self.persistPlacements(backward, reload: true) } })
+    }
+
     /// The freshest placement for `itemID`: the in-memory tile (which carries a
     /// not-yet-reloaded drag position) when present, else the stored row.
     private func livePlacement(_ itemID: UUID, in content: SpaceContent) -> Placement {
@@ -314,30 +370,43 @@ final class SpaceModel: ObservableObject {
 
     // MARK: - Remove
 
-    /// Remove a tile's row from the space (a placement, NOT the underlying
-    /// asset), then reload. No-op if the tile can't be resolved.
-    func removeTile(tileID: Int, in content: SpaceContent) {
-        guard let itemID = content.spaceItemID(forTileID: tileID) else { return }
-        removeItem(itemID)
+    /// Remove the rows the given tiles draw (a placement each, NEVER the asset) as
+    /// ONE batched undo step (049 · D7). No-op for tiles that can't be resolved.
+    func removeTiles(tileIDs: Set<Int>, in content: SpaceContent) {
+        removeItems(Set(tileIDs.compactMap { content.spaceItemID(forTileID: $0) }))
     }
 
-    /// Remove a space_item by id (a placement, never the asset), then reload.
-    /// Undoable — the removed row is captured and restored verbatim (stable id).
-    func removeItem(_ itemID: UUID) {
-        guard let detail = items.first(where: { $0.item.id == itemID }) else {
-            // Not in our current snapshot — remove without an undo record.
+    /// Single-tile convenience over ``removeTiles(tileIDs:in:)``.
+    func removeTile(tileID: Int, in content: SpaceContent) {
+        if let itemID = content.spaceItemID(forTileID: tileID) { removeItems([itemID]) }
+    }
+
+    /// Single-id convenience over ``removeItems(_:)``.
+    func removeItem(_ itemID: UUID) { removeItems([itemID]) }
+
+    /// Remove a batch of space_item rows by id (placements, never the assets) as ONE
+    /// undo step. Rows still in the current snapshot are captured and restored
+    /// verbatim on undo (stable ids); ids that already vanished are removed without
+    /// an undo record (idempotent). Drops the removed ids from the selection.
+    func removeItems(_ itemIDs: Set<UUID>) {
+        guard !itemIDs.isEmpty else { return }
+        selectedItemIDs.subtract(itemIDs)
+        let known = items.filter { itemIDs.contains($0.item.id) }.map(\.item)
+        let unknown = itemIDs.subtracting(known.map(\.id))
+
+        if !known.isEmpty {
+            enqueue { await self.performBatch(known, restore: false) }
+            registerReversible(known.count == 1 ? "Delete" : "Delete Items",
+                primary: { self.enqueue { await self.performBatch(known, restore: false) } },
+                inverse: { self.enqueue { await self.performBatch(known, restore: true) } })
+        }
+        for id in unknown {
+            // Not in our snapshot — remove without an undo record.
             enqueue {
-                do { try await self.services.removeSpaceItem(itemID: itemID); await self.load() }
+                do { try await self.services.removeSpaceItem(itemID: id); await self.load() }
                 catch { self.lastError = Self.message(for: error) }
             }
-            return
         }
-        let item = detail.item
-        if selectedItemID == itemID { selectedItemID = nil }
-        enqueue { await self.performBatch([item], restore: false) }
-        registerReversible("Delete",
-            primary: { self.enqueue { await self.performBatch([item], restore: false) } },
-            inverse: { self.enqueue { await self.performBatch([item], restore: true) } })
     }
 
     // MARK: - Add from Library
@@ -405,7 +474,7 @@ final class SpaceModel: ObservableObject {
                     to: self.spaceID, kind: kind, style: style,
                     x: Double(rect.minX), y: Double(rect.minY),
                     w: Double(rect.width), h: Double(rect.height), z: z)
-                self.selectedItemID = created.id
+                self.selectedItemIDs = [created.id] // select the new element
                 self.registerReversible(kind == .frame ? "Add Frame" : "Add Text",
                     primary: { self.enqueue { await self.performBatch([created], restore: true) } },
                     inverse: { self.enqueue { await self.performBatch([created], restore: false) } })

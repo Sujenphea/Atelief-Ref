@@ -128,7 +128,7 @@ struct SpaceView: View {
         ZStack {
             CanvasView(
                 provider: content, images: content,
-                selectedTileID: space.selectedTileID(in: content),
+                selectedTileIDs: space.selectedTileIDs(in: content),
                 tool: tool,
                 onActivateTile: { tileID in
                     if let url = content.videoURL(forTileID: tileID) {
@@ -143,16 +143,16 @@ struct SpaceView: View {
                         showEditor = true
                     }
                 },
-                onSelectTile: { tileID in
-                    space.select(tileID: tileID, in: content)
+                onSelectTiles: { tileIDs in
+                    space.select(tileIDs: tileIDs, in: content)
                 },
-                onRemoveTile: { tileID in
-                    space.removeTile(tileID: tileID, in: content)
+                onRemoveTiles: { tileIDs in
+                    space.removeTiles(tileIDs: tileIDs, in: content)
                 },
-                onDeleteTile: { tileID in
+                onDeleteTiles: { tileIDs in
                     // In a space, both "remove" and ⌫ drop the placement — the
                     // underlying asset (in its collections) is never touched here.
-                    space.removeTile(tileID: tileID, in: content)
+                    space.removeTiles(tileIDs: tileIDs, in: content)
                 },
                 onMoveTile: { tileID, worldOrigin in
                     space.moveTile(tileID: tileID, to: worldOrigin, in: content)
@@ -199,21 +199,22 @@ struct SpaceView: View {
                 .opacity(space.canRedo ? 1 : 0.35)
                 .keyboardShortcut("z", modifiers: [.command, .shift])
 
-            // Z-order for the selected tile (034 P2). Undoable via the space's own ⌘Z.
+            // Z-order for the selection (034 P2 · 049 D7 — the whole selection,
+            // relative order preserved). Undoable via the space's own ⌘Z.
             SelectionBarButton(
                 "square.3.layers.3d.top.filled",
-                help: "Bring the selected item to the front (⌘⇧])"
-            ) { if let id = space.selectedItemID { space.bringToFront(itemID: id) } }
-                .disabled(space.selectedItemID == nil)
-                .opacity(space.selectedItemID == nil ? 0.35 : 1)
+                help: "Bring the selected items to the front (⌘⇧])"
+            ) { space.bringSelectionToFront() }
+                .disabled(space.selectedItemIDs.isEmpty)
+                .opacity(space.selectedItemIDs.isEmpty ? 0.35 : 1)
                 .keyboardShortcut("]", modifiers: [.command, .shift])
 
             SelectionBarButton(
                 "square.3.layers.3d.bottom.filled",
-                help: "Send the selected item to the back (⌘⇧[)"
-            ) { if let id = space.selectedItemID { space.sendToBack(itemID: id) } }
-                .disabled(space.selectedItemID == nil)
-                .opacity(space.selectedItemID == nil ? 0.35 : 1)
+                help: "Send the selected items to the back (⌘⇧[)"
+            ) { space.sendSelectionToBack() }
+                .disabled(space.selectedItemIDs.isEmpty)
+                .opacity(space.selectedItemIDs.isEmpty ? 0.35 : 1)
                 .keyboardShortcut("[", modifiers: [.command, .shift])
         }
         .padding(.trailing, 10)

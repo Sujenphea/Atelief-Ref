@@ -47,13 +47,22 @@ public final class CanvasEngine {
     /// The ▶ glyph, rendered once and shared by every badge layer's `contents`.
     private lazy var playBadgeImage: CGImage? = Self.makePlayBadgeImage()
 
-    /// The currently selected tile's id, or `nil`. Drives the selection highlight
-    /// and is the target the host acts on for Delete / context-menu actions.
-    public private(set) var selectedTileID: Int?
-    /// The highlight border drawn around the selected tile. Created lazily on the
-    /// first selection (so a canvas that's never selected keeps its exact
-    /// sublayer count), then reused and hidden when there's nothing to highlight.
-    private var selectionLayer: CALayer?
+    /// The currently selected tiles' ids (049 · D1 — multi-select). Drives one
+    /// highlight layer per selected-and-visible tile and is the target set the host
+    /// acts on for Delete / context-menu actions. Empty when nothing is selected.
+    public private(set) var selectedTileIDs: Set<Int> = []
+
+    /// Single-selection convenience for the callers/tests that act on exactly one
+    /// tile: the lone selected id, or `nil` when the selection is empty OR holds
+    /// more than one tile. Derived, never stored — no parallel state to drift.
+    public var selectedTileID: Int? { selectedTileIDs.count == 1 ? selectedTileIDs.first : nil }
+
+    /// Highlight border layers keyed by tile id — siblings OUTSIDE the recycled
+    /// ``LayerPool`` (exactly like ``badges`` / ``textLayers``), created for a
+    /// visible-AND-selected tile and dropped when it is deselected or leaves the
+    /// viewport. Layer count is therefore bounded by the VIEWPORT, never the
+    /// selection size (049 · D16), so a select-all on a huge board stays cheap.
+    private var selectionLayers: [Int: CALayer] = [:]
 
     /// The tile currently being live-dragged, or `nil`. While set, its world
     /// frame is displayed offset by ``dragWorldOffset`` (in ``sync()`` and
@@ -135,25 +144,45 @@ public final class CanvasEngine {
         sync()
     }
 
-    /// Select a tile (or clear with `nil`) and redraw the highlight. Idempotent —
-    /// re-selecting the same tile is a no-op, so it's cheap to call on every click.
-    public func setSelected(_ id: Int?) {
-        guard selectedTileID != id else { return }
-        selectedTileID = id
+    /// Select exactly `ids` (or clear with an empty set) and redraw the highlights.
+    /// Idempotent — re-selecting the same set is a no-op, so it's cheap to call on
+    /// every click / marquee tick.
+    public func setSelected(_ ids: Set<Int>) {
+        guard selectedTileIDs != ids else { return }
+        selectedTileIDs = ids
         sync()
+    }
+
+    /// Single-selection convenience (clear with `nil`) over ``setSelected(_:)``.
+    public func setSelected(_ id: Int?) {
+        setSelected(id.map { [$0] } ?? [])
     }
 
     // MARK: Live drag (transient placement, no provider mutation)
 
-    /// Begin live-dragging `tileID`. Records the tile, snapshots the tiles it
-    /// carries along (``TileProvider/groupMembers(forDraggedTileID:)`` — a frame
-    /// moves its contents), and resets the offset; nothing moves until
-    /// ``updateDrag(byScreenDelta:)`` reports movement.
-    public func beginDrag(tileID: Int) {
+    /// Begin live-dragging `tileID`, carrying `alsoCarry` along with it (049 · D3 —
+    /// a multi-selection drag) UNIONED with the frame-as-group members the provider
+    /// reports (``TileProvider/groupMembers(forDraggedTileID:)`` — a frame moves its
+    /// contents). The carried set is a single de-duplicated ``Set`` (049 · D7 — a
+    /// selected tile that is ALSO inside a dragged frame is carried once, never
+    /// twice), and the primary tile is implicit (removed so it is never doubled).
+    /// Nothing moves until ``updateDrag(byScreenDelta:)`` reports movement.
+    public func beginDrag(tileID: Int, alsoCarry: Set<Int> = []) {
         dragTileID = tileID
-        dragGroupIDs = Set(provider.groupMembers(forDraggedTileID: tileID))
+        dragGroupIDs = Set(provider.groupMembers(forDraggedTileID: tileID)).union(alsoCarry)
         dragGroupIDs.remove(tileID) // the dragged tile is implicit, never doubled
         dragWorldOffset = .zero
+    }
+
+    /// Resolve a tile by id. ``Tile/id`` is the index into the provider's rows (its
+    /// documented contract), so this is O(1) — but guarded, and it falls back to a
+    /// scan if a provider ever violates the invariant, so correctness never depends
+    /// on it (049 · D15). Replaces the O(K·N) `first(where:)` scans in the drag-
+    /// origin paths, which run once per carried tile at drop.
+    private func tile(withID id: Int) -> Tile? {
+        let tiles = provider.tiles
+        if tiles.indices.contains(id), tiles[id].id == id { return tiles[id] }
+        return tiles.first { $0.id == id }
     }
 
     /// Update the live drag to a **cumulative** screen delta from the drag's
@@ -178,8 +207,7 @@ public final class CanvasEngine {
     /// the offset is cleared, so the tile stays exactly where it was dropped.
     /// Returns `nil` when nothing was being dragged.
     public func endDrag() -> (tileID: Int, worldOrigin: CGPoint)? {
-        guard let id = dragTileID,
-              let tile = provider.tiles.first(where: { $0.id == id }) else {
+        guard let id = dragTileID, let tile = tile(withID: id) else {
             dragTileID = nil
             dragGroupIDs = []
             dragWorldOffset = .zero
@@ -203,7 +231,7 @@ public final class CanvasEngine {
         var ids = [primary]
         ids.append(contentsOf: dragGroupIDs.sorted())
         return ids.compactMap { id in
-            guard let tile = provider.tiles.first(where: { $0.id == id }) else { return nil }
+            guard let tile = tile(withID: id) else { return nil }
             let origin = CGPoint(
                 x: tile.worldFrame.origin.x + dragWorldOffset.width,
                 y: tile.worldFrame.origin.y + dragWorldOffset.height)
@@ -279,11 +307,12 @@ public final class CanvasEngine {
             badges[id] = nil
             textLayers[id]?.removeFromSuperlayer()
             textLayers[id] = nil
+            selectionLayers[id]?.removeFromSuperlayer()
+            selectionLayers[id] = nil
         }
 
         // Place / update layers for visible tiles.
         var neededKeys = Set<ThumbnailCache.Key>()
-        var selectedFrame: CGRect?
         for tile in visible {
             let layer: CALayer
             if let existing = active[tile.id] {
@@ -298,7 +327,7 @@ public final class CanvasEngine {
             layer.frame = screenFrame
             layer.zPosition = CGFloat(tile.z)
             updateBadge(for: tile, screenFrame: screenFrame)
-            if tile.id == selectedTileID { selectedFrame = screenFrame }
+            updateSelectionHighlight(for: tile, screenFrame: screenFrame)
 
             switch provider.content(for: tile) {
             case .image:
@@ -319,9 +348,6 @@ public final class CanvasEngine {
                 setTextOverlay(style, for: tile, screenFrame: screenFrame)
             }
         }
-
-        // Draw / hide the selection highlight for this frame.
-        updateSelectionHighlight(frame: selectedFrame)
 
         // Drop decodes whose tiles are no longer needed (decision P15).
         scheduler.retainOnly(neededKeys)
@@ -477,24 +503,35 @@ public final class CanvasEngine {
         badge.zPosition = CGFloat(tile.z) + 0.5 // above its own tile
     }
 
-    /// Whether the selection highlight is currently drawn (a tile is selected AND
-    /// visible in the viewport). Introspection for the invariant tests.
-    public var isSelectionHighlightVisible: Bool {
-        selectionLayer.map { !$0.isHidden } ?? false
-    }
+    /// Whether ANY selection highlight is currently drawn (at least one selected
+    /// tile is visible in the viewport). Introspection for the invariant tests.
+    public var isSelectionHighlightVisible: Bool { !selectionLayers.isEmpty }
 
-    /// Position the highlight border around the selected tile's on-screen frame,
-    /// or hide it when nothing is selected / the selected tile is off-screen. The
-    /// layer is created on first use and kept above all tiles + badges.
-    private func updateSelectionHighlight(frame: CGRect?) {
-        guard let frame else {
-            selectionLayer?.isHidden = true
+    /// The number of highlight layers currently attached — must stay bounded by the
+    /// viewport (visible ∩ selected), never grow with the selection size (049 · D16
+    /// / D12 tests).
+    public var selectionHighlightCount: Int { selectionLayers.count }
+
+    /// Show / position / drop `tile`'s highlight border for this frame. A selected
+    /// AND visible tile gets a border framing its (drag-offset-aware) screen frame;
+    /// a tile that isn't selected drops any highlight it still carries. Managed like
+    /// ``badges`` — a per-tile sibling layer outside the recycled pool, kept above
+    /// all tiles + badges. The dragged tile's `screenFrame` already includes the
+    /// live-drag offset, so the highlight follows a drag with no extra bookkeeping.
+    private func updateSelectionHighlight(for tile: Tile, screenFrame: CGRect) {
+        guard selectedTileIDs.contains(tile.id) else {
+            selectionLayers[tile.id]?.removeFromSuperlayer()
+            selectionLayers[tile.id] = nil
             return
         }
-        let layer = selectionLayer ?? makeSelectionLayer()
-        selectionLayer = layer
-        layer.isHidden = false
-        layer.frame = frame.insetBy(dx: -Self.selectionInset, dy: -Self.selectionInset)
+        let layer: CALayer
+        if let existing = selectionLayers[tile.id] {
+            layer = existing
+        } else {
+            layer = makeSelectionLayer()
+            selectionLayers[tile.id] = layer
+        }
+        layer.frame = screenFrame.insetBy(dx: -Self.selectionInset, dy: -Self.selectionInset)
         layer.zPosition = .greatestFiniteMagnitude // always on top
     }
 

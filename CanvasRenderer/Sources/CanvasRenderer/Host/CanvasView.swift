@@ -17,35 +17,35 @@ public enum CanvasTool: Equatable, Sendable {
 public struct CanvasView: NSViewRepresentable {
     private let provider: any TileProvider
     private let images: any TileImageSource
-    private let selectedTileID: Int?
+    private let selectedTileIDs: Set<Int>
     private let tool: CanvasTool
     private let onActivateTile: ((Int) -> Void)?
-    private let onSelectTile: ((Int?) -> Void)?
-    private let onRemoveTile: ((Int) -> Void)?
-    private let onDeleteTile: ((Int) -> Void)?
+    private let onSelectTiles: ((Set<Int>) -> Void)?
+    private let onRemoveTiles: ((Set<Int>) -> Void)?
+    private let onDeleteTiles: ((Set<Int>) -> Void)?
     private let onMoveTile: ((Int, CGPoint) -> Void)?
     private let onCreateElement: ((CanvasTool, CGRect) -> Void)?
 
     public init(
         provider: any TileProvider,
         images: any TileImageSource,
-        selectedTileID: Int? = nil,
+        selectedTileIDs: Set<Int> = [],
         tool: CanvasTool = .select,
         onActivateTile: ((Int) -> Void)? = nil,
-        onSelectTile: ((Int?) -> Void)? = nil,
-        onRemoveTile: ((Int) -> Void)? = nil,
-        onDeleteTile: ((Int) -> Void)? = nil,
+        onSelectTiles: ((Set<Int>) -> Void)? = nil,
+        onRemoveTiles: ((Set<Int>) -> Void)? = nil,
+        onDeleteTiles: ((Set<Int>) -> Void)? = nil,
         onMoveTile: ((Int, CGPoint) -> Void)? = nil,
         onCreateElement: ((CanvasTool, CGRect) -> Void)? = nil
     ) {
         self.provider = provider
         self.images = images
-        self.selectedTileID = selectedTileID
+        self.selectedTileIDs = selectedTileIDs
         self.tool = tool
         self.onActivateTile = onActivateTile
-        self.onSelectTile = onSelectTile
-        self.onRemoveTile = onRemoveTile
-        self.onDeleteTile = onDeleteTile
+        self.onSelectTiles = onSelectTiles
+        self.onRemoveTiles = onRemoveTiles
+        self.onDeleteTiles = onDeleteTiles
         self.onMoveTile = onMoveTile
         self.onCreateElement = onCreateElement
     }
@@ -65,12 +65,12 @@ public struct CanvasView: NSViewRepresentable {
     /// reflects into the highlight.
     private func apply(to view: CanvasHostView) {
         view.onActivateTile = onActivateTile
-        view.onSelectTile = onSelectTile
-        view.onRemoveTile = onRemoveTile
-        view.onDeleteTile = onDeleteTile
+        view.onSelectTiles = onSelectTiles
+        view.onRemoveTiles = onRemoveTiles
+        view.onDeleteTiles = onDeleteTiles
         view.onMoveTile = onMoveTile
         view.onCreateElement = onCreateElement
         view.tool = tool
-        view.selectedTileID = selectedTileID
+        view.selectedTileIDs = selectedTileIDs
     }
 }

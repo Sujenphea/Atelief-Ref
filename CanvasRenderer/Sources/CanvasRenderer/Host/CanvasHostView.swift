@@ -12,16 +12,16 @@ public final class CanvasHostView: NSView {
     /// video). Set by the host; `nil` disables activation.
     public var onActivateTile: ((Int) -> Void)?
 
-    /// Called when the selection changes via a click: a tile's id when one is
-    /// clicked, or `nil` when empty space is clicked (deselect). `nil` disables.
-    public var onSelectTile: ((Int?) -> Void)?
+    /// Called when the selection changes via a click / marquee: the full set of
+    /// selected tile ids (empty when the selection is cleared). `nil` disables.
+    public var onSelectTiles: ((Set<Int>) -> Void)?
 
-    /// Called with a tile's id for the context-menu "Remove from Folder".
-    public var onRemoveTile: ((Int) -> Void)?
+    /// Called with the selected tile ids for the context-menu "Remove from Folder".
+    public var onRemoveTiles: ((Set<Int>) -> Void)?
 
-    /// Called with a tile's id for a destructive delete — the context-menu
+    /// Called with the selected tile ids for a destructive delete — the context-menu
     /// "Delete" or the ⌫ / Delete key on the current selection.
-    public var onDeleteTile: ((Int) -> Void)?
+    public var onDeleteTiles: ((Set<Int>) -> Void)?
 
     /// Called when a tile is dragged to a new position: its id and the FINAL
     /// world-space origin. The host updates the provider in memory (so the tile
@@ -51,6 +51,10 @@ public final class CanvasHostView: NSView {
     private var dragStartPoint: CGPoint?
     /// The tile hit at `mouseDown` — the drag candidate (nil over empty space).
     private var dragCandidateTileID: Int?
+    /// A selection action deferred from `mouseDown` to the mouse-UP click: applied
+    /// only if the press did NOT become a drag (049 · D6). Carries the plain-press-
+    /// on-a-selected-tile collapse-to-one, and the empty-space click-to-clear.
+    private var pendingClickAction: CanvasSelectionAction?
     /// Whether movement has passed the threshold and a live drag is in progress.
     private var isDragging = false
     /// Screen-point movement before a press-and-move becomes a drag (not a click).
@@ -62,10 +66,11 @@ public final class CanvasHostView: NSView {
         hypot(delta.width, delta.height) > threshold
     }
 
-    /// Reflect an externally-driven selection (e.g. the host selected an item in
-    /// another view) into the engine's highlight.
-    public var selectedTileID: Int? {
-        get { engine.selectedTileID }
+    /// Reflect an externally-driven selection (e.g. the model pushed a selection
+    /// change) into the engine's highlights. Idempotent, so the round-trip with
+    /// ``onSelectTiles`` settles without a loop.
+    public var selectedTileIDs: Set<Int> {
+        get { engine.selectedTileIDs }
         set { engine.setSelected(newValue) }
     }
 
@@ -131,12 +136,28 @@ public final class CanvasHostView: NSView {
         }
 
         let tileID = engine.tile(atScreenPoint: point)?.id
-        selectTile(tileID)
-        if event.clickCount == 2, let tileID {
-            onActivateTile?(tileID)
+        let shift = event.modifierFlags.contains(.shift)
+        let command = event.modifierFlags.contains(.command)
+
+        if let tileID {
+            // Route the press through the selection reducer: ⇧/⌘ act on the down
+            // edge; a plain press on a SELECTED tile defers (so a drag carries the
+            // whole selection), collapsing to one only if it stays a click.
+            let routing = canvasPressRouting(
+                tileID: tileID,
+                isSelected: engine.selectedTileIDs.contains(tileID),
+                shift: shift, command: command)
+            if let press = routing.pressAction { applySelection(press) }
+            pendingClickAction = routing.clickAction
+            if event.clickCount == 2 { onActivateTile?(tileID) }
+        } else {
+            // Empty space: defer a click-to-clear to mouse-UP (so a future marquee
+            // drag from the void won't clear). No drag candidate — a plain drag over
+            // empty space does nothing today (panning stays on scroll).
+            pendingClickAction = engine.selectedTileIDs.isEmpty ? nil : .clear
         }
-        // Arm click-vs-drag: a tile hit is a drag candidate; empty space isn't
-        // (panning stays on scroll, so a drag over the void does nothing).
+
+        // Arm click-vs-drag: a tile hit is a drag candidate; empty space isn't.
         dragStartPoint = point
         dragCandidateTileID = tileID
         isDragging = false
@@ -159,7 +180,13 @@ public final class CanvasHostView: NSView {
         if !isDragging {
             guard Self.exceedsDragThreshold(delta) else { return }
             isDragging = true
-            engine.beginDrag(tileID: tileID)
+            pendingClickAction = nil // it became a drag, not a click
+            // Finder rule: dragging a tile that isn't part of the selection selects
+            // only it first (so the highlight + carried set are consistent). A drag
+            // on a selected tile keeps the whole selection.
+            if !engine.selectedTileIDs.contains(tileID) { applySelection(.selectOnly(tileID)) }
+            let carry = canvasDragCarry(grabbed: tileID, selection: engine.selectedTileIDs)
+            engine.beginDrag(tileID: tileID, alsoCarry: carry)
         }
         engine.updateDrag(byScreenDelta: delta)
     }
@@ -180,12 +207,19 @@ public final class CanvasHostView: NSView {
         defer {
             dragStartPoint = nil
             dragCandidateTileID = nil
+            pendingClickAction = nil
             isDragging = false
         }
-        guard isDragging else { return }
-        // Persist EVERY tile the drag carried (a frame + its group), then clear
-        // the drag state. `currentDragOrigins()` is non-mutating; `endDrag()`
-        // clears. The provider updates in memory per callback so nothing snaps.
+        guard isDragging else {
+            // A press with no drag is a plain click: apply the deferred selection
+            // action (collapse-a-selected-tile-to-one, or empty-space clear).
+            if let action = pendingClickAction { applySelection(action) }
+            return
+        }
+        // Persist EVERY tile the drag carried (a frame + its group, or a multi-
+        // selection), then clear the drag state. `currentDragOrigins()` is
+        // non-mutating; `endDrag()` clears. The provider updates in memory per
+        // callback so nothing snaps.
         for moved in engine.currentDragOrigins() {
             onMoveTile?(moved.tileID, moved.worldOrigin)
         }
@@ -265,7 +299,9 @@ public final class CanvasHostView: NSView {
     public override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         guard let tile = engine.tile(atScreenPoint: point) else { return nil }
-        selectTile(tile.id)
+        // Finder rule: right-clicking a tile OUTSIDE the selection selects only it;
+        // right-clicking one INSIDE the selection acts on the whole selection.
+        if !engine.selectedTileIDs.contains(tile.id) { applySelection(.selectOnly(tile.id)) }
 
         let menu = NSMenu()
         let remove = NSMenuItem(
@@ -283,25 +319,30 @@ public final class CanvasHostView: NSView {
     public override var acceptsFirstResponder: Bool { true }
 
     public override func keyDown(with event: NSEvent) {
-        // 51 = Delete (Backspace), 117 = Forward Delete. Both mean "delete".
-        if (event.keyCode == 51 || event.keyCode == 117), let id = engine.selectedTileID {
-            onDeleteTile?(id)
-            return
+        // 51 = Delete (Backspace), 117 = Forward Delete. Both mean "delete", and
+        // both act on the WHOLE selection (049 · D7).
+        if event.keyCode == 51 || event.keyCode == 117 {
+            let ids = engine.selectedTileIDs
+            if !ids.isEmpty { onDeleteTiles?(ids); return }
         }
         super.keyDown(with: event)
     }
 
-    /// Update the engine's highlight and notify the host of the new selection.
-    private func selectTile(_ id: Int?) {
-        engine.setSelected(id)
-        onSelectTile?(id)
+    /// Apply a selection reducer action to the engine's current selection, redraw
+    /// the highlights, and notify the host of the new set.
+    private func applySelection(_ action: CanvasSelectionAction) {
+        let next = CanvasSelection(ids: engine.selectedTileIDs).applying(action).ids
+        engine.setSelected(next)
+        onSelectTiles?(next)
     }
 
     @objc private func contextRemove() {
-        if let id = engine.selectedTileID { onRemoveTile?(id) }
+        let ids = engine.selectedTileIDs
+        if !ids.isEmpty { onRemoveTiles?(ids) }
     }
 
     @objc private func contextDelete() {
-        if let id = engine.selectedTileID { onDeleteTile?(id) }
+        let ids = engine.selectedTileIDs
+        if !ids.isEmpty { onDeleteTiles?(ids) }
     }
 }
