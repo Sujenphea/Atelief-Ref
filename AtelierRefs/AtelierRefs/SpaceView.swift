@@ -157,6 +157,7 @@ struct SpaceView: View {
             CanvasView(
                 provider: content, images: content,
                 selectedTileIDs: space.selectedTileIDs(in: content),
+                syncToken: space.renderRevision,
                 tool: tool,
                 onActivateTile: { tileID in
                     if let url = content.videoURL(forTileID: tileID) {

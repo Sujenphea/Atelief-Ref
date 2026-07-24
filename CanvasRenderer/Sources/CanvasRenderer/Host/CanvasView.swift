@@ -18,6 +18,7 @@ public struct CanvasView: NSViewRepresentable {
     private let provider: any TileProvider
     private let images: any TileImageSource
     private let selectedTileIDs: Set<Int>
+    private let syncToken: Int
     private let tool: CanvasTool
     private let onActivateTile: ((Int) -> Void)?
     private let onSelectTiles: ((Set<Int>) -> Void)?
@@ -30,6 +31,7 @@ public struct CanvasView: NSViewRepresentable {
         provider: any TileProvider,
         images: any TileImageSource,
         selectedTileIDs: Set<Int> = [],
+        syncToken: Int = 0,
         tool: CanvasTool = .select,
         onActivateTile: ((Int) -> Void)? = nil,
         onSelectTiles: ((Set<Int>) -> Void)? = nil,
@@ -41,6 +43,7 @@ public struct CanvasView: NSViewRepresentable {
         self.provider = provider
         self.images = images
         self.selectedTileIDs = selectedTileIDs
+        self.syncToken = syncToken
         self.tool = tool
         self.onActivateTile = onActivateTile
         self.onSelectTiles = onSelectTiles
@@ -71,6 +74,7 @@ public struct CanvasView: NSViewRepresentable {
         view.onMoveTile = onMoveTile
         view.onCreateElement = onCreateElement
         view.tool = tool
+        view.syncToken = syncToken
         view.selectedTileIDs = selectedTileIDs
     }
 }

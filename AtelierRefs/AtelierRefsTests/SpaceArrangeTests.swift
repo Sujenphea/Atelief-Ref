@@ -178,6 +178,32 @@ struct SpaceArrangeTests {
         for id in ids { #expect(item(model, id).x == 10) } // positions unchanged
     }
 
+    // MARK: - Redraw signal
+
+    // A reload-free arrange moves the tiles in memory but fires no gesture and no
+    // selection change, so nothing would trigger `engine.sync()` — the model bumps
+    // `renderRevision` to force a host re-sync (else the canvas shows stale
+    // positions until the next unrelated event). A no-op arrange must NOT bump it.
+    @Test("arrange that moves tiles bumps renderRevision; a no-op arrange does not")
+    func arrangeBumpsRenderRevisionOnlyWhenMoved() async throws {
+        let (model, _) = try await makeModel()
+        let ids = await seed(model, [CGRect(x: 0, y: 0, width: 40, height: 40),
+                                     CGRect(x: 200, y: 100, width: 60, height: 20),
+                                     CGRect(x: 400, y: 200, width: 20, height: 80)])
+        selectAll(model, ids)
+
+        let before = model.renderRevision
+        model.arrange(.alignLeft) // x: 200, 400 → 0 : a real move
+        await model.waitForWrites()
+        #expect(model.renderRevision == before + 1)
+
+        // Already aligned (all minX == 0 now) → no move, no redraw signal.
+        let afterMove = model.renderRevision
+        model.arrange(.alignLeft)
+        await model.waitForWrites()
+        #expect(model.renderRevision == afterMove)
+    }
+
     // MARK: - Interleaving (11A)
 
     @Test("align → undo → move interleave correctly through the shared write chain")

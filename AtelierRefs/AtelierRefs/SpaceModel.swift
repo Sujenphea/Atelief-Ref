@@ -36,6 +36,13 @@ final class SpaceModel: ObservableObject {
     var selectedItemID: UUID? { selectedItemIDs.count == 1 ? selectedItemIDs.first : nil }
     /// Bumped whenever ``items`` change, so `SpaceView` rebuilds the canvas host.
     @Published private(set) var contentVersion = 0
+    /// Bumped when placements change IN MEMORY with no reload (align / distribute),
+    /// so `SpaceView` can force the canvas to re-sync WITHOUT a full host rebuild.
+    /// Unlike a drag (the host's gesture loop drives `sync()` per frame) or a z-op
+    /// (`reload: true` rebuilds via ``contentVersion``), an arrange fires no gesture
+    /// and no selection change — nothing would otherwise trigger `engine.sync()`, so
+    /// the moved tiles would stay stale until the next unrelated event.
+    @Published private(set) var renderRevision = 0
     /// The last surfaced error, or `nil`.
     @Published var lastError: String?
 
@@ -416,6 +423,9 @@ final class SpaceModel: ObservableObject {
             }
         }
         guard !edits.isEmpty else { return } // already arranged → no write, no undo
+        // Tiles moved in memory but nothing triggers a redraw (no gesture, no
+        // selection change, no reload) — bump the revision so the host re-syncs.
+        renderRevision &+= 1
         enqueue { await self.applyPlacementEdit(name: op.actionName, edits: edits, reload: false) }
     }
 

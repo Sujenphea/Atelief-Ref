@@ -138,6 +138,17 @@ public final class CanvasHostView: NSView {
         set { engine.setSelected(newValue) }
     }
 
+    /// A monotonic token the SwiftUI layer bumps to force a re-sync WITHOUT a full
+    /// host rebuild — the provider's tiles were mutated in place (e.g. align /
+    /// distribute) with no drag gesture and no selection change to otherwise drive
+    /// `sync()`. Setting a new value redraws from the provider's current tiles.
+    public var syncToken: Int = 0 {
+        didSet {
+            guard syncToken != oldValue else { return }
+            engine.sync()
+        }
+    }
+
     public init(
         provider: TileProvider,
         images: any TileImageSource,
