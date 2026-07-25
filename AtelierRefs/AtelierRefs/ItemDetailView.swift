@@ -400,6 +400,13 @@ struct ItemDetailView: View {
         // this toggles between gestures, never mid-pinch (no remount hitch).
         .modifier(DetailDragOutModifier(
             item: zoom == 1 ? exportItem : nil, payload: dragPayload))
+        // Edit ▸ Copy (⌘C, 052 · B1) on the open item — copies the original file
+        // (image, video, or a link/tweet's captured image), or nothing for a
+        // media-less item. Reuses the drag-out provider so ⌘C and drag-out stay
+        // byte-identical; unaffected by zoom (only the drag gesture is fit-gated).
+        .onCopyCommand {
+            exportItem.map { [AssetExport.dragProvider(item: $0, payload: dragPayload)] } ?? []
+        }
     }
 
     /// Reset zoom, (re)build the video player, and — on the non-loader path only —

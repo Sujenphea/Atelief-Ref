@@ -145,6 +145,20 @@ final class IngestionModel: ObservableObject {
         let undoToken: Int
     }
 
+    /// The outcome of the last ⌘C copy (052 · B1), published so the shell raises a
+    /// partial-copy toast when some selected assets had nothing to copy (7A). A
+    /// monotonic `seq` trips `onChange` even when an identical selection is recopied.
+    @Published private(set) var lastCopyReport: CopyReport?
+    private var copyReportSeq = 0
+
+    /// How a ⌘C resolved: how many entries reached the pasteboard and how many
+    /// selected assets were skipped (media-less `.unknown` / missing blob).
+    struct CopyReport: Equatable {
+        let copied: Int
+        let skipped: Int
+        let seq: Int
+    }
+
     /// A batch's progress counters.
     struct Progress: Equatable {
         var completed: Int
@@ -1364,6 +1378,33 @@ final class IngestionModel: ObservableObject {
         guard let string else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(string, forType: .string)
+    }
+
+    /// Copy an ordered selection to the general pasteboard and record the outcome
+    /// (052 · B1). The ONE ⌘C write path shared by grid / canvas / detail: each
+    /// surface supplies only its ordered `(asset, source)` pairs; the blob-URL
+    /// truth (``blobURL(forAsset:)``), the kind-aware entry rule
+    /// (``AssetExport/pasteboardEntry(asset:source:blobURL:)``), and the pasteboard
+    /// representations (``AssetPasteboardWriter``) all live in one place. Skips are
+    /// reported via ``lastCopyReport`` (7A), never silent.
+    func copyToPasteboard(assets: [(asset: Asset, source: Source?)]) {
+        let selection = AssetExport.exportSelection(
+            assets: assets, blobURL: { self.blobURL(forAsset: $0) })
+        AssetPasteboardWriter.write(selection, to: .general)
+        copyReportSeq += 1
+        lastCopyReport = CopyReport(
+            copied: selection.entries.count, skipped: selection.skipped, seq: copyReportSeq)
+    }
+
+    /// Copy the `selection` (membership ids) out of `details` to the pasteboard, in
+    /// `details` order (052 · B1). The grid-shaped convenience over
+    /// ``copyToPasteboard(assets:)`` shared by the collection grid and the search
+    /// grid — both hold `[CollectionItemDetail]` and select by `item.id`.
+    func copySelectedToPasteboard(from details: [CollectionItemDetail], selection ids: Set<UUID>) {
+        let assets = details
+            .filter { ids.contains($0.item.id) }
+            .map { (asset: $0.asset, source: Optional($0.source)) }
+        copyToPasteboard(assets: assets)
     }
 
     /// The on-disk URL of a folder item's 512-tier thumbnail (pure — no decode).

@@ -23,6 +23,10 @@ public final class CanvasHostView: NSView {
     /// "Delete" or the ⌫ / Delete key on the current selection.
     public var onDeleteTiles: ((Set<Int>) -> Void)?
 
+    /// Called with the selected tile ids for Edit ▸ Copy (⌘C, 052 · B1). The host
+    /// maps them to assets and writes the pasteboard; `nil` disables Copy.
+    public var onCopyTiles: ((Set<Int>) -> Void)?
+
     /// Called when a tile is dragged to a new position: its id and the FINAL
     /// world-space origin. The host updates the provider in memory (so the tile
     /// stays put) and persists off-main. During a frame group-drag it fires once
@@ -540,6 +544,14 @@ public final class CanvasHostView: NSView {
         super.keyDown(with: event)
     }
 
+    /// Edit ▸ Copy (⌘C, 052 · B1) — the standard responder action, so the system's
+    /// Copy menu item copies the canvas selection when the canvas holds focus.
+    /// `copy(_:)` is not declared by NSView, so it is a fresh `@objc` action.
+    @objc public func copy(_ sender: Any?) {
+        let ids = engine.selectedTileIDs
+        if !ids.isEmpty { onCopyTiles?(ids) }
+    }
+
     /// Apply a selection reducer action to the engine's current selection, redraw
     /// the highlights, and notify the host of the new set.
     private func applySelection(_ action: CanvasSelectionAction) {
@@ -556,5 +568,13 @@ public final class CanvasHostView: NSView {
     @objc private func contextDelete() {
         let ids = engine.selectedTileIDs
         if !ids.isEmpty { onDeleteTiles?(ids) }
+    }
+}
+
+extension CanvasHostView: NSUserInterfaceValidations {
+    /// Enable Edit ▸ Copy only when the canvas has a tile selection (052 · B1).
+    public func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copy(_:)) { return !engine.selectedTileIDs.isEmpty }
+        return true
     }
 }

@@ -183,6 +183,18 @@ struct SpaceView: View {
                     // underlying asset (in its collections) is never touched here.
                     space.removeTiles(tileIDs: tileIDs, in: content)
                 },
+                onCopyTiles: { tileIDs in
+                    // ⌘C copies the selected asset tiles (052 · B1), z-ordered for a
+                    // deterministic multi-copy; element rows (frame/text, no asset)
+                    // are skipped. Routes through the ONE shared write path.
+                    let assets = tileIDs
+                        .compactMap { content.detail(forTileID: $0) }
+                        .sorted { $0.item.z < $1.item.z }
+                        .compactMap { detail in
+                            detail.asset.map { (asset: $0, source: detail.source) }
+                        }
+                    model.copyToPasteboard(assets: assets)
+                },
                 onMoveTile: { tileID, worldOrigin in
                     space.moveTile(tileID: tileID, to: worldOrigin, in: content)
                 },

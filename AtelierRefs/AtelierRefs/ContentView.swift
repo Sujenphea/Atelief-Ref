@@ -71,6 +71,19 @@ struct ContentView: View {
                         collectionID: batch.collectionID, assetIDs: batch.assetIDs)),
                     coalesceKey: "capture-\(batch.collectionID.uuidString)")
             }
+            // A ⌘C that couldn't copy everything raises ONE partial-copy toast (052 ·
+            // B1 · 7A). A fully-successful copy is silent — the pasteboard content is
+            // the feedback, matching standard macOS Copy. Coalesced so a rapid repeat
+            // refreshes one card.
+            .onChange(of: model.lastCopyReport) { _, report in
+                guard let report, report.skipped > 0 else { return }
+                let noun = report.skipped == 1 ? "item" : "items"
+                toasts.post(
+                    message: report.copied > 0
+                        ? "Copied \(report.copied) — \(report.skipped) \(noun) had no image"
+                        : "Nothing to copy — \(report.skipped) \(noun) had no image",
+                    coalesceKey: "copy-report")
+            }
             // The 3-pane split's 960 minimum no longer applies — the new shell is
             // a single navigation column.
             .frame(minWidth: 860, minHeight: 600)

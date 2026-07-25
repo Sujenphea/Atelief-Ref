@@ -760,6 +760,7 @@ private struct LibrarySearchResults: View {
                 if let hit = search.results.first(where: { $0.asset.id == id }) { onOpen(hit) }
             },
             onRequestDelete: { requestDeleteTargets() },
+            onCopy: { model.copySelectedToPasteboard(from: items, selection: selectionStore.selection.ids) },
             onQuickLook: {},   // search has no Quick Look plumbing yet (parity gap, not lag)
             // ⌘± drives the SAME global density notch as the collection grid, so a
             // zoom in search persists everywhere (011-B2).

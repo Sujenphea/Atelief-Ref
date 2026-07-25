@@ -276,6 +276,12 @@ struct CollectionView: View {
             .map(\.asset.id)
     }
 
+    /// Copy the current selection to the pasteboard (Edit ▸ Copy / ⌘C, 052 · B1) in
+    /// GRID order, via the shared grid-copy path.
+    private func copySelectionToPasteboard() {
+        model.copySelectedToPasteboard(from: model.items, selection: model.selection.ids)
+    }
+
     /// The floating bottom "N selected" action bar (042), shown whenever the grid
     /// has a selection. An ADDITIVE second path to the grid's right-click menu:
     /// Clear, an overflow (`…`) menu carrying Move to / Add to / Set as Cover, and
@@ -565,6 +571,7 @@ struct CollectionView: View {
                 if let detail = model.items.first(where: { $0.item.id == id }) { open(detail) }
             },
             onRequestDelete: { model.requestDeleteSelected() },
+            onCopy: { copySelectionToPasteboard() },
             onQuickLook: { presentQuickLook() },
             onZoomIn: { gridPrefs.zoomIn(forWidth: geo.size.width - 2 * Self.contentMargin) },
             onZoomOut: { gridPrefs.zoomOut(forWidth: geo.size.width - 2 * Self.contentMargin) },

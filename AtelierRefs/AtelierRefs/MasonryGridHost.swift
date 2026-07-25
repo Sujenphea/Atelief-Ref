@@ -69,6 +69,9 @@ struct GridHostConfiguration {
     /// Delete the current selection (`deleteBackward`/`deleteForward`, replacing
     /// `.onDeleteCommand` → `model.requestDeleteSelected()`).
     var onRequestDelete: () -> Void
+    /// Copy the current selection to the pasteboard (Edit ▸ Copy / ⌘C, 052 · B1) —
+    /// wraps `model.copyToPasteboard(assets:)` over the grid-ordered selection.
+    var onCopy: () -> Void
     /// Spacebar Quick Look over the selection / lead (`presentQuickLook`).
     var onQuickLook: () -> Void
     /// ⌘+ / ⌘= — bigger cells, fewer columns (`gridPrefs.zoomIn`).
@@ -211,6 +214,10 @@ protocol MasonryGridViewEvents: AnyObject {
     func gridPerformKeyEquivalent(_ event: NSEvent) -> Bool
     /// A responder-chain delete (Delete / Backspace / Forward-Delete).
     func gridDeleteCommand()
+    /// A responder-chain Copy (⌘C / Edit ▸ Copy, 052 · B1) — copy the selection.
+    func gridCopyCommand()
+    /// Whether the grid currently has a selection — gates Copy's enabled state.
+    var gridHasSelection: Bool { get }
     /// The pointer moved to a window point (or `nil` on exit) — re-hit for hover.
     func gridMouseMoved(toWindowPoint point: CGPoint?)
     /// The clip view scrolled — re-hit hover at the last pointer location so a
@@ -297,6 +304,12 @@ final class MasonryNSCollectionView: NSCollectionView {
     override func deleteBackward(_ sender: Any?) { events?.gridDeleteCommand() }
     override func deleteForward(_ sender: Any?) { events?.gridDeleteCommand() }
 
+    // Edit ▸ Copy (⌘C, 052 · B1) — the standard responder action, so the system's
+    // unmodified Copy menu item routes to the focused grid (and text fields keep
+    // their own Cut/Copy/Paste). `copy(_:)` is not declared by NSView, so it is a
+    // fresh `@objc` action, not an override.
+    @objc func copy(_ sender: Any?) { events?.gridCopyCommand() }
+
     // A3 — a down/drag/up that reaches the collection view itself is on EMPTY space
     // (cell views intercept their own; see `FlippedContentView`). Route it to the
     // marquee + click-to-clear. Not calling `super` avoids native selection (off).
@@ -331,6 +344,16 @@ final class MasonryNSCollectionView: NSCollectionView {
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         events?.gridPerformDrop(sender) ?? false
+    }
+}
+
+extension MasonryNSCollectionView: NSUserInterfaceValidations {
+    /// Enable Edit ▸ Copy only when the grid has a selection (052 · B1); other
+    /// actions this view vends stay enabled. Used in place of `validateMenuItem`
+    /// so no NSView ObjC override is needed.
+    func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copy(_:)) { return events?.gridHasSelection ?? false }
+        return true
     }
 }
 
@@ -1339,6 +1362,10 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     }
 
     func gridDeleteCommand() { configuration.onRequestDelete() }
+
+    func gridCopyCommand() { configuration.onCopy() }
+
+    var gridHasSelection: Bool { !configuration.selectionStore.selection.ids.isEmpty }
 
     /// Execute a resolved ``GridKeyCommand``; returns whether it was HANDLED (an
     /// unhandled result falls through to `super.keyDown`). Selection commands route

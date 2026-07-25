@@ -87,15 +87,19 @@ enum AssetExport {
     /// missing on-disk URL, or a blob whose file is gone (reaped/trashed since it
     /// was rendered). The filename's extension and the promise `UTType` both come
     /// from the blob's own `pathExtension` (1A/6A).
-    static func exportItem(asset: Asset, source: Source, blobURL: URL?) -> AssetExportItem? {
+    ///
+    /// `source` is optional (052 · B1): a canvas ``SpaceItemDetail`` carries no
+    /// source for an element row and none for some asset rows, so a nil source just
+    /// drops the naming hints and falls back to the blob-derived `"image"` base.
+    static func exportItem(asset: Asset, source: Source?, blobURL: URL?) -> AssetExportItem? {
         guard let blobHash = asset.blobHash, !blobHash.isEmpty,
               let blobURL,
               FileManager.default.fileExists(atPath: blobURL.path) else { return nil }
         let ext = blobURL.pathExtension
         let name = filename(
             base: baseName(
-                title: source.title, authorHandle: source.authorHandle,
-                sourceURL: source.originalURL),
+                title: source?.title, authorHandle: source?.authorHandle,
+                sourceURL: source?.originalURL),
             blobHash: blobHash, ext: ext)
         return AssetExportItem(
             blobURL: blobURL, filename: name, utType: UTType(filenameExtension: ext) ?? .data)

@@ -24,6 +24,7 @@ public struct CanvasView: NSViewRepresentable {
     private let onSelectTiles: ((Set<Int>) -> Void)?
     private let onRemoveTiles: ((Set<Int>) -> Void)?
     private let onDeleteTiles: ((Set<Int>) -> Void)?
+    private let onCopyTiles: ((Set<Int>) -> Void)?
     private let onMoveTile: ((Int, CGPoint) -> Void)?
     private let onCreateElement: ((CanvasTool, CGRect) -> Void)?
 
@@ -37,6 +38,7 @@ public struct CanvasView: NSViewRepresentable {
         onSelectTiles: ((Set<Int>) -> Void)? = nil,
         onRemoveTiles: ((Set<Int>) -> Void)? = nil,
         onDeleteTiles: ((Set<Int>) -> Void)? = nil,
+        onCopyTiles: ((Set<Int>) -> Void)? = nil,
         onMoveTile: ((Int, CGPoint) -> Void)? = nil,
         onCreateElement: ((CanvasTool, CGRect) -> Void)? = nil
     ) {
@@ -49,6 +51,7 @@ public struct CanvasView: NSViewRepresentable {
         self.onSelectTiles = onSelectTiles
         self.onRemoveTiles = onRemoveTiles
         self.onDeleteTiles = onDeleteTiles
+        self.onCopyTiles = onCopyTiles
         self.onMoveTile = onMoveTile
         self.onCreateElement = onCreateElement
     }
@@ -71,6 +74,7 @@ public struct CanvasView: NSViewRepresentable {
         view.onSelectTiles = onSelectTiles
         view.onRemoveTiles = onRemoveTiles
         view.onDeleteTiles = onDeleteTiles
+        view.onCopyTiles = onCopyTiles
         view.onMoveTile = onMoveTile
         view.onCreateElement = onCreateElement
         view.tool = tool
