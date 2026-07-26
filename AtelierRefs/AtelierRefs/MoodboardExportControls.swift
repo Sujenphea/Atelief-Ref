@@ -40,7 +40,7 @@ struct MoodboardExportButton: View {
     /// any tiles are selected, else the entire board).
     private var mapping: MoodboardExport.Mapping {
         MoodboardExport.map(
-            details: MoodboardExport.rows(items: space.items, selected: space.selectedItemIDs),
+            details: MoodboardExport.rows(items: space.placedItems, selected: space.selectedItemIDs),
             imageURL: { model.previewImageURL(forAsset: $0) })
     }
 

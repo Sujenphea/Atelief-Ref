@@ -256,6 +256,23 @@ final class SpaceModel: ObservableObject {
         Set(selectedItemIDs.compactMap { content.tileID(forSpaceItemID: $0) })
     }
 
+    /// The board rows for EXPORT — each carrying its LIVE placement (052 · B3).
+    /// A drag / arrange moves the tile in the in-memory ``SpaceContent`` and
+    /// persists with `reload: false`, so ``items`` keeps stale pre-move x/y/z
+    /// until the next reload (the canvas draws the live content; ``restack`` /
+    /// ``arrange`` already read it via ``livePlacement``). Export is WYSIWYG, so
+    /// it must read the SAME live placements — never `items` directly, which would
+    /// export moved tiles at their pre-move positions.
+    var placedItems: [SpaceItemDetail] {
+        let content = self.content()
+        return items.map { detail in
+            let p = livePlacement(detail.item.id, in: content)
+            var item = detail.item
+            item.x = p.x; item.y = p.y; item.w = p.w; item.h = p.h; item.z = p.z
+            return SpaceItemDetail(item: item, asset: detail.asset, source: detail.source)
+        }
+    }
+
     // MARK: - Selection
 
     /// Replace the selection with the rows the given tiles draw (049 · D1). An empty

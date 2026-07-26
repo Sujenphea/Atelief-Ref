@@ -91,7 +91,7 @@ struct SpaceView: View {
         .focusedSceneValue(\.exportMoodboard, ExportMoodboardAction {
             guard !space.items.isEmpty else { return }
             let mapping = MoodboardExport.map(
-                details: MoodboardExport.rows(items: space.items, selected: space.selectedItemIDs),
+                details: MoodboardExport.rows(items: space.placedItems, selected: space.selectedItemIDs),
                 imageURL: { model.previewImageURL(forAsset: $0) })
             exportController.requestExport(
                 mapping: mapping, config: ExportConfig(), suggestedName: space.name)
