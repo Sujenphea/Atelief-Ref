@@ -152,7 +152,7 @@ struct ExportProgressRing: View {
             if controller.isExporting {
                 Button { showCancel.toggle() } label: { ring }
                     .buttonStyle(.plain)
-                    .help("Exporting moodboard…")
+                    .help("Exporting…")
                     .popover(isPresented: $showCancel, arrowEdge: .bottom) { cancelPanel }
             } else if showDone {
                 Image(systemName: "checkmark.circle.fill")
@@ -184,7 +184,7 @@ struct ExportProgressRing: View {
 
     private var cancelPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Exporting moodboard…").font(.callout)
+            Text("Exporting…").font(.callout)
             ProgressView(value: controller.progress).frame(width: 180)
             HStack {
                 Spacer()

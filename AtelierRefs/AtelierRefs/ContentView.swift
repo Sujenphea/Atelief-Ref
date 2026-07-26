@@ -170,7 +170,7 @@ struct ContentView: View {
     fileprivate static func exportToastMessage(for report: ExportController.Report) -> String? {
         switch report.outcome {
         case .success:
-            let base = report.url.map { "Exported \($0.lastPathComponent)" } ?? "Moodboard exported"
+            let base = report.url.map { "Exported \($0.lastPathComponent)" } ?? "Export complete"
             guard report.skipped > 0 else { return base }
             let noun = report.skipped == 1 ? "ref" : "refs"
             return "\(base) — \(report.skipped) \(noun) had no image"

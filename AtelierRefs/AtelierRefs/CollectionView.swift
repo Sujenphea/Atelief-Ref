@@ -30,6 +30,10 @@ struct CollectionView: View {
     // nine reads down into per-cell views (so this too stops re-running) is the
     // later A1–A2 work, deliberately NOT part of A0.
     @ObservedObject private var selectionStore: GridSelectionStore
+    /// The app-wide export controller (052 · B4), injected on `AppShellView`.
+    /// Drives the File-menu contact-sheet export; the selection-bar button reads
+    /// it from the environment directly.
+    @EnvironmentObject private var exportController: ExportController
     let collectionID: UUID
 
     init(model: IngestionModel, nav: NavModel, gridPrefs: GridViewPreferences, collectionID: UUID) {
@@ -123,6 +127,9 @@ struct CollectionView: View {
                 CollectionDetailHost(model: model, nav: nav, services: services)
             }
         }
+        // Expose this collection's contact-sheet export to the File-menu command
+        // (052 · B4), enabled only while a collection is focused.
+        .focusedSceneValue(\.exportContactSheet, ExportContactSheetAction(run: runContactSheetExport))
     }
 
     /// The grid density control (011-B2): step the global column-count notch
@@ -282,6 +289,18 @@ struct CollectionView: View {
         model.copySelectedToPasteboard(from: model.items, selection: model.selection.ids)
     }
 
+    /// The File-menu contact-sheet export (052 · B4): selection-or-whole-collection
+    /// with default settings (PDF single page, captions). The popover in the
+    /// selection bar is where format / columns change.
+    private func runContactSheetExport() {
+        let mapping = ContactSheetExport.map(
+            details: ContactSheetExport.rows(items: model.items, selectedIDs: model.selection.ids),
+            config: ContactSheetConfig(),
+            imageURL: { model.previewImageURL(forAsset: $0) })
+        exportController.requestExport(
+            mapping: mapping, config: ExportConfig(), suggestedName: model.name(for: collectionID))
+    }
+
     /// The floating bottom "N selected" action bar (042), shown whenever the grid
     /// has a selection. An ADDITIVE second path to the grid's right-click menu:
     /// Clear, an overflow (`…`) menu carrying Move to / Add to / Set as Cover, and
@@ -305,6 +324,11 @@ struct CollectionView: View {
                                help: "Remove \(count) from collection") {
                 model.removeFromFolder(assetIDs: selectedAssetIDs)
             }
+            // Contact-sheet export of the selection (052 · B4) — its own config
+            // popover, opening ABOVE the floating bar like the overflow. The ring
+            // shows progress + Cancel while a sheet renders.
+            ContactSheetExportButton(model: model, collectionID: collectionID)
+            ExportProgressRing()
             // Overflow as a popover so it opens ABOVE the bar (`arrowEdge: .top`),
             // not clipped below the floating capsule the way a `Menu` would.
             Button {
