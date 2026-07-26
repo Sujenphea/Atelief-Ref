@@ -157,6 +157,45 @@ struct EngineVectorTests {
         #expect(layer?.font != nil) // never blank — system fallback
     }
 
+    // MARK: Padding reconciliation (2C · 054 §4.4 · R12)
+
+    /// A `.text` tile's overlay is inset by the WORLD pad (`TextMetrics.padding ×
+    /// scale`) at every zoom, so the drawn inset equals the world inset the app
+    /// measured against — the draw≡measure invariant the auto-box relies on.
+    @Test("a .text overlay insets by TextMetrics.padding × scale at each zoom")
+    func textTileInsetIsWorldPadded() {
+        var p = VectorProvider(tiles: row)
+        p.texts = [1: TextStyle(string: "measured", fontSize: 24, color: RGBAColor(red: 0, green: 0, blue: 0))]
+        for scale in [CGFloat(0.5), 1, 2, 4] {
+            let e = CanvasEngine(
+                provider: p, images: NoImages(),
+                transform: CanvasTransform(scale: scale),
+                viewportSize: CGSize(width: 8_000, height: 8_000))
+            e.sync()
+            let overlay = e.textLayer(forTileID: 1)!.frame
+            let tile = e.currentScreenFrame(forTileID: 1)!
+            let pad = TextMetrics.padding * scale
+            #expect(Approx.equal(overlay, tile.insetBy(dx: pad, dy: pad)))
+        }
+    }
+
+    /// A frame LABEL keeps the legacy screen-space pad (`min(6, width·0.04)`),
+    /// byte-identical to before 2C — frames aren't auto-sized (054 §4.4).
+    @Test("a frame label keeps the legacy screen-space pad (byte-identical)")
+    func frameLabelKeepsScreenPad() {
+        var p = VectorProvider(tiles: row)
+        p.frames = [1]
+        p.frameStyles = [1: FrameStyle(
+            stroke: RGBAColor(red: 0, green: 0, blue: 0), strokeWidth: 2,
+            label: TextStyle(string: "Label", fontSize: 18, color: RGBAColor(red: 0, green: 0, blue: 0)))]
+        let e = engine(p) // scale 1
+        e.sync()
+        let overlay = e.textLayer(forTileID: 1)!.frame
+        let tile = e.currentScreenFrame(forTileID: 1)!
+        let pad = min(6, tile.width * 0.04)
+        #expect(Approx.equal(overlay, tile.insetBy(dx: pad, dy: pad)))
+    }
+
     // MARK: Frame-as-group drag
 
     @Test("dragging a frame carries its group; endDrag reports all final origins")

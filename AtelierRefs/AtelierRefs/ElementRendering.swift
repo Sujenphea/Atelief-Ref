@@ -46,13 +46,7 @@ enum ElementRendering {
             return assetTileContent(asset)
         case .text:
             let style = ElementStyle(jsonString: item.style) ?? ElementStyle()
-            return .text(TextStyle(
-                string: style.text ?? "",
-                fontSize: style.fontSize ?? defaultFontSize,
-                color: rgba(fromHex: style.textColor) ?? RGBAColor(red: 0.07, green: 0.07, blue: 0.07),
-                fontFamily: style.fontFamily,
-                weight: FontWeight(rawValue: style.weight.rawValue) ?? .regular,
-                alignment: TextAlignment(rawValue: style.align.rawValue) ?? .left))
+            return .text(textStyle(for: style))
         case .frame:
             let style = ElementStyle(jsonString: item.style) ?? ElementStyle()
             let label: TextStyle? = {
@@ -69,6 +63,21 @@ enum ElementRendering {
                 cornerRadius: frameCornerRadius,
                 label: label))
         }
+    }
+
+    /// Bridge an element's `ElementStyle` to the renderer's `TextStyle` — the ONE
+    /// place `.text` glyphs are built, reused by both the draw path (`tileContent`)
+    /// and the 2C auto-size measurement (`SpaceModel.autosizedFrame`), so a measured
+    /// size uses exactly the style that will be drawn (054 §4.1). The `?? .regular` /
+    /// `?? .left` are the conformance-test-guaranteed no-ops (a token always crosses).
+    static func textStyle(for style: ElementStyle) -> TextStyle {
+        TextStyle(
+            string: style.text ?? "",
+            fontSize: style.fontSize ?? defaultFontSize,
+            color: rgba(fromHex: style.textColor) ?? RGBAColor(red: 0.07, green: 0.07, blue: 0.07),
+            fontFamily: style.fontFamily,
+            weight: FontWeight(rawValue: style.weight.rawValue) ?? .regular,
+            alignment: TextAlignment(rawValue: style.align.rawValue) ?? .left)
     }
 
     /// What an asset row draws on a board. A byte-backed asset — an image / video,

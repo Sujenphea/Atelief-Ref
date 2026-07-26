@@ -332,7 +332,7 @@ public final class CanvasEngine {
             switch provider.content(for: tile) {
             case .image:
                 clearVectorStyling(layer)
-                setTextOverlay(nil, for: tile, screenFrame: screenFrame)
+                setTextOverlay(nil, for: tile, screenFrame: screenFrame, worldPadded: false)
                 paintImage(tile: tile, layer: layer, neededKeys: &neededKeys)
             case .frame(let style):
                 // A frame draws directly on its (non-recycled-content) pooled
@@ -340,12 +340,12 @@ public final class CanvasEngine {
                 keyByTile[tile.id] = nil
                 layer.contents = nil
                 applyFrameStyling(layer, style: style)
-                setTextOverlay(style.label, for: tile, screenFrame: screenFrame)
+                setTextOverlay(style.label, for: tile, screenFrame: screenFrame, worldPadded: false)
             case .text(let style):
                 keyByTile[tile.id] = nil
                 layer.contents = nil
                 clearVectorStyling(layer) // transparent base; glyphs ride the overlay
-                setTextOverlay(style, for: tile, screenFrame: screenFrame)
+                setTextOverlay(style, for: tile, screenFrame: screenFrame, worldPadded: true)
             }
         }
 
@@ -444,7 +444,13 @@ public final class CanvasEngine {
     /// Show / update / hide a tile's `CATextLayer` overlay (a `.text` element's
     /// glyphs or a frame's label). Sized in on-screen points from a world font
     /// size, so it stays crisp at any zoom. `nil` / empty removes the overlay.
-    private func setTextOverlay(_ style: TextStyle?, for tile: Tile, screenFrame: CGRect) {
+    ///
+    /// `worldPadded` picks the inset policy (054 §4.4 · R12): a `.text` tile uses a
+    /// **world-space** pad (``TextMetrics/padding`` `× scale`) so its drawn inset
+    /// equals the world-space inset the app measured against at EVERY zoom; a frame
+    /// label keeps the legacy **screen-space** pad (frames aren't auto-sized, so
+    /// their labels stay byte-identical).
+    private func setTextOverlay(_ style: TextStyle?, for tile: Tile, screenFrame: CGRect, worldPadded: Bool) {
         guard let style, !style.string.isEmpty else {
             textLayers[tile.id]?.removeFromSuperlayer()
             textLayers[tile.id] = nil
@@ -468,8 +474,12 @@ public final class CanvasEngine {
         text.fontSize = CGFloat(max(1, style.fontSize)) * transform.scale
         text.alignmentMode = style.alignment.caAlignment
         text.foregroundColor = style.color.cgColor
-        // Inset a touch so glyphs don't kiss a frame's border edge.
-        let pad = min(6, screenFrame.width * 0.04)
+        // Inset a touch so glyphs don't kiss the tile edge. A `.text` tile insets by
+        // the world-space measurement pad (`× scale`) so draw ≡ measure at any zoom;
+        // a frame label keeps the legacy screen-space pad (054 §4.4).
+        let pad = worldPadded
+            ? TextMetrics.padding * transform.scale
+            : min(6, screenFrame.width * 0.04)
         text.frame = screenFrame.insetBy(dx: pad, dy: pad)
         text.zPosition = CGFloat(tile.z) + 0.25 // above its own tile, below its badge
     }

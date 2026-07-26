@@ -186,9 +186,16 @@ final class SpaceModel: ObservableObject {
             inverse: { self.enqueue { await self.persistPlacements(backward, reload: true) } })
     }
 
-    private func performRestyle(_ id: UUID, _ style: ElementStyle) async {
+    /// Persist a restyle and, when `placement` is set, the derived geometry in ONE
+    /// transaction (054 §4.3 · R6) — style + auto-size can never half-persist and
+    /// one undo reverts both. `placement == nil` writes style only (the `.fixed`
+    /// path). Reloads to resync ``items``.
+    private func performRestyle(_ id: UUID, _ style: ElementStyle, placement: Placement?) async {
         do {
-            try await services.updateSpaceItemStyle(itemID: id, style: style)
+            let sp = placement.map {
+                SpaceItemPlacement(itemID: id, x: $0.x, y: $0.y, w: $0.w, h: $0.h, z: $0.z)
+            }
+            try await services.updateSpaceItemStyleAndPlacement(itemID: id, style: style, placement: sp)
             await load()
         } catch {
             lastError = Self.message(for: error)
@@ -582,15 +589,71 @@ final class SpaceModel: ObservableObject {
         return ElementStyle(jsonString: detail.item.style) ?? ElementStyle()
     }
 
-    /// Persist an element's restyle (text, colours, stroke, label), then reload.
-    /// Undoable — the previous style is captured and restored on undo.
+    /// The auto-sized world frame for a `.text` element under `style`, or `nil` when
+    /// no geometry write is due — a non-`.text` row, `.fixed` mode, or an auto mode
+    /// whose measured fit already matches the current box (054 §4.2 · R4 · D7).
+    ///
+    /// Top-left **anchor**: `x`/`y` (and, for `autoHeight`, `w`) are frozen — the box
+    /// only grows/shrinks right (`autoWidth`) or down (`autoHeight`). The width that
+    /// `autoHeight` wraps to is the **create-time** width (no resize handles in Phase
+    /// 2). Measurement uses the SAME font as drawing (``ElementRendering/textStyle``
+    /// → ``TextMetrics``), so the box can't drift from the glyphs.
+    func autosizedFrame(item: SpaceItem, style: ElementStyle) -> CGRect? {
+        guard item.kind == .text else { return nil }
+        let pad = Double(TextMetrics.padding)
+        let ts = ElementRendering.textStyle(for: style)
+
+        let newSize: CGSize
+        let newWidth: Double
+        switch style.resize {
+        case .fixed:
+            return nil
+        case .autoWidth:
+            newSize = TextMetrics.size(for: ts, maxWidth: nil)
+            newWidth = Double(newSize.width) + 2 * pad
+        case .autoHeight:
+            let maxWidth = max(1, CGFloat(item.w) - 2 * TextMetrics.padding)
+            newSize = TextMetrics.size(for: ts, maxWidth: maxWidth)
+            newWidth = item.w // width frozen at the create-time box
+        }
+        let newHeight = Double(newSize.height) + 2 * pad
+        // No change → no geometry write (the shrink-back / grow tests pin this).
+        guard newWidth != item.w || newHeight != item.h else { return nil }
+        return CGRect(x: item.x, y: item.y, width: newWidth, height: newHeight)
+    }
+
+    /// Persist an element's restyle (text, colours, stroke, label). For an auto-sized
+    /// `.text` element the derived `w`/`h` rides along in the SAME transaction and the
+    /// SAME undo step (054 §4.3 · D5) — one ⌘Z reverts both text and size. A geometry
+    /// change bumps ``renderRevision`` once so the canvas re-syncs; a style-only /
+    /// `.fixed` restyle writes no geometry and does not bump it. Undoable — the prior
+    /// style (and geometry, when it changed) is captured and restored on undo.
     func updateStyle(itemID: UUID, style newStyle: ElementStyle) {
+        guard let detail = items.first(where: { $0.item.id == itemID }) else { return }
+        let item = detail.item
         let oldStyle = style(forItemID: itemID)
-        guard oldStyle != newStyle else { return }
-        enqueue { await self.performRestyle(itemID, newStyle) }
-        registerReversible("Restyle",
-            primary: { self.enqueue { await self.performRestyle(itemID, newStyle) } },
-            inverse: { self.enqueue { await self.performRestyle(itemID, oldStyle) } })
+
+        let oldPlacement = Placement(x: item.x, y: item.y, w: item.w, h: item.h, z: item.z)
+        let newPlacement: Placement? = autosizedFrame(item: item, style: newStyle).map {
+            Placement(x: Double($0.minX), y: Double($0.minY),
+                      w: Double($0.width), h: Double($0.height), z: item.z)
+        }
+        let geomChanged = newPlacement != nil
+        guard oldStyle != newStyle || geomChanged else { return }
+
+        let name = item.kind == .text ? "Restyle Text" : "Restyle"
+        enqueue { await self.performRestyle(itemID, newStyle, placement: newPlacement) }
+        if geomChanged { renderRevision &+= 1 }
+        registerReversible(name,
+            primary: {
+                self.enqueue { await self.performRestyle(itemID, newStyle, placement: newPlacement) }
+                if geomChanged { self.renderRevision &+= 1 }
+            },
+            inverse: {
+                self.enqueue { await self.performRestyle(itemID, oldStyle,
+                                                         placement: geomChanged ? oldPlacement : nil) }
+                if geomChanged { self.renderRevision &+= 1 }
+            })
     }
 
     // MARK: - Errors

@@ -1965,6 +1965,33 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// Restyle a freeform element AND (optionally) move/resize it in ONE
+    /// transaction (054 §4.3 · R6 · D5 — 2C). An auto-sized text element's derived
+    /// `w`/`h` is *part of* its style change, so the style write and the geometry
+    /// write must never half-persist: a single `db.write {}` registers as one undo
+    /// step and one atomic edit. `placement == nil` writes style only (the common
+    /// `.fixed` path adds zero geometry writes). `.notFound` if the row is absent;
+    /// the placement (when present) is validated (C8). Bumps `updatedAt`.
+    public func updateSpaceItemStyleAndPlacement(
+        itemID: UUID, style: ElementStyle?, placement: SpaceItemPlacement?
+    ) async throws {
+        if let placement {
+            try Validation.canvasPlacement(x: placement.x, y: placement.y, w: placement.w, h: placement.h)
+        }
+        try await write { db in
+            guard var item = try SpaceItem.fetchOne(db, key: Self.key(itemID)) else {
+                throw AtelierError.notFound(entity: "space_item", id: itemID)
+            }
+            item.style = style?.jsonString()
+            if let placement {
+                item.x = placement.x; item.y = placement.y
+                item.w = placement.w; item.h = placement.h; item.z = placement.z
+            }
+            item.updatedAt = Date()
+            try item.update(db)
+        }
+    }
+
     /// Remove one row from a space (a placement, not the asset). Idempotent — an
     /// unknown / already-removed id is a no-op, not an error.
     public func removeSpaceItem(itemID: UUID) async throws {
