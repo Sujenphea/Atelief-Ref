@@ -42,6 +42,7 @@ extension CanvasArrange.Operation {
 struct SpaceView: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
+    @EnvironmentObject private var exportController: ExportController
     @StateObject private var space: SpaceModel
     /// Tags for the asset shown in the detail overlay (Space has no folder
     /// context, so it can't reuse `IngestionModel`'s selection-bound tags).
@@ -85,6 +86,16 @@ struct SpaceView: View {
         .onChange(of: tagStore.lastError) { _, message in
             if let message { model.lastError = message; tagStore.lastError = nil }
         }
+        // Expose the board's export to the File-menu command (052 · B3): default
+        // config (PDF, single page) for the same selection-or-whole-board rows.
+        .focusedSceneValue(\.exportMoodboard, ExportMoodboardAction {
+            guard !space.items.isEmpty else { return }
+            let mapping = MoodboardExport.map(
+                details: MoodboardExport.rows(items: space.items, selected: space.selectedItemIDs),
+                imageURL: { model.previewImageURL(forAsset: $0) })
+            exportController.requestExport(
+                mapping: mapping, config: ExportConfig(), suggestedName: space.name)
+        })
     }
 
     /// The header shrank to name + count once the tools moved into the context-aware
@@ -98,6 +109,10 @@ struct SpaceView: View {
             Spacer()
             Text("Drag to place · pinch to zoom")
                 .font(.caption).foregroundStyle(.tertiary)
+            // Moodboard export: the progress ring appears only while rendering
+            // (052 · B3); the Export button opens the format popover.
+            ExportProgressRing()
+            MoodboardExportButton(space: space, model: model)
         }
         .padding(.horizontal, Theme.Spacing.md)
         .padding(.vertical, Theme.Spacing.sm)

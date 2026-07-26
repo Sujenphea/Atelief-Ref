@@ -11,6 +11,7 @@
 		DA0000000000000000000003 /* AtelierCore in Frameworks */ = {isa = PBXBuildFile; productRef = DA0000000000000000000002 /* AtelierCore */; };
 		EA0000000000000000000003 /* AtelierIngestion in Frameworks */ = {isa = PBXBuildFile; productRef = EA0000000000000000000002 /* AtelierIngestion */; };
 		FA0000000000000000000003 /* AtelierServer in Frameworks */ = {isa = PBXBuildFile; productRef = FA0000000000000000000002 /* AtelierServer */; };
+		GA0000000000000000000003 /* AtelierExport in Frameworks */ = {isa = PBXBuildFile; productRef = GA0000000000000000000002 /* AtelierExport */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -63,6 +64,7 @@
 				DA0000000000000000000003 /* AtelierCore in Frameworks */,
 				EA0000000000000000000003 /* AtelierIngestion in Frameworks */,
 				FA0000000000000000000003 /* AtelierServer in Frameworks */,
+				GA0000000000000000000003 /* AtelierExport in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -127,6 +129,7 @@
 				DA0000000000000000000002 /* AtelierCore */,
 				EA0000000000000000000002 /* AtelierIngestion */,
 				FA0000000000000000000002 /* AtelierServer */,
+				GA0000000000000000000002 /* AtelierExport */,
 			);
 			productName = AtelierRefs;
 			productReference = 9907786E2FF364EF00718815 /* AtelierRefs.app */;
@@ -215,6 +218,7 @@
 				DA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierCore" */,
 				EA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierIngestion" */,
 				FA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierServer" */,
+				GA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierExport" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9907786F2FF364EF00718815 /* Products */;
@@ -616,6 +620,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../AtelierServer;
 		};
+		GA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierExport" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierExport;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -634,6 +642,10 @@
 		FA0000000000000000000002 /* AtelierServer */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AtelierServer;
+		};
+		GA0000000000000000000002 /* AtelierExport */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierExport;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

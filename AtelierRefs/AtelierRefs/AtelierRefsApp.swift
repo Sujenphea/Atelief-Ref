@@ -51,6 +51,9 @@ struct AtelierRefsApp: App {
             }
             CommandGroup(after: .saveItem) {
                 SnapshotCommands()
+                // File ▸ Export Moodboard… (052 · B3) — exports the focused Space
+                // board; disabled elsewhere.
+                ExportMoodboardCommand()
             }
         }
 

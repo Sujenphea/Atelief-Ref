@@ -23,6 +23,10 @@ struct ContentView: View {
     @StateObject private var gridPrefs = GridViewPreferences()
     // Shell-level capture-feedback toasts (011-B4), overlaid over every screen.
     @StateObject private var toasts = ToastCenter()
+    // Window-level moodboard export state (052 · B3): the save panel + off-main
+    // render live here so the Space board's Export button and the top-bar
+    // progress ring share one observable, and the report toast surfaces here.
+    @StateObject private var exportController = ExportController()
 
     // First-run onboarding gate (010 · Phase 2). Replayable from Settings (which
     // flips this back to false).
@@ -30,6 +34,9 @@ struct ContentView: View {
 
     var body: some View {
         AppShellView(model: model, nav: nav, gridPrefs: gridPrefs)
+            // The moodboard export controller reaches the Space board's Export
+            // button + the top-bar progress ring via the environment (052 · B3).
+            .environmentObject(exportController)
             // Dark-studio identity (D1): commit to a dark appearance so the app's
             // system semantic colours resolve to their dark variants for free, and
             // the AppKit grid inherits the window appearance.
@@ -84,6 +91,10 @@ struct ContentView: View {
                         : "Nothing to copy — \(report.skipped) \(noun) had no image",
                     coalesceKey: "copy-report")
             }
+            // A finished moodboard export raises ONE toast (052 · B3 · 7A): a
+            // confirmation on success (noting any skipped media-less refs), an
+            // error on failure. A user-cancelled export stays silent. Coalesced.
+            .modifier(ExportReportToast(controller: exportController, toasts: toasts))
             // The 3-pane split's 960 minimum no longer applies — the new shell is
             // a single navigation column.
             .frame(minWidth: 860, minHeight: 600)
@@ -153,6 +164,23 @@ struct ContentView: View {
         model.undoLastAction(expecting: token)
     }
 
+    /// The toast text for a finished export, or `nil` to stay silent (a user
+    /// cancellation). Extracted from the `.onChange` so the type-checker doesn't
+    /// choke on the nested string building (052 · B3).
+    fileprivate static func exportToastMessage(for report: ExportController.Report) -> String? {
+        switch report.outcome {
+        case .success:
+            let base = report.url.map { "Exported \($0.lastPathComponent)" } ?? "Moodboard exported"
+            guard report.skipped > 0 else { return base }
+            let noun = report.skipped == 1 ? "ref" : "refs"
+            return "\(base) — \(report.skipped) \(noun) had no image"
+        case .failed(let message):
+            return "Export failed — \(message)"
+        case .cancelled:
+            return nil
+        }
+    }
+
     /// Bridges the model's optional ``PendingDeletion`` to the dialog's `Bool`
     /// binding; dismissing (Cancel / Esc) clears the pending state.
     private var deletionConfirmation: Binding<Bool> {
@@ -167,6 +195,20 @@ struct ContentView: View {
         Binding(
             get: { model.pendingSpaceDeletion != nil },
             set: { if !$0 { model.cancelSpaceDeletion() } })
+    }
+}
+
+/// The finished-export toast, split into its own modifier so the shell's `body`
+/// stays under the type-checker's budget (052 · B3).
+private struct ExportReportToast: ViewModifier {
+    @ObservedObject var controller: ExportController
+    let toasts: ToastCenter
+
+    func body(content: Content) -> some View {
+        content.onChange(of: controller.lastReport) { _, report in
+            guard let report, let message = ContentView.exportToastMessage(for: report) else { return }
+            toasts.post(message: message, coalesceKey: "export-report")
+        }
     }
 }
 

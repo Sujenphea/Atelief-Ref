@@ -168,6 +168,31 @@ struct MoodboardRendererTests {
         #expect(result.skipped == [SkippedElement(id: "x", reason: .noProvider)])
     }
 
+    // MARK: - Progress (15A)
+
+    @Test("Progress advances per element and finishes at 1")
+    func progress() throws {
+        let els = (0..<4).map {
+            placed(.color(.black), frame: CGRect(x: 0, y: Double($0) * 10, width: 10, height: 10))
+        }
+        var ticks: [Double] = []
+        _ = try MoodboardRenderer.renderPNG(
+            page: page(els), provider: nil, onProgress: { ticks.append($0) })
+        // One tick per element (0.25, 0.5, 0.75, 1.0) plus the final 1.0.
+        #expect(ticks.contains(0.25))
+        #expect(ticks.contains(1.0))
+        #expect(ticks.last == 1.0)
+        // Monotonic non-decreasing.
+        #expect(zip(ticks, ticks.dropFirst()).allSatisfy { $0 <= $1 })
+    }
+
+    @Test("Empty layout still signals completion")
+    func progressEmpty() throws {
+        var last: Double = -1
+        _ = try MoodboardRenderer.renderPNG(page: page([]), provider: nil, onProgress: { last = $0 })
+        #expect(last == 1)
+    }
+
     // MARK: - Cancellation (15A)
 
     @Test("Cancellation aborts the render")

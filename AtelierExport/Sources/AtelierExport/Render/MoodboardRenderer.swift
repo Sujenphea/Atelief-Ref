@@ -26,6 +26,9 @@ public enum MoodboardRenderer {
     /// Render every page into a single multi-page PDF (vector page container,
     /// images embedded at `options.pixelsPerPoint` resolution).
     ///
+    /// - Parameter onProgress: called with a `0...1` fraction as elements are
+    ///   drawn (by count across all pages), then `1` on completion. Invoked on
+    ///   the calling thread; the host hops to the main actor to drive UI.
     /// - Throws: ``ExportError/noPages`` for an empty layout,
     ///   ``ExportError/contextCreationFailed`` if the PDF context won't open, or
     ///   `CancellationError` if `isCancelled` trips mid-render.
@@ -33,7 +36,8 @@ public enum MoodboardRenderer {
         pages: [LayoutPage],
         provider: MoodboardImageProvider?,
         options: RenderOptions = .pdfDefault,
-        isCancelled: () -> Bool = { false }
+        isCancelled: () -> Bool = { false },
+        onProgress: (Double) -> Void = { _ in }
     ) throws -> RenderResult {
         guard let first = pages.first else { throw ExportError.noPages }
 
@@ -48,16 +52,20 @@ public enum MoodboardRenderer {
             throw ExportError.contextCreationFailed
         }
 
+        let total = pages.reduce(0) { $0 + $1.elements.count }
+        var done = 0
         var skipped: [SkippedElement] = []
         for page in pages {
             try throwIfCancelled(isCancelled)
             context.beginPDFPage(nil)
             drawPage(
                 page, in: context, provider: provider,
-                options: options, skipped: &skipped, isCancelled: isCancelled)
+                options: options, skipped: &skipped, isCancelled: isCancelled,
+                onElementDone: { done += 1; onProgress(fraction(done, total)) })
             context.endPDFPage()
         }
         context.closePDF()
+        onProgress(1)
         return RenderResult(data: buffer as Data, skipped: skipped)
     }
 
@@ -72,7 +80,8 @@ public enum MoodboardRenderer {
         page: LayoutPage,
         provider: MoodboardImageProvider?,
         options: RenderOptions = RenderOptions(),
-        isCancelled: () -> Bool = { false }
+        isCancelled: () -> Bool = { false },
+        onProgress: (Double) -> Void = { _ in }
     ) throws -> RenderResult {
         let scale = options.pixelsPerPoint
         let pixelWidth = Int((page.size.width * scale).rounded())
@@ -91,14 +100,18 @@ public enum MoodboardRenderer {
         // in points exactly like the PDF path.
         context.scaleBy(x: scale, y: scale)
 
+        let total = page.elements.count
+        var done = 0
         var skipped: [SkippedElement] = []
         drawPage(
             page, in: context, provider: provider,
-            options: options, skipped: &skipped, isCancelled: isCancelled)
+            options: options, skipped: &skipped, isCancelled: isCancelled,
+            onElementDone: { done += 1; onProgress(fraction(done, total)) })
 
         try throwIfCancelled(isCancelled)
         guard let image = context.makeImage() else { throw ExportError.imageEncodingFailed }
         let data = try encodePNG(image)
+        onProgress(1)
         return RenderResult(data: data, skipped: skipped)
     }
 
@@ -112,7 +125,8 @@ public enum MoodboardRenderer {
         provider: MoodboardImageProvider?,
         options: RenderOptions,
         skipped: inout [SkippedElement],
-        isCancelled: () -> Bool
+        isCancelled: () -> Bool,
+        onElementDone: () -> Void
     ) {
         if let background = options.background {
             context.setFillColor(background.cgColor)
@@ -128,7 +142,13 @@ public enum MoodboardRenderer {
                      pixelsPerPoint: options.pixelsPerPoint, skipped: &skipped)
                 context.restoreGState()
             }
+            onElementDone()
         }
+    }
+
+    /// Progress fraction, guarding the empty-layout divide.
+    private static func fraction(_ done: Int, _ total: Int) -> Double {
+        total <= 0 ? 1 : Swift.min(1, Double(done) / Double(total))
     }
 
     /// The one documented switch over element kinds (mirrors the pasteboard
