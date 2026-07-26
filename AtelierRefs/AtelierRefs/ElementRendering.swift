@@ -49,7 +49,10 @@ enum ElementRendering {
             return .text(TextStyle(
                 string: style.text ?? "",
                 fontSize: style.fontSize ?? defaultFontSize,
-                color: rgba(fromHex: style.textColor) ?? RGBAColor(red: 0.07, green: 0.07, blue: 0.07)))
+                color: rgba(fromHex: style.textColor) ?? RGBAColor(red: 0.07, green: 0.07, blue: 0.07),
+                fontFamily: style.fontFamily,
+                weight: FontWeight(rawValue: style.weight.rawValue) ?? .regular,
+                alignment: TextAlignment(rawValue: style.align.rawValue) ?? .left))
         case .frame:
             let style = ElementStyle(jsonString: item.style) ?? ElementStyle()
             let label: TextStyle? = {

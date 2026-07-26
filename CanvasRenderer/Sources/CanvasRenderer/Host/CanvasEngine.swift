@@ -463,7 +463,10 @@ public final class CanvasEngine {
         }
         text.contentsScale = max(1, backingScale)
         text.string = style.string
+        // Typeface is cached by (family, weight); only fontSize is per-frame (cheap).
+        text.font = CanvasFont.resolve(family: style.fontFamily, weight: style.weight)
         text.fontSize = CGFloat(max(1, style.fontSize)) * transform.scale
+        text.alignmentMode = style.alignment.caAlignment
         text.foregroundColor = style.color.cgColor
         // Inset a touch so glyphs don't kiss a frame's border edge.
         let pad = min(6, screenFrame.width * 0.04)
@@ -474,6 +477,10 @@ public final class CanvasEngine {
     /// Number of text overlays currently attached (introspection for E3 tests —
     /// mirrors the badge-count checks the video tests use).
     public var textOverlayCount: Int { textLayers.count }
+
+    /// The `CATextLayer` overlay for a tile, if attached (introspection for 2A
+    /// tests — asserts the applied font / alignment). Mirrors ``textOverlayCount``.
+    public func textLayer(forTileID id: Int) -> CATextLayer? { textLayers[id] }
 
     // MARK: Badges + hit-testing
 

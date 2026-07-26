@@ -70,6 +70,19 @@ public struct FrameStyle: Equatable, Hashable, Sendable {
     }
 }
 
+/// A text element's font weight — mirrors `AtelierCore.TextWeight`. The rawValues
+/// MUST match the domain tokens (the bridge is a rawValue hop; enforced by a
+/// conformance test, not a comment). The renderer can't import `AtelierCore`.
+public enum FontWeight: String, Hashable, Sendable, CaseIterable {
+    case regular, medium, semibold, bold
+}
+
+/// A text element's horizontal alignment — mirrors `AtelierCore.TextAlign`. Same
+/// rawValue-match contract as ``FontWeight``.
+public enum TextAlignment: String, Hashable, Sendable, CaseIterable {
+    case left, center, right
+}
+
 /// A text element's presentation (E3). `fontSize` is a **world unit** — the engine
 /// multiplies it by the current zoom so the glyphs scale with the board and stay
 /// crisp (a `CATextLayer` re-rasterizes per frame at the on-screen point size).
@@ -77,10 +90,26 @@ public struct TextStyle: Equatable, Hashable, Sendable {
     public var string: String
     public var fontSize: Double
     public var color: RGBAColor
+    /// Font family name; nil → the system font.
+    public var fontFamily: String?
+    /// Font weight (default `.regular`).
+    public var weight: FontWeight
+    /// Horizontal alignment (default `.left`).
+    public var alignment: TextAlignment
 
-    public init(string: String, fontSize: Double, color: RGBAColor) {
+    public init(
+        string: String,
+        fontSize: Double,
+        color: RGBAColor,
+        fontFamily: String? = nil,
+        weight: FontWeight = .regular,
+        alignment: TextAlignment = .left
+    ) {
         self.string = string
         self.fontSize = fontSize
         self.color = color
+        self.fontFamily = fontFamily
+        self.weight = weight
+        self.alignment = alignment
     }
 }

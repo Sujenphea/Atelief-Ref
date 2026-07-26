@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreText
 import Foundation
 import QuartzCore
 import Testing
@@ -122,6 +123,38 @@ struct EngineVectorTests {
         e.sync()
         #expect(e.textOverlayCount == 0)
         #expect((e.rootLayer.sublayers?.count ?? 0) == 3)
+    }
+
+    // MARK: Rich text style (2A) — family / weight / alignment applied
+
+    @Test("setTextOverlay applies the resolved font family + alignment mode")
+    func overlayAppliesFontAndAlignment() {
+        var p = VectorProvider(tiles: row)
+        p.texts = [2: TextStyle(
+            string: "styled", fontSize: 24, color: RGBAColor(red: 0, green: 0, blue: 0),
+            fontFamily: "Helvetica", weight: .bold, alignment: .center)]
+        let e = engine(p)
+        e.sync()
+        let layer = e.textLayer(forTileID: 2)
+        #expect(layer != nil)
+        #expect(layer?.alignmentMode == .center)
+        // The layer's font is the CanvasFont-resolved typeface (the requested family).
+        if let font = layer?.font {
+            #expect(CTFontCopyFamilyName(font as! CTFont) as String == "Helvetica")
+        } else {
+            Issue.record("text layer has no font")
+        }
+    }
+
+    @Test("a nil family / default weight overlay still resolves a system font")
+    func overlayDefaultsToSystemFont() {
+        var p = VectorProvider(tiles: row)
+        p.texts = [1: TextStyle(string: "plain", fontSize: 18, color: RGBAColor(red: 0, green: 0, blue: 0))]
+        let e = engine(p)
+        e.sync()
+        let layer = e.textLayer(forTileID: 1)
+        #expect(layer?.alignmentMode == .left)
+        #expect(layer?.font != nil) // never blank — system fallback
     }
 
     // MARK: Frame-as-group drag

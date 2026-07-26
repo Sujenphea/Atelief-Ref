@@ -9,6 +9,7 @@
 //  so typing doesn't rebuild the canvas host per keystroke.
 //
 
+import AppKit
 import AtelierCore
 import CanvasRenderer
 import SwiftUI
@@ -30,6 +31,17 @@ struct ElementInspector: View {
     @State private var fillColor: Color
     @State private var strokeColor: Color
     @State private var strokeWidth: Double
+    /// The selected font family, or `""` for the system-font sentinel.
+    @State private var fontFamily: String
+    @State private var weight: TextWeight
+    @State private var align: TextAlign
+    @State private var resize: TextResize
+
+    /// The full system family list, "System" (the nil default) pinned first.
+    private let families = NSFontManager.shared.availableFontFamilies
+
+    /// The system-font sentinel used as the "System" picker tag / empty family.
+    private static let systemFamily = ""
 
     init(kind: SpaceItemKind, initialStyle: ElementStyle,
          onCommit: @escaping (ElementStyle) -> Void, onDelete: @escaping () -> Void) {
@@ -47,6 +59,10 @@ struct ElementInspector: View {
         _strokeColor = State(initialValue: Color(rgba:
             ElementRendering.rgba(fromHex: initialStyle.strokeColor) ?? RGBAColor(red: 0.56, green: 0.56, blue: 0.58)))
         _strokeWidth = State(initialValue: initialStyle.strokeWidth ?? ElementRendering.defaultFrameStrokeWidth)
+        _fontFamily = State(initialValue: initialStyle.fontFamily ?? Self.systemFamily)
+        _weight = State(initialValue: initialStyle.weight)
+        _align = State(initialValue: initialStyle.align)
+        _resize = State(initialValue: initialStyle.resize)
     }
 
     var body: some View {
@@ -86,17 +102,35 @@ struct ElementInspector: View {
         }
     }
 
+    // The string is edited on-canvas (2B), not here (R3) — the popover keeps only
+    // the STYLE controls (family / weight / align / size / colour / resize-mode).
     @ViewBuilder private var textEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("Text", text: $text, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(2...6)
+            Picker("Font", selection: $fontFamily) {
+                Text("System").tag(Self.systemFamily)
+                Divider()
+                ForEach(families, id: \.self) { Text($0).tag($0) }
+            }
+            Picker("Weight", selection: $weight) {
+                ForEach(TextWeight.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            Picker("Align", selection: $align) {
+                ForEach(TextAlign.allCases, id: \.self) { alignment in
+                    Image(systemName: alignment.symbolName).tag(alignment)
+                }
+            }
+            .pickerStyle(.segmented)
             HStack {
                 Text("Size").frame(width: 44, alignment: .leading)
                 Slider(value: $fontSize, in: 8...96)
                 Text("\(Int(fontSize))").monospacedDigit().frame(width: 28, alignment: .trailing)
             }
             ColorPicker("Colour", selection: $textColor, supportsOpacity: false)
+            Picker("Resize", selection: $resize) {
+                ForEach(TextResize.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
         }
     }
 
@@ -130,6 +164,10 @@ struct ElementInspector: View {
             style.text = text
             style.fontSize = fontSize
             style.textColor = ElementRendering.hex(from: textColor.rgbaComponents())
+            style.fontFamily = fontFamily.isEmpty ? nil : fontFamily
+            style.fontWeight = weight.rawValue
+            style.textAlign = align.rawValue
+            style.resizeMode = resize.rawValue
         case .frame:
             style.text = text.isEmpty ? nil : text
             style.textColor = ElementRendering.hex(from: textColor.rgbaComponents())
@@ -140,5 +178,27 @@ struct ElementInspector: View {
             break
         }
         return style
+    }
+}
+
+private extension TextAlign {
+    /// The SF Symbol for the alignment segmented control.
+    var symbolName: String {
+        switch self {
+        case .left: return "text.alignleft"
+        case .center: return "text.aligncenter"
+        case .right: return "text.alignright"
+        }
+    }
+}
+
+private extension TextResize {
+    /// A short label for the resize-mode segmented control.
+    var label: String {
+        switch self {
+        case .fixed: return "Fixed"
+        case .autoWidth: return "Auto W"
+        case .autoHeight: return "Auto H"
+        }
     }
 }

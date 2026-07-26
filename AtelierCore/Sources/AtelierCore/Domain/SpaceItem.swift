@@ -23,6 +23,27 @@ public enum SpaceItemKind: String, Sendable, Codable, CaseIterable, Hashable {
     case text
 }
 
+/// A text element's font weight (054 §1 · D-Weight — the 4-token set). The
+/// rawValue is the stored token; the renderer mirrors these strings (`FontWeight`)
+/// so the bridge is a plain rawValue hop (enforced by a conformance test).
+public enum TextWeight: String, Codable, CaseIterable, Sendable {
+    case regular, medium, semibold, bold
+}
+
+/// A text element's horizontal alignment (054 §1). RawValue = stored token;
+/// mirrored by the renderer's `TextAlignment`.
+public enum TextAlign: String, Codable, CaseIterable, Sendable {
+    case left, center, right
+}
+
+/// How a text element sizes to its content (054 §1 — 2C). Domain/app-only: it
+/// never crosses into the renderer (only weight + alignment do).
+public enum TextResize: String, Codable, CaseIterable, Sendable {
+    case fixed        // box w/h authoritative; text wraps + truncates (today)
+    case autoWidth    // one line; width grows to the text, height to the line
+    case autoHeight   // width fixed (create-time); height grows to wrapped text
+}
+
 /// A freeform element's presentation (005 §schema — `ElementStyle`). Stored as
 /// JSON TEXT in `space_item.style` (asset rows leave it nil). Every field is
 /// optional so a partially-styled element round-trips; E3 populates these.
@@ -39,6 +60,14 @@ public struct ElementStyle: Sendable, Equatable, Hashable, Codable {
     public var strokeColor: String?
     /// Frame border width in world units.
     public var strokeWidth: Double?
+    /// Font family name (an `NSFont` family); nil → the system font (054 §1).
+    public var fontFamily: String?
+    /// ``TextWeight`` rawValue; nil → `.regular`. Read via `weight` (§1.1).
+    public var fontWeight: String?
+    /// ``TextAlign`` rawValue; nil → `.left`. Read via `align` (§1.1).
+    public var textAlign: String?
+    /// ``TextResize`` rawValue; nil → `.fixed`. Read via `resize` (§1.1).
+    public var resizeMode: String?
 
     public init(
         text: String? = nil,
@@ -46,7 +75,11 @@ public struct ElementStyle: Sendable, Equatable, Hashable, Codable {
         textColor: String? = nil,
         fillColor: String? = nil,
         strokeColor: String? = nil,
-        strokeWidth: Double? = nil
+        strokeWidth: Double? = nil,
+        fontFamily: String? = nil,
+        fontWeight: String? = nil,
+        textAlign: String? = nil,
+        resizeMode: String? = nil
     ) {
         self.text = text
         self.fontSize = fontSize
@@ -54,6 +87,10 @@ public struct ElementStyle: Sendable, Equatable, Hashable, Codable {
         self.fillColor = fillColor
         self.strokeColor = strokeColor
         self.strokeWidth = strokeWidth
+        self.fontFamily = fontFamily
+        self.fontWeight = fontWeight
+        self.textAlign = textAlign
+        self.resizeMode = resizeMode
     }
 
     /// Encode to a compact JSON string for the `style` TEXT column, or `nil` if
@@ -70,6 +107,20 @@ public struct ElementStyle: Sendable, Equatable, Hashable, Codable {
         else { return nil }
         self = decoded
     }
+}
+
+// MARK: - Typed accessors (054 §1.1 · R7)
+
+/// Storage stays `String?` (forgiving decode, no migration). Parsing + defaulting
+/// lives in ONE place so no reader re-implements the parse or picks its own
+/// default; an unknown/malformed token degrades to the owned default, never throws.
+public extension ElementStyle {
+    /// The parsed font weight; unknown/nil → `.regular`.
+    var weight: TextWeight { TextWeight(rawValue: fontWeight ?? "") ?? .regular }
+    /// The parsed alignment; unknown/nil → `.left`.
+    var align: TextAlign { TextAlign(rawValue: textAlign ?? "") ?? .left }
+    /// The parsed resize mode; unknown/nil → `.fixed` (back-compat parity).
+    var resize: TextResize { TextResize(rawValue: resizeMode ?? "") ?? .fixed }
 }
 
 /// One row on a ``Space`` board (005 §entity O1). `assetID` is set iff
