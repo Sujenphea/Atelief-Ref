@@ -30,6 +30,25 @@ public final class CanvasEngine {
     /// Screen-space ring decoded ahead of the viewport (decision P15).
     public var prefetchMarginScreen: CGFloat
 
+    /// Fired exactly ONCE per transform mutation (``pan`` / ``zoom`` /
+    /// ``setTransform``, and thus ``frameToContent`` for free) — the single choke
+    /// point for the inline text editor to reposition its overlay imperatively
+    /// (2B · 054 §5.1 · R2). Notified AFTER the ``sync()`` so a listener reading
+    /// ``currentScreenFrame(forTileID:)`` sees the post-mutation geometry. `nil`
+    /// disables the notification (the common, no-editor case).
+    public var onTransformChanged: (() -> Void)?
+
+    /// The tile whose text an app-layer inline editor currently owns (2B · 054
+    /// §5.2), or `nil`. While set, that tile's `.text` glyphs are BLANKED in
+    /// ``sync()`` so the live `NSTextView` above it isn't doubled by the
+    /// `CATextLayer` beneath. Setting it re-syncs so the blank takes effect at once.
+    public var editingTileID: Int? {
+        didSet {
+            guard editingTileID != oldValue else { return }
+            sync()
+        }
+    }
+
     private var active: [Int: CALayer] = [:]
     private var keyByTile: [Int: ThumbnailCache.Key] = [:]
     /// Badge overlay layers (e.g. the ▶ for a video), keyed by tile id — siblings
@@ -132,16 +151,19 @@ public final class CanvasEngine {
     public func setTransform(_ newTransform: CanvasTransform) {
         transform = newTransform
         sync()
+        onTransformChanged?()
     }
 
     public func pan(byScreenDelta delta: CGSize) {
         transform = transform.panned(byScreenDelta: delta)
         sync()
+        onTransformChanged?()
     }
 
     public func zoom(by factor: CGFloat, aroundScreenPoint anchor: CGPoint) {
         transform = transform.zoomed(by: factor, aroundScreenPoint: anchor)
         sync()
+        onTransformChanged?()
     }
 
     /// Select exactly `ids` (or clear with an empty set) and redraw the highlights.
@@ -345,7 +367,10 @@ public final class CanvasEngine {
                 keyByTile[tile.id] = nil
                 layer.contents = nil
                 clearVectorStyling(layer) // transparent base; glyphs ride the overlay
-                setTextOverlay(style, for: tile, screenFrame: screenFrame, worldPadded: true)
+                // While an app-layer inline editor owns this tile (2B · 054 §5.2),
+                // blank the CATextLayer so the live NSTextView glyphs aren't doubled.
+                let overlay = tile.id == editingTileID ? nil : style
+                setTextOverlay(overlay, for: tile, screenFrame: screenFrame, worldPadded: true)
             }
         }
 

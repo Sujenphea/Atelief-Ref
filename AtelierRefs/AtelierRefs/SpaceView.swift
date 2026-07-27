@@ -52,6 +52,16 @@ struct SpaceView: View {
     @State private var showEditor = false
     /// The asset row shown in the full-window detail overlay, or `nil`.
     @State private var detailItem: SpaceItemDetail?
+    /// The tile currently being edited inline on-canvas (2B · 054 §5), or `nil`.
+    /// Double-clicking a `.text` element (or finishing a new-text-box create) sets
+    /// it; committing / cancelling / deleting clears it.
+    @State private var editingTileID: Int?
+    /// Whether ``editingTileID`` refers to a box just created (an empty commit
+    /// deletes it, 054 §5.3).
+    @State private var editingWasNew = false
+    /// The app↔host rendezvous the inline editor repositions through, off the
+    /// SwiftUI diff (054 §5.1/§5.2). A stable reference for this view's lifetime.
+    @State private var editBridge = CanvasEditingBridge()
 
     init(model: IngestionModel, nav: NavModel, spaceID: UUID, services: AppServices, store: MediaStore) {
         self.model = model
@@ -174,6 +184,7 @@ struct SpaceView: View {
                 selectedTileIDs: space.selectedTileIDs(in: content),
                 syncToken: space.renderRevision,
                 tool: tool,
+                editingTileID: editingTileID,
                 onActivateTile: { tileID in
                     if let url = content.videoURL(forTileID: tileID) {
                         quickLook.present(url: url)
@@ -181,8 +192,16 @@ struct SpaceView: View {
                               detail.item.kind == .asset, detail.asset != nil {
                         // Double-click an image asset → open its detail page.
                         openAssetDetail(detail)
+                    } else if let detail = content.detail(forTileID: tileID),
+                              detail.item.kind == .text {
+                        // Double-click a TEXT element → edit its string inline on
+                        // canvas (2B · D3); the style popover stays for the Edit bar.
+                        space.select(tileID: tileID, in: content)
+                        editingWasNew = false
+                        editingTileID = tileID
                     } else {
-                        // Double-click a frame/text element → open its inspector.
+                        // Double-click a FRAME element → open its style popover
+                        // (frames have no inline path, 054 §5.2).
                         space.select(tileID: tileID, in: content)
                         showEditor = true
                     }
@@ -215,15 +234,38 @@ struct SpaceView: View {
                 },
                 onCreateElement: { createdTool, worldRect in
                     switch createdTool {
-                    case .frame: space.addFrame(worldRect: worldRect)
-                    case .text: space.addText(worldRect: worldRect)
-                    case .select: break
+                    case .frame:
+                        space.addFrame(worldRect: worldRect)
+                    case .text:
+                        // Place the box, then enter inline edit immediately (054 §5.2)
+                        // once the write settles and the new row has a tile id.
+                        space.addText(worldRect: worldRect)
+                        Task {
+                            await space.waitForWrites()
+                            let created = space.content()
+                            if let id = space.selectedItemID,
+                               let tid = created.tileID(forSpaceItemID: id) {
+                                editingWasNew = true
+                                editingTileID = tid
+                            }
+                        }
+                    case .select:
+                        break
                     }
                     tool = .select // one-shot: back to Select after placing
-                })
+                },
+                onTransformChanged: { editBridge.transformDidChange() },
+                onHostReady: { editBridge.host = $0 })
             .id(space.contentVersion)
 
             if space.items.isEmpty { emptyHint }
+
+            // The inline text-editing overlay (2B). Present only while a `.text` tile
+            // is being edited; it repositions itself imperatively via `editBridge`.
+            if let editingTileID, let detail = content.detail(forTileID: editingTileID),
+               detail.item.kind == .text {
+                inlineEditor(tileID: editingTileID, itemID: detail.item.id)
+            }
         }
         // V/F/T ride the canvas container, NOT the `.idle` sub-bar (051 · E-2): a
         // `keyboardShortcut` fires only while rendered, so keeping them here means
@@ -231,6 +273,37 @@ struct SpaceView: View {
         // picker out of the bar for `.single` / `.multi`.
         .background(toolShortcuts)
         .overlay(alignment: .bottom) { actionBar }
+    }
+
+    /// The inline `NSTextView` overlay for the tile being edited (2B). Commit routes
+    /// through the SAME `updateStyle` path 2C uses (one undo step, auto-size + one
+    /// sync); cancel abandons; an empty NEW box is deleted (054 §5.3). Clearing
+    /// ``editingTileID`` removes the overlay and un-blanks the tile's glyphs.
+    @ViewBuilder
+    private func inlineEditor(tileID: Int, itemID: UUID) -> some View {
+        InlineTextEditor(
+            tileID: tileID,
+            style: space.style(forItemID: itemID),
+            wasNewlyCreated: editingWasNew,
+            bridge: editBridge,
+            onCommit: { newText in
+                var style = space.style(forItemID: itemID)
+                style.text = newText
+                space.updateStyle(itemID: itemID, style: style)
+                editingTileID = nil
+                editingWasNew = false
+            },
+            onCancel: {
+                editingTileID = nil
+                editingWasNew = false
+            },
+            onDelete: {
+                space.removeItem(itemID)
+                editingTileID = nil
+                editingWasNew = false
+            })
+        .frame(maxWidth: .infinity, maxHeight: .infinity) // fill the canvas area
+        .id(tileID)
     }
 
     // MARK: - Bottom action bar

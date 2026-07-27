@@ -20,6 +20,9 @@ public struct CanvasView: NSViewRepresentable {
     private let selectedTileIDs: Set<Int>
     private let syncToken: Int
     private let tool: CanvasTool
+    /// The tile an inline text editor is editing (2B · 054 §5.1), or `nil`. Pushed to
+    /// the host so the engine blanks that tile's `CATextLayer` while editing.
+    private let editingTileID: Int?
     private let onActivateTile: ((Int) -> Void)?
     private let onSelectTiles: ((Set<Int>) -> Void)?
     private let onRemoveTiles: ((Set<Int>) -> Void)?
@@ -27,6 +30,14 @@ public struct CanvasView: NSViewRepresentable {
     private let onCopyTiles: ((Set<Int>) -> Void)?
     private let onMoveTile: ((Int, CGPoint) -> Void)?
     private let onCreateElement: ((CanvasTool, CGRect) -> Void)?
+    /// Fired once per transform mutation (2B · 054 §5.1 · R2) so the inline editor
+    /// repositions its overlay imperatively — a plain closure, NOT a `Binding`, so it
+    /// never re-evaluates SwiftUI `body` (R15).
+    private let onTransformChanged: (() -> Void)?
+    /// Handed the freshly-built ``CanvasHostView`` so the app can reach its
+    /// ``CanvasHostView/transform`` + ``CanvasHostView/screenFrame(forTileID:)`` for
+    /// the inline editor. Fires on make (and again if the host is rebuilt via `.id`).
+    private let onHostReady: ((CanvasHostView) -> Void)?
 
     public init(
         provider: any TileProvider,
@@ -34,19 +45,23 @@ public struct CanvasView: NSViewRepresentable {
         selectedTileIDs: Set<Int> = [],
         syncToken: Int = 0,
         tool: CanvasTool = .select,
+        editingTileID: Int? = nil,
         onActivateTile: ((Int) -> Void)? = nil,
         onSelectTiles: ((Set<Int>) -> Void)? = nil,
         onRemoveTiles: ((Set<Int>) -> Void)? = nil,
         onDeleteTiles: ((Set<Int>) -> Void)? = nil,
         onCopyTiles: ((Set<Int>) -> Void)? = nil,
         onMoveTile: ((Int, CGPoint) -> Void)? = nil,
-        onCreateElement: ((CanvasTool, CGRect) -> Void)? = nil
+        onCreateElement: ((CanvasTool, CGRect) -> Void)? = nil,
+        onTransformChanged: (() -> Void)? = nil,
+        onHostReady: ((CanvasHostView) -> Void)? = nil
     ) {
         self.provider = provider
         self.images = images
         self.selectedTileIDs = selectedTileIDs
         self.syncToken = syncToken
         self.tool = tool
+        self.editingTileID = editingTileID
         self.onActivateTile = onActivateTile
         self.onSelectTiles = onSelectTiles
         self.onRemoveTiles = onRemoveTiles
@@ -54,11 +69,14 @@ public struct CanvasView: NSViewRepresentable {
         self.onCopyTiles = onCopyTiles
         self.onMoveTile = onMoveTile
         self.onCreateElement = onCreateElement
+        self.onTransformChanged = onTransformChanged
+        self.onHostReady = onHostReady
     }
 
     public func makeNSView(context: Context) -> CanvasHostView {
         let view = CanvasHostView(provider: provider, images: images)
         apply(to: view)
+        onHostReady?(view) // hand the live host to the app (inline-editor plumbing)
         return view
     }
 
@@ -77,7 +95,9 @@ public struct CanvasView: NSViewRepresentable {
         view.onCopyTiles = onCopyTiles
         view.onMoveTile = onMoveTile
         view.onCreateElement = onCreateElement
+        view.onTransformChanged = onTransformChanged
         view.tool = tool
+        view.editingTileID = editingTileID
         view.syncToken = syncToken
         view.selectedTileIDs = selectedTileIDs
     }

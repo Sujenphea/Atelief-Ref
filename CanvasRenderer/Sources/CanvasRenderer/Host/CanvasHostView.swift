@@ -42,6 +42,33 @@ public final class CanvasHostView: NSView {
     /// rubber-band a new element instead.
     public var tool: CanvasTool = .select
 
+    /// Forwarded from the engine (2B · 054 §5.1 · R2): fired once per transform
+    /// mutation so the app's inline text editor can reposition its overlay
+    /// imperatively, off the SwiftUI diff. `nil` disables it. Wired to the engine in
+    /// ``init`` so any transform source (pan/zoom/setTransform/frameToContent)
+    /// notifies through this one seam.
+    public var onTransformChanged: (() -> Void)?
+
+    /// The tile an app-layer inline editor is editing (2B), or `nil`. Forwarded to
+    /// the engine, which blanks that tile's `CATextLayer` while the `NSTextView`
+    /// overlay is up (054 §5.2) so glyphs aren't doubled.
+    public var editingTileID: Int? {
+        get { engine.editingTileID }
+        set { engine.editingTileID = newValue }
+    }
+
+    /// The current world↔screen transform (2B · 054 §5.1) — read by the inline
+    /// editor to scale its measured overlay size to screen points.
+    public var transform: CanvasTransform { engine.transform }
+
+    /// The on-screen frame a tile is currently drawn at, or `nil` if it isn't
+    /// visible (2B · 054 §5.1). The inline editor positions its `NSTextView` from
+    /// this on each ``onTransformChanged``; a `nil` result means the tile scrolled
+    /// out of the viewport → commit-and-exit (054 §5.4).
+    public func screenFrame(forTileID id: Int) -> CGRect? {
+        engine.currentScreenFrame(forTileID: id)
+    }
+
     // MARK: Element-create tracking (rubber-band)
 
     /// Screen point of the create `mouseDown`, or `nil` when not creating.
@@ -165,6 +192,10 @@ public final class CanvasHostView: NSView {
         layer = engine.rootLayer
         wantsLayer = true
         engine.rootLayer.frame = bounds
+        // Forward the engine-sourced transform notification outward (2B · 054 §5.1):
+        // any transform mutation (pan/zoom/setTransform/frameToContent) reaches the
+        // app through this one seam.
+        engine.onTransformChanged = { [weak self] in self?.onTransformChanged?() }
         engine.sync()
     }
 
