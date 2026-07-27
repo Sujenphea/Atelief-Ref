@@ -77,7 +77,10 @@ final class CanvasBenchmark: XCTestCase {
         let provider = VectorBenchProvider(count: elementCount)
         let engine = CanvasEngine(
             provider: provider, images: FixtureImageSet(count: 1, seed: 1),
-            transform: CanvasTransform(scale: 0.5, translation: CGPoint(x: 720, y: 450)),
+            // 0.25 (not 0.5): the grid is 320×260-pitched, so a half-scale camera
+            // only ever covered ~30 elements and the ">50 real content" guard below
+            // could not pass. This zoom actually fills the viewport with vectors.
+            transform: CanvasTransform(scale: 0.25, translation: CGPoint(x: 720, y: 450)),
             viewportSize: Self.viewport)
         engine.sync()
         XCTAssertGreaterThan(engine.activeLayerCount, 50, "benchmark must run over real content")
@@ -86,16 +89,114 @@ final class CanvasBenchmark: XCTestCase {
         let clock = ContinuousClock()
         let elapsed = clock.measure {
             for i in 0..<frames {
+                // Oscillate BOTH axes. A constant +3 y-step drifted 720 points
+                // over the run, walking the board clean off the viewport so the
+                // tail of the benchmark measured an empty scene.
                 let dx: CGFloat = (i % 2 == 0) ? -6 : 6
-                engine.pan(byScreenDelta: CGSize(width: dx, height: 3))
+                let dy: CGFloat = (i % 2 == 0) ? -3 : 3
+                engine.pan(byScreenDelta: CGSize(width: dx, height: dy))
             }
         }
         let perFrameMs = elapsed.milliseconds / Double(frames)
+        XCTAssertGreaterThan(engine.activeLayerCount, 50, "board must stay in view for the whole run")
         print("[canvas-benchmark] vector elements=\(engine.activeLayerCount) "
               + "textOverlays=\(engine.textOverlayCount) "
               + "per-frame=\(String(format: "%.3f", perFrameMs))ms budget=\(Self.frameBudgetMs)ms")
         XCTAssertLessThan(perFrameMs, Self.frameBudgetMs,
                           "per-frame vector sync exceeds the 120fps budget")
+    }
+
+    // MARK: - 060 Step 4 gate: zoom-stable text
+
+    /// The gate 061 Step 4 rides on. A worst-case board — every tile an
+    /// OVERFLOWING text box, the case that used to reflow — swept across zooms on
+    /// the CoreText path.
+    ///
+    /// Two costs are measured separately, because they land in different places:
+    ///
+    /// 1. **Sync** — the engine's per-frame work (cull, shape lookup, layer
+    ///    geometry). This is all `sync()` does; it never rasterizes.
+    /// 2. **Raster** — `draw(in:)` for every visible text layer. Core Animation
+    ///    normally runs this on the render server AFTER the frame, so a sync-only
+    ///    benchmark would silently miss the entire cost of the new path. Here it
+    ///    is driven explicitly into a bitmap so it shows up.
+    ///
+    /// A zoom sweep is the adversarial case: every frame changes the layers'
+    /// on-screen size, so every frame re-rasterizes. A pan re-rasterizes nothing.
+    @MainActor
+    func testGlyphTextWithinBudgetAcrossZooms() {
+        let engine = makeTextBenchEngine()
+        let overlays = engine.textOverlayCount
+        XCTAssertGreaterThan(overlays, 80, "benchmark must run over real content")
+
+        let syncMs = measureZoomSweepSyncMs(engine)
+        let rasterMs = measureRasterMs(engine)
+
+        print("[canvas-benchmark] glyph text overlays=\(overlays) "
+              + "sync=\(String(format: "%.3f", syncMs))ms "
+              + "raster=\(String(format: "%.3f", rasterMs))ms "
+              + "total=\(String(format: "%.3f", syncMs + rasterMs))ms "
+              + "budget=\(Self.frameBudgetMs)ms")
+
+        XCTAssertLessThan(syncMs + rasterMs, Self.frameBudgetMs,
+                          "per-frame zoom-sweep sync+raster exceeds the 120fps budget")
+    }
+
+    /// A board of text tiles whose strings comfortably overflow their boxes, so
+    /// every tile exercises wrapping AND end-truncation.
+    @MainActor
+    private func makeTextBenchEngine() -> CanvasEngine {
+        let engine = CanvasEngine(
+            provider: TextBenchProvider(count: 400), images: FixtureImageSet(count: 1, seed: 1),
+            // Half scale so the viewport holds ~120 overflowing boxes at once —
+            // a genuinely dense text board, not a handful of notes.
+            transform: CanvasTransform(scale: 0.5, translation: CGPoint(x: 40, y: 40)),
+            viewportSize: Self.viewport)
+        engine.sync()
+        return engine
+    }
+
+    /// Average `sync()` cost per frame while zooming in and out continuously.
+    @MainActor
+    private func measureZoomSweepSyncMs(_ engine: CanvasEngine) -> Double {
+        let frames = 240
+        let anchor = CGPoint(x: Self.viewport.width / 2, y: Self.viewport.height / 2)
+        let clock = ContinuousClock()
+        let elapsed = clock.measure {
+            for i in 0..<frames {
+                // Oscillate so the sweep stays in a sane zoom band while changing
+                // scale every single frame.
+                let factor: CGFloat = (i / 30) % 2 == 0 ? 1.02 : (1 / 1.02)
+                engine.zoom(by: factor, aroundScreenPoint: anchor)
+            }
+        }
+        return elapsed.milliseconds / Double(frames)
+    }
+
+    /// Average cost of rasterizing every visible glyph overlay once — the work
+    /// Core Animation does per frame whenever the on-screen size changed.
+    @MainActor
+    private func measureRasterMs(_ engine: CanvasEngine) -> Double {
+        let layers = (0..<400).compactMap { engine.textLayer(forTileID: $0) }
+        guard !layers.isEmpty else { return 0 }
+        guard let ctx = CGContext(
+            data: nil, width: Int(Self.viewport.width), height: Int(Self.viewport.height),
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return 0 }
+
+        let passes = 20
+        let clock = ContinuousClock()
+        let elapsed = clock.measure {
+            for _ in 0..<passes {
+                for layer in layers {
+                    ctx.saveGState()
+                    layer.draw(in: ctx)
+                    ctx.restoreGState()
+                }
+            }
+        }
+        return elapsed.milliseconds / Double(passes)
     }
 
     /// Records clock + memory metrics for regression baselines; also asserts the
@@ -153,6 +254,40 @@ private struct VectorBenchProvider: TileProvider {
 
     func content(for tile: Tile) -> TileContent {
         kinds.indices.contains(tile.id) ? kinds[tile.id] : .image
+    }
+}
+
+/// The 060 worst case: a dense grid of text tiles whose strings overflow their
+/// boxes, so every tile wraps to several lines and then end-truncates.
+private struct TextBenchProvider: TileProvider {
+    let tiles: [Tile]
+    private let styles: [TextStyle]
+
+    init(count: Int) {
+        let cols = 12
+        let body = "The quick brown fox jumps over the lazy dog, and then keeps "
+            + "running well past the bottom edge of this box so the layout has to "
+            + "wrap several times and truncate."
+        var tiles: [Tile] = []
+        var styles: [TextStyle] = []
+        for i in 0..<count {
+            let (r, c) = (i / cols, i % cols)
+            tiles.append(Tile(
+                id: i, x: Double(c) * 240, y: Double(r) * 180, w: 220, h: 160, z: i))
+            styles.append(TextStyle(
+                // Vary the string per tile so the shaping memo can't serve every
+                // tile from one entry — a board of identical text would flatter it.
+                string: "Note \(i). " + body,
+                fontSize: 15 + Double(i % 4),
+                color: RGBAColor(red: 0.1, green: 0.1, blue: 0.1),
+                alignment: [.left, .center, .right][i % 3]))
+        }
+        self.tiles = tiles
+        self.styles = styles
+    }
+
+    func content(for tile: Tile) -> TileContent {
+        styles.indices.contains(tile.id) ? .text(styles[tile.id]) : .image
     }
 }
 

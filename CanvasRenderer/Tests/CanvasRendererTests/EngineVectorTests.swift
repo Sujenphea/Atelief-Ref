@@ -127,7 +127,18 @@ struct EngineVectorTests {
 
     // MARK: Rich text style (2A) — family / weight / alignment applied
 
-    @Test("setTextOverlay applies the resolved font family + alignment mode")
+    /// The typeface a shaped run actually carries — read off the shaped line
+    /// rather than a layer property, so this asserts the font the glyphs are
+    /// really drawn with (060 folded layout and drawing onto one shaping call).
+    private func fontFamily(of shaped: ShapedText) -> String? {
+        guard let line = shaped.lines.first,
+              let run = (CTLineGetGlyphRuns(line.line) as? [CTRun])?.first,
+              let attributes = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any],
+              let font = attributes[.font] else { return nil }
+        return CTFontCopyFamilyName(font as! CTFont) as String
+    }
+
+    @Test("setTextOverlay shapes with the resolved font family + alignment")
     func overlayAppliesFontAndAlignment() {
         var p = VectorProvider(tiles: row)
         p.texts = [2: TextStyle(
@@ -135,15 +146,12 @@ struct EngineVectorTests {
             fontFamily: "Helvetica", weight: .bold, alignment: .center)]
         let e = engine(p)
         e.sync()
-        let layer = e.textLayer(forTileID: 2)
-        #expect(layer != nil)
-        #expect(layer?.alignmentMode == .center)
-        // The layer's font is the CanvasFont-resolved typeface (the requested family).
-        if let font = layer?.font {
-            #expect(CTFontCopyFamilyName(font as! CTFont) as String == "Helvetica")
-        } else {
-            Issue.record("text layer has no font")
+        guard let shaped = e.textLayer(forTileID: 2)?.shaped else {
+            Issue.record("text layer has no layout"); return
         }
+        #expect(fontFamily(of: shaped) == "Helvetica")
+        // Centring shows up as a positive pen offset inside the content width.
+        #expect(shaped.lines[0].origin.x > 0)
     }
 
     @Test("a nil family / default weight overlay still resolves a system font")
@@ -152,9 +160,11 @@ struct EngineVectorTests {
         p.texts = [1: TextStyle(string: "plain", fontSize: 18, color: RGBAColor(red: 0, green: 0, blue: 0))]
         let e = engine(p)
         e.sync()
-        let layer = e.textLayer(forTileID: 1)
-        #expect(layer?.alignmentMode == .left)
-        #expect(layer?.font != nil) // never blank — system fallback
+        guard let shaped = e.textLayer(forTileID: 1)?.shaped else {
+            Issue.record("text layer has no layout"); return
+        }
+        #expect(fontFamily(of: shaped) != nil)   // never blank — system fallback
+        #expect(shaped.lines[0].origin.x == 0)   // default alignment is leading
     }
 
     // MARK: Padding reconciliation (2C · 054 §4.4 · R12)

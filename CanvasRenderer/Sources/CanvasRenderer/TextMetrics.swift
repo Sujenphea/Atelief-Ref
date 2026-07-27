@@ -109,13 +109,3 @@ extension FontWeight {
     }
 }
 
-extension TextAlignment {
-    /// The `CATextLayer` alignment mode for this alignment.
-    var caAlignment: CATextLayerAlignmentMode {
-        switch self {
-        case .left: return .left
-        case .center: return .center
-        case .right: return .right
-        }
-    }
-}

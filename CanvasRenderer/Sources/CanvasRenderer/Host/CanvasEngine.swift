@@ -57,39 +57,13 @@ public final class CanvasEngine {
     /// Text overlay layers for freeform `.text` tiles and `.frame` labels (E3),
     /// keyed by tile id — `CATextLayer` siblings OUTSIDE the recycled ``LayerPool``
     /// (decision T3), created/dropped like ``badges``. A tile has at most one.
-    private var textLayers: [Int: CATextLayer] = [:]
-    /// The 060 replacement for ``textLayers``: one cached world-space layout per
-    /// tile, rasterized at the current zoom. Exactly one of the two dictionaries
-    /// is populated, chosen by ``useCoreTextGlyphs``.
-    private var glyphLayers: [Int: TextRenderLayer] = [:]
+    private var textLayers: [Int: TextRenderLayer] = [:]
 
     /// Backing scale (points → pixels) for crisp vector text. The window host sets
     /// it from `backingScaleFactor`; defaults to 2 so headless/text tests still
     /// rasterize at Retina density.
     public var backingScale: CGFloat = 2
 
-    /// Route `.text` tiles and frame labels through the zoom-stable
-    /// ``TextRenderLayer`` (060) instead of `CATextLayer`.
-    ///
-    /// `CATextLayer` fuses layout and rasterization behind its `fontSize`, so
-    /// feeding it `worldFontSize × zoom` re-breaks wrapped lines every frame —
-    /// the reflow 059 reported. The replacement shapes once in world space and
-    /// only re-rasterizes. Off by default while it lands (061 Step 3), so the old
-    /// path stays a one-line rollback; flipped on in Step 4.
-    ///
-    /// An INSTANCE flag, not a static one: the test suite runs in parallel, and a
-    /// process-wide toggle would race between suites.
-    public var useCoreTextGlyphs: Bool = false {
-        didSet {
-            guard useCoreTextGlyphs != oldValue else { return }
-            // Tear down whichever path just went inactive, then rebuild.
-            for (_, layer) in textLayers { layer.removeFromSuperlayer() }
-            for (_, layer) in glyphLayers { layer.removeFromSuperlayer() }
-            textLayers.removeAll()
-            glyphLayers.removeAll()
-            sync()
-        }
-    }
     /// The ▶ glyph, rendered once and shared by every badge layer's `contents`.
     private lazy var playBadgeImage: CGImage? = Self.makePlayBadgeImage()
 
@@ -356,8 +330,6 @@ public final class CanvasEngine {
             badges[id] = nil
             textLayers[id]?.removeFromSuperlayer()
             textLayers[id] = nil
-            glyphLayers[id]?.removeFromSuperlayer()
-            glyphLayers[id] = nil
             selectionLayers[id]?.removeFromSuperlayer()
             selectionLayers[id] = nil
         }
@@ -517,15 +489,10 @@ public final class CanvasEngine {
             : min(6, screenFrame.width * 0.04)
         let frame = screenFrame.insetBy(dx: pad, dy: pad)
         let z = CGFloat(tile.z) + 0.25 // above its own tile, below its badge
-        if useCoreTextGlyphs {
-            setGlyphOverlay(style, for: tile, frame: frame, worldPadded: worldPadded, zPosition: z)
-        } else {
-            setLegacyTextOverlay(style, for: tile, frame: frame, zPosition: z)
-        }
+        setGlyphOverlay(style, for: tile, frame: frame, worldPadded: worldPadded, zPosition: z)
     }
 
-    /// The 060 path: shape once in world space, then rasterize that layout at the
-    /// current zoom.
+    /// Shape once in world space, then rasterize that layout at the current zoom.
     private func setGlyphOverlay(_ style: TextStyle, for tile: Tile, frame: CGRect,
                                  worldPadded: Bool, zPosition: CGFloat) {
         // The shaping box in WORLD units, taken from the tile's world size — NOT
@@ -547,11 +514,11 @@ public final class CanvasEngine {
             maxHeight: max(1, worldSize.height - 2 * inset))
 
         let layer: TextRenderLayer
-        if let existing = glyphLayers[tile.id] {
+        if let existing = textLayers[tile.id] {
             layer = existing
         } else {
             layer = TextRenderLayer()
-            glyphLayers[tile.id] = layer
+            textLayers[tile.id] = layer
             rootLayer.addSublayer(layer)
         }
         layer.contentsScale = max(1, backingScale)
@@ -591,52 +558,20 @@ public final class CanvasEngine {
             y: (clamped.minY - frame.minY) / transform.scale))
     }
 
-    /// The pre-060 path, kept for rollback until Step 4 retires it.
-    private func setLegacyTextOverlay(_ style: TextStyle, for tile: Tile,
-                                      frame: CGRect, zPosition: CGFloat) {
-        let text: CATextLayer
-        if let existing = textLayers[tile.id] {
-            text = existing
-        } else {
-            text = CATextLayer()
-            text.isWrapped = true
-            text.truncationMode = .end
-            text.alignmentMode = .left
-            textLayers[tile.id] = text
-            rootLayer.addSublayer(text)
-        }
-        text.contentsScale = max(1, backingScale)
-        text.string = style.string
-        // Typeface is cached by (family, weight); only fontSize is per-frame (cheap).
-        text.font = CanvasFont.resolve(family: style.fontFamily, weight: style.weight)
-        text.fontSize = CGFloat(max(1, style.fontSize)) * transform.scale
-        text.alignmentMode = style.alignment.caAlignment
-        text.foregroundColor = style.color.cgColor
-        text.frame = frame
-        text.zPosition = zPosition
-    }
-
-    /// Drop a tile's text overlay from whichever path owns it.
+    /// Drop a tile's text overlay.
     private func removeTextOverlay(_ id: Int) {
         textLayers[id]?.removeFromSuperlayer()
         textLayers[id] = nil
-        glyphLayers[id]?.removeFromSuperlayer()
-        glyphLayers[id] = nil
     }
 
     /// Number of text overlays currently attached (introspection for E3 tests —
-    /// mirrors the badge-count checks the video tests use). Only one path is ever
-    /// populated, so this counts the active one.
-    public var textOverlayCount: Int { textLayers.count + glyphLayers.count }
+    /// mirrors the badge-count checks the video tests use).
+    public var textOverlayCount: Int { textLayers.count }
 
-    /// The `CATextLayer` overlay for a tile, if attached (introspection for 2A
-    /// tests — asserts the applied font / alignment). Mirrors ``textOverlayCount``.
-    /// `nil` when ``useCoreTextGlyphs`` is on — see ``glyphLayer(forTileID:)``.
-    public func textLayer(forTileID id: Int) -> CATextLayer? { textLayers[id] }
-
-    /// The 060 text overlay for a tile, if attached — the ``useCoreTextGlyphs``
-    /// counterpart of ``textLayer(forTileID:)`` (introspection for 060 tests).
-    func glyphLayer(forTileID id: Int) -> TextRenderLayer? { glyphLayers[id] }
+    /// The text overlay for a tile, if attached. Introspection for the E3 / 2A /
+    /// 060 tests, so it is internal — the layer type is a renderer detail no app
+    /// caller should reach for (none does). Mirrors ``textOverlayCount``.
+    func textLayer(forTileID id: Int) -> TextRenderLayer? { textLayers[id] }
 
     // MARK: Badges + hit-testing
 
