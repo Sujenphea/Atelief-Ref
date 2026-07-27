@@ -150,6 +150,20 @@ final class SpaceContent: TileProvider, TileImageSource {
         detail(forTileID: id)?.item.id
     }
 
+    /// The drag-OUT payload for a set of dragged tiles (059 · SP7): the asset ids of
+    /// the ASSET tiles among them, z-ordered (matching ⌘C copy), with a
+    /// membership-less source (`nilSourceID`) so a drop on a board / collection ADDS
+    /// a copy — never a move. Element tiles (frame / text, no asset) are skipped;
+    /// `nil` when no dragged tile carries an asset (nothing to drag out).
+    func dragOutPayload(forTileIDs ids: Set<Int>) -> AssetDragPayload? {
+        let assetIDs = ids
+            .compactMap { detail(forTileID: $0) }
+            .sorted { $0.item.z < $1.item.z }
+            .compactMap { $0.asset?.id }
+        guard !assetIDs.isEmpty else { return nil }
+        return AssetDragPayload(assetIDs: assetIDs, sourceCollectionID: AssetDragPayload.nilSourceID)
+    }
+
     /// The tile id showing the space_item `id`, or `nil` if it isn't on this
     /// board — lets the screen reflect the shared selection into the highlight.
     func tileID(forSpaceItemID id: UUID) -> Int? {

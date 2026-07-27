@@ -196,29 +196,35 @@ schema).
 
 ## Phase SP7 — Board→board drag-out (M) · the canvas as a drag SOURCE
 
-The destination side already accepts a membership-less `AssetDragPayload` (SP2), so
-this is purely the SOURCE half: a `space_item` tile drag must start an
-`NSDraggingSession` that writes an `AssetDragPayload` (assetIDs of the dragged
-tiles, `sourceCollectionID = nilSourceID`) onto the drag pasteboard, so dropping on
-another board (or a collection row / sidebar) adds — never moves — the reference.
+Boards open one at a time, so board→board happens by dragging a canvas tile onto a
+**sidebar space row** — which already accepts a membership-less `AssetDragPayload`
+and calls `addAssetsToSpace` (SP2 destination + the shipped sidebar drop). So SP7 is
+purely the SOURCE half: an ⌥-drag on a tile starts an `NSDraggingSession` writing an
+`AssetDragPayload` (assetIDs of the dragged tiles, `sourceCollectionID = nilSourceID`)
+so a sidebar space / collection row ADDS a copy — never moves — the reference.
 
-1. **Distinguish move-vs-drag-out.** `CanvasHostView`'s tile drag is today an
-   in-view move (`onMoveTile`). A drag that leaves the view bounds must instead
-   begin an AppKit `NSDraggingSession` (mirroring the grid's drag-out, 011). Gate:
-   a within-board drag still moves the tile (no regression); a drag that exits
-   starts a session.
-2. **Payload source (app side).** A new `onBeginTileDrag(Set<Int>) -> NSPasteboardItem?`
-   seam: the app maps tile ids → asset ids and returns an `AssetDragPayload`
-   pasteboard item (nil source). Package stays payload-agnostic (same layering as
-   the drop seam).
-3. **Undo.** Board→board is additive on the destination (a normal S2 placement +
-   undo); the source board is untouched (a copy, not a move) — so no cross-board
-   compound undo. Dropping onto the SAME board is a no-op/refused (would duplicate
-   in place).
+1. **Trigger revised: ⌥-drag, not leave-bounds.** The original plan started a
+   session when a tile drag *left the view bounds*. Implementation showed that's
+   jarring — the tile follows the cursor as an in-view move, then must **snap back**
+   to origin when the cursor crosses the edge (board→board is additive, so the
+   source stays). ⌥-drag avoids it entirely: with ⌥ held, the tile drag is a
+   drag-out session **from the start** (no in-view move → no snap-back), and ⌥=copy
+   matches the additive semantics. Plain drag still moves in-view (no regression).
+2. **Payload source (app side).** `CanvasHostView.onBeginTileDragOut(Set<Int>) ->
+   NSPasteboardItem?`: the app maps tile ids → asset ids and returns an
+   `AssetDragPayload` pasteboard item (nil source). Package stays payload-agnostic
+   (same layering as the drop seam). `SpaceContent.dragOutPayload(forTileIDs:)` is
+   the pure, tested mapping (z-ordered, elements skipped).
+3. **Self-drop guard.** `CanvasHostView` is now an `NSDraggingSource`; while it owns
+   an active drag-out session (`isActiveDragSource`) it refuses drops back onto
+   itself, so a drag-out dropped on the SAME board can't duplicate in place.
+4. **Undo.** Board→board is additive on the destination (a normal S2 placement +
+   undo via the sidebar path); the source board is untouched (a copy) — no
+   cross-board compound undo.
 
-**Tests:** move-vs-drag-out threshold (in-bounds → move, out-of-bounds → session);
-the emitted payload carries the right asset ids + nil source; a board→board drop
-adds on the target and leaves the source intact; same-board drop refused.
+**Tests:** `dragOutPayload` carries the right asset ids + nil source, z-ordered,
+elements skipped, nil when no asset tiles. (The AppKit session / self-drop / drag
+image are manual-runbook — they need a live drag.)
 
-**Gate:** a tile dragged from board A onto board B adds it to B (centred on the
-drop), A unchanged; within-A drag still just moves.
+**Gate:** ⌥-dragging a board tile onto a sidebar space row adds it there, the source
+board unchanged; a plain drag still just moves the tile in place.

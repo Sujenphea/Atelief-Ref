@@ -233,6 +233,29 @@ struct SpaceContentTests {
         #expect(content.spaceItemID(forTileID: 0) == a.item.id)
     }
 
+    @Test("dragOutPayload: z-ordered asset ids, membership-less source, skips elements")
+    func dragOutPayloadAssetsOnly() {
+        let a = assetDetail(z: 1, dim: 120)   // z 1
+        let b = assetDetail(z: 0, dim: 120)   // z 0 — earlier in z-order
+        let element = elementDetail()          // no asset — skipped
+        let content = makeContent([a, b, element])
+        let allTiles = Set(0..<3)
+
+        let payload = content.dragOutPayload(forTileIDs: allTiles)
+        #expect(payload != nil)
+        // z-ordered (b z0 before a z1); the element contributes nothing.
+        #expect(payload?.assetIDs == [b.asset!.id, a.asset!.id])
+        // Membership-less, so a drop on a board / collection COPIES (never moves).
+        #expect(payload?.sourceCollectionID == AssetDragPayload.nilSourceID)
+    }
+
+    @Test("dragOutPayload is nil when no dragged tile carries an asset")
+    func dragOutPayloadNilForElementsOnly() {
+        let content = makeContent([elementDetail(), frameDetail(x: 0, y: 0, w: 10, h: 10)])
+        #expect(content.dragOutPayload(forTileIDs: Set(0..<2)) == nil)
+        #expect(content.dragOutPayload(forTileIDs: []) == nil)
+    }
+
     @Test("in-memory setPlacement moves a tile, keeping w/h/z")
     func setPlacement() {
         let a = assetDetail(z: 3, dim: 120)

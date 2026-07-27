@@ -297,6 +297,12 @@ struct SpaceView: View {
                 // with nothing importable is a silent no-op.
                 onPaste: { pasteboard, worldPoint in
                     importExternal(from: pasteboard, at: worldPoint)
+                },
+                // SP7: ⌥-drag a tile out to a sidebar space / collection row (adds a
+                // copy there). Maps the carried tiles → an asset-drag payload; nil
+                // (no asset tiles) leaves it an ordinary in-view move.
+                onBeginTileDragOut: { tileIDs in
+                    content.dragOutPayload(forTileIDs: tileIDs)?.makePasteboardItem()
                 })
             .id(space.contentVersion)
 
