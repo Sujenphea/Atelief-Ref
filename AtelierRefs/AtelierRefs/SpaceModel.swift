@@ -571,6 +571,20 @@ final class SpaceModel: ObservableObject {
         }
     }
 
+    /// Import EXTERNAL drop content (files / images / a web URL) and place it
+    /// centred on `worldPoint` (059 · SP3 / S1 · 10A). `ingest` is the async step
+    /// that turns the decoded drop into placeable assets — production binds
+    /// `IngestionModel.importInputs` / `importRemoteURL`; tests inject a fake. The
+    /// ingest runs OFF the serial write chain so a slow download never freezes board
+    /// edits (undo / move); only the fast placement is enqueued, once the assets are
+    /// ready. A drop that yields no assets is a silent no-op (the ingest step
+    /// already reported why via `status`). Awaitable so tests can settle it.
+    func importAndPlace(at worldPoint: CGPoint, ingest: @escaping () async -> [Asset]) async {
+        let assets = await ingest()
+        guard !assets.isEmpty else { return }
+        enqueue { await self.insertPlaced(assets, seededAt: .point(worldPoint)) }
+    }
+
     /// The ONE placement writer (059 · SP2 / 6A): seed → `flowIn` → batch insert in
     /// one transaction (13A) → placement-only undo (7A / S2) → a single reload
     /// (14A). Runs inside the serial write chain, so it reads `items` at its own

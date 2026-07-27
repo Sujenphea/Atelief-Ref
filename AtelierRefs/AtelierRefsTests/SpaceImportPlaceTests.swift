@@ -126,4 +126,64 @@ struct SpaceImportPlaceTests {
         #expect(model.items.isEmpty)
         #expect(!model.canUndo)
     }
+
+    // MARK: importAndPlace — external drop seam (SP3 / 10A, injected fake ingest)
+
+    @Test("importAndPlace places the ingested assets centred on the drop point")
+    func importAndPlaceSuccess() async throws {
+        let (model, services, _) = try await makeModel()
+        let a1 = try await makeAsset(services, hash: "ee0001", url: "https://e.com/e1")
+        let a2 = try await makeAsset(services, hash: "ee0002", url: "https://e.com/e2")
+
+        // Fake ingest: stands in for IngestionModel.importInputs, returning assets
+        // that already exist in the store (as a real ingest would).
+        await model.importAndPlace(at: CGPoint(x: 300, y: 400)) { [a1, a2] }
+        await model.waitForWrites()
+        #expect(model.items.count == 2)
+        // The block's bounding box centres on the point.
+        let minX = model.items.map(\.item.x).min()!
+        let maxX = model.items.map { $0.item.x + $0.item.w }.max()!
+        #expect(abs((minX + maxX) / 2 - 300) < 1e-6)
+        #expect(model.canUndo)
+    }
+
+    @Test("importAndPlace with a zero-result ingest is a silent no-op")
+    func importAndPlaceZeroResults() async throws {
+        let (model, _, _) = try await makeModel()
+        await model.importAndPlace(at: CGPoint(x: 0, y: 0)) { [] }
+        await model.waitForWrites()
+        #expect(model.items.isEmpty)
+        #expect(!model.canUndo)              // nothing to undo when nothing imported
+    }
+
+    @Test("importAndPlace when the space was deleted mid-import: notFound, no crash")
+    func importAndPlaceSpaceDeleted() async throws {
+        let (model, services, spaceID) = try await makeModel()
+        let a = try await makeAsset(services, hash: "ff0001", url: "https://e.com/f")
+
+        // The ingest resolves an asset, but the space is gone by the time the
+        // placement runs (a board closed / deleted mid-import). The batch insert
+        // throws .notFound; insertPlaced catches it — no crash, no placement.
+        try await services.deleteSpace(id: spaceID)
+        await model.importAndPlace(at: CGPoint(x: 0, y: 0)) { [a] }
+        await model.waitForWrites()
+        #expect(model.items.isEmpty)
+        #expect(!model.canUndo)              // failed insert registers no undo step
+    }
+
+    @Test("importAndPlace is additive + undoable; undo keeps the asset")
+    func importAndPlaceUndoKeepsAsset() async throws {
+        let (model, services, _) = try await makeModel()
+        let a = try await makeAsset(services, hash: "ff0002", url: "https://e.com/g")
+
+        await model.importAndPlace(at: CGPoint(x: 10, y: 10)) { [a] }
+        await model.waitForWrites()
+        #expect(model.items.count == 1)
+
+        model.undo()
+        await model.waitForWrites()
+        #expect(model.items.isEmpty)
+        let survivor = try await services.getAsset(id: a.id)
+        #expect(survivor.asset.id == a.id)   // placement-only undo; asset untouched
+    }
 }

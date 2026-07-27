@@ -257,24 +257,54 @@ struct SpaceView: View {
                 },
                 onTransformChanged: { editBridge.transformDidChange() },
                 onHostReady: { editBridge.host = $0 },
-                // SP2 / S2: accept an in-app asset drag (grid / library / another
-                // board) and place it centred on the drop point. External import
-                // (files / images / URLs) is SP3 — refused here for now.
-                acceptedDropTypes: [AssetDragPayload.pasteboardType],
+                // Drop target (SP2 · S2 + SP3 · S1). We register the app-private
+                // asset-drag type PLUS the external file / image / URL types, so
+                // both an in-app reference drag and a Finder/browser drop land here.
+                acceptedDropTypes: [
+                    AssetDragPayload.pasteboardType, .fileURL, .png, .tiff, .URL,
+                ],
                 onDragEntered: { pasteboard in
-                    guard let payload = AssetDragPayload.decode(from: pasteboard),
-                          case .place = canvasDropRoute(.assetDrag(payload)) else { return [] }
-                    return .copy
+                    // An .assetIDs drag is ONLY ever a placement (never external) —
+                    // accept iff it routes to place; otherwise fall to the external
+                    // importable-content check.
+                    if let payload = AssetDragPayload.decode(from: pasteboard) {
+                        if case .place = canvasDropRoute(.assetDrag(payload)) { return .copy }
+                        return []
+                    }
+                    return ImportPasteboard.hasImportableContent(on: pasteboard) ? .copy : []
                 },
                 onDrop: { pasteboard, worldPoint in
-                    guard let payload = AssetDragPayload.decode(from: pasteboard) else { return false }
-                    switch canvasDropRoute(.assetDrag(payload)) {
-                    case let .place(assetIDs):
+                    // 1. An INTERNAL drag carries .assetIDs AND (since drag-out, 011)
+                    //    file promises — re-ingesting our own promised file would
+                    //    duplicate the asset. So an .assetIDs drag is ONLY a
+                    //    placement, never an external import (mirror handleDrop's
+                    //    guard); an empty marker is refused, never falls through.
+                    if let payload = AssetDragPayload.decode(from: pasteboard) {
+                        guard case let .place(assetIDs) = canvasDropRoute(.assetDrag(payload)) else {
+                            return false
+                        }
                         space.placeDroppedAssets(ids: assetIDs, at: worldPoint)
                         return true
-                    case .ingestThenPlace, .reject:
+                    }
+                    // 2. External content: decode into Unsorted, ingest, place at the
+                    //    drop point. The decode + route are pure/tested; the ingest
+                    //    step is bound to the model's shared import core (SP3 · 1A).
+                    let folder = model.unsortedFolderID
+                    let inputs = DirectInputReader.inputs(from: pasteboard, into: folder, now: Date())
+                    let webURL = ImportPasteboard.firstWebURL(on: pasteboard)
+                    guard case .ingestThenPlace = canvasDropRoute(
+                        .external(hasImportableType: !inputs.isEmpty || webURL != nil)) else {
+                        model.reportUnreadableDrop()
                         return false
                     }
+                    Task {
+                        await space.importAndPlace(at: worldPoint) {
+                            if !inputs.isEmpty { return await model.importInputs(inputs) }
+                            if let webURL { return await model.importRemoteURL(webURL, into: folder) }
+                            return []
+                        }
+                    }
+                    return true
                 })
             .id(space.contentVersion)
 
@@ -293,6 +323,14 @@ struct SpaceView: View {
         // picker out of the bar for `.single` / `.multi`.
         .background(toolShortcuts)
         .overlay(alignment: .bottom) { actionBar }
+        // Live import feedback for an external drop (059 · SP3 / 5A) — the SAME
+        // floating pill the collection grid shows, driven by the shared
+        // `IngestionModel.progress`. Top-aligned so it never collides with the
+        // bottom action bar.
+        .overlay(alignment: .top) {
+            ImportProgressPill(progress: model.progress)
+                .padding(.top, Theme.Spacing.md)
+        }
     }
 
     /// The inline `NSTextView` overlay for the tile being edited (2B). Commit routes

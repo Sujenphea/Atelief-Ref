@@ -1995,35 +1995,53 @@ final class IngestionModel: ObservableObject {
     /// at all — folded into the completion status so a partial drop reports "N
     /// imported, M couldn't be read" rather than dropping them silently (7A).
     func run(inputs: [IngestInput], undecoded: Int = 0) {
-        guard isReady, let coordinator, !inputs.isEmpty else { return }
+        guard isReady, coordinator != nil, !inputs.isEmpty else { return }
+        Task {
+            _ = await importInputs(inputs, undecoded: undecoded)
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+        }
+    }
+
+    /// The awaitable ingest CORE shared by the grid path (``run``, fire-and-forget)
+    /// and the canvas drop path (059 · SP3 / 1A·2A — `await` → place). Runs the
+    /// batch through the coordinator, drives `progress` / `status`, and RETURNS the
+    /// dedup-resolved assets in input order. Assets are collapsed by id so a
+    /// same-file-twice drop yields ONE asset (059 · Q2). Each input already carries
+    /// its target folder (baked in at decode), so this takes no folder. Empty batch
+    /// → `[]` with no status churn. Does NOT reload the grid — that stays with the
+    /// caller, so the canvas can place instead of refreshing a folder it isn't on.
+    @discardableResult
+    func importInputs(_ inputs: [IngestInput], undecoded: Int = 0) async -> [Asset] {
+        guard let coordinator, !inputs.isEmpty else { return [] }
         let total = inputs.count
         progress = Progress(completed: 0, total: total)
         status = "Importing \(total)…"
 
-        Task {
-            let outcomes = await coordinator.ingest(inputs) { completed, total in
-                Task { @MainActor [weak self] in
-                    self?.progress = Progress(completed: completed, total: total)
-                }
+        let outcomes = await coordinator.ingest(inputs) { completed, total in
+            Task { @MainActor [weak self] in
+                self?.progress = Progress(completed: completed, total: total)
             }
-
-            var imported = 0
-            var failures = 0
-            for outcome in outcomes {
-                switch outcome {
-                case .ingested: imported += 1
-                case .failed: failures += 1
-                case .cancelled: break
-                }
-            }
-
-            progress = nil
-            status = Self.importStatus(
-                imported: imported, failures: failures, undecoded: undecoded)
-
-            await refreshFolders()
-            loadContents(of: selectedFolderID)
         }
+
+        var assets: [Asset] = []
+        var seen: Set<UUID> = []
+        var imported = 0
+        var failures = 0
+        for outcome in outcomes {
+            switch outcome {
+            case let .ingested(asset, _):
+                imported += 1
+                if seen.insert(asset.id).inserted { assets.append(asset) }
+            case .failed: failures += 1
+            case .cancelled: break
+            }
+        }
+
+        progress = nil
+        status = Self.importStatus(
+            imported: imported, failures: failures, undecoded: undecoded)
+        return assets
     }
 
     /// Compose the completion status for an import batch: always the imported
@@ -2072,12 +2090,20 @@ final class IngestionModel: ObservableObject {
     /// never lost. An auth-walled host (x / instagram / pinterest) is NOT app-resolved
     /// (it returns a login / share-card); the user is pointed at the extension.
     private func resolveLinkAndIngest(from url: URL, into folder: UUID) async {
+        run(inputs: [await resolveLinkInput(from: url, into: folder)])
+    }
+
+    /// The input-producing half of ``resolveLinkAndIngest`` (059 · SP3) — resolve a
+    /// page URL into the `.link` ``IngestInput`` WITHOUT running it, so both the
+    /// grid path (fire-and-forget `run`) and the awaitable canvas path
+    /// (``importRemoteURL``) share one resolution. Every branch yields a saveable
+    /// link so the drop is never lost.
+    private func resolveLinkInput(from url: URL, into folder: UUID) async -> IngestInput {
         if PageResolver.isAuthWalledHost(url) {
             // Auth-walled: an app fetch returns a login / share-card, so DON'T resolve —
             // but still save a BARE link (URL preserved, no fetch) so the paste yields a
             // clickable item. The extension remains the way to get the rich tweet card.
-            run(inputs: [Self.linkInput(for: url, page: nil, imageData: nil, into: folder)])
-            return
+            return Self.linkInput(for: url, page: nil, imageData: nil, into: folder)
         }
         status = "Resolving link…"
         let page = try? await pageResolver.resolve(url)
@@ -2086,7 +2112,26 @@ final class IngestionModel: ObservableObject {
         if let imageURL = page?.imageURL {
             imageData = try? await remoteFetcher.fetch(imageURL).data
         }
-        run(inputs: [Self.linkInput(for: url, page: page, imageData: imageData, into: folder)])
+        return Self.linkInput(for: url, page: page, imageData: imageData, into: folder)
+    }
+
+    /// Awaitable remote-URL import (059 · SP3): download a bare image URL, or —
+    /// when the URL is a page, not an image — resolve it into a link, then ingest
+    /// and RETURN the resolved assets so the canvas can place them. Mirrors
+    /// ``ingestRemoteImage`` (the grid path) but awaits + returns instead of
+    /// fire-and-forget. Network runs off-actor; failures surface via `status`.
+    func importRemoteURL(_ url: URL, into folder: UUID) async -> [Asset] {
+        status = "Downloading image…"
+        do {
+            let input = try await remoteFetcher.ingestInput(for: url, into: folder, at: Date())
+            return await importInputs([input])
+        } catch {
+            if case RemoteImageFetchError.notAnImage = error {
+                return await importInputs([await resolveLinkInput(from: url, into: folder)])
+            }
+            status = Self.remoteFetchStatus(for: error)
+            return []
+        }
     }
 
     /// Build the ``IngestInput`` for a resolved link (001 · C2b) — pure, so the

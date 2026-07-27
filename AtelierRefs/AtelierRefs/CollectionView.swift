@@ -472,22 +472,9 @@ struct CollectionView: View {
     /// browser/Instagram sweeps report separately via `BulkSweepsView`.
     @ViewBuilder
     private var importIndicator: some View {
-        if let progress = model.progress {
-            HStack(spacing: Theme.Spacing.sm) {
-                ProgressView(
-                    value: Double(progress.completed),
-                    total: Double(max(progress.total, 1)))
-                .frame(width: 120)
-                Text("\(progress.completed) / \(progress.total)")
-                    .font(.caption).monospacedDigit().foregroundStyle(.secondary)
-            }
-            .padding(.leading, 16)
-            .padding(.trailing, 16)
-            .padding(.vertical, Theme.Spacing.sm)
-            .background(Theme.Colors.field, in: Capsule())
-            .overlay(Capsule().strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.35), radius: 14, y: 5)
-        }
+        // The pill is shared with the Space board (059 · SP3 / 5A) so both surfaces
+        // report a drop/paste batch identically.
+        ImportProgressPill(progress: model.progress)
     }
 
 
@@ -731,26 +718,7 @@ struct CollectionView: View {
         let pasteboard = NSPasteboard.general
         let inputs = DirectInputReader.inputs(
             from: pasteboard, into: collectionID, now: Date())
-        dispatch(inputs: inputs, webURL: Self.firstWebURL(on: pasteboard))
-    }
-
-    private static func firstWebURL(on pasteboard: NSPasteboard) -> URL? {
-        if let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
-           let url = objects.first(where: { !$0.isFileURL && DirectInputReader.isWebURL($0) }) {
-            return url
-        }
-        if let string = pasteboard.string(forType: .URL),
-           let url = URL(string: string), DirectInputReader.isWebURL(url) {
-            return url
-        }
-        // A URL copied as PLAIN TEXT (the address bar, a message, a doc) carries only
-        // `public.utf8-plain-text` — not `.URL` or an NSURL — so parse that too, with a
-        // dotted-host guard so arbitrary text isn't mistaken for a link (001 · C2b).
-        if let text = pasteboard.string(forType: .string),
-           let url = IngestionModel.webURL(fromPastedText: text) {
-            return url
-        }
-        return nil
+        dispatch(inputs: inputs, webURL: ImportPasteboard.firstWebURL(on: pasteboard))
     }
 
     /// Decode a drag drop's providers off-main through the shared
