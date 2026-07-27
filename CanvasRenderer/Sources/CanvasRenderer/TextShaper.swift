@@ -152,7 +152,16 @@ enum TextShaper {
         // Alignment is applied as a per-line pen offset below (one source of
         // truth, and the ONLY way to align a truncated line we build ourselves),
         // so the paragraph style stays alignment-free on purpose.
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: paragraph]
+        //
+        // Colour is deliberately absent: it cannot move a line break, so keeping
+        // it out of the layout means a recolour never costs a re-shape. The
+        // runs take the drawing context's fill colour instead
+        // (``TextRenderLayer`` sets it per frame).
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .paragraphStyle: paragraph,
+            kCTForegroundColorFromContextAttributeName as NSAttributedString.Key: true,
+        ]
         let attributed = NSAttributedString(string: string, attributes: attributes)
         let setter = CTFramesetterCreateWithAttributedString(attributed)
 
