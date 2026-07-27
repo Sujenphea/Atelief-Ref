@@ -158,7 +158,46 @@ minus itself, because a box that snapped to its own edge could never be nudged.
 A snap may never breach the minimum size — `snapAspectFrame` refuses rather than
 scaling below it.
 
-## 6. Known gaps
+## 6. Frames: resize is a boundary change
+
+Considered and rejected: making a frame resize carry (scale) its contents, to match
+the way dragging one moves them.
+
+**Figma settles it.** Figma distinguishes *groups*, which scale their contents
+because a group's bounds ARE its contents' bounds, from *frames*, which apply
+per-child **constraints** — horizontal Left / Right / Left-and-Right / Center /
+Scale, and the vertical equivalents. The default for a new child is **Left + Top**:
+resizing a frame leaves children exactly where and what size they were. `Scale` is
+opt-in per child.
+
+Ours is a frame, not a group, and the expected outcome is Figma's default. On a
+moodboard you draw a frame around a cluster of references and later drag its edge
+out to fit more in; the references you carefully placed must not move or grow.
+Constraints earn their complexity when a frame is a screen that must adapt at
+several sizes — a moodboard has no such requirement, so the whole system (five
+options per axis, per child, plus UI to set them) would buy almost nothing.
+
+The move/resize asymmetry this leaves is **not** an inconsistency: Figma has the
+same one, because the two gestures answer different questions. Moving a frame
+preserves its membership; resizing it is how membership is *changed*.
+
+### The real defect, and the fix
+
+Where we genuinely differ from Figma is that our membership is **derived from
+containment** (`groupMembers` returns tiles whose centre is inside the rect), not
+stored parentage. So a resize silently evicts or adopts tiles, and the user finds
+out later — when they drag the frame and the wrong things move.
+
+The fix is visibility, not different behaviour: while a frame is being resized, the
+tiles it will contain on release are washed in accent blue. A fill, not a border —
+the border idiom belongs to selection, and these tiles are not selected.
+
+Crucially the engine **asks the provider** (`groupMembers(forTileID:in:)`) rather
+than re-deriving containment, and `SpaceContent`'s drag-time query delegates to that
+same method with the stored rect. One rule, two callers: the set highlighted mid-
+resize is by construction the set a later drag carries.
+
+## 7. Known gaps
 
 - **Editor and canvas still use different text engines** (TextKit vs CoreText).
   Unchanged from 060; both now lay out at the same world size against the same world
@@ -166,5 +205,5 @@ scaling below it.
   agree". Revisit if a wrap mismatch appears at an edit boundary.
 - **Moves don't snap.** Only resizes do. Nook snaps a dragged object's bounding
   box on move as well; `ResizeSnapping.snapPoint` is reusable for it.
-- **Resizing a frame doesn't carry its contents.** Deliberate for now (a frame is a
-  boundary), but a frame drag *does* carry them, so the two gestures disagree.
+- **Moves have no membership preview.** Only resizes do. Dragging a tile into a
+  frame changes membership just as silently.

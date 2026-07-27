@@ -1,3 +1,5 @@
+import CoreGraphics
+
 /// The **one stable seam** of the renderer (decision A2).
 ///
 /// The spike drives the canvas from a deterministic dummy generator; at
@@ -28,12 +30,24 @@ public protocol TileProvider {
     /// frame carries the tiles it contains); the dragged tile itself is implicit.
     /// Defaults to none, so a plain drag moves only the dragged tile.
     func groupMembers(forDraggedTileID id: Int) -> [Int]
+
+    /// The tiles that would belong to `id` if its world frame were `worldRect` —
+    /// the same grouping rule as ``groupMembers(forDraggedTileID:)``, asked about a
+    /// HYPOTHETICAL rect rather than the stored one (062).
+    ///
+    /// A resize changes a frame's membership, and the renderer needs to show which
+    /// tiles will be inside *before* the user lets go. It deliberately asks the
+    /// provider rather than re-deriving containment itself: the two answers must
+    /// never drift, or the highlight would promise something the drop doesn't
+    /// deliver. Defaults to none.
+    func groupMembers(forTileID id: Int, in worldRect: CGRect) -> [Int]
 }
 
 public extension TileProvider {
     func badge(for tile: Tile) -> TileBadge? { nil }
     func content(for tile: Tile) -> TileContent { .image }
     func groupMembers(forDraggedTileID id: Int) -> [Int] { [] }
+    func groupMembers(forTileID id: Int, in worldRect: CGRect) -> [Int] { [] }
 }
 
 /// A small glyph the renderer overlays on a tile to signal something about its

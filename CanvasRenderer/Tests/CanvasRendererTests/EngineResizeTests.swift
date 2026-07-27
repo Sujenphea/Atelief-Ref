@@ -6,9 +6,14 @@
 //  what the tile is drawn at mid-drag. `ResizeHandleTests` covers the arithmetic;
 //  these cover the policy and the live-drag state machine.
 //
-//  The policy exists to keep a handle from ever appearing where it would lie:
-//  handles are shown only on a SINGLE selected TEXT tile, because text is the one
-//  kind whose box the app can re-derive after a width change.
+//  Handles show on a SINGLE selected tile of any kind — a multi-selection has no
+//  one sensible meaning. What differs per kind is how each answers a new width:
+//  text re-derives its height from the re-wrapped glyphs, an image holds its ratio
+//  so it can never distort, and a frame takes the rect as given.
+//
+//  A resizing FRAME also previews its membership, which matters because ours is
+//  derived from containment rather than stored: a resize silently changes what is
+//  inside, and the preview is what makes that aimable instead of a surprise.
 //
 
 import CoreGraphics
@@ -404,5 +409,128 @@ struct EngineResizeLiveChromeTests {
         e.sync()
         #expect(e.resizeHandlePositions[.right]?.x == 400)
         #expect(e.textLayer(forTileID: 0)?.shaped?.key == stored)
+    }
+}
+
+// MARK: - Prospective frame membership (062)
+
+@MainActor
+@Suite("Engine resize — frame membership preview (062)")
+struct EngineFrameMembershipTests {
+
+    /// A provider whose frames own whatever tile CENTRES fall inside them — the same
+    /// containment rule the app uses, so the preview is asserted against the real
+    /// semantics rather than a stand-in.
+    private struct FrameProvider: TileProvider {
+        let tiles: [Tile]
+        let frameIDs: Set<Int>
+
+        func content(for tile: Tile) -> TileContent {
+            frameIDs.contains(tile.id)
+                ? .frame(FrameStyle(fill: nil, stroke: nil, strokeWidth: 0, cornerRadius: 0))
+                : .image
+        }
+
+        func groupMembers(forDraggedTileID id: Int) -> [Int] {
+            guard tiles.indices.contains(id) else { return [] }
+            return groupMembers(forTileID: id, in: tiles[id].worldFrame)
+        }
+
+        func groupMembers(forTileID id: Int, in worldRect: CGRect) -> [Int] {
+            guard frameIDs.contains(id) else { return [] }
+            return tiles.indices.filter { i in
+                i != id && worldRect.contains(CGPoint(x: tiles[i].worldFrame.midX,
+                                                      y: tiles[i].worldFrame.midY))
+            }
+        }
+    }
+
+    private struct NoImages: TileImageSource {
+        func imageKey(for tile: Tile) -> Int { tile.id }
+        func imageData(for tile: Tile, tier: LODTier) -> Data? { nil }
+    }
+
+    /// Tile 0 is a frame at 0…200. Tile 1's centre is at x = 250 (outside it);
+    /// tile 2's centre is at x = 100 (inside it).
+    private func engine() -> CanvasEngine {
+        let tiles = [
+            Tile(id: 0, x: 0, y: 0, w: 200, h: 200, z: 0),
+            Tile(id: 1, x: 240, y: 80, w: 20, h: 20, z: 1),
+            Tile(id: 2, x: 90, y: 90, w: 20, h: 20, z: 1),
+        ]
+        let e = CanvasEngine(
+            provider: FrameProvider(tiles: tiles, frameIDs: [0]), images: NoImages(),
+            transform: CanvasTransform(scale: 1, translation: .zero),
+            viewportSize: CGSize(width: 4_000, height: 4_000))
+        e.sync()
+        e.setSelected(0)
+        return e
+    }
+
+    @Test("growing a frame over a neighbour previews it as a member")
+    func growingAdoptsNeighbour() {
+        let e = engine()
+        e.beginResize(tileID: 0, handle: .right)
+        #expect(e.prospectiveMembers == [])          // nothing until the first tick
+
+        e.updateResize(toWorldPoint: CGPoint(x: 300, y: 0), snapping: false)
+        // Tile 2 was already inside; tile 1's centre (250) is now enclosed too.
+        #expect(e.prospectiveMembers == [1, 2])
+    }
+
+    @Test("shrinking a frame away from a member drops it from the preview")
+    func shrinkingEvictsMember() {
+        let e = engine()
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 50, y: 0), snapping: false)
+        // Tile 2's centre (x = 100) now falls outside the shrunken frame.
+        #expect(e.prospectiveMembers == [])
+    }
+
+    @Test("the preview tracks the LIVE rect, updating on every tick")
+    func previewTracksTheLiveRect() {
+        let e = engine()
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 300, y: 0), snapping: false)
+        #expect(e.prospectiveMembers.contains(1))
+        e.updateResize(toWorldPoint: CGPoint(x: 210, y: 0), snapping: false)
+        #expect(!e.prospectiveMembers.contains(1))   // pulled back out again
+    }
+
+    @Test("resizing a NON-frame previews no membership at all")
+    func nonFramePreviewsNothing() {
+        let e = engine()
+        e.setSelected(1)
+        e.beginResize(tileID: 1, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 900, y: 0), snapping: false)
+        #expect(e.prospectiveMembers.isEmpty)
+    }
+
+    @Test("the preview clears when the resize ends")
+    func previewClearsOnEnd() {
+        let e = engine()
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 300, y: 0), snapping: false)
+        #expect(!e.prospectiveMembers.isEmpty)
+        e.endResize()
+        #expect(e.prospectiveMembers.isEmpty)
+    }
+
+    @Test("the preview agrees with what a later drag would actually carry")
+    func previewMatchesTheDragCarry() {
+        // The whole point of routing through the provider: the set highlighted mid-
+        // resize must equal the set a drag carries once that geometry is committed.
+        let grown = [
+            Tile(id: 0, x: 0, y: 0, w: 300, h: 200, z: 0),
+            Tile(id: 1, x: 240, y: 80, w: 20, h: 20, z: 1),
+            Tile(id: 2, x: 90, y: 90, w: 20, h: 20, z: 1),
+        ]
+        let committed = FrameProvider(tiles: grown, frameIDs: [0])
+
+        let e = engine()
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 300, y: 0), snapping: false)
+
+        #expect(e.prospectiveMembers == Set(committed.groupMembers(forDraggedTileID: 0)))
     }
 }

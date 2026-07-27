@@ -81,10 +81,21 @@ final class SpaceContent: TileProvider, TileImageSource {
     /// Frame-as-group: dragging a `.frame` carries every OTHER tile whose centre
     /// is inside the frame's current world rect. Non-frame drags carry nothing.
     func groupMembers(forDraggedTileID id: Int) -> [Int] {
+        guard tiles.indices.contains(id) else { return [] }
+        return groupMembers(forTileID: id, in: tiles[id].worldFrame)
+    }
+
+    /// Membership against a HYPOTHETICAL rect (062) — the frame being resized asks
+    /// this on every tick to show what it is about to contain.
+    ///
+    /// This is the ONE place containment is decided; the drag path above delegates
+    /// to it with the frame's stored rect. Keeping a single rule is the point: the
+    /// highlight shown mid-resize and the set a later drag carries are the same
+    /// answer to the same question, so they cannot disagree.
+    func groupMembers(forTileID id: Int, in worldRect: CGRect) -> [Int] {
         guard rows.indices.contains(id), rows[id].item.kind == .frame else { return [] }
-        let frame = tiles[id].worldFrame
         return tiles.indices.filter { i in
-            i != id && frame.contains(Self.centre(of: tiles[i]))
+            i != id && worldRect.contains(Self.centre(of: tiles[i]))
         }
     }
 

@@ -176,3 +176,38 @@ The manual check above is unchanged and now also covers ⇧ (ratio held), ⌘ (s
 off), and dragging an image (never distorts). Moves still don't snap — only resizes
 do — and resizing a frame doesn't carry its contents even though *dragging* one
 does, so those two gestures disagree.
+
+## Follow-up — frames preview their membership
+
+Considered and rejected first: making a frame resize carry (scale) its contents, so
+it matches dragging one.
+
+**Figma settles it.** Figma's *groups* scale their contents; its *frames* apply
+per-child constraints defaulting to **Left + Top** — resize a frame and children
+stay exactly where and what size they were. Ours is a frame, and that default is
+what a moodboard user expects: you drag a frame's edge out to fit more in, and the
+references you placed must not move or grow. Constraints earn their complexity for
+screens that adapt at several sizes; a moodboard has no such requirement.
+
+The move/resize asymmetry that prompted this is not an inconsistency — Figma has the
+same one. Moving a frame preserves its membership; resizing it is how membership is
+*changed*.
+
+**What was actually wrong** is that our membership is derived from containment, not
+stored parentage, so a resize silently evicts or adopts tiles and the user only
+finds out later. Fixed by showing it: the tiles a frame will contain on release are
+washed in accent blue while it is resized. A fill rather than a border — the border
+idiom belongs to selection, and these tiles are not selected.
+
+The engine **asks the provider** (`groupMembers(forTileID:in:)`) instead of
+re-deriving containment, and `SpaceContent`'s drag-time query now delegates to that
+same method with the stored rect. One rule, two callers, so the set highlighted mid-
+resize is by construction the set a later drag carries — asserted directly by
+`previewMatchesTheDragCarry`.
+
+- `CanvasRenderer/TileProvider.swift` — `groupMembers(forTileID:in:)`, defaulting to none
+- `CanvasRenderer/Host/CanvasEngine.swift` — `prospectiveMembers` + the wash layers
+- `AtelierRefs/SpaceContent.swift` — one containment rule; the drag path delegates
+- Tests: `EngineFrameMembershipTests` (new, 6)
+
+CanvasRenderer: **279 tests in 32 suites** green. `AtelierRefsTests`: TEST SUCCEEDED.

@@ -112,6 +112,13 @@ public final class CanvasEngine {
     private var activeSnapGuides: [SnapGuide] = []
     /// The drawn guide lines, recycled across ticks (a resize churns these fast).
     private var guideLayers: [CALayer] = []
+    /// While a FRAME is being resized, the tiles that will belong to it on release
+    /// (062). Membership here is derived from containment, so a resize silently
+    /// changes it — showing the prospective set turns that invisible side effect
+    /// into something the user can aim.
+    private var prospectiveMemberIDs: Set<Int> = []
+    /// The wash drawn over each prospective member.
+    private var membershipLayers: [Int: CALayer] = [:]
 
     public init(
         provider: TileProvider,
@@ -391,7 +398,11 @@ public final class CanvasEngine {
         }
 
         activeSnapGuides = guides
-        resizeWorldFrame = fittedFrame(frame, for: tile)
+        let live = fittedFrame(frame, for: tile)
+        resizeWorldFrame = live
+        // Ask the provider what this rect would contain — never re-derive it here,
+        // or the promise could drift from what a later drag actually carries.
+        prospectiveMemberIDs = Set(provider.groupMembers(forTileID: id, in: live))
         sync()
     }
 
@@ -438,10 +449,15 @@ public final class CanvasEngine {
         resizeOriginalFrame = .zero
         resizeWorldFrame = nil
         activeSnapGuides = []
+        prospectiveMemberIDs = []
     }
 
     /// The snap guides currently shown — introspection for the tests.
     public var snapGuides: [SnapGuide] { activeSnapGuides }
+
+    /// The tiles a frame being resized will contain on release — introspection for
+    /// the tests, and the set the highlight is drawn from.
+    public var prospectiveMembers: Set<Int> { prospectiveMemberIDs }
 
     /// Whether handle dots are currently drawn — introspection for the tests.
     public var resizeHandleCount: Int { handleLayers.count }
@@ -563,6 +579,7 @@ public final class CanvasEngine {
         // belong to at most ONE tile, so they are not part of the per-tile loop).
         updateResizeHandles(in: visible)
         updateSnapGuides()
+        updateMembershipHighlights(in: visible)
 
         // Drop decodes whose tiles are no longer needed (decision P15).
         scheduler.retainOnly(neededKeys)
@@ -615,6 +632,44 @@ public final class CanvasEngine {
                 : CGRect(x: 0, y: origin.y, width: viewportSize.width, height: 1)
             layer.zPosition = .greatestFiniteMagnitude
         }
+    }
+
+    /// Wash the tiles a resizing frame is about to contain. Deliberately a FILL
+    /// rather than a border: the selection highlight already owns the border idiom,
+    /// and these tiles are not selected — conflating the two would read as "these
+    /// are selected too", which is exactly the wrong message.
+    private func updateMembershipHighlights(in visible: [Tile]) {
+        guard !prospectiveMemberIDs.isEmpty else {
+            for layer in membershipLayers.values { layer.removeFromSuperlayer() }
+            membershipLayers.removeAll()
+            return
+        }
+        var stale = Set(membershipLayers.keys)
+        for tile in visible where prospectiveMemberIDs.contains(tile.id) {
+            stale.remove(tile.id)
+            let layer: CALayer
+            if let existing = membershipLayers[tile.id] {
+                layer = existing
+            } else {
+                layer = makeMembershipLayer()
+                membershipLayers[tile.id] = layer
+            }
+            layer.frame = transform.worldToScreen(displayWorldFrame(for: tile))
+            layer.zPosition = .greatestFiniteMagnitude
+        }
+        // A tile that left the viewport (or the frame) gives its wash back.
+        for id in stale {
+            membershipLayers[id]?.removeFromSuperlayer()
+            membershipLayers[id] = nil
+        }
+    }
+
+    private func makeMembershipLayer() -> CALayer {
+        let layer = CALayer()
+        layer.backgroundColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.22)
+        layer.cornerRadius = 3
+        rootLayer.addSublayer(layer)
+        return layer
     }
 
     private func makeGuideLayer() -> CALayer {
