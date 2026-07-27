@@ -58,11 +58,38 @@ public final class CanvasEngine {
     /// keyed by tile id — `CATextLayer` siblings OUTSIDE the recycled ``LayerPool``
     /// (decision T3), created/dropped like ``badges``. A tile has at most one.
     private var textLayers: [Int: CATextLayer] = [:]
+    /// The 060 replacement for ``textLayers``: one cached world-space layout per
+    /// tile, rasterized at the current zoom. Exactly one of the two dictionaries
+    /// is populated, chosen by ``useCoreTextGlyphs``.
+    private var glyphLayers: [Int: TextRenderLayer] = [:]
 
     /// Backing scale (points → pixels) for crisp vector text. The window host sets
     /// it from `backingScaleFactor`; defaults to 2 so headless/text tests still
     /// rasterize at Retina density.
     public var backingScale: CGFloat = 2
+
+    /// Route `.text` tiles and frame labels through the zoom-stable
+    /// ``TextRenderLayer`` (060) instead of `CATextLayer`.
+    ///
+    /// `CATextLayer` fuses layout and rasterization behind its `fontSize`, so
+    /// feeding it `worldFontSize × zoom` re-breaks wrapped lines every frame —
+    /// the reflow 059 reported. The replacement shapes once in world space and
+    /// only re-rasterizes. Off by default while it lands (061 Step 3), so the old
+    /// path stays a one-line rollback; flipped on in Step 4.
+    ///
+    /// An INSTANCE flag, not a static one: the test suite runs in parallel, and a
+    /// process-wide toggle would race between suites.
+    public var useCoreTextGlyphs: Bool = false {
+        didSet {
+            guard useCoreTextGlyphs != oldValue else { return }
+            // Tear down whichever path just went inactive, then rebuild.
+            for (_, layer) in textLayers { layer.removeFromSuperlayer() }
+            for (_, layer) in glyphLayers { layer.removeFromSuperlayer() }
+            textLayers.removeAll()
+            glyphLayers.removeAll()
+            sync()
+        }
+    }
     /// The ▶ glyph, rendered once and shared by every badge layer's `contents`.
     private lazy var playBadgeImage: CGImage? = Self.makePlayBadgeImage()
 
@@ -329,6 +356,8 @@ public final class CanvasEngine {
             badges[id] = nil
             textLayers[id]?.removeFromSuperlayer()
             textLayers[id] = nil
+            glyphLayers[id]?.removeFromSuperlayer()
+            glyphLayers[id] = nil
             selectionLayers[id]?.removeFromSuperlayer()
             selectionLayers[id] = nil
         }
@@ -477,10 +506,94 @@ public final class CanvasEngine {
     /// their labels stay byte-identical).
     private func setTextOverlay(_ style: TextStyle?, for tile: Tile, screenFrame: CGRect, worldPadded: Bool) {
         guard let style, !style.string.isEmpty else {
-            textLayers[tile.id]?.removeFromSuperlayer()
-            textLayers[tile.id] = nil
+            removeTextOverlay(tile.id)
             return
         }
+        // Inset a touch so glyphs don't kiss the tile edge. A `.text` tile insets by
+        // the world-space measurement pad (`× scale`) so draw ≡ measure at any zoom;
+        // a frame label keeps the legacy screen-space pad (054 §4.4).
+        let pad = worldPadded
+            ? TextMetrics.padding * transform.scale
+            : min(6, screenFrame.width * 0.04)
+        let frame = screenFrame.insetBy(dx: pad, dy: pad)
+        let z = CGFloat(tile.z) + 0.25 // above its own tile, below its badge
+        if useCoreTextGlyphs {
+            setGlyphOverlay(style, for: tile, frame: frame, worldPadded: worldPadded, zPosition: z)
+        } else {
+            setLegacyTextOverlay(style, for: tile, frame: frame, zPosition: z)
+        }
+    }
+
+    /// The 060 path: shape once in world space, then rasterize that layout at the
+    /// current zoom.
+    private func setGlyphOverlay(_ style: TextStyle, for tile: Tile, frame: CGRect,
+                                 worldPadded: Bool, zPosition: CGFloat) {
+        // The shaping box in WORLD units, taken from the tile's world size — NOT
+        // from `frame ÷ scale`. Both would be algebraically equal for a `.text`
+        // tile, but going through screen space would fold float noise from the
+        // camera into the ``ShapeKey``, and a key that moves with the camera is
+        // exactly the coupling this whole design removes.
+        //
+        // A frame label subtracts no pad: its inset is a SCREEN pad (054 §4.4),
+        // whose world equivalent shrinks as you zoom in, so folding it in would
+        // make the label's shaping width zoom-dependent. Shaping against the full
+        // world width keeps labels stable; the few points of pad only mean a very
+        // long label meets the backing store's edge a touch sooner.
+        let worldSize = tile.worldFrame.size
+        let inset = worldPadded ? TextMetrics.padding : 0
+        let shaped = TextShaper.shape(
+            style,
+            maxWidth: max(1, worldSize.width - 2 * inset),
+            maxHeight: max(1, worldSize.height - 2 * inset))
+
+        let layer: TextRenderLayer
+        if let existing = glyphLayers[tile.id] {
+            layer = existing
+        } else {
+            layer = TextRenderLayer()
+            glyphLayers[tile.id] = layer
+            rootLayer.addSublayer(layer)
+        }
+        layer.contentsScale = max(1, backingScale)
+        layer.setShaped(shaped)
+        let (clamped, worldOffset) = clampedTextFrame(frame)
+        layer.apply(scale: transform.scale, color: style.color.cgColor, worldOffset: worldOffset)
+        layer.frame = clamped
+        layer.zPosition = zPosition
+    }
+
+    /// 060 §2 backing-store cap. A text box zoomed deep enough is far bigger than
+    /// the screen, and a layer's backing store is a GPU texture: past roughly
+    /// 8192 px on a side it degrades silently, and its memory grows with zoom².
+    /// Only oversized layers are clamped — everything at ordinary zooms keeps its
+    /// full frame, so a pan leaves `bounds.size` untouched and re-rasterizes
+    /// nothing. Returns the clamped frame plus how far into the layout its
+    /// top-left now sits, in world units.
+    private func clampedTextFrame(_ frame: CGRect) -> (frame: CGRect, worldOffset: CGPoint) {
+        guard viewportSize.width > 0, viewportSize.height > 0, transform.scale > 0 else {
+            return (frame, .zero)
+        }
+        // Slack keeps a margin of off-screen text rasterized, so nudging the pan
+        // doesn't reveal a blank edge.
+        let slack: CGFloat = 512
+        let window = CGRect(origin: .zero, size: viewportSize).insetBy(dx: -slack, dy: -slack)
+        guard frame.width > window.width || frame.height > window.height else {
+            return (frame, .zero)
+        }
+        let clamped = frame.intersection(window)
+        guard !clamped.isNull, clamped.width >= 1, clamped.height >= 1 else {
+            // Entirely outside the window (the tile is in the prefetch ring):
+            // keep the layer, give it no backing store.
+            return (CGRect(origin: frame.origin, size: .zero), .zero)
+        }
+        return (clamped, CGPoint(
+            x: (clamped.minX - frame.minX) / transform.scale,
+            y: (clamped.minY - frame.minY) / transform.scale))
+    }
+
+    /// The pre-060 path, kept for rollback until Step 4 retires it.
+    private func setLegacyTextOverlay(_ style: TextStyle, for tile: Tile,
+                                      frame: CGRect, zPosition: CGFloat) {
         let text: CATextLayer
         if let existing = textLayers[tile.id] {
             text = existing
@@ -499,23 +612,31 @@ public final class CanvasEngine {
         text.fontSize = CGFloat(max(1, style.fontSize)) * transform.scale
         text.alignmentMode = style.alignment.caAlignment
         text.foregroundColor = style.color.cgColor
-        // Inset a touch so glyphs don't kiss the tile edge. A `.text` tile insets by
-        // the world-space measurement pad (`× scale`) so draw ≡ measure at any zoom;
-        // a frame label keeps the legacy screen-space pad (054 §4.4).
-        let pad = worldPadded
-            ? TextMetrics.padding * transform.scale
-            : min(6, screenFrame.width * 0.04)
-        text.frame = screenFrame.insetBy(dx: pad, dy: pad)
-        text.zPosition = CGFloat(tile.z) + 0.25 // above its own tile, below its badge
+        text.frame = frame
+        text.zPosition = zPosition
+    }
+
+    /// Drop a tile's text overlay from whichever path owns it.
+    private func removeTextOverlay(_ id: Int) {
+        textLayers[id]?.removeFromSuperlayer()
+        textLayers[id] = nil
+        glyphLayers[id]?.removeFromSuperlayer()
+        glyphLayers[id] = nil
     }
 
     /// Number of text overlays currently attached (introspection for E3 tests —
-    /// mirrors the badge-count checks the video tests use).
-    public var textOverlayCount: Int { textLayers.count }
+    /// mirrors the badge-count checks the video tests use). Only one path is ever
+    /// populated, so this counts the active one.
+    public var textOverlayCount: Int { textLayers.count + glyphLayers.count }
 
     /// The `CATextLayer` overlay for a tile, if attached (introspection for 2A
     /// tests — asserts the applied font / alignment). Mirrors ``textOverlayCount``.
+    /// `nil` when ``useCoreTextGlyphs`` is on — see ``glyphLayer(forTileID:)``.
     public func textLayer(forTileID id: Int) -> CATextLayer? { textLayers[id] }
+
+    /// The 060 text overlay for a tile, if attached — the ``useCoreTextGlyphs``
+    /// counterpart of ``textLayer(forTileID:)`` (introspection for 060 tests).
+    func glyphLayer(forTileID id: Int) -> TextRenderLayer? { glyphLayers[id] }
 
     // MARK: Badges + hit-testing
 
