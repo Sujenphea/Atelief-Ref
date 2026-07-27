@@ -1892,6 +1892,46 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// Add MANY asset references to a space in ONE transaction (059 · SP2 / 13A) —
+    /// the insert analog of ``setSpaceItemPlacements(_:)``. A drag / import of N
+    /// references mints N `space_item` rows in a single atomic write instead of N
+    /// round-trips through the serialized writer. The space is validated ONCE; every
+    /// asset must exist (`.notFound`) and every placement is validated up front, so
+    /// an unknown asset or bad rect rolls the WHOLE batch back (all-or-nothing,
+    /// matching the single-item contract). An empty batch is a no-op returning `[]`.
+    /// The same asset MAY appear twice (each row has its own id) — a deliberate
+    /// caller act, mirroring ``addAssetToSpace``.
+    @discardableResult
+    public func addAssetsToSpace(
+        _ placements: [SpaceAssetPlacement], to spaceID: UUID
+    ) async throws -> [SpaceItem] {
+        guard !placements.isEmpty else { return [] }
+        for p in placements {
+            try Validation.spaceItem(kind: .asset, assetID: p.assetID)
+            try Validation.canvasPlacement(x: p.x, y: p.y, w: p.w, h: p.h)
+        }
+        let now = Date()
+        let items = placements.map { p in
+            SpaceItem(
+                id: UUID(), spaceID: spaceID, kind: .asset, assetID: p.assetID,
+                x: p.x, y: p.y, w: p.w, h: p.h, z: p.z, style: nil,
+                createdAt: now, updatedAt: now)
+        }
+        return try await write { db in
+            guard try Space.exists(db, key: Self.key(spaceID)) else {
+                throw AtelierError.notFound(entity: "space", id: spaceID)
+            }
+            for item in items {
+                guard let assetID = item.assetID,
+                      try Asset.exists(db, key: Self.key(assetID)) else {
+                    throw AtelierError.notFound(entity: "asset", id: item.assetID ?? item.id)
+                }
+                try item.insert(db)
+            }
+            return items
+        }
+    }
+
     /// Add a freeform element (frame / text) to a space (005 O1; wired by E3).
     /// Validates the placement (C8) and the discriminator (an element row must
     /// NOT carry an asset id); the space must exist (`.notFound`). `style` is the

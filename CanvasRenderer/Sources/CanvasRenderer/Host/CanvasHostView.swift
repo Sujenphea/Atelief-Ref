@@ -42,6 +42,62 @@ public final class CanvasHostView: NSView {
     /// rubber-band a new element instead.
     public var tool: CanvasTool = .select
 
+    // MARK: Drop destination (059 · SP2 / 4A — external + library drops)
+
+    /// Pasteboard types this canvas accepts as a DROP target. The app sets these
+    /// (e.g. its app-private asset-drag type, and later file / image / URL types
+    /// for external import). Empty means the canvas is not a drop target. Setting
+    /// re-registers the view's dragged types, so a `nil`/empty assignment cleanly
+    /// disables dropping. This is AppKit (not SwiftUI `.onDrop`) on purpose: the
+    /// canvas already owns mouse-drag / marquee / pan gestures, and an
+    /// `NSDraggingDestination` composes with them without fighting for the event.
+    public var acceptedDropTypes: [NSPasteboard.PasteboardType] = [] {
+        didSet {
+            unregisterDraggedTypes()
+            if !acceptedDropTypes.isEmpty { registerForDraggedTypes(acceptedDropTypes) }
+        }
+    }
+
+    /// Decide the drag operation to advertise while a drag hovers (the cursor
+    /// badge). The app inspects the drag pasteboard and returns `.copy` to accept
+    /// or `[]` to refuse. `nil` → accept as `.copy` whenever any accepted type is
+    /// present. Kept app-side so the package never needs the app's payload types.
+    public var onDragEntered: ((NSPasteboard) -> NSDragOperation)?
+
+    /// Handle a drop. The app receives the drag pasteboard and the WORLD point
+    /// under the drop — computed HERE via the same ``CanvasTransform`` hit-testing
+    /// uses (decision C6), so a dropped item lands exactly where the cursor is with
+    /// zero chance of drift. Returns whether the drop was accepted. `nil` disables
+    /// dropping regardless of ``acceptedDropTypes``.
+    public var onDrop: ((_ pasteboard: NSPasteboard, _ worldPoint: CGPoint) -> Bool)?
+
+    /// Handle Edit ▸ Paste (⌘V) when the canvas holds focus (059 · SP4, the paste
+    /// peer of the ⌘C ``onCopyTiles`` seam / 236). The app receives the general
+    /// pasteboard and the world point at the VIEWPORT CENTRE — a paste has no cursor
+    /// location, so pasted content lands in the middle of what the user is looking
+    /// at. Returns whether the paste was handled. `nil` disables Paste. Because this
+    /// is a responder-chain action, a focused text field (e.g. the inline text
+    /// editor) still gets ⌘V first — the canvas only pastes when IT holds focus.
+    public var onPaste: ((_ pasteboard: NSPasteboard, _ worldPoint: CGPoint) -> Bool)?
+
+    /// Start a board→board / board→collection drag-OUT (059 · SP7). Given the
+    /// carried tile ids, the app returns an `NSPasteboardItem` carrying its
+    /// asset-drag payload (or `nil` when nothing draggable-out is carried, e.g. only
+    /// element tiles). When non-nil AND ⌥ is held at press, an ⌥-drag on a tile
+    /// starts an `NSDraggingSession` with that item INSTEAD of an in-view move, so it
+    /// can land on a sidebar space / collection row. ⌥ (copy) matches the additive
+    /// board→board semantics — the source tile stays put, no snap-back. `nil`
+    /// disables drag-out (in-view move only).
+    public var onBeginTileDragOut: ((Set<Int>) -> NSPasteboardItem?)?
+
+    /// True while THIS view is the source of an in-flight drag-out session — used to
+    /// refuse a drop of our own drag back onto the SAME board (a board→board copy
+    /// onto the source would duplicate in place, 059 · SP7).
+    private var isActiveDragSource = false
+
+    /// ⌥ state captured at `mouseDown`, gating ⌥-drag drag-out at the threshold.
+    private var pressOptionDown = false
+
     /// Forwarded from the engine (2B · 054 §5.1 · R2): fired once per transform
     /// mutation so the app's inline text editor can reposition its overlay
     /// imperatively, off the SwiftUI diff. `nil` disables it. Wired to the engine in
@@ -256,6 +312,7 @@ public final class CanvasHostView: NSView {
         let tileID = engine.tile(atScreenPoint: point)?.id
         let shift = event.modifierFlags.contains(.shift)
         let command = event.modifierFlags.contains(.command)
+        pressOptionDown = event.modifierFlags.contains(.option) // ⌥ → drag-out (SP7)
 
         if let tileID {
             // Route the press through the selection reducer: ⇧/⌘ act on the down
@@ -297,6 +354,7 @@ public final class CanvasHostView: NSView {
         marqueeCurrentScreen = nil
         marqueeBase = []
         isMarqueeing = false
+        pressOptionDown = false
     }
 
     /// Once movement passes the threshold, begin (then continue) a live drag of
@@ -338,6 +396,14 @@ public final class CanvasHostView: NSView {
             // on a selected tile keeps the whole selection.
             if !engine.selectedTileIDs.contains(tileID) { applySelection(.selectOnly(tileID)) }
             let carry = canvasDragCarry(grabbed: tileID, selection: engine.selectedTileIDs)
+            // SP7: an ⌥-drag on a tile is a drag-OUT (board→board / →collection via
+            // the sidebar), not an in-view move — start an NSDraggingSession with the
+            // app's asset payload. If the carried tiles yield no payload (e.g. only
+            // element tiles), fall through to the normal in-view move.
+            if pressOptionDown, let item = onBeginTileDragOut?(carry.union([tileID])) {
+                beginTileDragOut(pasteboardItem: item, primaryTileID: tileID, event: event)
+                return
+            }
             engine.beginDrag(tileID: tileID, alsoCarry: carry)
         }
         engine.updateDrag(byScreenDelta: delta)
@@ -583,6 +649,17 @@ public final class CanvasHostView: NSView {
         if !ids.isEmpty { onCopyTiles?(ids) }
     }
 
+    /// Edit ▸ Paste (⌘V, 059 · SP4) — the standard responder action, so the system's
+    /// Paste menu item pastes onto the canvas when it holds focus. Hands the app the
+    /// general pasteboard + the world point at the viewport centre (via the shared
+    /// transform, so it never drifts from hit-testing). `paste(_:)` is not declared
+    /// by NSView, so it is a fresh `@objc` action.
+    @objc public func paste(_ sender: Any?) {
+        guard let onPaste else { return }
+        let centre = CGPoint(x: bounds.midX, y: bounds.midY)
+        _ = onPaste(NSPasteboard.general, engine.transform.screenToWorld(centre))
+    }
+
     /// Apply a selection reducer action to the engine's current selection, redraw
     /// the highlights, and notify the host of the new set.
     private func applySelection(_ action: CanvasSelectionAction) {
@@ -600,12 +677,101 @@ public final class CanvasHostView: NSView {
         let ids = engine.selectedTileIDs
         if !ids.isEmpty { onDeleteTiles?(ids) }
     }
+
+    // MARK: - NSDraggingDestination (drop target, 059 · SP2 / 4A)
+
+    /// The operation to advertise as a drag enters / moves over the canvas. Defers
+    /// to ``onDragEntered`` (the app reads the pasteboard); with no handler it
+    /// accepts as `.copy` whenever the canvas has accepted types, else refuses.
+    private func dragOperation(for sender: NSDraggingInfo) -> NSDragOperation {
+        // Refuse our OWN in-flight drag-out dropped back on this board (SP7): a
+        // board→board copy onto the source would duplicate the tile in place.
+        guard !isActiveDragSource, onDrop != nil, !acceptedDropTypes.isEmpty else { return [] }
+        if let onDragEntered { return onDragEntered(sender.draggingPasteboard) }
+        return .copy
+    }
+
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        dragOperation(for: sender)
+    }
+
+    public override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        dragOperation(for: sender)
+    }
+
+    public override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        dragOperation(for: sender) != []
+    }
+
+    /// Commit a drop: map the drop location to a WORLD point through the shared
+    /// transform (isFlipped view coords → world), then hand the pasteboard + point
+    /// to the app. The app decodes the payload and places / imports; the package
+    /// stays ignorant of what's on the pasteboard.
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard !isActiveDragSource, let onDrop else { return false } // no self-drop (SP7)
+        let viewPoint = convert(sender.draggingLocation, from: nil)
+        let worldPoint = engine.transform.screenToWorld(viewPoint)
+        return onDrop(sender.draggingPasteboard, worldPoint)
+    }
+
+    // MARK: - Drag-out source (board→board / →collection, 059 · SP7)
+
+    /// Begin an `NSDraggingSession` for an ⌥-drag: the app's asset payload rides the
+    /// session so a sidebar space / collection row accepts it (adds a copy). The
+    /// primary tile's on-screen frame + a snapshot become the drag image, so it
+    /// reads as the tile lifting off. The in-view move never started, so the source
+    /// tile stays exactly put.
+    private func beginTileDragOut(
+        pasteboardItem: NSPasteboardItem, primaryTileID: Int, event: NSEvent
+    ) {
+        let dragItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        let frame = engine.currentScreenFrame(forTileID: primaryTileID)
+            ?? CGRect(x: event.locationInWindow.x, y: event.locationInWindow.y, width: 120, height: 120)
+        dragItem.setDraggingFrame(frame, contents: tileDragImage(in: frame))
+        isActiveDragSource = true
+        resetGestureState() // the in-view drag never began; drop the press state
+        beginDraggingSession(with: [dragItem], event: event, source: self)
+    }
+
+    /// A snapshot of the view region a tile occupies, for the drag image. `nil` (an
+    /// invisible drag) is an acceptable fallback if caching fails.
+    private func tileDragImage(in frame: CGRect) -> NSImage? {
+        guard frame.width > 0, frame.height > 0,
+              let rep = bitmapImageRepForCachingDisplay(in: frame) else { return nil }
+        cacheDisplay(in: frame, to: rep)
+        let image = NSImage(size: frame.size)
+        image.addRepresentation(rep)
+        return image
+    }
+}
+
+extension CanvasHostView: NSDraggingSource {
+    /// A board drag-out is always a COPY within the app (the board is additive — the
+    /// source tile is never removed). It carries no file promise, so a drop OUTSIDE
+    /// the app is refused (nothing to hand Finder).
+    public func draggingSession(
+        _ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        context == .withinApplication ? .copy : []
+    }
+
+    /// Session teardown: clear the source flag so the board accepts external drops
+    /// again, and re-sync in case the gesture left transient state.
+    public func draggingSession(
+        _ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation
+    ) {
+        isActiveDragSource = false
+    }
 }
 
 extension CanvasHostView: NSUserInterfaceValidations {
     /// Enable Edit ▸ Copy only when the canvas has a tile selection (052 · B1).
     public func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
         if item.action == #selector(copy(_:)) { return !engine.selectedTileIDs.isEmpty }
+        // Enable Paste whenever a handler is wired; the handler no-ops if the
+        // pasteboard holds nothing importable (059 · SP4). Content-type gating stays
+        // app-side — the package never learns what "importable" means.
+        if item.action == #selector(paste(_:)) { return onPaste != nil }
         return true
     }
 }

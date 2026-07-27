@@ -194,8 +194,10 @@ struct InlineTextEditor: NSViewRepresentable {
         /// Font / colour / alignment from the element's style — the SAME family/weight
         /// mapping `CanvasFont` uses (it is internal to the renderer, so replicated
         /// here for the transient glyphs; the committed render still goes through it).
+        /// The point size tracks the live zoom (see ``applyFontScale``) so the editor
+        /// glyphs match the on-canvas `CATextLayer` (drawn at `fontSize × scale`).
         private func applyTypography() {
-            textView.font = Self.nsFont(for: editor.style)
+            applyFontScale()
             let rgba = ElementRendering.rgba(fromHex: editor.style.textColor)
                 ?? RGBAColor(red: 0.07, green: 0.07, blue: 0.07)
             textView.textColor = NSColor(
@@ -205,6 +207,14 @@ struct InlineTextEditor: NSViewRepresentable {
             case .center: textView.alignment = .center
             case .right: textView.alignment = .right
             }
+        }
+
+        /// Size the editor font to the live zoom so the transient glyphs match the
+        /// on-canvas `CATextLayer` (which draws at `fontSize × scale`). Re-applied on
+        /// every transform change (see ``reposition``) so a zoom while editing keeps
+        /// the editor and the tile in lock-step.
+        private func applyFontScale() {
+            textView.font = Self.nsFont(for: editor.style, scale: bridge.scale)
         }
 
         /// First-responder + initial placement once the overlay has a window.
@@ -234,6 +244,7 @@ struct InlineTextEditor: NSViewRepresentable {
                 return
             }
             let scale = bridge.scale
+            applyFontScale() // keep the editor glyphs matched to the canvas zoom
             let padScreen = TextMetrics.padding * scale
             var target = frame
 
@@ -285,11 +296,13 @@ struct InlineTextEditor: NSViewRepresentable {
 
         // Font construction ---------------------------------------------------
 
-        /// The display `NSFont` for a style — mirrors `CanvasRenderer.CanvasFont`
-        /// (internal there): family via `NSFontManager`, else the system font, at the
-        /// mapped weight.
-        private static func nsFont(for style: ElementStyle) -> NSFont {
-            let size = CGFloat(style.fontSize ?? ElementRendering.defaultFontSize)
+        /// The display `NSFont` for a style at the current zoom — mirrors
+        /// `CanvasRenderer.CanvasFont` (internal there): family via `NSFontManager`,
+        /// else the system font, at the mapped weight. `scale` matches the on-canvas
+        /// `fontSize × transform.scale`, so the editor glyphs never differ in size
+        /// from the tile they overlay.
+        private static func nsFont(for style: ElementStyle, scale: CGFloat) -> NSFont {
+            let size = CGFloat(style.fontSize ?? ElementRendering.defaultFontSize) * max(0.01, scale)
             let systemWeight: NSFont.Weight
             let legacyWeight: Int
             switch style.weight {
