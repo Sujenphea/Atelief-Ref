@@ -34,14 +34,24 @@ final class UpdaterController: ObservableObject {
     @Published var canCheckForUpdates = false
 
     init() {
-        // Default delegates: the stock updater + standard user driver behaviour.
+        // Only boot Sparkle when this build actually carries a usable update
+        // configuration. Until `generate_keys` has produced a real EdDSA public
+        // key and a real `SUFeedURL` is set (see Info.plist / SECRETS.md), both
+        // Info.plist values are the deliberate `REPLACE…` placeholders A3 shipped —
+        // and Sparkle's `startUpdater:` rejects an invalid `SUPublicEDKey` by
+        // failing at launch with "The updater failed to start." Gating the start
+        // keeps Debug / pre-release runs silent (the menu item simply stays
+        // disabled) instead of nagging on every launch, while a real Developer ID
+        // release — which carries valid keys — starts and behaves normally.
         // Feed URL + public EdDSA key come from Info.plist (SUFeedURL / SUPublicEDKey).
         updaterController = SPUStandardUpdaterController(
-            startingUpdater: true,
+            startingUpdater: Self.hasUsableUpdateConfiguration,
             updaterDelegate: nil,
             userDriverDelegate: nil)
 
         // Sparkle publishes `canCheckForUpdates` via KVO; bridge it to @Published.
+        // When the updater wasn't started (placeholder config) this stays false,
+        // so the "Check for Updates…" menu item is correctly disabled.
         updaterController.updater.publisher(for: \.canCheckForUpdates)
             .assign(to: &$canCheckForUpdates)
     }
@@ -49,6 +59,30 @@ final class UpdaterController: ObservableObject {
     /// Begin a user-initiated update check; Sparkle's standard UI drives the rest.
     func checkForUpdates() {
         updaterController.updater.checkForUpdates()
+    }
+
+    /// Whether this build's Info.plist carries a real Sparkle feed + public key
+    /// (reads `Bundle.main`). Delegates to the pure overload for testability.
+    static var hasUsableUpdateConfiguration: Bool {
+        hasUsableUpdateConfiguration(
+            feedURL: Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
+            publicEDKey: Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String)
+    }
+
+    /// Pure config validator: true only when the feed URL and EdDSA public key are
+    /// both present, non-empty, not the shipped `REPLACE…` placeholders, and the
+    /// key decodes to a 32-byte Ed25519 public key. An invalid key is exactly what
+    /// makes Sparkle's `startUpdater:` fail, so a malformed paste can't reproduce
+    /// the "failed to start" alert either — it just leaves the updater unstarted.
+    static func hasUsableUpdateConfiguration(feedURL: String?, publicEDKey: String?) -> Bool {
+        func real(_ value: String?) -> String? {
+            guard let value, !value.isEmpty, !value.contains("REPLACE") else { return nil }
+            return value
+        }
+        guard real(feedURL) != nil, let key = real(publicEDKey) else { return false }
+        // Ed25519 public key = 32 bytes → 44 Base64 characters.
+        guard let decoded = Data(base64Encoded: key), decoded.count == 32 else { return false }
+        return true
     }
 }
 
