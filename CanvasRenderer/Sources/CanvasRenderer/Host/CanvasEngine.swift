@@ -108,6 +108,10 @@ public final class CanvasEngine {
     private var resizeWorldFrame: CGRect?
     /// The handle dots drawn on the single selected resizable tile.
     private var handleLayers: [ResizeHandle: CALayer] = [:]
+    /// The snap guides for the current resize tick, in WORLD space.
+    private var activeSnapGuides: [SnapGuide] = []
+    /// The drawn guide lines, recycled across ticks (a resize churns these fast).
+    private var guideLayers: [CALayer] = []
 
     public init(
         provider: TileProvider,
@@ -288,13 +292,20 @@ public final class CanvasEngine {
 
     // MARK: Live resize (transient geometry, no provider mutation — 062)
 
-    /// Whether `tile` may be resized by dragging a handle. Text only for now: a text
-    /// box's width IS the wrap width the app lays its glyphs out against, so it is
-    /// the one kind whose box the user must be able to set directly. Images would
-    /// want an aspect lock and frames would have to decide what happens to their
-    /// contents — both are separate questions, so neither shows handles yet.
-    private func isResizable(_ tile: Tile) -> Bool {
-        if case .text = provider.content(for: tile) { return true }
+    /// Whether `tile` may be resized by dragging a handle — every kind can.
+    ///
+    /// Each answers a width differently, and that difference lives in one place
+    /// (``fittedFrame`` / ``locksAspect``) rather than in the gesture: text
+    /// re-derives its height from the re-wrapped glyphs, an image holds its ratio so
+    /// it can never distort, and a frame simply takes the rect (its contents keep
+    /// their own positions — a frame is a boundary, not a scaler).
+    private func isResizable(_ tile: Tile) -> Bool { true }
+
+    /// Whether `tile` must keep its aspect ratio regardless of modifiers. Images do:
+    /// a distorted photograph is never what the user meant, so the lock is the
+    /// default rather than something they have to remember to hold.
+    private func locksAspect(_ tile: Tile) -> Bool {
+        if case .image = provider.content(for: tile) { return true }
         return false
     }
 
@@ -336,13 +347,60 @@ public final class CanvasEngine {
 
     /// Update the live resize to the cursor's current WORLD point. Recomputed from
     /// the frame captured at `beginResize`, never accumulated.
-    public func updateResize(toWorldPoint world: CGPoint) {
+    ///
+    /// `constrainRatio` is the ⇧ modifier; an image adds its own permanent lock on
+    /// top. `snapping` is ON by default and the host clears it for ⌘ — the same
+    /// "hold ⌘ to place it exactly where I say" escape the move gesture offers.
+    public func updateResize(
+        toWorldPoint world: CGPoint, constrainRatio: Bool = false, snapping: Bool = true
+    ) {
         guard let id = resizeTileID, let handle = activeResizeHandle,
               let tile = tile(withID: id) else { return }
-        let dragged = ResizeGeometry.resizedFrame(
-            resizeOriginalFrame, handle: handle, toWorldPoint: world)
-        resizeWorldFrame = fittedFrame(dragged, for: tile)
+
+        let keepRatio = constrainRatio || locksAspect(tile)
+        let candidates = snapping ? snapCandidates(excluding: id) : []
+        let threshold = ResizeSnapping.worldThreshold(scale: transform.scale)
+        var guides: [SnapGuide] = []
+        var frame: CGRect
+
+        if keepRatio {
+            // Ratio-locked: the point can't be nudged without breaking the ratio, so
+            // the whole frame is scaled about its anchor onto the target instead.
+            let aspect = resizeOriginalFrame.height > 0
+                ? resizeOriginalFrame.width / resizeOriginalFrame.height : 1
+            frame = ResizeGeometry.resizedFrame(
+                resizeOriginalFrame, handle: handle, toWorldPoint: world,
+                keepRatio: true, aspect: aspect)
+            if snapping {
+                let snapped = ResizeSnapping.snapAspectFrame(
+                    frame, handle: handle, candidates: candidates, threshold: threshold)
+                frame = snapped.frame
+                guides = snapped.guides
+            }
+        } else {
+            // Free: snap the dragged point itself, then build the frame from it.
+            var target = world
+            if snapping {
+                let snapped = ResizeSnapping.snapPoint(
+                    world, handle: handle, candidates: candidates, threshold: threshold)
+                target = snapped.point
+                guides = snapped.guides
+            }
+            frame = ResizeGeometry.resizedFrame(
+                resizeOriginalFrame, handle: handle, toWorldPoint: target)
+        }
+
+        activeSnapGuides = guides
+        resizeWorldFrame = fittedFrame(frame, for: tile)
         sync()
+    }
+
+    /// The world frames a resize may snap to: every VISIBLE tile except the one
+    /// being resized. Visible rather than all — snapping to a box the user cannot
+    /// see would look like the drag sticking for no reason, and it keeps the scan
+    /// bounded by the viewport rather than by the size of the board.
+    private func snapCandidates(excluding id: Int) -> [CGRect] {
+        currentVisibleTiles().filter { $0.id != id }.map(\.worldFrame)
     }
 
     /// A text tile's frame with its HEIGHT re-derived from the text wrapped to that
@@ -379,7 +437,11 @@ public final class CanvasEngine {
         activeResizeHandle = nil
         resizeOriginalFrame = .zero
         resizeWorldFrame = nil
+        activeSnapGuides = []
     }
+
+    /// The snap guides currently shown — introspection for the tests.
+    public var snapGuides: [SnapGuide] { activeSnapGuides }
 
     /// Whether handle dots are currently drawn — introspection for the tests.
     public var resizeHandleCount: Int { handleLayers.count }
@@ -500,6 +562,7 @@ public final class CanvasEngine {
         // Resize handles ride on top of the selection border, once per sync (they
         // belong to at most ONE tile, so they are not part of the per-tile loop).
         updateResizeHandles(in: visible)
+        updateSnapGuides()
 
         // Drop decodes whose tiles are no longer needed (decision P15).
         scheduler.retainOnly(neededKeys)
@@ -529,6 +592,36 @@ public final class CanvasEngine {
             layer.cornerRadius = size / 2
             layer.zPosition = .greatestFiniteMagnitude // above the selection border
         }
+    }
+
+    /// Draw the snap guides spanning the viewport. A guide is a world-space LINE,
+    /// so only its position maps through the transform — its length is simply the
+    /// viewport, and its thickness stays 1 screen point at any zoom.
+    private func updateSnapGuides() {
+        guard !activeSnapGuides.isEmpty else {
+            for layer in guideLayers { layer.removeFromSuperlayer() }
+            guideLayers.removeAll()
+            return
+        }
+        while guideLayers.count < activeSnapGuides.count { guideLayers.append(makeGuideLayer()) }
+        while guideLayers.count > activeSnapGuides.count {
+            guideLayers.removeLast().removeFromSuperlayer()
+        }
+        for (layer, guide) in zip(guideLayers, activeSnapGuides) {
+            let origin = transform.worldToScreen(
+                CGPoint(x: guide.position, y: guide.position))
+            layer.frame = guide.isVertical
+                ? CGRect(x: origin.x, y: 0, width: 1, height: viewportSize.height)
+                : CGRect(x: 0, y: origin.y, width: viewportSize.width, height: 1)
+            layer.zPosition = .greatestFiniteMagnitude
+        }
+    }
+
+    private func makeGuideLayer() -> CALayer {
+        let layer = CALayer()
+        layer.backgroundColor = CGColor(red: 1.0, green: 0.2, blue: 0.55, alpha: 0.9) // magenta
+        rootLayer.addSublayer(layer)
+        return layer
     }
 
     private func makeHandleLayer() -> CALayer {

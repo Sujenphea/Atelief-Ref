@@ -126,3 +126,53 @@ drag with a genuinely different `ShapeKey`, the text layer's frame follows, a
 vertical drag doesn't set the height, and ending restores the provider's geometry.
 
 CanvasRenderer: **251 tests in 30 suites** green.
+
+## Follow-up — snapping, ratio lock, and handles for every kind
+
+**Handles now reach images and frames.** This was the prerequisite, not scope creep:
+aspect lock is meaningless on text, because `fittedFrame` overrides a text box's
+height with the text's, so ⇧ would have done nothing at all. Each kind answers a new
+width in one place rather than in the gesture — text re-derives its height, an image
+holds its ratio **permanently** (a distorted photograph is never what the user
+meant), and a frame takes the rect as given, its contents keeping their positions.
+
+**⇧ locks any tile's ratio. ⌘ turns snapping off** — the same escape the move
+gesture offers.
+
+**Snapping** pulls a dragged edge onto a nearby box's edge or centre, with a guide
+line showing why. Two rules carry it:
+
+- the threshold is **6 SCREEN points** divided by the zoom, so "a few points" means
+  the same thing to the hand at every zoom — a fixed world radius would be unusably
+  sticky zoomed out and imperceptible zoomed in;
+- a **ratio-locked** snap can't move the point without breaking the ratio, so the
+  frame is scaled uniformly about its anchor instead, and only the single nearest
+  snap applies (two would need two scales).
+
+Candidates are the **visible** tiles minus the resized one — snapping to a box you
+can't see reads as the drag sticking for no reason, and a box that snapped to its
+own edge could never be nudged. A snap never breaches the minimum size.
+
+## Files changed (follow-up)
+
+- `CanvasRenderer/ResizeSnapping.swift` (new) — `SnapGuide`, screen-relative
+  threshold, `snapPoint`, `snapAspectFrame`
+- `CanvasRenderer/ResizeHandles.swift` — `keepRatio`/`aspect` on `resizedFrame`;
+  `aspectRect`
+- `CanvasRenderer/Host/CanvasEngine.swift` — `isResizable` opens to every kind;
+  `locksAspect` for images; `updateResize(constrainRatio:snapping:)`; guide layers
+- `CanvasRenderer/Host/CanvasHostView.swift` — passes ⇧ / ⌘
+- Tests: `ResizeSnappingTests` (new, 15); snapping + ratio cases in
+  `EngineResizeTests`; a non-text resize case in `SpaceTextResizeTests`.
+  Three pre-existing tests asserted an exact total sublayer count as a proxy for
+  "one highlight" — a selected tile now carries handle layers too, so they assert
+  `selectionHighlightCount == 1` directly, which is what they meant.
+
+CanvasRenderer: **273 tests in 31 suites** green. `AtelierRefsTests`: TEST SUCCEEDED.
+
+## Still outstanding
+
+The manual check above is unchanged and now also covers ⇧ (ratio held), ⌘ (snapping
+off), and dragging an image (never distorts). Moves still don't snap — only resizes
+do — and resizing a frame doesn't carry its contents even though *dragging* one
+does, so those two gestures disagree.

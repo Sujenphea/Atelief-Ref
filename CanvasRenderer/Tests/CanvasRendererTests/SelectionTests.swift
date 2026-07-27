@@ -48,8 +48,10 @@ struct SelectionTests {
         engine.setSelected(1)
         #expect(engine.selectedTileID == 1)
         #expect(engine.isSelectionHighlightVisible)
-        // Three tiles + one highlight layer.
-        #expect((engine.rootLayer.sublayers?.count ?? 0) == 4)
+        // Exactly one highlight layer. (Asserted directly rather than as a total
+        // sublayer count: a selected tile also carries eight resize handles now,
+        // and this test is about the highlight, not the chrome around it.)
+        #expect(engine.selectionHighlightCount == 1)
     }
 
     @Test("deselecting hides the highlight (layer stays, reused)")
@@ -93,8 +95,8 @@ struct SelectionTests {
         engine.setSelected(2)
         #expect(engine.selectedTileID == 2)
         #expect(engine.isSelectionHighlightVisible)
-        // Still exactly one highlight layer (3 tiles + 1).
-        #expect((engine.rootLayer.sublayers?.count ?? 0) == 4)
+        // Still exactly one highlight layer — the old one moved, not a second added.
+        #expect(engine.selectionHighlightCount == 1)
     }
 
     // MARK: - Multi-selection highlights (049 · D4 / D12 / D16)

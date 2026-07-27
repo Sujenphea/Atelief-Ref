@@ -221,6 +221,27 @@ struct SpaceTextResizeTests {
         #expect(model.contentVersion == ver)      // ...never an `.id`-bound rebuild
     }
 
+    @Test("a NON-text element keeps the dragged height — nothing is derived")
+    func nonTextResizeKeepsDraggedHeight() async throws {
+        // The contrast that makes the text rule visible: only text re-derives its
+        // height. A frame takes the rect it was dragged to, both dimensions.
+        let model = try await makeModel()
+        model.addFrame(worldRect: CGRect(x: 0, y: 0, width: 200, height: 150))
+        await model.waitForWrites()
+        let id = model.selectedItemID!
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+
+        model.resizeTile(
+            tileID: tid, to: CGRect(x: 10, y: 20, width: 320, height: 240), in: content)
+        await model.waitForWrites(); await model.load()
+
+        let now = item(model, id)
+        #expect(now.x == 10 && now.y == 20)
+        #expect(now.w == 320)
+        #expect(now.h == 240)   // kept, not re-derived
+    }
+
     @Test("a resize to the same box writes nothing")
     func noOpResizeWritesNothing() async throws {
         let model = try await makeModel()

@@ -486,7 +486,12 @@ public final class CanvasHostView: NSView {
                 isResizing = true
                 engine.beginResize(tileID: candidate.tileID, handle: candidate.handle)
             }
-            engine.updateResize(toWorldPoint: engine.transform.screenToWorld(point))
+            // ⇧ locks the ratio (an image locks its own regardless); ⌘ turns snapping
+            // off, matching the move gesture's "put it exactly here" escape.
+            engine.updateResize(
+                toWorldPoint: engine.transform.screenToWorld(point),
+                constrainRatio: event.modifierFlags.contains(.shift),
+                snapping: !event.modifierFlags.contains(.command))
             return
         }
 

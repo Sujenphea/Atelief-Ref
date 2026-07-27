@@ -74,12 +74,37 @@ struct EngineResizeTests {
         #expect(e.resizeHandleCount == 8)
     }
 
-    @Test("a selected IMAGE tile shows none — only text can be resized")
-    func selectedImageShowsNoHandles() {
+    @Test("a selected IMAGE tile shows handles too")
+    func selectedImageShowsHandles() {
         let e = engine()
         e.setSelected(1)
-        #expect(e.resizeHandleCount == 0)
-        #expect(e.resizeHandle(atScreenPoint: CGPoint(x: 400, y: 0)) == nil)
+        #expect(e.resizeHandleCount == 8)
+        #expect(e.resizeHandle(atScreenPoint: CGPoint(x: 400, y: 0))?.handle == .topLeft)
+    }
+
+    @Test("an image keeps its aspect ratio with no modifier held")
+    func imageLocksItsAspect() {
+        let e = engine()          // tile 1 is a 300×200 image — ratio 1.5
+        e.setSelected(1)
+        e.beginResize(tileID: 1, handle: .bottomRight)
+        // Drag to a point whose free-resize result would be square.
+        e.updateResize(toWorldPoint: CGPoint(x: 700, y: 300), snapping: false)
+        let frame = e.currentResizeFrame()?.worldFrame
+        let ratio = (frame?.width ?? 0) / max(frame?.height ?? 1, 0.0001)
+        #expect(abs(ratio - 1.5) < 0.001)   // never distorted
+    }
+
+    @Test("a text box does NOT lock its aspect — its height is the text's")
+    func textDoesNotLockAspect() {
+        let e = engine()
+        e.setSelected(0)
+        e.beginResize(tileID: 0, handle: .bottomRight)
+        e.updateResize(toWorldPoint: CGPoint(x: 700, y: 900), snapping: false)
+        let frame = e.currentResizeFrame()?.worldFrame
+        // Width followed the cursor; height came from the wrapped text, so the
+        // original 300×200 ratio is emphatically not preserved.
+        #expect(frame?.width == 700)
+        #expect((frame?.height ?? 0) < 200)
     }
 
     @Test("a multi-selection shows none, even when it includes the text tile")
@@ -221,6 +246,68 @@ struct EngineResizeTests {
         e.beginResize(tileID: 99, handle: .right)
         e.updateResize(toWorldPoint: CGPoint(x: 500, y: 0))
         #expect(e.currentResizeFrame() == nil)
+    }
+
+    // MARK: - Snapping
+
+    @Test("a dragged edge snaps to a neighbour and raises a guide")
+    func edgeSnapsToNeighbour() {
+        // Tile 1 (the image) starts at x = 400. Drag tile 0's right edge to 398.
+        let e = engine()
+        e.setSelected(0)
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 398, y: 0))
+        #expect(e.currentResizeFrame()?.worldFrame.maxX == 400)   // landed exactly
+        #expect(e.snapGuides == [SnapGuide(isVertical: true, position: 400)])
+    }
+
+    @Test("⌘ (snapping off) obeys the cursor exactly and raises no guide")
+    func commandDisablesSnapping() {
+        let e = engine()
+        e.setSelected(0)
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 398, y: 0), snapping: false)
+        #expect(e.currentResizeFrame()?.worldFrame.maxX == 398)
+        #expect(e.snapGuides.isEmpty)
+    }
+
+    @Test("a box never snaps to itself")
+    func neverSnapsToItself() {
+        // Tile 0's own right edge is at 300. Dragging it to 299 must NOT stick to
+        // 300 — a box that snapped to itself could never be resized by small amounts.
+        let e = engine()
+        e.setSelected(0)
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 299, y: 0))
+        #expect(e.currentResizeFrame()?.worldFrame.maxX == 299)
+    }
+
+    @Test("guides clear when the resize ends")
+    func guidesClearOnEnd() {
+        let e = engine()
+        e.setSelected(0)
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 398, y: 0))
+        #expect(!e.snapGuides.isEmpty)
+        e.endResize()
+        #expect(e.snapGuides.isEmpty)
+    }
+
+    @Test("the snap radius follows the zoom, not the world")
+    func snapRadiusFollowsZoom() {
+        // 20 world units from the target: out of reach at 1× (6pt ⇒ 6 world), but
+        // well within it at 0.1× (6pt ⇒ 60 world).
+        let near = engine(scale: 1)
+        near.setSelected(0)
+        near.beginResize(tileID: 0, handle: .right)
+        near.updateResize(toWorldPoint: CGPoint(x: 380, y: 0))
+        #expect(near.currentResizeFrame()?.worldFrame.maxX == 380)   // no snap
+
+        let far = engine(scale: 0.1)
+        far.setSelected(0)
+        far.beginResize(tileID: 0, handle: .right)
+        far.updateResize(toWorldPoint: CGPoint(x: 380, y: 0))
+        #expect(far.currentResizeFrame()?.worldFrame.maxX == 400)    // snapped
     }
 }
 

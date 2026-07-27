@@ -91,13 +91,50 @@ public enum ResizeGeometry {
     /// holding. Each moving edge is clamped so it can never cross (or come within
     /// `minSize` of) its anchor, so a fast drag past the far side yields a
     /// `minSize` box rather than a negative one.
+    ///
+    /// With `keepRatio` the box is locked to `aspect` (width ÷ height): a corner
+    /// scales about the opposite corner, and a side handle takes its length from the
+    /// cursor while the perpendicular dimension follows the ratio, centred — so the
+    /// box grows symmetrically rather than lurching to one side.
     public static func resizedFrame(
         _ frame: CGRect,
         handle: ResizeHandle,
         toWorldPoint world: CGPoint,
+        keepRatio: Bool = false,
+        aspect: CGFloat = 1,
         minSize: CGFloat = minWorldSize
     ) -> CGRect {
         let minSize = max(0, minSize)
+        let aspect = max(aspect, 0.0001)
+
+        if keepRatio {
+            if handle.isCorner {
+                // Anchor at the opposite corner and grow toward the cursor.
+                let anchor = CGPoint(
+                    x: handle.movesLeft ? frame.maxX : frame.minX,
+                    y: handle.movesTop ? frame.maxY : frame.minY)
+                return aspectRect(anchor: anchor, to: world, aspect: aspect, minSize: minSize)
+            }
+            if handle.movesLeft || handle.movesRight {
+                // Width from the cursor, opposite edge fixed, centred vertically.
+                let fixedX = handle.movesLeft ? frame.maxX : frame.minX
+                var w = max(abs(world.x - fixedX), minSize)
+                var h = w / aspect
+                if h < minSize { h = minSize; w = h * aspect }
+                return CGRect(
+                    x: handle.movesLeft ? fixedX - w : fixedX,
+                    y: frame.midY - h / 2, width: w, height: h)
+            }
+            // Height from the cursor, opposite edge fixed, centred horizontally.
+            let fixedY = handle.movesTop ? frame.maxY : frame.minY
+            var h = max(abs(world.y - fixedY), minSize)
+            var w = h * aspect
+            if w < minSize { w = minSize; h = w / aspect }
+            return CGRect(
+                x: frame.midX - w / 2,
+                y: handle.movesTop ? fixedY - h : fixedY, width: w, height: h)
+        }
+
         var minX = frame.minX, maxX = frame.maxX
         var minY = frame.minY, maxY = frame.maxY
         if handle.movesLeft { minX = min(world.x, maxX - minSize) }
@@ -105,5 +142,26 @@ public enum ResizeGeometry {
         if handle.movesTop { minY = min(world.y, maxY - minSize) }
         if handle.movesBottom { maxY = max(world.y, minY + minSize) }
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    /// A rect anchored at `anchor`, sized toward `b` but locked to `aspect`
+    /// (width ÷ height) and ENCLOSING the cursor offset — the larger of the two
+    /// candidate dimensions wins, so the box always reaches the pointer on at least
+    /// one axis rather than lagging behind it. The minimum is applied on whichever
+    /// axis hits it first and then propagated through the ratio, so clamping can
+    /// never distort the box.
+    static func aspectRect(
+        anchor: CGPoint, to b: CGPoint, aspect: CGFloat, minSize: CGFloat
+    ) -> CGRect {
+        let aspect = max(aspect, 0.0001)
+        let dx = b.x - anchor.x, dy = b.y - anchor.y
+        var w = abs(dx), h = abs(dy)
+        if w / max(h, 0.0001) > aspect { h = w / aspect } else { w = h * aspect }
+        if w < minSize { w = minSize; h = w / aspect }
+        if h < minSize { h = minSize; w = h * aspect }
+        return CGRect(
+            x: dx < 0 ? anchor.x - w : anchor.x,
+            y: dy < 0 ? anchor.y - h : anchor.y,
+            width: w, height: h)
     }
 }

@@ -120,9 +120,9 @@ struct DragTests {
         engine.sync()
         engine.beginDrag(tileID: 1)
         engine.updateDrag(byScreenDelta: CGSize(width: 60, height: -40))
-        // Still exactly one highlight (3 tiles + 1), and it stays visible.
+        // Still exactly one highlight, and it stays visible.
         #expect(engine.isSelectionHighlightVisible)
-        #expect((engine.rootLayer.sublayers?.count ?? 0) == 4)
+        #expect(engine.selectionHighlightCount == 1)
     }
 
     @Test("hit-testing tracks the dragged tile's live position")

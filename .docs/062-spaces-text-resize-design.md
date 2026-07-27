@@ -82,9 +82,9 @@ This is the same world-vs-screen discipline 060 settled for glyphs. Corners are
 tested first over a square zone and edge bands exclude the corner zones, so the
 overlap resolves to the corner — the handle that does strictly more.
 
-`CanvasEngine` gates handles to a **single selected `.text` tile**. Images would
-need an aspect lock and frames would have to decide what happens to their contents;
-both are separate questions, so neither shows handles yet. The live resize mirrors
+`CanvasEngine` gates handles to a **single selected tile** — a multi-selection shows
+none, because resizing several boxes at once has no one sensible meaning. Which
+kinds qualify, and how each answers a new width, is §5. The live resize mirrors
 the drag path exactly — transient frame, provider untouched, host persists then
 syncs — and each update recomputes from the frame captured at `beginResize` rather
 than accumulating, so a long drag cannot drift.
@@ -109,9 +109,14 @@ Pure and headless throughout:
 - `ResizeHandleTests` — placement, hit-testing (including corner-beats-edge, a
   forgiving near miss, and a box smaller than its own handles), per-handle edge
   ownership, and clamping when a drag crosses its own anchor.
-- `EngineResizeTests` — the policy (single + text only), hit-testing through the
-  transform (including a zoomed-out grab, the screen-space regression), and the
-  live-drag machine (no provider mutation, no accumulation drift, safe no-ops).
+- `EngineResizeTests` — the policy (single selection; image ratio locked, text not),
+  hit-testing through the transform (including a zoomed-out grab, the screen-space
+  regression), the live-drag machine (no provider mutation, no accumulation drift,
+  safe no-ops), and snapping end-to-end (snaps to a neighbour, never to itself, ⌘
+  disables, the radius follows the zoom).
+- `ResizeSnappingTests` — the snapping rules in isolation: nearest target wins, a
+  side handle never snaps off-axis, a corner resolves each axis independently, a
+  ratio-locked snap preserves the ratio exactly and refuses to breach the minimum.
 - `SpaceTextResizeTests` — the model contract: height follows the text, `x`/`y`/`w`
   never move on their own, the box always fits its text, a resize is one undo step.
 - `SpaceInlineEditGeometryTests` — the editor's box is still byte-identical across
@@ -120,15 +125,46 @@ Pure and headless throughout:
 The only non-headless surface is the drag itself — cursor feel and grab accuracy —
 recorded in the changelog as a manual check.
 
-## 5. Known gaps
+## 5. Snapping and ratio lock
 
-- **Handles are text-only.** A selected image or frame shows none, which is visibly
-  inconsistent. The geometry is written generically, so extending it is a policy
-  change in `isResizable` plus an aspect lock for images.
+Added in the same series, modelled on Nook again.
+
+**Handles reach every kind.** Aspect lock is meaningless on text — `fittedFrame`
+overrides the height with the text's — so it only becomes a real feature once
+images and frames can be resized. Each kind answers a width differently, and that
+difference lives in one place rather than in the gesture: text re-derives its
+height, an **image holds its ratio permanently** (a distorted photograph is never
+what the user meant, so the lock is the default rather than something to remember),
+and a frame simply takes the rect — it is a boundary, not a scaler, so its contents
+keep their own positions.
+
+**⇧ locks any tile's ratio; ⌘ turns snapping off** — the same "put it exactly where
+I say" escape the move gesture offers.
+
+**Snapping** pulls a dragged edge onto a nearby box's edge or centre. Two rules
+carry the design:
+
+- The threshold is **6 SCREEN points**, divided by the zoom. A fixed world radius
+  would be unusably sticky zoomed out and imperceptible zoomed in.
+- A **ratio-locked** snap cannot move the point — that would break the ratio — so
+  the frame is scaled uniformly about its anchor by whatever factor lands a moving
+  edge on the target. Only the single nearest snap applies, because two would need
+  two different scales and there is only one.
+
+Candidates are the **visible** tiles minus the one being resized. Visible, because
+snapping to a box the user cannot see reads as the drag sticking for no reason; and
+minus itself, because a box that snapped to its own edge could never be nudged.
+
+A snap may never breach the minimum size — `snapAspectFrame` refuses rather than
+scaling below it.
+
+## 6. Known gaps
+
 - **Editor and canvas still use different text engines** (TextKit vs CoreText).
   Unchanged from 060; both now lay out at the same world size against the same world
   width, but Nook uses TextKit for both and concluded the two "can't be made to
   agree". Revisit if a wrap mismatch appears at an edit boundary.
-- **No snapping or aspect lock on resize.** Nook snaps a dragged edge to nearby
-  objects' edges/centres and ⇧-locks the ratio. Out of scope here; the seam
-  (`ResizeGeometry.resizedFrame`) is where both would go.
+- **Moves don't snap.** Only resizes do. Nook snaps a dragged object's bounding
+  box on move as well; `ResizeSnapping.snapPoint` is reusable for it.
+- **Resizing a frame doesn't carry its contents.** Deliberate for now (a frame is a
+  boundary), but a frame drag *does* carry them, so the two gestures disagree.
