@@ -71,6 +71,15 @@ public final class CanvasHostView: NSView {
     /// dropping regardless of ``acceptedDropTypes``.
     public var onDrop: ((_ pasteboard: NSPasteboard, _ worldPoint: CGPoint) -> Bool)?
 
+    /// Handle Edit ▸ Paste (⌘V) when the canvas holds focus (059 · SP4, the paste
+    /// peer of the ⌘C ``onCopyTiles`` seam / 236). The app receives the general
+    /// pasteboard and the world point at the VIEWPORT CENTRE — a paste has no cursor
+    /// location, so pasted content lands in the middle of what the user is looking
+    /// at. Returns whether the paste was handled. `nil` disables Paste. Because this
+    /// is a responder-chain action, a focused text field (e.g. the inline text
+    /// editor) still gets ⌘V first — the canvas only pastes when IT holds focus.
+    public var onPaste: ((_ pasteboard: NSPasteboard, _ worldPoint: CGPoint) -> Bool)?
+
     /// Forwarded from the engine (2B · 054 §5.1 · R2): fired once per transform
     /// mutation so the app's inline text editor can reposition its overlay
     /// imperatively, off the SwiftUI diff. `nil` disables it. Wired to the engine in
@@ -612,6 +621,17 @@ public final class CanvasHostView: NSView {
         if !ids.isEmpty { onCopyTiles?(ids) }
     }
 
+    /// Edit ▸ Paste (⌘V, 059 · SP4) — the standard responder action, so the system's
+    /// Paste menu item pastes onto the canvas when it holds focus. Hands the app the
+    /// general pasteboard + the world point at the viewport centre (via the shared
+    /// transform, so it never drifts from hit-testing). `paste(_:)` is not declared
+    /// by NSView, so it is a fresh `@objc` action.
+    @objc public func paste(_ sender: Any?) {
+        guard let onPaste else { return }
+        let centre = CGPoint(x: bounds.midX, y: bounds.midY)
+        _ = onPaste(NSPasteboard.general, engine.transform.screenToWorld(centre))
+    }
+
     /// Apply a selection reducer action to the engine's current selection, redraw
     /// the highlights, and notify the host of the new set.
     private func applySelection(_ action: CanvasSelectionAction) {
@@ -669,6 +689,10 @@ extension CanvasHostView: NSUserInterfaceValidations {
     /// Enable Edit ▸ Copy only when the canvas has a tile selection (052 · B1).
     public func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
         if item.action == #selector(copy(_:)) { return !engine.selectedTileIDs.isEmpty }
+        // Enable Paste whenever a handler is wired; the handler no-ops if the
+        // pasteboard holds nothing importable (059 · SP4). Content-type gating stays
+        // app-side — the package never learns what "importable" means.
+        if item.action == #selector(paste(_:)) { return onPaste != nil }
         return true
     }
 }

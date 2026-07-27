@@ -286,25 +286,17 @@ struct SpaceView: View {
                         space.placeDroppedAssets(ids: assetIDs, at: worldPoint)
                         return true
                     }
-                    // 2. External content: decode into Unsorted, ingest, place at the
-                    //    drop point. The decode + route are pure/tested; the ingest
-                    //    step is bound to the model's shared import core (SP3 · 1A).
-                    let folder = model.unsortedFolderID
-                    let inputs = DirectInputReader.inputs(from: pasteboard, into: folder, now: Date())
-                    let webURL = ImportPasteboard.firstWebURL(on: pasteboard)
-                    guard case .ingestThenPlace = canvasDropRoute(
-                        .external(hasImportableType: !inputs.isEmpty || webURL != nil)) else {
-                        model.reportUnreadableDrop()
-                        return false
-                    }
-                    Task {
-                        await space.importAndPlace(at: worldPoint) {
-                            if !inputs.isEmpty { return await model.importInputs(inputs) }
-                            if let webURL { return await model.importRemoteURL(webURL, into: folder) }
-                            return []
-                        }
-                    }
-                    return true
+                    // 2. External content: ingest into Unsorted + place at the drop
+                    //    point (shared with paste). An unreadable DROP is reported.
+                    if importExternal(from: pasteboard, at: worldPoint) { return true }
+                    model.reportUnreadableDrop()
+                    return false
+                },
+                // SP4: ⌘V on the focused canvas pastes external content at the
+                // viewport centre through the SAME import path as a drop. A paste
+                // with nothing importable is a silent no-op.
+                onPaste: { pasteboard, worldPoint in
+                    importExternal(from: pasteboard, at: worldPoint)
                 })
             .id(space.contentVersion)
 
@@ -459,6 +451,31 @@ struct SpaceView: View {
         case .distributeHorizontal: "arrow.left.and.right"
         case .distributeVertical: "arrow.up.and.down"
         }
+    }
+
+    // MARK: - External import (drop + paste)
+
+    /// Decode an external pasteboard (a DROP or a ⌘V PASTE) and — if it carries
+    /// importable content — ingest into Unsorted and place it centred on
+    /// `worldPoint` through the shared import-and-place seam (059 · SP3 / SP4).
+    /// Returns whether it was handled (`false` = nothing importable). ONE method so
+    /// drop + paste can never diverge on how a pasteboard becomes board content.
+    private func importExternal(from pasteboard: NSPasteboard, at worldPoint: CGPoint) -> Bool {
+        let folder = model.unsortedFolderID
+        let inputs = DirectInputReader.inputs(from: pasteboard, into: folder, now: Date())
+        let webURL = ImportPasteboard.firstWebURL(on: pasteboard)
+        guard case .ingestThenPlace = canvasDropRoute(
+            .external(hasImportableType: !inputs.isEmpty || webURL != nil)) else {
+            return false
+        }
+        Task {
+            await space.importAndPlace(at: worldPoint) {
+                if !inputs.isEmpty { return await model.importInputs(inputs) }
+                if let webURL { return await model.importRemoteURL(webURL, into: folder) }
+                return []
+            }
+        }
+        return true
     }
 
     // MARK: - Asset detail overlay

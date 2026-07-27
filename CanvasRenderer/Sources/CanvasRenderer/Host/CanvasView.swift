@@ -44,6 +44,7 @@ public struct CanvasView: NSViewRepresentable {
     private let acceptedDropTypes: [NSPasteboard.PasteboardType]
     private let onDragEntered: ((NSPasteboard) -> NSDragOperation)?
     private let onDrop: ((NSPasteboard, CGPoint) -> Bool)?
+    private let onPaste: ((NSPasteboard, CGPoint) -> Bool)?
 
     public init(
         provider: any TileProvider,
@@ -63,7 +64,8 @@ public struct CanvasView: NSViewRepresentable {
         onHostReady: ((CanvasHostView) -> Void)? = nil,
         acceptedDropTypes: [NSPasteboard.PasteboardType] = [],
         onDragEntered: ((NSPasteboard) -> NSDragOperation)? = nil,
-        onDrop: ((NSPasteboard, CGPoint) -> Bool)? = nil
+        onDrop: ((NSPasteboard, CGPoint) -> Bool)? = nil,
+        onPaste: ((NSPasteboard, CGPoint) -> Bool)? = nil
     ) {
         self.provider = provider
         self.images = images
@@ -83,6 +85,7 @@ public struct CanvasView: NSViewRepresentable {
         self.acceptedDropTypes = acceptedDropTypes
         self.onDragEntered = onDragEntered
         self.onDrop = onDrop
+        self.onPaste = onPaste
     }
 
     public func makeNSView(context: Context) -> CanvasHostView {
@@ -110,6 +113,7 @@ public struct CanvasView: NSViewRepresentable {
         view.onTransformChanged = onTransformChanged
         view.onDragEntered = onDragEntered
         view.onDrop = onDrop
+        view.onPaste = onPaste
         // Assign the registered types AFTER the handlers so a drop arriving between
         // the two assignments still finds `onDrop` in place.
         view.acceptedDropTypes = acceptedDropTypes
