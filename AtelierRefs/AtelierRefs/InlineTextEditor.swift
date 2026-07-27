@@ -57,6 +57,42 @@ func inlineEditOutcome(text: String, wasNewlyCreated: Bool, committed: Bool) -> 
     return .persist(text)
 }
 
+/// The WORLD-space box an inline editor lays text out in — the pure geometry half of
+/// `Coordinator.reposition()`.
+///
+/// The whole point is what is MISSING from the result: zoom. `scale` appears only to
+/// map the tile's screen frame back into world units, so for a given tile this
+/// returns the same box at every zoom — which is what keeps TextKit from re-wrapping
+/// as you pinch, and what makes the editor's line breaks agree with the committed
+/// box (`TextMetrics` measured that against the same world width).
+///
+/// `measuredWorldSize` is the string's measured size in world units (ignored for
+/// `.fixed`, which simply fills its tile).
+func inlineEditorWorldBox(
+    tileScreenFrame: CGRect,
+    scale: CGFloat,
+    resize: TextResize,
+    measuredWorldSize: CGSize,
+    padding: CGFloat = TextMetrics.padding
+) -> CGSize {
+    // A degenerate camera must not divide by zero — clamp rather than trap.
+    let scale = max(0.0001, scale)
+    let worldTileWidth = tileScreenFrame.width / scale
+    switch resize {
+    case .fixed:
+        return CGSize(width: worldTileWidth, height: tileScreenFrame.height / scale)
+    case .autoWidth:
+        return CGSize(
+            width: measuredWorldSize.width + 2 * padding,
+            height: measuredWorldSize.height + 2 * padding)
+    case .autoHeight:
+        // Width stays user-controlled; only the height follows the text.
+        return CGSize(
+            width: worldTileWidth,
+            height: measuredWorldSize.height + 2 * padding)
+    }
+}
+
 /// While editing, a tile that scrolls out of the viewport (its on-screen frame goes
 /// `nil`) triggers a commit-and-exit rather than a silent abandon (054 §5.4). Pure
 /// so the "tile-left-viewport → commit" rule is unit-tested without a window.
@@ -159,17 +195,23 @@ struct InlineTextEditor: NSViewRepresentable {
         var editor: InlineTextEditor
         let textView: InlineNSTextView
         let container: PassThroughContainer
+        /// Carries the zoom, so the text view never has to (see ``EditorScaleBox``).
+        let scaleBox: EditorScaleBox
         private var commitGuard = CommitGuard()
 
         init(_ editor: InlineTextEditor) {
             self.editor = editor
             self.textView = InlineNSTextView(frame: .zero)
             self.container = PassThroughContainer()
+            self.scaleBox = EditorScaleBox()
             super.init()
             configure()
         }
 
         private func configure() {
+            // Plain-text mode BEFORE the font: toggling `isRichText` off resets the
+            // font to the default, so a font applied earlier would be silently
+            // discarded and the glyphs would render at the system size.
             textView.isRichText = false
             textView.importsGraphics = false
             textView.drawsBackground = false
@@ -181,6 +223,11 @@ struct InlineTextEditor: NSViewRepresentable {
             textView.maxSize = NSSize(
                 width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
             textView.textContainer?.widthTracksTextView = true
+            // TextKit's default 5pt line-fragment padding is invisible to
+            // `TextMetrics`, so leaving it on makes the editor wrap ~10pt narrower
+            // than the committed box measures — a line could break differently the
+            // moment you start typing. Zero it so both agree on the wrap width.
+            textView.textContainer?.lineFragmentPadding = 0
             textView.delegate = self
             textView.string = editor.style.text ?? ""
             applyTypography()
@@ -188,16 +235,17 @@ struct InlineTextEditor: NSViewRepresentable {
             textView.onEscape = { [weak self] in self?.finish(committed: false) }         // Esc cancels
 
             container.textView = textView
-            container.addSubview(textView)
+            scaleBox.addSubview(textView)
+            container.addSubview(scaleBox)
         }
 
         /// Font / colour / alignment from the element's style — the SAME family/weight
         /// mapping `CanvasFont` uses (it is internal to the renderer, so replicated
         /// here for the transient glyphs; the committed render still goes through it).
-        /// The point size tracks the live zoom (see ``applyFontScale``) so the editor
-        /// glyphs match the on-canvas `CATextLayer` (drawn at `fontSize × scale`).
+        /// The point size is the WORLD size and never changes with zoom — the
+        /// ``scaleBox`` carries the zoom instead (see ``reposition``).
         private func applyTypography() {
-            applyFontScale()
+            textView.font = Self.nsFont(for: editor.style)
             let rgba = ElementRendering.rgba(fromHex: editor.style.textColor)
                 ?? RGBAColor(red: 0.07, green: 0.07, blue: 0.07)
             textView.textColor = NSColor(
@@ -207,14 +255,6 @@ struct InlineTextEditor: NSViewRepresentable {
             case .center: textView.alignment = .center
             case .right: textView.alignment = .right
             }
-        }
-
-        /// Size the editor font to the live zoom so the transient glyphs match the
-        /// on-canvas `CATextLayer` (which draws at `fontSize × scale`). Re-applied on
-        /// every transform change (see ``reposition``) so a zoom while editing keeps
-        /// the editor and the tile in lock-step.
-        private func applyFontScale() {
-            textView.font = Self.nsFont(for: editor.style, scale: bridge.scale)
         }
 
         /// First-responder + initial placement once the overlay has a window.
@@ -243,30 +283,41 @@ struct InlineTextEditor: NSViewRepresentable {
                 if inlineEditShouldCommitOnViewportExit(screenFrame: nil) { finish(committed: true) }
                 return
             }
-            let scale = bridge.scale
-            applyFontScale() // keep the editor glyphs matched to the canvas zoom
-            let padScreen = TextMetrics.padding * scale
-            var target = frame
-
-            switch editor.style.resize {
-            case .fixed:
-                break
-            case .autoWidth, .autoHeight:
+            let scale = max(0.0001, bridge.scale)
+            // Measure the CURRENT string in world units, through the SAME helper the
+            // committed box uses, so editor and canvas can't disagree on the wrap.
+            var measured = CGSize.zero
+            if editor.style.resize != .fixed {
                 var ts = ElementRendering.textStyle(for: editor.style)
                 ts.string = textView.string
                 let maxWidth: CGFloat? = editor.style.resize == .autoHeight
                     ? max(1, frame.width / scale - 2 * TextMetrics.padding)
                     : nil
-                let measured = TextMetrics.size(for: ts, maxWidth: maxWidth)
-                let width = editor.style.resize == .autoWidth
-                    ? measured.width * scale + 2 * padScreen
-                    : frame.width
-                let height = measured.height * scale + 2 * padScreen
-                target = CGRect(x: frame.minX, y: frame.minY, width: width, height: height)
+                measured = TextMetrics.size(for: ts, maxWidth: maxWidth)
             }
+            let worldSize = inlineEditorWorldBox(
+                tileScreenFrame: frame, scale: scale,
+                resize: editor.style.resize, measuredWorldSize: measured)
 
-            textView.textContainerInset = NSSize(width: padScreen, height: padScreen)
-            textView.frame = target
+            // The zoom lives HERE and nowhere else: a screen-space frame over a
+            // world-space bounds makes the box's scale exactly `scale`, and the text
+            // view inside fills those world-sized bounds at scale 1.
+            //
+            // The zoom must not live on the text view — `NSTextView` rewrites its own
+            // bounds during layout, so a scale set there gets intermittently reverted
+            // and the glyphs snap back to unscaled mid-edit. Nor may it live on the
+            // font: sizing the font `worldSize × zoom` makes TextKit re-wrap on every
+            // zoom step, which is both jerky and the same reflow 059 removed from the
+            // canvas. With layout fixed in world units, a zoom is pure rasterization —
+            // so line breaks hold, and they hold *identically* to the committed box,
+            // which `TextMetrics` measured against the same world width.
+            let padded = NSSize(width: TextMetrics.padding, height: TextMetrics.padding)
+            scaleBox.frame = CGRect(
+                x: frame.minX, y: frame.minY,
+                width: worldSize.width * scale, height: worldSize.height * scale)
+            scaleBox.bounds = CGRect(origin: .zero, size: worldSize)
+            textView.textContainerInset = padded
+            textView.frame = CGRect(origin: .zero, size: worldSize)
         }
 
         /// Resolve the outcome ONCE (guarded) and dispatch. Clears the reposition hook
@@ -296,13 +347,13 @@ struct InlineTextEditor: NSViewRepresentable {
 
         // Font construction ---------------------------------------------------
 
-        /// The display `NSFont` for a style at the current zoom — mirrors
+        /// The display `NSFont` for a style at its WORLD point size — mirrors
         /// `CanvasRenderer.CanvasFont` (internal there): family via `NSFontManager`,
-        /// else the system font, at the mapped weight. `scale` matches the on-canvas
-        /// `fontSize × transform.scale`, so the editor glyphs never differ in size
-        /// from the tile they overlay.
-        private static func nsFont(for style: ElementStyle, scale: CGFloat) -> NSFont {
-            let size = CGFloat(style.fontSize ?? ElementRendering.defaultFontSize) * max(0.01, scale)
+        /// else the system font, at the mapped weight. Deliberately zoom-free: the
+        /// glyphs are scaled by ``scaleBox``, so this size is a layout input that must
+        /// stay constant or TextKit re-wraps on every zoom step (see ``reposition``).
+        private static func nsFont(for style: ElementStyle) -> NSFont {
+            let size = CGFloat(style.fontSize ?? ElementRendering.defaultFontSize)
             let systemWeight: NSFont.Weight
             let legacyWeight: Int
             switch style.weight {
@@ -322,6 +373,20 @@ struct InlineTextEditor: NSViewRepresentable {
 }
 
 // MARK: - Live AppKit pieces
+
+/// Carries the canvas zoom for the inline editor, so the `NSTextView` inside never
+/// has to. Its frame is the tile's SCREEN rect while its bounds is the same box in
+/// WORLD units, which makes the view's scale exactly the camera's — the AppKit
+/// counterpart of what ``CanvasRenderer`` does for committed text (060): lay out
+/// once in world space, let the zoom be pure rasterization.
+///
+/// It must be a view the text system does not manage. `NSTextView` rewrites its own
+/// bounds during layout, so a scale applied there is intermittently reverted; this
+/// box has no such layout, so its scale is deterministic. Flipped to match
+/// ``PassThroughContainer`` / `CanvasHostView` (top-left origin, y down).
+final class EditorScaleBox: NSView {
+    override var isFlipped: Bool { true }
+}
 
 /// The flipped host for the `NSTextView`, sized to the canvas. Its `hitTest` passes
 /// clicks that miss the text box through to the canvas beneath — so clicking away
