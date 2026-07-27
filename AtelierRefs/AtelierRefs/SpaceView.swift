@@ -9,6 +9,7 @@
 //  changes — images ride the existing path.
 //
 
+import AppKit
 import AtelierCore
 import AtelierIngestion
 import CanvasRenderer
@@ -255,7 +256,26 @@ struct SpaceView: View {
                     tool = .select // one-shot: back to Select after placing
                 },
                 onTransformChanged: { editBridge.transformDidChange() },
-                onHostReady: { editBridge.host = $0 })
+                onHostReady: { editBridge.host = $0 },
+                // SP2 / S2: accept an in-app asset drag (grid / library / another
+                // board) and place it centred on the drop point. External import
+                // (files / images / URLs) is SP3 — refused here for now.
+                acceptedDropTypes: [AssetDragPayload.pasteboardType],
+                onDragEntered: { pasteboard in
+                    guard let payload = AssetDragPayload.decode(from: pasteboard),
+                          case .place = canvasDropRoute(.assetDrag(payload)) else { return [] }
+                    return .copy
+                },
+                onDrop: { pasteboard, worldPoint in
+                    guard let payload = AssetDragPayload.decode(from: pasteboard) else { return false }
+                    switch canvasDropRoute(.assetDrag(payload)) {
+                    case let .place(assetIDs):
+                        space.placeDroppedAssets(ids: assetIDs, at: worldPoint)
+                        return true
+                    case .ingestThenPlace, .reject:
+                        return false
+                    }
+                })
             .id(space.contentVersion)
 
             if space.items.isEmpty { emptyHint }

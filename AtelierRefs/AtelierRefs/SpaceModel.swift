@@ -189,17 +189,48 @@ final class SpaceModel: ObservableObject {
     /// Persist a restyle and, when `placement` is set, the derived geometry in ONE
     /// transaction (054 §4.3 · R6) — style + auto-size can never half-persist and
     /// one undo reverts both. `placement == nil` writes style only (the `.fixed`
-    /// path). Reloads to resync ``items``.
-    private func performRestyle(_ id: UUID, _ style: ElementStyle, placement: Placement?) async {
+    /// path). Does NOT reload: the caller (``applyRestyle``) already updated ``items``
+    /// and the live content in memory, so reloading would only bump ``contentVersion``
+    /// and rebuild the whole host — the restyle lag / viewport-reset / double-click-
+    /// drop bug this path exists to avoid (the style peer of a drag's `reload: false`).
+    private func persistRestyle(_ id: UUID, _ style: ElementStyle, placement: Placement?) async {
         do {
             let sp = placement.map {
                 SpaceItemPlacement(itemID: id, x: $0.x, y: $0.y, w: $0.w, h: $0.h, z: $0.z)
             }
             try await services.updateSpaceItemStyleAndPlacement(itemID: id, style: style, placement: sp)
-            await load()
         } catch {
             lastError = Self.message(for: error)
         }
+    }
+
+    /// Apply a restyle to ``items`` and the LIVE ``SpaceContent`` in memory, bump
+    /// ``renderRevision`` so the canvas re-syncs the tile IN PLACE (no host rebuild),
+    /// then persist durably with no reload. `placement` carries the derived auto-size
+    /// geometry (nil = style only, geometry untouched). Mirrors the drag path: mutate
+    /// the shared content instance the renderer holds, then signal a re-sync — never
+    /// swap ``contentVersion`` (which is `.id`-bound and tears the host down). Both the
+    /// forward edit and its undo/redo route through here so every restyle is
+    /// flicker-free and keeps the user's pan/zoom.
+    private func applyRestyle(_ id: UUID, _ style: ElementStyle, placement: Placement?) {
+        guard let idx = items.firstIndex(where: { $0.item.id == id }) else { return }
+        let content = self.content()
+        // Preserve the LIVE position when the restyle carries no geometry of its own —
+        // a style-only edit must not reset a not-yet-reloaded drag position (this also
+        // de-stales `items` back to the live rect).
+        let geom = placement ?? livePlacement(id, in: content)
+        var item = items[idx].item
+        item.style = style.jsonString()
+        item.x = geom.x; item.y = geom.y; item.w = geom.w; item.h = geom.h; item.z = geom.z
+        let detail = SpaceItemDetail(item: item, asset: items[idx].asset, source: items[idx].source)
+        items[idx] = detail
+        // Mirror into the content the renderer is already holding so the next sync
+        // draws the change without a new `SpaceContent` (no `.id` change → no rebuild).
+        if let tileID = content.tileID(forSpaceItemID: id) {
+            content.setElementStyle(tileID: tileID, detail: detail)
+        }
+        renderRevision &+= 1
+        enqueue { await self.persistRestyle(id, style, placement: placement) }
     }
 
     /// Remove or re-insert a batch of rows, then reload once. The two directions
@@ -508,34 +539,69 @@ final class SpaceModel: ObservableObject {
 
     // MARK: - Add from Library
 
-    /// Add assets to this space, flowed into justified rows BELOW the current
-    /// content (005 — the "Add from Library" flow-in). Reloads on completion.
+    /// Where a batch of new references seats on the board (059 · SP2 / 6A).
+    enum PlacementSeed: Equatable {
+        /// Flow BELOW the current content (the "Add from Library" append).
+        case belowContent
+        /// Centre the flowed block on a WORLD point (a drag / drop / paste).
+        case point(CGPoint)
+    }
+
+    /// Add already-resolved assets to this space, flowed BELOW the current content
+    /// (005 — the "Add from Library" flow-in). Reloads on completion.
     func addAssets(_ assets: [Asset]) {
         guard !assets.isEmpty else { return }
-        // Start below the current content's bounding box; z above the current max.
-        let startY: Double = {
-            let maxBottom = items.map { $0.item.y + $0.item.h }.max() ?? 0
-            return maxBottom > 0 ? maxBottom + SpaceLayout.spacing : 0
-        }()
+        enqueue { await self.insertPlaced(assets, seededAt: .belowContent) }
+    }
+
+    /// Place a drag / drop of EXISTING references (059 · SP2 / S2): resolve the
+    /// dragged ids to assets, then flow them centred on the drop point. Skips ids
+    /// that no longer resolve; a fully-stale drop is a silent no-op.
+    func placeDroppedAssets(ids: [UUID], at worldPoint: CGPoint) {
+        guard !ids.isEmpty else { return }
+        enqueue {
+            var assets: [Asset] = []
+            for id in ids {
+                if let detail = try? await self.services.getAsset(id: id) {
+                    assets.append(detail.asset)
+                }
+            }
+            guard !assets.isEmpty else { return }
+            await self.insertPlaced(assets, seededAt: .point(worldPoint))
+        }
+    }
+
+    /// The ONE placement writer (059 · SP2 / 6A): seed → `flowIn` → batch insert in
+    /// one transaction (13A) → placement-only undo (7A / S2) → a single reload
+    /// (14A). Runs inside the serial write chain, so it reads `items` at its own
+    /// commit time (below whatever content exists when it runs).
+    private func insertPlaced(_ assets: [Asset], seededAt seed: PlacementSeed) async {
         let startZ = (items.map(\.item.z).max() ?? -1) + 1
         let aspects = assets.map(SpaceLayout.aspect)
-        let rects = SpaceLayout.flowIn(aspects: aspects, startY: startY, startZ: startZ)
-        enqueue {
-            do {
-                var created: [SpaceItem] = []
-                for (asset, rect) in zip(assets, rects) {
-                    let item = try await self.services.addAssetToSpace(
-                        assetID: asset.id, to: self.spaceID,
-                        x: rect.x, y: rect.y, w: rect.w, h: rect.h, z: rect.z)
-                    created.append(item)
-                }
-                self.registerReversible(created.count == 1 ? "Add Reference" : "Add References",
-                    primary: { self.enqueue { await self.performBatch(created, restore: true) } },
-                    inverse: { self.enqueue { await self.performBatch(created, restore: false) } })
-                await self.load()
-            } catch {
-                self.lastError = Self.message(for: error)
-            }
+        let rects: [PlacedRect]
+        switch seed {
+        case .belowContent:
+            let startY: Double = {
+                let maxBottom = items.map { $0.item.y + $0.item.h }.max() ?? 0
+                return maxBottom > 0 ? maxBottom + SpaceLayout.spacing : 0
+            }()
+            rects = SpaceLayout.flowIn(aspects: aspects, originY: startY, startZ: startZ)
+        case let .point(p):
+            rects = SpaceLayout.flowIn(
+                aspects: aspects, centeredOn: (x: p.x, y: p.y), startZ: startZ)
+        }
+        let placements = zip(assets, rects).map { asset, rect in
+            SpaceAssetPlacement(
+                assetID: asset.id, x: rect.x, y: rect.y, w: rect.w, h: rect.h, z: rect.z)
+        }
+        do {
+            let created = try await services.addAssetsToSpace(placements, to: spaceID)
+            registerReversible(created.count == 1 ? "Add Reference" : "Add References",
+                primary: { self.enqueue { await self.performBatch(created, restore: true) } },
+                inverse: { self.enqueue { await self.performBatch(created, restore: false) } })
+            await load()
+        } catch {
+            lastError = Self.message(for: error)
         }
     }
 
@@ -624,16 +690,23 @@ final class SpaceModel: ObservableObject {
 
     /// Persist an element's restyle (text, colours, stroke, label). For an auto-sized
     /// `.text` element the derived `w`/`h` rides along in the SAME transaction and the
-    /// SAME undo step (054 §4.3 · D5) — one ⌘Z reverts both text and size. A geometry
-    /// change bumps ``renderRevision`` once so the canvas re-syncs; a style-only /
-    /// `.fixed` restyle writes no geometry and does not bump it. Undoable — the prior
-    /// style (and geometry, when it changed) is captured and restored on undo.
+    /// SAME undo step (054 §4.3 · D5) — one ⌘Z reverts both text and size. The change
+    /// is applied to the live content IN MEMORY and re-synced via ``renderRevision``
+    /// (never a host rebuild), so any visible restyle — geometry OR style-only — bumps
+    /// ``renderRevision`` once as its redraw signal. Undoable — the prior style (and
+    /// geometry, when it changed) is captured and restored, flicker-free, on undo.
     func updateStyle(itemID: UUID, style newStyle: ElementStyle) {
-        guard let detail = items.first(where: { $0.item.id == itemID }) else { return }
-        let item = detail.item
+        guard var item = items.first(where: { $0.item.id == itemID })?.item else { return }
         let oldStyle = style(forItemID: itemID)
 
-        let oldPlacement = Placement(x: item.x, y: item.y, w: item.w, h: item.h, z: item.z)
+        // Geometry truth is the LIVE content: a drag / arrange persists with
+        // `reload: false`, leaving `items` x/y/w/h stale until the next reload (see
+        // ``livePlacement``). Anchor the restyle + auto-size on the live rect so an
+        // edit after a move can't snap the element back to its pre-move position.
+        let oldPlacement = livePlacement(itemID, in: content())
+        item.x = oldPlacement.x; item.y = oldPlacement.y
+        item.w = oldPlacement.w; item.h = oldPlacement.h; item.z = oldPlacement.z
+
         let newPlacement: Placement? = autosizedFrame(item: item, style: newStyle).map {
             Placement(x: Double($0.minX), y: Double($0.minY),
                       w: Double($0.width), h: Double($0.height), z: item.z)
@@ -642,18 +715,10 @@ final class SpaceModel: ObservableObject {
         guard oldStyle != newStyle || geomChanged else { return }
 
         let name = item.kind == .text ? "Restyle Text" : "Restyle"
-        enqueue { await self.performRestyle(itemID, newStyle, placement: newPlacement) }
-        if geomChanged { renderRevision &+= 1 }
+        applyRestyle(itemID, newStyle, placement: newPlacement)
         registerReversible(name,
-            primary: {
-                self.enqueue { await self.performRestyle(itemID, newStyle, placement: newPlacement) }
-                if geomChanged { self.renderRevision &+= 1 }
-            },
-            inverse: {
-                self.enqueue { await self.performRestyle(itemID, oldStyle,
-                                                         placement: geomChanged ? oldPlacement : nil) }
-                if geomChanged { self.renderRevision &+= 1 }
-            })
+            primary: { self.applyRestyle(itemID, newStyle, placement: newPlacement) },
+            inverse: { self.applyRestyle(itemID, oldStyle, placement: geomChanged ? oldPlacement : nil) })
     }
 
     // MARK: - Errors

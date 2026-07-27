@@ -1960,7 +1960,7 @@ final class IngestionModel: ObservableObject {
                 }
                 guard !assets.isEmpty else { return }
                 let rects = SpaceLayout.flowIn(
-                    aspects: assets.map(SpaceLayout.aspect), startY: startY, startZ: startZ)
+                    aspects: assets.map(SpaceLayout.aspect), originY: startY, startZ: startZ)
                 for (asset, rect) in zip(assets, rects) {
                     try await services.addAssetToSpace(
                         assetID: asset.id, to: spaceID,

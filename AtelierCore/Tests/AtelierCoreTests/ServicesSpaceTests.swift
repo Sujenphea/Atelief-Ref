@@ -185,6 +185,97 @@ struct ServicesSpaceTests {
         }
     }
 
+    // MARK: batch asset insert (059 · SP2 / 13A)
+
+    @Test("addAssetsToSpace inserts every placement in one transaction, distinct ids")
+    func addAssetsBatch() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let space = try await services.createSpace(name: "Board")
+        let a1 = try await makeAsset(services, hash: "abc124", url: "https://example.com/1")
+        let a2 = try await makeAsset(services, hash: "abc125", url: "https://example.com/2")
+        let created = try await services.addAssetsToSpace([
+            SpaceAssetPlacement(assetID: a1, x: 0, y: 0, w: 100, h: 100, z: 0),
+            SpaceAssetPlacement(assetID: a2, x: 200, y: 0, w: 100, h: 100, z: 1),
+        ], to: space.id)
+        #expect(created.count == 2)
+        #expect(Set(created.map(\.id)).count == 2)          // each row its own id
+        #expect(created.map(\.z) == [0, 1])                 // z preserved in order
+        let rows = try await services.spaceItems(in: space.id)
+        #expect(rows.count == 2)
+        #expect(Set(rows.compactMap { $0.item.assetID }) == [a1, a2])
+    }
+
+    @Test("addAssetsToSpace on an empty batch is a no-op returning []")
+    func addAssetsBatchEmpty() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let space = try await services.createSpace(name: "Board")
+        let created = try await services.addAssetsToSpace([], to: space.id)
+        #expect(created.isEmpty)
+        #expect(try await services.spaceItems(in: space.id).isEmpty)
+    }
+
+    @Test("addAssetsToSpace is all-or-nothing: an unknown asset rolls the batch back")
+    func addAssetsBatchAtomicOnUnknownAsset() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let space = try await services.createSpace(name: "Board")
+        let good = try await makeAsset(services)
+        let ghost = UUID()
+        await #expect(throws: AtelierError.notFound(entity: "asset", id: ghost)) {
+            try await services.addAssetsToSpace([
+                SpaceAssetPlacement(assetID: good, x: 0, y: 0, w: 10, h: 10, z: 0),
+                SpaceAssetPlacement(assetID: ghost, x: 20, y: 0, w: 10, h: 10, z: 1),
+            ], to: space.id)
+        }
+        // The valid first row must NOT have persisted (whole batch rolled back).
+        #expect(try await services.spaceItems(in: space.id).isEmpty)
+    }
+
+    @Test("addAssetsToSpace on a missing space throws notFound (nothing inserted)")
+    func addAssetsBatchMissingSpace() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let assetID = try await makeAsset(services)
+        let ghostSpace = UUID()
+        await #expect(throws: AtelierError.notFound(entity: "space", id: ghostSpace)) {
+            try await services.addAssetsToSpace(
+                [SpaceAssetPlacement(assetID: assetID, x: 0, y: 0, w: 10, h: 10, z: 0)],
+                to: ghostSpace)
+        }
+    }
+
+    @Test("addAssetsToSpace validates every placement before writing")
+    func addAssetsBatchBadPlacement() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let space = try await services.createSpace(name: "Board")
+        let assetID = try await makeAsset(services)
+        await #expect(throws: AtelierError.invalidPlacement) {
+            try await services.addAssetsToSpace([
+                SpaceAssetPlacement(assetID: assetID, x: 0, y: 0, w: 100, h: 100, z: 0),
+                SpaceAssetPlacement(assetID: assetID, x: 0, y: 0, w: 0, h: 100, z: 1), // w=0
+            ], to: space.id)
+        }
+        #expect(try await services.spaceItems(in: space.id).isEmpty)
+    }
+
+    @Test("addAssetsToSpace allows the same asset twice — two rows, two ids")
+    func addAssetsBatchSameAssetTwice() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let space = try await services.createSpace(name: "Board")
+        let assetID = try await makeAsset(services)
+        let created = try await services.addAssetsToSpace([
+            SpaceAssetPlacement(assetID: assetID, x: 0, y: 0, w: 10, h: 10, z: 0),
+            SpaceAssetPlacement(assetID: assetID, x: 50, y: 0, w: 10, h: 10, z: 1),
+        ], to: space.id)
+        #expect(created.count == 2)
+        #expect(created[0].id != created[1].id)
+        #expect(try await services.spaceItems(in: space.id).count == 2)
+    }
+
     // MARK: elements (E3 surface, validated now)
 
     @Test("addElement creates an element row with no asset and a decoded style")

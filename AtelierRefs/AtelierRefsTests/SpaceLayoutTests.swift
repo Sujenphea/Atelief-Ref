@@ -21,7 +21,7 @@ struct SpaceLayoutFlowTests {
     func packsAndWraps() {
         // width per square = rowHeight (240); 6 fit before the 7th wraps
         // (240*6 + 16*5 = 1520 ≤ 1600; a 7th would exceed).
-        let rects = SpaceLayout.flowIn(aspects: Array(repeating: 1.0, count: 8), startY: 0, startZ: 0)
+        let rects = SpaceLayout.flowIn(aspects: Array(repeating: 1.0, count: 8), originY: 0, startZ: 0)
         #expect(rects.count == 8)
         // First row shares startY; the 7th drops to the next row.
         #expect(rects[0].y == 0)
@@ -36,9 +36,75 @@ struct SpaceLayoutFlowTests {
 
     @Test("flow-in honours startY and startZ offsets")
     func offsets() {
-        let rects = SpaceLayout.flowIn(aspects: [1.0, 1.0], startY: 500, startZ: 10)
+        let rects = SpaceLayout.flowIn(aspects: [1.0, 1.0], originY: 500, startZ: 10)
         #expect(rects[0].y == 500)
         #expect(rects.map(\.z) == [10, 11])
+    }
+
+    @Test("originX shifts the whole flow right and moves the wrap boundary with it")
+    func originXShiftsFlowAndWrap() {
+        // 6 squares fit per row from x=0; the same must hold from any originX, i.e.
+        // the wrap boundary travels with the origin (not pinned at absolute 1600).
+        let rects = SpaceLayout.flowIn(
+            aspects: Array(repeating: 1.0, count: 8), originX: 1000, originY: 50, startZ: 0)
+        #expect(rects[0].x == 1000)          // first tile sits at the origin
+        #expect(rects[0].y == 50)
+        #expect(rects[5].y == 50)            // 6th still on the first row
+        #expect(rects[6].y == 50 + SpaceLayout.rowHeight + SpaceLayout.spacing) // 7th wraps
+        #expect(rects[6].x == 1000)          // wrapped tile returns to originX, not 0
+    }
+}
+
+@Suite("SpaceLayout: centred drop-at-point flow (6A)")
+struct SpaceLayoutCenteredFlowTests {
+
+    @Test("a single item lands with its centre exactly on the drop point")
+    func singleCentred() {
+        // A 2:1 landscape aspect → w = 480, h = 240 (rowHeight).
+        let rects = SpaceLayout.flowIn(aspects: [2.0], centeredOn: (x: 100, y: 200), startZ: 5)
+        #expect(rects.count == 1)
+        #expect(rects[0].w == SpaceLayout.rowHeight * 2)
+        #expect(rects[0].h == SpaceLayout.rowHeight)
+        #expect(rects[0].x + rects[0].w / 2 == 100)   // centre-x on the point
+        #expect(rects[0].y + rects[0].h / 2 == 200)   // centre-y on the point
+        #expect(rects[0].z == 5)
+    }
+
+    @Test("a block's bounding box is centred on the point; internal packing preserved")
+    func blockCentred() {
+        let aspects = Array(repeating: 1.0, count: 3)
+        let centred = SpaceLayout.flowIn(aspects: aspects, centeredOn: (x: 0, y: 0), startZ: 0)
+        // The bounding box of the centred block must straddle the origin evenly.
+        let box = SpaceLayout.boundingBox(centred)!
+        #expect(abs(box.minX + box.width / 2) < 1e-9)
+        #expect(abs(box.minY + box.height / 2) < 1e-9)
+        // Centring is a pure translation of the origin-packed block: relative
+        // offsets between tiles are identical to the top-left flow.
+        let packed = SpaceLayout.flowIn(aspects: aspects, originY: 0, startZ: 0)
+        let dx = centred[0].x - packed[0].x, dy = centred[0].y - packed[0].y
+        for (c, p) in zip(centred, packed) {
+            #expect(abs((c.x - p.x) - dx) < 1e-9)
+            #expect(abs((c.y - p.y) - dy) < 1e-9)
+        }
+    }
+
+    @Test("empty input yields no placements (no crash, no phantom tile)")
+    func emptyCentred() {
+        #expect(SpaceLayout.flowIn(aspects: [], centeredOn: (x: 10, y: 10), startZ: 0).isEmpty)
+    }
+
+    @Test("boundingBox spans the union of all rects; nil when empty")
+    func boundingBoxSpansUnion() {
+        #expect(SpaceLayout.boundingBox([]) == nil)
+        let rects = [
+            PlacedRect(x: 10, y: 20, w: 30, h: 40, z: 0),
+            PlacedRect(x: -5, y: 100, w: 15, h: 10, z: 1),
+        ]
+        let box = SpaceLayout.boundingBox(rects)!
+        #expect(box.minX == -5)
+        #expect(box.minY == 20)
+        #expect(box.width == 45)   // from -5 to 40
+        #expect(box.height == 90)  // from 20 to 110
     }
 }
 

@@ -73,6 +73,14 @@ extension AssetDragPayload {
         try? JSONDecoder().decode(AssetDragPayload.self, from: data)
     }
 
+    /// Decode a payload directly off a pasteboard (059 · SP2) — the canvas
+    /// ``NSDraggingDestination`` reads the drag pasteboard this way. Returns `nil`
+    /// when the board carries no `.assetIDs` bytes (an external / foreign drop).
+    static func decode(from pasteboard: NSPasteboard) -> AssetDragPayload? {
+        guard let data = pasteboard.data(forType: pasteboardType) else { return nil }
+        return decode(from: data)
+    }
+
     /// The sentinel "no source collection" id — a fixed, impossible collection id
     /// (all-zero; never produced by `UUID()`). Marks a MEMBERSHIP-LESS drag (library
     /// search results, a Space board): the drag has no collection to move OUT of, so

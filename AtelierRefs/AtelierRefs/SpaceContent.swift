@@ -29,10 +29,12 @@ final class SpaceContent: TileProvider, TileImageSource {
     private(set) var tiles: [Tile]
 
     /// The drawable rows behind the tiles (asset + element); `tile.id` indexes
-    /// straight into this. Asset rows with an unresolved asset are dropped.
-    private let rows: [SpaceItemDetail]
+    /// straight into this. Asset rows with an unresolved asset are dropped. Mutable
+    /// so an inspector / inline restyle can update a row in place (``setElementStyle``).
+    private(set) var rows: [SpaceItemDetail]
     /// The renderer content per tile (precomputed: `.image` / `.frame` / `.text`).
-    private let contentByTile: [TileContent]
+    /// Mutable so a restyle can re-derive one tile's content without a host rebuild.
+    private(set) var contentByTile: [TileContent]
     /// The on-disk thumbnail store.
     private let store: MediaStore
     /// A dense cache key per distinct blob hash, so two tiles of the same image
@@ -118,6 +120,22 @@ final class SpaceContent: TileProvider, TileImageSource {
         let existing = tiles[tileID]
         tiles[tileID] = Tile(
             id: existing.id, x: x, y: y, w: existing.w, h: existing.h, z: existing.z)
+    }
+
+    // MARK: - Style mutation (inspector / inline restyle)
+
+    /// Update an element tile's style + geometry in place — the style peer of
+    /// ``setPlacement(tileID:x:y:)`` (the drag path). Re-derives the tile's drawn
+    /// content and rect so an inspector / inline restyle redraws on the next
+    /// `sync()` WITHOUT rebuilding the host (which would reset pan/zoom and drop the
+    /// double-click sequence). The caller bumps `renderRevision` to trigger the sync.
+    /// No-op for an out-of-range id.
+    func setElementStyle(tileID: Int, detail: SpaceItemDetail) {
+        guard rows.indices.contains(tileID) else { return }
+        rows[tileID] = detail
+        let item = detail.item
+        contentByTile[tileID] = ElementRendering.tileContent(for: item, asset: detail.asset)
+        tiles[tileID] = Tile(id: tileID, x: item.x, y: item.y, w: item.w, h: item.h, z: item.z)
     }
 
     // MARK: - Lookups

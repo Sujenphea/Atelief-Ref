@@ -38,6 +38,12 @@ public struct CanvasView: NSViewRepresentable {
     /// ``CanvasHostView/transform`` + ``CanvasHostView/screenFrame(forTileID:)`` for
     /// the inline editor. Fires on make (and again if the host is rebuilt via `.id`).
     private let onHostReady: ((CanvasHostView) -> Void)?
+    /// Drop-target seam (059 · SP2 / 4A): the pasteboard types the canvas accepts,
+    /// the hover-operation decision, and the drop handler (pasteboard + WORLD point).
+    /// All `nil`/empty by default, so a canvas that passes none is not a drop target.
+    private let acceptedDropTypes: [NSPasteboard.PasteboardType]
+    private let onDragEntered: ((NSPasteboard) -> NSDragOperation)?
+    private let onDrop: ((NSPasteboard, CGPoint) -> Bool)?
 
     public init(
         provider: any TileProvider,
@@ -54,7 +60,10 @@ public struct CanvasView: NSViewRepresentable {
         onMoveTile: ((Int, CGPoint) -> Void)? = nil,
         onCreateElement: ((CanvasTool, CGRect) -> Void)? = nil,
         onTransformChanged: (() -> Void)? = nil,
-        onHostReady: ((CanvasHostView) -> Void)? = nil
+        onHostReady: ((CanvasHostView) -> Void)? = nil,
+        acceptedDropTypes: [NSPasteboard.PasteboardType] = [],
+        onDragEntered: ((NSPasteboard) -> NSDragOperation)? = nil,
+        onDrop: ((NSPasteboard, CGPoint) -> Bool)? = nil
     ) {
         self.provider = provider
         self.images = images
@@ -71,6 +80,9 @@ public struct CanvasView: NSViewRepresentable {
         self.onCreateElement = onCreateElement
         self.onTransformChanged = onTransformChanged
         self.onHostReady = onHostReady
+        self.acceptedDropTypes = acceptedDropTypes
+        self.onDragEntered = onDragEntered
+        self.onDrop = onDrop
     }
 
     public func makeNSView(context: Context) -> CanvasHostView {
@@ -96,6 +108,11 @@ public struct CanvasView: NSViewRepresentable {
         view.onMoveTile = onMoveTile
         view.onCreateElement = onCreateElement
         view.onTransformChanged = onTransformChanged
+        view.onDragEntered = onDragEntered
+        view.onDrop = onDrop
+        // Assign the registered types AFTER the handlers so a drop arriving between
+        // the two assignments still finds `onDrop` in place.
+        view.acceptedDropTypes = acceptedDropTypes
         view.tool = tool
         view.editingTileID = editingTileID
         view.syncToken = syncToken

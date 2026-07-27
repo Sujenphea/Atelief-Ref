@@ -42,6 +42,35 @@ public final class CanvasHostView: NSView {
     /// rubber-band a new element instead.
     public var tool: CanvasTool = .select
 
+    // MARK: Drop destination (059 · SP2 / 4A — external + library drops)
+
+    /// Pasteboard types this canvas accepts as a DROP target. The app sets these
+    /// (e.g. its app-private asset-drag type, and later file / image / URL types
+    /// for external import). Empty means the canvas is not a drop target. Setting
+    /// re-registers the view's dragged types, so a `nil`/empty assignment cleanly
+    /// disables dropping. This is AppKit (not SwiftUI `.onDrop`) on purpose: the
+    /// canvas already owns mouse-drag / marquee / pan gestures, and an
+    /// `NSDraggingDestination` composes with them without fighting for the event.
+    public var acceptedDropTypes: [NSPasteboard.PasteboardType] = [] {
+        didSet {
+            unregisterDraggedTypes()
+            if !acceptedDropTypes.isEmpty { registerForDraggedTypes(acceptedDropTypes) }
+        }
+    }
+
+    /// Decide the drag operation to advertise while a drag hovers (the cursor
+    /// badge). The app inspects the drag pasteboard and returns `.copy` to accept
+    /// or `[]` to refuse. `nil` → accept as `.copy` whenever any accepted type is
+    /// present. Kept app-side so the package never needs the app's payload types.
+    public var onDragEntered: ((NSPasteboard) -> NSDragOperation)?
+
+    /// Handle a drop. The app receives the drag pasteboard and the WORLD point
+    /// under the drop — computed HERE via the same ``CanvasTransform`` hit-testing
+    /// uses (decision C6), so a dropped item lands exactly where the cursor is with
+    /// zero chance of drift. Returns whether the drop was accepted. `nil` disables
+    /// dropping regardless of ``acceptedDropTypes``.
+    public var onDrop: ((_ pasteboard: NSPasteboard, _ worldPoint: CGPoint) -> Bool)?
+
     /// Forwarded from the engine (2B · 054 §5.1 · R2): fired once per transform
     /// mutation so the app's inline text editor can reposition its overlay
     /// imperatively, off the SwiftUI diff. `nil` disables it. Wired to the engine in
@@ -599,6 +628,40 @@ public final class CanvasHostView: NSView {
     @objc private func contextDelete() {
         let ids = engine.selectedTileIDs
         if !ids.isEmpty { onDeleteTiles?(ids) }
+    }
+
+    // MARK: - NSDraggingDestination (drop target, 059 · SP2 / 4A)
+
+    /// The operation to advertise as a drag enters / moves over the canvas. Defers
+    /// to ``onDragEntered`` (the app reads the pasteboard); with no handler it
+    /// accepts as `.copy` whenever the canvas has accepted types, else refuses.
+    private func dragOperation(for sender: NSDraggingInfo) -> NSDragOperation {
+        guard onDrop != nil, !acceptedDropTypes.isEmpty else { return [] }
+        if let onDragEntered { return onDragEntered(sender.draggingPasteboard) }
+        return .copy
+    }
+
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        dragOperation(for: sender)
+    }
+
+    public override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        dragOperation(for: sender)
+    }
+
+    public override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        dragOperation(for: sender) != []
+    }
+
+    /// Commit a drop: map the drop location to a WORLD point through the shared
+    /// transform (isFlipped view coords → world), then hand the pasteboard + point
+    /// to the app. The app decodes the payload and places / imports; the package
+    /// stays ignorant of what's on the pasteboard.
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let onDrop else { return false }
+        let viewPoint = convert(sender.draggingLocation, from: nil)
+        let worldPoint = engine.transform.screenToWorld(viewPoint)
+        return onDrop(sender.draggingPasteboard, worldPoint)
     }
 }
 
