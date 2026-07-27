@@ -76,26 +76,13 @@ public enum TextMetrics {
     /// → unconstrained (grows to the longest line); a value → wrapped to that width
     /// (height grows with the line count). An empty string still occupies one line
     /// height (so an empty auto box stays selectable). Ceiled so glyphs never clip.
+    ///
+    /// A thin wrapper over ``TextShaper/shape(_:maxWidth:maxHeight:)`` (060 §1):
+    /// the size returned IS the size of the layout that gets drawn, so a measured
+    /// line break can never differ from a drawn one. Never truncates — clipping is
+    /// a draw-box concern, not a measurement one.
     public static func size(for style: TextStyle, maxWidth: CGFloat?) -> CGSize {
-        let pointSize = CGFloat(max(1, style.fontSize))
-        let base = CanvasFont.resolve(family: style.fontFamily, weight: style.weight)
-        // The resolved typeface carries a nominal reference size; measure at the
-        // actual world point size (a cheap descriptor copy, not a new resolution).
-        let font = CTFontCreateCopyWithAttributes(base, pointSize, nil, nil)
-        let lineHeight = CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font)
-
-        // An empty string measures as one line (a lone space) so the box never
-        // collapses to zero height; width stays tiny.
-        let string = style.string.isEmpty ? " " : style.string
-        let attributed = NSAttributedString(string: string, attributes: [.font: font])
-        let constraint = CGSize(
-            width: maxWidth ?? .greatestFiniteMagnitude,
-            height: .greatestFiniteMagnitude)
-        let rect = attributed.boundingRect(
-            with: constraint, options: [.usesLineFragmentOrigin], context: nil)
-        return CGSize(
-            width: ceil(rect.width),
-            height: ceil(max(rect.height, lineHeight)))
+        TextShaper.shape(style, maxWidth: maxWidth).size
     }
 }
 
