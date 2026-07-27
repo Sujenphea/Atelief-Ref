@@ -15,16 +15,16 @@
 | **4A** | Canvas drop = `CanvasHostView` `NSDraggingDestination`; not SwiftUI `.onDrop`. |
 | **5A** | Progress + partial-failure via `ToastCenter` + the `238` progress ring. |
 | **6A** | One `place(assets:seededAt:)` (insert loop + undo); `flowIn` gains `origin`. |
-| **7A** | S2 undo = placement-only; S1 undo = placement + newly-ingested unreferenced asset. |
+| **7A** | *(revised SP5)* S1 & S2 undo = placement-only; the ingested asset stays in Unsorted — consistent with collection imports, whose ingest isn't undoable either. |
 | **8A** | Asset-row creation gates placement; blob/thumbnail fills async (reuse `117`). |
-| **9A** | Full undo matrix incl. shared-reference guard + redo. |
+| **9A** | *(revised SP5)* Undo matrix: S1/S2 placement undo→redo. No shared-reference guard — nothing is deleted, so there is no data-loss branch. |
 | **10A** | Unit-test ingest→place at the model seam with an injected fake ingest. |
 | **11A** | Extract pure `canvasDropRoute(...)` (mirror `DropRouter`) + exhaustive matrix. |
 | **12A** | Extend the idempotency suite with board-placement multiplicity cases. |
 | **13A** | Batch `addAssetsToSpace([...])` — validate space once, one transaction. |
 | **14A** | One board reload per import batch; defer incremental append. |
 | **15A** | Reuse `DecodeScheduler`/culler; no bespoke throttle; verify with a 100-drop. |
-| **16A** | S1 undo asset removal via the existing `deleteAssets`/`MediaReaper` path. |
+| **16A** | *(revised SP5 — void)* No asset deletion on undo (placement-only per 7A); `MediaReaper` stays out of the import path entirely. |
 
 ## Grounding — reused primitives (do not rebuild)
 
@@ -135,14 +135,31 @@ is untouched) → `DirectInputReader` paste decode → `importInputs` → place 
 **viewport center**. Tests: paste image / paste URL / paste with no importable
 content → no-op; center placement.
 
-## Phase SP5 — Undo completion (S)
+## Phase SP5 — Undo completion (S) · *revised: placement-only*
 
-Finish the compound S1 inverse (7A/16A): undo removes the placement and, for
-assets **newly created by this import and referenced nowhere else**, routes their
-deletion through `deleteAssets`/`MediaReaper` (batched). Full 9A matrix, incl. the
-shared-reference guard and redo.
+**Decision revised (SP5).** Undo for BOTH surfaces is placement-only — it removes
+the board tile(s), and the ingested asset stays in Unsorted. Two findings drove
+this away from the original compound-delete plan:
 
-**Gate:** 9A matrix green — especially "asset referenced elsewhere survives S1 undo."
+1. An external drop ingests into **Unsorted** (a real membership) *plus* the board
+   placement, so the asset is never truly "unreferenced".
+2. **Collection imports aren't undoable at all** — the grid's `run()` registers no
+   undo; ⌘Z reverses delete / remove / move / reorder / rename, never an *import*.
+   Deleting the asset on a board-import undo would make the board inconsistent with
+   every other import surface.
+
+So there is no asset deletion, no `MediaReaper` in the import path, and no
+shared-reference guard (nothing is deleted → no data-loss branch). The placement
+undo/redo already registered by `insertPlaced` (SP2) IS the S1 inverse too.
+
+SP5 is therefore **verification + hardening**, not new machinery: prove the S1
+external-drop undo removes only the placement, leaves the asset in Unsorted, and
+redoes cleanly.
+
+**Tests:** S1 import → undo (tile gone, asset + its Unsorted membership survive) →
+redo (tile back, stable id). Plus the existing S2 undo/redo.
+
+**Gate:** the S1 undo→redo matrix green; the imported asset provably survives undo.
 
 ## Phase SP6 — Perf verification (S, measurement)
 

@@ -44,7 +44,8 @@
   sidebar-reorder only. Distinct `UTType`s keep the three drag kinds unconfusable.
 - **A guarded delete already exists.** `deleteAssets` + `MediaReaper`
   (`041`/`042`) do reference-counted orphan handling (blobs → Trash) — the one
-  audited data-loss path, reused by undo (7A/16A).
+  audited data-loss path. (The import path does NOT use it — undo is placement-only
+  per the SP5 revision of 7A; it powers only the separate ⌫ delete verb.)
 
 ## The core decision: a Space is not a collection
 
@@ -124,13 +125,17 @@ path (S2) already covers it. Revisit only if it becomes a real habit.
 - **5A — One reporting vocabulary.** Progress + partial-success/error surface via
   `ToastCenter` + the `238` export-style top-bar progress ring — the board has no
   header, so it reuses the shared surfaces rather than a canvas-only status.
-- **7A — Correct inverse per surface.** S2 undo removes the placement only. **S1
-  undo removes the placement AND the just-ingested asset when that asset was newly
-  created by the import and is referenced nowhere else** — otherwise ⌘Z strands a
-  surprise asset in Unsorted.
-- **16A — Reuse the audited delete.** S1 undo routes the asset removal through the
-  existing `deleteAssets`/`MediaReaper` reference-counted path (batched for the
-  import's new assets) — never a bespoke "is this referenced?" query.
+- **7A — Placement-only inverse (revised SP5).** BOTH surfaces undo the placement
+  only; the ingested asset stays in Unsorted. The original plan deleted a
+  newly-ingested asset on S1 undo, but two facts overturned it: (a) an external drop
+  ingests into **Unsorted** — a real membership — so the asset is never "referenced
+  nowhere else"; and (b) **collection imports aren't undoable at all** (the grid
+  `run()` registers no undo), so reversing a *board* import's ingest would be
+  inconsistent with every other import surface. ⌘Z removing the tile while the asset
+  remains in the library matches how the whole app already treats imports.
+- **16A — void (revised SP5).** No asset deletion on undo, so `MediaReaper` /
+  `deleteAssets` stay out of the import path entirely. (The recoverable-delete infra
+  still powers the separate ⌫ *delete* verb, untouched.)
 
 ## Performance
 
@@ -141,7 +146,7 @@ path (S2) already covers it. Revisit only if it becomes a real habit.
   `space_item`s and must flow through the existing `DecodeScheduler` + culler — add
   no bespoke throttle; **verify with a 100-image drop** and escalate only if
   measurement shows a spike.
-- **16A** batched reference-count check on undo (above).
+- **16A** void — no asset deletion on undo (above).
 
 ## Schema / migration impact
 
@@ -161,8 +166,9 @@ Zero migration, zero new entity.
    resolved assets (2A) → place (8A); `ToastCenter`+ring reporting (5A).
 4. **SP4 (S)** — **S3 paste onto canvas** (⌘V → viewport center) via the responder
    chain, mirroring `236`.
-5. **SP5 (S)** — undo wiring: S2 placement-only; S1 compound via the shared pipeline
-   + `deleteAssets` path (7A/16A).
+5. **SP5 (S)** — undo verification: S1 & S2 are BOTH placement-only (revised 7A);
+   the ingested asset stays in Unsorted. No asset-delete, no `deleteAssets` in the
+   import path — just harden the undo→redo matrix with tests.
 
 SP2 and SP3 are independent after SP1; ship SP2 first.
 
@@ -180,10 +186,10 @@ SP2 and SP3 are independent after SP1; ship SP2 first.
   **injected fake ingest**: success; partial failure (placed count == resolved
   count); slow-resolve (media-less placed, then fills); zero results; **space
   deleted mid-import** (`addAssetToSpace` throws `notFound` → graceful, no crash).
-- **Undo — 9A (full matrix):** S1-new (placement + asset removed); S1-that-deduped-
-  to-existing (placement only — asset predated the drop); S2 (placement only);
-  **shared-reference guard** (asset referenced by another placement/collection
-  survives undo); **redo** restores both.
+- **Undo — 9A (revised SP5, placement-only):** S1 import → undo removes the tile,
+  the asset + its Unsorted membership survive; redo restores the tile (stable id).
+  S2 (placement only). No asset-deletion / shared-reference branch — nothing is
+  deleted, so there is no data-loss case to guard.
 - **Dedup/placement multiplicity — 12A:** already-in-Unsorted file → no second
   membership but a new tile; re-drop on same board → **two** `space_item`s; same
   file twice in one multi-file drop → one asset (placement count per the open
@@ -206,8 +212,9 @@ SP2 and SP3 are independent after SP1; ship SP2 first.
   don't diverge.
 - **Dedup surprise** — dedup collapses the *asset*, never board placements; a board
   may repeat a ref.
-- **S1 undo data loss** — the reference-count guard (7A/16A) is the guard against
-  deleting a shared asset; it is the highest-risk branch and is covered by 9A.
+- **S1 undo data loss** — eliminated by the SP5 revision: undo is placement-only,
+  so no asset is ever deleted and there is no shared-asset risk. The imported asset
+  simply remains in Unsorted, removable via the normal ⌫ delete if unwanted.
 
 ## Settled decisions (reviewed 2026-07-27)
 

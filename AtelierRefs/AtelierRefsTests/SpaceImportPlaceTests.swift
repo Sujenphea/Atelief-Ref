@@ -171,19 +171,33 @@ struct SpaceImportPlaceTests {
         #expect(!model.canUndo)              // failed insert registers no undo step
     }
 
-    @Test("importAndPlace is additive + undoable; undo keeps the asset")
-    func importAndPlaceUndoKeepsAsset() async throws {
+    @Test("S1 import undo is placement-only: tile gone, asset + Unsorted membership survive, redo restores")
+    func importAndPlaceUndoRedoPlacementOnly() async throws {
         let (model, services, _) = try await makeModel()
+        // Mimic the SP3 external-drop ingest: the asset lands in Unsorted (a real
+        // membership) — makeAsset ingests into services.unsortedFolderID.
         let a = try await makeAsset(services, hash: "ff0002", url: "https://e.com/g")
+        let unsorted = services.unsortedFolderID
 
         await model.importAndPlace(at: CGPoint(x: 10, y: 10)) { [a] }
         await model.waitForWrites()
         #expect(model.items.count == 1)
+        let placedID = model.items[0].item.id
 
+        // Undo — the board tile goes; the asset AND its Unsorted membership remain
+        // (the revised 7A: placement-only, consistent with collection imports).
         model.undo()
         await model.waitForWrites()
         #expect(model.items.isEmpty)
         let survivor = try await services.getAsset(id: a.id)
-        #expect(survivor.asset.id == a.id)   // placement-only undo; asset untouched
+        #expect(survivor.asset.id == a.id)                        // asset not deleted
+        let unsortedIDs = try await services.collectionItems(in: unsorted).map(\.asset.id)
+        #expect(unsortedIDs.contains(a.id))                       // still in the library
+
+        // Redo — the tile comes back with its original id.
+        model.redo()
+        await model.waitForWrites()
+        #expect(model.items.count == 1)
+        #expect(model.items[0].item.id == placedID)               // stable id across cycle
     }
 }
