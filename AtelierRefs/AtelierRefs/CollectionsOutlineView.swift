@@ -360,7 +360,21 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         guard draft != nil else { return }
         if let name {
             draft?.committedName = name
-            model.createFolder(name: name, parent: draft?.parentID ?? nil)
+            // Activate the new collection. The committed draft row is drawn with the
+            // selected-row highlight (`forceSelected`) but is NOT selectable, so
+            // without this the sidebar reads as "the new collection is active" while
+            // `nav` — and therefore the detail panel and the ⌘V import target — stay
+            // on the previously selected one.
+            model.createFolder(name: name, parent: draft?.parentID ?? nil) { [weak self] created in
+                // Point the MODEL at it in the same turn, not just `nav`.
+                // `AppShellView.syncActiveCollection` would do this, but only after
+                // an `.onChange` + `DispatchQueue.main.async` hop — and every
+                // "add to the current folder" verb (Add Color / Add Link, a pasted
+                // URL) reads `selectedFolderID`, so anything the user triggers
+                // inside that window would land in the PREVIOUS collection.
+                self?.model.selectedFolderID = created.id
+                self?.nav.selectSidebar(.collection(created.id))
+            }
             outlineView.reloadData()                      // draft cell → static label
             // Safety net: if creation fails silently (no refresh), drop the lingering
             // static row after a beat so it never sticks.
@@ -511,7 +525,15 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
     @objc private func rowClicked() {
         let row = outlineView.clickedRow
         guard row >= 0, let node = outlineView.item(atRow: row) as? CollectionNode,
-              !isDraftNode(node), !children(of: node).isEmpty else { return }
+              !isDraftNode(node) else { return }
+        // A click is authoritative for nav. `outlineViewSelectionDidChange` fires
+        // only when the outline's selection actually CHANGES, so a click on a row
+        // that is already highlighted can't heal a highlight/`nav` disagreement —
+        // which is exactly the state a click is trying to correct.
+        if nav.sidebarSelection != .collection(node.id) {
+            nav.selectSidebar(.collection(node.id))
+        }
+        guard !children(of: node).isEmpty else { return }
         let willExpand = !outlineView.isItemExpanded(node)
         if willExpand { outlineView.expandItem(node) } else { outlineView.collapseItem(node) }
         (outlineView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell)?

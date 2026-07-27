@@ -1002,9 +1002,23 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Create a folder (root when `parent == nil`, else a subfolder).
-    func createFolder(name: String, parent: UUID?) {
-        perform { services in _ = try await services.createCollection(name: name, parent: parent) }
+    /// Create a folder (root when `parent == nil`, else a subfolder). `onCreated`
+    /// fires with the created collection AFTER ``refreshFolders`` has published it,
+    /// so a caller that activates the new folder (the sidebar's select-on-create)
+    /// finds its row already in the tree — selecting it before the refresh would
+    /// leave the outline unable to resolve the row.
+    func createFolder(name: String, parent: UUID?, onCreated: ((Collection) -> Void)? = nil) {
+        guard let services else { return }
+        Task {
+            do {
+                let created = try await services.createCollection(name: name, parent: parent)
+                await refreshFolders()
+                onCreated?(created)
+                loadContents(of: selectedFolderID)
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
     }
 
     /// Rename a folder. Rejected for Unsorted (`.protectedCollection`). Undoable.
@@ -1996,10 +2010,18 @@ final class IngestionModel: ObservableObject {
     /// imported, M couldn't be read" rather than dropping them silently (7A).
     func run(inputs: [IngestInput], undecoded: Int = 0) {
         guard isReady, coordinator != nil, !inputs.isEmpty else { return }
+        // Reload the folder the batch actually LANDED in, not `selectedFolderID`.
+        // Each input bakes in its destination at decode (the pasting view's own
+        // `collectionID`), so if the selection hasn't caught up yet the imported
+        // assets still appear in the grid the user pasted into instead of silently
+        // going missing. A mixed-target batch has no single grid to show, so it
+        // falls back to the selection.
+        let first = inputs[0].collectionID
+        let folder = inputs.allSatisfy { $0.collectionID == first } ? first : selectedFolderID
         Task {
             _ = await importInputs(inputs, undecoded: undecoded)
             await refreshFolders()
-            loadContents(of: selectedFolderID)
+            loadContents(of: folder)
         }
     }
 
@@ -2061,9 +2083,16 @@ final class IngestionModel: ObservableObject {
     /// same batch path as everything else. The network fetch runs OFF-MAIN (the
     /// fetcher's `await`s hop off this actor); progress + failure surface through
     /// the existing `status` / `lastError` infra. A no-op if not ready.
-    func ingestRemoteImage(from url: URL) {
+    ///
+    /// `folder` is the target the CALLER is showing — the pasting view's own
+    /// `collectionID`, exactly like the byte path bakes into its `IngestInput`s.
+    /// It used to read `selectedFolderID`, which lags the sidebar selection by a
+    /// runloop hop: a URL pasted right after switching (or creating) a collection
+    /// landed in the PREVIOUS one, and the reload that followed left the visible
+    /// collection stuck on its "Loading collection" skeleton.
+    func ingestRemoteImage(from url: URL, into folder: UUID) {
         guard isReady else { return }
-        let target = selectedFolderID
+        let target = folder
         let fetcher = remoteFetcher
         status = "Downloading image…"
         Task {

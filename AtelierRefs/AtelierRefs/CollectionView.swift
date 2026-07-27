@@ -112,6 +112,39 @@ struct CollectionView: View {
     /// folder) keeps this true, so it never flashes a skeleton.
     private var isLoaded: Bool { model.loadedCollectionID == collectionID }
 
+    /// The collection an import triggered RIGHT NOW must target.
+    ///
+    /// Not simply `collectionID`: this screen has no collection-keyed `.id(...)`
+    /// (deliberately — the AppKit grid host is reused across switches rather than
+    /// torn down), so SwiftUI keeps ONE view identity for every collection. The
+    /// hidden ⌘V button's action closure is registered against that identity and is
+    /// NOT re-registered when the struct is rebuilt with a new `collectionID` — it
+    /// stays bound to whichever collection was showing when the shortcut was first
+    /// installed. A paste then imported into the collection open at LAUNCH, no
+    /// matter what the sidebar said (verified in the running app: `paste()` saw a
+    /// stale `collectionID` while `selectedFolderID` was already correct).
+    ///
+    /// `nav` is a reference type, so even a stale closure holds the LIVE nav model:
+    /// reading the selection here — at invocation, not at capture — is always
+    /// current. Falls back to `collectionID` if the selection isn't a collection.
+    private var importTargetID: UUID {
+        Self.resolveImportTarget(
+            path: nav.path, sidebar: nav.sidebarSelection, fallback: collectionID)
+    }
+
+    /// The pure half of ``importTargetID``, so the resolution order is unit-tested
+    /// rather than only observable in a running app. Mirrors
+    /// `AppShellView.syncActiveCollection`: a drilled subfolder wins over the
+    /// sidebar selection, and anything that isn't a collection (Home / a Space /
+    /// Settings) leaves `fallback` in charge.
+    static func resolveImportTarget(
+        path: [AppRoute], sidebar: SidebarItem, fallback: UUID
+    ) -> UUID {
+        if case .collection(let drilled)? = path.last { return drilled }
+        if case .collection(let selected) = sidebar { return selected }
+        return fallback
+    }
+
     var body: some View {
         // 006 shell — the grid fills the detail panel; the old `.searchable` field +
         // toolbar (density / sort / add / new-space) are gone. Sort lives in the
@@ -707,7 +740,10 @@ struct CollectionView: View {
         if !inputs.isEmpty {
             model.run(inputs: inputs, undecoded: undecoded)
         } else if let webURL {
-            model.ingestRemoteImage(from: webURL)
+            // The SAME target the decoded inputs above bake in, so both halves of a
+            // paste/drop agree. This used to read `model.selectedFolderID` inside
+            // `ingestRemoteImage`, which lags the sidebar by a runloop hop.
+            model.ingestRemoteImage(from: webURL, into: importTargetID)
         } else {
             model.reportUnreadableDrop()
         }
@@ -717,7 +753,7 @@ struct CollectionView: View {
         guard model.isReady else { return }
         let pasteboard = NSPasteboard.general
         let inputs = DirectInputReader.inputs(
-            from: pasteboard, into: collectionID, now: Date())
+            from: pasteboard, into: importTargetID, now: Date())
         dispatch(inputs: inputs, webURL: ImportPasteboard.firstWebURL(on: pasteboard))
     }
 
@@ -738,7 +774,7 @@ struct CollectionView: View {
                   $0.hasItemConformingToTypeIdentifier(UTType.assetIDs.identifier)
               }) else { return false }
         guard model.isReady else { return false }
-        let target = collectionID
+        let target = importTargetID
         Task {
             let decoded = await DirectInputReader.inputs(
                 from: providers, into: target, now: Date())
