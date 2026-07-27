@@ -261,7 +261,7 @@ final class SpaceModel: ObservableObject {
             let rows = try await services.spaceItems(in: spaceID)
             guard id == loadID else { return }
             self.space = space
-            self.items = rows
+            self.items = refitTextRows(rows)
             // Prune the selection to ids that survived the reload (049 · D7) — the
             // set peer of the old stale-single guard.
             let present = Set(rows.map { $0.item.id })
@@ -704,6 +704,30 @@ final class SpaceModel: ObservableObject {
         // No change → no geometry write (the shrink-back / grow tests pin this).
         guard newHeight != item.h else { return nil }
         return CGRect(x: item.x, y: item.y, width: item.w, height: newHeight)
+    }
+
+    /// Bring every `.text` row's stored height into line with its text (062).
+    ///
+    /// 062 guarantees a text box fits its content, but rows written before it carry
+    /// `.fixed`-era heights that don't — the mode used to let text overflow and be
+    /// truncated. Re-deriving on load is what makes those boards correct the moment
+    /// they are opened, rather than staying wrong until the row happens to be edited.
+    ///
+    /// Deliberately **in memory only**: no write, no undo entry, no `renderRevision`
+    /// bump. The canvas is built from `items`, so correcting them here is enough to
+    /// render right, and the corrected height persists on the row's next real edit.
+    /// Writing during a load would put a mutation on every board open — churn, and a
+    /// migration masquerading as the user's own change in the undo stack.
+    func refitTextRows(_ rows: [SpaceItemDetail]) -> [SpaceItemDetail] {
+        rows.map { detail in
+            guard detail.item.kind == .text,
+                  let fitted = autosizedFrame(
+                    item: detail.item, style: ElementStyle(jsonString: detail.item.style) ?? ElementStyle())
+            else { return detail }
+            var item = detail.item
+            item.h = Double(fitted.height)
+            return SpaceItemDetail(item: item, asset: detail.asset, source: detail.source)
+        }
     }
 
     /// Commit a resize-handle drag (062): the dragged rect's origin + WIDTH are

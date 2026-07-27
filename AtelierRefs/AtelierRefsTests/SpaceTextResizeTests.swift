@@ -261,6 +261,30 @@ struct SpaceTextResizeTests {
         #expect(model.undoActionName == name) // no new undo step registered
     }
 
+    // MARK: - Legacy rows are re-fitted on load
+
+    @Test("a stale stored height is corrected on load, in memory, with no write")
+    func loadRefitsStaleTextHeights() async throws {
+        // Simulates a row written before 062: a `.fixed`-era height its text outgrew.
+        let model = try await makeModel()
+        let id = await seedText(model, CGRect(x: 0, y: 0, width: 200, height: 24))
+        model.updateStyle(itemID: id, style: styled(
+            model, id, text: "A long run of text that must wrap onto several lines indeed"))
+        await model.waitForWrites(); await model.load()
+        let fitted = item(model, id).h
+
+        // Force the stored height back to something too small, as a legacy row would be.
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+        model.resizeTile(
+            tileID: tid, to: CGRect(x: 0, y: 0, width: 200, height: 24), in: content)
+        await model.waitForWrites()
+
+        // A fresh load must present the row at its FITTED height, not the stale one.
+        await model.load()
+        #expect(abs(item(model, id).h - fitted) < 0.001)
+    }
+
     // MARK: - Exactly one undo step; ⌘Z reverts BOTH text and size
 
     @Test("a restyle + auto-size is ONE undo step that reverts both text and size")

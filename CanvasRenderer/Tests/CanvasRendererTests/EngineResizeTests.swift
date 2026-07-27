@@ -534,3 +534,80 @@ struct EngineFrameMembershipTests {
         #expect(e.prospectiveMembers == Set(committed.groupMembers(forDraggedTileID: 0)))
     }
 }
+
+// MARK: - Overflow (062)
+
+@MainActor
+@Suite("Text overflow — a text tile never truncates (062)")
+struct EngineTextOverflowTests {
+
+    private struct P: TileProvider {
+        let tiles: [Tile]
+        var texts: [Int: TextStyle] = [:]
+        var frames: [Int: FrameStyle] = [:]
+        func content(for tile: Tile) -> TileContent {
+            if let s = texts[tile.id] { return .text(s) }
+            if let f = frames[tile.id] { return .frame(f) }
+            return .image
+        }
+    }
+    private struct NoImages: TileImageSource {
+        func imageKey(for tile: Tile) -> Int { tile.id }
+        func imageData(for tile: Tile, tier: LODTier) -> Data? { nil }
+    }
+
+    private let long = "The quick brown fox jumps over the lazy dog again and again and again and again"
+
+    private func style(_ string: String) -> TextStyle {
+        TextStyle(string: string, fontSize: 18, color: RGBAColor(red: 0, green: 0, blue: 0))
+    }
+
+    private func engine(_ provider: P) -> CanvasEngine {
+        let e = CanvasEngine(
+            provider: provider, images: NoImages(),
+            transform: CanvasTransform(scale: 1, translation: .zero),
+            viewportSize: CGSize(width: 4_000, height: 4_000))
+        e.sync()
+        return e
+    }
+
+    @Test("a text tile whose STORED height is too small still draws every line")
+    func staleHeightDoesNotHideText() {
+        // The state a row written before 062 is in: a `.fixed`-era height that its
+        // text outgrew. Truncating here would hide content the 062 model promises is
+        // visible, and the user would have no way to discover it was there.
+        let e = engine(P(tiles: [Tile(id: 0, x: 0, y: 0, w: 400, h: 24, z: 0)],
+                         texts: [0: style(long)]))
+        let drawn = e.textLayer(forTileID: 0)?.shaped
+        let full = TextShaper.shape(style(long), maxWidth: 400 - 2 * TextMetrics.padding)
+        #expect(drawn?.lines.count == full.lines.count)
+        #expect((drawn?.lines.count ?? 0) > 1)   // the box really was too short
+    }
+
+    @Test("a frame LABEL still truncates — its box owes nothing to its text")
+    func frameLabelStillTruncates() {
+        // The contrast that justifies the rule: a frame's box is user-controlled and
+        // is NOT derived from its label, so a label too long for it must be cut.
+        let e = engine(P(tiles: [Tile(id: 0, x: 0, y: 0, w: 120, h: 24, z: 0)],
+                         frames: [0: FrameStyle(fill: nil, stroke: nil, strokeWidth: 0,
+                                                cornerRadius: 0, label: style(long))]))
+        let drawn = e.textLayer(forTileID: 0)?.shaped
+        let full = TextShaper.shape(style(long), maxWidth: 120)
+        #expect((drawn?.lines.count ?? 0) < full.lines.count)
+    }
+
+    @Test("narrowing a text box grows it and drops no lines")
+    func narrowingDropsNoLines() {
+        let e = engine(P(tiles: [Tile(id: 0, x: 0, y: 0, w: 400, h: 60, z: 0)],
+                         texts: [0: style(long)]))
+        e.setSelected(0)
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 120, y: 0), snapping: false)
+
+        let drawn = e.textLayer(forTileID: 0)?.shaped
+        let full = TextShaper.shape(style(long), maxWidth: 120 - 2 * TextMetrics.padding)
+        #expect(drawn?.lines.count == full.lines.count)
+        // …and the box grew to hold them, live.
+        #expect((e.currentResizeFrame()?.worldFrame.height ?? 0) > 60)
+    }
+}

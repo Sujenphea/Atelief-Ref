@@ -241,3 +241,36 @@ because the snap is folded into `dragWorldOffset` it flows through
 - Tests: `MoveSnappingTests` (7) + `DragSnappingTests` (6)
 
 CanvasRenderer: **292 tests in 34 suites** green. `AtelierRefsTests`: TEST SUCCEEDED.
+
+## Follow-up — a text tile never truncates
+
+Reported: resizing the width reflows live, but overflowing text doesn't. Reproduced
+headlessly — a text tile 400×**24** holding two lines of text drew **1 of 2**. The
+missing line was cut with an ellipsis, invisibly.
+
+`setGlyphOverlay` still passed a `maxHeight`, which makes `TextShaper` truncate.
+That was correct under `.fixed`, where a box really could overflow. Under 062 a text
+tile's height is DERIVED from its wrapped text, so it fits by construction and a
+height limit can only ever hide content the model promised was visible — which is
+exactly what a row written before 062 (or one mid-migration) hits.
+
+Now `maxHeight` is passed for a frame **label** and never for a text **tile**. The
+contrast is the justification: a frame's box is user-controlled and owes nothing to
+its label, so an over-long label must be cut; a text box is the opposite. Overflowing
+briefly is recoverable, invisible text is not.
+
+**And the migration note above was wrong.** It claimed legacy boxes "grow downward on
+first load" — nothing re-fitted them, so they stayed stale until edited. `load()` now
+runs `refitTextRows`, re-deriving every `.text` row's height from its text. It is
+deliberately **in memory only**: no write, no undo entry, no `renderRevision` bump.
+The canvas is built from `items`, so correcting them there is enough to render
+right, and the height persists on the row's next real edit. Writing during a load
+would put a mutation on every board open, and a migration masquerading as the user's
+own change in the undo stack.
+
+- `CanvasRenderer/Host/CanvasEngine.swift` — `maxHeight` for labels only
+- `AtelierRefs/SpaceModel.swift` — `refitTextRows`, applied in `load()`
+- Tests: `EngineTextOverflowTests` (3 — stale height draws every line, a frame label
+  still truncates, narrowing drops none) + a model test for the load-time re-fit
+
+CanvasRenderer: **295 tests in 35 suites** green. `AtelierRefsTests`: TEST SUCCEEDED.

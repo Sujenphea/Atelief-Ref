@@ -865,10 +865,21 @@ public final class CanvasEngine {
         // long label meets the backing store's edge a touch sooner.
         let worldSize = displayWorldFrame(for: tile).size
         let inset = worldPadded ? TextMetrics.padding : 0
+        // Truncate a frame LABEL, never a text TILE (062).
+        //
+        // A frame's box is user-controlled and owes nothing to its label, so a label
+        // too long for it must be cut. A text tile is the opposite: its height is
+        // DERIVED from the wrapped text, so it fits by construction and a height
+        // limit can only ever hide content the model promised was visible. That
+        // mattered under the old `.fixed` mode, which really could overflow; keeping
+        // it now means a box whose stored height is stale — a row written before 062,
+        // or one mid-migration — silently drops lines instead of showing its text.
+        // Overflowing briefly is recoverable; invisible text is not.
+        let maxHeight = worldPadded ? nil : max(1, worldSize.height - 2 * inset)
         let shaped = TextShaper.shape(
             style,
             maxWidth: max(1, worldSize.width - 2 * inset),
-            maxHeight: max(1, worldSize.height - 2 * inset))
+            maxHeight: maxHeight)
 
         let layer: TextRenderLayer
         if let existing = textLayers[tile.id] {
