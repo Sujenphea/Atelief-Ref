@@ -8,6 +8,9 @@ DerivedData/
 *.xcscmblueprint
 *.xccheckout
 
+# Chrome extension packaging output (scripts/package-extension.sh)
+/dist/
+
 # Swift Package Manager
 .build/
 .swiftpm/
