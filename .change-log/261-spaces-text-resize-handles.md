@@ -98,3 +98,31 @@ mouse-up, and that ⌘Z restores the previous width and height in one step.
 - **No snapping or ⇧ aspect lock** on resize (Nook has both);
   `ResizeGeometry.resizedFrame` is the seam where they would go.
 - The floating format bubble + one-click colour palette from Nook remain unported.
+
+## Follow-up — live preview (same commit series)
+
+Reported after the first pass: the handles and the text didn't update during a
+drag. One root cause, in `setGlyphOverlay`, which shaped against
+`tile.worldFrame.size` — the **stored** size. That was deliberate in 060 (keep the
+`ShapeKey` off the camera) but it meant a resize left the glyphs laid out for the
+old width for the whole drag: the box moved under text that refused to reflow.
+
+Fixed by shaping against `displayWorldFrame(for:).size`. That is still pure world
+arithmetic — stored frame, or the live gesture's — so the camera still cannot reach
+the key and 060's zoom-invariance holds; only a deliberate resize moves it.
+
+The second half: `updateResize` now runs the dragged rect through `fittedFrame`,
+re-deriving a text tile's HEIGHT from the re-wrapped text on every tick. Previously
+the height only settled on mouse-up, so narrowing a box made the text wrap onto more
+lines while the box kept its old height — which is what made the handles look
+frozen. The preview now can't disagree with the commit, and a vertical drag on a
+text box is inert by construction (the height is the text's, never the pointer's).
+
+**Tests added.** The original suite asserted `resizeHandle(atScreenPoint:)` followed
+the live frame — the HIT-test — which passed while the drawn chrome was stale. The
+gap is now closed by `resizeHandlePositions` (where dots are actually drawn) and a
+`live chrome` suite: dots track the live box, the text re-wraps to more lines mid-
+drag with a genuinely different `ShapeKey`, the text layer's frame follows, a
+vertical drag doesn't set the height, and ending restores the provider's geometry.
+
+CanvasRenderer: **251 tests in 30 suites** green.

@@ -337,10 +337,31 @@ public final class CanvasEngine {
     /// Update the live resize to the cursor's current WORLD point. Recomputed from
     /// the frame captured at `beginResize`, never accumulated.
     public func updateResize(toWorldPoint world: CGPoint) {
-        guard resizeTileID != nil, let handle = activeResizeHandle else { return }
-        resizeWorldFrame = ResizeGeometry.resizedFrame(
+        guard let id = resizeTileID, let handle = activeResizeHandle,
+              let tile = tile(withID: id) else { return }
+        let dragged = ResizeGeometry.resizedFrame(
             resizeOriginalFrame, handle: handle, toWorldPoint: world)
+        resizeWorldFrame = fittedFrame(dragged, for: tile)
         sync()
+    }
+
+    /// A text tile's frame with its HEIGHT re-derived from the text wrapped to that
+    /// frame's width; anything else is returned untouched.
+    ///
+    /// This is the same rule the app applies when the drag commits, applied on every
+    /// tick so the preview cannot disagree with the result. Without it a resize
+    /// looks wrong in a specific way: narrowing a box makes the text wrap onto more
+    /// lines, but the box would keep its old height for the whole drag and only jump
+    /// to the right size on release. It also means a vertical drag has no lasting
+    /// effect on a text box — the height is the text's, never the pointer's — which
+    /// is the behaviour, not an accident of it.
+    private func fittedFrame(_ frame: CGRect, for tile: Tile) -> CGRect {
+        guard case .text(let style) = provider.content(for: tile) else { return frame }
+        let inset = TextMetrics.padding
+        let shaped = TextShaper.shape(style, maxWidth: max(1, frame.width - 2 * inset))
+        return CGRect(
+            x: frame.minX, y: frame.minY,
+            width: frame.width, height: shaped.size.height + 2 * inset)
     }
 
     /// The resized tile and its current live world frame, or `nil` when idle.
@@ -362,6 +383,13 @@ public final class CanvasEngine {
 
     /// Whether handle dots are currently drawn — introspection for the tests.
     public var resizeHandleCount: Int { handleLayers.count }
+
+    /// Where each handle dot is actually DRAWN, in screen points. Distinct from
+    /// ``resizeHandle(atScreenPoint:)``, which reports where a handle would be hit:
+    /// the two can disagree if the chrome goes stale, and only this one catches it.
+    public var resizeHandlePositions: [ResizeHandle: CGPoint] {
+        handleLayers.mapValues(\.position)
+    }
 
     /// Frames all content to fit the viewport (with fractional `padding` on each
     /// side), centred. The host calls this once on first layout so the canvas
@@ -628,18 +656,25 @@ public final class CanvasEngine {
     /// Shape once in world space, then rasterize that layout at the current zoom.
     private func setGlyphOverlay(_ style: TextStyle, for tile: Tile, frame: CGRect,
                                  worldPadded: Bool, zPosition: CGFloat) {
-        // The shaping box in WORLD units, taken from the tile's world size — NOT
-        // from `frame ÷ scale`. Both would be algebraically equal for a `.text`
-        // tile, but going through screen space would fold float noise from the
-        // camera into the ``ShapeKey``, and a key that moves with the camera is
+        // The shaping box in WORLD units, taken from the tile's DISPLAYED world
+        // frame — NOT from `frame ÷ scale`. Both would be algebraically equal for a
+        // `.text` tile, but going through screen space would fold float noise from
+        // the camera into the ``ShapeKey``, and a key that moves with the camera is
         // exactly the coupling this whole design removes.
+        //
+        // Displayed, not stored (062): a live resize changes the box the text must
+        // wrap into, and shaping against the stored size would leave the glyphs laid
+        // out for the OLD width for the whole drag — the box would move under text
+        // that refused to reflow. ``displayWorldFrame`` is pure world arithmetic
+        // (stored frame, or the live gesture's frame), so the camera still cannot
+        // reach the key; only a deliberate resize can.
         //
         // A frame label subtracts no pad: its inset is a SCREEN pad (054 §4.4),
         // whose world equivalent shrinks as you zoom in, so folding it in would
         // make the label's shaping width zoom-dependent. Shaping against the full
         // world width keeps labels stable; the few points of pad only mean a very
         // long label meets the backing store's edge a touch sooner.
-        let worldSize = tile.worldFrame.size
+        let worldSize = displayWorldFrame(for: tile).size
         let inset = worldPadded ? TextMetrics.padding : 0
         let shaped = TextShaper.shape(
             style,

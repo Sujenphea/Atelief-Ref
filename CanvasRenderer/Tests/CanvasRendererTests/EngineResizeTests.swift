@@ -173,8 +173,25 @@ struct EngineResizeTests {
         e.beginResize(tileID: 0, handle: .right)
         e.updateResize(toWorldPoint: CGPoint(x: 500, y: 0))
         #expect(e.resizeHandleCount == 8)
-        // The right handle sits on the LIVE edge, not the stored one.
-        #expect(e.resizeHandle(atScreenPoint: CGPoint(x: 500, y: 100))?.handle == .right)
+        // The right handle sits on the LIVE edge, not the stored one. Its y comes
+        // from the live frame too: the height is DERIVED from the wrapped text
+        // (062), so the box is nothing like the 200pt the provider stores.
+        let live = try? #require(e.currentResizeFrame()?.worldFrame)
+        #expect(e.resizeHandle(
+            atScreenPoint: CGPoint(x: 500, y: live?.midY ?? 0))?.handle == .right)
+    }
+
+    @Test("the live height is the text's, not the pointer's — a vertical drag is inert")
+    func verticalDragDoesNotSetHeight() {
+        let e = engine()
+        e.setSelected(0)
+        e.beginResize(tileID: 0, handle: .bottom)
+        e.updateResize(toWorldPoint: CGPoint(x: 0, y: 5_000))
+        // Yanking the bottom edge 5000pt down must NOT make the box 5000pt tall:
+        // "Hello" needs one line, and that is what the box gets.
+        let height = e.currentResizeFrame()?.worldFrame.height ?? 0
+        #expect(height > 0)
+        #expect(height < 200)
     }
 
     @Test("ending a resize clears the live frame")
@@ -204,5 +221,101 @@ struct EngineResizeTests {
         e.beginResize(tileID: 99, handle: .right)
         e.updateResize(toWorldPoint: CGPoint(x: 500, y: 0))
         #expect(e.currentResizeFrame() == nil)
+    }
+}
+
+// MARK: - What is actually DRAWN mid-drag (the live-chrome regressions)
+
+@MainActor
+@Suite("Engine resize — live chrome (062)")
+struct EngineResizeLiveChromeTests {
+
+    private struct VectorProvider: TileProvider {
+        let tiles: [Tile]
+        var texts: [Int: TextStyle] = [:]
+        func content(for tile: Tile) -> TileContent {
+            if let style = texts[tile.id] { return .text(style) }
+            return .image
+        }
+    }
+
+    private struct NoImages: TileImageSource {
+        func imageKey(for tile: Tile) -> Int { tile.id }
+        func imageData(for tile: Tile, tier: LODTier) -> Data? { nil }
+    }
+
+    /// One wide text tile holding a string long enough that its wrapping visibly
+    /// depends on the box width.
+    private func engine() -> CanvasEngine {
+        let provider = VectorProvider(
+            tiles: [Tile(id: 0, x: 0, y: 0, w: 400, h: 200, z: 0)],
+            texts: [0: TextStyle(
+                string: "The quick brown fox jumps over the lazy dog again and again",
+                fontSize: 18, color: RGBAColor(red: 0, green: 0, blue: 0))])
+        let e = CanvasEngine(
+            provider: provider, images: NoImages(),
+            transform: CanvasTransform(scale: 1, translation: .zero),
+            viewportSize: CGSize(width: 4_000, height: 4_000))
+        e.sync()
+        e.setSelected(0)
+        return e
+    }
+
+    @Test("the handle dots are DRAWN at the live box, not the stored one")
+    func handleDotsFollowTheLiveBox() {
+        let e = engine()
+        let before = e.resizeHandlePositions
+        #expect(before[.right]?.x == 400)
+
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 250, y: 0))
+
+        let during = e.resizeHandlePositions
+        // Every handle that owns the right edge must have moved with it.
+        #expect(during[.right]?.x == 250)
+        #expect(during[.topRight]?.x == 250)
+        #expect(during[.bottomRight]?.x == 250)
+        // The left edge is anchored, and the top/bottom midpoints re-centre.
+        #expect(during[.left]?.x == 0)
+        #expect(during[.top]?.x == 125)
+    }
+
+    @Test("the text re-wraps to the live width while the box is being resized")
+    func textReflowsDuringResize() {
+        let e = engine()
+        let wide = e.textLayer(forTileID: 0)?.shaped
+        let wideLines = wide?.lines.count ?? 0
+        #expect(wideLines > 0)
+
+        // Narrow the box hard: the same string must wrap onto more lines, live.
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 120, y: 0))
+
+        let narrow = e.textLayer(forTileID: 0)?.shaped
+        #expect((narrow?.lines.count ?? 0) > wideLines)
+        // And the shaping key must have actually changed — not merely been redrawn.
+        #expect(narrow?.key != wide?.key)
+    }
+
+    @Test("the text layer's frame follows the live box too")
+    func textLayerFrameFollowsTheLiveBox() {
+        let e = engine()
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 250, y: 0))
+        let frame = e.textLayer(forTileID: 0)?.frame
+        // Inset by the world padding on both edges (scale 1).
+        #expect(frame?.width == 250 - 2 * TextMetrics.padding)
+    }
+
+    @Test("ending the resize returns the chrome and the wrap to the provider's box")
+    func endingRestoresStoredGeometry() {
+        let e = engine()
+        let stored = e.textLayer(forTileID: 0)?.shaped?.key
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 120, y: 0))
+        e.endResize()
+        e.sync()
+        #expect(e.resizeHandlePositions[.right]?.x == 400)
+        #expect(e.textLayer(forTileID: 0)?.shaped?.key == stored)
     }
 }
