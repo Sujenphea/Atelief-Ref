@@ -213,6 +213,29 @@ public struct SpaceItemPlacement: Sendable, Equatable {
     }
 }
 
+/// One NEW asset placement for the batch insert
+/// ``AppServices/addAssetsToSpace(_:to:)`` (059 · SP2 / 13A). The insert analog of
+/// ``SpaceItemPlacement``: it addresses an ASSET (a fresh `space_item` row is
+/// minted per entry) rather than an existing row, so importing / dropping N
+/// references onto a board is ONE transaction instead of N round-trips.
+public struct SpaceAssetPlacement: Sendable, Equatable {
+    public let assetID: UUID
+    public let x: Double
+    public let y: Double
+    public let w: Double
+    public let h: Double
+    public let z: Int
+
+    public init(assetID: UUID, x: Double, y: Double, w: Double, h: Double, z: Int) {
+        self.assetID = assetID
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+        self.z = z
+    }
+}
+
 // MARK: - Query inputs (GRDB-free, A2)
 
 /// How a multi-tag filter combines (007 · search). A query-only value (never

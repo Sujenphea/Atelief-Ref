@@ -9,11 +9,13 @@
 //  grow AND shrink; `autoHeight` shrink-back reduces `h` with `w` frozen; a restyle
 //  + auto-size is exactly ONE undo step that reverts BOTH text and size;
 //  `fixed→autoWidth` re-fits and `autoWidth→fixed` freezes; a `.fixed` restyle
-//  writes NO geometry and does NOT bump `renderRevision`.
+//  writes NO geometry yet still re-syncs in place (bumps `renderRevision`, never
+//  `contentVersion` — the restyle applies to the live content without a host rebuild).
 //
 
 import AtelierCore
 import AtelierIngestion
+import CanvasRenderer
 import CoreGraphics
 import Foundation
 import Testing
@@ -199,25 +201,104 @@ struct SpaceTextResizeTests {
         #expect(item(model, id).w == wAuto) // frozen
     }
 
-    // MARK: - .fixed restyle writes no geometry and does not bump renderRevision
+    // MARK: - .fixed restyle writes no geometry but still re-syncs in place
 
-    @Test("a .fixed restyle writes no geometry and does not bump renderRevision")
-    func fixedRestyleNoGeometryNoRenderRevision() async throws {
+    @Test("a .fixed restyle writes no geometry, bumps renderRevision, and never rebuilds the host")
+    func fixedRestyleNoGeometryStillReSyncs() async throws {
         let model = try await makeModel()
         let id = await seedText(model, CGRect(x: 5, y: 6, width: 120, height: 40))
         let rev = model.renderRevision
+        let ver = model.contentVersion
         let before = item(model, id)
 
         // A style-only change (colour) on a fixed box.
         var s = model.style(forItemID: id)
         s.textColor = "#FF0000"
         model.updateStyle(itemID: id, style: s)
-        await model.waitForWrites(); await model.load()
+        await model.waitForWrites()
 
         let now = item(model, id)
         #expect(now.w == before.w)              // geometry untouched
         #expect(now.h == before.h)
         #expect(now.x == before.x && now.y == before.y && now.z == before.z)
-        #expect(model.renderRevision == rev)    // no re-sync signal for a style-only edit
+        // The redraw now rides `renderRevision` (in-memory re-sync) instead of a
+        // reload → host rebuild, so a style-only edit DOES bump it exactly once...
+        #expect(model.renderRevision == rev + 1)
+        // ...and must NOT bump `contentVersion` (which is `.id`-bound and would tear
+        // the canvas host down, resetting pan/zoom + dropping the double-click).
+        #expect(model.contentVersion == ver)
+        // The change is live in `items` immediately, with no reload.
+        #expect(model.style(forItemID: id).textColor == "#FF0000")
+    }
+
+    // MARK: - a restyle never rebuilds the host (the core in-place-restyle fix)
+
+    @Test("an autoWidth restyle keeps contentVersion stable (no host rebuild)")
+    func restyleDoesNotBumpContentVersion() async throws {
+        let model = try await makeModel()
+        let id = await seedText(model, CGRect(x: 0, y: 0, width: 80, height: 30))
+
+        // Switch to autoWidth + change the string — a geometry-changing restyle.
+        var s = model.style(forItemID: id)
+        s.resizeMode = TextResize.autoWidth.rawValue
+        s.text = "A considerably longer run of text than before"
+        let verBefore = model.contentVersion
+        model.updateStyle(itemID: id, style: s)
+        await model.waitForWrites()
+
+        // Geometry changed in memory (auto-width grew) but the host was NOT rebuilt.
+        #expect(item(model, id).w != 80)
+        #expect(model.contentVersion == verBefore)
+    }
+
+    // MARK: - a restyle after a move anchors on the LIVE position (no snap-back)
+
+    @Test("a style-only restyle after a move keeps the moved position")
+    func restyleAfterMoveKeepsPosition() async throws {
+        let model = try await makeModel()
+        let id = await seedText(model, CGRect(x: 0, y: 0, width: 100, height: 40))
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+
+        // Move it — a drag persists with `reload: false`, so `items` x/y goes stale
+        // while the live tile (and the DB) hold the moved position.
+        model.moveTile(tileID: tid, to: CGPoint(x: 250, y: 180), in: content)
+        await model.waitForWrites()
+
+        // A style-only edit must anchor on the LIVE (moved) position, not stale items.
+        var s = model.style(forItemID: id)
+        s.textColor = "#00FF00"
+        model.updateStyle(itemID: id, style: s)
+        await model.waitForWrites()
+
+        // The live tile stays where it was dropped — no snap-back...
+        #expect(content.tiles[tid].x == 250)
+        #expect(content.tiles[tid].y == 180)
+        // ...and `items` is de-staled to the live position too.
+        #expect(item(model, id).x == 250)
+        #expect(item(model, id).y == 180)
+    }
+
+    // MARK: - an auto-size restyle after a move keeps the moved anchor
+
+    @Test("an autoWidth restyle after a move grows from the moved anchor")
+    func autosizeAfterMoveKeepsAnchor() async throws {
+        let model = try await makeModel()
+        let id = await seedText(model, CGRect(x: 0, y: 0, width: 100, height: 40))
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+        model.moveTile(tileID: tid, to: CGPoint(x: 300, y: 200), in: content)
+        await model.waitForWrites()
+
+        var s = model.style(forItemID: id)
+        s.resizeMode = TextResize.autoWidth.rawValue
+        s.text = "A longer run of text so the box must grow in width"
+        model.updateStyle(itemID: id, style: s)
+        await model.waitForWrites()
+
+        // Top-left anchor is the MOVED position, not the origin it was created at.
+        #expect(item(model, id).x == 300)
+        #expect(item(model, id).y == 200)
+        #expect(content.tiles[tid].x == 300)
     }
 }

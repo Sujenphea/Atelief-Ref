@@ -48,6 +48,13 @@ Reshapes the item-detail screen to the Figma "Item Detailed" frame
 - `AssetTagsStore.swift` — broadened to also load `collections` /
   `allCollections` and expose `setName` / `setNote` / `addToCollection` /
   `removeFromCollection` (bound at the existing per-asset lifecycle).
+- `AtelierRefsTests/AssetTagsStoreCollectionsTests.swift` — new (bind loads
+  memberships + library list; add/remove; the last-membership **re-home to
+  Unsorted**; `onMembershipChanged` fires).
+- `AtelierRefsTests/NavModelTests.swift` — updated two route-intent tests stale
+  since the sidebar refactor (`openSpaces` removed; top-level nav moved from
+  `path` to `sidebarSelection`). Unrelated to this feature; fixed to unblock the
+  test build.
 - `CollectionView.swift`, `SpaceView.swift`, `LibrarySearch.swift` — pass the new
   collections / name / note bindings into `ItemDetailView`.
 

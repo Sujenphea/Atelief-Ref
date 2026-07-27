@@ -29,10 +29,12 @@ final class SpaceContent: TileProvider, TileImageSource {
     private(set) var tiles: [Tile]
 
     /// The drawable rows behind the tiles (asset + element); `tile.id` indexes
-    /// straight into this. Asset rows with an unresolved asset are dropped.
-    private let rows: [SpaceItemDetail]
+    /// straight into this. Asset rows with an unresolved asset are dropped. Mutable
+    /// so an inspector / inline restyle can update a row in place (``setElementStyle``).
+    private(set) var rows: [SpaceItemDetail]
     /// The renderer content per tile (precomputed: `.image` / `.frame` / `.text`).
-    private let contentByTile: [TileContent]
+    /// Mutable so a restyle can re-derive one tile's content without a host rebuild.
+    private(set) var contentByTile: [TileContent]
     /// The on-disk thumbnail store.
     private let store: MediaStore
     /// A dense cache key per distinct blob hash, so two tiles of the same image
@@ -120,6 +122,22 @@ final class SpaceContent: TileProvider, TileImageSource {
             id: existing.id, x: x, y: y, w: existing.w, h: existing.h, z: existing.z)
     }
 
+    // MARK: - Style mutation (inspector / inline restyle)
+
+    /// Update an element tile's style + geometry in place — the style peer of
+    /// ``setPlacement(tileID:x:y:)`` (the drag path). Re-derives the tile's drawn
+    /// content and rect so an inspector / inline restyle redraws on the next
+    /// `sync()` WITHOUT rebuilding the host (which would reset pan/zoom and drop the
+    /// double-click sequence). The caller bumps `renderRevision` to trigger the sync.
+    /// No-op for an out-of-range id.
+    func setElementStyle(tileID: Int, detail: SpaceItemDetail) {
+        guard rows.indices.contains(tileID) else { return }
+        rows[tileID] = detail
+        let item = detail.item
+        contentByTile[tileID] = ElementRendering.tileContent(for: item, asset: detail.asset)
+        tiles[tileID] = Tile(id: tileID, x: item.x, y: item.y, w: item.w, h: item.h, z: item.z)
+    }
+
     // MARK: - Lookups
 
     /// The full detail a tile draws, or `nil` if out of range.
@@ -130,6 +148,20 @@ final class SpaceContent: TileProvider, TileImageSource {
     /// The space_item id a tile draws (the unit placement / removal write on).
     func spaceItemID(forTileID id: Int) -> UUID? {
         detail(forTileID: id)?.item.id
+    }
+
+    /// The drag-OUT payload for a set of dragged tiles (059 · SP7): the asset ids of
+    /// the ASSET tiles among them, z-ordered (matching ⌘C copy), with a
+    /// membership-less source (`nilSourceID`) so a drop on a board / collection ADDS
+    /// a copy — never a move. Element tiles (frame / text, no asset) are skipped;
+    /// `nil` when no dragged tile carries an asset (nothing to drag out).
+    func dragOutPayload(forTileIDs ids: Set<Int>) -> AssetDragPayload? {
+        let assetIDs = ids
+            .compactMap { detail(forTileID: $0) }
+            .sorted { $0.item.z < $1.item.z }
+            .compactMap { $0.asset?.id }
+        guard !assetIDs.isEmpty else { return nil }
+        return AssetDragPayload(assetIDs: assetIDs, sourceCollectionID: AssetDragPayload.nilSourceID)
     }
 
     /// The tile id showing the space_item `id`, or `nil` if it isn't on this
