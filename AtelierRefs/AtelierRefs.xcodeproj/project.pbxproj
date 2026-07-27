@@ -12,6 +12,7 @@
 		EA0000000000000000000003 /* AtelierIngestion in Frameworks */ = {isa = PBXBuildFile; productRef = EA0000000000000000000002 /* AtelierIngestion */; };
 		FA0000000000000000000003 /* AtelierServer in Frameworks */ = {isa = PBXBuildFile; productRef = FA0000000000000000000002 /* AtelierServer */; };
 		GA0000000000000000000003 /* AtelierExport in Frameworks */ = {isa = PBXBuildFile; productRef = GA0000000000000000000002 /* AtelierExport */; };
+		HA0000000000000000000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = HA0000000000000000000002 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -35,6 +36,7 @@
 		9907786E2FF364EF00718815 /* AtelierRefs.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AtelierRefs.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9907787B2FF364F000718815 /* AtelierRefsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtelierRefsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		990778852FF364F000718815 /* AtelierRefsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtelierRefsUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000001 /* Config/Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Release.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -65,6 +67,7 @@
 				EA0000000000000000000003 /* AtelierIngestion in Frameworks */,
 				FA0000000000000000000003 /* AtelierServer in Frameworks */,
 				GA0000000000000000000003 /* AtelierExport in Frameworks */,
+				HA0000000000000000000003 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -91,6 +94,7 @@
 				990778702FF364EF00718815 /* AtelierRefs */,
 				9907787E2FF364F000718815 /* AtelierRefsTests */,
 				990778882FF364F000718815 /* AtelierRefsUITests */,
+				AA0000000000000000000001 /* Config/Release.xcconfig */,
 				9907786F2FF364EF00718815 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -130,6 +134,7 @@
 				EA0000000000000000000002 /* AtelierIngestion */,
 				FA0000000000000000000002 /* AtelierServer */,
 				GA0000000000000000000002 /* AtelierExport */,
+				HA0000000000000000000002 /* Sparkle */,
 			);
 			productName = AtelierRefs;
 			productReference = 9907786E2FF364EF00718815 /* AtelierRefs.app */;
@@ -219,6 +224,7 @@
 				EA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierIngestion" */,
 				FA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierServer" */,
 				GA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierExport" */,
+				HA0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9907786F2FF364EF00718815 /* Products */;
@@ -450,11 +456,13 @@
 		};
 		990778912FF364F000718815 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000001 /* Config/Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AtelierRefs/AtelierRefs.entitlements;
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_IDENTITY = "Developer ID Application";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = L25247V6JG;
@@ -626,6 +634,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		HA0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.6.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		CA0000000000000000000002 /* CanvasRenderer */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -646,6 +665,11 @@
 		GA0000000000000000000002 /* AtelierExport */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AtelierExport;
+		};
+		HA0000000000000000000002 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = HA0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

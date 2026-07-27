@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ExportOptions.plist — consumed by `xcodebuild -exportArchive` in phase A2.
+
+  Direct-download Developer ID distribution (decision 1A). The app auto-updates
+  via Sparkle, which is incompatible with the Mac App Store, so NO App Store
+  export options (uploadSymbols / uploadBitcode / manageAppVersionAndBuildNumber)
+  are enabled here. Contains only the (public) team ID — no secrets.
+-->
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>developer-id</string>
+	<key>signingStyle</key>
+	<string>manual</string>
+	<key>teamID</key>
+	<string>L25247V6JG</string>
+	<key>signingCertificate</key>
+	<string>Developer ID Application</string>
+	<key>stripSwiftSymbols</key>
+	<true/>
+</dict>
+</plist>

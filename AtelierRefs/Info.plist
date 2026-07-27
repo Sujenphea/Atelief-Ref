@@ -3,6 +3,39 @@
 <plist version="1.0">
 <dict>
 	<!--
+	  052 · A3 — Sparkle 2 auto-update keys. Merged on top of the generated
+	  Info.plist (GENERATE_INFOPLIST_FILE = YES). Decisions 1A (Developer ID +
+	  Sparkle channel), 2A (sandboxed XPC integration), 5A (EdDSA key in Keychain).
+
+	  BOTH values below are DELIBERATE PLACEHOLDERS that a real release MUST
+	  replace. The always-on A4 config-contract unit test asserts these KEYS are
+	  present; the "non-placeholder" gate lives in scripts/verify-release.sh (run on
+	  release tags), so a real release shipping these strings fails there on purpose
+	  — without turning every push's unit suite red:
+
+	    • SUFeedURL       — the appcast hosting location is an OPEN decision (see
+	      052 plan "Open questions"). Point it at the real static host / GitHub
+	      Releases URL before shipping.
+	    • SUPublicEDKey   — the EdDSA public key. Generate the keypair once with
+	      Sparkle's `generate_keys` (private key lands in the login Keychain, 5A);
+	      paste the printed public key here. See SECRETS.md.
+	-->
+	<key>SUFeedURL</key>
+	<string>https://REPLACE-ME.example.com/atelierrefs/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>REPLACE_WITH_PUBLIC_ED_KEY_FROM_generate_keys</string>
+	<!--
+	  Sandboxed installation (2A): route the install through Sparkle's Installer
+	  XPC service (org.sparkle-project.InstallerLauncher), embedded inside
+	  Sparkle.framework. The matching mach-lookup entitlements live in
+	  AtelierRefs.entitlements. The Downloader XPC service is NOT enabled here
+	  because the app keeps `com.apple.security.network.client`, so Sparkle
+	  downloads in-process; add `SUEnableDownloaderService = YES` only if that
+	  entitlement is ever dropped.
+	-->
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<!--
 	  009 · N3 — declare the app-private drag type so the OS registers
 	  `com.ref-atelier.asset-ids` for in-app drag sessions. Without this
 	  declaration the exported UTType is unknown at the drop destination and

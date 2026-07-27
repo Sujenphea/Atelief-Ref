@@ -1,0 +1,92 @@
+name: Release
+
+# 052 · A4 — release-tag guard. Separate from ci.yml on purpose: the PR/push CI
+# gate builds UNSIGNED on GitHub-hosted runners (CODE_SIGNING_ALLOWED=NO), whereas
+# this job SIGNS + NOTARIZES a real artifact and runs the 9A verify-release checks.
+# Those needs are fundamentally different (trigger, runner, secrets), so bolting a
+# conditional job onto ci.yml would muddy both — a dedicated workflow is cleaner.
+#
+# ── Runner decision (resolves the plan's deferred "release runner" question) ──
+# GitHub-hosted images (macos-15 and, for now, macos-latest) do NOT provide the
+# Xcode 26 / macOS 26 SDK this app targets (MACOSX_DEPLOYMENT_TARGET = 26.0), and —
+# more decisively — they cannot hold the release secrets. Per SECRETS.md the
+# Developer ID Application identity, the `AtelierRefs-notary` notarytool profile,
+# and the Sparkle EdDSA private key all live in the *login Keychain of a
+# provisioned release machine*; they are never committed and are not injected into
+# GitHub-hosted runners. So signing + notarization can ONLY run on a self-hosted
+# macOS 26 runner that has them provisioned.
+#
+# We therefore target a self-hosted runner. If no such runner is online the job
+# stays queued (it never falsely goes green); if a runner is online but lacks the
+# identity/profile, the explicit preflight step below fails LOUDLY before any build
+# work — so a misconfigured runner is a red job, not a false pass.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Sign, notarize, verify (Developer ID)
+    # Self-hosted macOS 26 with the release keychain provisioned (see header +
+    # SECRETS.md). The 'macOS'/'arm64' labels are stock; add a 'macos-26' label to
+    # the runner and include it here if you keep multiple self-hosted macs.
+    runs-on: [self-hosted, macOS, arm64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+
+      # Guard: fail fast + clearly if this runner cannot actually sign/notarize,
+      # rather than discovering it deep inside release.sh (or, worse, going green).
+      - name: Preflight — signing identity + notary profile present
+        run: |
+          set -euo pipefail
+          ok=1
+          if ! security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
+            echo "::error::No 'Developer ID Application' identity in this runner's keychain (see SECRETS.md)."
+            ok=0
+          fi
+          if ! xcrun notarytool history --keychain-profile AtelierRefs-notary >/dev/null 2>&1; then
+            echo "::error::notarytool profile 'AtelierRefs-notary' missing/unauthorized on this runner (see SECRETS.md)."
+            ok=0
+          fi
+          [[ "$ok" == "1" ]] || { echo "Runner is not provisioned for a signed release."; exit 1; }
+
+      # release.sh archives → exports (Developer ID) → notarizes --wait → staples →
+      # builds the DMG → generates the signed Sparkle appcast. It self-preflights
+      # too, so any missing tool/credential still exits non-zero (red job).
+      - name: Build signed release (release.sh)
+        run: ./scripts/release.sh
+
+      # verify-release.sh is the 9A/12A artifact guard: codesign/gatekeeper/staple/
+      # notarization, hardened-runtime + sandbox + network.server entitlements, the
+      # Sparkle sign_update signature, the non-placeholder SUFeedURL/SUPublicEDKey
+      # gate, and appcast validity. Resolve the versioned DMG by glob.
+      - name: Verify release artifact (verify-release.sh)
+        run: |
+          set -euo pipefail
+          out="build/release"
+          app="${out}/export/AtelierRefs.app"
+          dmg="$(ls -t ${out}/AtelierRefs-*.dmg 2>/dev/null | head -n1 || true)"
+          appcast="${out}/appcast.xml"
+          ./scripts/verify-release.sh "$app" "$dmg" "$appcast"
+
+      - name: Upload release artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atelierrefs-release
+          path: |
+            build/release/*.dmg
+            build/release/appcast.xml
+          if-no-files-found: warn

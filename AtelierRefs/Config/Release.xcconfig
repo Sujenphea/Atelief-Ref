@@ -1,0 +1,24 @@
+// Release.xcconfig — Developer ID signing configuration (non-secret).
+//
+// Scope: the AtelierRefs app target, Release configuration only. Debug stays on
+// automatic "Apple Development" signing so local development is unaffected.
+//
+// This file IS committed to version control. It contains NO secrets — only the
+// (public) Apple Developer team identifier and the Developer ID signing settings.
+// The signing certificate itself and the notarization credentials live in the
+// login Keychain; see SECRETS.md at the repo root for their exact locations.
+// Decisions 1A (Developer ID + Sparkle channel) and 5A (secrets in Keychain) apply.
+//
+// Wired as the Release configuration's base configuration in project.pbxproj.
+// NOTE: any build setting also set explicitly on the target's Release configuration
+// in project.pbxproj takes precedence over the value here — the two are kept in sync.
+
+// Apple Developer team (public identifier, safe to commit).
+DEVELOPMENT_TEAM = L25247V6JG
+
+// Developer ID Application signing — direct-download / Sparkle auto-update channel.
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = Developer ID Application
+
+// Hardened Runtime is mandatory for notarization.
+ENABLE_HARDENED_RUNTIME = YES

@@ -10,5 +10,20 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!--
+	  052 · A3 (decision 2A) — Sparkle sandboxed auto-update. The host app talks to
+	  Sparkle's Installer/Downloader XPC services (embedded in Sparkle.framework)
+	  over per-app mach service names Sparkle derives from the bundle id:
+	  `<bundle-id>-spks` (status/progress) and `<bundle-id>-spki` (installer).
+	  $(PRODUCT_BUNDLE_IDENTIFIER) is substituted at build time to
+	  `sujenphea.AtelierRefs`. These temporary-exception entitlements are the ONLY
+	  additions Sparkle's sandboxing guide requires of the host; app-sandbox,
+	  network.client, network.server and files.user-selected above are unchanged.
+	-->
+	<key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+	<array>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER)-spks</string>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER)-spki</string>
+	</array>
 </dict>
 </plist>

@@ -17,6 +17,9 @@ struct AtelierRefsApp: App {
     // nothing otherwise. The whole spike lives in `Debug/`; this line is its
     // only footprint outside that folder.
     @NSApplicationDelegateAdaptor(GridBakeoffAppDelegate.self) private var bakeoffDelegate
+    // 052 · A3 — the app-global Sparkle updater. `startingUpdater: true` boots the
+    // updater at launch; the App menu's "Check for Updates…" command reads it.
+    @StateObject private var updater = UpdaterController()
 
     var body: some Scene {
         WindowGroup {
@@ -28,6 +31,12 @@ struct AtelierRefsApp: App {
         // 004-P1 — a menu Back command (⌘[) that pops the current NavModel,
         // reaching it through the focused-scene value the shell publishes.
         .commands {
+            // App-menu "Check for Updates…" (052 · A3), placed right after the
+            // "About AtelierRefs" item. Observes the app-global updater so it
+            // disables while a check is already in flight.
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesCommand(updater: updater)
+            }
             // Standard Edit-menu undo/redo (010 · Phase 1), wired to the shared
             // model's app-level UndoManager via the focused scene value — the
             // default group targets the responder chain, which never sees our
