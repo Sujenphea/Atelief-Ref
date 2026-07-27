@@ -2,7 +2,7 @@
 //  SpaceInlineEditGeometryTests.swift
 //  AtelierRefsTests
 //
-//  2B — the inline editor's PURE geometry decision (`inlineEditorWorldBox`),
+//  2B / 062 — the inline editor's PURE geometry decision (`inlineEditorWorldBox`),
 //  following the same posture as `SpaceInlineEditTests`: the `NSTextView` lifecycle
 //  is live-only, but the decisions it drives are pure functions and tested here.
 //
@@ -11,7 +11,11 @@
 //  re-wrap — on every zoom step: jerky, and the same reflow 059 removed from the
 //  canvas. Layout now happens in world units and the zoom is carried by
 //  `EditorScaleBox`, so for a fixed tile the layout box cannot move with the camera.
-//  These tests pin that.
+//
+//  062 collapsed the three resize modes into one behaviour — the width is the
+//  tile's (the user's), the height follows the text — so the box is now a single
+//  expression rather than a switch. What must hold is unchanged: no zoom in, no
+//  zoom out.
 //
 
 import AppKit
@@ -22,7 +26,7 @@ import Testing
 @testable import AtelierRefs
 @testable import CanvasRenderer
 
-@Suite("Inline text-edit geometry (2B · world-space layout)")
+@Suite("Inline text-edit geometry (062 · world-space layout)")
 struct SpaceInlineEditGeometryTests {
 
     /// A tile 300×200 in WORLD units, expressed as the screen frame the engine would
@@ -38,64 +42,53 @@ struct SpaceInlineEditGeometryTests {
 
     // MARK: - The crux: the layout box does not move with the camera
 
-    @Test("the world layout box is identical at every zoom, in every resize mode")
+    @Test("the world layout box is identical at every zoom")
     func boxIsIdenticalAtEveryZoom() {
-        for resize in [TextResize.fixed, .autoWidth, .autoHeight] {
-            let boxes = zooms.map { scale in
-                inlineEditorWorldBox(
-                    tileScreenFrame: screenFrame(scale: scale), scale: scale,
-                    resize: resize, measuredWorldSize: measured)
-            }
-            // Every zoom must produce the SAME world box — exactly, not approximately.
-            let first = boxes[0]
-            for (zoom, box) in zip(zooms, boxes) {
-                #expect(abs(box.width - first.width) < 0.000_1, "width drifted at \(zoom)×")
-                #expect(abs(box.height - first.height) < 0.000_1, "height drifted at \(zoom)×")
-            }
+        let boxes = zooms.map { scale in
+            inlineEditorWorldBox(
+                tileScreenFrame: screenFrame(scale: scale), scale: scale,
+                measuredWorldSize: measured)
+        }
+        // Every zoom must produce the SAME world box — exactly, not approximately.
+        let first = boxes[0]
+        for (zoom, box) in zip(zooms, boxes) {
+            #expect(abs(box.width - first.width) < 0.000_1, "width drifted at \(zoom)×")
+            #expect(abs(box.height - first.height) < 0.000_1, "height drifted at \(zoom)×")
         }
     }
 
     @Test("the wrap width the editor lays out against is zoom-invariant")
     func wrapWidthIsZoomInvariant() {
-        // `.autoHeight` is the wrapping mode — the one that visibly reflowed. Its
-        // content width (box − padding on both edges) is what TextKit wraps to and
-        // what `TextMetrics` measures against; both must be constant across zoom.
+        // The content width (box − padding on both edges) is what TextKit wraps to
+        // and what `TextMetrics` measures against; both must be constant across zoom,
+        // or a pinch re-wraps the line the caret is sitting on.
         let widths = zooms.map { scale in
             inlineEditorWorldBox(
                 tileScreenFrame: screenFrame(scale: scale), scale: scale,
-                resize: .autoHeight, measuredWorldSize: measured
+                measuredWorldSize: measured
             ).width - 2 * TextMetrics.padding
         }
         #expect(widths.allSatisfy { abs($0 - widths[0]) < 0.000_1 })
         #expect(abs(widths[0] - (300 - 2 * TextMetrics.padding)) < 0.000_1)
     }
 
-    // MARK: - Per-mode geometry
+    // MARK: - Width is the tile's, height is the text's
 
-    @Test("fixed fills its tile's world box, ignoring the measured text")
-    func fixedFillsTheTile() {
+    @Test("the width comes from the tile, never from the measured text")
+    func widthComesFromTheTile() {
+        // A string measured far wider than the box must NOT widen it — the width is
+        // the user's, set by a resize handle, and only they may change it (062).
         let box = inlineEditorWorldBox(
             tileScreenFrame: screenFrame(scale: 2), scale: 2,
-            resize: .fixed, measuredWorldSize: CGSize(width: 9_999, height: 9_999))
+            measuredWorldSize: CGSize(width: 9_999, height: 40))
         #expect(abs(box.width - 300) < 0.000_1)
-        #expect(abs(box.height - 200) < 0.000_1)
     }
 
-    @Test("autoWidth hugs the measured text on both axes, plus padding")
-    func autoWidthHugsText() {
+    @Test("the height is the measured text plus padding on both edges")
+    func heightIsMeasuredTextPlusPadding() {
         let box = inlineEditorWorldBox(
             tileScreenFrame: screenFrame(scale: 3), scale: 3,
-            resize: .autoWidth, measuredWorldSize: measured)
-        #expect(abs(box.width - (measured.width + 2 * TextMetrics.padding)) < 0.000_1)
-        #expect(abs(box.height - (measured.height + 2 * TextMetrics.padding)) < 0.000_1)
-    }
-
-    @Test("autoHeight keeps the user's width and grows only downward")
-    func autoHeightKeepsWidth() {
-        let box = inlineEditorWorldBox(
-            tileScreenFrame: screenFrame(scale: 0.5), scale: 0.5,
-            resize: .autoHeight, measuredWorldSize: measured)
-        #expect(abs(box.width - 300) < 0.000_1)                                  // width untouched
+            measuredWorldSize: measured)
         #expect(abs(box.height - (measured.height + 2 * TextMetrics.padding)) < 0.000_1)
     }
 
@@ -103,11 +96,22 @@ struct SpaceInlineEditGeometryTests {
     func heightTracksTheText() {
         func height(_ measuredHeight: CGFloat) -> CGFloat {
             inlineEditorWorldBox(
-                tileScreenFrame: screenFrame(scale: 1), scale: 1, resize: .autoHeight,
+                tileScreenFrame: screenFrame(scale: 1), scale: 1,
                 measuredWorldSize: CGSize(width: 180, height: measuredHeight)).height
         }
         #expect(height(40) < height(96))
         #expect(height(96) < height(300))
+    }
+
+    @Test("the editor's height ignores the tile's height entirely")
+    func heightIgnoresTheTile() {
+        // The committed tile is 200pt tall but the text needs far less: the editor
+        // must hug the text, exactly as the committed box will after `autosizedFrame`.
+        let box = inlineEditorWorldBox(
+            tileScreenFrame: screenFrame(scale: 1), scale: 1,
+            measuredWorldSize: CGSize(width: 100, height: 20))
+        #expect(abs(box.height - (20 + 2 * TextMetrics.padding)) < 0.000_1)
+        #expect(box.height < 200)
     }
 
     // MARK: - Degenerate input
@@ -117,7 +121,7 @@ struct SpaceInlineEditGeometryTests {
         for scale in [CGFloat(0), -1, .leastNonzeroMagnitude] {
             let box = inlineEditorWorldBox(
                 tileScreenFrame: CGRect(x: 0, y: 0, width: 300, height: 200),
-                scale: scale, resize: .fixed, measuredWorldSize: measured)
+                scale: scale, measuredWorldSize: measured)
             #expect(box.width.isFinite && box.height.isFinite)
             #expect(box.width > 0 && box.height > 0)
         }
@@ -126,9 +130,8 @@ struct SpaceInlineEditGeometryTests {
     @Test("an empty measured size still yields a padded, non-zero box")
     func emptyTextStillHasABox() {
         let box = inlineEditorWorldBox(
-            tileScreenFrame: screenFrame(scale: 1), scale: 1,
-            resize: .autoWidth, measuredWorldSize: .zero)
-        #expect(abs(box.width - 2 * TextMetrics.padding) < 0.000_1)
+            tileScreenFrame: screenFrame(scale: 1), scale: 1, measuredWorldSize: .zero)
+        #expect(abs(box.width - 300) < 0.000_1)                    // the tile's width
         #expect(abs(box.height - 2 * TextMetrics.padding) < 0.000_1)
     }
 

@@ -8,6 +8,11 @@
 //  four nils and the accessors return today's defaults; an unknown/malformed token
 //  degrades to the owned default rather than throwing.
 //
+//  062 retired the three-way text resize mode — a text box now has exactly one
+//  behaviour, so nothing READS `resizeMode`. It is still asserted here because it
+//  must keep DECODING and round-tripping: rows written by older builds carry the
+//  key, and dropping it from the struct would silently discard it on the next save.
+//
 
 import Foundation
 import Testing
@@ -26,14 +31,15 @@ struct ElementStyleTextTests {
             text: "Hello", fontSize: 24, textColor: "#112233",
             fillColor: "#445566", strokeColor: "#778899", strokeWidth: 3,
             fontFamily: "Helvetica Neue", fontWeight: TextWeight.semibold.rawValue,
-            textAlign: TextAlign.center.rawValue, resizeMode: TextResize.autoHeight.rawValue)
+            textAlign: TextAlign.center.rawValue, resizeMode: "autoHeight")
         let json = try #require(style.jsonString())
         let back = try #require(ElementStyle(jsonString: json))
         #expect(back == style)
         // Accessors read the tokens we set.
         #expect(back.weight == .semibold)
         #expect(back.align == .center)
-        #expect(back.resize == .autoHeight)
+        // Retired but preserved verbatim (062) — no reader, no data loss.
+        #expect(back.resizeMode == "autoHeight")
     }
 
     @Test("jsonString / init?(jsonString:) is stable across a re-encode")
@@ -61,25 +67,24 @@ struct ElementStyleTextTests {
         // The accessors return today's exact defaults.
         #expect(style.weight == .regular)
         #expect(style.align == .left)
-        #expect(style.resize == .fixed)
     }
 
     @Test("an entirely empty JSON object decodes to all-nil / defaults")
     func emptyObjectDefaults() throws {
         let style = try #require(ElementStyle(jsonString: "{}"))
         #expect(style.fontFamily == nil && style.fontWeight == nil)
-        #expect(style.weight == .regular && style.align == .left && style.resize == .fixed)
+        #expect(style.weight == .regular && style.align == .left)
     }
 
     // MARK: - Unknown / malformed tokens
 
-    @Test("an unknown weight/align/resize token degrades to the owned default")
+    @Test("an unknown weight/align token degrades to the owned default")
     func unknownTokenDefaults() {
         let style = ElementStyle(
             fontWeight: "ultrablack", textAlign: "justify", resizeMode: "elastic")
         #expect(style.weight == .regular)
         #expect(style.align == .left)
-        #expect(style.resize == .fixed)
+        #expect(style.resizeMode == "elastic")   // unread, but never rewritten
     }
 
     @Test("an unknown token survives a JSON round-trip and still defaults")
@@ -97,6 +102,5 @@ struct ElementStyleTextTests {
     func enumTokenSets() {
         #expect(TextWeight.allCases.map(\.rawValue) == ["regular", "medium", "semibold", "bold"])
         #expect(TextAlign.allCases.map(\.rawValue) == ["left", "center", "right"])
-        #expect(TextResize.allCases.map(\.rawValue) == ["fixed", "autoWidth", "autoHeight"])
     }
 }

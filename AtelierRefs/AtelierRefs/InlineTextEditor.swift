@@ -66,31 +66,20 @@ func inlineEditOutcome(text: String, wasNewlyCreated: Bool, committed: Bool) -> 
 /// as you pinch, and what makes the editor's line breaks agree with the committed
 /// box (`TextMetrics` measured that against the same world width).
 ///
-/// `measuredWorldSize` is the string's measured size in world units (ignored for
-/// `.fixed`, which simply fills its tile).
+/// The width is the tile's — the user owns it, and only a resize-handle drag changes
+/// it (062). The height follows `measuredWorldSize`, the string's measured size in
+/// world units, so the editor grows and shrinks exactly as the committed box will.
 func inlineEditorWorldBox(
     tileScreenFrame: CGRect,
     scale: CGFloat,
-    resize: TextResize,
     measuredWorldSize: CGSize,
     padding: CGFloat = TextMetrics.padding
 ) -> CGSize {
     // A degenerate camera must not divide by zero — clamp rather than trap.
     let scale = max(0.0001, scale)
-    let worldTileWidth = tileScreenFrame.width / scale
-    switch resize {
-    case .fixed:
-        return CGSize(width: worldTileWidth, height: tileScreenFrame.height / scale)
-    case .autoWidth:
-        return CGSize(
-            width: measuredWorldSize.width + 2 * padding,
-            height: measuredWorldSize.height + 2 * padding)
-    case .autoHeight:
-        // Width stays user-controlled; only the height follows the text.
-        return CGSize(
-            width: worldTileWidth,
-            height: measuredWorldSize.height + 2 * padding)
-    }
+    return CGSize(
+        width: tileScreenFrame.width / scale,
+        height: measuredWorldSize.height + 2 * padding)
 }
 
 /// While editing, a tile that scrolls out of the viewport (its on-screen frame goes
@@ -286,18 +275,12 @@ struct InlineTextEditor: NSViewRepresentable {
             let scale = max(0.0001, bridge.scale)
             // Measure the CURRENT string in world units, through the SAME helper the
             // committed box uses, so editor and canvas can't disagree on the wrap.
-            var measured = CGSize.zero
-            if editor.style.resize != .fixed {
-                var ts = ElementRendering.textStyle(for: editor.style)
-                ts.string = textView.string
-                let maxWidth: CGFloat? = editor.style.resize == .autoHeight
-                    ? max(1, frame.width / scale - 2 * TextMetrics.padding)
-                    : nil
-                measured = TextMetrics.size(for: ts, maxWidth: maxWidth)
-            }
+            var ts = ElementRendering.textStyle(for: editor.style)
+            ts.string = textView.string
+            let measured = TextMetrics.size(
+                for: ts, maxWidth: max(1, frame.width / scale - 2 * TextMetrics.padding))
             let worldSize = inlineEditorWorldBox(
-                tileScreenFrame: frame, scale: scale,
-                resize: editor.style.resize, measuredWorldSize: measured)
+                tileScreenFrame: frame, scale: scale, measuredWorldSize: measured)
 
             // The zoom lives HERE and nowhere else: a screen-space frame over a
             // world-space bounds makes the box's scale exactly `scale`, and the text

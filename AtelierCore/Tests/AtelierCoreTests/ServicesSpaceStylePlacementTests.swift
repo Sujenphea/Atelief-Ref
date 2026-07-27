@@ -38,14 +38,14 @@ struct ServicesSpaceStylePlacementTests {
         let id = try await seedText(services, in: space.id)
 
         var style = ElementStyle(text: "Auto width", fontSize: 22)
-        style.resizeMode = TextResize.autoWidth.rawValue
+        style.fontFamily = "Menlo"
         try await services.updateSpaceItemStyleAndPlacement(
             itemID: id, style: style,
             placement: SpaceItemPlacement(itemID: id, x: 100, y: 200, w: 260, h: 34, z: 0))
 
         let row = try await fetch(services, space.id, id)
         #expect(ElementStyle(jsonString: row.style)?.text == "Auto width")
-        #expect(ElementStyle(jsonString: row.style)?.resize == .autoWidth)
+        #expect(ElementStyle(jsonString: row.style)?.fontFamily == "Menlo")
         #expect(row.w == 260) // derived geometry rode along in the same write
         #expect(row.h == 34)
         #expect(row.x == 100) // anchor untouched

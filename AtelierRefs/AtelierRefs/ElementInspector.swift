@@ -35,7 +35,6 @@ struct ElementInspector: View {
     @State private var fontFamily: String
     @State private var weight: TextWeight
     @State private var align: TextAlign
-    @State private var resize: TextResize
 
     /// The full system family list, "System" (the nil default) pinned first.
     private let families = NSFontManager.shared.availableFontFamilies
@@ -62,7 +61,6 @@ struct ElementInspector: View {
         _fontFamily = State(initialValue: initialStyle.fontFamily ?? Self.systemFamily)
         _weight = State(initialValue: initialStyle.weight)
         _align = State(initialValue: initialStyle.align)
-        _resize = State(initialValue: initialStyle.resize)
     }
 
     var body: some View {
@@ -103,7 +101,9 @@ struct ElementInspector: View {
     }
 
     // The string is edited on-canvas (2B), not here (R3) — the popover keeps only
-    // the STYLE controls (family / weight / align / size / colour / resize-mode).
+    // the STYLE controls (family / weight / align / size / colour). Sizing is not a
+    // setting: the box's width follows its resize handles and its height follows the
+    // text (062).
     @ViewBuilder private var textEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
             Picker("Font", selection: $fontFamily) {
@@ -127,10 +127,6 @@ struct ElementInspector: View {
                 Text("\(Int(fontSize))").monospacedDigit().frame(width: 28, alignment: .trailing)
             }
             ColorPicker("Colour", selection: $textColor, supportsOpacity: false)
-            Picker("Resize", selection: $resize) {
-                ForEach(TextResize.allCases, id: \.self) { Text($0.label).tag($0) }
-            }
-            .pickerStyle(.segmented)
         }
     }
 
@@ -167,7 +163,6 @@ struct ElementInspector: View {
             style.fontFamily = fontFamily.isEmpty ? nil : fontFamily
             style.fontWeight = weight.rawValue
             style.textAlign = align.rawValue
-            style.resizeMode = resize.rawValue
         case .frame:
             style.text = text.isEmpty ? nil : text
             style.textColor = ElementRendering.hex(from: textColor.rgbaComponents())
@@ -188,17 +183,6 @@ private extension TextAlign {
         case .left: return "text.alignleft"
         case .center: return "text.aligncenter"
         case .right: return "text.alignright"
-        }
-    }
-}
-
-private extension TextResize {
-    /// A short label for the resize-mode segmented control.
-    var label: String {
-        switch self {
-        case .fixed: return "Fixed"
-        case .autoWidth: return "Auto W"
-        case .autoHeight: return "Auto H"
         }
     }
 }

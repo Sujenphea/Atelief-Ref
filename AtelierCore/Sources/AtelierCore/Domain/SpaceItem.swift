@@ -36,14 +36,6 @@ public enum TextAlign: String, Codable, CaseIterable, Sendable {
     case left, center, right
 }
 
-/// How a text element sizes to its content (054 §1 — 2C). Domain/app-only: it
-/// never crosses into the renderer (only weight + alignment do).
-public enum TextResize: String, Codable, CaseIterable, Sendable {
-    case fixed        // box w/h authoritative; text wraps + truncates (today)
-    case autoWidth    // one line; width grows to the text, height to the line
-    case autoHeight   // width fixed (create-time); height grows to wrapped text
-}
-
 /// A freeform element's presentation (005 §schema — `ElementStyle`). Stored as
 /// JSON TEXT in `space_item.style` (asset rows leave it nil). Every field is
 /// optional so a partially-styled element round-trips; E3 populates these.
@@ -66,7 +58,11 @@ public struct ElementStyle: Sendable, Equatable, Hashable, Codable {
     public var fontWeight: String?
     /// ``TextAlign`` rawValue; nil → `.left`. Read via `align` (§1.1).
     public var textAlign: String?
-    /// ``TextResize`` rawValue; nil → `.fixed`. Read via `resize` (§1.1).
+    /// **Legacy, ignored (062).** Text used to carry a three-way resize mode
+    /// (`fixed` / `autoWidth` / `autoHeight`); a text box now has exactly one
+    /// behaviour — the user owns the width, the height is derived from the wrapped
+    /// text. The field is retained so rows written by older builds still decode (and
+    /// round-trip) unchanged; nothing reads it.
     public var resizeMode: String?
 
     public init(
@@ -119,8 +115,6 @@ public extension ElementStyle {
     var weight: TextWeight { TextWeight(rawValue: fontWeight ?? "") ?? .regular }
     /// The parsed alignment; unknown/nil → `.left`.
     var align: TextAlign { TextAlign(rawValue: textAlign ?? "") ?? .left }
-    /// The parsed resize mode; unknown/nil → `.fixed` (back-compat parity).
-    var resize: TextResize { TextResize(rawValue: resizeMode ?? "") ?? .fixed }
 }
 
 /// One row on a ``Space`` board (005 §entity O1). `assetID` is set iff

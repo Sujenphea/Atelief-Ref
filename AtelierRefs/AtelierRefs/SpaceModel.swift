@@ -637,8 +637,20 @@ final class SpaceModel: ObservableObject {
     }
 
     /// Add a text element occupying `worldRect`, on TOP of the content. Selects it.
+    /// Place a new text box. The dragged rect's WIDTH is the user's choice; its
+    /// height is derived from the default string immediately (062), so a box is
+    /// never born taller or shorter than its content — the same invariant every
+    /// later edit maintains. A click-placed box arrives at a default width from the
+    /// host, so this is the only place the created height is decided.
     func addText(worldRect: CGRect) {
-        addElement(kind: .text, style: ElementRendering.defaultTextStyle(), rect: worldRect, behind: false)
+        let style = ElementRendering.defaultTextStyle()
+        let ts = ElementRendering.textStyle(for: style)
+        let measured = TextMetrics.size(
+            for: ts, maxWidth: max(1, worldRect.width - 2 * TextMetrics.padding))
+        let rect = CGRect(
+            x: worldRect.minX, y: worldRect.minY, width: worldRect.width,
+            height: measured.height + 2 * TextMetrics.padding)
+        addElement(kind: .text, style: style, rect: rect, behind: false)
     }
 
     private func addElement(kind: SpaceItemKind, style: ElementStyle, rect: CGRect, behind: Bool) {
@@ -670,36 +682,65 @@ final class SpaceModel: ObservableObject {
     }
 
     /// The auto-sized world frame for a `.text` element under `style`, or `nil` when
-    /// no geometry write is due — a non-`.text` row, `.fixed` mode, or an auto mode
-    /// whose measured fit already matches the current box (054 §4.2 · R4 · D7).
+    /// no geometry write is due — a non-`.text` row, or one whose measured fit
+    /// already matches its current box (054 §4.2 · R4 · D7 · 062).
     ///
-    /// Top-left **anchor**: `x`/`y` (and, for `autoHeight`, `w`) are frozen — the box
-    /// only grows/shrinks right (`autoWidth`) or down (`autoHeight`). The width that
-    /// `autoHeight` wraps to is the **create-time** width (no resize handles in Phase
-    /// 2). Measurement uses the SAME font as drawing (``ElementRendering/textStyle``
-    /// → ``TextMetrics``), so the box can't drift from the glyphs.
+    /// A text box has ONE sizing behaviour: **the user owns the width, the height is
+    /// derived** from the text wrapped to that width. There is no mode to consult —
+    /// `x`, `y` and `w` are frozen here and only ever change through a deliberate
+    /// gesture (a move or a handle drag, see ``resizeTile(tileID:to:in:)``), so the
+    /// box grows and shrinks downward from a fixed top-left as the text changes.
+    ///
+    /// Measurement uses the SAME font as drawing (``ElementRendering/textStyle`` →
+    /// ``TextMetrics``, which shapes through ``TextShaper``), so the box can't drift
+    /// from the glyphs, and truncation is unreachable: the box always fits its text.
     func autosizedFrame(item: SpaceItem, style: ElementStyle) -> CGRect? {
         guard item.kind == .text else { return nil }
         let pad = Double(TextMetrics.padding)
         let ts = ElementRendering.textStyle(for: style)
-
-        let newSize: CGSize
-        let newWidth: Double
-        switch style.resize {
-        case .fixed:
-            return nil
-        case .autoWidth:
-            newSize = TextMetrics.size(for: ts, maxWidth: nil)
-            newWidth = Double(newSize.width) + 2 * pad
-        case .autoHeight:
-            let maxWidth = max(1, CGFloat(item.w) - 2 * TextMetrics.padding)
-            newSize = TextMetrics.size(for: ts, maxWidth: maxWidth)
-            newWidth = item.w // width frozen at the create-time box
-        }
-        let newHeight = Double(newSize.height) + 2 * pad
+        let maxWidth = max(1, CGFloat(item.w) - 2 * TextMetrics.padding)
+        let measured = TextMetrics.size(for: ts, maxWidth: maxWidth)
+        let newHeight = Double(measured.height) + 2 * pad
         // No change → no geometry write (the shrink-back / grow tests pin this).
-        guard newWidth != item.w || newHeight != item.h else { return nil }
-        return CGRect(x: item.x, y: item.y, width: newWidth, height: newHeight)
+        guard newHeight != item.h else { return nil }
+        return CGRect(x: item.x, y: item.y, width: item.w, height: newHeight)
+    }
+
+    /// Commit a resize-handle drag (062): the dragged rect's origin + WIDTH are
+    /// authoritative, and a text row's HEIGHT is re-derived from the text wrapped to
+    /// that new width — so setting the width is the only thing a resize does, and the
+    /// box still ends up exactly as tall as its content.
+    ///
+    /// Both halves land in ONE undo step, exactly as a restyle folds its auto-size in
+    /// (054 §4.3 · D5): one ⌘Z restores the previous width AND height together.
+    /// Mirrors ``moveTile(tileID:to:in:)`` — the tile is updated in the live content
+    /// first (so nothing snaps between the drop and the write), then persisted with
+    /// `reload: false`.
+    func resizeTile(tileID: Int, to worldRect: CGRect, in content: SpaceContent) {
+        guard content.tiles.indices.contains(tileID),
+              let itemID = content.spaceItemID(forTileID: tileID),
+              var item = items.first(where: { $0.item.id == itemID })?.item else { return }
+        let tile = content.tiles[tileID]
+        let old = Placement(x: tile.x, y: tile.y, w: tile.w, h: tile.h, z: tile.z)
+
+        // Anchor on the DRAGGED geometry before deriving, so the height is measured
+        // against the width the user just chose rather than the stale one.
+        item.x = Double(worldRect.minX)
+        item.y = Double(worldRect.minY)
+        item.w = Double(worldRect.width)
+        item.h = Double(worldRect.height)
+        let derived = autosizedFrame(item: item, style: style(forItemID: itemID))
+        let new = Placement(
+            x: Double(worldRect.minX), y: Double(worldRect.minY),
+            w: Double(worldRect.width), h: Double(derived?.height ?? worldRect.height), z: tile.z)
+        guard old != new else { return }
+
+        content.setPlacement(tileID: tileID, x: new.x, y: new.y, w: new.w, h: new.h)
+        renderRevision += 1 // geometry changed in place → re-sync, never a rebuild
+        enqueue {
+            await self.applyPlacementEdit(
+                name: "Resize", edits: [(id: itemID, old: old, new: new)], reload: false)
+        }
     }
 
     /// Persist an element's restyle (text, colours, stroke, label). For an auto-sized

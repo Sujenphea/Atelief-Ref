@@ -255,6 +255,9 @@ struct SpaceView: View {
                     }
                     tool = .select // one-shot: back to Select after placing
                 },
+                onResizeTile: { tileID, worldRect in
+                    space.resizeTile(tileID: tileID, to: worldRect, in: content)
+                },
                 onTransformChanged: { editBridge.transformDidChange() },
                 onHostReady: { editBridge.host = $0 },
                 // Drop target (SP2 · S2 + SP3 · S1). We register the app-private

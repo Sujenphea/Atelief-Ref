@@ -30,6 +30,7 @@ public struct CanvasView: NSViewRepresentable {
     private let onCopyTiles: ((Set<Int>) -> Void)?
     private let onMoveTile: ((Int, CGPoint) -> Void)?
     private let onCreateElement: ((CanvasTool, CGRect) -> Void)?
+    private let onResizeTile: ((Int, CGRect) -> Void)?
     /// Fired once per transform mutation (2B · 054 §5.1 · R2) so the inline editor
     /// repositions its overlay imperatively — a plain closure, NOT a `Binding`, so it
     /// never re-evaluates SwiftUI `body` (R15).
@@ -61,6 +62,7 @@ public struct CanvasView: NSViewRepresentable {
         onCopyTiles: ((Set<Int>) -> Void)? = nil,
         onMoveTile: ((Int, CGPoint) -> Void)? = nil,
         onCreateElement: ((CanvasTool, CGRect) -> Void)? = nil,
+        onResizeTile: ((Int, CGRect) -> Void)? = nil,
         onTransformChanged: (() -> Void)? = nil,
         onHostReady: ((CanvasHostView) -> Void)? = nil,
         acceptedDropTypes: [NSPasteboard.PasteboardType] = [],
@@ -82,6 +84,7 @@ public struct CanvasView: NSViewRepresentable {
         self.onCopyTiles = onCopyTiles
         self.onMoveTile = onMoveTile
         self.onCreateElement = onCreateElement
+        self.onResizeTile = onResizeTile
         self.onTransformChanged = onTransformChanged
         self.onHostReady = onHostReady
         self.acceptedDropTypes = acceptedDropTypes
@@ -113,6 +116,7 @@ public struct CanvasView: NSViewRepresentable {
         view.onCopyTiles = onCopyTiles
         view.onMoveTile = onMoveTile
         view.onCreateElement = onCreateElement
+        view.onResizeTile = onResizeTile
         view.onTransformChanged = onTransformChanged
         view.onDragEntered = onDragEntered
         view.onDrop = onDrop

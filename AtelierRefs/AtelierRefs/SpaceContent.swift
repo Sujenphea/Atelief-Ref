@@ -112,14 +112,18 @@ final class SpaceContent: TileProvider, TileImageSource {
 
     // MARK: - Placement mutation (canvas drag)
 
-    /// Move `tileID` to a new world-space origin, keeping its current `w/h/z`.
-    /// The in-memory update the renderer reads next `sync()`; the durable write
-    /// via `setSpaceItemPlacement` happens separately. No-op for an out-of-range id.
-    func setPlacement(tileID: Int, x: Double, y: Double) {
+    /// Move `tileID` to a new world-space origin and, when `w`/`h` are given (a
+    /// resize-handle drag, 062), a new size. A `nil` dimension keeps the current one,
+    /// so the drag path can keep calling this without naming a size. `z` is never
+    /// touched. The in-memory update the renderer reads next `sync()`; the durable
+    /// write via `setSpaceItemPlacement` happens separately. No-op for an
+    /// out-of-range id.
+    func setPlacement(tileID: Int, x: Double, y: Double, w: Double? = nil, h: Double? = nil) {
         guard tiles.indices.contains(tileID) else { return }
         let existing = tiles[tileID]
         tiles[tileID] = Tile(
-            id: existing.id, x: x, y: y, w: existing.w, h: existing.h, z: existing.z)
+            id: existing.id, x: x, y: y,
+            w: w ?? existing.w, h: h ?? existing.h, z: existing.z)
     }
 
     // MARK: - Style mutation (inspector / inline restyle)

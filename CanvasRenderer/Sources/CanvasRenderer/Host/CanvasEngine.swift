@@ -96,6 +96,19 @@ public final class CanvasEngine {
     /// The live-drag's world-space offset from the dragged tile's stored origin.
     private var dragWorldOffset: CGSize = .zero
 
+    /// The tile being live-resized (062), or `nil`. Like a drag, this is transient:
+    /// the provider is untouched until the host persists the final frame.
+    private var resizeTileID: Int?
+    /// The handle being dragged this resize.
+    private var activeResizeHandle: ResizeHandle?
+    /// The resized tile's frame at `beginResize` — every update recomputes from THIS
+    /// rather than accumulating, so a resize can't drift over a long drag.
+    private var resizeOriginalFrame: CGRect = .zero
+    /// The live world frame the resized tile is drawn at, or `nil` when idle.
+    private var resizeWorldFrame: CGRect?
+    /// The handle dots drawn on the single selected resizable tile.
+    private var handleLayers: [ResizeHandle: CALayer] = [:]
+
     public init(
         provider: TileProvider,
         images: any TileImageSource,
@@ -262,12 +275,93 @@ public final class CanvasEngine {
         }
     }
 
-    /// The world frame a tile is drawn at this frame — its stored frame, offset
-    /// by the live-drag delta when it's the dragged tile or one of its group.
+    /// The world frame a tile is drawn at this frame — its stored frame, replaced by
+    /// the live-resize frame while it is being resized, else offset by the live-drag
+    /// delta when it's the dragged tile or one of its group. Resize wins because the
+    /// two gestures are mutually exclusive: a press either grabs a handle or the
+    /// body, never both.
     private func displayWorldFrame(for tile: Tile) -> CGRect {
+        if tile.id == resizeTileID, let live = resizeWorldFrame { return live }
         guard tile.id == dragTileID || dragGroupIDs.contains(tile.id) else { return tile.worldFrame }
         return tile.worldFrame.offsetBy(dx: dragWorldOffset.width, dy: dragWorldOffset.height)
     }
+
+    // MARK: Live resize (transient geometry, no provider mutation — 062)
+
+    /// Whether `tile` may be resized by dragging a handle. Text only for now: a text
+    /// box's width IS the wrap width the app lays its glyphs out against, so it is
+    /// the one kind whose box the user must be able to set directly. Images would
+    /// want an aspect lock and frames would have to decide what happens to their
+    /// contents — both are separate questions, so neither shows handles yet.
+    private func isResizable(_ tile: Tile) -> Bool {
+        if case .text = provider.content(for: tile) { return true }
+        return false
+    }
+
+    /// The one tile that shows handles: the lone selected tile, if it is visible and
+    /// resizable. A multi-selection shows none — resizing several boxes at once has
+    /// no single sensible meaning here.
+    ///
+    /// `visible` lets ``sync()`` reuse the culled set it already computed; the
+    /// selection check comes first so the common no-selection case costs nothing.
+    private func handleTile(in visible: [Tile]? = nil) -> Tile? {
+        guard let id = selectedTileID else { return nil }
+        guard let tile = (visible ?? currentVisibleTiles()).first(where: { $0.id == id }),
+              isResizable(tile)
+        else { return nil }
+        return tile
+    }
+
+    /// The resize handle under `screenPoint`, with the tile it belongs to, or `nil`.
+    /// The host calls this at `mouseDown` BEFORE its tile hit-test, so a press on a
+    /// handle starts a resize rather than a move.
+    public func resizeHandle(atScreenPoint screenPoint: CGPoint) -> (tileID: Int, handle: ResizeHandle)? {
+        guard let tile = handleTile() else { return nil }
+        let screenFrame = transform.worldToScreen(displayWorldFrame(for: tile))
+        guard let handle = ResizeGeometry.handle(atScreenPoint: screenPoint, in: screenFrame) else {
+            return nil
+        }
+        return (tile.id, handle)
+    }
+
+    /// Begin live-resizing `tileID` by `handle`. Nothing moves until
+    /// ``updateResize(toWorldPoint:)``.
+    public func beginResize(tileID: Int, handle: ResizeHandle) {
+        guard let tile = tile(withID: tileID) else { return }
+        resizeTileID = tileID
+        activeResizeHandle = handle
+        resizeOriginalFrame = tile.worldFrame
+        resizeWorldFrame = tile.worldFrame
+    }
+
+    /// Update the live resize to the cursor's current WORLD point. Recomputed from
+    /// the frame captured at `beginResize`, never accumulated.
+    public func updateResize(toWorldPoint world: CGPoint) {
+        guard resizeTileID != nil, let handle = activeResizeHandle else { return }
+        resizeWorldFrame = ResizeGeometry.resizedFrame(
+            resizeOriginalFrame, handle: handle, toWorldPoint: world)
+        sync()
+    }
+
+    /// The resized tile and its current live world frame, or `nil` when idle.
+    /// **Non-mutating** — the host persists this, then calls ``endResize()``, mirroring
+    /// the drag path's `currentDragOrigins()` / `endDrag()` ordering so the tile never
+    /// snaps back between the write and the next sync.
+    public func currentResizeFrame() -> (tileID: Int, worldFrame: CGRect)? {
+        guard let id = resizeTileID, let frame = resizeWorldFrame else { return nil }
+        return (id, frame)
+    }
+
+    /// Clear the live-resize state, WITHOUT syncing.
+    public func endResize() {
+        resizeTileID = nil
+        activeResizeHandle = nil
+        resizeOriginalFrame = .zero
+        resizeWorldFrame = nil
+    }
+
+    /// Whether handle dots are currently drawn — introspection for the tests.
+    public var resizeHandleCount: Int { handleLayers.count }
 
     /// Frames all content to fit the viewport (with fractional `padding` on each
     /// side), centred. The host calls this once on first layout so the canvas
@@ -375,8 +469,47 @@ public final class CanvasEngine {
             }
         }
 
+        // Resize handles ride on top of the selection border, once per sync (they
+        // belong to at most ONE tile, so they are not part of the per-tile loop).
+        updateResizeHandles(in: visible)
+
         // Drop decodes whose tiles are no longer needed (decision P15).
         scheduler.retainOnly(neededKeys)
+    }
+
+    /// Show / move / drop the eight handle dots on the single selected resizable
+    /// tile. Sized in SCREEN points, so they stay the same physical size at every
+    /// zoom — the whole reason the hit-test lives in screen space too.
+    private func updateResizeHandles(in visible: [Tile]) {
+        guard let tile = handleTile(in: visible) else {
+            for layer in handleLayers.values { layer.removeFromSuperlayer() }
+            handleLayers.removeAll()
+            return
+        }
+        let screenFrame = transform.worldToScreen(displayWorldFrame(for: tile))
+        let size = ResizeGeometry.handleSize
+        for (handle, centre) in ResizeGeometry.handleCentres(in: screenFrame) {
+            let layer: CALayer
+            if let existing = handleLayers[handle] {
+                layer = existing
+            } else {
+                layer = makeHandleLayer()
+                handleLayers[handle] = layer
+            }
+            layer.bounds = CGRect(x: 0, y: 0, width: size, height: size)
+            layer.position = centre
+            layer.cornerRadius = size / 2
+            layer.zPosition = .greatestFiniteMagnitude // above the selection border
+        }
+    }
+
+    private func makeHandleLayer() -> CALayer {
+        let layer = CALayer()
+        layer.backgroundColor = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
+        layer.borderColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 1.0) // accent blue
+        layer.borderWidth = 1.5
+        rootLayer.addSublayer(layer)
+        return layer
     }
 
     /// Synchronously decode the current visible set into the cache. One-time

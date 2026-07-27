@@ -38,6 +38,13 @@ public final class CanvasHostView: NSView {
     /// The host places the element and (typically) flips back to `.select`.
     public var onCreateElement: ((CanvasTool, CGRect) -> Void)?
 
+    /// Called when a resize-handle drag finishes: the tile's id and its FINAL
+    /// WORLD-space rect (062). Peer of ``onMoveTile`` — the host updates the
+    /// provider in memory and persists off-main. For a text box the host is expected
+    /// to treat the rect's WIDTH as authoritative and re-derive the height from the
+    /// wrapped text, so the two never disagree. `nil` disables resizing.
+    public var onResizeTile: ((Int, CGRect) -> Void)?
+
     /// The active tool. `.select` pans / selects / drags; `.frame` / `.text`
     /// rubber-band a new element instead.
     public var tool: CanvasTool = .select
@@ -146,6 +153,22 @@ public final class CanvasHostView: NSView {
     private var isDragging = false
     /// Screen-point movement before a press-and-move becomes a drag (not a click).
     static let dragThreshold: CGFloat = 3
+
+    // MARK: Resize tracking (handle drag — 062)
+
+    /// The handle grabbed at `mouseDown`, or `nil` when the press missed every
+    /// handle. Armed on the down edge; the resize itself only begins once movement
+    /// passes the drag threshold, so a click on a handle stays a click.
+    private var resizeCandidate: (tileID: Int, handle: ResizeHandle)?
+    /// Whether a live resize is in progress.
+    private var isResizing = false
+    /// The handle the pointer is currently over, so `mouseMoved` only touches
+    /// `NSCursor` when the answer actually changes. Tracked as the HANDLE rather
+    /// than the cursor because `NSCursor.frameResize` vends a fresh instance per
+    /// call, which would make an identity comparison always differ.
+    private var hoveredHandle: ResizeHandle?
+    /// Tracking area backing the hover cursor.
+    private var hoverTrackingArea: NSTrackingArea?
 
     // MARK: Marquee tracking (rubber-band selection — 049 · D2 / PR 2)
 
@@ -282,6 +305,78 @@ public final class CanvasHostView: NSView {
         if window == nil { endMarquee() }
     }
 
+    // MARK: Hover cursor (resize handles — 062)
+
+    /// A handle is a small target, so the pointer has to say when it's over one —
+    /// without the cursor change the 22pt grab zone is invisible and undiscoverable.
+    /// `.inVisibleRect` keeps the area in step with scrolling/resizing on its own.
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil)
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        updateHoverCursor(at: convert(event.locationInWindow, from: nil))
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        clearHoverCursor()
+    }
+
+    /// Point the cursor at whatever handle is under `point` (or back to the arrow).
+    /// Suppressed mid-gesture: during a drag or resize the cursor belongs to that
+    /// gesture, and a create tool has its own meaning for a press.
+    private func updateHoverCursor(at point: CGPoint) {
+        guard !isResizing, !isDragging, !isMarqueeing, tool == .select, onResizeTile != nil else {
+            return
+        }
+        let handle = engine.resizeHandle(atScreenPoint: point)?.handle
+        guard handle != hoveredHandle else { return }
+        hoveredHandle = handle
+        (handle.map(Self.cursor(for:)) ?? .arrow).set()
+    }
+
+    private func clearHoverCursor() {
+        guard hoveredHandle != nil else { return }
+        hoveredHandle = nil
+        NSCursor.arrow.set()
+    }
+
+    /// The directional resize cursor for a handle.
+    ///
+    /// `NSCursor.frameResize` (macOS 15+) is the only public API that gives true
+    /// diagonal corner cursors. Below it AppKit exposes just the two axis cursors,
+    /// so a corner falls back to the horizontal one — honest rather than arbitrary,
+    /// since width is the axis that survives a text resize anyway. The package
+    /// targets macOS 14, so this stays a runtime check rather than a floor bump.
+    static func cursor(for handle: ResizeHandle) -> NSCursor {
+        if #available(macOS 15.0, *) {
+            switch handle {
+            case .topLeft: return .frameResize(position: .topLeft, directions: .all)
+            case .top: return .frameResize(position: .top, directions: .all)
+            case .topRight: return .frameResize(position: .topRight, directions: .all)
+            case .right: return .frameResize(position: .right, directions: .all)
+            case .bottomRight: return .frameResize(position: .bottomRight, directions: .all)
+            case .bottom: return .frameResize(position: .bottom, directions: .all)
+            case .bottomLeft: return .frameResize(position: .bottomLeft, directions: .all)
+            case .left: return .frameResize(position: .left, directions: .all)
+            }
+        }
+        switch handle {
+        case .top, .bottom: return .resizeUpDown
+        default: return .resizeLeftRight
+        }
+    }
+
     public override func scrollWheel(with event: NSEvent) {
         engine.pan(byScreenDelta: CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY))
     }
@@ -300,12 +395,22 @@ public final class CanvasHostView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         resetGestureState()
 
-        // Gesture precedence (049 · D8), highest to lowest:
+        // Gesture precedence (049 · D8 · 062), highest to lowest:
         //  1. A create tool (`.frame` / `.text`) → rubber-band a NEW element.
-        //  2. `.select` on a TILE → a drag candidate (press routing selects).
-        //  3. `.select` on EMPTY space → a marquee candidate (or click-to-clear).
+        //  2. `.select` on a resize HANDLE → a resize candidate.
+        //  3. `.select` on a TILE → a drag candidate (press routing selects).
+        //  4. `.select` on EMPTY space → a marquee candidate (or click-to-clear).
         if tool != .select {
             createStartPoint = point
+            return
+        }
+
+        // Handles sit ON the tile's edge, so they must be tested BEFORE the body:
+        // otherwise every handle press would be swallowed as a move of the tile
+        // beneath it.
+        if onResizeTile != nil, let hit = engine.resizeHandle(atScreenPoint: point) {
+            resizeCandidate = hit
+            dragStartPoint = point
             return
         }
 
@@ -355,6 +460,8 @@ public final class CanvasHostView: NSView {
         marqueeBase = []
         isMarqueeing = false
         pressOptionDown = false
+        resizeCandidate = nil
+        isResizing = false
     }
 
     /// Once movement passes the threshold, begin (then continue) a live drag of
@@ -366,6 +473,20 @@ public final class CanvasHostView: NSView {
         // Rubber-band a new element under a create tool.
         if tool != .select, let start = createStartPoint {
             updateCreatePreview(from: start, to: point)
+            return
+        }
+
+        // Resize: an armed handle takes precedence over everything below. Past the
+        // threshold the engine draws the tile at the live frame; the provider is
+        // untouched until mouse-UP.
+        if let candidate = resizeCandidate, let start = dragStartPoint {
+            if !isResizing {
+                let delta = CGSize(width: point.x - start.x, height: point.y - start.y)
+                guard Self.exceedsDragThreshold(delta) else { return }
+                isResizing = true
+                engine.beginResize(tileID: candidate.tileID, handle: candidate.handle)
+            }
+            engine.updateResize(toWorldPoint: engine.transform.screenToWorld(point))
             return
         }
 
@@ -419,6 +540,19 @@ public final class CanvasHostView: NSView {
             let end = convert(event.locationInWindow, from: nil)
             finishCreate(from: start, to: end)
             createStartPoint = nil
+            return
+        }
+
+        // Finish a resize: hand the FINAL world frame to the host (which updates the
+        // provider + persists), then clear the live state and sync — the same
+        // ordering the move path uses, so the tile never snaps back mid-write.
+        if isResizing {
+            if let resized = engine.currentResizeFrame() {
+                onResizeTile?(resized.tileID, resized.worldFrame)
+            }
+            engine.endResize()
+            engine.sync()
+            resetGestureState()
             return
         }
 

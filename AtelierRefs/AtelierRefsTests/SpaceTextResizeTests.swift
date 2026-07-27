@@ -2,15 +2,20 @@
 //  SpaceTextResizeTests.swift
 //  AtelierRefsTests
 //
-//  054 §4.2–4.3 (2C · R9) — the auto-size write path over the real (temp)
-//  AppServices harness (like `SpaceArrangeTests`). The pure measurement is proven
-//  in `TextMetricsTests`; these pin the MODEL contract: an `autoWidth` text change
-//  updates `w` and freezes `x`/`y`/`z`; the top-left anchor is invariant across
-//  grow AND shrink; `autoHeight` shrink-back reduces `h` with `w` frozen; a restyle
-//  + auto-size is exactly ONE undo step that reverts BOTH text and size;
-//  `fixed→autoWidth` re-fits and `autoWidth→fixed` freezes; a `.fixed` restyle
-//  writes NO geometry yet still re-syncs in place (bumps `renderRevision`, never
-//  `contentVersion` — the restyle applies to the live content without a host rebuild).
+//  054 §4.2–4.3 (2C · R9) / 062 — the text auto-size write path over the real
+//  (temp) AppServices harness (like `SpaceArrangeTests`). The pure measurement is
+//  proven in `TextMetricsTests`; these pin the MODEL contract.
+//
+//  062 retired the three-way resize mode. A text box now has ONE behaviour: the
+//  user owns the width (create, or a resize-handle drag), and the height is always
+//  derived from the text wrapped to that width. Two properties follow, and most of
+//  this suite exists to hold them:
+//
+//    * **Truncation is unreachable.** The box is re-fitted on every edit, so text
+//      can never overflow the box it is drawn in. The old `.fixed` default could,
+//      and did — that was the bug.
+//    * **Width only ever changes on purpose.** No text edit, restyle, or undo may
+//      move `x`/`y`/`w`; only `resizeTile` does.
 //
 
 import AtelierCore
@@ -22,7 +27,7 @@ import Testing
 @testable import AtelierRefs
 
 @MainActor
-@Suite("SpaceModel text resize-mode (2C · 054 §4)")
+@Suite("SpaceModel text sizing (062 · width owned, height derived)")
 struct SpaceTextResizeTests {
 
     private func makeModel() async throws -> SpaceModel {
@@ -46,212 +51,269 @@ struct SpaceTextResizeTests {
         model.items.first { $0.item.id == id }!.item
     }
 
-    /// A copy of the row's current style with the given resize token + text.
-    private func styled(_ model: SpaceModel, _ id: UUID,
-                        resize: TextResize, text: String) -> ElementStyle {
+    /// A copy of the row's current style with a new string.
+    private func styled(_ model: SpaceModel, _ id: UUID, text: String) -> ElementStyle {
         var s = model.style(forItemID: id)
-        s.resizeMode = resize.rawValue
         s.text = text
         return s
     }
 
-    // MARK: - autoWidth updates w, freezes x/y/z
+    /// The height the text in `id`'s current style needs at world width `width`.
+    private func fittedHeight(_ model: SpaceModel, _ id: UUID, width: Double) -> Double {
+        let ts = ElementRendering.textStyle(for: model.style(forItemID: id))
+        let measured = TextMetrics.size(
+            for: ts, maxWidth: max(1, CGFloat(width) - 2 * TextMetrics.padding))
+        return Double(measured.height) + 2 * Double(TextMetrics.padding)
+    }
 
-    @Test("an autoWidth text change updates w and freezes x/y/z; bumps renderRevision")
-    func autoWidthUpdatesWidthFreezesAnchor() async throws {
+    // MARK: - Height follows the text; x/y/w never move on their own
+
+    @Test("a text change grows the height and freezes x/y/w/z; bumps renderRevision")
+    func textChangeGrowsHeightFreezesBox() async throws {
         let model = try await makeModel()
-        let id = await seedText(model, CGRect(x: 100, y: 200, width: 40, height: 20))
+        let id = await seedText(model, CGRect(x: 100, y: 200, width: 160, height: 20))
         let before = item(model, id)
         let rev = model.renderRevision
 
-        model.updateStyle(itemID: id, style: styled(model, id, resize: .autoWidth, text: "Hello World"))
+        model.updateStyle(itemID: id, style: styled(
+            model, id, text: "The quick brown fox jumps over the lazy dog again and again"))
         await model.waitForWrites()
         await model.load()
 
         let now = item(model, id)
-        #expect(now.w != before.w)   // width follows the text
-        #expect(now.w > before.w)    // "Hello World" @ 22pt is far wider than 40
-        #expect(now.x == 100)        // anchor frozen
+        #expect(now.h > before.h)     // wrapped to several lines
+        #expect(now.w == before.w)    // width is the user's — untouched
+        #expect(now.x == 100)         // anchor frozen
         #expect(now.y == 200)
         #expect(now.z == before.z)
         #expect(model.renderRevision == rev + 1) // geometry changed → one re-sync
         #expect(model.undoActionName == "Restyle Text")
     }
 
-    // MARK: - anchor invariance across grow AND shrink
-
-    @Test("top-left anchor is invariant across grow and shrink (autoWidth)")
-    func anchorInvariantGrowAndShrink() async throws {
-        let model = try await makeModel()
-        let id = await seedText(model, CGRect(x: 320, y: 88, width: 30, height: 24))
-
-        model.updateStyle(itemID: id, style: styled(model, id, resize: .autoWidth, text: "Short"))
-        await model.waitForWrites(); await model.load()
-        let small = item(model, id)
-
-        // Grow: a much longer line.
-        model.updateStyle(itemID: id, style: styled(model, id, resize: .autoWidth,
-                                                     text: "A considerably longer line of text"))
-        await model.waitForWrites(); await model.load()
-        let grown = item(model, id)
-        #expect(grown.w > small.w)
-
-        // Shrink: back to a short line.
-        model.updateStyle(itemID: id, style: styled(model, id, resize: .autoWidth, text: "Hi"))
-        await model.waitForWrites(); await model.load()
-        let shrunk = item(model, id)
-        #expect(shrunk.w < grown.w)
-
-        // x/y/z never moved through either transition.
-        for s in [small, grown, shrunk] {
-            #expect(s.x == 320)
-            #expect(s.y == 88)
-            #expect(s.z == small.z)
-        }
-    }
-
-    // MARK: - autoHeight shrink-back reduces h, w frozen
-
-    @Test("autoHeight grows then shrinks height while width stays the create-time width")
-    func autoHeightShrinkBackReducesHeight() async throws {
+    @Test("the height shrinks back when the text gets shorter, width still frozen")
+    func shrinkBackReducesHeight() async throws {
         let model = try await makeModel()
         let id = await seedText(model, CGRect(x: 0, y: 0, width: 160, height: 24))
 
         let long = "The quick brown fox jumps over the lazy dog again and again and again"
-        model.updateStyle(itemID: id, style: styled(model, id, resize: .autoHeight, text: long))
+        model.updateStyle(itemID: id, style: styled(model, id, text: long))
         await model.waitForWrites(); await model.load()
         let tall = item(model, id)
-        #expect(tall.w == 160)     // width frozen at the create-time box
-        #expect(tall.h > 24)       // wrapped to several lines
+        #expect(tall.w == 160)
+        #expect(tall.h > 24)
 
-        model.updateStyle(itemID: id, style: styled(model, id, resize: .autoHeight, text: "one"))
+        model.updateStyle(itemID: id, style: styled(model, id, text: "one"))
         await model.waitForWrites(); await model.load()
-        let shortH = item(model, id)
-        #expect(shortH.w == 160)   // still frozen
-        #expect(shortH.h < tall.h) // shrink-back reduces height
+        let short = item(model, id)
+        #expect(short.w == 160)     // still the user's width
+        #expect(short.h < tall.h)   // shrink-back reduces height
     }
 
-    // MARK: - exactly one undo step; ⌘Z reverts BOTH text and size
+    @Test("the top-left anchor is invariant across grow AND shrink")
+    func anchorInvariantGrowAndShrink() async throws {
+        let model = try await makeModel()
+        let id = await seedText(model, CGRect(x: 320, y: 88, width: 120, height: 24))
+
+        for text in ["Short", "A considerably longer line of text that must wrap", "Hi"] {
+            model.updateStyle(itemID: id, style: styled(model, id, text: text))
+            await model.waitForWrites(); await model.load()
+            let now = item(model, id)
+            #expect(now.x == 320)
+            #expect(now.y == 88)
+            #expect(now.w == 120)
+        }
+    }
+
+    // MARK: - The box always fits its text (truncation is unreachable)
+
+    @Test("after any edit the box is exactly as tall as its wrapped text")
+    func boxAlwaysFitsItsText() async throws {
+        let model = try await makeModel()
+        let id = await seedText(model, CGRect(x: 0, y: 0, width: 200, height: 24))
+
+        for text in ["one", "a much longer run of words that has to wrap onto several lines", "x"] {
+            model.updateStyle(itemID: id, style: styled(model, id, text: text))
+            await model.waitForWrites(); await model.load()
+            let now = item(model, id)
+            #expect(abs(now.h - fittedHeight(model, id, width: now.w)) < 0.001)
+        }
+    }
+
+    @Test("a created box is born fitting its text, not at the dragged height")
+    func createdBoxIsFitted() async throws {
+        let model = try await makeModel()
+        // Drag out a tall box: the WIDTH is the user's, the height is not.
+        let id = await seedText(model, CGRect(x: 12, y: 34, width: 240, height: 400))
+        let now = item(model, id)
+        #expect(now.w == 240)   // dragged width kept
+        #expect(now.x == 12 && now.y == 34)
+        #expect(now.h < 400)    // the default string does not need 400pt
+        #expect(abs(now.h - fittedHeight(model, id, width: 240)) < 0.001)
+    }
+
+    // MARK: - Resize-handle drag (062)
+
+    @Test("a resize sets the width and re-derives the height, as ONE undo step")
+    func resizeSetsWidthAndDerivesHeight() async throws {
+        let model = try await makeModel()
+        let id = await seedText(model, CGRect(x: 0, y: 0, width: 400, height: 24))
+        model.updateStyle(itemID: id, style: styled(
+            model, id, text: "A run of text long enough to wrap once the box narrows"))
+        await model.waitForWrites(); await model.load()
+        let wide = item(model, id)
+
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+        // Drag the right handle left: the height the drag reports is ignored.
+        model.resizeTile(
+            tileID: tid, to: CGRect(x: 0, y: 0, width: 140, height: 9_999), in: content)
+        await model.waitForWrites(); await model.load()
+
+        let narrow = item(model, id)
+        #expect(narrow.w == 140)                  // the dragged width is authoritative
+        #expect(narrow.h != 9_999)                // the dragged height is NOT
+        #expect(narrow.h > wide.h)                // narrower ⇒ more wrapping ⇒ taller
+        #expect(abs(narrow.h - fittedHeight(model, id, width: 140)) < 0.001)
+        #expect(model.undoActionName == "Resize")
+
+        // ONE undo restores BOTH the width and the derived height.
+        model.undo()
+        await model.waitForWrites(); await model.load()
+        let back = item(model, id)
+        #expect(back.w == wide.w)
+        #expect(back.h == wide.h)
+    }
+
+    @Test("a left-handle resize moves the origin as well as the width")
+    func resizeFromLeftMovesOrigin() async throws {
+        let model = try await makeModel()
+        let id = await seedText(model, CGRect(x: 100, y: 50, width: 200, height: 24))
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+
+        // Dragging the LEFT edge right keeps maxX pinned: origin moves, width shrinks.
+        model.resizeTile(
+            tileID: tid, to: CGRect(x: 160, y: 50, width: 140, height: 24), in: content)
+        await model.waitForWrites(); await model.load()
+
+        let now = item(model, id)
+        #expect(now.x == 160)
+        #expect(now.w == 140)
+        #expect(now.x + now.w == 300)   // the far edge stayed put
+        #expect(now.y == 50)
+    }
+
+    @Test("a resize updates the live tile in place and never rebuilds the host")
+    func resizeUpdatesLiveTileWithoutRebuild() async throws {
+        let model = try await makeModel()
+        let id = await seedText(model, CGRect(x: 0, y: 0, width: 300, height: 24))
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+        let rev = model.renderRevision
+        let ver = model.contentVersion
+
+        model.resizeTile(
+            tileID: tid, to: CGRect(x: 0, y: 0, width: 180, height: 24), in: content)
+        await model.waitForWrites()
+
+        #expect(content.tiles[tid].w == 180)      // live content updated immediately
+        #expect(model.renderRevision == rev + 1)  // re-sync in place...
+        #expect(model.contentVersion == ver)      // ...never an `.id`-bound rebuild
+    }
+
+    @Test("a resize to the same box writes nothing")
+    func noOpResizeWritesNothing() async throws {
+        let model = try await makeModel()
+        let id = await seedText(model, CGRect(x: 7, y: 8, width: 220, height: 24))
+        await model.load()
+        let before = item(model, id)
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+        let name = model.undoActionName
+
+        model.resizeTile(
+            tileID: tid,
+            to: CGRect(x: before.x, y: before.y, width: before.w, height: before.h),
+            in: content)
+        await model.waitForWrites()
+
+        #expect(model.undoActionName == name) // no new undo step registered
+    }
+
+    // MARK: - Exactly one undo step; ⌘Z reverts BOTH text and size
 
     @Test("a restyle + auto-size is ONE undo step that reverts both text and size")
     func oneUndoStepRevertsTextAndSize() async throws {
         let model = try await makeModel()
-        let id = await seedText(model, CGRect(x: 0, y: 0, width: 50, height: 24))
+        let id = await seedText(model, CGRect(x: 0, y: 0, width: 120, height: 24))
 
-        model.updateStyle(itemID: id, style: styled(model, id, resize: .autoWidth, text: "Hi"))
+        model.updateStyle(itemID: id, style: styled(model, id, text: "Hi"))
         await model.waitForWrites(); await model.load()
-        let wA = item(model, id).w
+        let hA = item(model, id).h
 
-        model.updateStyle(itemID: id, style: styled(model, id, resize: .autoWidth,
-                                                    text: "A considerably longer line of text"))
+        model.updateStyle(itemID: id, style: styled(
+            model, id, text: "A considerably longer line of text that wraps several times over"))
         await model.waitForWrites(); await model.load()
-        let wB = item(model, id).w
-        #expect(wB > wA)
+        let hB = item(model, id).h
+        #expect(hB > hA)
         #expect(model.undoActionName == "Restyle Text")
 
-        // ONE undo reverts BOTH the string and the derived width…
+        // ONE undo reverts BOTH the string and the derived height…
         model.undo()
         await model.waitForWrites(); await model.load()
         #expect(model.style(forItemID: id).text == "Hi")
-        #expect(item(model, id).w == wA)
+        #expect(item(model, id).h == hA)
         // …and the NEXT undo is the prior restyle → exactly one step per edit.
         #expect(model.undoActionName == "Restyle Text")
     }
 
-    // MARK: - fixed ↔ auto transitions
+    // MARK: - A style-only restyle re-syncs in place without a host rebuild
 
-    @Test("fixed → autoWidth re-fits the box to the text")
-    func fixedToAutoWidthRefits() async throws {
-        let model = try await makeModel()
-        // A wide fixed box holding the default short "Text".
-        let id = await seedText(model, CGRect(x: 10, y: 10, width: 300, height: 50))
-        #expect(item(model, id).w == 300)
-
-        // Switch to autoWidth WITHOUT changing the string → it re-fits to "Text".
-        var s = model.style(forItemID: id)
-        s.resizeMode = TextResize.autoWidth.rawValue
-        model.updateStyle(itemID: id, style: s)
-        await model.waitForWrites(); await model.load()
-        let now = item(model, id)
-        #expect(now.w != 300)  // re-fit to the (much narrower) text
-        #expect(now.x == 10)   // anchor frozen
-        #expect(now.y == 10)
-    }
-
-    @Test("autoWidth → fixed freezes the box; later text changes do not resize it")
-    func autoWidthToFixedFreezes() async throws {
-        let model = try await makeModel()
-        let id = await seedText(model, CGRect(x: 0, y: 0, width: 40, height: 24))
-
-        model.updateStyle(itemID: id, style: styled(model, id, resize: .autoWidth, text: "Hi"))
-        await model.waitForWrites(); await model.load()
-        let wAuto = item(model, id).w
-
-        // Switch to fixed (string unchanged) → NO geometry write, box stays.
-        var f = model.style(forItemID: id)
-        f.resizeMode = TextResize.fixed.rawValue
-        model.updateStyle(itemID: id, style: f)
-        await model.waitForWrites(); await model.load()
-        #expect(item(model, id).w == wAuto)
-
-        // A later text change while fixed must NOT resize the frozen box.
-        model.updateStyle(itemID: id, style: styled(model, id, resize: .fixed,
-                                                    text: "A very long line that would be wide"))
-        await model.waitForWrites(); await model.load()
-        #expect(item(model, id).w == wAuto) // frozen
-    }
-
-    // MARK: - .fixed restyle writes no geometry but still re-syncs in place
-
-    @Test("a .fixed restyle writes no geometry, bumps renderRevision, and never rebuilds the host")
-    func fixedRestyleNoGeometryStillReSyncs() async throws {
+    @Test("a colour-only restyle writes no geometry, bumps renderRevision, never rebuilds")
+    func colourRestyleNoGeometryStillReSyncs() async throws {
         let model = try await makeModel()
         let id = await seedText(model, CGRect(x: 5, y: 6, width: 120, height: 40))
+        await model.load()
         let rev = model.renderRevision
         let ver = model.contentVersion
         let before = item(model, id)
 
-        // A style-only change (colour) on a fixed box.
         var s = model.style(forItemID: id)
         s.textColor = "#FF0000"
         model.updateStyle(itemID: id, style: s)
         await model.waitForWrites()
 
         let now = item(model, id)
-        #expect(now.w == before.w)              // geometry untouched
+        #expect(now.w == before.w)  // geometry untouched — the string didn't change
         #expect(now.h == before.h)
         #expect(now.x == before.x && now.y == before.y && now.z == before.z)
-        // The redraw now rides `renderRevision` (in-memory re-sync) instead of a
-        // reload → host rebuild, so a style-only edit DOES bump it exactly once...
+        // The redraw rides `renderRevision` (in-memory re-sync) instead of a reload →
+        // host rebuild, so a style-only edit DOES bump it exactly once...
         #expect(model.renderRevision == rev + 1)
         // ...and must NOT bump `contentVersion` (which is `.id`-bound and would tear
         // the canvas host down, resetting pan/zoom + dropping the double-click).
         #expect(model.contentVersion == ver)
-        // The change is live in `items` immediately, with no reload.
         #expect(model.style(forItemID: id).textColor == "#FF0000")
     }
 
-    // MARK: - a restyle never rebuilds the host (the core in-place-restyle fix)
-
-    @Test("an autoWidth restyle keeps contentVersion stable (no host rebuild)")
+    @Test("a geometry-changing restyle keeps contentVersion stable (no host rebuild)")
     func restyleDoesNotBumpContentVersion() async throws {
         let model = try await makeModel()
         let id = await seedText(model, CGRect(x: 0, y: 0, width: 80, height: 30))
-
-        // Switch to autoWidth + change the string — a geometry-changing restyle.
-        var s = model.style(forItemID: id)
-        s.resizeMode = TextResize.autoWidth.rawValue
-        s.text = "A considerably longer run of text than before"
+        await model.load()
+        let hBefore = item(model, id).h
         let verBefore = model.contentVersion
-        model.updateStyle(itemID: id, style: s)
+
+        model.updateStyle(itemID: id, style: styled(
+            model, id, text: "A considerably longer run of text than before"))
         await model.waitForWrites()
 
-        // Geometry changed in memory (auto-width grew) but the host was NOT rebuilt.
-        #expect(item(model, id).w != 80)
+        // Geometry changed in memory (the box grew taller) but the host was NOT rebuilt.
+        #expect(item(model, id).h != hBefore)
         #expect(model.contentVersion == verBefore)
     }
 
-    // MARK: - a restyle after a move anchors on the LIVE position (no snap-back)
+    // MARK: - A restyle after a move anchors on the LIVE position (no snap-back)
 
     @Test("a style-only restyle after a move keeps the moved position")
     func restyleAfterMoveKeepsPosition() async throws {
@@ -265,7 +327,6 @@ struct SpaceTextResizeTests {
         model.moveTile(tileID: tid, to: CGPoint(x: 250, y: 180), in: content)
         await model.waitForWrites()
 
-        // A style-only edit must anchor on the LIVE (moved) position, not stale items.
         var s = model.style(forItemID: id)
         s.textColor = "#00FF00"
         model.updateStyle(itemID: id, style: s)
@@ -279,9 +340,7 @@ struct SpaceTextResizeTests {
         #expect(item(model, id).y == 180)
     }
 
-    // MARK: - an auto-size restyle after a move keeps the moved anchor
-
-    @Test("an autoWidth restyle after a move grows from the moved anchor")
+    @Test("an auto-size restyle after a move grows from the moved anchor")
     func autosizeAfterMoveKeepsAnchor() async throws {
         let model = try await makeModel()
         let id = await seedText(model, CGRect(x: 0, y: 0, width: 100, height: 40))
@@ -290,15 +349,12 @@ struct SpaceTextResizeTests {
         model.moveTile(tileID: tid, to: CGPoint(x: 300, y: 200), in: content)
         await model.waitForWrites()
 
-        var s = model.style(forItemID: id)
-        s.resizeMode = TextResize.autoWidth.rawValue
-        s.text = "A longer run of text so the box must grow in width"
-        model.updateStyle(itemID: id, style: s)
+        model.updateStyle(itemID: id, style: styled(
+            model, id, text: "A longer run of text so the box must grow taller"))
         await model.waitForWrites()
 
         // Top-left anchor is the MOVED position, not the origin it was created at.
         #expect(item(model, id).x == 300)
         #expect(item(model, id).y == 200)
-        #expect(content.tiles[tid].x == 300)
     }
 }
