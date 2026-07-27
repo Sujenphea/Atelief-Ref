@@ -211,3 +211,33 @@ resize is by construction the set a later drag carries — asserted directly by
 - Tests: `EngineFrameMembershipTests` (new, 6)
 
 CanvasRenderer: **279 tests in 32 suites** green. `AtelierRefsTests`: TEST SUCCEEDED.
+
+## Follow-up — moves snap too
+
+`ResizeSnapping` became `CanvasSnapping`: once moves use it, the old name is
+actively misleading. Same file, same rules, one added entry point.
+
+A **resize** snaps the dragged point. A **move** snaps the carried set's BOUNDING
+BOX, which is a richer rule — it can align on any of its three lines per axis
+(leading edge, centre, trailing edge) against any of a candidate's three, so both
+"line this up under that" and "centre it on that" fall out of the same gesture.
+
+Two decisions worth recording:
+
+- **The box snaps, not each tile.** A group whose members snapped individually
+  would drift apart a little on every drag; `groupSnapsAsAWhole` pins that the
+  carried tiles all take the same offset.
+- **Carried tiles are excluded as targets.** Otherwise a drag would snap to itself
+  and seize up — `neverSnapsToItsOwnGroup` covers it.
+
+⌘ disables it mid-drag, exactly as for a resize. Guides clear on `endDrag`, and
+because the snap is folded into `dragWorldOffset` it flows through
+`currentDragOrigins()` into the committed position for free.
+
+- `CanvasRenderer/CanvasSnapping.swift` — renamed; `snapOffset(movingBox:…)` added
+- `CanvasRenderer/Host/CanvasEngine.swift` — `updateDrag(byScreenDelta:snapping:)`,
+  `draggedBoundingBox`, `dragSnapCandidates`; guides cleared on `endDrag`
+- `CanvasRenderer/Host/CanvasHostView.swift` — passes ⌘ through on drag
+- Tests: `MoveSnappingTests` (7) + `DragSnappingTests` (6)
+
+CanvasRenderer: **292 tests in 34 suites** green. `AtelierRefsTests`: TEST SUCCEEDED.

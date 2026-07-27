@@ -237,12 +237,51 @@ public final class CanvasEngine {
     /// mapping is `screen = world * scale + translation`, uniform positive scale
     /// with no y-flip in the transform, so the sign is direct) and re-syncs so
     /// the dragged tile follows the cursor.
-    public func updateDrag(byScreenDelta screenDelta: CGSize) {
+    public func updateDrag(byScreenDelta screenDelta: CGSize, snapping: Bool = true) {
         guard dragTileID != nil else { return }
-        dragWorldOffset = CGSize(
+        var offset = CGSize(
             width: screenDelta.width / transform.scale,
             height: screenDelta.height / transform.scale)
+
+        // Snap the CARRIED SET's bounding box, not the grabbed tile: dragging a
+        // frame (or a multi-selection) should align the thing the user sees moving,
+        // and a group whose members snapped individually would tear itself apart.
+        if snapping, let box = draggedBoundingBox(offsetBy: offset) {
+            let snap = CanvasSnapping.snapOffset(
+                movingBox: box,
+                candidates: dragSnapCandidates(),
+                threshold: CanvasSnapping.worldThreshold(scale: transform.scale))
+            offset.width += snap.offset.width
+            offset.height += snap.offset.height
+            activeSnapGuides = snap.guides
+        } else {
+            activeSnapGuides = []
+        }
+
+        dragWorldOffset = offset
         sync()
+    }
+
+    /// The union of every carried tile's world frame at `offset`, or `nil` when the
+    /// drag carries nothing drawable.
+    private func draggedBoundingBox(offsetBy offset: CGSize) -> CGRect? {
+        guard let primary = dragTileID else { return nil }
+        var box: CGRect?
+        for id in [primary] + dragGroupIDs {
+            guard let tile = tile(withID: id) else { continue }
+            let frame = tile.worldFrame.offsetBy(dx: offset.width, dy: offset.height)
+            box = box.map { $0.union(frame) } ?? frame
+        }
+        return box
+    }
+
+    /// The frames a drag may snap to: visible tiles that are NOT being carried. A
+    /// carried tile moves with the box, so snapping to one would be snapping to
+    /// yourself — the drag would seize up and never move.
+    private func dragSnapCandidates() -> [CGRect] {
+        var carried = dragGroupIDs
+        if let primary = dragTileID { carried.insert(primary) }
+        return currentVisibleTiles().filter { !carried.contains($0.id) }.map(\.worldFrame)
     }
 
     /// Finalize the live drag: return the dragged tile's FINAL world origin
@@ -258,6 +297,7 @@ public final class CanvasEngine {
             dragTileID = nil
             dragGroupIDs = []
             dragWorldOffset = .zero
+            activeSnapGuides = []
             return nil
         }
         let origin = CGPoint(
@@ -266,6 +306,7 @@ public final class CanvasEngine {
         dragTileID = nil
         dragGroupIDs = []
         dragWorldOffset = .zero
+        activeSnapGuides = []
         return (id, origin)
     }
 
@@ -366,7 +407,7 @@ public final class CanvasEngine {
 
         let keepRatio = constrainRatio || locksAspect(tile)
         let candidates = snapping ? snapCandidates(excluding: id) : []
-        let threshold = ResizeSnapping.worldThreshold(scale: transform.scale)
+        let threshold = CanvasSnapping.worldThreshold(scale: transform.scale)
         var guides: [SnapGuide] = []
         var frame: CGRect
 
@@ -379,7 +420,7 @@ public final class CanvasEngine {
                 resizeOriginalFrame, handle: handle, toWorldPoint: world,
                 keepRatio: true, aspect: aspect)
             if snapping {
-                let snapped = ResizeSnapping.snapAspectFrame(
+                let snapped = CanvasSnapping.snapAspectFrame(
                     frame, handle: handle, candidates: candidates, threshold: threshold)
                 frame = snapped.frame
                 guides = snapped.guides
@@ -388,7 +429,7 @@ public final class CanvasEngine {
             // Free: snap the dragged point itself, then build the frame from it.
             var target = world
             if snapping {
-                let snapped = ResizeSnapping.snapPoint(
+                let snapped = CanvasSnapping.snapPoint(
                     world, handle: handle, candidates: candidates, threshold: threshold)
                 target = snapped.point
                 guides = snapped.guides

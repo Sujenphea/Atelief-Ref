@@ -1,5 +1,5 @@
 //
-//  ResizeSnapping.swift
+//  CanvasSnapping.swift
 //  CanvasRenderer
 //
 //  062 — snapping a resize to the boxes around it. Modelled on Nook's Easel: a
@@ -29,7 +29,7 @@ public struct SnapGuide: Equatable, Sendable {
     }
 }
 
-public enum ResizeSnapping {
+public enum CanvasSnapping {
     /// Snap radius in SCREEN points. Callers divide by the zoom to get world units.
     public static let thresholdScreen: CGFloat = 6
 
@@ -78,6 +78,57 @@ public enum ResizeSnapping {
             guides.append(SnapGuide(isVertical: false, position: hit))
         }
         return (point, guides)
+    }
+
+    /// The offset that snaps a MOVING bounding box onto nearby boxes.
+    ///
+    /// Richer than ``snapPoint(_:handle:candidates:threshold:)``, which aligns a
+    /// single dragged corner: a move can align on any of the box's three lines per
+    /// axis — leading edge, centre, trailing edge — against any of a candidate's
+    /// three. That is what makes "line this up under that" and "centre it on that"
+    /// both work from the same gesture.
+    ///
+    /// The smallest adjustment wins per axis, and the axes resolve independently, so
+    /// a tile can align its left edge to one neighbour and its centre to another.
+    /// Returns a **delta to add** to the drag's raw offset, not a position, so the
+    /// caller stays in charge of how the offset was derived.
+    public static func snapOffset(
+        movingBox: CGRect,
+        candidates: [CGRect],
+        threshold: CGFloat
+    ) -> (offset: CGSize, guides: [SnapGuide]) {
+        var guides: [SnapGuide] = []
+        var offset = CGSize.zero
+
+        if let hit = bestAlignment(
+            sources: [movingBox.minX, movingBox.midX, movingBox.maxX],
+            targets: targets(in: candidates, vertical: true), threshold: threshold) {
+            offset.width = hit.delta
+            guides.append(SnapGuide(isVertical: true, position: hit.target))
+        }
+        if let hit = bestAlignment(
+            sources: [movingBox.minY, movingBox.midY, movingBox.maxY],
+            targets: targets(in: candidates, vertical: false), threshold: threshold) {
+            offset.height = hit.delta
+            guides.append(SnapGuide(isVertical: false, position: hit.target))
+        }
+        return (offset, guides)
+    }
+
+    /// The smallest in-range adjustment across every source×target pair, with the
+    /// target it lands on (for the guide line).
+    private static func bestAlignment(
+        sources: [CGFloat], targets: [CGFloat], threshold: CGFloat
+    ) -> (delta: CGFloat, target: CGFloat)? {
+        var best: (delta: CGFloat, target: CGFloat)?
+        for source in sources {
+            for target in targets {
+                let delta = target - source
+                guard abs(delta) <= threshold else { continue }
+                if best == nil || abs(delta) < abs(best!.delta) { best = (delta, target) }
+            }
+        }
+        return best
     }
 
     /// Snap an ASPECT-LOCKED resize. The point can't simply be moved — that would

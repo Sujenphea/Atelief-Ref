@@ -150,3 +150,99 @@ struct DragTests {
         #expect(CanvasHostView.exceedsDragThreshold(CGSize(width: -5, height: 0)))
     }
 }
+
+// MARK: - Move snapping (062)
+
+@MainActor
+@Suite("Drag snapping (062)")
+struct DragSnappingTests {
+
+    private struct Provider: TileProvider {
+        let tiles: [Tile]
+        let groups: [Int: [Int]]
+        func groupMembers(forDraggedTileID id: Int) -> [Int] { groups[id] ?? [] }
+    }
+
+    private struct NoImages: TileImageSource {
+        func imageKey(for tile: Tile) -> Int { tile.id }
+        func imageData(for tile: Tile, tier: LODTier) -> Data? { nil }
+    }
+
+    /// Tile 0 at x ∈ [0, 100]; a stationary neighbour (tile 1) at x ∈ [200, 300].
+    /// Tile 2 rides along with tile 0 when it is dragged.
+    private func engine(groups: [Int: [Int]] = [:]) -> CanvasEngine {
+        let tiles = [
+            Tile(id: 0, x: 0, y: 0, w: 100, h: 100, z: 0),
+            Tile(id: 1, x: 200, y: 0, w: 100, h: 100, z: 0),
+            Tile(id: 2, x: 0, y: 400, w: 100, h: 100, z: 0),
+        ]
+        let e = CanvasEngine(
+            provider: Provider(tiles: tiles, groups: groups), images: NoImages(),
+            transform: CanvasTransform(scale: 1, translation: .zero),
+            viewportSize: CGSize(width: 4_000, height: 4_000))
+        e.sync()
+        return e
+    }
+
+    @Test("a dragged tile's edge snaps to a neighbour and raises a guide")
+    func dragSnapsToNeighbour() {
+        let e = engine()
+        e.beginDrag(tileID: 0)
+        // Move 197 right: tile 0's maxX lands at 297, three short of the neighbour's
+        // maxX (300). The snap closes the gap.
+        e.updateDrag(byScreenDelta: CGSize(width: 197, height: 0))
+        #expect(e.currentDragOrigins().first?.worldOrigin.x == 200)
+        #expect(!e.snapGuides.isEmpty)
+    }
+
+    @Test("⌘ (snapping off) lands exactly where the cursor says")
+    func commandDisablesDragSnapping() {
+        let e = engine()
+        e.beginDrag(tileID: 0)
+        e.updateDrag(byScreenDelta: CGSize(width: 197, height: 0), snapping: false)
+        #expect(e.currentDragOrigins().first?.worldOrigin.x == 197)
+        #expect(e.snapGuides.isEmpty)
+    }
+
+    @Test("a tile far from anything is never nudged")
+    func farDragIsUntouched() {
+        let e = engine()
+        e.beginDrag(tileID: 0)
+        e.updateDrag(byScreenDelta: CGSize(width: 900, height: 900))
+        #expect(e.currentDragOrigins().first?.worldOrigin.x == 900)
+        #expect(e.snapGuides.isEmpty)
+    }
+
+    @Test("a group snaps as ONE bounding box, so it can't tear itself apart")
+    func groupSnapsAsAWhole() {
+        // Tile 2 rides with tile 0. Both must take the SAME offset — if members
+        // snapped individually their relative positions would drift every drag.
+        let e = engine(groups: [0: [2]])
+        e.beginDrag(tileID: 0, alsoCarry: [2])
+        e.updateDrag(byScreenDelta: CGSize(width: 197, height: 0))
+
+        let origins = Dictionary(
+            uniqueKeysWithValues: e.currentDragOrigins().map { ($0.tileID, $0.worldOrigin) })
+        #expect(origins[0]?.x == origins[2]?.x)   // same offset, relative layout intact
+    }
+
+    @Test("a drag never snaps to a tile it is carrying")
+    func neverSnapsToItsOwnGroup() {
+        // With tile 1 carried too, nothing stationary is left in range, so the drag
+        // must be obeyed exactly — a carried tile moves with you and can't be a target.
+        let e = engine(groups: [0: [1]])
+        e.beginDrag(tileID: 0, alsoCarry: [1])
+        e.updateDrag(byScreenDelta: CGSize(width: 197, height: 0))
+        #expect(e.currentDragOrigins().first?.worldOrigin.x == 197)
+    }
+
+    @Test("guides clear when the drag ends")
+    func guidesClearOnEndDrag() {
+        let e = engine()
+        e.beginDrag(tileID: 0)
+        e.updateDrag(byScreenDelta: CGSize(width: 197, height: 0))
+        #expect(!e.snapGuides.isEmpty)
+        _ = e.endDrag()
+        #expect(e.snapGuides.isEmpty)
+    }
+}

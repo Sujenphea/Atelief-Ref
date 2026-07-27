@@ -141,8 +141,17 @@ keep their own positions.
 **⇧ locks any tile's ratio; ⌘ turns snapping off** — the same "put it exactly where
 I say" escape the move gesture offers.
 
-**Snapping** pulls a dragged edge onto a nearby box's edge or centre. Two rules
-carry the design:
+**Snapping** applies to both gestures — `ResizeSnapping` was renamed
+`CanvasSnapping` once moves started using it, since the name would otherwise be
+actively misleading. A **resize** snaps the dragged point; a **move** snaps the
+carried set's BOUNDING BOX, which can align on any of its three lines per axis
+(leading edge, centre, trailing edge) against any of a candidate's three — that is
+what makes both "line this up under that" and "centre it on that" fall out of one
+gesture. Snapping the box rather than each tile is what keeps a group from tearing
+itself apart, and carried tiles are excluded as targets or the drag would seize up
+snapping to itself.
+
+Two rules carry the design:
 
 - The threshold is **6 SCREEN points**, divided by the zoom. A fixed world radius
   would be unusably sticky zoomed out and imperceptible zoomed in.
@@ -207,3 +216,5 @@ resize is by construction the set a later drag carries.
   box on move as well; `ResizeSnapping.snapPoint` is reusable for it.
 - **Moves have no membership preview.** Only resizes do. Dragging a tile into a
   frame changes membership just as silently.
+- **No spacing/distribution snapping.** Only edge and centre alignment; equal-gap
+  snapping between three or more tiles is a bigger feature.

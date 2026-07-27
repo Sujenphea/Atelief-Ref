@@ -532,7 +532,9 @@ public final class CanvasHostView: NSView {
             }
             engine.beginDrag(tileID: tileID, alsoCarry: carry)
         }
-        engine.updateDrag(byScreenDelta: delta)
+        // ⌘ turns snapping off mid-drag, exactly as it does for a resize.
+        engine.updateDrag(
+            byScreenDelta: delta, snapping: !event.modifierFlags.contains(.command))
     }
 
     /// Finalize a drag: hand the final origin to the host (which updates the
