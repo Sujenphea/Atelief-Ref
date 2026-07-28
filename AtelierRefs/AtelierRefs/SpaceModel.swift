@@ -659,8 +659,12 @@ final class SpaceModel: ObservableObject {
     /// never born taller or shorter than its content — the same invariant every
     /// later edit maintains. A click-placed box arrives at a default width from the
     /// host, so this is the only place the created height is decided.
-    func addText(worldRect: CGRect) {
-        let style = ElementRendering.defaultTextStyle()
+    /// `string` overrides the placeholder — a text box pasted from the clipboard (065)
+    /// arrives with its content already set, so its height is derived from the REAL
+    /// text rather than from "Text" and then re-derived a moment later.
+    func addText(worldRect: CGRect, string: String? = nil) {
+        var style = ElementRendering.defaultTextStyle()
+        if let string { style.text = string }
         let ts = ElementRendering.textStyle(for: style)
         let measured = TextMetrics.size(
             for: ts, maxWidth: max(1, worldRect.width - 2 * TextMetrics.padding))
@@ -669,6 +673,26 @@ final class SpaceModel: ObservableObject {
             height: measured.height + 2 * TextMetrics.padding)
         addElement(kind: .text, style: style, rect: rect, behind: false)
     }
+
+    /// Paste plain text from another app as a text box centred on `worldPoint` (065).
+    ///
+    /// The LAST resort in the paste chain, deliberately: a pasteboard carrying a URL
+    /// also carries that URL as a string, so running this before the importer would
+    /// turn every pasted link into a text box instead of a reference.
+    func pasteText(_ string: String, at worldPoint: CGPoint) {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        addText(
+            worldRect: CGRect(
+                x: worldPoint.x - Self.pastedTextWidth / 2, y: worldPoint.y,
+                width: Self.pastedTextWidth, height: 0),
+            string: trimmed)
+    }
+
+    /// How wide a text box pasted from plain text starts. A fixed, readable column:
+    /// the height is then derived from the text wrapped to it (062), so a long paste
+    /// grows downward rather than off the side of the board.
+    static let pastedTextWidth: CGFloat = 320
 
     private func addElement(kind: SpaceItemKind, style: ElementStyle, rect: CGRect, behind: Bool) {
         let z = behind
@@ -689,6 +713,107 @@ final class SpaceModel: ObservableObject {
                 self.lastError = Self.message(for: error)
             }
         }
+    }
+
+    // MARK: - Duplicate (065)
+
+    /// The rows a duplicate would create — pure, so the identity and stacking rules
+    /// are tested without a database.
+    ///
+    /// Three rules, and each one is a bug if it is missed:
+    ///
+    /// - **Fresh `id`, everything else carried.** `kind`, `assetID`, `style` and size
+    ///   all copy across, which is what makes ONE function serve a text box, a frame
+    ///   and an asset placement. Duplicating an asset row makes a second *placement* of
+    ///   the same asset, never a second asset — the board owns placements (059 · SP7).
+    /// - **Relative order preserved.** Sources are taken in `z` order and re-stacked
+    ///   from the top, so duplicating a stack keeps the stack.
+    /// - **`spaceID` carried, not re-read.** A copy belongs to the board its source is
+    ///   on; pasting into a *different* board rewrites it at the call site.
+    static func duplicatedRows(
+        of sources: [SpaceItem], offset: CGSize, startZ: Int, makeID: () -> UUID = UUID.init
+    ) -> [SpaceItem] {
+        sources
+            .sorted { $0.z < $1.z }
+            .enumerated()
+            .map { index, source in
+                var copy = source
+                copy.id = makeID()
+                copy.x += Double(offset.width)
+                copy.y += Double(offset.height)
+                copy.z = startZ + index
+                return copy
+            }
+    }
+
+    /// Duplicate rows by id, offset by `offset`, selecting the copies. One undo entry.
+    ///
+    /// Shared by ⌘D, an ⌥-drag drop and a paste of copied elements, so all three can
+    /// never disagree about what a copy is. Routes through ``performBatch`` — the same
+    /// primitive create/delete undo uses — because a duplicate IS a create, and giving
+    /// it its own write path is how the two drift.
+    func duplicate(itemIDs: Set<UUID>, offset: CGSize) {
+        let sources = items.filter { itemIDs.contains($0.item.id) }.map(\.item)
+        guard !sources.isEmpty else { return }
+        insertRows(
+            Self.duplicatedRows(of: sources, offset: offset, startZ: nextZ),
+            name: sources.count == 1 ? "Duplicate" : "Duplicate Items")
+    }
+
+    /// The z a newly created row should take to sit on top of everything.
+    private var nextZ: Int { (items.map(\.item.z).max() ?? -1) + 1 }
+
+    /// Create `rows` as one undoable step and select them.
+    ///
+    /// The shared tail of ⌘D, an ⌥-drag drop and a paste. It routes through
+    /// ``performBatch`` — the primitive create/delete undo already uses — because all
+    /// three ARE creates, and giving any of them its own write path is how they drift.
+    private func insertRows(_ rows: [SpaceItem], name: String) {
+        guard !rows.isEmpty else { return }
+        enqueue {
+            await self.performBatch(rows, restore: true)
+            // After the write, so the selection survives `load()`'s pruning of ids that
+            // do not exist yet at the time it runs.
+            self.selectedItemIDs = Set(rows.map(\.id))
+            self.registerReversible(name,
+                primary: { self.enqueue { await self.performBatch(rows, restore: true) } },
+                inverse: { self.enqueue { await self.performBatch(rows, restore: false) } })
+        }
+    }
+
+    /// Paste a copied piece of a board (065), CENTRED on `worldPoint` — a paste has no
+    /// cursor position, so it lands on what the user is looking at rather than hanging
+    /// off to the bottom-right of it.
+    ///
+    /// The payload's `spaceID` is this board's, not the one it was copied from, so a
+    /// copy pastes into any board. An asset row pastes as another *placement* of the
+    /// same asset; if that asset isn't in this library the write fails and surfaces on
+    /// `lastError` rather than half-pasting.
+    func pasteElements(_ payload: SpaceElementPayload, at worldPoint: CGPoint) {
+        let size = payload.size
+        let origin = CGPoint(
+            x: worldPoint.x - size.width / 2, y: worldPoint.y - size.height / 2)
+        insertRows(
+            payload.rows(forSpaceID: spaceID, at: origin, startZ: nextZ),
+            name: payload.rows.count == 1 ? "Paste" : "Paste Items")
+    }
+
+    /// Duplicate the current selection — ⌘D. Offset so the copy is visibly a copy
+    /// rather than perfectly hidden behind its source.
+    func duplicateSelection() {
+        duplicate(itemIDs: selectedItemIDs, offset: Self.duplicateOffset)
+    }
+
+    /// Where a ⌘D copy lands relative to its source. Down-right, matching Figma and
+    /// Finder, so the copy reads as "on top of and after" the original.
+    static let duplicateOffset = CGSize(width: 10, height: 10)
+
+    /// Duplicate the tiles an ⌥-drag carried, landing them at the drag's world offset
+    /// (065). The originals stay where they were.
+    func duplicateTiles(tileIDs: Set<Int>, offset: CGSize, in content: SpaceContent) {
+        duplicate(
+            itemIDs: Set(tileIDs.compactMap { content.spaceItemID(forTileID: $0) }),
+            offset: offset)
     }
 
     /// The current `ElementStyle` for an element row (empty style if unset / not

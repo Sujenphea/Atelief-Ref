@@ -39,6 +39,7 @@ public struct CanvasView: NSViewRepresentable {
     private let onDeleteTiles: ((Set<Int>) -> Void)?
     private let onCopyTiles: ((Set<Int>) -> Void)?
     private let onMoveTile: ((Int, CGPoint) -> Void)?
+    private let onDuplicateTiles: ((Set<Int>, CGSize) -> Void)?
     private let onCreateElement: ((CanvasTool, CGRect) -> Void)?
     private let onResizeTile: ((Int, CGRect) -> Void)?
     /// Fired once per transform mutation (2B · 054 §5.1 · R2) so the inline editor
@@ -82,6 +83,7 @@ public struct CanvasView: NSViewRepresentable {
         onDeleteTiles: ((Set<Int>) -> Void)? = nil,
         onCopyTiles: ((Set<Int>) -> Void)? = nil,
         onMoveTile: ((Int, CGPoint) -> Void)? = nil,
+        onDuplicateTiles: ((Set<Int>, CGSize) -> Void)? = nil,
         onCreateElement: ((CanvasTool, CGRect) -> Void)? = nil,
         onResizeTile: ((Int, CGRect) -> Void)? = nil,
         onTransformChanged: (() -> Void)? = nil,
@@ -109,6 +111,7 @@ public struct CanvasView: NSViewRepresentable {
         self.onDeleteTiles = onDeleteTiles
         self.onCopyTiles = onCopyTiles
         self.onMoveTile = onMoveTile
+        self.onDuplicateTiles = onDuplicateTiles
         self.onCreateElement = onCreateElement
         self.onResizeTile = onResizeTile
         self.onTransformChanged = onTransformChanged
@@ -148,6 +151,7 @@ public struct CanvasView: NSViewRepresentable {
         view.onDeleteTiles = onDeleteTiles
         view.onCopyTiles = onCopyTiles
         view.onMoveTile = onMoveTile
+        view.onDuplicateTiles = onDuplicateTiles
         view.onCreateElement = onCreateElement
         view.onResizeTile = onResizeTile
         view.onTransformChanged = onTransformChanged

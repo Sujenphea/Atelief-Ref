@@ -241,19 +241,41 @@ struct SpaceView: View {
                     space.removeTiles(tileIDs: tileIDs, in: content)
                 },
                 onCopyTiles: { tileIDs in
-                    // ⌘C copies the selected asset tiles (052 · B1), z-ordered for a
-                    // deterministic multi-copy; element rows (frame/text, no asset)
-                    // are skipped. Routes through the ONE shared write path.
-                    let assets = tileIDs
+                    // ⌘C writes TWO representations of the same selection (065), so the
+                    // destination decides what a copy meant rather than the source:
+                    //
+                    //  - the asset one (052 · B1) — z-ordered, elements skipped — which
+                    //    is what a collection or another app can use;
+                    //  - the board one, which keeps every row INCLUDING frames and text
+                    //    boxes, with their relative layout, for pasting onto a board.
+                    //
+                    // Before this, ⌘C on a text box put nothing on the pasteboard at
+                    // all, because the asset representation is the only one there was.
+                    let details = tileIDs
                         .compactMap { content.detail(forTileID: $0) }
                         .sorted { $0.item.z < $1.item.z }
-                        .compactMap { detail in
-                            detail.asset.map { (asset: $0, source: detail.source) }
-                        }
-                    model.copyToPasteboard(assets: assets)
+                    let assets = details.compactMap { detail in
+                        detail.asset.map { (asset: $0, source: detail.source) }
+                    }
+                    // Order is load-bearing: `copyToPasteboard` CLEARS the pasteboard
+                    // before writing, so the board representation has to go on after
+                    // it. And a selection of only text boxes skips it entirely — it
+                    // would clear, write nothing, and report "0 copied" at the user for
+                    // a copy that in fact succeeded.
+                    if assets.isEmpty {
+                        NSPasteboard.general.clearContents()
+                    } else {
+                        model.copyToPasteboard(assets: assets)
+                    }
+                    copyElementsToPasteboard(details.map(\.item))
                 },
                 onMoveTile: { tileID, worldOrigin in
                     space.moveTile(tileID: tileID, to: worldOrigin, in: content)
+                },
+                // ⌥-drag on tiles with nothing to drag OUT (i.e. frames and text) —
+                // asset tiles keep ⌥ for the board→collection drag-out (059 · SP7).
+                onDuplicateTiles: { tileIDs, worldOffset in
+                    space.duplicateTiles(tileIDs: tileIDs, offset: worldOffset, in: content)
                 },
                 onCreateElement: { createdTool, worldRect in
                     switch createdTool {
@@ -339,7 +361,7 @@ struct SpaceView: View {
                 // viewport centre through the SAME import path as a drop. A paste
                 // with nothing importable is a silent no-op.
                 onPaste: { pasteboard, worldPoint in
-                    importExternal(from: pasteboard, at: worldPoint)
+                    pasteOntoBoard(from: pasteboard, at: worldPoint)
                 },
                 // SP7: ⌥-drag a tile out to a sidebar space / collection row (adds a
                 // copy there). Maps the carried tiles → an asset-drag payload; nil
@@ -522,6 +544,7 @@ struct SpaceView: View {
     /// `.single`: Edit (elements only) + z-order for the lone selection.
     @ViewBuilder private var singleBar: some View {
         editButton
+        duplicateButton
         zOrderBar
     }
 
@@ -535,7 +558,26 @@ struct SpaceView: View {
                 .disabled(!enabled)
                 .opacity(enabled ? 1 : 0.35)
         }
+        duplicateButton
         zOrderBar
+    }
+
+    /// Duplicate the selection (⌘D, 065) — in both `.single` and `.multi`, because a
+    /// duplicate means the same thing at any selection size.
+    ///
+    /// The shortcut is WITHDRAWN while a text box is being edited, the same bargain
+    /// ⌘Z strikes in ``undoRedoBar``: a key equivalent is dispatched before `keyDown`
+    /// reaches the first responder, so a live binding here would fire while the user is
+    /// typing — and ⌘D in a text field means nothing, so the keystroke would simply
+    /// vanish into a duplicated box. Withdrawing the binding rather than unmounting the
+    /// button keeps the bar from reflowing mid-edit.
+    @ViewBuilder private var duplicateButton: some View {
+        SelectionBarButton(
+            "plus.square.on.square",
+            help: "Duplicate the selection (⌘D)"
+        ) { space.duplicateSelection() }
+            .keyboardShortcut(
+                editingTileID != nil ? nil : KeyboardShortcut("d", modifiers: .command))
     }
 
     /// Z-order for the whole selection (034 P2 · 049 D7 — relative order preserved),
@@ -576,6 +618,41 @@ struct SpaceView: View {
     /// `worldPoint` through the shared import-and-place seam (059 · SP3 / SP4).
     /// Returns whether it was handled (`false` = nothing importable). ONE method so
     /// drop + paste can never diverge on how a pasteboard becomes board content.
+    /// Write the copied rows' board representation to the general pasteboard (065).
+    ///
+    /// Appends — the caller has already cleared. An empty selection writes nothing
+    /// rather than an empty payload, so a later paste falls through to the branches
+    /// below instead of matching a copy that carried nothing.
+    private func copyElementsToPasteboard(_ rows: [SpaceItem]) {
+        guard !rows.isEmpty,
+              let data = try? SpaceElementPayload(items: rows).pasteboardData() else { return }
+        NSPasteboard.general.setData(data, forType: SpaceElementPayload.pasteboardType)
+    }
+
+    /// ⌘V onto the board, in strict priority order (065). The ORDER is the design:
+    ///
+    /// 1. **A copied piece of a board** — rebuilt with its layout intact. First,
+    ///    because our own representation is the most specific thing on the pasteboard
+    ///    and the other branches would happily consume a weaker one instead (a copied
+    ///    text box also puts its string on the pasteboard as plain text).
+    /// 2. **Importable external content** — files, images, URLs — unchanged, so a
+    ///    pasted link still becomes a reference.
+    /// 3. **Plain text** — a text box. LAST, and that is what keeps it from stealing
+    ///    every pasted URL, since a URL is also a string.
+    private func pasteOntoBoard(from pasteboard: NSPasteboard, at worldPoint: CGPoint) -> Bool {
+        if let payload = SpaceElementPayload.decode(from: pasteboard) {
+            space.pasteElements(payload, at: worldPoint)
+            return true
+        }
+        if importExternal(from: pasteboard, at: worldPoint) { return true }
+        if let string = pasteboard.string(forType: .string),
+           !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            space.pasteText(string, at: worldPoint)
+            return true
+        }
+        return false
+    }
+
     private func importExternal(from pasteboard: NSPasteboard, at worldPoint: CGPoint) -> Bool {
         let folder = model.unsortedFolderID
         let inputs = DirectInputReader.inputs(from: pasteboard, into: folder, now: Date())

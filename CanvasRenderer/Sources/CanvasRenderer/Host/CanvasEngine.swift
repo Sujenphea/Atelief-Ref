@@ -400,6 +400,17 @@ public final class CanvasEngine {
         }
     }
 
+    /// How far the current drag has carried its tiles, in WORLD units, or `nil` when
+    /// nothing is being dragged.
+    ///
+    /// The offset rather than the origins is what an ⌥-duplicate needs (065): the
+    /// copies are new rows that do not exist yet, so there is no tile id to report an
+    /// origin for — only "this far from wherever your source was". Non-mutating, and
+    /// read before ``endDrag()`` clears it, exactly like ``currentDragOrigins()``.
+    public func currentDragWorldOffset() -> CGSize? {
+        dragTileID == nil ? nil : dragWorldOffset
+    }
+
     /// The world frame a tile is drawn at this frame — its stored frame, replaced by
     /// the live-resize frame while it is being resized, else offset by the live-drag
     /// delta when it's the dragged tile or one of its group. Resize wins because the
