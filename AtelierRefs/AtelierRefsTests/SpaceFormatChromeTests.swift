@@ -101,6 +101,20 @@ struct SpaceFormatChromeTests {
         }
     }
 
+    @Test("a box on a fractional pixel still lands both panels on whole points")
+    func panelsLandOnWholePoints() {
+        // The box's on-screen frame is fractional at most zoom levels. A panel on a
+        // half point spreads its hairline border — and the rings around its 16pt
+        // swatches — over two rows of pixels, which reads as a blurred, faintly
+        // off-centre dot rather than as a rounding error.
+        let box = CGRect(x: 400.37, y: 300.62, width: 301.4, height: 119.75)
+        let (palette, bubble) = panels(for: box)
+        for origin in [palette.origin, bubble.origin] {
+            #expect(origin.x == origin.x.rounded())
+            #expect(origin.y == origin.y.rounded())
+        }
+    }
+
     // MARK: - The two panels meeting
 
     @Test("when the palette flips down, the bubble steps below it")

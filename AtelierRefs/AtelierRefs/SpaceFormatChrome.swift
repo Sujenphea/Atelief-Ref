@@ -118,6 +118,21 @@ enum SpaceTextChromeLayout {
         return max(26, ceil(measured) + 16)
     }
 
+    /// The "Aa" popover's width, MEASURED rather than guessed.
+    ///
+    /// Its widest control is the four-way weight picker, and a segmented control does
+    /// not grow to fit — it compresses and clips, so "Semibold" becomes "Semib…" at a
+    /// width that looked fine for "Bold". Deriving it from the labels means it still
+    /// fits if a weight is renamed or the system font size changes.
+    static var fontPopoverWidth: CGFloat {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let widest = TextWeight.allCases
+            .map { ($0.rawValue.capitalized as NSString).size(withAttributes: [.font: font]).width }
+            .max() ?? 0
+        let segment = ceil(widest) + 20 // the control's own per-segment padding
+        return max(260, segment * CGFloat(TextWeight.allCases.count) + 2 * Theme.Spacing.lg)
+    }
+
     /// The bubble's size for a given point-size label.
     static func bubbleSize(sizeLabel: String) -> CGSize {
         CGSize(
@@ -126,16 +141,21 @@ enum SpaceTextChromeLayout {
     }
 
     /// Keep a panel of `width` horizontally on-screen, centred on the box.
+    ///
+    /// Rounded to whole points. The box's on-screen frame is fractional at most zoom
+    /// levels, and a panel landing on a half point puts its hairline border — and the
+    /// rings around its 16pt swatches — across two rows of pixels, which reads as a
+    /// blurred, very slightly off-centre dot.
     private static func clampedX(anchor: CGRect, width: CGFloat, bounds: CGSize) -> CGFloat {
         let centred = anchor.midX - width / 2
-        return max(margin, min(centred, bounds.width - width - margin))
+        return max(margin, min(centred, bounds.width - width - margin)).rounded()
     }
 
     /// The palette floats ABOVE the box, and flips below when there is no room.
     static func paletteOrigin(anchor: CGRect, size: CGSize, bounds: CGSize) -> CGPoint {
         var y = anchor.minY - size.height - gap
         if y < margin { y = anchor.maxY + gap }
-        return CGPoint(x: clampedX(anchor: anchor, width: size.width, bounds: bounds), y: y)
+        return CGPoint(x: clampedX(anchor: anchor, width: size.width, bounds: bounds), y: y.rounded())
     }
 
     /// The bubble floats BELOW the box, flips above when there is no room, and in
@@ -151,11 +171,11 @@ enum SpaceTextChromeLayout {
             y = anchor.minY - size.height - gap
             if let palette, palette.maxY <= anchor.minY { y = min(y, palette.minY - size.height - gap) }
         }
-        return CGPoint(x: clampedX(anchor: anchor, width: size.width, bounds: bounds), y: y)
+        return CGPoint(x: clampedX(anchor: anchor, width: size.width, bounds: bounds), y: y.rounded())
     }
 
     /// The preset point sizes the bubble's size popover offers (Nook's list).
-    static let sizePresets: [CGFloat] = [10, 12, 14, 18, 24, 36, 48, 64, 72, 96, 144]
+    static let sizePresets: [CGFloat] = [10, 12, 14, 16, 18, 24, 36, 48, 64, 72, 96, 144]
 
     /// The label the bubble shows for a style's point size.
     static func sizeLabel(for style: ElementStyle) -> String {
@@ -313,21 +333,34 @@ private struct SwatchDot: View {
 
     @State private var hovering = false
 
+    /// The hover ring's diameter: the dot plus 2.5pt of clearance on each side. Kept
+    /// under the swatch gap (6) so two neighbours' rings never touch.
+    private static let hoverRingSize = SpaceTextChromeLayout.swatchSize + 5
+
     var body: some View {
         Button(action: action) {
-            Circle()
-                .fill(swatch.color)
-                .frame(width: SpaceTextChromeLayout.swatchSize,
-                       height: SpaceTextChromeLayout.swatchSize)
-                .overlay(
-                    Circle().strokeBorder(
-                        isCurrent ? Theme.Colors.inkPrimary : Theme.Colors.hairlineStrong,
-                        lineWidth: isCurrent ? 2 : 1))
-                .overlay(
-                    Circle()
-                        .strokeBorder(Theme.Colors.inkPrimary.opacity(hovering ? 0.5 : 0), lineWidth: 1.5)
-                        .padding(-2.5))
-                .contentShape(Circle())
+            ZStack {
+                Circle().fill(swatch.color)
+                Circle().strokeBorder(
+                    isCurrent ? Theme.Colors.inkPrimary : Theme.Colors.hairlineStrong,
+                    lineWidth: isCurrent ? 2 : 1)
+            }
+            .frame(width: SpaceTextChromeLayout.swatchSize,
+                   height: SpaceTextChromeLayout.swatchSize)
+            // The ring is CENTRED on the dot by an explicit frame rather than grown
+            // out of it by a negative padding — an overlay is centred on its base, so
+            // concentric is a layout guarantee here rather than the outcome of
+            // insetting a frame by equal amounts. It overflows the dot's 16pt slot on
+            // purpose: the panel's own 8pt padding leaves room, and the dot's LAYOUT
+            // size stays 16, so the strip is still exactly the width
+            // `SpaceTextChromeLayout.paletteSize` reports.
+            .overlay {
+                Circle()
+                    .strokeBorder(
+                        Theme.Colors.inkPrimary.opacity(hovering ? 0.5 : 0), lineWidth: 1.5)
+                    .frame(width: Self.hoverRingSize, height: Self.hoverRingSize)
+            }
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .help(swatch.name)
@@ -388,7 +421,10 @@ struct SpaceTextFontPopover: View {
         // unless the content supplies one. `lg` matches the inspector's, so the two
         // ways into the same settings are padded alike.
         .padding(Theme.Spacing.lg)
-        .frame(width: 260)
+        .frame(width: SpaceTextChromeLayout.fontPopoverWidth)
+        // A family name longer than the popover truncates the button's label rather
+        // than stretching the popover past the width the weight picker needs.
+        .lineLimit(1)
     }
 
     /// A `Binding` that reads the current style and writes an edited copy back —

@@ -108,6 +108,31 @@ apply, and that the panels flip rather than leave the viewport near its edges.
   undo entry and the caret position. Keeping the edit alive needs the panels in a
   non-activating window.
 
+## Follow-up — padding, ring alignment, popover width (same commit series)
+
+Reported after the first pass, all three in the chrome's own drawing:
+
+- **Popovers had no breathing room.** A popover supplies no inset of its own, so
+  the inspector's 14 and the font popover's 12 left controls against the chrome.
+  Both are `Theme.Spacing.lg` now (the inspector 280 → 300 wide so the extra inset
+  doesn't squeeze its pickers), and the size list insets its ROWS rather than its
+  scroll view, so the whole row width stays clickable.
+- **The hover ring sat off-centre on its swatch.** It was grown out of the 16pt dot
+  with `.padding(-2.5)`; it is an overlay with an explicit 21pt frame now, so
+  concentric is a layout guarantee rather than the result of insetting a frame by
+  equal amounts. Two things could have produced the offset and both are gone: the
+  panels also snap to whole points now, because the box's on-screen frame is
+  fractional at most zoom levels and a panel on a half point spreads a hairline —
+  and a 16pt dot's ring — over two rows of pixels.
+- **The font popover was too narrow for its content.** A segmented control doesn't
+  grow to fit, it compresses and clips, so "Semibold" was cut at a width that
+  looked fine for "Bold". The width is now MEASURED from the weight labels
+  (`fontPopoverWidth`, 340 at the current system font size) the same way the
+  bubble's size segment already was, so it survives a renamed weight or a different
+  system font size.
+
+One test added: a fractionally-placed box still lands both panels on whole points.
+
 ## Migration notes
 
 None. New chrome only; nothing persisted changed, and `ElementInspector` is
