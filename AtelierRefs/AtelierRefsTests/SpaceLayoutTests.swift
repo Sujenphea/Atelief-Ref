@@ -201,8 +201,8 @@ struct SpaceContentTests {
         let content = makeContent([asset, element])
         #expect(content.tiles.count == 2) // asset + text element both draw
         // The element tile carries text content; the asset tile stays an image.
-        let assetTile = content.tiles[content.tileID(forSpaceItemID: asset.item.id)!]
-        let textTile = content.tiles[content.tileID(forSpaceItemID: element.item.id)!]
+        let assetTile = content.tile(forTileID: content.tileID(forSpaceItemID: asset.item.id)!)!
+        let textTile = content.tile(forTileID: content.tileID(forSpaceItemID: element.item.id)!)!
         #expect(content.content(for: assetTile) == .image)
         if case .text(let style) = content.content(for: textTile) {
             #expect(style.string == "hi")
@@ -260,9 +260,10 @@ struct SpaceContentTests {
     func setPlacement() {
         let a = assetDetail(z: 3, dim: 120)
         let content = makeContent([a])
-        let before = content.tiles[0]
-        content.setPlacement(tileID: 0, x: 800, y: -200)
-        let after = content.tiles[0]
+        let tid = content.tiles[0].id
+        let before = content.tile(forTileID: tid)!
+        content.setPlacement(tileID: tid, x: 800, y: -200)
+        let after = content.tile(forTileID: tid)!
         #expect(after.x == 800)
         #expect(after.y == -200)
         #expect(after.w == before.w)

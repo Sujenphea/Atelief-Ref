@@ -78,6 +78,7 @@ struct SpaceTextResizeTests {
         model.updateStyle(itemID: id, style: styled(
             model, id, text: "The quick brown fox jumps over the lazy dog again and again"))
         await model.waitForWrites()
+        #expect(model.renderRevision == rev + 1) // the restyle: exactly one re-sync
         await model.load()
 
         let now = item(model, id)
@@ -86,7 +87,10 @@ struct SpaceTextResizeTests {
         #expect(now.x == 100)         // anchor frozen
         #expect(now.y == 200)
         #expect(now.z == before.z)
-        #expect(model.renderRevision == rev + 1) // geometry changed → one re-sync
+        // …and the reload adds its own redraw signal. A reload reconciles the live
+        // content in place now instead of rebuilding the host, so `renderRevision` is
+        // how the canvas hears about it — there is no `.id` swap to do the job.
+        #expect(model.renderRevision == rev + 2)
         #expect(model.undoActionName == "Restyle Text")
     }
 
@@ -216,7 +220,7 @@ struct SpaceTextResizeTests {
             tileID: tid, to: CGRect(x: 0, y: 0, width: 180, height: 24), in: content)
         await model.waitForWrites()
 
-        #expect(content.tiles[tid].w == 180)      // live content updated immediately
+        #expect(content.tile(forTileID: tid)!.w == 180)      // live content updated immediately
         #expect(model.renderRevision == rev + 1)  // re-sync in place...
         #expect(model.contentVersion == ver)      // ...never an `.id`-bound rebuild
     }
@@ -378,8 +382,8 @@ struct SpaceTextResizeTests {
         await model.waitForWrites()
 
         // The live tile stays where it was dropped — no snap-back...
-        #expect(content.tiles[tid].x == 250)
-        #expect(content.tiles[tid].y == 180)
+        #expect(content.tile(forTileID: tid)!.x == 250)
+        #expect(content.tile(forTileID: tid)!.y == 180)
         // ...and `items` is de-staled to the live position too.
         #expect(item(model, id).x == 250)
         #expect(item(model, id).y == 180)

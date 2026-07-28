@@ -51,6 +51,12 @@ public struct CanvasView: NSViewRepresentable {
     private let onDrop: ((NSPasteboard, CGPoint) -> Bool)?
     private let onPaste: ((NSPasteboard, CGPoint) -> Bool)?
     private let onBeginTileDragOut: ((Set<Int>) -> NSPasteboardItem?)?
+    /// Whether this canvas may still frame its content to fit — the app arms it for a
+    /// board's FIRST open only, so no later reload moves the camera. See
+    /// ``CanvasHostView/framesContentWhenReady``.
+    private let framesContentWhenReady: Bool
+    /// Fired the one time the framing actually happened.
+    private let onDidFrameContent: (() -> Void)?
 
     public init(
         provider: any TileProvider,
@@ -74,7 +80,9 @@ public struct CanvasView: NSViewRepresentable {
         onDragEntered: ((NSPasteboard) -> NSDragOperation)? = nil,
         onDrop: ((NSPasteboard, CGPoint) -> Bool)? = nil,
         onPaste: ((NSPasteboard, CGPoint) -> Bool)? = nil,
-        onBeginTileDragOut: ((Set<Int>) -> NSPasteboardItem?)? = nil
+        onBeginTileDragOut: ((Set<Int>) -> NSPasteboardItem?)? = nil,
+        framesContentWhenReady: Bool = true,
+        onDidFrameContent: (() -> Void)? = nil
     ) {
         self.provider = provider
         self.images = images
@@ -98,6 +106,8 @@ public struct CanvasView: NSViewRepresentable {
         self.onDrop = onDrop
         self.onPaste = onPaste
         self.onBeginTileDragOut = onBeginTileDragOut
+        self.framesContentWhenReady = framesContentWhenReady
+        self.onDidFrameContent = onDidFrameContent
     }
 
     public func makeNSView(context: Context) -> CanvasHostView {
@@ -132,6 +142,10 @@ public struct CanvasView: NSViewRepresentable {
         // Assign the registered types AFTER the handlers so a drop arriving between
         // the two assignments still finds `onDrop` in place.
         view.acceptedDropTypes = acceptedDropTypes
+        // Both BEFORE `syncToken`: its didSet may frame, and must see the current
+        // arming state and be able to report back through the current closure.
+        view.onDidFrameContent = onDidFrameContent
+        view.framesContentWhenReady = framesContentWhenReady
         view.tool = tool
         view.editingTileID = editingTileID
         view.syncToken = syncToken

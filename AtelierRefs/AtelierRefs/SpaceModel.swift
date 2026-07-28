@@ -34,14 +34,24 @@ final class SpaceModel: ObservableObject {
     /// selection is empty OR holds more than one row. Derived, never stored — no
     /// parallel state to drift (the inspector + single-item paths read this).
     var selectedItemID: UUID? { selectedItemIDs.count == 1 ? selectedItemIDs.first : nil }
-    /// Bumped whenever ``items`` change, so `SpaceView` rebuilds the canvas host.
+    /// Bumped when a reload adds or removes a ROW — i.e. when the tile set itself
+    /// changed, not merely its geometry. Observability only: nothing is `.id`-bound to
+    /// it any more, and nothing rebuilds the canvas host.
+    ///
+    /// It used to drive `SpaceView`'s `.id(space.contentVersion)`, which meant every
+    /// reload destroyed the host and built a fresh one — and a fresh host frames the
+    /// board to fit. That is the whole story behind "the zoom jumps when I delete
+    /// something": `load()` is reached by delete, create, drop, paste, add-from-library,
+    /// both z-ops, and **every undo/redo of a placement edit** (they all pass
+    /// `reload: true`). A reload now reconciles the live ``SpaceContent`` in place.
     @Published private(set) var contentVersion = 0
-    /// Bumped when placements change IN MEMORY with no reload (align / distribute),
-    /// so `SpaceView` can force the canvas to re-sync WITHOUT a full host rebuild.
-    /// Unlike a drag (the host's gesture loop drives `sync()` per frame) or a z-op
-    /// (`reload: true` rebuilds via ``contentVersion``), an arrange fires no gesture
-    /// and no selection change — nothing would otherwise trigger `engine.sync()`, so
-    /// the moved tiles would stay stale until the next unrelated event.
+    /// Bumped whenever what the canvas draws changed with no host rebuild — a reload,
+    /// an align / distribute, a restyle, a resize. `SpaceView` feeds it to the canvas
+    /// as `syncToken`, which is the renderer's "re-read the provider" signal. Unlike a
+    /// drag (the host's gesture loop drives `sync()` per frame), these fire no gesture
+    /// and may fire no selection change — nothing would otherwise trigger
+    /// `engine.sync()`, so the changed tiles would stay stale until the next unrelated
+    /// event.
     @Published private(set) var renderRevision = 0
     /// The last surfaced error, or `nil`.
     @Published var lastError: String?
@@ -52,7 +62,6 @@ final class SpaceModel: ObservableObject {
     /// Monotonic load id so a slow read can't clobber a newer one.
     private var loadID = 0
     private var cachedContent: SpaceContent?
-    private var cachedVersion = -1
 
     /// Undo/redo scoped to THIS open space (history resets on close — v1). Every
     /// write funnels through ``enqueue(_:)`` so an undo can't reorder ahead of an
@@ -139,9 +148,11 @@ final class SpaceModel: ObservableObject {
     // MARK: - Write primitives (used by ops + their inverses)
 
     /// Persist a batch of placements in ONE transaction (049 · D13); optionally
-    /// reload after. The live-drag flush passes `reload: false` (flicker-free — the
-    /// tiles already moved in memory); undo/redo pass `reload: true` to resync
-    /// ``items``. An empty batch is a no-op.
+    /// reload after. The live-drag flush passes `reload: false` (the tiles already
+    /// moved in memory, so re-reading them would be pure work); undo/redo pass
+    /// `reload: true` to resync ``items`` from the durable truth. Both are
+    /// flicker-free and both keep the camera — a reload reconciles the live content in
+    /// place. An empty batch is a no-op.
     private func persistPlacements(_ placements: [(id: UUID, p: Placement)], reload: Bool) async {
         guard !placements.isEmpty else { return }
         do {
@@ -166,8 +177,9 @@ final class SpaceModel: ObservableObject {
     /// pointless undo entries; if nothing remains, this does nothing at all.
     ///
     /// `reload` governs only the FORWARD apply: geometry ops that already moved the
-    /// tiles in memory pass `false` (flicker-free, like a drag); z-ops pass `true`
-    /// (051 · 13A). Undo/redo always reload to resync ``items``.
+    /// tiles in memory pass `false` (nothing to re-read, like a drag); z-ops pass
+    /// `true` (051 · 13A). Undo/redo always reload, because they restore geometry the
+    /// live content has no other way to learn about.
     ///
     /// This is `async` and awaits the write INLINE, so a caller already running on
     /// the serial queue (``flushMoves``) folds the write into its own task — an
@@ -190,9 +202,8 @@ final class SpaceModel: ObservableObject {
     /// transaction (054 §4.3 · R6) — style + auto-size can never half-persist and
     /// one undo reverts both. `placement == nil` writes style only (the `.fixed`
     /// path). Does NOT reload: the caller (``applyRestyle``) already updated ``items``
-    /// and the live content in memory, so reloading would only bump ``contentVersion``
-    /// and rebuild the whole host — the restyle lag / viewport-reset / double-click-
-    /// drop bug this path exists to avoid (the style peer of a drag's `reload: false`).
+    /// and the live content in memory, so a reload would only re-read the database to
+    /// learn what it just wrote (the style peer of a drag's `reload: false`).
     private func persistRestyle(_ id: UUID, _ style: ElementStyle, placement: Placement?) async {
         do {
             let sp = placement.map {
@@ -208,10 +219,9 @@ final class SpaceModel: ObservableObject {
     /// ``renderRevision`` so the canvas re-syncs the tile IN PLACE (no host rebuild),
     /// then persist durably with no reload. `placement` carries the derived auto-size
     /// geometry (nil = style only, geometry untouched). Mirrors the drag path: mutate
-    /// the shared content instance the renderer holds, then signal a re-sync — never
-    /// swap ``contentVersion`` (which is `.id`-bound and tears the host down). Both the
+    /// the shared content instance the renderer holds, then signal a re-sync. Both the
     /// forward edit and its undo/redo route through here so every restyle is
-    /// flicker-free and keeps the user's pan/zoom.
+    /// flicker-free.
     private func applyRestyle(_ id: UUID, _ style: ElementStyle, placement: Placement?) {
         guard let idx = items.firstIndex(where: { $0.item.id == id }) else { return }
         let content = self.content()
@@ -267,7 +277,12 @@ final class SpaceModel: ObservableObject {
             let present = Set(rows.map { $0.item.id })
             let pruned = selectedItemIDs.intersection(present)
             if pruned != selectedItemIDs { selectedItemIDs = pruned }
-            contentVersion &+= 1
+            // Update the content the renderer is ALREADY holding, rather than handing
+            // it a new one — the host is never torn down, so the camera never moves.
+            // Surviving rows keep their tile ids, so an open inline editor, the
+            // selection and the format chrome all stay pointed at the same rows.
+            if content().reconcile(items: items) { contentVersion &+= 1 }
+            renderRevision &+= 1
         } catch {
             guard id == loadID else { return }
             lastError = Self.message(for: error)
@@ -276,13 +291,17 @@ final class SpaceModel: ObservableObject {
 
     // MARK: - Content provider
 
-    /// The `SpaceContent` for the current rows — rebuilt only when
-    /// ``contentVersion`` changes. Always non-nil (even for an empty space) so the
-    /// canvas is present to draw the first frame / text onto; the empty-state hint
+    /// The `SpaceContent` this board draws — built once, then kept in step by
+    /// ``SpaceContent/reconcile(items:)``. Always non-nil (even for an empty space) so
+    /// the canvas is present to draw the first frame / text onto; the empty-state hint
     /// is a non-blocking overlay the view adds when ``items`` is empty.
+    ///
+    /// ONE instance for the model's lifetime, deliberately: the renderer holds this
+    /// reference, so replacing it would mean replacing the host, and replacing the host
+    /// means reframing the camera. Every mutation path — a drag, a restyle, a resize,
+    /// and now a reload — updates this instance and signals with ``renderRevision``.
     func content() -> SpaceContent {
-        if cachedVersion == contentVersion, let cached = cachedContent { return cached }
-        cachedVersion = contentVersion
+        if let cached = cachedContent { return cached }
         let content = SpaceContent(items: items, store: store)
         cachedContent = content
         return content
@@ -333,9 +352,8 @@ final class SpaceModel: ObservableObject {
     /// frame + its group, OR a multi-select drag — so the whole burst is buffered
     /// and flushed as a SINGLE batched write + a SINGLE undo step (049 · D13 / D7).
     func moveTile(tileID: Int, to worldOrigin: CGPoint, in content: SpaceContent) {
-        guard content.tiles.indices.contains(tileID),
+        guard let tile = content.tile(forTileID: tileID),
               let itemID = content.spaceItemID(forTileID: tileID) else { return }
-        let tile = content.tiles[tileID]
         let old = Placement(x: tile.x, y: tile.y, w: tile.w, h: tile.h, z: tile.z)
         let new = Placement(x: Double(worldOrigin.x), y: Double(worldOrigin.y), w: tile.w, h: tile.h, z: tile.z)
         guard old != new else { return }
@@ -488,8 +506,7 @@ final class SpaceModel: ObservableObject {
     /// not-yet-reloaded drag position) when present, else the stored row.
     private func livePlacement(_ itemID: UUID, in content: SpaceContent) -> Placement {
         if let tid = content.tileID(forSpaceItemID: itemID),
-           content.tiles.indices.contains(tid) {
-            let t = content.tiles[tid]
+           let t = content.tile(forTileID: tid) {
             return Placement(x: t.x, y: t.y, w: t.w, h: t.h, z: t.z)
         }
         let item = items.first(where: { $0.item.id == itemID })!.item
@@ -741,10 +758,9 @@ final class SpaceModel: ObservableObject {
     /// first (so nothing snaps between the drop and the write), then persisted with
     /// `reload: false`.
     func resizeTile(tileID: Int, to worldRect: CGRect, in content: SpaceContent) {
-        guard content.tiles.indices.contains(tileID),
+        guard let tile = content.tile(forTileID: tileID),
               let itemID = content.spaceItemID(forTileID: tileID),
               var item = items.first(where: { $0.item.id == itemID })?.item else { return }
-        let tile = content.tiles[tileID]
         let old = Placement(x: tile.x, y: tile.y, w: tile.w, h: tile.h, z: tile.z)
 
         // Anchor on the DRAGGED geometry before deriving, so the height is measured
@@ -760,7 +776,7 @@ final class SpaceModel: ObservableObject {
         guard old != new else { return }
 
         content.setPlacement(tileID: tileID, x: new.x, y: new.y, w: new.w, h: new.h)
-        renderRevision += 1 // geometry changed in place → re-sync, never a rebuild
+        renderRevision += 1 // geometry changed in place → re-sync
         enqueue {
             await self.applyPlacementEdit(
                 name: "Resize", edits: [(id: itemID, old: old, new: new)], reload: false)

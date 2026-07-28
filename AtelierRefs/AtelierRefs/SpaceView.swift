@@ -4,9 +4,12 @@
 //
 //  005-E2 — one open space over the real renderer. Shows the space's asset rows
 //  on the infinite canvas (`CanvasView`) driven by `SpaceContent`, or an empty
-//  state. Assets enter the board by dragging them in from a collection. The canvas
-//  host is rebuilt (via `.id`) whenever the space's rows change. Zero renderer
-//  changes — images ride the existing path.
+//  state. Assets enter the board by dragging them in from a collection.
+//
+//  The canvas host is built ONCE and never rebuilt. Every change — a drag, a
+//  restyle, a delete, a reload — updates the `SpaceContent` the renderer already
+//  holds and re-syncs through `renderRevision`, because a rebuild would reframe the
+//  board and throw away the user's pan and zoom.
 //
 
 import AppKit
@@ -74,6 +77,10 @@ struct SpaceView: View {
     @State private var showFontPopover = false
     @State private var showSizePopover = false
     @State private var showColorPopover = false
+    /// Whether this board has already been framed to fit. Owned here rather than by the
+    /// canvas host so it is a fact about the BOARD, not about a view instance — the
+    /// camera is the user's from the first frame onward.
+    @State private var didFrameBoard = false
 
     init(model: IngestionModel, nav: NavModel, spaceID: UUID, services: AppServices, store: MediaStore) {
         self.model = model
@@ -325,8 +332,15 @@ struct SpaceView: View {
                 // (no asset tiles) leaves it an ordinary in-view move.
                 onBeginTileDragOut: { tileIDs in
                     content.dragOutPayload(forTileIDs: tileIDs)?.makePasteboardItem()
-                })
-            .id(space.contentVersion)
+                },
+                // Frame the board to fit exactly once, on its first open. A board loads
+                // its rows asynchronously, so the canvas is laid out before there is
+                // anything to frame — the host therefore waits for content rather than
+                // burning its one shot on an empty world. `didFrameBoard` lives on this
+                // view, whose identity is stable, so the camera survives even if the
+                // host is ever rebuilt for some other reason.
+                framesContentWhenReady: !didFrameBoard,
+                onDidFrameContent: { Task { @MainActor in didFrameBoard = true } })
 
             if space.items.isEmpty { emptyHint }
 

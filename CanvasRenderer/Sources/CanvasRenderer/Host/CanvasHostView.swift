@@ -6,7 +6,36 @@ import AppKit
 @MainActor
 public final class CanvasHostView: NSView {
     private let engine: CanvasEngine
-    private var hasFramedContent = false
+
+    /// Whether this host may still frame the board to fit. The app arms it for the
+    /// FIRST open of a board and disarms it once ``onDidFrameContent`` reports the
+    /// framing happened, so no later reload — or rebuild — can move the camera.
+    ///
+    /// It used to be a private per-instance `hasFramedContent`, which quietly meant
+    /// "once per HOST" rather than "once per board", so any host rebuild reframed and
+    /// threw the user's pan/zoom away. It also fired too early: a board loads its rows
+    /// asynchronously, so the first `layout()` runs with NO tiles, and framing an empty
+    /// world is a no-op that nonetheless consumed the one shot.
+    public var framesContentWhenReady: Bool = true
+
+    /// Fired the one time framing actually happened (never for a no-op attempt), so the
+    /// app can record that this board has been framed.
+    public var onDidFrameContent: (() -> Void)?
+
+    private var didFrameContent = false
+
+    /// Frame the board to fit, if this host is still allowed to and there is now
+    /// something to frame. Returns whether it did.
+    @discardableResult
+    private func frameContentIfNeeded() -> Bool {
+        guard framesContentWhenReady, !didFrameContent,
+              bounds.width > 0, bounds.height > 0,
+              engine.hasDrawableContent else { return false }
+        didFrameContent = true
+        engine.frameToContent()
+        onDidFrameContent?()
+        return true
+    }
 
     /// Called with a tile's id when the user double-clicks it (e.g. to open a
     /// video). Set by the host; `nil` disables activation.
@@ -279,7 +308,10 @@ public final class CanvasHostView: NSView {
     public var syncToken: Int = 0 {
         didSet {
             guard syncToken != oldValue else { return }
-            engine.sync()
+            // A board's rows arrive asynchronously, so content can turn up long after
+            // the last `layout()` — with no bounds change to notice it. Without this,
+            // a board whose first layout ran empty would never be framed at all.
+            if !frameContentIfNeeded() { engine.sync() }
         }
     }
 
@@ -315,14 +347,9 @@ public final class CanvasHostView: NSView {
         super.layout()
         engine.rootLayer.frame = bounds
         engine.viewportSize = bounds.size
-        // Frame the board to fit the very first time we know our size; afterwards
-        // a resize just re-syncs (it must not stomp the user's pan/zoom).
-        if !hasFramedContent, bounds.width > 0, bounds.height > 0 {
-            hasFramedContent = true
-            engine.frameToContent()
-        } else {
-            engine.sync()
-        }
+        // Frame the board to fit the first time we know our size AND have content;
+        // afterwards a resize just re-syncs (it must not stomp the user's pan/zoom).
+        if !frameContentIfNeeded() { engine.sync() }
     }
 
     /// If the host leaves its window mid-gesture (e.g. a content reload rebuilds it

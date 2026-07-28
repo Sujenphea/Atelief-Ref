@@ -621,6 +621,13 @@ public final class CanvasEngine {
     /// side), centred. The host calls this once on first layout so the canvas
     /// opens *over* the tiles instead of on empty world space. No-op if the
     /// viewport is empty or there are no drawable tiles.
+    /// Whether any tile would actually be framed — the precondition
+    /// ``frameToContent(padding:)`` silently needs, hoisted so a caller can tell
+    /// "framed it" from "did nothing" without inspecting the transform afterwards.
+    public var hasDrawableContent: Bool {
+        provider.tiles.contains { !$0.isDegenerate }
+    }
+
     public func frameToContent(padding: CGFloat = 0.1) {
         guard viewportSize.width > 0, viewportSize.height > 0 else { return }
 
