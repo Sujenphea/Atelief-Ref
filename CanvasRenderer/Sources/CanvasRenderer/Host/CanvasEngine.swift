@@ -38,6 +38,23 @@ public final class CanvasEngine {
     /// disables the notification (the common, no-editor case).
     public var onTransformChanged: (() -> Void)?
 
+    /// Fired when a LIVE gesture moves a tile's DISPLAYED frame without touching the
+    /// camera — today, a resize drag (062). The peer of ``onTransformChanged``, and
+    /// it exists because that one is not enough: the inline editor places its overlay
+    /// from the edited tile's on-screen frame, so any change to that frame must reach
+    /// it, whether the box moved under the camera or the camera moved under the box.
+    ///
+    /// Without this a resize of the tile being edited desynchronises the two halves of
+    /// what the user sees: the engine redraws the box, border and handles at the live
+    /// frame, while the `NSTextView` above them keeps the wrap width it was mounted
+    /// with — so the box narrows and the text spills straight out of it. Every fix on
+    /// the ``setGlyphOverlay`` path is inert here, because those glyphs are blanked
+    /// while ``editingTileID`` is set.
+    ///
+    /// Notified AFTER the ``sync()``, exactly as ``onTransformChanged`` is, so a
+    /// listener reading ``currentScreenFrame(forTileID:)`` sees the new geometry.
+    public var onLiveFrameChanged: (() -> Void)?
+
     /// The tile whose text an app-layer inline editor currently owns (2B · 054
     /// §5.2), or `nil`. While set, that tile's `.text` glyphs are BLANKED in
     /// ``sync()`` so the live `NSTextView` above it isn't doubled by the
@@ -445,6 +462,7 @@ public final class CanvasEngine {
         // or the promise could drift from what a later drag actually carries.
         prospectiveMemberIDs = Set(provider.groupMembers(forTileID: id, in: live))
         sync()
+        onLiveFrameChanged?()
     }
 
     /// The world frames a resize may snap to: every VISIBLE tile except the one
@@ -484,6 +502,11 @@ public final class CanvasEngine {
     }
 
     /// Clear the live-resize state, WITHOUT syncing.
+    ///
+    /// Notifies ``onLiveFrameChanged`` on the way out: the host calls this AFTER
+    /// handing the final frame to the app, so the displayed frame here is the
+    /// committed one, and a listener that tracked the drag needs to land on it
+    /// rather than on the last mid-drag tick.
     public func endResize() {
         resizeTileID = nil
         activeResizeHandle = nil
@@ -491,6 +514,7 @@ public final class CanvasEngine {
         resizeWorldFrame = nil
         activeSnapGuides = []
         prospectiveMemberIDs = []
+        onLiveFrameChanged?()
     }
 
     /// The snap guides currently shown — introspection for the tests.

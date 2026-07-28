@@ -121,8 +121,16 @@ final class CanvasEditingBridge {
     /// on teardown. `transformDidChange()` fans the engine notification into it.
     var onReposition: (() -> Void)?
 
-    /// Called once per transform mutation (via `CanvasView.onTransformChanged`).
-    func transformDidChange() { onReposition?() }
+    /// Called whenever the edited tile's on-screen frame may have moved — a
+    /// transform mutation (`CanvasView.onTransformChanged`) OR a live resize
+    /// (`CanvasView.onLiveFrameChanged`, 062).
+    ///
+    /// Both wires land here because the editor doesn't care WHY the frame moved,
+    /// only that it did: it re-measures the current string against the tile's new
+    /// width on every call. Listening to the transform alone was the bug — resizing
+    /// a box while editing it left the glyphs laid out for the old width, so the
+    /// text spilled out of the box instead of re-wrapping into it.
+    func geometryDidChange() { onReposition?() }
 
     /// The edited tile's live on-screen frame, or `nil` if it left the viewport.
     func screenFrame(forTileID id: Int) -> CGRect? { host?.screenFrame(forTileID: id) }

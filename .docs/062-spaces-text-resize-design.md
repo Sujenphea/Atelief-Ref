@@ -206,14 +206,50 @@ than re-deriving containment, and `SpaceContent`'s drag-time query delegates to 
 same method with the stored rect. One rule, two callers: the set highlighted mid-
 resize is by construction the set a later drag carries.
 
-## 7. Known gaps
+## 7. Resizing the tile being edited
+
+A text box can be resized **while its inline editor is open**, and nothing about
+this was designed — it fell out of two independent decisions and was broken until
+262.
+
+While `editingTileID` is set, `sync()` blanks that tile's `CATextLayer` (054 §5.2)
+so the `NSTextView` above it isn't doubled. Everything §2–§4 specifies about a live
+resize — the fitted height, the shaping width taken from `displayWorldFrame` — is
+drawn through that layer. So for the one tile being edited, **the entire glyph path
+is inert**: the text on screen belongs to the editor, and the engine is drawing only
+the box, the border and the handles.
+
+The editor places its overlay imperatively from the tile's on-screen frame, and
+until 262 its only cue to do that again was `onTransformChanged`. A resize moves the
+box with the camera standing still, so the cue never came: the box narrowed and the
+text, still laid out for the old width, spilled out of it.
+
+Two smaller decisions let the gesture start at all, and both are worth keeping:
+`handleTile` doesn't consult `editingTileID` (so the handles stay live on a box you
+are editing, as in Figma), and `PassThroughContainer.hitTest` returns `nil` for its
+own area, so a press on the outer half of a handle's grab zone reaches the canvas.
+
+The fix is a second notification, `onLiveFrameChanged`, fired per resize tick and on
+commit. It is deliberately **not** `onTransformChanged`: the camera did not move, and
+a notification that misreports its cause is worse than a second one. Both land on
+`CanvasEditingBridge.geometryDidChange()`, since the editor only needs to know that
+the frame moved — its `reposition()` already re-measures the current string against
+the tile's width.
+
+The general rule this leaves behind: **anything that changes a tile's displayed frame
+must notify, whoever moved it.** The engine is not the only thing drawing that tile.
+
+## 8. Known gaps
 
 - **Editor and canvas still use different text engines** (TextKit vs CoreText).
   Unchanged from 060; both now lay out at the same world size against the same world
   width, but Nook uses TextKit for both and concluded the two "can't be made to
   agree". Revisit if a wrap mismatch appears at an edit boundary.
-- **Moves don't snap.** Only resizes do. Nook snaps a dragged object's bounding
-  box on move as well; `ResizeSnapping.snapPoint` is reusable for it.
+- **Mid-edit chrome sizes to the committed text.** `fittedFrame` derives the box
+  height from the provider's style, not the editor's uncommitted string, so typing
+  and then resizing without committing leaves the border and handles sized to the
+  old text. The visible glyphs are right either way. Closing it means handing the
+  engine the live string, which the app owns (§7).
 - **Moves have no membership preview.** Only resizes do. Dragging a tile into a
   frame changes membership just as silently.
 - **No spacing/distribution snapping.** Only edge and centre alignment; equal-gap

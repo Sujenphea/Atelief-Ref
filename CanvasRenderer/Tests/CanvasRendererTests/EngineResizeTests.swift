@@ -611,3 +611,95 @@ struct EngineTextOverflowTests {
         #expect((e.currentResizeFrame()?.worldFrame.height ?? 0) > 60)
     }
 }
+
+// MARK: - Resizing the tile being EDITED (062)
+
+/// The glyph path above is switched OFF for the tile an inline editor owns — its
+/// `CATextLayer` is blanked so the `NSTextView` above isn't doubled. So for that
+/// one tile, everything the engine draws (box, border, handles) moves with the
+/// resize while the text is somebody else's to place. This suite pins the seam
+/// that tells them: without it the box narrows and the text, still laid out for
+/// the old width, spills straight out of it.
+@MainActor
+@Suite("Live resize while editing — the app must hear the frame move (062)")
+struct EngineEditingResizeTests {
+
+    private struct P: TileProvider {
+        let tiles: [Tile]
+        var texts: [Int: TextStyle] = [:]
+        func content(for tile: Tile) -> TileContent {
+            if let s = texts[tile.id] { return .text(s) }
+            return .image
+        }
+    }
+    private struct NoImages: TileImageSource {
+        func imageKey(for tile: Tile) -> Int { tile.id }
+        func imageData(for tile: Tile, tier: LODTier) -> Data? { nil }
+    }
+
+    private func editingEngine() -> CanvasEngine {
+        let style = TextStyle(string: "The quick brown fox jumps over the lazy dog again and again",
+                              fontSize: 18, color: RGBAColor(red: 0, green: 0, blue: 0))
+        let e = CanvasEngine(
+            provider: P(tiles: [Tile(id: 0, x: 0, y: 0, w: 400, h: 60, z: 0)], texts: [0: style]),
+            images: NoImages(),
+            transform: CanvasTransform(scale: 1, translation: .zero),
+            viewportSize: CGSize(width: 1_200, height: 800))
+        e.sync()
+        e.setSelected(0)
+        e.editingTileID = 0
+        return e
+    }
+
+    @Test("the tile being edited still offers handles, and draws no glyphs of its own")
+    func editedTileIsResizableAndBlank() {
+        // Both halves matter, and only together: the handles are why a resize can
+        // start mid-edit at all, and the blank is why no fix on the glyph path can
+        // reach it. Either alone would be harmless.
+        let e = editingEngine()
+        #expect(e.resizeHandle(atScreenPoint: CGPoint(x: 400, y: 30))?.handle == .right)
+        #expect(e.textLayer(forTileID: 0) == nil)
+    }
+
+    @Test("every resize tick notifies, and so does the commit")
+    func resizeNotifiesLiveFrame() {
+        let e = editingEngine()
+        var live = 0
+        var transforms = 0
+        e.onLiveFrameChanged = { live += 1 }
+        e.onTransformChanged = { transforms += 1 }
+
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 300, y: 30), snapping: false)
+        e.updateResize(toWorldPoint: CGPoint(x: 200, y: 30), snapping: false)
+        #expect(live == 2)
+        e.endResize()
+        #expect(live == 3) // the commit lands the listener on the final frame
+        // The camera never moved, which is exactly why the transform seam alone
+        // could not carry this — the whole reason the second notification exists.
+        #expect(transforms == 0)
+    }
+
+    @Test("what the listener reads mid-drag is the LIVE frame, not the stored one")
+    func notificationCarriesTheLiveGeometry() {
+        // A notification that fired before the geometry was readable would be worse
+        // than none: the editor would re-place itself onto the frame it already had.
+        let e = editingEngine()
+        var seen: CGRect?
+        e.onLiveFrameChanged = { seen = e.currentScreenFrame(forTileID: 0) }
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 150, y: 30), snapping: false)
+        #expect(seen?.width == 150)
+        #expect((seen?.height ?? 0) > 60) // and taller, the text having re-wrapped
+    }
+
+    @Test("a pan or zoom does NOT fire it — that stays the transform seam's job")
+    func cameraMovesDoNotFireIt() {
+        let e = editingEngine()
+        var live = 0
+        e.onLiveFrameChanged = { live += 1 }
+        e.pan(byScreenDelta: CGSize(width: 40, height: 40))
+        e.zoom(by: 1.5, aroundScreenPoint: CGPoint(x: 100, y: 100))
+        #expect(live == 0)
+    }
+}

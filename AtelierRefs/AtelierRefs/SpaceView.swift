@@ -258,7 +258,8 @@ struct SpaceView: View {
                 onResizeTile: { tileID, worldRect in
                     space.resizeTile(tileID: tileID, to: worldRect, in: content)
                 },
-                onTransformChanged: { editBridge.transformDidChange() },
+                onTransformChanged: { editBridge.geometryDidChange() },
+                onLiveFrameChanged: { editBridge.geometryDidChange() },
                 onHostReady: { editBridge.host = $0 },
                 // Drop target (SP2 · S2 + SP3 · S1). We register the app-private
                 // asset-drag type PLUS the external file / image / URL types, so

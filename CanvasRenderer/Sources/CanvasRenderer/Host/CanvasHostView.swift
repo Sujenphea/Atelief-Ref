@@ -112,6 +112,12 @@ public final class CanvasHostView: NSView {
     /// notifies through this one seam.
     public var onTransformChanged: (() -> Void)?
 
+    /// Forwarded from the engine (062): fired when a live resize moves a tile's
+    /// displayed frame with the camera standing still. The editor's overlay is
+    /// positioned from that frame, so it has to hear about both kinds of movement —
+    /// see ``CanvasEngine/onLiveFrameChanged``.
+    public var onLiveFrameChanged: (() -> Void)?
+
     /// The tile an app-layer inline editor is editing (2B), or `nil`. Forwarded to
     /// the engine, which blanks that tile's `CATextLayer` while the `NSTextView`
     /// overlay is up (054 §5.2) so glyphs aren't doubled.
@@ -275,6 +281,9 @@ public final class CanvasHostView: NSView {
         // any transform mutation (pan/zoom/setTransform/frameToContent) reaches the
         // app through this one seam.
         engine.onTransformChanged = { [weak self] in self?.onTransformChanged?() }
+        // …and its peer for a live resize (062), which moves the box under a still
+        // camera and so never reaches the notification above.
+        engine.onLiveFrameChanged = { [weak self] in self?.onLiveFrameChanged?() }
         engine.sync()
     }
 
