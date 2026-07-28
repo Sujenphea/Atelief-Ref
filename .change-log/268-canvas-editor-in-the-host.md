@@ -71,6 +71,13 @@ through an async queue, so a commit at terminate may not reach disk.)
 the board's. The app's undo button is a SwiftUI `keyboardShortcut`, which would
 otherwise swallow it and revert the whole previous board operation mid-sentence.
 
+> **Corrected by 270.** The ⌘Z half of that paragraph was wrong as shipped. A sibling
+> SwiftUI `keyboardShortcut` *beats* the host's `performKeyEquivalent` — measured with
+> an edit open, the app's undo button claimed ⌘Z and the canvas was never asked, so this
+> branch never ran. It takes both halves: the app withdraws its binding while an edit is
+> open, **and** this performs the undo. Escape and ⌘↵ always worked, Escape only because
+> nothing else in the window claims it.
+
 **Handles vs the caret.** Resize-while-editing is deliberate (262/263), so the handles
 cannot simply be switched off over the edited box — but their zones reach 11pt inward
 from every edge, which on a short text box leaves almost nothing for the caret.

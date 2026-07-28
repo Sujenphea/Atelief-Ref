@@ -474,14 +474,23 @@ struct SpaceView: View {
     }
 
     /// Undo / redo — always on screen so their shortcuts never die (051 · E-2).
+    ///
+    /// The shortcuts, but not the buttons, drop out while a text box is being edited.
+    /// A sibling `keyboardShortcut` beats the canvas host's `performKeyEquivalent`
+    /// (measured), so leaving ⌘Z registered means one press mid-sentence reverts the
+    /// whole previous board operation instead of one keystroke. Unregistering it lets
+    /// the event fall through to the `NSTextView`'s own per-keystroke undo. The
+    /// buttons stay mounted and clickable — only their key binding is withdrawn, so
+    /// the bar doesn't reflow when an edit starts.
     @ViewBuilder private var undoRedoBar: some View {
+        let editing = editingTileID != nil
         SelectionBarButton(
             "arrow.uturn.backward",
             help: space.canUndo ? "Undo \(space.undoActionName)" : "Nothing to undo"
         ) { space.undo() }
             .disabled(!space.canUndo)
             .opacity(space.canUndo ? 1 : 0.35)
-            .keyboardShortcut("z", modifiers: .command)
+            .keyboardShortcut(editing ? nil : KeyboardShortcut("z", modifiers: .command))
 
         SelectionBarButton(
             "arrow.uturn.forward",
@@ -489,7 +498,8 @@ struct SpaceView: View {
         ) { space.redo() }
             .disabled(!space.canRedo)
             .opacity(space.canRedo ? 1 : 0.35)
-            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .keyboardShortcut(
+                editing ? nil : KeyboardShortcut("z", modifiers: [.command, .shift]))
     }
 
     /// `.single`: Edit (elements only) + z-order for the lone selection.

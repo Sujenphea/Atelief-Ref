@@ -571,29 +571,39 @@ public final class CanvasHostView: NSView {
         }
     }
 
-    /// Keys the canvas must win while an edit is open, handled here rather than in
-    /// `keyDown` so they beat menu-level matching (a SwiftUI `keyboardShortcut` on a
-    /// button elsewhere in the window is exactly that).
+    /// Escape, ⌘↵ and ⌘Z while an edit is open, handled here rather than in `keyDown`
+    /// because the text view holds first responder while editing — `keyDown` never
+    /// reaches us.
     ///
-    /// ⌘Z is the subtle one: while typing, undo must be the TEXT VIEW's per-keystroke
-    /// undo, not the board's. Left alone, the app's undo button would swallow it and a
-    /// single ⌘Z would revert the whole previous board operation mid-sentence.
+    /// ⌘Z needs BOTH halves of a bargain, and neither works alone:
+    ///
+    /// - This method loses to a sibling SwiftUI `keyboardShortcut` (measured: with the
+    ///   app's undo button mounted, it claims ⌘Z and the canvas is never asked). So the
+    ///   app must withdraw its binding while an edit is open.
+    /// - But withdrawing it is not enough on its own. Nothing else claims ⌘Z, so it
+    ///   falls through to `keyDown` on the `NSTextView` — which does nothing with it,
+    ///   because typing undo is normally driven by an Edit ▸ Undo menu item this app
+    ///   has no equivalent of. Undo has to be *performed*, here.
+    ///
+    /// Together: the app stands down, and this drives the text view's own undo manager,
+    /// so ⌘Z mid-sentence undoes one keystroke instead of the last board operation.
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard editingTileID != nil else { return super.performKeyEquivalent(with: event) }
-        let command = event.modifierFlags.contains(.command)
-        let shift = event.modifierFlags.contains(.shift)
 
         if event.keyCode == 53 { // Escape → abandon
             endEditingText(commit: false)
             return true
         }
+        let command = event.modifierFlags.contains(.command)
         if event.keyCode == 36, command { // ⌘↵ → commit
             endEditingText(commit: true)
             return true
         }
         if command, event.charactersIgnoringModifiers?.lowercased() == "z" {
+            // Claimed either way: an edit is open, so ⌘Z means the text, and letting it
+            // fall through to the board's undo mid-sentence is the bug this prevents.
             guard let undoManager = window?.firstResponder?.undoManager else { return true }
-            if shift { undoManager.redo() } else { undoManager.undo() }
+            if event.modifierFlags.contains(.shift) { undoManager.redo() } else { undoManager.undo() }
             return true
         }
         return super.performKeyEquivalent(with: event)
