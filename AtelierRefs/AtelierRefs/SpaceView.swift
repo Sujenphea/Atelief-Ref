@@ -351,13 +351,25 @@ struct SpaceView: View {
                 framesContentWhenReady: !didFrameBoard,
                 onDidFrameContent: { Task { @MainActor in didFrameBoard = true } },
                 // The host owns the edit; these two are how the app hears about it.
-                // Both are hopped off the update frame — they publish, and they can
-                // fire from inside `apply(to:)`, which runs during a view update.
+                //
+                // `onEditingChanged` is hopped off the update frame: it publishes, and
+                // it fires from inside `apply(to:)` when an edit request is delivered,
+                // which runs during a view update.
                 onEditingChanged: { tileID in
                     Task { @MainActor in editingTileID = tileID }
                 },
+                // `onFinishEditingText` is deliberately NOT hopped. The canvas un-blanks
+                // the tile and restores its stored height IMMEDIATELY after this returns,
+                // reading the provider fresh — so anything deferred here means the box is
+                // redrawn with the OLD string at the OLD height for a turn, then reflows
+                // to the new one. That was a visible glitch on every commit. Writing here
+                // and now is safe because `updateStyle` mirrors into the live
+                // `SpaceContent` synchronously (only the persistence is enqueued), so the
+                // un-blank already finds the new text and its derived height. The host
+                // hops this itself on its teardown paths, where publishing into a view
+                // update would be the real hazard.
                 onFinishEditingText: { tileID, outcome in
-                    Task { @MainActor in applyEditOutcome(outcome, tileID: tileID) }
+                    applyEditOutcome(outcome, tileID: tileID)
                 })
 
             if space.items.isEmpty { emptyHint }

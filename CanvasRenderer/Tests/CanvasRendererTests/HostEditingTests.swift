@@ -25,8 +25,14 @@ struct HostEditingTests {
         var texts: [Int: TextStyle] = [
             0: TextStyle(string: "hello", fontSize: 16, color: RGBAColor(red: 1, green: 1, blue: 1)),
         ]
+        /// Every string the renderer was handed for tile 0, in order — so a test can ask
+        /// what the canvas actually drew, not just what it ended up with.
+        var served: [String] = []
         func content(for tile: Tile) -> TileContent {
-            if let style = texts[tile.id] { return .text(style) }
+            if let style = texts[tile.id] {
+                if tile.id == 0 { served.append(style.string) }
+                return .text(style)
+            }
             return .image
         }
     }
@@ -226,7 +232,7 @@ struct HostEditingTests {
     // MARK: - Teardown
 
     @Test("leaving the window commits rather than losing the text")
-    func leavingTheWindowCommits() {
+    func leavingTheWindowCommits() async {
         let host = makeHost()
         var finished: [CanvasTextEditOutcome] = []
         host.onFinishEditingText = { _, o in finished.append(o) }
@@ -234,8 +240,37 @@ struct HostEditingTests {
 
         host.viewWillMove(toWindow: nil)
 
-        #expect(finished == [.committed("hello")])
+        // The edit is over at once — only the REPORT is deferred, because a teardown
+        // commit publishes into the very view update that is removing this host.
         #expect(host.editingTileID == nil)
+        #expect(finished.isEmpty)
+        await Task.yield()
+        #expect(finished == [.committed("hello")])
+    }
+
+    // MARK: - The stale-redraw contract
+
+    @Test("the box is never redrawn with the old text — the app writes before the un-blank")
+    func committedGlyphsAreNeverDrawnStale() {
+        let provider = TextProvider()
+        let host = makeHost(provider)
+        host.beginEditingText(tileID: 0, isNewlyCreated: false)
+        // The app, writing where it is told to: synchronously, as `SpaceModel` does by
+        // mirroring into the live content before its persistence is enqueued.
+        host.onFinishEditingText = { tileID, _ in
+            provider.texts[tileID] = TextStyle(
+                string: "typed", fontSize: 16, color: RGBAColor(red: 1, green: 1, blue: 1))
+        }
+        provider.served.removeAll()
+
+        host.endEditingText(commit: true)
+
+        // Ending an edit restores the stored height and un-blanks the glyphs, and both
+        // re-read the provider. If the outcome were reported late — or reported after
+        // those two steps — the canvas would draw the OLD string at the OLD height for a
+        // turn and then reflow, which is a flicker on every single commit.
+        #expect(!provider.served.isEmpty)              // it did redraw…
+        #expect(!provider.served.contains("hello"))    // …and never with the stale string
     }
 
     // MARK: - Handles vs the caret

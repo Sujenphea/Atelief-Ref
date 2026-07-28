@@ -242,11 +242,42 @@ public final class CanvasHostView: NSView {
         editor?.finish(commit: commit)
     }
 
+    /// Whether the host is being torn out of its window / the app is quitting. Set only
+    /// around the two teardown commits below.
+    private var isTearingDown = false
+
     private func editorDidFinish(tileID: Int, _ outcome: CanvasTextEditOutcome) {
         editor = nil
         editingTileID = nil
-        onFinishEditingText?(tileID, outcome)
-        onEditingChanged?(nil)
+
+        // Normally SYNCHRONOUS, and that matters: the caller un-blanks this tile and
+        // restores its stored height the instant this returns, re-reading the provider.
+        // An app that defers its write therefore has its box redrawn with the old text
+        // at the old height for a turn — a visible flicker on every commit.
+        //
+        // The exception is teardown. There the app would be publishing into a SwiftUI
+        // pass that is removing this very view, and the redraw it would race is one
+        // nobody sees, so the outcome goes off the current turn instead.
+        guard isTearingDown else {
+            onFinishEditingText?(tileID, outcome)
+            onEditingChanged?(nil)
+            return
+        }
+        let reportFinish = onFinishEditingText
+        let reportChange = onEditingChanged
+        Task { @MainActor in
+            reportFinish?(tileID, outcome)
+            reportChange?(nil)
+        }
+    }
+
+    /// Commit an open edit as part of tearing this host down, delivering the outcome off
+    /// the current turn. See ``editorDidFinish(tileID:_:)``.
+    private func endEditingForTeardown() {
+        guard editingTileID != nil else { return }
+        isTearingDown = true
+        endEditingText(commit: true)
+        isTearingDown = false
     }
 
     /// The current world↔screen transform (2B · 054 §5.1) — read by the inline
@@ -454,7 +485,7 @@ public final class CanvasHostView: NSView {
     deinit { NotificationCenter.default.removeObserver(self) }
 
     @objc private func applicationWillTerminate(_ note: Notification) {
-        endEditingText(commit: true)
+        endEditingForTeardown()
     }
 
     @available(*, unavailable)
@@ -490,7 +521,7 @@ public final class CanvasHostView: NSView {
     /// because a board was switched or a window closed is never what the user meant.
     public override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
-        if newWindow == nil { endEditingText(commit: true) }
+        if newWindow == nil { endEditingForTeardown() }
     }
 
     // MARK: Hover cursor (resize handles — 062)
