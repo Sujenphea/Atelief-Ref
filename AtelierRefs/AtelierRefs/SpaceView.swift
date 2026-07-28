@@ -63,6 +63,10 @@ struct SpaceView: View {
     /// The app↔host rendezvous the inline editor repositions through, off the
     /// SwiftUI diff (054 §5.1/§5.2). A stable reference for this view's lifetime.
     @State private var editBridge = CanvasEditingBridge()
+    /// The live on-screen frame the floating format chrome anchors on (062) —
+    /// republished imperatively from the same geometry notifications the editor
+    /// listens to, so a pan / zoom / move / resize never re-evaluates this body.
+    @StateObject private var chromeAnchor = SpaceTextChromeAnchor()
 
     init(model: IngestionModel, nav: NavModel, spaceID: UUID, services: AppServices, store: MediaStore) {
         self.model = model
@@ -258,9 +262,9 @@ struct SpaceView: View {
                 onResizeTile: { tileID, worldRect in
                     space.resizeTile(tileID: tileID, to: worldRect, in: content)
                 },
-                onTransformChanged: { editBridge.geometryDidChange() },
-                onLiveFrameChanged: { editBridge.geometryDidChange() },
-                onHostReady: { editBridge.host = $0 },
+                onTransformChanged: { editBridge.geometryDidChange(); chromeAnchor.refresh() },
+                onLiveFrameChanged: { editBridge.geometryDidChange(); chromeAnchor.refresh() },
+                onHostReady: { editBridge.host = $0; chromeAnchor.refresh() },
                 // Drop target (SP2 · S2 + SP3 · S1). We register the app-private
                 // asset-drag type PLUS the external file / image / URL types, so
                 // both an in-app reference drag and a Finder/browser drop land here.
@@ -318,6 +322,26 @@ struct SpaceView: View {
                detail.item.kind == .text {
                 inlineEditor(tileID: editingTileID, itemID: detail.item.id)
             }
+
+            // The floating palette + font/size bubble for the text box being edited
+            // or solely selected (062). ABOVE the editor in the stack so its buttons
+            // take the click; the editor's container passes through everything that
+            // misses its own text box anyway.
+            if let target = formatTarget(in: content) {
+                SpaceFormatChrome(
+                    anchor: chromeAnchor,
+                    style: space.style(forItemID: target.itemID),
+                    onChange: { space.updateStyle(itemID: target.itemID, style: $0) })
+                    .onAppear { chromeAnchor.track(tileID: target.tileID, bridge: editBridge) }
+                    .onChange(of: target.tileID) { _, tileID in
+                        chromeAnchor.track(tileID: tileID, bridge: editBridge)
+                    }
+                    // A restyle re-derives the box's height in place (`renderRevision`,
+                    // never a rebuild), so the chrome has to re-read the frame it just
+                    // changed — otherwise picking 96pt leaves the bubble at the height
+                    // the box had at 24.
+                    .onChange(of: space.renderRevision) { _, _ in chromeAnchor.refresh() }
+            }
         }
         // V/F/T ride the canvas container, NOT the `.idle` sub-bar (051 · E-2): a
         // `keyboardShortcut` fires only while rendered, so keeping them here means
@@ -364,6 +388,25 @@ struct SpaceView: View {
             })
         .frame(maxWidth: .infinity, maxHeight: .infinity) // fill the canvas area
         .id(tileID)
+    }
+
+    /// The text box the floating format chrome targets (062): the one being edited,
+    /// else the sole selected `.text` element. `nil` — for a multi-selection, an
+    /// asset, a frame, or nothing — hides it.
+    ///
+    /// The chrome anchors on the TILE (its on-screen frame) but writes to the ITEM,
+    /// and both are resolved here, together, because a click on the chrome may first
+    /// blur the editor: the edit commits, `editingTileID` clears, and the target
+    /// falls through to the selected element — which is the same row, so the format
+    /// lands where the user aimed it either way.
+    private func formatTarget(in content: SpaceContent) -> (tileID: Int, itemID: UUID)? {
+        if let editingTileID, let detail = content.detail(forTileID: editingTileID),
+           detail.item.kind == .text {
+            return (editingTileID, detail.item.id)
+        }
+        guard let element = space.selectedElement, element.item.kind == .text,
+              let tileID = content.tileID(forSpaceItemID: element.item.id) else { return nil }
+        return (tileID, element.item.id)
     }
 
     // MARK: - Bottom action bar

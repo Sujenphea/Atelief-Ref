@@ -1,0 +1,191 @@
+//
+//  SpaceFormatChromeTests.swift
+//  AtelierRefsTests
+//
+//  062 — the floating format chrome's PURE parts: where the two panels land, and
+//  which palette swatch a stored colour is.
+//
+//  The placement is the half worth testing. A floating panel is only ever wrong in
+//  three ways — off the edge of the viewport, on top of the thing it is formatting,
+//  or on top of the other panel — and all three happen at viewport edges, which is
+//  exactly where they are hardest to reproduce by hand. So the flip rules are
+//  asserted here rather than eyeballed: box near the top, box near the bottom, box
+//  against either side, and the case where BOTH panels want the same side.
+//
+
+import AppKit
+import AtelierCore
+import CoreGraphics
+import Foundation
+import Testing
+@testable import AtelierRefs
+
+@Suite("Floating format chrome — palette above, bubble below (062)")
+struct SpaceFormatChromeTests {
+
+    private let bounds = CGSize(width: 1_200, height: 800)
+    private let gap = SpaceTextChromeLayout.gap
+    private let margin = SpaceTextChromeLayout.margin
+
+    private var paletteSize: CGSize { SpaceTextChromeLayout.paletteSize }
+    private func bubbleSize(_ label: String = "24") -> CGSize {
+        SpaceTextChromeLayout.bubbleSize(sizeLabel: label)
+    }
+
+    /// Both panels for a box, in the order the view builds them.
+    private func panels(for box: CGRect, bounds: CGSize? = nil)
+        -> (palette: CGRect, bubble: CGRect) {
+        let b = bounds ?? self.bounds
+        let palette = CGRect(
+            origin: SpaceTextChromeLayout.paletteOrigin(anchor: box, size: paletteSize, bounds: b),
+            size: paletteSize)
+        let bubble = CGRect(
+            origin: SpaceTextChromeLayout.bubbleOrigin(
+                anchor: box, size: bubbleSize(), bounds: b, palette: palette),
+            size: bubbleSize())
+        return (palette, bubble)
+    }
+
+    // MARK: - The ordinary case
+
+    @Test("palette above the box, bubble below it, both centred on it")
+    func defaultPlacement() {
+        let box = CGRect(x: 400, y: 300, width: 300, height: 120)
+        let (palette, bubble) = panels(for: box)
+
+        #expect(palette.maxY == box.minY - gap)
+        #expect(bubble.minY == box.maxY + gap)
+        #expect(palette.midX == box.midX)
+        #expect(bubble.midX == box.midX)
+    }
+
+    @Test("neither panel is drawn over the box it formats")
+    func panelsClearTheBox() {
+        let box = CGRect(x: 400, y: 300, width: 300, height: 120)
+        let (palette, bubble) = panels(for: box)
+        #expect(!palette.intersects(box))
+        #expect(!bubble.intersects(box))
+    }
+
+    // MARK: - Viewport edges
+
+    @Test("a box at the top pushes the palette below it")
+    func paletteFlipsAtTheTopEdge() {
+        // Above the box there is no room, and a panel half off-screen is a panel the
+        // user can't click.
+        let box = CGRect(x: 400, y: 6, width: 300, height: 120)
+        let (palette, _) = panels(for: box)
+        #expect(palette.minY == box.maxY + gap)
+        #expect(palette.minY >= margin)
+    }
+
+    @Test("a box at the bottom pushes the bubble above it")
+    func bubbleFlipsAtTheBottomEdge() {
+        // Above the box, and above the palette that is already there (see
+        // `bubbleClearsThePaletteWhenFlippingUp`) — so `<=`, not `==`.
+        let box = CGRect(x: 400, y: 640, width: 300, height: 120)
+        let (_, bubble) = panels(for: box)
+        #expect(bubble.maxY <= box.minY - gap)
+        #expect(bubble.maxY <= bounds.height - margin)
+    }
+
+    @Test("a box against either side keeps both panels on screen")
+    func clampedHorizontally() {
+        for box in [CGRect(x: -200, y: 300, width: 300, height: 120),
+                    CGRect(x: 1_150, y: 300, width: 300, height: 120)] {
+            let (palette, bubble) = panels(for: box)
+            for panel in [palette, bubble] {
+                #expect(panel.minX >= margin)
+                #expect(panel.maxX <= bounds.width - margin)
+            }
+        }
+    }
+
+    // MARK: - The two panels meeting
+
+    @Test("when the palette flips down, the bubble steps below it")
+    func bubbleClearsAFlippedPalette() {
+        // Both want the space under the box. Without the second rule they are drawn
+        // in the same place and the top one is unreachable.
+        let box = CGRect(x: 400, y: 6, width: 300, height: 120)
+        let (palette, bubble) = panels(for: box)
+        #expect(palette.minY == box.maxY + gap)      // palette flipped down
+        #expect(bubble.minY >= palette.maxY + gap)   // bubble stepped past it
+        #expect(!palette.intersects(bubble))
+    }
+
+    @Test("when the bubble flips up, it steps above the palette")
+    func bubbleClearsThePaletteWhenFlippingUp() {
+        let box = CGRect(x: 400, y: 640, width: 300, height: 120)
+        let (palette, bubble) = panels(for: box)
+        #expect(bubble.maxY <= palette.minY - gap)
+        #expect(!palette.intersects(bubble))
+    }
+
+    @Test("the panels never overlap, wherever the box is")
+    func panelsNeverOverlap() {
+        // The sweep is the point: the collision rules are conditional, and a case
+        // neither branch covers would show up here rather than on someone's board.
+        for y in stride(from: -100.0, through: 900.0, by: 25.0) {
+            for x in stride(from: -300.0, through: 1_400.0, by: 100.0) {
+                let box = CGRect(x: x, y: y, width: 300, height: 120)
+                let (palette, bubble) = panels(for: box)
+                #expect(!palette.intersects(bubble),
+                        "panels collide for a box at (\(x), \(y))")
+            }
+        }
+    }
+
+    // MARK: - Sizing
+
+    @Test("the bubble widens for a wider size label, never below its minimum")
+    func bubbleWidthTracksItsLabel() {
+        #expect(bubbleSize("144").width > bubbleSize("10").width)
+        #expect(SpaceTextChromeLayout.sizeSegmentWidth(label: "8") >= 26)
+    }
+
+    @Test("the size label reads the style, and falls back to the default")
+    func sizeLabelReadsTheStyle() {
+        #expect(SpaceTextChromeLayout.sizeLabel(for: ElementStyle(fontSize: 36)) == "36")
+        #expect(SpaceTextChromeLayout.sizeLabel(for: ElementStyle(fontSize: 23.6)) == "24")
+        #expect(SpaceTextChromeLayout.sizeLabel(for: ElementStyle())
+                == String(Int(ElementRendering.defaultFontSize)))
+    }
+
+    // MARK: - The palette
+
+    @Test("eleven swatches, every one a parseable colour, no duplicates")
+    func paletteIsWellFormed() {
+        #expect(TextPalette.swatches.count == 11)
+        for swatch in TextPalette.swatches {
+            #expect(ElementRendering.rgba(fromHex: swatch.hex) != nil, "\(swatch.name) is unparseable")
+        }
+        #expect(Set(TextPalette.swatches.map(\.hex)).count == TextPalette.swatches.count)
+    }
+
+    @Test("a stored colour matches its swatch whatever form it was written in")
+    func matchingIsOnTheColourNotTheString() {
+        // The inspector's `ColorPicker` writes whatever the resolved `NSColor`
+        // produces — lower case, and `#rrggbbaa` when it round-trips an alpha. All of
+        // those are the same red, so all of them must ring the same dot.
+        let red = TextPalette.swatches.first { $0.name == "Red" }!
+        #expect(TextPalette.swatch(forStoredHex: "#FF5A5F") == red)
+        #expect(TextPalette.swatch(forStoredHex: "#ff5a5f") == red)
+        #expect(TextPalette.swatch(forStoredHex: "ff5a5f") == red)
+        #expect(TextPalette.swatch(forStoredHex: "#FF5A5FFF") == red)
+    }
+
+    @Test("an off-palette colour rings nothing, rather than the nearest dot")
+    func offPaletteColourMatchesNoSwatch() {
+        #expect(TextPalette.swatch(forStoredHex: "#123456") == nil)
+        #expect(TextPalette.swatch(forStoredHex: "#FF5A60") == nil) // one step off red
+        #expect(TextPalette.swatch(forStoredHex: nil) == nil)
+        #expect(TextPalette.swatch(forStoredHex: "not a colour") == nil)
+    }
+
+    @Test("a translucent stored colour is not the opaque swatch")
+    func alphaIsPartOfTheMatch() {
+        #expect(TextPalette.swatch(forStoredHex: "#00000080") == nil)
+        #expect(TextPalette.swatch(forStoredHex: "#000000")?.name == "Black")
+    }
+}

@@ -183,6 +183,11 @@ struct InlineTextEditor: NSViewRepresentable {
     func updateNSView(_ nsView: PassThroughContainer, context: Context) {
         // Keep the Coordinator's closures/style fresh, then re-place the overlay.
         context.coordinator.editor = self
+        // A restyle can arrive mid-edit now that the format bubble is anchored on the
+        // box being edited (062). The live glyphs are built from the style, so they
+        // have to be rebuilt when it changes — before the reposition, which measures
+        // the string in the NEW font.
+        context.coordinator.applyTypographyIfChanged()
         context.coordinator.reposition()
     }
 
@@ -247,12 +252,43 @@ struct InlineTextEditor: NSViewRepresentable {
             container.addSubview(scaleBox)
         }
 
+        /// Everything the live glyphs are built from EXCEPT the string — the string
+        /// belongs to the text view while an edit is open, and must never be written
+        /// back from the (still stale) model style.
+        private struct Typography: Equatable {
+            let family: String?
+            let weight: TextWeight
+            let align: TextAlign
+            let size: Double
+            let color: String?
+
+            init(_ style: ElementStyle) {
+                family = style.fontFamily
+                weight = style.weight
+                align = style.align
+                size = style.fontSize ?? ElementRendering.defaultFontSize
+                color = style.textColor
+            }
+        }
+
+        /// What ``applyTypography()`` last put on the text view, so a style that hasn't
+        /// changed doesn't reset the font (and with it the typing attributes) on every
+        /// SwiftUI update.
+        private var appliedTypography: Typography?
+
+        /// Rebuild the live glyphs iff the style's typography actually moved.
+        func applyTypographyIfChanged() {
+            guard Typography(editor.style) != appliedTypography else { return }
+            applyTypography()
+        }
+
         /// Font / colour / alignment from the element's style — the SAME family/weight
         /// mapping `CanvasFont` uses (it is internal to the renderer, so replicated
         /// here for the transient glyphs; the committed render still goes through it).
         /// The point size is the WORLD size and never changes with zoom — the
         /// ``scaleBox`` carries the zoom instead (see ``reposition``).
         private func applyTypography() {
+            appliedTypography = Typography(editor.style)
             textView.font = Self.nsFont(for: editor.style)
             let rgba = ElementRendering.rgba(fromHex: editor.style.textColor)
                 ?? RGBAColor(red: 0.07, green: 0.07, blue: 0.07)

@@ -39,10 +39,11 @@ public final class CanvasEngine {
     public var onTransformChanged: (() -> Void)?
 
     /// Fired when a LIVE gesture moves a tile's DISPLAYED frame without touching the
-    /// camera — today, a resize drag (062). The peer of ``onTransformChanged``, and
-    /// it exists because that one is not enough: the inline editor places its overlay
-    /// from the edited tile's on-screen frame, so any change to that frame must reach
-    /// it, whether the box moved under the camera or the camera moved under the box.
+    /// camera — a resize drag or a move drag (062). The peer of ``onTransformChanged``,
+    /// and it exists because that one is not enough: the inline editor places its
+    /// overlay from the edited tile's on-screen frame, and the app's floating format
+    /// chrome anchors on the selected tile's, so any change to that frame must reach
+    /// them, whether the box moved under the camera or the camera moved under the box.
     ///
     /// Without this a resize of the tile being edited desynchronises the two halves of
     /// what the user sees: the engine redraws the box, border and handles at the live
@@ -289,6 +290,7 @@ public final class CanvasEngine {
 
         dragWorldOffset = offset
         sync()
+        onLiveFrameChanged?()
     }
 
     /// The union of every carried tile's world frame at `offset`, or `nil` when the
@@ -321,7 +323,15 @@ public final class CanvasEngine {
     /// then calls ``sync()`` — by then the provider reports the new geometry and
     /// the offset is cleared, so the tile stays exactly where it was dropped.
     /// Returns `nil` when nothing was being dragged.
+    ///
+    /// Notifies ``onLiveFrameChanged`` on the way out — but only if a drag was
+    /// actually running, so an ordinary click doesn't fire it. By this point the
+    /// provider already holds the dropped origin (the host persisted it above) and
+    /// the offset is cleared, so a listener that tracked the drag lands on the
+    /// committed frame rather than on the last mid-drag tick. Mirrors ``endResize()``.
     public func endDrag() -> (tileID: Int, worldOrigin: CGPoint)? {
+        let wasDragging = dragTileID != nil
+        defer { if wasDragging { onLiveFrameChanged?() } }
         guard let id = dragTileID, let tile = tile(withID: id) else {
             dragTileID = nil
             dragGroupIDs = []

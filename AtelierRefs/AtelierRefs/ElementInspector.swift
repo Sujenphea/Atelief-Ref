@@ -176,8 +176,9 @@ struct ElementInspector: View {
     }
 }
 
-private extension TextAlign {
-    /// The SF Symbol for the alignment segmented control.
+extension TextAlign {
+    /// The SF Symbol for the alignment segmented control — shared with the board's
+    /// floating format bubble (062), so the two controls can't drift.
     var symbolName: String {
         switch self {
         case .left: return "text.alignleft"

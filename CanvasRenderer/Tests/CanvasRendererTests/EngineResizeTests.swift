@@ -765,4 +765,59 @@ struct EngineEditingResizeTests {
         e.setEditingBoxHeight(140)
         #expect(e.syncCount == before)
     }
+
+    // MARK: A move drag moves the displayed frame too (062)
+
+    /// A plain engine — no edit open. The drag half of the notification exists for
+    /// the app's floating format chrome, which anchors on the SELECTED tile and so
+    /// has to follow a box that is merely being dragged, not edited.
+    private func dragEngine() -> CanvasEngine {
+        let e = CanvasEngine(
+            provider: P(tiles: [Tile(id: 0, x: 0, y: 0, w: 400, h: 60, z: 0)]),
+            images: NoImages(),
+            transform: CanvasTransform(scale: 1, translation: .zero),
+            viewportSize: CGSize(width: 1_200, height: 800))
+        e.sync()
+        e.setSelected(0)
+        return e
+    }
+
+    @Test("every drag tick notifies, and so does the drop")
+    func dragNotifiesLiveFrame() {
+        let e = dragEngine()
+        var live = 0
+        var transforms = 0
+        e.onLiveFrameChanged = { live += 1 }
+        e.onTransformChanged = { transforms += 1 }
+
+        e.beginDrag(tileID: 0)
+        e.updateDrag(byScreenDelta: CGSize(width: 30, height: 20), snapping: false)
+        e.updateDrag(byScreenDelta: CGSize(width: 60, height: 40), snapping: false)
+        #expect(live == 2)
+        _ = e.endDrag()
+        #expect(live == 3) // the drop lands the listener on the committed frame
+        #expect(transforms == 0) // the camera never moved
+    }
+
+    @Test("what the listener reads mid-drag is the offset frame")
+    func dragNotificationCarriesTheLiveGeometry() {
+        let e = dragEngine()
+        var seen: CGRect?
+        e.onLiveFrameChanged = { seen = e.currentScreenFrame(forTileID: 0) }
+        e.beginDrag(tileID: 0)
+        e.updateDrag(byScreenDelta: CGSize(width: 30, height: 20), snapping: false)
+        #expect(seen?.origin == CGPoint(x: 30, y: 20))
+    }
+
+    @Test("a click — mouse down and up with no drag — is silent")
+    func endDragWithoutADragIsSilent() {
+        // `endDrag()` runs on every mouse-up that wasn't a click-select, so firing
+        // unconditionally would turn the notification into a per-click event and make
+        // every listener re-read geometry that never moved.
+        let e = dragEngine()
+        var live = 0
+        e.onLiveFrameChanged = { live += 1 }
+        _ = e.endDrag()
+        #expect(live == 0)
+    }
 }

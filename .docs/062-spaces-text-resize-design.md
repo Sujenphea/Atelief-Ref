@@ -259,7 +259,46 @@ It is transient by design — not a provider mutation, not a write. Nothing pers
 until the edit commits, so an abandoned edit leaves no trace and the undo stack gets
 one entry rather than one per keystroke.
 
-## 8. Known gaps
+## 8. Formatting where the text is
+
+The last piece of Nook's text model is not sizing at all — it is that formatting
+lives **on the canvas**. A palette of eleven colours floats above the box and a
+font/size bubble below it; recolouring is one click, next to the thing being
+recoloured. Ours put the same controls behind a selection, a glyph in the bottom
+bar, and a 280pt form.
+
+Ported as SwiftUI chrome over the renderer rather than, as Nook does, rects drawn
+into the canvas view and hit-tested in `mouseDown`. `CanvasRenderer` has no business
+knowing what an `ElementStyle` is — the seam the inline editor already respects — and
+SwiftUI gives us the popovers, hover and keyboard handling for nothing.
+
+What is worth keeping from Nook is the geometry, so it is kept exactly: palette
+above, bubble below, each flipping to the other side when the viewport edge leaves no
+room, and **stepping past the other when both end up on the same side**. That last
+rule is the one that is easy to omit and produces the only unusable arrangement — two
+panels drawn on top of each other, near an edge, where it is hardest to notice by
+hand. It is pure arithmetic (`SpaceTextChromeLayout`) and tested across a sweep of
+box positions rather than eyeballed.
+
+The panels are **fixed screen size** — chrome, not content, so the zoom does not
+reach them. They track the box through one published `CGRect`
+(`SpaceTextChromeAnchor`), off the `SpaceView` body diff, from the same two geometry
+notifications the editor listens to. That is what surfaced the last hole in §7's
+notification: it fired for a resize drag but not a move drag, so chrome anchored on a
+dragged tile detached and snapped back at the drop. `updateDrag` / `endDrag` now fire
+it too, `endDrag` only when a drag was actually running.
+
+**Formatting mid-edit.** A click on the chrome may blur the editor, which commits —
+Nook's bubble does the same. The target is therefore resolved at click time as *the
+box being edited, else the sole selected one*, and both are the same row, so the
+format lands where the user aimed it whichever way the responder chain goes. If the
+edit does survive, the restyle arrives while the `NSTextView` is live, so the editor
+re-applies typography when the style moves (guarded, so an unchanged style never
+resets the font mid-word). The restyle writes the **stored** string, never the one
+being typed — a restyle followed by Esc must still abandon the edit — and the box
+stays the right height meanwhile because the editing height is applied last (§7).
+
+## 9. Known gaps
 
 - **Editor and canvas still use different text engines** (TextKit vs CoreText).
   Unchanged from 060; both now lay out at the same world size against the same world
@@ -273,5 +312,11 @@ one entry rather than one per keystroke.
   first, as a box that changes height slightly on commit.
 - **Moves have no membership preview.** Only resizes do. Dragging a tile into a
   frame changes membership just as silently.
+- **The floating chrome is text-only and single-target.** A frame has both a fill
+  and a stroke, so "recolour" doesn't say which — frames keep the inspector. Nook's
+  palette recolours a whole selection; ours formats one box, which is where
+  `SpaceModel.updateStyle` writes today.
+- **A click on the chrome ends an open edit** (§8), costing a second undo entry and
+  the caret. Keeping the edit alive would need the panels in a non-activating window.
 - **No spacing/distribution snapping.** Only edge and centre alignment; equal-gap
   snapping between three or more tiles is a bigger feature.
