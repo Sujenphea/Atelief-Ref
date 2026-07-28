@@ -403,6 +403,24 @@ private let searchFieldWidth: CGFloat = 360
 /// dropdown floats at the top of the panel (trailing, under the field) instead. The
 /// keyword / meaning mode toggle stays a control at the top of the results grid — see
 /// `LibrarySearchResults.modePicker`.
+/// Whether `responder` is the **search field's** text editor — the only thing a tap in
+/// the content is allowed to blur.
+///
+/// This used to read `responder is NSText`, which is not the same question. `NSTextView`
+/// is a subclass of `NSText`, so it also matched the canvas's inline text editor — and
+/// since `LibrarySearchable` wraps every pane and a `simultaneousGesture` ends on
+/// mouse-UP, every double-click that opened a text box was blurred a few milliseconds
+/// later by this very handler. It looked like double-click-to-edit was broken; the edit
+/// was opening every time and being closed again immediately.
+///
+/// A *field editor* is the shared per-window editor an `NSTextField` (and so a SwiftUI
+/// `TextField`) borrows while focused. The canvas owns its text view outright, so it is
+/// not one — which is exactly the distinction wanted here.
+func isSearchFieldEditor(_ responder: NSResponder?) -> Bool {
+    guard let text = responder as? NSText else { return false }
+    return text.isFieldEditor
+}
+
 struct LibrarySearchable<Content: View>: View {
     @ObservedObject var model: IngestionModel
     /// The global grid density notch — search results honour the SAME persisted
@@ -429,11 +447,10 @@ struct LibrarySearchable<Content: View>: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // URL-bar behaviour: clicking anywhere in the content — including empty
-            // space — blurs the search field (guarded to `NSText`, the SwiftUI field
-            // editor, so it never interferes with grid selection / keyboard nav) and
-            // dismisses the suggestion dropdown.
+            // space — blurs the search field and dismisses the suggestion dropdown.
             .simultaneousGesture(TapGesture().onEnded {
-                if let window = NSApp.keyWindow, window.firstResponder is NSText {
+                if let window = NSApp.keyWindow,
+                   isSearchFieldEditor(window.firstResponder) {
                     window.makeFirstResponder(nil)
                 }
                 search.clearSuggestions()
