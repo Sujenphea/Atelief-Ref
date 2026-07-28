@@ -73,6 +73,7 @@ struct SpaceView: View {
     /// chrome that showed only while editing would unmount the control mid-click.
     @State private var showFontPopover = false
     @State private var showSizePopover = false
+    @State private var showColorPopover = false
 
     init(model: IngestionModel, nav: NavModel, spaceID: UUID, services: AppServices, store: MediaStore) {
         self.model = model
@@ -345,6 +346,7 @@ struct SpaceView: View {
                     style: space.style(forItemID: target.itemID),
                     showFont: $showFontPopover,
                     showSize: $showSizePopover,
+                    showColor: $showColorPopover,
                     onChange: { space.updateStyle(itemID: target.itemID, style: $0) })
                     // Deferred: `onAppear` runs inside the view update, and the anchor
                     // publishes — the same "Publishing changes from within view
@@ -429,7 +431,7 @@ struct SpaceView: View {
            detail.item.kind == .text {
             return (editingTileID, detail.item.id)
         }
-        guard showFontPopover || showSizePopover else { return nil }
+        guard showFontPopover || showSizePopover || showColorPopover else { return nil }
         guard let element = space.selectedElement, element.item.kind == .text,
               let tileID = content.tileID(forSpaceItemID: element.item.id) else { return nil }
         return (tileID, element.item.id)

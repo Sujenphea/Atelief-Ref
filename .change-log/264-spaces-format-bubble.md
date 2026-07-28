@@ -160,6 +160,24 @@ One test added: a fractionally-placed box still lands both panels on whole point
   Animation validates against **FLT_MAX** ~3.4e38 — every assignment logged and was
   clamped. One `CanvasEngine.chromeZ` constant (1e6) replaces all six.
 
+## Follow-up 3 — the palette is one segment, not a second panel
+
+The eleven-dot strip is gone. The bubble is `Aa · size · ●`, and the colour segment
+shows the box's current colour and opens the eleven in a 6-wide grid.
+
+The strip was 252pt — wider than many of the boxes it formats, so the chrome dwarfed
+its subject. Collapsing it also deletes a whole class of geometry: with only one
+floating panel there is no palette to collide with, so `paletteOrigin`, the
+`palette:` parameter on `bubbleOrigin` and the step-past-the-other-panel rule are
+all gone, along with the three tests that pinned them. The bubble's width now counts
+its two dividers and the four gaps around them — a new test asserts that, because
+the panel's frame is set from that number and anything left out of the sum is
+squeezed out of the content at draw time.
+
+Off-palette colours are handled: the segment shows the stored hex as an unnamed
+swatch rather than falling back to a default, so it always reads as the box's real
+colour.
+
 ## Migration notes
 
 None. New chrome only; nothing persisted changed, and `ElementInspector` is

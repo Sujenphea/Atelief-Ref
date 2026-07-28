@@ -95,20 +95,19 @@ enum SpaceTextChromeLayout {
     static let margin: CGFloat = 4
 
     static let swatchSize: CGFloat = 16
-    static let swatchGap: CGFloat = 6
+    /// Space between swatches in the colour popover's grid. Wider than the hover
+    /// ring's overhang so two neighbours' rings never touch.
+    static let swatchGap: CGFloat = 10
     static let panelPadding: CGFloat = 8
     static let bubbleHeight: CGFloat = 30
     static let segmentHeight: CGFloat = 22
     static let aaWidth: CGFloat = 30
+    /// The colour segment — a single dot showing the box's current colour.
+    static let swatchSegmentWidth: CGFloat = 26
     static let segmentGap: CGFloat = 8
-
-    /// The palette strip's size — eleven swatches in a row, so it is constant.
-    static var paletteSize: CGSize {
-        let n = CGFloat(TextPalette.swatches.count)
-        return CGSize(
-            width: panelPadding * 2 + n * swatchSize + (n - 1) * swatchGap,
-            height: panelPadding * 2 + swatchSize)
-    }
+    static let dividerWidth: CGFloat = 1
+    /// Columns in the colour popover's grid (11 swatches → 6 + 5).
+    static let paletteColumns = 6
 
     /// The size segment's width for a given label — wide enough for "144", never
     /// narrower than a tap target.
@@ -133,10 +132,14 @@ enum SpaceTextChromeLayout {
         return max(260, segment * CGFloat(TextWeight.allCases.count) + 2 * Theme.Spacing.lg)
     }
 
-    /// The bubble's size for a given point-size label.
+    /// The bubble's size for a given point-size label: `Aa | size | ●`, with the two
+    /// dividers and the gaps either side of each counted in — the panel's frame is set
+    /// from this number, so anything left out of it is squeezed out of the content.
     static func bubbleSize(sizeLabel: String) -> CGSize {
-        CGSize(
-            width: panelPadding * 2 + aaWidth + segmentGap + sizeSegmentWidth(label: sizeLabel),
+        let separators = 2 * (segmentGap + dividerWidth + segmentGap)
+        return CGSize(
+            width: panelPadding * 2 + aaWidth + sizeSegmentWidth(label: sizeLabel)
+                + swatchSegmentWidth + separators,
             height: bubbleHeight)
     }
 
@@ -151,26 +154,15 @@ enum SpaceTextChromeLayout {
         return max(margin, min(centred, bounds.width - width - margin)).rounded()
     }
 
-    /// The palette floats ABOVE the box, and flips below when there is no room.
-    static func paletteOrigin(anchor: CGRect, size: CGSize, bounds: CGSize) -> CGPoint {
-        var y = anchor.minY - size.height - gap
-        if y < margin { y = anchor.maxY + gap }
-        return CGPoint(x: clampedX(anchor: anchor, width: size.width, bounds: bounds), y: y.rounded())
-    }
-
-    /// The bubble floats BELOW the box, flips above when there is no room, and in
-    /// both directions steps past the palette if the palette had to flip to the same
-    /// side. Without that second rule the two panels stack on top of each other at a
-    /// viewport edge — the one arrangement where a floating control is unusable.
-    static func bubbleOrigin(
-        anchor: CGRect, size: CGSize, bounds: CGSize, palette: CGRect?
-    ) -> CGPoint {
+    /// The bubble floats BELOW the box, and flips above when there is no room.
+    ///
+    /// It used to have a second rule — step past the colour palette when that panel
+    /// had flipped to the same side. Collapsing the palette into a single segment took
+    /// the second panel away, and the rule with it: there is nothing left to collide
+    /// with, so the only edge case is the viewport's own bottom.
+    static func bubbleOrigin(anchor: CGRect, size: CGSize, bounds: CGSize) -> CGPoint {
         var y = anchor.maxY + gap
-        if let palette, palette.minY >= anchor.maxY { y = max(y, palette.maxY + gap) }
-        if y + size.height > bounds.height - margin {
-            y = anchor.minY - size.height - gap
-            if let palette, palette.maxY <= anchor.minY { y = min(y, palette.minY - size.height - gap) }
-        }
+        if y + size.height > bounds.height - margin { y = anchor.minY - size.height - gap }
         return CGPoint(x: clampedX(anchor: anchor, width: size.width, bounds: bounds), y: y.rounded())
     }
 
@@ -219,7 +211,7 @@ final class SpaceTextChromeAnchor: ObservableObject {
 
 // MARK: - The chrome
 
-/// The palette + bubble over the canvas, for ONE text box.
+/// The bubble over the canvas, for ONE text box: font · size · colour.
 struct SpaceFormatChrome: View {
     @ObservedObject var anchor: SpaceTextChromeAnchor
     /// The target's current style — seeds every control (checkmark, ring, label).
@@ -229,6 +221,7 @@ struct SpaceFormatChrome: View {
     /// can end that edit — so the flag has to outlive this view's own state.
     @Binding var showFont: Bool
     @Binding var showSize: Bool
+    @Binding var showColor: Bool
     /// Apply an edited style. `SpaceView` routes this to `SpaceModel.updateStyle`,
     /// so one click is one undo step with the auto-size folded in (054 §4.3 · D5).
     let onChange: (ElementStyle) -> Void
@@ -236,42 +229,18 @@ struct SpaceFormatChrome: View {
     var body: some View {
         GeometryReader { geo in
             if let box = anchor.screenFrame {
-                let paletteSize = SpaceTextChromeLayout.paletteSize
-                let bubbleSize = SpaceTextChromeLayout.bubbleSize(
+                let size = SpaceTextChromeLayout.bubbleSize(
                     sizeLabel: SpaceTextChromeLayout.sizeLabel(for: style))
-                let palette = CGRect(
-                    origin: SpaceTextChromeLayout.paletteOrigin(
-                        anchor: box, size: paletteSize, bounds: geo.size),
-                    size: paletteSize)
                 let bubble = CGRect(
                     origin: SpaceTextChromeLayout.bubbleOrigin(
-                        anchor: box, size: bubbleSize, bounds: geo.size, palette: palette),
-                    size: bubbleSize)
-
-                paletteBar
-                    .frame(width: palette.width, height: palette.height)
-                    .position(x: palette.midX, y: palette.midY)
+                        anchor: box, size: size, bounds: geo.size),
+                    size: size)
 
                 bubbleBar
                     .frame(width: bubble.width, height: bubble.height)
                     .position(x: bubble.midX, y: bubble.midY)
             }
         }
-    }
-
-    // MARK: Palette
-
-    private var paletteBar: some View {
-        HStack(spacing: SpaceTextChromeLayout.swatchGap) {
-            ForEach(TextPalette.swatches) { swatch in
-                SwatchDot(
-                    swatch: swatch,
-                    isCurrent: TextPalette.matches(swatch, storedHex: style.textColor),
-                    action: { change { $0.textColor = swatch.hex } })
-            }
-        }
-        .padding(SpaceTextChromeLayout.panelPadding)
-        .panelChrome(cornerRadius: SpaceTextChromeLayout.paletteSize.height / 2)
     }
 
     // MARK: Bubble
@@ -291,7 +260,7 @@ struct SpaceFormatChrome: View {
                 SpaceTextFontPopover(style: style, onChange: onChange)
             }
 
-            Divider().frame(height: SpaceTextChromeLayout.segmentHeight - 6)
+            divider
 
             Button { showSize = true } label: {
                 Text(SpaceTextChromeLayout.sizeLabel(for: style))
@@ -310,10 +279,45 @@ struct SpaceFormatChrome: View {
                     current: CGFloat(style.fontSize ?? ElementRendering.defaultFontSize),
                     onSelect: { size in change { $0.fontSize = Double(size) } })
             }
+
+            divider
+
+            // The colour segment shows the box's CURRENT colour and opens the eleven.
+            // A strip of all of them was the first cut, and it made the chrome twice
+            // the size of the thing it formats — 252pt of panel over a box that is
+            // often narrower than that.
+            Button { showColor = true } label: {
+                SwatchDotBody(swatch: currentSwatch, isCurrent: false, hovering: false)
+                    .frame(width: SpaceTextChromeLayout.swatchSegmentWidth,
+                           height: SpaceTextChromeLayout.segmentHeight)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Text colour")
+            .popover(isPresented: $showColor, arrowEdge: .bottom) {
+                SpaceTextColorPopover(
+                    current: style.textColor,
+                    onSelect: { hex in change { $0.textColor = hex } })
+            }
         }
         .padding(.horizontal, SpaceTextChromeLayout.panelPadding)
         .foregroundStyle(Theme.Colors.inkPrimary)
         .panelChrome(cornerRadius: SpaceTextChromeLayout.bubbleHeight / 2)
+    }
+
+    private var divider: some View {
+        Divider()
+            .frame(width: SpaceTextChromeLayout.dividerWidth,
+                   height: SpaceTextChromeLayout.segmentHeight - 6)
+    }
+
+    /// The dot the colour segment shows: the matching palette swatch, or — for a
+    /// colour set through the inspector's picker — an unnamed swatch of the stored
+    /// hex, so the segment always shows the box's real colour rather than a default.
+    private var currentSwatch: TextPalette.Swatch {
+        TextPalette.swatch(forStoredHex: style.textColor)
+            ?? TextPalette.Swatch(
+                name: "Custom", hex: style.textColor ?? ElementRendering.defaultTextColorHex)
     }
 
     /// Edit a copy of the target's style and hand it back — every control's one path
@@ -460,6 +464,38 @@ struct SpaceTextFontPopover: View {
                 set(&edited, newValue)
                 onChange(edited)
             })
+    }
+}
+
+/// The colour popover: the eleven swatches, one click each.
+///
+/// Nook floats all eleven permanently above the box. That reads well on its canvas
+/// and badly on ours — the strip is 252pt wide, wider than many of the text boxes it
+/// would be formatting, so the chrome dwarfed its subject. One dot in the bubble,
+/// opening these, keeps the one-click recolour a click deeper but the board legible.
+struct SpaceTextColorPopover: View {
+    /// The box's stored colour, so the matching swatch shows its ring.
+    let current: String?
+    let onSelect: (String) -> Void
+
+    private var columns: [GridItem] {
+        Array(
+            repeating: GridItem(.fixed(SpaceTextChromeLayout.swatchSize),
+                                spacing: SpaceTextChromeLayout.swatchGap),
+            count: SpaceTextChromeLayout.paletteColumns)
+    }
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: SpaceTextChromeLayout.swatchGap) {
+            ForEach(TextPalette.swatches) { swatch in
+                SwatchDot(
+                    swatch: swatch,
+                    isCurrent: TextPalette.matches(swatch, storedHex: current),
+                    action: { onSelect(swatch.hex) })
+            }
+        }
+        .padding(Theme.Spacing.lg)
+        .fixedSize()
     }
 }
 

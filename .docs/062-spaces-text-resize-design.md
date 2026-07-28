@@ -262,26 +262,30 @@ one entry rather than one per keystroke.
 ## 8. Formatting where the text is
 
 The last piece of Nook's text model is not sizing at all — it is that formatting
-lives **on the canvas**. A palette of eleven colours floats above the box and a
-font/size bubble below it; recolouring is one click, next to the thing being
-recoloured. Ours put the same controls behind a selection, a glyph in the bottom
-bar, and a 280pt form.
+lives **on the canvas**: a bubble by the box rather than a glyph in the bottom bar
+and a 280pt form.
 
 Ported as SwiftUI chrome over the renderer rather than, as Nook does, rects drawn
 into the canvas view and hit-tested in `mouseDown`. `CanvasRenderer` has no business
 knowing what an `ElementStyle` is — the seam the inline editor already respects — and
 SwiftUI gives us the popovers, hover and keyboard handling for nothing.
 
-What is worth keeping from Nook is the geometry, so it is kept exactly: palette
-above, bubble below, each flipping to the other side when the viewport edge leaves no
-room, and **stepping past the other when both end up on the same side**. That last
-rule is the one that is easy to omit and produces the only unusable arrangement — two
-panels drawn on top of each other, near an edge, where it is hardest to notice by
-hand. It is pure arithmetic (`SpaceTextChromeLayout`) and tested across a sweep of
-box positions rather than eyeballed.
+**One panel, three segments: `Aa` · size · colour.** Nook floats a second panel of
+eleven colour dots permanently above the box, and that is the one part of its layout
+we tried and dropped. The strip is 252pt wide — wider than many of the boxes it
+formats — so the chrome dwarfed its subject, and two floating panels needed a rule
+for what happens when both want the same side of the box at a viewport edge. Folding
+the palette into a single dot that opens the eleven removes the panel, the rule, and
+the ugliness in one go, at the cost of one click on a recolour.
 
-The panels are **fixed screen size** — chrome, not content, so the zoom does not
-reach them. They track the box through one published `CGRect`
+What remains is pure arithmetic (`SpaceTextChromeLayout`): below the box, centred,
+flipped above when the viewport's bottom leaves no room, clamped at either side. It
+is tested across a sweep of box positions rather than eyeballed, because the flip is
+conditional and a case the branch misses shows up at an edge, where it is hardest to
+notice by hand.
+
+The panel is **fixed screen size** — chrome, not content, so the zoom does not
+reach it. It tracks the box through one published `CGRect`
 (`SpaceTextChromeAnchor`), off the `SpaceView` body diff, from the same two geometry
 notifications the editor listens to. That is what surfaced the last hole in §7's
 notification: it fired for a resize drag but not a move drag, so chrome anchored on a

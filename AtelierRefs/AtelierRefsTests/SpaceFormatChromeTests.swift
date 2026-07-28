@@ -2,15 +2,18 @@
 //  SpaceFormatChromeTests.swift
 //  AtelierRefsTests
 //
-//  062 — the floating format chrome's PURE parts: where the two panels land, and
-//  which palette swatch a stored colour is.
+//  062 — the floating format bubble's PURE parts: where the panel lands, and which
+//  palette swatch a stored colour is.
 //
 //  The placement is the half worth testing. A floating panel is only ever wrong in
-//  three ways — off the edge of the viewport, on top of the thing it is formatting,
-//  or on top of the other panel — and all three happen at viewport edges, which is
-//  exactly where they are hardest to reproduce by hand. So the flip rules are
-//  asserted here rather than eyeballed: box near the top, box near the bottom, box
-//  against either side, and the case where BOTH panels want the same side.
+//  two ways — off the edge of the viewport, or on top of the thing it is formatting —
+//  and both happen at viewport edges, which is exactly where they are hardest to
+//  reproduce by hand. So the flip rules are asserted here rather than eyeballed: box
+//  near the bottom, box against either side, box on a fractional pixel.
+//
+//  (An earlier cut floated all eleven colours in a second panel above the box, which
+//  needed a don't-collide rule between the two. The palette is one segment in the
+//  bubble now, so both the second panel and that rule are gone.)
 //
 
 import AppKit
@@ -21,132 +24,79 @@ import Foundation
 import Testing
 @testable import AtelierRefs
 
-@Suite("Floating format chrome — palette above, bubble below (062)")
+@Suite("Floating format bubble — font · size · colour (062)")
 struct SpaceFormatChromeTests {
 
     private let bounds = CGSize(width: 1_200, height: 800)
     private let gap = SpaceTextChromeLayout.gap
     private let margin = SpaceTextChromeLayout.margin
 
-    private var paletteSize: CGSize { SpaceTextChromeLayout.paletteSize }
     private func bubbleSize(_ label: String = "24") -> CGSize {
         SpaceTextChromeLayout.bubbleSize(sizeLabel: label)
     }
 
-    /// Both panels for a box, in the order the view builds them.
-    private func panels(for box: CGRect, bounds: CGSize? = nil)
-        -> (palette: CGRect, bubble: CGRect) {
-        let b = bounds ?? self.bounds
-        let palette = CGRect(
-            origin: SpaceTextChromeLayout.paletteOrigin(anchor: box, size: paletteSize, bounds: b),
-            size: paletteSize)
-        let bubble = CGRect(
+    /// The bubble for a box.
+    private func bubble(for box: CGRect, bounds: CGSize? = nil) -> CGRect {
+        CGRect(
             origin: SpaceTextChromeLayout.bubbleOrigin(
-                anchor: box, size: bubbleSize(), bounds: b, palette: palette),
+                anchor: box, size: bubbleSize(), bounds: bounds ?? self.bounds),
             size: bubbleSize())
-        return (palette, bubble)
     }
 
     // MARK: - The ordinary case
 
-    @Test("palette above the box, bubble below it, both centred on it")
+    @Test("the bubble sits below the box, centred on it, clear of it")
     func defaultPlacement() {
         let box = CGRect(x: 400, y: 300, width: 300, height: 120)
-        let (palette, bubble) = panels(for: box)
+        let panel = bubble(for: box)
 
-        #expect(palette.maxY == box.minY - gap)
-        #expect(bubble.minY == box.maxY + gap)
-        #expect(palette.midX == box.midX)
-        #expect(bubble.midX == box.midX)
-    }
-
-    @Test("neither panel is drawn over the box it formats")
-    func panelsClearTheBox() {
-        let box = CGRect(x: 400, y: 300, width: 300, height: 120)
-        let (palette, bubble) = panels(for: box)
-        #expect(!palette.intersects(box))
-        #expect(!bubble.intersects(box))
+        #expect(panel.minY == box.maxY + gap)
+        #expect(panel.midX == box.midX)
+        #expect(!panel.intersects(box))
     }
 
     // MARK: - Viewport edges
 
-    @Test("a box at the top pushes the palette below it")
-    func paletteFlipsAtTheTopEdge() {
-        // Above the box there is no room, and a panel half off-screen is a panel the
-        // user can't click.
-        let box = CGRect(x: 400, y: 6, width: 300, height: 120)
-        let (palette, _) = panels(for: box)
-        #expect(palette.minY == box.maxY + gap)
-        #expect(palette.minY >= margin)
-    }
-
     @Test("a box at the bottom pushes the bubble above it")
     func bubbleFlipsAtTheBottomEdge() {
-        // Above the box, and above the palette that is already there (see
-        // `bubbleClearsThePaletteWhenFlippingUp`) — so `<=`, not `==`.
-        let box = CGRect(x: 400, y: 640, width: 300, height: 120)
-        let (_, bubble) = panels(for: box)
-        #expect(bubble.maxY <= box.minY - gap)
-        #expect(bubble.maxY <= bounds.height - margin)
+        let box = CGRect(x: 400, y: 740, width: 300, height: 50)
+        let panel = bubble(for: box)
+        #expect(panel.maxY == box.minY - gap)
+        #expect(panel.maxY <= bounds.height - margin)
+        #expect(!panel.intersects(box))
     }
 
-    @Test("a box against either side keeps both panels on screen")
+    @Test("a box against either side keeps the bubble on screen")
     func clampedHorizontally() {
         for box in [CGRect(x: -200, y: 300, width: 300, height: 120),
                     CGRect(x: 1_150, y: 300, width: 300, height: 120)] {
-            let (palette, bubble) = panels(for: box)
-            for panel in [palette, bubble] {
-                #expect(panel.minX >= margin)
-                #expect(panel.maxX <= bounds.width - margin)
-            }
+            let panel = bubble(for: box)
+            #expect(panel.minX >= margin)
+            #expect(panel.maxX <= bounds.width - margin)
         }
     }
 
-    @Test("a box on a fractional pixel still lands both panels on whole points")
+    @Test("a box on a fractional pixel still lands the bubble on whole points")
     func panelsLandOnWholePoints() {
         // The box's on-screen frame is fractional at most zoom levels. A panel on a
-        // half point spreads its hairline border — and the rings around its 16pt
-        // swatches — over two rows of pixels, which reads as a blurred, faintly
-        // off-centre dot rather than as a rounding error.
+        // half point spreads its hairline border — and the ring around its swatch —
+        // over two rows of pixels, which reads as blurred rather than as a rounding
+        // error.
         let box = CGRect(x: 400.37, y: 300.62, width: 301.4, height: 119.75)
-        let (palette, bubble) = panels(for: box)
-        for origin in [palette.origin, bubble.origin] {
-            #expect(origin.x == origin.x.rounded())
-            #expect(origin.y == origin.y.rounded())
-        }
+        let panel = bubble(for: box)
+        #expect(panel.origin.x == panel.origin.x.rounded())
+        #expect(panel.origin.y == panel.origin.y.rounded())
     }
 
-    // MARK: - The two panels meeting
-
-    @Test("when the palette flips down, the bubble steps below it")
-    func bubbleClearsAFlippedPalette() {
-        // Both want the space under the box. Without the second rule they are drawn
-        // in the same place and the top one is unreachable.
-        let box = CGRect(x: 400, y: 6, width: 300, height: 120)
-        let (palette, bubble) = panels(for: box)
-        #expect(palette.minY == box.maxY + gap)      // palette flipped down
-        #expect(bubble.minY >= palette.maxY + gap)   // bubble stepped past it
-        #expect(!palette.intersects(bubble))
-    }
-
-    @Test("when the bubble flips up, it steps above the palette")
-    func bubbleClearsThePaletteWhenFlippingUp() {
-        let box = CGRect(x: 400, y: 640, width: 300, height: 120)
-        let (palette, bubble) = panels(for: box)
-        #expect(bubble.maxY <= palette.minY - gap)
-        #expect(!palette.intersects(bubble))
-    }
-
-    @Test("the panels never overlap, wherever the box is")
-    func panelsNeverOverlap() {
-        // The sweep is the point: the collision rules are conditional, and a case
-        // neither branch covers would show up here rather than on someone's board.
+    @Test("the bubble never lands on the box, wherever the box is")
+    func bubbleNeverCoversTheBox() {
+        // The sweep is the point: the flip is conditional, and a case the branch
+        // doesn't cover would show up here rather than on someone's board.
         for y in stride(from: -100.0, through: 900.0, by: 25.0) {
             for x in stride(from: -300.0, through: 1_400.0, by: 100.0) {
                 let box = CGRect(x: x, y: y, width: 300, height: 120)
-                let (palette, bubble) = panels(for: box)
-                #expect(!palette.intersects(bubble),
-                        "panels collide for a box at (\(x), \(y))")
+                #expect(!bubble(for: box).intersects(box),
+                        "the bubble covers a box at (\(x), \(y))")
             }
         }
     }
@@ -157,6 +107,20 @@ struct SpaceFormatChromeTests {
     func bubbleWidthTracksItsLabel() {
         #expect(bubbleSize("144").width > bubbleSize("10").width)
         #expect(SpaceTextChromeLayout.sizeSegmentWidth(label: "8") >= 26)
+    }
+
+    @Test("the bubble's width counts its dividers, so nothing is squeezed out")
+    func bubbleWidthCountsEverythingItDraws() {
+        // The panel's frame is set from this number: a separator left out of the sum
+        // is a separator squeezed out of the content at draw time.
+        let label = "24"
+        let content = SpaceTextChromeLayout.aaWidth
+            + SpaceTextChromeLayout.sizeSegmentWidth(label: label)
+            + SpaceTextChromeLayout.swatchSegmentWidth
+            + 2 * SpaceTextChromeLayout.dividerWidth
+            + 4 * SpaceTextChromeLayout.segmentGap
+            + 2 * SpaceTextChromeLayout.panelPadding
+        #expect(bubbleSize(label).width == content)
     }
 
     @Test("the size label reads the style, and falls back to the default")
@@ -268,12 +232,18 @@ struct SpaceFormatChromeTests {
         #expect(abs(hovered.height - hovered.width) < 0.3)
     }
 
-    @Test("the hover ring stays inside the strip's padding and clear of its neighbour")
-    func hoverRingFitsThePanel() {
-        // It overflows the dot's own 16pt slot by design, so what keeps it from
-        // colliding is the panel's padding and the gap between swatches.
+    @Test("the hover ring clears its neighbours in the colour popover's grid")
+    func hoverRingFitsTheGrid() {
+        // It overflows the dot's own 16pt cell by design, so what keeps it from
+        // colliding is the grid's spacing — and, in the bubble, the segment it sits in.
         let overhang = (SwatchDotBody.hoverRingSize - SpaceTextChromeLayout.swatchSize) / 2
-        #expect(overhang <= SpaceTextChromeLayout.panelPadding)
         #expect(overhang * 2 <= SpaceTextChromeLayout.swatchGap)
+        #expect(SwatchDotBody.hoverRingSize <= SpaceTextChromeLayout.swatchSegmentWidth)
+    }
+
+    @Test("eleven swatches fill the grid's rows without a ragged last row of one")
+    func paletteGridIsBalanced() {
+        let columns = SpaceTextChromeLayout.paletteColumns
+        #expect(TextPalette.swatches.count % columns != 1)
     }
 }
