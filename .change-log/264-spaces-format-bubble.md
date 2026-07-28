@@ -133,6 +133,33 @@ Reported after the first pass, all three in the chrome's own drawing:
 
 One test added: a fractionally-placed box still lands both panels on whole points.
 
+## Follow-up 2 — editing-only, a measured ring, two log warnings
+
+- **The chrome now shows only while a box is being EDITED**, not while it is merely
+  selected. Formatting belongs to writing; chrome on every selection is chrome in
+  the way of every drag. The exception is a popover the chrome itself opened —
+  presenting one takes key-window focus, blurs the editor and commits, which read
+  literally would unmount the bubble mid-click — so while a popover is up the target
+  falls through to the sole selected `.text` element, the box that was being edited
+  a moment ago. The popover flags moved to `SpaceView` for exactly that reason.
+- **The hover ring, third attempt — measured this time.** The visual is split into
+  `SwatchDotBody` so a test can render it with `ImageRenderer` at 4× and read the
+  bounding box of the ink: both states are centred within 0.3pt, resting is the 16pt
+  dot, hovering is the ring. The ring is also **20pt now, not 21** — an odd ring
+  around an even dot is concentric in layout but lands its stroke on half-points, so
+  at 1× it antialiases across two pixel rows, heavier on one side. That, plus the
+  whole-point panel snapping above, is what "not centred" looked like.
+- **"Publishing changes from within view updates is not allowed."** `onHostReady`
+  fires from `CanvasView.makeNSView` — inside a view update — and the anchor's
+  `refresh()` publishes there. Hopped off the update frame with a `Task { @MainActor }`,
+  the same dodge `ElementInspector.onDisappear` already uses; `.onAppear` likewise.
+- **"zPosition should be within (-FLT_MAX, FLT_MAX) range."** Pre-existing, not from
+  this feature: six chrome layers (selection border, handles, guides, membership
+  wash, create preview) set `zPosition = .greatestFiniteMagnitude`. That property is
+  a `CGFloat`, so its greatest finite value is a `Double`'s ~1.8e308, while Core
+  Animation validates against **FLT_MAX** ~3.4e38 — every assignment logged and was
+  clamped. One `CanvasEngine.chromeZ` constant (1e6) replaces all six.
+
 ## Migration notes
 
 None. New chrome only; nothing persisted changed, and `ElementInspector` is

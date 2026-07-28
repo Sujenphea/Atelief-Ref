@@ -67,6 +67,12 @@ struct SpaceView: View {
     /// republished imperatively from the same geometry notifications the editor
     /// listens to, so a pan / zoom / move / resize never re-evaluates this body.
     @StateObject private var chromeAnchor = SpaceTextChromeAnchor()
+    /// Whether the format chrome's font / size popover is open. Owned HERE, not by
+    /// the chrome, because it decides whether the chrome stays mounted: presenting a
+    /// popover takes key-window focus, which blurs the editor and commits — so a
+    /// chrome that showed only while editing would unmount the control mid-click.
+    @State private var showFontPopover = false
+    @State private var showSizePopover = false
 
     init(model: IngestionModel, nav: NavModel, spaceID: UUID, services: AppServices, store: MediaStore) {
         self.model = model
@@ -264,7 +270,14 @@ struct SpaceView: View {
                 },
                 onTransformChanged: { editBridge.geometryDidChange(); chromeAnchor.refresh() },
                 onLiveFrameChanged: { editBridge.geometryDidChange(); chromeAnchor.refresh() },
-                onHostReady: { editBridge.host = $0; chromeAnchor.refresh() },
+                // `onHostReady` fires from `makeNSView` — inside a view update, where
+                // publishing is undefined behaviour — so the anchor's read is hopped
+                // off the update frame. The bridge's own host is a plain reference and
+                // publishes nothing, so it is set straight away.
+                onHostReady: { host in
+                    editBridge.host = host
+                    Task { @MainActor in chromeAnchor.refresh() }
+                },
                 // Drop target (SP2 · S2 + SP3 · S1). We register the app-private
                 // asset-drag type PLUS the external file / image / URL types, so
                 // both an in-app reference drag and a Finder/browser drop land here.
@@ -323,16 +336,23 @@ struct SpaceView: View {
                 inlineEditor(tileID: editingTileID, itemID: detail.item.id)
             }
 
-            // The floating palette + font/size bubble for the text box being edited
-            // or solely selected (062). ABOVE the editor in the stack so its buttons
-            // take the click; the editor's container passes through everything that
-            // misses its own text box anyway.
+            // The floating palette + font/size bubble for the text box being EDITED
+            // (062). ABOVE the editor in the stack so its buttons take the click; the
+            // editor's container passes through everything that misses its text box.
             if let target = formatTarget(in: content) {
                 SpaceFormatChrome(
                     anchor: chromeAnchor,
                     style: space.style(forItemID: target.itemID),
+                    showFont: $showFontPopover,
+                    showSize: $showSizePopover,
                     onChange: { space.updateStyle(itemID: target.itemID, style: $0) })
-                    .onAppear { chromeAnchor.track(tileID: target.tileID, bridge: editBridge) }
+                    // Deferred: `onAppear` runs inside the view update, and the anchor
+                    // publishes — the same "Publishing changes from within view
+                    // updates" trap `ElementInspector.onDisappear` already dodges.
+                    .onAppear {
+                        let tileID = target.tileID
+                        Task { @MainActor in chromeAnchor.track(tileID: tileID, bridge: editBridge) }
+                    }
                     .onChange(of: target.tileID) { _, tileID in
                         chromeAnchor.track(tileID: tileID, bridge: editBridge)
                     }
@@ -390,20 +410,26 @@ struct SpaceView: View {
         .id(tileID)
     }
 
-    /// The text box the floating format chrome targets (062): the one being edited,
-    /// else the sole selected `.text` element. `nil` — for a multi-selection, an
-    /// asset, a frame, or nothing — hides it.
+    /// The text box the floating format chrome targets (062) — **the one being
+    /// edited**. Merely selecting a box doesn't raise it: formatting belongs to the
+    /// act of writing, and chrome that appears on every selection is chrome in the
+    /// way of every drag.
+    ///
+    /// The one exception is a popover the chrome itself opened. Presenting one takes
+    /// key-window focus, which blurs the `NSTextView` and commits the edit — so
+    /// editing-only, read literally, would unmount the bubble the instant its popover
+    /// appeared. While a popover is up the target therefore falls through to the sole
+    /// selected `.text` element, which is the box that was being edited a moment ago,
+    /// so the format still lands where the user aimed it.
     ///
     /// The chrome anchors on the TILE (its on-screen frame) but writes to the ITEM,
-    /// and both are resolved here, together, because a click on the chrome may first
-    /// blur the editor: the edit commits, `editingTileID` clears, and the target
-    /// falls through to the selected element — which is the same row, so the format
-    /// lands where the user aimed it either way.
+    /// so both are resolved here, together.
     private func formatTarget(in content: SpaceContent) -> (tileID: Int, itemID: UUID)? {
         if let editingTileID, let detail = content.detail(forTileID: editingTileID),
            detail.item.kind == .text {
             return (editingTileID, detail.item.id)
         }
+        guard showFontPopover || showSizePopover else { return nil }
         guard let element = space.selectedElement, element.item.kind == .text,
               let tileID = content.tileID(forSpaceItemID: element.item.id) else { return nil }
         return (tileID, element.item.id)

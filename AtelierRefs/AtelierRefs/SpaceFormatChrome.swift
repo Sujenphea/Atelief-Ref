@@ -224,12 +224,14 @@ struct SpaceFormatChrome: View {
     @ObservedObject var anchor: SpaceTextChromeAnchor
     /// The target's current style — seeds every control (checkmark, ring, label).
     let style: ElementStyle
+    /// Whether each popover is open. Bound to `SpaceView` rather than held here: the
+    /// chrome is mounted only while a box is being edited, and presenting a popover
+    /// can end that edit — so the flag has to outlive this view's own state.
+    @Binding var showFont: Bool
+    @Binding var showSize: Bool
     /// Apply an edited style. `SpaceView` routes this to `SpaceModel.updateStyle`,
     /// so one click is one undo step with the auto-size folded in (054 §4.3 · D5).
     let onChange: (ElementStyle) -> Void
-
-    @State private var showFont = false
-    @State private var showSize = false
 
     var body: some View {
         GeometryReader { geo in
@@ -333,39 +335,57 @@ private struct SwatchDot: View {
 
     @State private var hovering = false
 
-    /// The hover ring's diameter: the dot plus 2.5pt of clearance on each side. Kept
-    /// under the swatch gap (6) so two neighbours' rings never touch.
-    private static let hoverRingSize = SpaceTextChromeLayout.swatchSize + 5
-
     var body: some View {
         Button(action: action) {
-            ZStack {
-                Circle().fill(swatch.color)
-                Circle().strokeBorder(
-                    isCurrent ? Theme.Colors.inkPrimary : Theme.Colors.hairlineStrong,
-                    lineWidth: isCurrent ? 2 : 1)
-            }
-            .frame(width: SpaceTextChromeLayout.swatchSize,
-                   height: SpaceTextChromeLayout.swatchSize)
-            // The ring is CENTRED on the dot by an explicit frame rather than grown
-            // out of it by a negative padding — an overlay is centred on its base, so
-            // concentric is a layout guarantee here rather than the outcome of
-            // insetting a frame by equal amounts. It overflows the dot's 16pt slot on
-            // purpose: the panel's own 8pt padding leaves room, and the dot's LAYOUT
-            // size stays 16, so the strip is still exactly the width
-            // `SpaceTextChromeLayout.paletteSize` reports.
-            .overlay {
-                Circle()
-                    .strokeBorder(
-                        Theme.Colors.inkPrimary.opacity(hovering ? 0.5 : 0), lineWidth: 1.5)
-                    .frame(width: Self.hoverRingSize, height: Self.hoverRingSize)
-            }
-            .contentShape(Circle())
+            SwatchDotBody(swatch: swatch, isCurrent: isCurrent, hovering: hovering)
         }
         .buttonStyle(.plain)
         .help(swatch.name)
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.12), value: hovering)
+    }
+}
+
+/// The dot's DRAWING, split from its button so a test can render it at a known hover
+/// state and measure where the ink actually lands (`SpaceFormatChromeTests`). Two
+/// attempts at centring this ring were reported as still off, which is one more than
+/// a thing this simple deserves before it gets measured rather than reasoned about.
+struct SwatchDotBody: View {
+    let swatch: TextPalette.Swatch
+    let isCurrent: Bool
+    let hovering: Bool
+
+    /// The hover ring's diameter: the dot plus **2pt of clearance on each side**.
+    ///
+    /// Even, deliberately. An odd ring around an even dot (21 around 16) is concentric
+    /// in layout but lands its stroke on half-points, so at 1× it is antialiased
+    /// across two pixel rows — heavier on one side than the other, which is exactly
+    /// what "not centred" looks like. Kept well inside the 6pt swatch gap so two
+    /// neighbours' rings never touch.
+    static let hoverRingSize = SpaceTextChromeLayout.swatchSize + 4
+
+    var body: some View {
+        ZStack {
+            Circle().fill(swatch.color)
+            Circle().strokeBorder(
+                isCurrent ? Theme.Colors.inkPrimary : Theme.Colors.hairlineStrong,
+                lineWidth: isCurrent ? 2 : 1)
+        }
+        .frame(width: SpaceTextChromeLayout.swatchSize,
+               height: SpaceTextChromeLayout.swatchSize)
+        // The ring is CENTRED on the dot by an explicit frame rather than grown out of
+        // it by a negative padding — an overlay is centred on its base, so concentric
+        // is a layout guarantee here rather than the outcome of insetting a frame by
+        // equal amounts on four sides. It overflows the dot's 16pt slot on purpose:
+        // the panel's own 8pt padding leaves room, and the dot's LAYOUT size stays 16,
+        // so the strip is still exactly the width `paletteSize` reports.
+        .overlay {
+            Circle()
+                .strokeBorder(
+                    Theme.Colors.inkPrimary.opacity(hovering ? 0.5 : 0), lineWidth: 1.5)
+                .frame(width: Self.hoverRingSize, height: Self.hoverRingSize)
+        }
+        .contentShape(Circle())
     }
 }
 

@@ -14,6 +14,7 @@
 //
 
 import AppKit
+import SwiftUI
 import AtelierCore
 import CoreGraphics
 import Foundation
@@ -201,5 +202,78 @@ struct SpaceFormatChromeTests {
     func alphaIsPartOfTheMatch() {
         #expect(TextPalette.swatch(forStoredHex: "#00000080") == nil)
         #expect(TextPalette.swatch(forStoredHex: "#000000")?.name == "Black")
+    }
+
+    // MARK: - The hover ring, measured
+
+    /// Render a swatch dot and return the bounding box of everything it drew, in
+    /// POINTS relative to the render's centre.
+    ///
+    /// Rendered rather than reasoned about: "the ring isn't centred" was reported
+    /// twice, and both fixes were arguments about how SwiftUI centres an overlay. An
+    /// argument can be wrong in a way a pixel can't.
+    @MainActor
+    private func inkBounds(hovering: Bool) throws -> CGRect {
+        let side: CGFloat = 40
+        let renderer = ImageRenderer(
+            content: ZStack {
+                SwatchDotBody(
+                    swatch: TextPalette.swatches.first { $0.name == "Black" }!,
+                    isCurrent: false, hovering: hovering)
+            }
+            .frame(width: side, height: side))
+        let scale: CGFloat = 4
+        renderer.scale = scale
+        let image = try #require(renderer.cgImage)
+
+        // Read the alpha channel: the background is clear, so anything the dot drew
+        // is the only non-zero alpha in the bitmap.
+        let w = image.width, h = image.height
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        let ctx = try #require(CGContext(
+            data: &pixels, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+        var minX = w, minY = h, maxX = -1, maxY = -1
+        for y in 0..<h {
+            for x in 0..<w where pixels[(y * w + x) * 4 + 3] > 8 { // ignore AA dust
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+            }
+        }
+        #expect(maxX >= 0, "the dot drew nothing at all")
+        // Back to points, relative to the centre of the render.
+        let half = side * scale / 2
+        return CGRect(
+            x: (CGFloat(minX) - half) / scale, y: (CGFloat(minY) - half) / scale,
+            width: CGFloat(maxX - minX + 1) / scale, height: CGFloat(maxY - minY + 1) / scale)
+    }
+
+    @MainActor
+    @Test("the hover ring is concentric with its dot, and 2pt clear of it")
+    func hoverRingIsConcentric() throws {
+        let resting = try inkBounds(hovering: false)
+        let hovered = try inkBounds(hovering: true)
+
+        // Both are centred on the same point: |left inset| == |right inset|.
+        for box in [resting, hovered] {
+            #expect(abs(box.minX + box.maxX) < 0.3, "off-centre horizontally: \(box)")
+            #expect(abs(box.minY + box.maxY) < 0.3, "off-centre vertically: \(box)")
+        }
+        // Resting is the 16pt dot; hovering adds the ring, 2pt clear on every side.
+        #expect(abs(resting.width - SpaceTextChromeLayout.swatchSize) < 0.6)
+        #expect(abs(hovered.width - SwatchDotBody.hoverRingSize) < 0.6)
+        #expect(abs(hovered.height - hovered.width) < 0.3)
+    }
+
+    @Test("the hover ring stays inside the strip's padding and clear of its neighbour")
+    func hoverRingFitsThePanel() {
+        // It overflows the dot's own 16pt slot by design, so what keeps it from
+        // colliding is the panel's padding and the gap between swatches.
+        let overhang = (SwatchDotBody.hoverRingSize - SpaceTextChromeLayout.swatchSize) / 2
+        #expect(overhang <= SpaceTextChromeLayout.panelPadding)
+        #expect(overhang * 2 <= SpaceTextChromeLayout.swatchGap)
     }
 }

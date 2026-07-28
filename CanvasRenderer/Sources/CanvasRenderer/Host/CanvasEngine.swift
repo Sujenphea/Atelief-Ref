@@ -735,7 +735,7 @@ public final class CanvasEngine {
             layer.bounds = CGRect(x: 0, y: 0, width: size, height: size)
             layer.position = centre
             layer.cornerRadius = size / 2
-            layer.zPosition = .greatestFiniteMagnitude // above the selection border
+            layer.zPosition = Self.chromeZ // above the selection border
         }
     }
 
@@ -758,7 +758,7 @@ public final class CanvasEngine {
             layer.frame = guide.isVertical
                 ? CGRect(x: origin.x, y: 0, width: 1, height: viewportSize.height)
                 : CGRect(x: 0, y: origin.y, width: viewportSize.width, height: 1)
-            layer.zPosition = .greatestFiniteMagnitude
+            layer.zPosition = Self.chromeZ
         }
     }
 
@@ -783,7 +783,7 @@ public final class CanvasEngine {
                 membershipLayers[tile.id] = layer
             }
             layer.frame = transform.worldToScreen(displayWorldFrame(for: tile))
-            layer.zPosition = .greatestFiniteMagnitude
+            layer.zPosition = Self.chromeZ
         }
         // A tile that left the viewport (or the frame) gives its wash back.
         for id in stale {
@@ -1085,7 +1085,7 @@ public final class CanvasEngine {
             selectionLayers[tile.id] = layer
         }
         layer.frame = screenFrame.insetBy(dx: -Self.selectionInset, dy: -Self.selectionInset)
-        layer.zPosition = .greatestFiniteMagnitude // always on top
+        layer.zPosition = Self.chromeZ // always on top
     }
 
     private func makeSelectionLayer() -> CALayer {
@@ -1101,6 +1101,17 @@ public final class CanvasEngine {
     /// Screen-point outset of the highlight beyond the tile edge (so the border
     /// frames the image rather than covering it).
     private static let selectionInset: CGFloat = 2
+
+    /// `zPosition` for chrome that must draw above every tile — the selection border,
+    /// the resize handles, the snap guides, the membership wash, the create preview.
+    ///
+    /// A real number rather than `.greatestFiniteMagnitude`, which is what these all
+    /// used to be. `zPosition` is a `CGFloat`, so its greatest finite value is a
+    /// `Double`'s (~1.8e308), while Core Animation validates the property against
+    /// **FLT_MAX** (~3.4e38) — every one of those assignments logged "zPosition
+    /// should be within (-FLT_MAX, FLT_MAX) range" and was clamped anyway. A million
+    /// is above any tile's z (a row index) by every margin that matters.
+    static let chromeZ: CGFloat = 1_000_000
 
     /// The topmost visible tile whose on-screen frame contains `screenPoint`, or
     /// `nil`. Used by the host view to resolve a click to an asset.

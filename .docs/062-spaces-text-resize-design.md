@@ -288,15 +288,24 @@ notification: it fired for a resize drag but not a move drag, so chrome anchored
 dragged tile detached and snapped back at the drop. `updateDrag` / `endDrag` now fire
 it too, `endDrag` only when a drag was actually running.
 
-**Formatting mid-edit.** A click on the chrome may blur the editor, which commits —
-Nook's bubble does the same. The target is therefore resolved at click time as *the
-box being edited, else the sole selected one*, and both are the same row, so the
-format lands where the user aimed it whichever way the responder chain goes. If the
-edit does survive, the restyle arrives while the `NSTextView` is live, so the editor
-re-applies typography when the style moves (guarded, so an unchanged style never
-resets the font mid-word). The restyle writes the **stored** string, never the one
-being typed — a restyle followed by Esc must still abandon the edit — and the box
-stays the right height meanwhile because the editing height is applied last (§7).
+**It shows while you are editing, not while you have selected.** Formatting belongs
+to the act of writing; chrome that appears on every selection is chrome in the way of
+every drag. Nook shows its bubble for a selected text object too, and that is the one
+piece of its behaviour we deliberately did not take.
+
+The exception is a popover the chrome itself opened. Presenting one takes key-window
+focus, which blurs the `NSTextView` and commits — so "only while editing", read
+literally, would unmount the bubble the instant its popover appeared. While a popover
+is open the target therefore falls through to the sole selected `.text` element,
+which is the box that was being edited a moment ago. The popover flags live in
+`SpaceView`, not in the chrome, precisely because they have to outlive it.
+
+**Formatting mid-edit.** If the edit does survive the click — a palette swatch opens
+no popover, so it should — the restyle arrives while the `NSTextView` is live, and
+the editor re-applies typography when the style moves (guarded, so an unchanged style
+never resets the font mid-word). The restyle writes the **stored** string, never the
+one being typed: a restyle followed by Esc must still abandon the edit. The box stays
+the right height meanwhile because the editing height is applied last (§7).
 
 ## 9. Known gaps
 

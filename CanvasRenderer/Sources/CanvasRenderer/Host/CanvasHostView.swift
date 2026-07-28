@@ -618,7 +618,7 @@ public final class CanvasHostView: NSView {
         CATransaction.setDisableActions(true)
         preview.frame = rect
         preview.isHidden = false
-        preview.zPosition = .greatestFiniteMagnitude
+        preview.zPosition = CanvasEngine.chromeZ
         CATransaction.commit()
     }
 
@@ -701,7 +701,7 @@ public final class CanvasHostView: NSView {
         CATransaction.setDisableActions(true)
         layer.frame = engine.transform.worldToScreen(worldRect)
         layer.isHidden = false
-        layer.zPosition = .greatestFiniteMagnitude
+        layer.zPosition = CanvasEngine.chromeZ
         CATransaction.commit()
     }
 
