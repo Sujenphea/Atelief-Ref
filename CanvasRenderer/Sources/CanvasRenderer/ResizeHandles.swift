@@ -36,6 +36,16 @@ public enum ResizeGeometry {
     /// than the dot so a handle is easy to catch without pixel-hunting.
     public static let handleHitSize: CGFloat = 22
 
+    /// The grab zone for the box currently being EDITED, in screen points.
+    ///
+    /// Smaller than ``handleHitSize`` because the two gestures want opposite things
+    /// from the same pixels. Resizing a box while editing it is deliberate (062), so
+    /// the handles cannot simply be switched off — but a text box is short, and a 22pt
+    /// zone reaching 11pt in from every edge would leave a 16pt box with almost no
+    /// interior for the caret. 10pt keeps every handle catchable while leaving the
+    /// middle of the box to the text.
+    public static let editingHitSize: CGFloat = 10
+
     /// Smallest world edge a resize may produce. Also the floor that keeps a text
     /// box's wrap width from collapsing toward zero.
     public static let minWorldSize: CGFloat = 24

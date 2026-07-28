@@ -191,12 +191,13 @@ final class SpaceTextChromeAnchor: ObservableObject {
     @Published private(set) var screenFrame: CGRect?
 
     private var tileID: Int?
-    private weak var bridge: CanvasEditingBridge?
+    /// The live canvas host, set from `onHostReady`. `weak` so a detached host is never
+    /// kept alive by the bubble.
+    weak var host: CanvasHostView?
 
     /// Point the anchor at a tile (or `nil` to stop tracking) and read its frame now.
-    func track(tileID: Int?, bridge: CanvasEditingBridge) {
+    func track(tileID: Int?) {
         self.tileID = tileID
-        self.bridge = bridge
         refresh()
     }
 
@@ -204,7 +205,7 @@ final class SpaceTextChromeAnchor: ObservableObject {
     /// per-tick notifications a drag or zoom produces cost one `CGRect` compare when
     /// nothing moved.
     func refresh() {
-        let frame = tileID.flatMap { bridge?.screenFrame(forTileID: $0) }
+        let frame = tileID.flatMap { host?.screenFrame(forTileID: $0) }
         if frame != screenFrame { screenFrame = frame }
     }
 }

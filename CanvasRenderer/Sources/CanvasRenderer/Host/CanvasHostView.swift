@@ -15,6 +15,12 @@ public final class CanvasHostView: NSView {
     /// container, so its own `layer` is not where tiles are.
     var contentLayer: CALayer { engine.rootLayer }
 
+    /// The handle a press at `point` would arm, for the package's own tests — the
+    /// gesture itself needs a real `NSEvent`, which a headless test has no way to make.
+    func resizeHandleForTesting(at point: CGPoint) -> ResizeHandle? {
+        engine.resizeHandle(atScreenPoint: point)?.handle
+    }
+
     /// Whether this host may still frame the board to fit. The app arms it for the
     /// FIRST open of a board and disarms it once ``onDidFrameContent`` reports the
     /// framing happened, so no later reload — or rebuild — can move the camera.
@@ -155,19 +161,80 @@ public final class CanvasHostView: NSView {
     /// see ``CanvasEngine/onLiveFrameChanged``.
     public var onLiveFrameChanged: (() -> Void)?
 
-    /// The tile an app-layer inline editor is editing (2B), or `nil`. Forwarded to
-    /// the engine, which blanks that tile's `CATextLayer` while the `NSTextView`
-    /// overlay is up (054 §5.2) so glyphs aren't doubled.
-    public var editingTileID: Int? {
-        get { engine.editingTileID }
-        set { engine.editingTileID = newValue }
+    // MARK: Inline text editing (054 §5)
+
+    /// The tile whose text this host is currently editing, or `nil`.
+    ///
+    /// Read-only: the host owns the editor now, so nobody else can claim an edit is in
+    /// progress that isn't. Ask for one with ``editRequest`` or ``beginEditingText``.
+    public private(set) var editingTileID: Int?
+
+    /// The live editor, while an edit is open.
+    private var editor: CanvasTextEditController?
+
+    /// Editing began (the tile id) or ended (`nil`). The app mirrors this into its own
+    /// state — the floating format bubble anchors on "the box being edited".
+    public var onEditingChanged: ((Int?) -> Void)?
+
+    /// An edit finished. Fired exactly once per edit, before ``onEditingChanged``
+    /// reports `nil`, so the app can write the result while the tile is still known.
+    public var onFinishEditingText: ((Int, CanvasTextEditOutcome) -> Void)?
+
+    /// Ask the host to begin editing a tile, as a value.
+    ///
+    /// A method call would be simpler, but the app drives this from SwiftUI, where the
+    /// same state is pushed on every view update: creating a text box has to wait for
+    /// the row to be written before it knows the tile id, so the request is set once and
+    /// re-delivered until it is consumed. The token makes that idempotent — and lets the
+    /// same tile be edited twice in a row, which an id alone could not express.
+    ///
+    /// `nil` is a NO-OP, never "stop editing": the app clears its state after the
+    /// request is taken, and that must not tear down the edit it just started. Use
+    /// ``endEditingText(commit:)`` to end one.
+    public var editRequest: CanvasTextEditRequest? {
+        didSet { applyEditRequestIfNeeded() }
     }
 
-    /// Draw the tile being edited at the height its editor needs (062) — the editor
-    /// pushes this as the string changes, so the box on the canvas grows with the
-    /// text instead of waiting for the commit. `nil` restores the stored height.
-    public func setEditingBoxHeight(_ height: CGFloat?) {
-        engine.setEditingBoxHeight(height)
+    private var appliedEditToken: Int?
+
+    private func applyEditRequestIfNeeded() {
+        guard let request = editRequest, request.token != appliedEditToken else { return }
+        // Wait for a viewport: `beginEditingText` measures the tile's screen frame, and
+        // before the first layout there is nothing to measure against. The request is
+        // held, not dropped — `layout()` retries.
+        guard bounds.width > 0, bounds.height > 0,
+              engine.textStyle(forTileID: request.tileID) != nil else { return }
+        appliedEditToken = request.token
+        beginEditingText(tileID: request.tileID, isNewlyCreated: request.isNewlyCreated)
+    }
+
+    /// Begin editing `tileID`'s text. A no-op for a tile that draws no text. An edit
+    /// already open on another tile is committed first.
+    public func beginEditingText(tileID: Int, isNewlyCreated: Bool) {
+        guard let style = engine.textStyle(forTileID: tileID) else { return }
+        if let editor {
+            guard editor.tileID != tileID else { return } // already editing this one
+            editor.finish(commit: true)
+        }
+        let controller = CanvasTextEditController(
+            tileID: tileID, isNewlyCreated: isNewlyCreated, style: style,
+            engine: engine, host: self,
+            onFinish: { [weak self] outcome in self?.editorDidFinish(tileID: tileID, outcome) })
+        editor = controller
+        editingTileID = tileID
+        onEditingChanged?(tileID)
+    }
+
+    /// End the open edit, if any. `commit: false` abandons it (Esc).
+    public func endEditingText(commit: Bool) {
+        editor?.finish(commit: commit)
+    }
+
+    private func editorDidFinish(tileID: Int, _ outcome: CanvasTextEditOutcome) {
+        editor = nil
+        editingTileID = nil
+        onFinishEditingText?(tileID, outcome)
+        onEditingChanged?(nil)
     }
 
     /// The current world↔screen transform (2B · 054 §5.1) — read by the inline
@@ -320,6 +387,11 @@ public final class CanvasHostView: NSView {
             // the last `layout()` — with no bounds change to notice it. Without this,
             // a board whose first layout ran empty would never be framed at all.
             if !frameContentIfNeeded() { engine.sync() }
+            // A restyle mid-edit (the format bubble) arrives as a re-sync, so this is
+            // where the live glyphs learn about it. The string is deliberately NOT
+            // taken from the model — it belongs to the text view until the edit ends.
+            editor?.applyTypographyIfChanged()
+            applyEditRequestIfNeeded()
         }
     }
 
@@ -346,11 +418,31 @@ public final class CanvasHostView: NSView {
         // Forward the engine-sourced transform notification outward (2B · 054 §5.1):
         // any transform mutation (pan/zoom/setTransform/frameToContent) reaches the
         // app through this one seam.
-        engine.onTransformChanged = { [weak self] in self?.onTransformChanged?() }
+        // The editor repositions FIRST, then the app hears about it. Its height push
+        // changes the tile's displayed frame, so an app listener (the format bubble
+        // anchors on that frame) reading before the editor would trail by a frame.
+        engine.onTransformChanged = { [weak self] in
+            self?.editor?.reposition()
+            self?.onTransformChanged?()
+        }
         // …and its peer for a live resize (062), which moves the box under a still
         // camera and so never reaches the notification above.
-        engine.onLiveFrameChanged = { [weak self] in self?.onLiveFrameChanged?() }
+        engine.onLiveFrameChanged = { [weak self] in
+            self?.editor?.reposition()
+            self?.onLiveFrameChanged?()
+        }
         engine.sync()
+        // Commit rather than lose the edit if this view is torn out from under it —
+        // a board switch, a window close, or the app quitting.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(applicationWillTerminate),
+            name: NSApplication.willTerminateNotification, object: nil)
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func applicationWillTerminate(_ note: Notification) {
+        endEditingText(commit: true)
     }
 
     @available(*, unavailable)
@@ -367,6 +459,10 @@ public final class CanvasHostView: NSView {
         // Frame the board to fit the first time we know our size AND have content;
         // afterwards a resize just re-syncs (it must not stomp the user's pan/zoom).
         if !frameContentIfNeeded() { engine.sync() }
+        // A request that arrived before the first layout had no viewport to measure
+        // against; now there is one.
+        applyEditRequestIfNeeded()
+        editor?.reposition()
     }
 
     /// If the host leaves its window mid-gesture (e.g. a content reload rebuilds it
@@ -374,6 +470,15 @@ public final class CanvasHostView: NSView {
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil { endMarquee() }
+        // An edit that began before this view had a window can take focus now.
+        editor?.hostDidMoveToWindow()
+    }
+
+    /// Leaving the window ends any open edit by COMMITTING it. Losing typed text
+    /// because a board was switched or a window closed is never what the user meant.
+    public override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil { endEditingText(commit: true) }
     }
 
     // MARK: Hover cursor (resize handles — 062)
@@ -408,6 +513,12 @@ public final class CanvasHostView: NSView {
     /// gesture, and a create tool has its own meaning for a press.
     private func updateHoverCursor(at point: CGPoint) {
         guard !isResizing, !isDragging, !isMarqueeing, tool == .select, onResizeTile != nil else {
+            return
+        }
+        // Inside the box being edited the cursor belongs to the text view, which vends
+        // its own I-beam. Return without stomping it back to `.arrow`.
+        if let editor, editor.contains(hostPoint: point) {
+            hoveredHandle = nil
             return
         }
         let handle = engine.resizeHandle(atScreenPoint: point)?.handle
@@ -446,6 +557,34 @@ public final class CanvasHostView: NSView {
         case .top, .bottom: return .resizeUpDown
         default: return .resizeLeftRight
         }
+    }
+
+    /// Keys the canvas must win while an edit is open, handled here rather than in
+    /// `keyDown` so they beat menu-level matching (a SwiftUI `keyboardShortcut` on a
+    /// button elsewhere in the window is exactly that).
+    ///
+    /// ⌘Z is the subtle one: while typing, undo must be the TEXT VIEW's per-keystroke
+    /// undo, not the board's. Left alone, the app's undo button would swallow it and a
+    /// single ⌘Z would revert the whole previous board operation mid-sentence.
+    public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard editingTileID != nil else { return super.performKeyEquivalent(with: event) }
+        let command = event.modifierFlags.contains(.command)
+        let shift = event.modifierFlags.contains(.shift)
+
+        if event.keyCode == 53 { // Escape → abandon
+            endEditingText(commit: false)
+            return true
+        }
+        if event.keyCode == 36, command { // ⌘↵ → commit
+            endEditingText(commit: true)
+            return true
+        }
+        if command, event.charactersIgnoringModifiers?.lowercased() == "z" {
+            guard let undoManager = window?.firstResponder?.undoManager else { return true }
+            if shift { undoManager.redo() } else { undoManager.undo() }
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 
     public override func scrollWheel(with event: NSEvent) {
@@ -489,6 +628,12 @@ public final class CanvasHostView: NSView {
             // selection lands on the DOWN edge here, where the old path deferred it
             // to `pendingClickAction` on the up edge — same outcome, one event sooner.
             applySelection(.selectOnly(tileID))
+            // A text tile edits in place, and it begins HERE — synchronously, inside
+            // the gesture. `makeFirstResponder(self)` above has already committed any
+            // edit that was open, exactly as clicking away would.
+            if engine.textStyle(forTileID: tileID) != nil {
+                beginEditingText(tileID: tileID, isNewlyCreated: false)
+            }
             onActivateTile?(tileID)
 
         case .resize(let tileID, let handle):

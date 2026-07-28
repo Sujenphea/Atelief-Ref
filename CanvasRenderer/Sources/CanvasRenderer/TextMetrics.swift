@@ -45,6 +45,19 @@ enum CanvasFont {
         return font
     }
 
+    /// The same typeface as ``resolve(family:weight:)``, as an `NSFont` at a given
+    /// point size — what an `NSTextView` needs.
+    ///
+    /// One resolver for the drawn glyphs and the edited ones. The inline editor used to
+    /// rebuild this mapping for itself, in the app, because `CanvasFont` was internal to
+    /// the package; two copies of a family/weight table is exactly the kind of thing
+    /// that drifts, and it is the editor and the renderer disagreeing that the user sees.
+    static func nsFont(family: String?, weight: FontWeight, size: CGFloat) -> NSFont {
+        let base = resolve(family: family, weight: weight)
+        let sized = CTFontCreateCopyWithAttributes(base, max(1, size), nil, nil)
+        return sized as NSFont
+    }
+
     private static func build(family: String?, weight: FontWeight) -> CTFont {
         if let family, !family.isEmpty,
            let resolved = NSFontManager.shared.font(

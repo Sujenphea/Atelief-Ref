@@ -20,9 +20,15 @@ public struct CanvasView: NSViewRepresentable {
     private let selectedTileIDs: Set<Int>
     private let syncToken: Int
     private let tool: CanvasTool
-    /// The tile an inline text editor is editing (2B · 054 §5.1), or `nil`. Pushed to
-    /// the host so the engine blanks that tile's `CATextLayer` while editing.
-    private let editingTileID: Int?
+    /// A request to begin editing a tile's text (054 §5). Token-keyed, so pushing the
+    /// same value on every view update starts exactly one edit; `nil` is a no-op and
+    /// never ENDS an edit. See ``CanvasHostView/editRequest``.
+    private let editRequest: CanvasTextEditRequest?
+    /// Editing began (a tile id) or ended (`nil`) — the app mirrors this into its own
+    /// state, since the host owns the edit now.
+    private let onEditingChanged: ((Int?) -> Void)?
+    /// An edit finished: which tile, and what it meant. The app writes the result.
+    private let onFinishEditingText: ((Int, CanvasTextEditOutcome) -> Void)?
     private let onActivateTile: ((Int) -> Void)?
     private let onSelectTiles: ((Set<Int>) -> Void)?
     private let onRemoveTiles: ((Set<Int>) -> Void)?
@@ -64,7 +70,7 @@ public struct CanvasView: NSViewRepresentable {
         selectedTileIDs: Set<Int> = [],
         syncToken: Int = 0,
         tool: CanvasTool = .select,
-        editingTileID: Int? = nil,
+        editRequest: CanvasTextEditRequest? = nil,
         onActivateTile: ((Int) -> Void)? = nil,
         onSelectTiles: ((Set<Int>) -> Void)? = nil,
         onRemoveTiles: ((Set<Int>) -> Void)? = nil,
@@ -82,14 +88,16 @@ public struct CanvasView: NSViewRepresentable {
         onPaste: ((NSPasteboard, CGPoint) -> Bool)? = nil,
         onBeginTileDragOut: ((Set<Int>) -> NSPasteboardItem?)? = nil,
         framesContentWhenReady: Bool = true,
-        onDidFrameContent: (() -> Void)? = nil
+        onDidFrameContent: (() -> Void)? = nil,
+        onEditingChanged: ((Int?) -> Void)? = nil,
+        onFinishEditingText: ((Int, CanvasTextEditOutcome) -> Void)? = nil
     ) {
         self.provider = provider
         self.images = images
         self.selectedTileIDs = selectedTileIDs
         self.syncToken = syncToken
         self.tool = tool
-        self.editingTileID = editingTileID
+        self.editRequest = editRequest
         self.onActivateTile = onActivateTile
         self.onSelectTiles = onSelectTiles
         self.onRemoveTiles = onRemoveTiles
@@ -108,6 +116,8 @@ public struct CanvasView: NSViewRepresentable {
         self.onBeginTileDragOut = onBeginTileDragOut
         self.framesContentWhenReady = framesContentWhenReady
         self.onDidFrameContent = onDidFrameContent
+        self.onEditingChanged = onEditingChanged
+        self.onFinishEditingText = onFinishEditingText
     }
 
     public func makeNSView(context: Context) -> CanvasHostView {
@@ -147,8 +157,12 @@ public struct CanvasView: NSViewRepresentable {
         view.onDidFrameContent = onDidFrameContent
         view.framesContentWhenReady = framesContentWhenReady
         view.tool = tool
-        view.editingTileID = editingTileID
+        view.onEditingChanged = onEditingChanged
+        view.onFinishEditingText = onFinishEditingText
         view.syncToken = syncToken
         view.selectedTileIDs = selectedTileIDs
+        // LAST: an edit request is applied the moment it lands, so everything it needs
+        // — the callbacks, the tool, the freshly synced geometry — must be in place.
+        view.editRequest = editRequest
     }
 }

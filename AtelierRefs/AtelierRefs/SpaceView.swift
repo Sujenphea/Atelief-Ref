@@ -56,16 +56,16 @@ struct SpaceView: View {
     @State private var showEditor = false
     /// The asset row shown in the full-window detail overlay, or `nil`.
     @State private var detailItem: SpaceItemDetail?
-    /// The tile currently being edited inline on-canvas (2B · 054 §5), or `nil`.
-    /// Double-clicking a `.text` element (or finishing a new-text-box create) sets
-    /// it; committing / cancelling / deleting clears it.
+    /// The tile the canvas host is editing inline (2B · 054 §5), MIRRORED from
+    /// `onEditingChanged`. Never written directly: the host owns the edit — it begins
+    /// one inside its own `mouseDown` — so this only ever reports what is already true.
+    /// It exists because the format bubble targets "the box being edited".
     @State private var editingTileID: Int?
-    /// Whether ``editingTileID`` refers to a box just created (an empty commit
-    /// deletes it, 054 §5.3).
-    @State private var editingWasNew = false
-    /// The app↔host rendezvous the inline editor repositions through, off the
-    /// SwiftUI diff (054 §5.1/§5.2). A stable reference for this view's lifetime.
-    @State private var editBridge = CanvasEditingBridge()
+    /// A pending "start editing this tile" request, and its monotonic token. Only the
+    /// create-a-text-box path needs one: a double-click never comes through here,
+    /// because the host has already begun the edit by the time the app hears about it.
+    @State private var editRequest: CanvasTextEditRequest?
+    @State private var editToken = 0
     /// The live on-screen frame the floating format chrome anchors on (062) —
     /// republished imperatively from the same geometry notifications the editor
     /// listens to, so a pan / zoom / move / resize never re-evaluates this body.
@@ -203,7 +203,7 @@ struct SpaceView: View {
                 selectedTileIDs: space.selectedTileIDs(in: content),
                 syncToken: space.renderRevision,
                 tool: tool,
-                editingTileID: editingTileID,
+                editRequest: editRequest,
                 onActivateTile: { tileID in
                     if let url = content.videoURL(forTileID: tileID) {
                         quickLook.present(url: url)
@@ -213,11 +213,10 @@ struct SpaceView: View {
                         openAssetDetail(detail)
                     } else if let detail = content.detail(forTileID: tileID),
                               detail.item.kind == .text {
-                        // Double-click a TEXT element → edit its string inline on
-                        // canvas (2B · D3); the style popover stays for the Edit bar.
+                        // A TEXT element is already being edited by the time this
+                        // fires — the host begins it inside `mouseDown`, with no round
+                        // trip through here. Just keep the shared selection in step.
                         space.select(tileID: tileID, in: content)
-                        editingWasNew = false
-                        editingTileID = tileID
                     } else {
                         // Double-click a FRAME element → open its style popover
                         // (frames have no inline path, 054 §5.2).
@@ -264,8 +263,9 @@ struct SpaceView: View {
                             let created = space.content()
                             if let id = space.selectedItemID,
                                let tid = created.tileID(forSpaceItemID: id) {
-                                editingWasNew = true
-                                editingTileID = tid
+                                editToken += 1
+                                editRequest = CanvasTextEditRequest(
+                                    tileID: tid, isNewlyCreated: true, token: editToken)
                             }
                         }
                     case .select:
@@ -276,14 +276,15 @@ struct SpaceView: View {
                 onResizeTile: { tileID, worldRect in
                     space.resizeTile(tileID: tileID, to: worldRect, in: content)
                 },
-                onTransformChanged: { editBridge.geometryDidChange(); chromeAnchor.refresh() },
-                onLiveFrameChanged: { editBridge.geometryDidChange(); chromeAnchor.refresh() },
+                // The canvas repositions its own editor before these fire, so the
+                // chrome anchor always reads the frame the editor has settled on.
+                onTransformChanged: { chromeAnchor.refresh() },
+                onLiveFrameChanged: { chromeAnchor.refresh() },
                 // `onHostReady` fires from `makeNSView` — inside a view update, where
                 // publishing is undefined behaviour — so the anchor's read is hopped
-                // off the update frame. The bridge's own host is a plain reference and
-                // publishes nothing, so it is set straight away.
+                // off the update frame.
                 onHostReady: { host in
-                    editBridge.host = host
+                    chromeAnchor.host = host
                     Task { @MainActor in chromeAnchor.refresh() }
                 },
                 // Drop target (SP2 · S2 + SP3 · S1). We register the app-private
@@ -340,20 +341,22 @@ struct SpaceView: View {
                 // view, whose identity is stable, so the camera survives even if the
                 // host is ever rebuilt for some other reason.
                 framesContentWhenReady: !didFrameBoard,
-                onDidFrameContent: { Task { @MainActor in didFrameBoard = true } })
+                onDidFrameContent: { Task { @MainActor in didFrameBoard = true } },
+                // The host owns the edit; these two are how the app hears about it.
+                // Both are hopped off the update frame — they publish, and they can
+                // fire from inside `apply(to:)`, which runs during a view update.
+                onEditingChanged: { tileID in
+                    Task { @MainActor in editingTileID = tileID }
+                },
+                onFinishEditingText: { tileID, outcome in
+                    Task { @MainActor in applyEditOutcome(outcome, tileID: tileID) }
+                })
 
             if space.items.isEmpty { emptyHint }
 
-            // The inline text-editing overlay (2B). Present only while a `.text` tile
-            // is being edited; it repositions itself imperatively via `editBridge`.
-            if let editingTileID, let detail = content.detail(forTileID: editingTileID),
-               detail.item.kind == .text {
-                inlineEditor(tileID: editingTileID, itemID: detail.item.id)
-            }
-
             // The floating palette + font/size bubble for the text box being EDITED
-            // (062). ABOVE the editor in the stack so its buttons take the click; the
-            // editor's container passes through everything that misses its text box.
+            // (062). The editor is a subview of the canvas host below this, and only
+            // as large as the box itself, so the bubble's buttons take their own clicks.
             if let target = formatTarget(in: content) {
                 SpaceFormatChrome(
                     anchor: chromeAnchor,
@@ -367,10 +370,10 @@ struct SpaceView: View {
                     // updates" trap `ElementInspector.onDisappear` already dodges.
                     .onAppear {
                         let tileID = target.tileID
-                        Task { @MainActor in chromeAnchor.track(tileID: tileID, bridge: editBridge) }
+                        Task { @MainActor in chromeAnchor.track(tileID: tileID) }
                     }
                     .onChange(of: target.tileID) { _, tileID in
-                        chromeAnchor.track(tileID: tileID, bridge: editBridge)
+                        chromeAnchor.track(tileID: tileID)
                     }
                     // A restyle re-derives the box's height in place (`renderRevision`,
                     // never a rebuild), so the chrome has to re-read the frame it just
@@ -395,35 +398,23 @@ struct SpaceView: View {
         }
     }
 
-    /// The inline `NSTextView` overlay for the tile being edited (2B). Commit routes
-    /// through the SAME `updateStyle` path 2C uses (one undo step, auto-size + one
-    /// sync); cancel abandons; an empty NEW box is deleted (054 §5.3). Clearing
-    /// ``editingTileID`` removes the overlay and un-blanks the tile's glyphs.
-    @ViewBuilder
-    private func inlineEditor(tileID: Int, itemID: UUID) -> some View {
-        InlineTextEditor(
-            tileID: tileID,
-            style: space.style(forItemID: itemID),
-            wasNewlyCreated: editingWasNew,
-            bridge: editBridge,
-            onCommit: { newText in
-                var style = space.style(forItemID: itemID)
-                style.text = newText
-                space.updateStyle(itemID: itemID, style: style)
-                editingTileID = nil
-                editingWasNew = false
-            },
-            onCancel: {
-                editingTileID = nil
-                editingWasNew = false
-            },
-            onDelete: {
-                space.removeItem(itemID)
-                editingTileID = nil
-                editingWasNew = false
-            })
-        .frame(maxWidth: .infinity, maxHeight: .infinity) // fill the canvas area
-        .id(tileID)
+    /// Apply the outcome of an inline edit the canvas host just finished (054 §5.3).
+    ///
+    /// The host decided WHAT happened; this decides what it means for the model. A
+    /// commit routes through the SAME `updateStyle` path the inspector uses, so an
+    /// edit is one undo step covering both the string and the height it implies.
+    private func applyEditOutcome(_ outcome: CanvasTextEditOutcome, tileID: Int) {
+        guard let itemID = space.content().spaceItemID(forTileID: tileID) else { return }
+        switch outcome {
+        case .committed(let newText):
+            var style = space.style(forItemID: itemID)
+            style.text = newText
+            space.updateStyle(itemID: itemID, style: style)
+        case .deleted:
+            space.removeItem(itemID)
+        case .cancelled:
+            break
+        }
     }
 
     /// The text box the floating format chrome targets (062) — **the one being

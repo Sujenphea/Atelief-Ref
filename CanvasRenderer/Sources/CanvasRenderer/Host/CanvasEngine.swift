@@ -490,7 +490,12 @@ public final class CanvasEngine {
     public func resizeHandle(atScreenPoint screenPoint: CGPoint) -> (tileID: Int, handle: ResizeHandle)? {
         guard let tile = handleTile() else { return nil }
         let screenFrame = transform.worldToScreen(displayWorldFrame(for: tile))
-        guard let handle = ResizeGeometry.handle(atScreenPoint: screenPoint, in: screenFrame) else {
+        // The box being edited yields most of its grab zone to the caret (062 keeps
+        // resize-while-editing, so it yields SOME rather than all of it).
+        let hitSize = tile.id == editingTileID
+            ? ResizeGeometry.editingHitSize : ResizeGeometry.handleHitSize
+        guard let handle = ResizeGeometry.handle(
+            atScreenPoint: screenPoint, in: screenFrame, hitSize: hitSize) else {
             return nil
         }
         return (tile.id, handle)
