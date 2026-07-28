@@ -1,6 +1,6 @@
 //
-//  SpaceInlineEditGeometryTests.swift
-//  AtelierRefsTests
+//  TextEditGeometryTests.swift
+//  CanvasRendererTests
 //
 //  2B / 062 — the inline editor's PURE geometry decision (`inlineEditorWorldBox`),
 //  following the same posture as `SpaceInlineEditTests`: the `NSTextView` lifecycle
@@ -10,7 +10,7 @@
 //  `worldSize × zoom`, which made TextKit re-lay-out — and therefore potentially
 //  re-wrap — on every zoom step: jerky, and the same reflow 059 removed from the
 //  canvas. Layout now happens in world units and the zoom is carried by
-//  `EditorScaleBox`, so for a fixed tile the layout box cannot move with the camera.
+//  `CanvasEditorScaleBox`, so for a fixed tile the layout box cannot move with the camera.
 //
 //  062 collapsed the three resize modes into one behaviour — the width is the
 //  tile's (the user's), the height follows the text — so the box is now a single
@@ -19,15 +19,14 @@
 //
 
 import AppKit
-import AtelierCore
 import CoreGraphics
 import Foundation
 import Testing
-@testable import AtelierRefs
 @testable import CanvasRenderer
 
+@MainActor
 @Suite("Inline text-edit geometry (062 · world-space layout)")
-struct SpaceInlineEditGeometryTests {
+struct TextEditGeometryTests {
 
     /// A tile 300×200 in WORLD units, expressed as the screen frame the engine would
     /// hand the editor at `scale` (screen = world × scale + translation).
@@ -45,7 +44,7 @@ struct SpaceInlineEditGeometryTests {
     @Test("the world layout box is identical at every zoom")
     func boxIsIdenticalAtEveryZoom() {
         let boxes = zooms.map { scale in
-            inlineEditorWorldBox(
+            canvasInlineEditorWorldBox(
                 tileScreenFrame: screenFrame(scale: scale), scale: scale,
                 measuredWorldSize: measured)
         }
@@ -63,7 +62,7 @@ struct SpaceInlineEditGeometryTests {
         // and what `TextMetrics` measures against; both must be constant across zoom,
         // or a pinch re-wraps the line the caret is sitting on.
         let widths = zooms.map { scale in
-            inlineEditorWorldBox(
+            canvasInlineEditorWorldBox(
                 tileScreenFrame: screenFrame(scale: scale), scale: scale,
                 measuredWorldSize: measured
             ).width - 2 * TextMetrics.padding
@@ -78,7 +77,7 @@ struct SpaceInlineEditGeometryTests {
     func widthComesFromTheTile() {
         // A string measured far wider than the box must NOT widen it — the width is
         // the user's, set by a resize handle, and only they may change it (062).
-        let box = inlineEditorWorldBox(
+        let box = canvasInlineEditorWorldBox(
             tileScreenFrame: screenFrame(scale: 2), scale: 2,
             measuredWorldSize: CGSize(width: 9_999, height: 40))
         #expect(abs(box.width - 300) < 0.000_1)
@@ -86,7 +85,7 @@ struct SpaceInlineEditGeometryTests {
 
     @Test("the height is the measured text plus padding on both edges")
     func heightIsMeasuredTextPlusPadding() {
-        let box = inlineEditorWorldBox(
+        let box = canvasInlineEditorWorldBox(
             tileScreenFrame: screenFrame(scale: 3), scale: 3,
             measuredWorldSize: measured)
         #expect(abs(box.height - (measured.height + 2 * TextMetrics.padding)) < 0.000_1)
@@ -95,7 +94,7 @@ struct SpaceInlineEditGeometryTests {
     @Test("a taller string grows the box; a shorter one shrinks it")
     func heightTracksTheText() {
         func height(_ measuredHeight: CGFloat) -> CGFloat {
-            inlineEditorWorldBox(
+            canvasInlineEditorWorldBox(
                 tileScreenFrame: screenFrame(scale: 1), scale: 1,
                 measuredWorldSize: CGSize(width: 180, height: measuredHeight)).height
         }
@@ -107,7 +106,7 @@ struct SpaceInlineEditGeometryTests {
     func heightIgnoresTheTile() {
         // The committed tile is 200pt tall but the text needs far less: the editor
         // must hug the text, exactly as the committed box will after `autosizedFrame`.
-        let box = inlineEditorWorldBox(
+        let box = canvasInlineEditorWorldBox(
             tileScreenFrame: screenFrame(scale: 1), scale: 1,
             measuredWorldSize: CGSize(width: 100, height: 20))
         #expect(abs(box.height - (20 + 2 * TextMetrics.padding)) < 0.000_1)
@@ -119,7 +118,7 @@ struct SpaceInlineEditGeometryTests {
     @Test("a zero or negative scale is clamped, never divides by zero")
     func degenerateScaleIsSafe() {
         for scale in [CGFloat(0), -1, .leastNonzeroMagnitude] {
-            let box = inlineEditorWorldBox(
+            let box = canvasInlineEditorWorldBox(
                 tileScreenFrame: CGRect(x: 0, y: 0, width: 300, height: 200),
                 scale: scale, measuredWorldSize: measured)
             #expect(box.width.isFinite && box.height.isFinite)
@@ -129,7 +128,7 @@ struct SpaceInlineEditGeometryTests {
 
     @Test("an empty measured size still yields a padded, non-zero box")
     func emptyTextStillHasABox() {
-        let box = inlineEditorWorldBox(
+        let box = canvasInlineEditorWorldBox(
             tileScreenFrame: screenFrame(scale: 1), scale: 1, measuredWorldSize: .zero)
         #expect(abs(box.width - 300) < 0.000_1)                    // the tile's width
         #expect(abs(box.height - 2 * TextMetrics.padding) < 0.000_1)
@@ -138,9 +137,9 @@ struct SpaceInlineEditGeometryTests {
     // MARK: - The scale box carries the zoom
 
     @MainActor
-    @Test("EditorScaleBox turns a screen frame over a world bounds into the zoom")
+    @Test("CanvasEditorScaleBox turns a screen frame over a world bounds into the zoom")
     func scaleBoxCarriesTheZoom() {
-        let box = EditorScaleBox()
+        let box = CanvasEditorScaleBox()
         let world = CGSize(width: 300, height: 200)
         for scale in zooms {
             box.frame = CGRect(x: 0, y: 0, width: world.width * scale, height: world.height * scale)

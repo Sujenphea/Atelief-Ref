@@ -14,10 +14,11 @@
 //  The renderer's `CanvasFont` (the single typeface source) is internal to
 //  CanvasRenderer, so the transient editing glyphs are built here with the SAME
 //  family/weight mapping; the persisted result is still measured + drawn through
-//  `TextMetrics`/`CanvasFont` on commit, so the committed box can't drift. The
-//  lifecycle decision is a pure, exhaustively-tested predicate (`inlineEditOutcome`),
-//  and a one-shot `CommitGuard` blocks the blur+Esc / commit-during-undo double
-//  write (mirrors `ElementInspector.finished`).
+//  `TextMetrics`/`CanvasFont` on commit, so the committed box can't drift.
+//
+//  The lifecycle decisions — `canvasTextEditOutcome`, the world box, the viewport-exit
+//  rule, the one-shot commit guard — live in `CanvasRenderer/CanvasTextEdit.swift`, so
+//  they can be shared as this editor moves into the canvas host.
 //
 
 import AppKit
@@ -25,93 +26,11 @@ import AtelierCore
 import CanvasRenderer
 import SwiftUI
 
-// MARK: - Pure lifecycle logic (unit-tested; no NSView)
-
-/// What to do with an inline edit when it ends (054 §5.3 · R8).
-enum InlineEditOutcome: Equatable {
-    /// Write the string back through the model's restyle path (auto-size + one undo).
-    case persist(String)
-    /// Abandon the edit — no write (Esc, or the double-commit guard).
-    case cancel
-    /// Remove the element entirely — an empty box the user just created, so it
-    /// leaves no invisible orphan (054 §5.3).
-    case deleteElement
-}
-
-/// The pure commit/cancel/delete decision for an inline edit (054 §5.3 · R8).
-///
-/// - `committed == false` → `.cancel` (Esc / abandoned): never write.
-/// - empty text, newly created → `.deleteElement`: an untouched new box is removed.
-/// - empty text, pre-existing → `.persist("")`: an explicit clear is honoured
-///   (the element stays; its string becomes empty).
-/// - non-empty → `.persist(text)`.
-///
-/// "Empty" is whitespace/newline-insensitive so a box holding only spaces reads as
-/// empty for the delete-new-box rule. The design lists the parameter as
-/// `textIsEmpty: Bool`, but `.persist(text)` needs the string, so the text is
-/// threaded through and emptiness derived here (one source, no caller re-derives it).
-func inlineEditOutcome(text: String, wasNewlyCreated: Bool, committed: Bool) -> InlineEditOutcome {
-    guard committed else { return .cancel }
-    let isEmpty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    if isEmpty { return wasNewlyCreated ? .deleteElement : .persist("") }
-    return .persist(text)
-}
-
-/// The WORLD-space box an inline editor lays text out in — the pure geometry half of
-/// `Coordinator.reposition()`.
-///
-/// The whole point is what is MISSING from the result: zoom. `scale` appears only to
-/// map the tile's screen frame back into world units, so for a given tile this
-/// returns the same box at every zoom — which is what keeps TextKit from re-wrapping
-/// as you pinch, and what makes the editor's line breaks agree with the committed
-/// box (`TextMetrics` measured that against the same world width).
-///
-/// The width is the tile's — the user owns it, and only a resize-handle drag changes
-/// it (062). The height follows `measuredWorldSize`, the string's measured size in
-/// world units, so the editor grows and shrinks exactly as the committed box will.
-func inlineEditorWorldBox(
-    tileScreenFrame: CGRect,
-    scale: CGFloat,
-    measuredWorldSize: CGSize,
-    padding: CGFloat = TextMetrics.padding
-) -> CGSize {
-    // A degenerate camera must not divide by zero — clamp rather than trap.
-    let scale = max(0.0001, scale)
-    return CGSize(
-        width: tileScreenFrame.width / scale,
-        height: measuredWorldSize.height + 2 * padding)
-}
-
-/// While editing, a tile that scrolls out of the viewport triggers a commit-and-exit
-/// rather than a silent abandon (054 §5.4). Pure so the rule is unit-tested without a
-/// window.
-///
-/// The two guards are the whole point. "Not visible" is only meaningful once the canvas
-/// knows how big it is and the editor has actually placed itself once — before either,
-/// nothing is visible by definition, and the old version of this (which asked only
-/// whether a screen frame existed) read that as *the tile left the viewport* and
-/// committed the edit the moment it mounted. An editor that has never positioned holds
-/// its ground; only a tile that was on screen and then left commits.
-func inlineEditShouldCommitOnViewportExit(
-    isVisible: Bool, viewportSize: CGSize, hasPositioned: Bool
-) -> Bool {
-    guard hasPositioned, viewportSize.width > 0, viewportSize.height > 0 else { return false }
-    return !isVisible
-}
-
-/// One-shot guard mirroring `ElementInspector.finished` (054 §5.3): the FIRST finish
-/// wins; a later blur / Esc / commit-during-undo is ignored so the edit never writes
-/// twice. Value type so the "double-commit guard" is unit-testable.
-struct CommitGuard {
-    private(set) var finished = false
-
-    /// Returns `true` exactly once — for the first caller — and `false` thereafter.
-    mutating func begin() -> Bool {
-        if finished { return false }
-        finished = true
-        return true
-    }
-}
+// MARK: - Pure lifecycle logic
+//
+// The predicates and the outcome type now live in `CanvasRenderer`
+// (`CanvasTextEdit.swift`), next to the seam they describe, so they can be shared with
+// the editor as it moves into the canvas host. Nothing app-specific was in them.
 
 // MARK: - Bridge (app ↔ live host rendezvous)
 
@@ -225,17 +144,17 @@ struct InlineTextEditor: NSViewRepresentable {
         /// The latest representable (refreshed in make/update) — the source of the
         /// commit/cancel/delete closures + style at finish time.
         var editor: InlineTextEditor
-        let textView: InlineNSTextView
+        let textView: CanvasEditorTextView
         let container: PassThroughContainer
-        /// Carries the zoom, so the text view never has to (see ``EditorScaleBox``).
-        let scaleBox: EditorScaleBox
-        private var commitGuard = CommitGuard()
+        /// Carries the zoom, so the text view never has to (see ``CanvasEditorScaleBox``).
+        let scaleBox: CanvasEditorScaleBox
+        private var commitGuard = CanvasCommitGuard()
 
         init(_ editor: InlineTextEditor) {
             self.editor = editor
-            self.textView = InlineNSTextView(frame: .zero)
+            self.textView = CanvasEditorTextView(frame: .zero)
             self.container = PassThroughContainer()
-            self.scaleBox = EditorScaleBox()
+            self.scaleBox = CanvasEditorScaleBox()
             super.init()
             configure()
         }
@@ -347,7 +266,7 @@ struct InlineTextEditor: NSViewRepresentable {
         /// and resizes ONLY the overlay — no engine sync, no `renderRevision` bump
         /// (§5.2 · R16).
         func reposition() {
-            if inlineEditShouldCommitOnViewportExit(
+            if canvasInlineEditShouldCommitOnViewportExit(
                 isVisible: bridge.isTileVisible(editor.tileID),
                 viewportSize: bridge.viewportSize,
                 hasPositioned: hasPositioned) {
@@ -366,7 +285,7 @@ struct InlineTextEditor: NSViewRepresentable {
             ts.string = textView.string
             let measured = TextMetrics.size(
                 for: ts, maxWidth: max(1, frame.width / scale - 2 * TextMetrics.padding))
-            let worldSize = inlineEditorWorldBox(
+            let worldSize = canvasInlineEditorWorldBox(
                 tileScreenFrame: frame, scale: scale, measuredWorldSize: measured)
 
             // The zoom lives HERE and nowhere else: a screen-space frame over a
@@ -405,11 +324,11 @@ struct InlineTextEditor: NSViewRepresentable {
         func finish(committed: Bool) {
             guard commitGuard.begin() else { return } // double-commit guard (§5.3)
             bridge.onReposition = nil
-            switch inlineEditOutcome(
-                text: textView.string, wasNewlyCreated: editor.wasNewlyCreated, committed: committed) {
-            case .cancel: editor.onCancel()
-            case .deleteElement: editor.onDelete()
-            case .persist(let string): editor.onCommit(string)
+            switch canvasTextEditOutcome(
+                text: textView.string, isNewlyCreated: editor.wasNewlyCreated, committed: committed) {
+            case .cancelled: editor.onCancel()
+            case .deleted: editor.onDelete()
+            case .committed(let string): editor.onCommit(string)
             }
             // Hand the height back to the stored geometry, AFTER the outcome has been
             // applied: a commit has by then written the derived height, so the box
@@ -457,20 +376,6 @@ struct InlineTextEditor: NSViewRepresentable {
 
 // MARK: - Live AppKit pieces
 
-/// Carries the canvas zoom for the inline editor, so the `NSTextView` inside never
-/// has to. Its frame is the tile's SCREEN rect while its bounds is the same box in
-/// WORLD units, which makes the view's scale exactly the camera's — the AppKit
-/// counterpart of what ``CanvasRenderer`` does for committed text (060): lay out
-/// once in world space, let the zoom be pure rasterization.
-///
-/// It must be a view the text system does not manage. `NSTextView` rewrites its own
-/// bounds during layout, so a scale applied there is intermittently reverted; this
-/// box has no such layout, so its scale is deterministic. Flipped to match
-/// ``PassThroughContainer`` / `CanvasHostView` (top-left origin, y down).
-final class EditorScaleBox: NSView {
-    override var isFlipped: Bool { true }
-}
-
 /// The flipped host for the `NSTextView`, sized to the canvas. Its `hitTest` passes
 /// clicks that miss the text box through to the canvas beneath — so clicking away
 /// makes the canvas first responder and blurs the editor (→ commit, §5.2/5.4) —
@@ -490,24 +395,5 @@ final class PassThroughContainer: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil { onMovedToWindow?() }
-    }
-}
-
-/// An `NSTextView` that intercepts ⌘↵ (commit) and Esc (cancel) before the normal
-/// text-editing key handling. Everything else types as usual.
-final class InlineNSTextView: NSTextView {
-    var onCommandReturn: (() -> Void)?
-    var onEscape: (() -> Void)?
-
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 36, event.modifierFlags.contains(.command) { // ⌘ + Return
-            onCommandReturn?()
-            return
-        }
-        if event.keyCode == 53 { // Escape
-            onEscape?()
-            return
-        }
-        super.keyDown(with: event)
     }
 }

@@ -1,6 +1,6 @@
 //
-//  SpaceInlineEditTests.swift
-//  AtelierRefsTests
+//  TextEditLifecycleTests.swift
+//  CanvasRendererTests
 //
 //  2B · 054 §5.3 (R8) — the PURE inline-edit lifecycle logic. The `NSTextView`
 //  first-responder / IME / blur lifecycle is live-only (verified by hand, see the
@@ -14,41 +14,41 @@
 import CoreGraphics
 import Foundation
 import Testing
-@testable import AtelierRefs
+@testable import CanvasRenderer
 
 @Suite("Inline text-edit lifecycle (2B · 054 §5.3)")
-struct SpaceInlineEditTests {
+struct TextEditLifecycleTests {
 
     // MARK: - inlineEditOutcome matrix (R8)
 
     @Test("not committed → cancel, whatever the text / new-ness")
     func notCommittedCancels() {
-        #expect(inlineEditOutcome(text: "anything", wasNewlyCreated: false, committed: false) == .cancel)
-        #expect(inlineEditOutcome(text: "", wasNewlyCreated: true, committed: false) == .cancel)
-        #expect(inlineEditOutcome(text: "x", wasNewlyCreated: true, committed: false) == .cancel)
+        #expect(canvasTextEditOutcome(text: "anything", isNewlyCreated: false, committed: false) == .cancelled)
+        #expect(canvasTextEditOutcome(text: "", isNewlyCreated: true, committed: false) == .cancelled)
+        #expect(canvasTextEditOutcome(text: "x", isNewlyCreated: true, committed: false) == .cancelled)
     }
 
     @Test("committed empty NEW box → deleteElement (no invisible orphan)")
     func emptyNewBoxDeletes() {
-        #expect(inlineEditOutcome(text: "", wasNewlyCreated: true, committed: true) == .deleteElement)
+        #expect(canvasTextEditOutcome(text: "", isNewlyCreated: true, committed: true) == .deleted)
         // Whitespace/newlines only still read as empty for the delete-new rule.
-        #expect(inlineEditOutcome(text: "   ", wasNewlyCreated: true, committed: true) == .deleteElement)
-        #expect(inlineEditOutcome(text: "\n\t ", wasNewlyCreated: true, committed: true) == .deleteElement)
+        #expect(canvasTextEditOutcome(text: "   ", isNewlyCreated: true, committed: true) == .deleted)
+        #expect(canvasTextEditOutcome(text: "\n\t ", isNewlyCreated: true, committed: true) == .deleted)
     }
 
     @Test("committed empty PRE-EXISTING box → persist(\"\") (explicit clear honoured)")
     func emptyExistingBoxPersistsEmpty() {
-        #expect(inlineEditOutcome(text: "", wasNewlyCreated: false, committed: true) == .persist(""))
-        #expect(inlineEditOutcome(text: "   ", wasNewlyCreated: false, committed: true) == .persist(""))
+        #expect(canvasTextEditOutcome(text: "", isNewlyCreated: false, committed: true) == .committed(""))
+        #expect(canvasTextEditOutcome(text: "   ", isNewlyCreated: false, committed: true) == .committed(""))
     }
 
     @Test("committed non-empty → persist(text), new or not")
     func nonEmptyPersists() {
-        #expect(inlineEditOutcome(text: "Hello", wasNewlyCreated: true, committed: true) == .persist("Hello"))
-        #expect(inlineEditOutcome(text: "Hello", wasNewlyCreated: false, committed: true) == .persist("Hello"))
+        #expect(canvasTextEditOutcome(text: "Hello", isNewlyCreated: true, committed: true) == .committed("Hello"))
+        #expect(canvasTextEditOutcome(text: "Hello", isNewlyCreated: false, committed: true) == .committed("Hello"))
         // The raw string is persisted verbatim (surrounding text preserved).
-        #expect(inlineEditOutcome(text: " padded ", wasNewlyCreated: false, committed: true)
-            == .persist(" padded "))
+        #expect(canvasTextEditOutcome(text: " padded ", isNewlyCreated: false, committed: true)
+            == .committed(" padded "))
     }
 
     // MARK: - viewport-exit → commit (§5.4)
@@ -57,9 +57,9 @@ struct SpaceInlineEditTests {
 
     @Test("a tile that scrolled out of a laid-out canvas commits; a visible one does not")
     func viewportExitCommits() {
-        #expect(inlineEditShouldCommitOnViewportExit(
+        #expect(canvasInlineEditShouldCommitOnViewportExit(
             isVisible: false, viewportSize: viewport, hasPositioned: true) == true)
-        #expect(inlineEditShouldCommitOnViewportExit(
+        #expect(canvasInlineEditShouldCommitOnViewportExit(
             isVisible: true, viewportSize: viewport, hasPositioned: true) == false)
     }
 
@@ -68,12 +68,12 @@ struct SpaceInlineEditTests {
         // The regression: mounting an editor used to self-commit, because "no screen
         // frame" was read as "the tile left the viewport" when in truth the canvas had
         // not been laid out and NOTHING was visible yet.
-        #expect(inlineEditShouldCommitOnViewportExit(
+        #expect(canvasInlineEditShouldCommitOnViewportExit(
             isVisible: false, viewportSize: .zero, hasPositioned: false) == false)
         // Both guards are independent: either one alone holds the commit back.
-        #expect(inlineEditShouldCommitOnViewportExit(
+        #expect(canvasInlineEditShouldCommitOnViewportExit(
             isVisible: false, viewportSize: viewport, hasPositioned: false) == false)
-        #expect(inlineEditShouldCommitOnViewportExit(
+        #expect(canvasInlineEditShouldCommitOnViewportExit(
             isVisible: false, viewportSize: .zero, hasPositioned: true) == false)
     }
 
@@ -82,7 +82,7 @@ struct SpaceInlineEditTests {
         for size in [CGSize.zero,
                      CGSize(width: 0, height: 600),
                      CGSize(width: 800, height: 0)] {
-            #expect(inlineEditShouldCommitOnViewportExit(
+            #expect(canvasInlineEditShouldCommitOnViewportExit(
                 isVisible: false, viewportSize: size, hasPositioned: true) == false)
         }
     }
@@ -91,7 +91,7 @@ struct SpaceInlineEditTests {
 
     @Test("the commit guard fires exactly once; later finishes are ignored")
     func commitGuardIsOneShot() {
-        var guardState = CommitGuard()
+        var guardState = CanvasCommitGuard()
         #expect(guardState.finished == false)
         #expect(guardState.begin() == true)  // first finish wins…
         #expect(guardState.finished == true)

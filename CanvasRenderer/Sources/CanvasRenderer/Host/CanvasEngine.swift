@@ -207,6 +207,19 @@ public final class CanvasEngine {
         currentVisibleTiles().contains { $0.id == id }
     }
 
+    /// The text a tile draws, or `nil` if it isn't a `.text` tile.
+    ///
+    /// This is the whole typography seam for inline editing: ``TextStyle`` already
+    /// carries the string, size, colour, family, weight and alignment, and the provider
+    /// already hands it across on every sync — so an editor inside the renderer needs
+    /// nothing from the app to build its glyphs, and the app needs to teach the renderer
+    /// nothing about its own style type.
+    public func textStyle(forTileID id: Int) -> TextStyle? {
+        guard let tile = tile(withID: id),
+              case .text(let style) = provider.content(for: tile) else { return nil }
+        return style
+    }
+
     /// ``screenFrame(forTileID:)``, but `nil` for a tile that isn't currently visible.
     /// Kept because callers depend on exactly that: the drag-out snapshot has no image
     /// to make for an off-screen tile, and the transform-seam tests pin the `nil`.
