@@ -239,17 +239,38 @@ the tile's width.
 The general rule this leaves behind: **anything that changes a tile's displayed frame
 must notify, whoever moved it.** The engine is not the only thing drawing that tile.
 
+### The box must grow while you type
+
+The same split has a second half. 054 §5.2 (R16) kept the canvas out of the keystroke
+path on purpose — the editor grew its own overlay, the engine was left alone. That was
+right when a `.fixed` box's height was the user's and had no business chasing the text.
+**062 removed the premise:** the height is derived from the text now, so a box that
+doesn't grow as you type is showing a size that stopped being true at the first
+keystroke, with its own border and handles sitting inside its glyphs until commit.
+
+So the editor pushes its measured world height to `setEditingBoxHeight(_:)` from
+`reposition()` — not from `textDidChange` — so the two stay in step whatever moved
+them. The engine applies it to `editingTileID`'s displayed frame, **height only and
+last**, after the drag/resize overrides. That ordering is the 062 split made literal:
+the width is the user's (stored, or the one a handle drag is setting this instant),
+the height is the text's, and while an editor holds the text it holds the height.
+
+It is transient by design — not a provider mutation, not a write. Nothing persists
+until the edit commits, so an abandoned edit leaves no trace and the undo stack gets
+one entry rather than one per keystroke.
+
 ## 8. Known gaps
 
 - **Editor and canvas still use different text engines** (TextKit vs CoreText).
   Unchanged from 060; both now lay out at the same world size against the same world
   width, but Nook uses TextKit for both and concluded the two "can't be made to
   agree". Revisit if a wrap mismatch appears at an edit boundary.
-- **Mid-edit chrome sizes to the committed text.** `fittedFrame` derives the box
-  height from the provider's style, not the editor's uncommitted string, so typing
-  and then resizing without committing leaves the border and handles sized to the
-  old text. The visible glyphs are right either way. Closing it means handing the
-  engine the live string, which the app owns (§7).
+- **The engine still can't measure an uncommitted string itself.** It doesn't need
+  to — the editor pushes the height (§7) — but that means the box is only as correct
+  as the editor's TextKit measurement while an edit is open, and as correct as
+  CoreText's the moment it commits. The two agree today because both lay out at the
+  same world size against the same world width; a wrap mismatch would surface here
+  first, as a box that changes height slightly on commit.
 - **Moves have no membership preview.** Only resizes do. Dragging a tile into a
   frame changes membership just as silently.
 - **No spacing/distribution snapping.** Only edge and centre alignment; equal-gap

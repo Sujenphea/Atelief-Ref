@@ -62,9 +62,21 @@ public final class CanvasEngine {
     public var editingTileID: Int? {
         didSet {
             guard editingTileID != oldValue else { return }
+            // A height belongs to ONE edit. Carrying it into the next one would draw
+            // the new box at the old box's height until its first keystroke.
+            editingWorldHeight = nil
             sync()
         }
     }
+
+    /// The world height the open editor currently needs, or `nil` when no editor is
+    /// up (or before it has measured). Applied to ``editingTileID``'s displayed frame.
+    private var editingWorldHeight: CGFloat?
+
+    /// Relayouts served — introspection for the tests, in the same spirit as
+    /// ``TextRenderLayer/drawCount``: the per-keystroke paths must cost nothing when
+    /// nothing they own actually changed.
+    public private(set) var syncCount = 0
 
     private var active: [Int: CALayer] = [:]
     private var keyByTile: [Int: ThumbnailCache.Key] = [:]
@@ -349,10 +361,50 @@ public final class CanvasEngine {
     /// delta when it's the dragged tile or one of its group. Resize wins because the
     /// two gestures are mutually exclusive: a press either grabs a handle or the
     /// body, never both.
+    ///
+    /// An open editor then overrides the HEIGHT (062). Height only, and last: under
+    /// 062 a text box's height is not geometry the user sets but a fact about the
+    /// text, so while an editor holds the text it also holds the height — whereas the
+    /// width stays the user's, whether that's the stored one or the one a handle drag
+    /// is setting this very moment. Applying it after both gestures is what lets a
+    /// resize *while* editing take its width from the drag and its height from the
+    /// text now in the editor, rather than from the last committed string.
     private func displayWorldFrame(for tile: Tile) -> CGRect {
-        if tile.id == resizeTileID, let live = resizeWorldFrame { return live }
-        guard tile.id == dragTileID || dragGroupIDs.contains(tile.id) else { return tile.worldFrame }
-        return tile.worldFrame.offsetBy(dx: dragWorldOffset.width, dy: dragWorldOffset.height)
+        var frame = tile.worldFrame
+        if tile.id == resizeTileID, let live = resizeWorldFrame {
+            frame = live
+        } else if tile.id == dragTileID || dragGroupIDs.contains(tile.id) {
+            frame = frame.offsetBy(dx: dragWorldOffset.width, dy: dragWorldOffset.height)
+        }
+        if tile.id == editingTileID, let height = editingWorldHeight {
+            frame.size.height = height
+        }
+        return frame
+    }
+
+    /// Draw the tile being edited at the height its editor currently needs, or `nil`
+    /// to fall back to the stored one.
+    ///
+    /// 054 §5.2 (R16) deliberately kept the canvas out of the keystroke path: the
+    /// editor grew its own overlay and the engine was left alone. Under the three-way
+    /// resize modes that was right — a `.fixed` box's height was the user's, and had
+    /// no business following the text. 062 removed that: the height IS the text now,
+    /// so a box that doesn't grow as you type is showing a size that stopped being
+    /// true at the first keystroke, and its border and handles sit inside its own
+    /// glyphs until you commit.
+    ///
+    /// Cheap enough to call per keystroke: it is a `CGFloat` compare and, when it
+    /// really changed, a ``sync()`` — which relays existing layers and re-rasterizes
+    /// nothing (the edited tile's glyphs are blanked; the editor draws them). It is
+    /// deliberately NOT a provider mutation and NOT a write: nothing is persisted
+    /// until the edit commits, so an abandoned edit leaves no trace.
+    ///
+    /// Does not fire ``onLiveFrameChanged``. The editor is the caller here, and
+    /// telling it what it just told us would be a loop with no new information.
+    public func setEditingBoxHeight(_ height: CGFloat?) {
+        guard editingWorldHeight != height else { return }
+        editingWorldHeight = height
+        sync()
     }
 
     // MARK: Live resize (transient geometry, no provider mutation — 062)
@@ -578,6 +630,7 @@ public final class CanvasEngine {
     /// Reconciles the layer tree with the current transform. Cheap by design:
     /// only culled-visible tiles touch a layer; everything else is recycled.
     public func sync() {
+        syncCount &+= 1
         CATransaction.begin()
         CATransaction.setDisableActions(true) // no implicit per-frame animations
         defer { CATransaction.commit() }

@@ -126,6 +126,13 @@ public final class CanvasHostView: NSView {
         set { engine.editingTileID = newValue }
     }
 
+    /// Draw the tile being edited at the height its editor needs (062) — the editor
+    /// pushes this as the string changes, so the box on the canvas grows with the
+    /// text instead of waiting for the commit. `nil` restores the stored height.
+    public func setEditingBoxHeight(_ height: CGFloat?) {
+        engine.setEditingBoxHeight(height)
+    }
+
     /// The current world↔screen transform (2B · 054 §5.1) — read by the inline
     /// editor to scale its measured overlay size to screen points.
     public var transform: CanvasTransform { engine.transform }

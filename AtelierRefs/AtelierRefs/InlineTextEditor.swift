@@ -137,6 +137,13 @@ final class CanvasEditingBridge {
 
     /// The current world→screen scale (for mapping measured world size to screen).
     var scale: CGFloat { host?.transform.scale ?? 1 }
+
+    /// Tell the canvas how tall the edited box currently needs to be, so its box,
+    /// border and handles grow with the text as it is typed (062). `nil` on teardown
+    /// hands the height back to the stored geometry.
+    func editingBoxHeightDidChange(_ height: CGFloat?) {
+        host?.setEditingBoxHeight(height)
+    }
 }
 
 // MARK: - The NSTextView overlay
@@ -181,6 +188,10 @@ struct InlineTextEditor: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: PassThroughContainer, coordinator: Coordinator) {
         coordinator.editor.bridge.onReposition = nil
+        // Belt and braces with `finish`: an editor torn down without finishing (the
+        // view simply going away) must not leave the canvas drawing that tile at a
+        // height no editor is backing any more.
+        coordinator.editor.bridge.editingBoxHeightDidChange(nil)
     }
 
     // MARK: Coordinator
@@ -302,6 +313,14 @@ struct InlineTextEditor: NSViewRepresentable {
             // canvas. With layout fixed in world units, a zoom is pure rasterization —
             // so line breaks hold, and they hold *identically* to the committed box,
             // which `TextMetrics` measured against the same world width.
+            // The canvas draws the box, its border and its handles; the editor draws
+            // the glyphs. Hand over the height so the two agree at every keystroke
+            // (062) — without this the box keeps its committed height and the text
+            // grows straight out of it. Pushed here rather than from `textDidChange`
+            // so a reposition from ANY cause (typing, pan/zoom, a resize drag) leaves
+            // the two in step.
+            bridge.editingBoxHeightDidChange(worldSize.height)
+
             let padded = NSSize(width: TextMetrics.padding, height: TextMetrics.padding)
             scaleBox.frame = CGRect(
                 x: frame.minX, y: frame.minY,
@@ -324,6 +343,11 @@ struct InlineTextEditor: NSViewRepresentable {
             case .deleteElement: editor.onDelete()
             case .persist(let string): editor.onCommit(string)
             }
+            // Hand the height back to the stored geometry, AFTER the outcome has been
+            // applied: a commit has by then written the derived height, so the box
+            // holds still; a cancel drops back to the height it had before the edit,
+            // which is the point of cancelling.
+            bridge.editingBoxHeightDidChange(nil)
         }
 
         // NSTextViewDelegate --------------------------------------------------

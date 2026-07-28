@@ -702,4 +702,67 @@ struct EngineEditingResizeTests {
         e.zoom(by: 1.5, aroundScreenPoint: CGPoint(x: 100, y: 100))
         #expect(live == 0)
     }
+
+    // MARK: The box grows as you type (062)
+
+    @Test("the edited box is drawn at the height its editor asks for")
+    func editingHeightDrivesTheBox() {
+        // The whole visible symptom: without this the box, its border and its handles
+        // keep the committed height while the glyphs above them grow past it.
+        let e = editingEngine()
+        #expect(e.currentScreenFrame(forTileID: 0)?.height == 60)
+        e.setEditingBoxHeight(140)
+        #expect(e.currentScreenFrame(forTileID: 0)?.height == 140)
+        #expect(e.currentScreenFrame(forTileID: 0)?.width == 400) // width is untouched
+    }
+
+    @Test("the handles follow the growing box, not the stored one")
+    func handlesFollowTheEditingHeight() {
+        let e = editingEngine()
+        e.setEditingBoxHeight(140)
+        // Grab the bottom edge where the box now ENDS; at the stored height there is
+        // nothing there.
+        #expect(e.resizeHandle(atScreenPoint: CGPoint(x: 200, y: 140))?.handle == .bottom)
+    }
+
+    @Test("clearing it hands the height back to the stored geometry")
+    func clearingRestoresTheStoredHeight() {
+        // Cancelling an edit must leave no trace: the height was never the provider's.
+        let e = editingEngine()
+        e.setEditingBoxHeight(140)
+        e.setEditingBoxHeight(nil)
+        #expect(e.currentScreenFrame(forTileID: 0)?.height == 60)
+    }
+
+    @Test("it belongs to ONE edit — moving the editor drops it")
+    func heightDoesNotOutliveItsEdit() {
+        let e = editingEngine()
+        e.setEditingBoxHeight(140)
+        e.editingTileID = nil
+        #expect(e.currentScreenFrame(forTileID: 0)?.height == 60)
+    }
+
+    @Test("resizing WHILE typing takes the width from the drag, the height from the text")
+    func resizeAndEditCompose() {
+        // The two live overrides meet here, and each has to win where it is
+        // authoritative: 062 gives the user the width and the text the height.
+        let e = editingEngine()
+        e.setEditingBoxHeight(140)
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 220, y: 30), snapping: false)
+        let frame = e.currentScreenFrame(forTileID: 0)
+        #expect(frame?.width == 220)
+        #expect(frame?.height == 140)
+    }
+
+    @Test("setting the same height again does not re-sync")
+    func repeatedHeightIsANoOp() {
+        // It is called on every keystroke, and most keystrokes do not change the
+        // height — those must cost a compare, not a relayout.
+        let e = editingEngine()
+        e.setEditingBoxHeight(140)
+        let before = e.syncCount
+        e.setEditingBoxHeight(140)
+        #expect(e.syncCount == before)
+    }
 }
