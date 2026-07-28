@@ -31,6 +31,10 @@ public struct CanvasView: NSViewRepresentable {
     private let onFinishEditingText: ((Int, CanvasTextEditOutcome) -> Void)?
     private let onActivateTile: ((Int) -> Void)?
     private let onSelectTiles: ((Set<Int>) -> Void)?
+    /// A tool key (`v` / `f` / `t`) was pressed on the canvas. Handled there rather
+    /// than as a `keyboardShortcut` here, which would fire — and eat the keystroke —
+    /// while the user is typing into a text box. See ``CanvasHostView/onSelectTool``.
+    private let onSelectTool: ((CanvasTool) -> Void)?
     private let onRemoveTiles: ((Set<Int>) -> Void)?
     private let onDeleteTiles: ((Set<Int>) -> Void)?
     private let onCopyTiles: ((Set<Int>) -> Void)?
@@ -73,6 +77,7 @@ public struct CanvasView: NSViewRepresentable {
         editRequest: CanvasTextEditRequest? = nil,
         onActivateTile: ((Int) -> Void)? = nil,
         onSelectTiles: ((Set<Int>) -> Void)? = nil,
+        onSelectTool: ((CanvasTool) -> Void)? = nil,
         onRemoveTiles: ((Set<Int>) -> Void)? = nil,
         onDeleteTiles: ((Set<Int>) -> Void)? = nil,
         onCopyTiles: ((Set<Int>) -> Void)? = nil,
@@ -118,6 +123,7 @@ public struct CanvasView: NSViewRepresentable {
         self.onDidFrameContent = onDidFrameContent
         self.onEditingChanged = onEditingChanged
         self.onFinishEditingText = onFinishEditingText
+        self.onSelectTool = onSelectTool
     }
 
     public func makeNSView(context: Context) -> CanvasHostView {
@@ -137,6 +143,7 @@ public struct CanvasView: NSViewRepresentable {
     private func apply(to view: CanvasHostView) {
         view.onActivateTile = onActivateTile
         view.onSelectTiles = onSelectTiles
+        view.onSelectTool = onSelectTool
         view.onRemoveTiles = onRemoveTiles
         view.onDeleteTiles = onDeleteTiles
         view.onCopyTiles = onCopyTiles

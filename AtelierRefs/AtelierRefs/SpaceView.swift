@@ -164,19 +164,16 @@ struct SpaceView: View {
         .help("Select (V), Frame (F), or Text (T)")
     }
 
-    /// V / F / T switch tools without reaching for the picker (design-tool muscle
-    /// memory). Zero-size hidden buttons so the shortcuts register while the board
-    /// is up; a focused text field takes plain keys first, so typing isn't hijacked.
-    private var toolShortcuts: some View {
-        ZStack {
-            Button("") { tool = .select }.keyboardShortcut("v", modifiers: [])
-            Button("") { tool = .frame }.keyboardShortcut("f", modifiers: [])
-            Button("") { tool = .text }.keyboardShortcut("t", modifiers: [])
-        }
-        .frame(width: 0, height: 0)
-        .opacity(0)
-        .accessibilityHidden(true)
-    }
+    // V / F / T switch tools without reaching for the picker (design-tool muscle
+    // memory). They used to be zero-size hidden buttons carrying unmodified
+    // `keyboardShortcut`s, on the assumption that a focused text field would take
+    // plain keys first. It doesn't: a key equivalent is dispatched BEFORE `keyDown`
+    // reaches the first responder and knows nothing about an AppKit text view inside
+    // an `NSViewRepresentable`, so every `t`, `f` and `v` typed into a text box was
+    // swallowed and switched the tool — after which the canvas was in create mode and
+    // a double-click made a new box instead of editing the one under the cursor. The
+    // canvas now handles them in `keyDown` (`onSelectTool`), where its own focus is
+    // the gate. See `.change-log/269`.
 
     /// The `.single` bar's Edit glyph (051 · 8A — folded down from the header).
     /// Shows only when the lone selected row is a freeform element; opens its
@@ -227,6 +224,9 @@ struct SpaceView: View {
                 onSelectTiles: { tileIDs in
                     space.select(tileIDs: tileIDs, in: content)
                 },
+                // V / F / T, reported by the canvas because only the canvas knows
+                // whether a text box has the keyboard.
+                onSelectTool: { tool = $0 },
                 onRemoveTiles: { tileIDs in
                     space.removeTiles(tileIDs: tileIDs, in: content)
                 },
@@ -285,7 +285,15 @@ struct SpaceView: View {
                 // off the update frame.
                 onHostReady: { host in
                     chromeAnchor.host = host
-                    Task { @MainActor in chromeAnchor.refresh() }
+                    Task { @MainActor in
+                        chromeAnchor.refresh()
+                        // The tool keys are `keyDown` now, which only reaches a first
+                        // responder — so arm the canvas as one on open, or V/F/T would
+                        // be dead until the board had been clicked once. Hopped
+                        // because `onHostReady` fires from `makeNSView`, before the
+                        // host has been put in a window.
+                        host.window?.makeFirstResponder(host)
+                    }
                 },
                 // Drop target (SP2 · S2 + SP3 · S1). We register the app-private
                 // asset-drag type PLUS the external file / image / URL types, so
@@ -382,11 +390,6 @@ struct SpaceView: View {
                     .onChange(of: space.renderRevision) { _, _ in chromeAnchor.refresh() }
             }
         }
-        // V/F/T ride the canvas container, NOT the `.idle` sub-bar (051 · E-2): a
-        // `keyboardShortcut` fires only while rendered, so keeping them here means
-        // the create tools stay reachable even when a selection swaps the tool
-        // picker out of the bar for `.single` / `.multi`.
-        .background(toolShortcuts)
         .overlay(alignment: .bottom) { actionBar }
         // Live import feedback for an external drop (059 · SP3 / 5A) — the SAME
         // floating pill the collection grid shows, driven by the shared

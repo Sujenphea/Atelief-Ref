@@ -59,6 +59,18 @@ public final class CanvasHostView: NSView {
     /// selected tile ids (empty when the selection is cleared). `nil` disables.
     public var onSelectTiles: ((Set<Int>) -> Void)?
 
+    /// The user pressed a tool key (`v` / `f` / `t`). The app owns the tool, so it
+    /// decides what to do; the canvas only reports the press.
+    ///
+    /// This lives on the canvas rather than as a shortcut elsewhere in the window for
+    /// one reason: a key equivalent is dispatched BEFORE `keyDown` reaches the first
+    /// responder, and it has no idea whether that responder is a text editor. An
+    /// unmodified letter registered as a shortcut therefore fires — and swallows the
+    /// keystroke — while the user is typing into a text box. Handling it here makes
+    /// the canvas's focus the gate: an open editor holds first responder, so these
+    /// never reach us at all.
+    public var onSelectTool: ((CanvasTool) -> Void)?
+
     /// Called with the selected tile ids for the context-menu "Remove from Folder".
     public var onRemoveTiles: ((Set<Int>) -> Void)?
 
@@ -1000,7 +1012,36 @@ public final class CanvasHostView: NSView {
             let ids = engine.selectedTileIDs
             if !ids.isEmpty { onDeleteTiles?(ids); return }
         }
+        // The tool keys. `editingTileID` is belt-and-braces — an open editor normally
+        // holds first responder, so this method is unreachable while typing — but an
+        // edit begun before the host had a window is still waiting for focus, and in
+        // that window the host IS the responder.
+        if editingTileID == nil,
+           let tool = Self.toolShortcut(
+            characters: event.charactersIgnoringModifiers, modifiers: event.modifierFlags) {
+            onSelectTool?(tool)
+            return
+        }
         super.keyDown(with: event)
+    }
+
+    /// The tool a bare keystroke asks for, or `nil`. Pure, so the mapping is pinned by
+    /// tests rather than by an `NSEvent` no test wants to build.
+    ///
+    /// Bare means bare: any of ⌘ / ⌥ / ⌃ disqualifies it, so ⌘V still pastes. ⇧ is
+    /// allowed through `lowercased()` — an accidental capital shouldn't silently do
+    /// nothing when the user meant the tool.
+    static func toolShortcut(
+        characters: String?, modifiers: NSEvent.ModifierFlags
+    ) -> CanvasTool? {
+        guard !modifiers.contains(.command), !modifiers.contains(.option),
+              !modifiers.contains(.control), !modifiers.contains(.function) else { return nil }
+        switch characters?.lowercased() {
+        case "v": return .select
+        case "f": return .frame
+        case "t": return .text
+        default: return nil
+        }
     }
 
     /// Edit ▸ Copy (⌘C, 052 · B1) — the standard responder action, so the system's
