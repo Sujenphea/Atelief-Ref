@@ -126,6 +126,59 @@ public func canvasDragCarry(grabbed: Int, selection: Set<Int>) -> Set<Int> {
     selection.contains(grabbed) ? selection : [grabbed]
 }
 
+/// What a mouse-DOWN on the canvas resolves to, ahead of any selection routing
+/// (049 · D8 · 062). Pure so the precedence order is pinned by tests rather than by
+/// the shape of a nested `if` chain in ``CanvasHostView/mouseDown(with:)``.
+public enum CanvasPressTarget: Equatable, Sendable {
+    /// A create tool owns the press — rubber-band a new element.
+    case create
+    /// A double-click on a tile: activate it (play a video, open a detail page, edit
+    /// text inline).
+    case activate(tileID: Int)
+    /// A press on one of the selected tile's resize handles.
+    case resize(tileID: Int, handle: ResizeHandle)
+    /// A press on a tile's body: a selection + drag candidate.
+    case tile(tileID: Int)
+    /// A press on empty space: a marquee candidate, or a click-to-clear.
+    case empty
+}
+
+/// Resolve a mouse-DOWN to what it acts on, in precedence order.
+///
+/// **A double-click beats the resize handles.** This is the whole reason the
+/// precedence lives in a testable function: the handles belong to the SELECTED tile,
+/// and the first click of a double-click selects it — so by the second click the
+/// eight grab zones are live, and each reaches
+/// ``ResizeGeometry/handleHitSize`` ÷ 2 = 11 screen points inward from every edge and
+/// corner. A text box is short by nature (a 16pt box is ~28 screen points tall), so
+/// those zones cover all but a few points of its middle, and at any zoom below ~1×
+/// they cover it entirely. Testing the handle first therefore swallowed almost every
+/// double-click on a text box, and the double-click-to-edit it should have started
+/// never happened — the user got a resize candidate and, because the canvas had taken
+/// first responder, beeping keystrokes. Activation is not a geometry gesture, so it
+/// takes the press outright and arms nothing.
+///
+/// Above two clicks the handle keeps precedence, exactly as it did before: a
+/// third click is not an activation, and the press is a resize candidate again.
+public func canvasPressTarget(
+    tool: CanvasTool,
+    clickCount: Int,
+    tileID: Int?,
+    handle: (tileID: Int, handle: ResizeHandle)?,
+    resizeEnabled: Bool
+) -> CanvasPressTarget {
+    // 1. A create tool takes every press, at any click count.
+    if tool != .select { return .create }
+    // 2. A double-click on a tile activates it — ahead of the handles (see above).
+    if clickCount == 2, let tileID { return .activate(tileID: tileID) }
+    // 3. Handles sit ON the tile's edge, so they must beat the BODY: otherwise every
+    //    handle press would be swallowed as a move of the tile beneath it.
+    if resizeEnabled, let handle { return .resize(tileID: handle.tileID, handle: handle.handle) }
+    // 4. The tile's body, then 5. empty space.
+    if let tileID { return .tile(tileID: tileID) }
+    return .empty
+}
+
 /// Route a mouse-DOWN on the tile `id` to its press/click selection actions
 /// (049 · D6, the Finder rule):
 ///  - **⇧** adds on down; **⌘** toggles on down (modifiers act immediately, never

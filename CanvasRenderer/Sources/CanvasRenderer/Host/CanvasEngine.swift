@@ -184,13 +184,34 @@ public final class CanvasEngine {
     /// Outstanding async decodes.
     public var inFlightDecodeCount: Int { scheduler.inFlightCount }
 
-    /// The on-screen frame a tile is currently drawn at — its stored world frame
-    /// plus any live-drag offset, mapped through the transform — or `nil` if the
-    /// tile isn't among the currently visible tiles. Mirrors the math ``sync()``
-    /// uses to place each layer; introspection for the drag tests.
-    public func currentScreenFrame(forTileID id: Int) -> CGRect? {
-        guard let tile = currentVisibleTiles().first(where: { $0.id == id }) else { return nil }
+    /// The on-screen frame a tile WOULD be drawn at — its stored world frame plus any
+    /// live-drag / live-resize / editing-height adjustment, mapped through the
+    /// transform. `nil` only when the id resolves to no tile at all.
+    ///
+    /// Deliberately **not** gated on visibility. The culler is a rendering
+    /// optimisation, not a statement about whether a tile exists, and a caller that
+    /// needs a frame usually needs it most in the moments the culler has nothing to
+    /// say — before the first ``layout()``, ``viewportSize`` is still `.zero` and
+    /// ``currentVisibleTiles()`` returns nothing at all. Reading "no frame" as "the
+    /// tile is gone" is what made an inline editor commit itself the instant it
+    /// mounted. Ask ``isVisible(tileID:)`` for the separate question.
+    public func screenFrame(forTileID id: Int) -> CGRect? {
+        guard let tile = tile(withID: id) else { return nil }
         return transform.worldToScreen(displayWorldFrame(for: tile))
+    }
+
+    /// Whether a tile is in the culled-visible set right now — i.e. whether the user
+    /// can actually see it. The peer of ``screenFrame(forTileID:)``, split out so
+    /// "where is it" and "can it be seen" are never conflated again.
+    public func isVisible(tileID id: Int) -> Bool {
+        currentVisibleTiles().contains { $0.id == id }
+    }
+
+    /// ``screenFrame(forTileID:)``, but `nil` for a tile that isn't currently visible.
+    /// Kept because callers depend on exactly that: the drag-out snapshot has no image
+    /// to make for an off-screen tile, and the transform-seam tests pin the `nil`.
+    public func currentScreenFrame(forTileID id: Int) -> CGRect? {
+        isVisible(tileID: id) ? screenFrame(forTileID: id) : nil
     }
 
     /// The tiles visible under the current transform + viewport + prefetch margin.

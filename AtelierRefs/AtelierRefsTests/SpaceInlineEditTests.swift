@@ -53,13 +53,38 @@ struct SpaceInlineEditTests {
 
     // MARK: - viewport-exit → commit (§5.4)
 
-    @Test("a tile that left the viewport (nil frame) triggers commit; a visible one does not")
+    private let viewport = CGSize(width: 800, height: 600)
+
+    @Test("a tile that scrolled out of a laid-out canvas commits; a visible one does not")
     func viewportExitCommits() {
-        #expect(inlineEditShouldCommitOnViewportExit(screenFrame: nil) == true)
         #expect(inlineEditShouldCommitOnViewportExit(
-            screenFrame: CGRect(x: 0, y: 0, width: 10, height: 10)) == false)
-        // A zero-size but non-nil frame is still "present" — no commit.
-        #expect(inlineEditShouldCommitOnViewportExit(screenFrame: .zero) == false)
+            isVisible: false, viewportSize: viewport, hasPositioned: true) == true)
+        #expect(inlineEditShouldCommitOnViewportExit(
+            isVisible: true, viewportSize: viewport, hasPositioned: true) == false)
+    }
+
+    @Test("an editor that has never positioned never commits — it hasn't started yet")
+    func firstLayoutNeverCommits() {
+        // The regression: mounting an editor used to self-commit, because "no screen
+        // frame" was read as "the tile left the viewport" when in truth the canvas had
+        // not been laid out and NOTHING was visible yet.
+        #expect(inlineEditShouldCommitOnViewportExit(
+            isVisible: false, viewportSize: .zero, hasPositioned: false) == false)
+        // Both guards are independent: either one alone holds the commit back.
+        #expect(inlineEditShouldCommitOnViewportExit(
+            isVisible: false, viewportSize: viewport, hasPositioned: false) == false)
+        #expect(inlineEditShouldCommitOnViewportExit(
+            isVisible: false, viewportSize: .zero, hasPositioned: true) == false)
+    }
+
+    @Test("a degenerate viewport is never treated as the tile having left")
+    func degenerateViewportHoldsStill() {
+        for size in [CGSize.zero,
+                     CGSize(width: 0, height: 600),
+                     CGSize(width: 800, height: 0)] {
+            #expect(inlineEditShouldCommitOnViewportExit(
+                isVisible: false, viewportSize: size, hasPositioned: true) == false)
+        }
     }
 
     // MARK: - double-commit guard (§5.3)

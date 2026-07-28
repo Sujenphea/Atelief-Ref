@@ -81,11 +81,42 @@ struct TransformSeamTests {
                     y: anchor.y + (before.origin.y - anchor.y) * factor)))
     }
 
-    @Test("screenFrame is nil for a tile outside the viewport")
+    @Test("currentScreenFrame is nil for a tile outside the viewport")
     func screenFrameNilOffscreen() {
         let engine = makeEngine()
         engine.setTransform(CanvasTransform(scale: 1, translation: CGPoint(x: -100_000, y: -100_000)))
         #expect(engine.currentScreenFrame(forTileID: 1) == nil)
+        #expect(engine.isVisible(tileID: 1) == false)
+    }
+
+    @Test("screenFrame answers WHERE a tile is even when it can't be seen")
+    func screenFrameIsNotVisibilityGated() {
+        let engine = makeEngine()
+        engine.setTransform(CanvasTransform(scale: 1, translation: CGPoint(x: -100_000, y: -100_000)))
+        // Off-screen: `currentScreenFrame` withholds, the ungated one still answers —
+        // and answers the SAME geometry the transform implies.
+        let frame = engine.screenFrame(forTileID: 1)
+        #expect(frame != nil)
+        #expect(Approx.equal(frame!, engine.transform.worldToScreen(row[1].worldFrame)))
+    }
+
+    @Test("screenFrame answers before the first layout, when nothing is visible yet")
+    func screenFrameSurvivesAZeroViewport() {
+        let engine = makeEngine()
+        engine.viewportSize = .zero
+        // The regression this split exists for: with no viewport the culler reports an
+        // empty world, so a visibility-gated read looks exactly like "the tile is gone".
+        #expect(engine.currentVisibleTiles().isEmpty)
+        #expect(engine.isVisible(tileID: 1) == false)
+        #expect(engine.screenFrame(forTileID: 1) != nil)
+    }
+
+    @Test("neither frame accessor invents a tile that doesn't exist")
+    func unknownTileHasNoFrame() {
+        let engine = makeEngine()
+        #expect(engine.screenFrame(forTileID: 9_999) == nil)
+        #expect(engine.currentScreenFrame(forTileID: 9_999) == nil)
+        #expect(engine.isVisible(tileID: 9_999) == false)
     }
 
     // MARK: - onTransformChanged fires exactly once per mutation (R2)

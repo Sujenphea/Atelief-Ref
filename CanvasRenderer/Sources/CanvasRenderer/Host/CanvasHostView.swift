@@ -137,13 +137,24 @@ public final class CanvasHostView: NSView {
     /// editor to scale its measured overlay size to screen points.
     public var transform: CanvasTransform { engine.transform }
 
-    /// The on-screen frame a tile is currently drawn at, or `nil` if it isn't
-    /// visible (2B · 054 §5.1). The inline editor positions its `NSTextView` from
-    /// this on each ``onTransformChanged``; a `nil` result means the tile scrolled
-    /// out of the viewport → commit-and-exit (054 §5.4).
+    /// The on-screen frame a tile is drawn at (2B · 054 §5.1) — `nil` only when the id
+    /// resolves to no tile. The inline editor positions its `NSTextView` from this on
+    /// each ``onTransformChanged``.
+    ///
+    /// Not visibility-gated: "where is this tile" and "can the user see it" are
+    /// separate questions, and conflating them made the editor commit itself on its
+    /// first layout, when the viewport size wasn't known yet. Ask ``isTileVisible(_:)``
+    /// for the commit-and-exit rule (054 §5.4).
     public func screenFrame(forTileID id: Int) -> CGRect? {
-        engine.currentScreenFrame(forTileID: id)
+        engine.screenFrame(forTileID: id)
     }
+
+    /// Whether a tile is currently within the culled-visible set.
+    public func isTileVisible(_ id: Int) -> Bool { engine.isVisible(tileID: id) }
+
+    /// The canvas's viewport in points — `.zero` until the first ``layout()``. The
+    /// inline editor reads it to tell "not laid out yet" from "scrolled away".
+    public var viewportSize: CGSize { engine.viewportSize }
 
     // MARK: Element-create tracking (rubber-band)
 
@@ -411,31 +422,36 @@ public final class CanvasHostView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         resetGestureState()
 
-        // Gesture precedence (049 · D8 · 062), highest to lowest:
-        //  1. A create tool (`.frame` / `.text`) → rubber-band a NEW element.
-        //  2. `.select` on a resize HANDLE → a resize candidate.
-        //  3. `.select` on a TILE → a drag candidate (press routing selects).
-        //  4. `.select` on EMPTY space → a marquee candidate (or click-to-clear).
-        if tool != .select {
-            createStartPoint = point
-            return
-        }
-
-        // Handles sit ON the tile's edge, so they must be tested BEFORE the body:
-        // otherwise every handle press would be swallowed as a move of the tile
-        // beneath it.
-        if onResizeTile != nil, let hit = engine.resizeHandle(atScreenPoint: point) {
-            resizeCandidate = hit
-            dragStartPoint = point
-            return
-        }
-
-        let tileID = engine.tile(atScreenPoint: point)?.id
         let shift = event.modifierFlags.contains(.shift)
         let command = event.modifierFlags.contains(.command)
         pressOptionDown = event.modifierFlags.contains(.option) // ⌥ → drag-out (SP7)
 
-        if let tileID {
+        // Gesture precedence lives in `canvasPressTarget` (049 · D8 · 062) so the
+        // ORDER is pinned by tests rather than by the shape of this method — the
+        // double-click-vs-handle case it settles is a bug this file shipped.
+        switch canvasPressTarget(
+            tool: tool,
+            clickCount: event.clickCount,
+            tileID: engine.tile(atScreenPoint: point)?.id,
+            handle: engine.resizeHandle(atScreenPoint: point),
+            resizeEnabled: onResizeTile != nil)
+        {
+        case .create:
+            createStartPoint = point
+
+        case .activate(let tileID):
+            // Collapse to the activated tile and hand it over. Nothing is armed: an
+            // activation is not a drag or a resize, so mouse-UP is inert. The
+            // selection lands on the DOWN edge here, where the old path deferred it
+            // to `pendingClickAction` on the up edge — same outcome, one event sooner.
+            applySelection(.selectOnly(tileID))
+            onActivateTile?(tileID)
+
+        case .resize(let tileID, let handle):
+            resizeCandidate = (tileID: tileID, handle: handle)
+            dragStartPoint = point
+
+        case .tile(let tileID):
             // Route the press through the selection reducer: ⇧/⌘ act on the down
             // edge; a plain press on a SELECTED tile defers (so a drag carries the
             // whole selection), collapsing to one only if it stays a click. Arm the
@@ -446,10 +462,10 @@ public final class CanvasHostView: NSView {
                 shift: shift, command: command)
             if let press = routing.pressAction { applySelection(press) }
             pendingClickAction = routing.clickAction
-            if event.clickCount == 2 { onActivateTile?(tileID) }
             dragStartPoint = point
             dragCandidateTileID = tileID
-        } else {
+
+        case .empty:
             // Empty space: arm a rubber-band marquee anchored in WORLD space (so
             // edge auto-pan grows it correctly), and defer a click-to-clear to
             // mouse-UP — applied only if the press never becomes a marquee. A ⇧

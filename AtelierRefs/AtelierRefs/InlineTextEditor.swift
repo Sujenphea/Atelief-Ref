@@ -82,11 +82,21 @@ func inlineEditorWorldBox(
         height: measuredWorldSize.height + 2 * padding)
 }
 
-/// While editing, a tile that scrolls out of the viewport (its on-screen frame goes
-/// `nil`) triggers a commit-and-exit rather than a silent abandon (054 §5.4). Pure
-/// so the "tile-left-viewport → commit" rule is unit-tested without a window.
-func inlineEditShouldCommitOnViewportExit(screenFrame: CGRect?) -> Bool {
-    screenFrame == nil
+/// While editing, a tile that scrolls out of the viewport triggers a commit-and-exit
+/// rather than a silent abandon (054 §5.4). Pure so the rule is unit-tested without a
+/// window.
+///
+/// The two guards are the whole point. "Not visible" is only meaningful once the canvas
+/// knows how big it is and the editor has actually placed itself once — before either,
+/// nothing is visible by definition, and the old version of this (which asked only
+/// whether a screen frame existed) read that as *the tile left the viewport* and
+/// committed the edit the moment it mounted. An editor that has never positioned holds
+/// its ground; only a tile that was on screen and then left commits.
+func inlineEditShouldCommitOnViewportExit(
+    isVisible: Bool, viewportSize: CGSize, hasPositioned: Bool
+) -> Bool {
+    guard hasPositioned, viewportSize.width > 0, viewportSize.height > 0 else { return false }
+    return !isVisible
 }
 
 /// One-shot guard mirroring `ElementInspector.finished` (054 §5.3): the FIRST finish
@@ -132,8 +142,17 @@ final class CanvasEditingBridge {
     /// text spilled out of the box instead of re-wrapping into it.
     func geometryDidChange() { onReposition?() }
 
-    /// The edited tile's live on-screen frame, or `nil` if it left the viewport.
+    /// The edited tile's live on-screen frame, or `nil` if the id resolves to no tile.
+    /// NOT visibility-gated — see ``CanvasHostView/screenFrame(forTileID:)``.
     func screenFrame(forTileID id: Int) -> CGRect? { host?.screenFrame(forTileID: id) }
+
+    /// Whether the edited tile is on screen right now — the commit-and-exit input
+    /// (§5.4), asked separately from its frame.
+    func isTileVisible(_ id: Int) -> Bool { host?.isTileVisible(id) ?? false }
+
+    /// The canvas viewport, `.zero` before its first layout. Tells "not laid out yet"
+    /// from "scrolled away", which a bare frame can't.
+    var viewportSize: CGSize { host?.viewportSize ?? .zero }
 
     /// The current world→screen scale (for mapping measured world size to screen).
     var scale: CGFloat { host?.transform.scale ?? 1 }
@@ -317,16 +336,29 @@ struct InlineTextEditor: NSViewRepresentable {
             }
         }
 
-        /// Place the overlay from the tile's live screen frame (imperative, R15). A
-        /// `nil` frame means the tile scrolled out → commit-and-exit (§5.4). Auto
-        /// modes re-measure the CURRENT string through `TextMetrics` (the SAME source
-        /// as the committed box) and resize ONLY the overlay — no engine sync, no
-        /// `renderRevision` bump (§5.2 · R16).
+        /// Whether ``reposition()`` has ever successfully placed the overlay. Until it
+        /// has, "the tile isn't visible" cannot mean the tile scrolled away — the canvas
+        /// may simply not have been laid out yet.
+        private var hasPositioned = false
+
+        /// Place the overlay from the tile's live screen frame (imperative, R15). A tile
+        /// that scrolls out of the viewport commits and exits (§5.4). Re-measures the
+        /// CURRENT string through `TextMetrics` (the SAME source as the committed box)
+        /// and resizes ONLY the overlay — no engine sync, no `renderRevision` bump
+        /// (§5.2 · R16).
         func reposition() {
-            guard let frame = bridge.screenFrame(forTileID: editor.tileID) else {
-                if inlineEditShouldCommitOnViewportExit(screenFrame: nil) { finish(committed: true) }
+            if inlineEditShouldCommitOnViewportExit(
+                isVisible: bridge.isTileVisible(editor.tileID),
+                viewportSize: bridge.viewportSize,
+                hasPositioned: hasPositioned) {
+                finish(committed: true)
                 return
             }
+            // A tile the provider no longer has is a torn-down board, not a scrolled
+            // one — there is nothing to place the overlay over, and nothing to commit
+            // against either, so hold still and let the teardown run.
+            guard let frame = bridge.screenFrame(forTileID: editor.tileID) else { return }
+            hasPositioned = true
             let scale = max(0.0001, bridge.scale)
             // Measure the CURRENT string in world units, through the SAME helper the
             // committed box uses, so editor and canvas can't disagree on the wrap.
