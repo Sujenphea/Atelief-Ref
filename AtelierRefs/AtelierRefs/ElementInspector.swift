@@ -83,8 +83,11 @@ struct ElementInspector: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(14)
-        .frame(width: 280)
+        // A popover supplies no inset of its own, and at 14 the pickers and the
+        // Done/Delete row sat against its chrome. `lg` on the design scale, shared
+        // with the board's font popover (062) so the two read as one control set.
+        .padding(Theme.Spacing.lg)
+        .frame(width: 300)
         // Dismissing the popover by clicking outside used to discard every edit.
         // Commit those pending edits instead (unless Done/Delete already closed it).
         // `onDisappear` runs INSIDE the view-removal update, and `onCommit`

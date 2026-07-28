@@ -384,8 +384,11 @@ struct SpaceTextFontPopover: View {
             .pickerStyle(.segmented)
             .labelsHidden()
         }
-        .padding(Theme.Spacing.md)
-        .frame(width: 240)
+        // Popovers get no inset of their own, so the controls sit against the chrome
+        // unless the content supplies one. `lg` matches the inspector's, so the two
+        // ways into the same settings are padded alike.
+        .padding(Theme.Spacing.lg)
+        .frame(width: 260)
     }
 
     /// A `Binding` that reads the current style and writes an edited copy back —
@@ -429,9 +432,12 @@ struct SpaceTextSizePopover: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.vertical, Theme.Spacing.xs)
+            // Inset on the rows rather than the scroll view: the row is the click
+            // target, so padding it keeps the whole width clickable.
+            .padding(.horizontal, Theme.Spacing.xs)
+            .padding(.vertical, Theme.Spacing.sm)
         }
-        .frame(width: 110, height: 260)
+        .frame(width: 124, height: 260)
     }
 }
 
