@@ -406,21 +406,14 @@ struct SpaceTextFontPopover: View {
     let style: ElementStyle
     let onChange: (ElementStyle) -> Void
 
-    /// The full system family list, "System" (the nil default) pinned first —
-    /// matching ``ElementInspector``.
-    private let families = NSFontManager.shared.availableFontFamilies
-    private static let systemFamily = ""
+    /// The system-font sentinel — ``FontFamilyPicker`` owns the list itself now (064).
+    private static let systemFamily = FontFamilyCatalog.systemFamily
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            Picker("Font", selection: binding(
+            FontFamilyPicker(selection: binding(
                 get: { style.fontFamily ?? Self.systemFamily },
-                set: { $0.fontFamily = $1.isEmpty ? nil : $1 })) {
-                Text("System").tag(Self.systemFamily)
-                Divider()
-                ForEach(families, id: \.self) { Text($0).tag($0) }
-            }
-            .labelsHidden()
+                set: { $0.fontFamily = $1.isEmpty ? nil : $1 }))
 
             Picker("Weight", selection: binding(
                 get: { style.weight },

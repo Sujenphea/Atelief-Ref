@@ -103,6 +103,11 @@ struct SpaceView: View {
                     .transition(.opacity)
             }
         }
+        // Enumerate the system's font families now, on a background thread (064). A
+        // board is the only place a font picker is reachable from, and the first picker
+        // to open used to pay ~384 ms for this on the main thread — as part of the click
+        // that opened it. Idempotent, so re-opening a board costs nothing.
+        .task { FontFamilyCatalog.shared.warm() }
         // The space name lives in the in-content header only (parity with Collection);
         // the native window-toolbar title is dropped so the name isn't shown twice.
         // Undo/redo and z-order live in the floating bottom action bar (`actionBar`,

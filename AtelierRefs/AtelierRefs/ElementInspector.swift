@@ -36,11 +36,10 @@ struct ElementInspector: View {
     @State private var weight: TextWeight
     @State private var align: TextAlign
 
-    /// The full system family list, "System" (the nil default) pinned first.
-    private let families = NSFontManager.shared.availableFontFamilies
-
     /// The system-font sentinel used as the "System" picker tag / empty family.
-    private static let systemFamily = ""
+    /// ``FontFamilyPicker`` owns the list itself (064), shared with the board's own
+    /// font popover so the two ways into this setting can't drift.
+    private static let systemFamily = FontFamilyCatalog.systemFamily
 
     init(kind: SpaceItemKind, initialStyle: ElementStyle,
          onCommit: @escaping (ElementStyle) -> Void, onDelete: @escaping () -> Void) {
@@ -109,11 +108,7 @@ struct ElementInspector: View {
     // text (062).
     @ViewBuilder private var textEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("Font", selection: $fontFamily) {
-                Text("System").tag(Self.systemFamily)
-                Divider()
-                ForEach(families, id: \.self) { Text($0).tag($0) }
-            }
+            FontFamilyPicker(selection: $fontFamily)
             Picker("Weight", selection: $weight) {
                 ForEach(TextWeight.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
             }
