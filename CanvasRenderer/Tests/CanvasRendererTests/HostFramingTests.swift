@@ -127,18 +127,52 @@ struct HostFramingTests {
         #expect(host.transform.translation == identity.translation)
     }
 
+    // MARK: - The surface split
+
+    @Test("a subview of the host stays out of the engine's tile tree")
+    func subviewsDoNotJoinTheTileTree() {
+        let provider = LateProvider()
+        provider.tiles = content
+        let host = makeHost(provider)
+        host.layout()
+        #expect(host.contentLayer.sublayers?.count == 1) // the one visible tile
+
+        // The inline text editor will be a subview like this one. If the host were
+        // still layer-hosting, AppKit would splice this view's backing layer straight
+        // into the engine's tree, where it would compete with pooled tile layers by
+        // zPosition and break the one-layer-per-visible-tile invariant.
+        let overlay = NSView(frame: CGRect(x: 0, y: 0, width: 50, height: 50))
+        overlay.wantsLayer = true
+        host.addSubview(overlay)
+        host.layout()
+
+        #expect(host.contentLayer.sublayers?.count == 1) // still just the tile
+        #expect(host.subviews.contains(overlay))
+    }
+
+    @Test("the drawing surface is transparent to events, so the host still gets them")
+    func surfaceDoesNotSwallowEvents() {
+        let provider = LateProvider()
+        provider.tiles = content
+        let host = makeHost(provider)
+        host.layout()
+        // `hitTest` walks subviews first; the surface must decline so every press,
+        // drag and scroll reaches the host's own gesture handling as it always did.
+        #expect(host.hitTest(NSPoint(x: 100, y: 100)) === host)
+    }
+
     @Test("a sync that does not frame still re-syncs the layers")
     func nonFramingSyncStillDraws() {
         let provider = LateProvider()
         let host = makeHost(provider)
         host.framesContentWhenReady = false // never frames, so only the sync branch runs
         host.layout()
-        #expect(host.layer?.sublayers?.isEmpty != false) // nothing to draw yet
+        #expect(host.contentLayer.sublayers?.isEmpty != false) // nothing to draw yet
 
         // The redraw path must not be swallowed by the framing branch: a reload
         // signals through `syncToken`, and nothing else would draw the new rows.
         provider.tiles = content
         host.syncToken = 1
-        #expect(host.layer?.sublayers?.count == 1)
+        #expect(host.contentLayer.sublayers?.count == 1)
     }
 }

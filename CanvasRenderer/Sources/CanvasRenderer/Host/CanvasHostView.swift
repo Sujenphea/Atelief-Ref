@@ -7,6 +7,14 @@ import AppKit
 public final class CanvasHostView: NSView {
     private let engine: CanvasEngine
 
+    /// The layer-hosting subview the engine draws into. See ``init`` for why the tile
+    /// tree cannot live on the host itself.
+    private let surface: CanvasSurfaceView
+
+    /// The engine's layer tree, for the package's own tests: the host is a plain
+    /// container, so its own `layer` is not where tiles are.
+    var contentLayer: CALayer { engine.rootLayer }
+
     /// Whether this host may still frame the board to fit. The app arms it for the
     /// FIRST open of a board and disarms it once ``onDidFrameContent`` reports the
     /// framing happened, so no later reload — or rebuild — can move the camera.
@@ -321,12 +329,20 @@ public final class CanvasHostView: NSView {
         frame: CGRect = CGRect(x: 0, y: 0, width: 1280, height: 800)
     ) {
         self.engine = CanvasEngine(provider: provider, images: images, viewportSize: frame.size)
+        self.surface = CanvasSurfaceView(frame: CGRect(origin: .zero, size: frame.size))
         super.init(frame: frame)
 
-        // Layer-hosting view: install the engine's root layer, then opt in.
-        layer = engine.rootLayer
+        // The engine's layer tree lives on a dedicated LAYER-HOSTING subview, not on
+        // this view. A layer-hosting view owns its layer's sublayers outright, so any
+        // subview added here would have its layer spliced in among the pooled tile
+        // layers — where it would compete by `zPosition` and break the one-layer-per-
+        // visible-tile invariant. Keeping the host a plain container is what lets it
+        // hold real subviews (the inline text editor) above the canvas.
+        surface.layer = engine.rootLayer
+        surface.wantsLayer = true
         wantsLayer = true
-        engine.rootLayer.frame = bounds
+        addSubview(surface)
+        engine.rootLayer.frame = surface.bounds
         // Forward the engine-sourced transform notification outward (2B · 054 §5.1):
         // any transform mutation (pan/zoom/setTransform/frameToContent) reaches the
         // app through this one seam.
@@ -345,7 +361,8 @@ public final class CanvasHostView: NSView {
 
     public override func layout() {
         super.layout()
-        engine.rootLayer.frame = bounds
+        surface.frame = bounds
+        engine.rootLayer.frame = surface.bounds
         engine.viewportSize = bounds.size
         // Frame the board to fit the first time we know our size AND have content;
         // afterwards a resize just re-syncs (it must not stomp the user's pan/zoom).
@@ -974,4 +991,24 @@ extension CanvasHostView: NSUserInterfaceValidations {
         if item.action == #selector(paste(_:)) { return onPaste != nil }
         return true
     }
+}
+
+/// The layer-hosting surface the ``CanvasEngine`` draws into, sitting beneath every
+/// real subview of ``CanvasHostView``.
+///
+/// It exists so the host itself does NOT have to be layer-hosting. A layer-hosting
+/// view owns its layer's sublayers completely — the engine pools, recycles and
+/// z-orders them every `sync()` — so a subview added to it would have its backing
+/// layer spliced into that same tree, competing with tiles by `zPosition` and
+/// breaking the "one layer per visible tile" invariant. Splitting the two means the
+/// host can hold ordinary AppKit subviews (the inline text editor) above a canvas
+/// that keeps managing its own layers.
+///
+/// Transparent to events: `hitTest` returns `nil`, so every click, drag and scroll
+/// still lands on the host exactly as it did when the host was the drawing view.
+/// Flipped to match the host (top-left origin, y down), so the engine's screen-space
+/// geometry is unchanged.
+final class CanvasSurfaceView: NSView {
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
