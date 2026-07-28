@@ -17,8 +17,14 @@ import SwiftUI
 
 enum ElementRendering {
     // Defaults for freshly-created elements.
-    static let defaultFontSize: Double = 22
-    static let defaultTextColorHex = "#111111"
+    static let defaultFontSize: Double = 16
+    /// Text with no colour of its own, and every freshly-created text box. White,
+    /// because the board is a dark surface — the near-black this used to be dates
+    /// from when the canvas was light, and reads as an invisible box today.
+    static let defaultTextColor = RGBAColor(red: 1, green: 1, blue: 1)
+    /// The same colour as stored — ONE source, so a new box and a legacy row with no
+    /// colour can't disagree.
+    static var defaultTextColorHex: String { hex(from: defaultTextColor) }
     static let defaultLabelColorHex = "#3A3A3C"
     static let defaultFrameStrokeHex = "#8E8E93"
     static let defaultFrameStrokeWidth: Double = 2
@@ -74,7 +80,7 @@ enum ElementRendering {
         TextStyle(
             string: style.text ?? "",
             fontSize: style.fontSize ?? defaultFontSize,
-            color: rgba(fromHex: style.textColor) ?? RGBAColor(red: 0.07, green: 0.07, blue: 0.07),
+            color: rgba(fromHex: style.textColor) ?? defaultTextColor,
             fontFamily: style.fontFamily,
             weight: FontWeight(rawValue: style.weight.rawValue) ?? .regular,
             alignment: TextAlignment(rawValue: style.align.rawValue) ?? .left)

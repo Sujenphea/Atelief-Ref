@@ -291,7 +291,7 @@ struct InlineTextEditor: NSViewRepresentable {
             appliedTypography = Typography(editor.style)
             textView.font = Self.nsFont(for: editor.style)
             let rgba = ElementRendering.rgba(fromHex: editor.style.textColor)
-                ?? RGBAColor(red: 0.07, green: 0.07, blue: 0.07)
+                ?? ElementRendering.defaultTextColor
             textView.textColor = NSColor(
                 srgbRed: rgba.red, green: rgba.green, blue: rgba.blue, alpha: rgba.alpha)
             switch editor.style.align {

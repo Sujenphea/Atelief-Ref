@@ -51,7 +51,7 @@ struct ElementInspector: View {
         _text = State(initialValue: initialStyle.text ?? "")
         _fontSize = State(initialValue: initialStyle.fontSize ?? ElementRendering.defaultFontSize)
         _textColor = State(initialValue: Color(rgba:
-            ElementRendering.rgba(fromHex: initialStyle.textColor) ?? RGBAColor(red: 0.07, green: 0.07, blue: 0.07)))
+            ElementRendering.rgba(fromHex: initialStyle.textColor) ?? ElementRendering.defaultTextColor))
         _fillEnabled = State(initialValue: initialStyle.fillColor != nil)
         _fillColor = State(initialValue: Color(rgba:
             ElementRendering.rgba(fromHex: initialStyle.fillColor) ?? RGBAColor(red: 0.9, green: 0.9, blue: 0.92, alpha: 1)))
