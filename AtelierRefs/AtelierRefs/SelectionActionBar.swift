@@ -85,21 +85,15 @@ extension View {
             .padding(.bottom, 16)
     }
 
-    /// Wrap the `…` overflow popover's content in the design-system container — a
-    /// `surface` card with `card` (12pt) corners + a hairline border — and make the
-    /// host popover's own chrome transparent so ONLY this card shows. Fixed width so
-    /// the section headers and rows all align. Replaces the raw system-menu look.
+    /// Wrap the `…` overflow popover's content in the design-system container — the
+    /// shared ``popoverChrome(cornerRadius:)`` surface — and make the host popover's
+    /// own chrome transparent so ONLY this card shows. Fixed width so the section
+    /// headers and rows all align. Replaces the raw system-menu look.
     func selectionMenuChrome() -> some View {
         self
             .padding(Theme.Spacing.xs)
             .frame(width: 220)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                    .fill(Theme.Colors.surface))
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                    .strokeBorder(Theme.Colors.hairline))
-            .elevation(.hover)
+            .popoverChrome()
             .presentationBackground(.clear)
     }
 }

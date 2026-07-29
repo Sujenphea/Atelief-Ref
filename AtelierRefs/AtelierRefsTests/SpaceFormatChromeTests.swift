@@ -318,4 +318,69 @@ struct SpaceFormatChromeTests {
         let columns = SpaceTextChromeLayout.paletteColumns
         #expect(TextPalette.swatches.count % columns != 1)
     }
+
+    // MARK: - The pill, measured
+
+    /// Render the chrome for a box and return the height of the OPAQUE pill it drew,
+    /// down the bubble's centre column.
+    ///
+    /// Measured rather than derived, because the failure this covers is invisible to
+    /// the geometry: the padding was in `bubbleSize` the whole time, and the bar drew
+    /// a pill the height of its segments inside it. A background sizes to the view it
+    /// decorates, so chrome applied BEFORE the frame ignores the frame. Only ink can
+    /// tell those two apart.
+    ///
+    /// The threshold picks the pill out of its own shadow — the fill is opaque, the
+    /// shadow peaks at 0.35 alpha.
+    @MainActor
+    private func pillHeight(bounds: CGSize, box: CGRect) throws -> CGFloat {
+        let renderer = ImageRenderer(
+            content: SpaceFormatChrome(
+                anchor: SpaceTextChromeAnchor(screenFrame: box),
+                style: ElementStyle(fontSize: 16),
+                showAlign: .constant(false), showFont: .constant(false),
+                showSize: .constant(false), showColor: .constant(false),
+                onChange: { _ in })
+                .frame(width: bounds.width, height: bounds.height))
+        let scale: CGFloat = 4
+        renderer.scale = scale
+        let image = try #require(renderer.cgImage)
+
+        let w = image.width, h = image.height
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        let ctx = try #require(CGContext(
+            data: &pixels, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+        // Down the middle of the bubble: the longest run of opaque pixels is the pill.
+        let bubble = self.bubble(for: box, bounds: bounds)
+        let column = min(max(Int(bubble.midX * scale), 0), w - 1)
+        var longest = 0, run = 0
+        for y in 0..<h {
+            if pixels[(y * w + column) * 4 + 3] > 200 {
+                run += 1
+                longest = max(longest, run)
+            } else {
+                run = 0
+            }
+        }
+        #expect(longest > 0, "the bubble drew no opaque pill at all")
+        return CGFloat(longest) / scale
+    }
+
+    @MainActor
+    @Test("the pill is drawn as tall as the layout says, not as tall as its segments")
+    func pillIsDrawnAtItsLayoutHeight() throws {
+        let bounds = CGSize(width: 400, height: 300)
+        let box = CGRect(x: 120, y: 100, width: 160, height: 60)
+        let drawn = try pillHeight(bounds: bounds, box: box)
+
+        // Within a rounded pixel of the layout height — and, the part that regressed,
+        // taller than the segments it wraps.
+        #expect(abs(drawn - SpaceTextChromeLayout.bubbleHeight) < 1,
+                "the pill drew \(drawn)pt for a \(SpaceTextChromeLayout.bubbleHeight)pt layout")
+        #expect(drawn > SpaceTextChromeLayout.segmentHeight)
+    }
 }

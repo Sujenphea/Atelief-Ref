@@ -90,11 +90,13 @@ struct FontFamilyPicker: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // A selected ROW is `selection`, the token the sidebar and the search
+        // results already use — not a tinted accent. The app is monochrome by
+        // design (`Theme`), and a translucent tint also shifted colour with the
+        // fill behind it once this list moved onto the popover surface.
         .background(
-            isSelected
-                ? Color.accentColor.opacity(0.15)
-                : Color.clear,
-            in: RoundedRectangle(cornerRadius: 4))
+            isSelected ? Theme.Colors.selection : Color.clear,
+            in: RoundedRectangle(cornerRadius: Theme.Radius.chip))
         .id(value)
     }
 }

@@ -101,7 +101,11 @@ enum SpaceTextChromeLayout {
     /// Inset from the bubble's pill to its first and last segment. Wider than the
     /// gap BETWEEN segments so the ends read as an edge rather than another gap —
     /// at 8 the outer icons sat as close to the border as to their neighbours.
-    static let bubblePadding: CGFloat = 12
+    ///
+    /// A spacing TOKEN, not a measured number like the segment widths below it: the
+    /// inset of a floating pill is the same design decision here as in
+    /// `selectionBarChrome()`, so it reads off the same scale.
+    static let bubblePadding = Theme.Spacing.md
     static let segmentHeight: CGFloat = 22
     /// The pill: a segment with half the horizontal inset above and below it (6pt
     /// each side of a 22pt segment), so the icons sit inside an even margin rather
@@ -229,6 +233,14 @@ final class SpaceTextChromeAnchor: ObservableObject {
     /// kept alive by the bubble.
     weak var host: CanvasHostView?
 
+    init() {}
+
+    /// Seed a frame directly, with no tile and no host — for previews and for the
+    /// tests that RENDER the chrome (there is no canvas to read a frame from there).
+    init(screenFrame: CGRect) {
+        self.screenFrame = screenFrame
+    }
+
     /// Point the anchor at a tile (or `nil` to stop tracking) and read its frame now.
     func track(tileID: Int?) {
         self.tileID = tileID
@@ -293,8 +305,14 @@ struct SpaceFormatChrome: View {
                             .onTapGesture { closeAll() }
                     }
 
+                    // Frame FIRST, chrome second — the same order the panels use
+                    // below. A background sizes to the view it decorates, so chrome
+                    // applied inside the bar drew a pill the height of the SEGMENTS
+                    // (22pt), which this frame then centred in 34pt of nothing: the
+                    // padding was in the geometry and not on screen.
                     bubbleBar
                         .frame(width: bubble.width, height: bubble.height)
+                        .bubbleChrome(cornerRadius: bubble.height / 2)
                         .position(x: bubble.midX, y: bubble.midY)
 
                     if let panel = activePanel {
@@ -304,7 +322,10 @@ struct SpaceFormatChrome: View {
                         content(of: panel)
                             .foregroundStyle(Theme.Colors.inkPrimary)
                             .frame(width: panelSize.width, height: panelSize.height)
-                            .panelChrome(cornerRadius: cornerRadius(of: panel))
+                            // A segment's panel is a POPOVER — the app's shared
+                            // container (`surface` + hairline + `hover` elevation),
+                            // the same look the selection bar's `…` overflow uses.
+                            .popoverChrome(cornerRadius: cornerRadius(of: panel))
                             .position(
                                 x: origin.x + panelSize.width / 2,
                                 y: origin.y + panelSize.height / 2)
@@ -442,9 +463,7 @@ struct SpaceFormatChrome: View {
             .buttonStyle(.plain)
             .help("Text size")
         }
-        .padding(.horizontal, SpaceTextChromeLayout.bubblePadding)
         .foregroundStyle(Theme.Colors.inkPrimary)
-        .panelChrome(cornerRadius: SpaceTextChromeLayout.bubbleHeight / 2)
     }
 
     /// The dot the colour segment shows: the matching palette swatch, or — for a
@@ -627,13 +646,17 @@ struct SpaceTextSizePanel: View {
 // MARK: - Shared chrome
 
 private extension View {
-    /// The floating-panel look, sharing the action bar's tokens so the board's three
-    /// floating controls read as one system rather than three ports.
-    func panelChrome(cornerRadius: CGFloat) -> some View {
-        background(Theme.Colors.field, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
+    /// The BUBBLE's look: the floating-bar tokens, so the format bubble, the selection
+    /// action bar and the import pill read as one system rather than three ports.
+    ///
+    /// Deliberately not the popover surface the panels use. The bubble is a bar — it
+    /// belongs to the box it formats and tracks it — while a panel is a transient
+    /// layer over the board. Giving them the same fill made the panel look like more
+    /// bubble; `field` on `surface` is the app's existing bar-on-popover contrast.
+    func bubbleChrome(cornerRadius: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return background(Theme.Colors.field, in: shape)
+            .overlay(shape.strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
             .shadow(color: .black.opacity(0.35), radius: 14, y: 5)
     }
 }

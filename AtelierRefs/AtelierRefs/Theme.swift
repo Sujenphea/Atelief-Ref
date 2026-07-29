@@ -126,6 +126,28 @@ extension View {
     }
 }
 
+// MARK: - Popover surface
+
+extension View {
+    /// The app's ONE popover look: a `surface` card on a plain `hairline`, lifted by
+    /// the `hover` elevation.
+    ///
+    /// A popover is the app's only chrome that floats over content it did not lay
+    /// out, so its separation has to come from the shadow rather than from a heavy
+    /// border — hence the subtle hairline paired with the strongest elevation token.
+    /// That is the opposite balance to a floating BAR (`selectionBarChrome()`), which
+    /// sits in known space and can afford `hairlineStrong`.
+    ///
+    /// The radius is a parameter only so a pill-shaped popover can pass its own; the
+    /// default is the container radius every card in the app uses.
+    func popoverChrome(cornerRadius: CGFloat = Theme.Radius.card) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return background(Theme.Colors.surface, in: shape)
+            .overlay(shape.strokeBorder(Theme.Colors.hairline))
+            .elevation(.hover)
+    }
+}
+
 // MARK: - The native translucent window material (D1b)
 
 /// An `NSVisualEffectView` placed behind the shell so the desktop shows through the
