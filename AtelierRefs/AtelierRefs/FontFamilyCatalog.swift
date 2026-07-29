@@ -10,8 +10,8 @@
 //      private let families = NSFontManager.shared.availableFontFamilies
 //
 //  A stored `let` on a `View` is re-evaluated every time the struct is constructed, and
-//  `SpaceTextFontPopover` is constructed inside its `.popover` content closure — i.e. on
-//  the click that opens it. So the first time a user opened the "Aa" popover, that click
+//  `SpaceTextFontPanel` is constructed only when its open flag flips true — i.e. on
+//  the click that opens it. So the first time a user opened the "Aa" panel, that click
 //  paid the whole enumeration on the main thread.
 //
 //  Measured on a 402-family machine (see `.docs/064`), and the numbers are the reason

@@ -98,15 +98,22 @@ enum SpaceTextChromeLayout {
     /// Space between swatches in the colour popover's grid. Wider than the hover
     /// ring's overhang so two neighbours' rings never touch.
     static let swatchGap: CGFloat = 10
-    static let panelPadding: CGFloat = 8
-    static let bubbleHeight: CGFloat = 30
+    /// Inset from the bubble's pill to its first and last segment. Wider than the
+    /// gap BETWEEN segments so the ends read as an edge rather than another gap —
+    /// at 8 the outer icons sat as close to the border as to their neighbours.
+    static let bubblePadding: CGFloat = 12
     static let segmentHeight: CGFloat = 22
+    /// The pill: a segment with half the horizontal inset above and below it (6pt
+    /// each side of a 22pt segment), so the icons sit inside an even margin rather
+    /// than against the border.
+    static let bubbleHeight: CGFloat = segmentHeight + bubblePadding
     static let aaWidth: CGFloat = 30
+    /// The alignment segment — one icon that mirrors the box's current alignment.
+    static let alignWidth: CGFloat = 30
     /// The colour segment — a single dot showing the box's current colour.
     static let swatchSegmentWidth: CGFloat = 26
     static let segmentGap: CGFloat = 8
-    static let dividerWidth: CGFloat = 1
-    /// Columns in the colour popover's grid (11 swatches → 6 + 5).
+    /// Columns in the colour panel's grid (11 swatches → 6 + 5).
     static let paletteColumns = 6
 
     /// The size segment's width for a given label — wide enough for "144", never
@@ -117,29 +124,39 @@ enum SpaceTextChromeLayout {
         return max(26, ceil(measured) + 16)
     }
 
-    /// The "Aa" popover's width, MEASURED rather than guessed.
+    /// The panels the bubble's segments open. Sized HERE, not by their content: a
+    /// panel's origin — and its flip at a viewport edge — has to be computed before
+    /// layout, so each panel is framed to the size the math was given.
     ///
-    /// Its widest control is the four-way weight picker, and a segmented control does
-    /// not grow to fit — it compresses and clips, so "Semibold" becomes "Semib…" at a
-    /// width that looked fine for "Bold". Deriving it from the labels means it still
-    /// fits if a weight is renamed or the system font size changes.
-    static var fontPopoverWidth: CGFloat {
-        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
-        let widest = TextWeight.allCases
-            .map { ($0.rawValue.capitalized as NSString).size(withAttributes: [.font: font]).width }
-            .max() ?? 0
-        let segment = ceil(widest) + 20 // the control's own per-segment padding
-        return max(260, segment * CGFloat(TextWeight.allCases.count) + 2 * Theme.Spacing.lg)
+    /// The align panel is the bubble's own shape: a pill of the three alignment
+    /// icons, each in the same slot the bubble's align segment uses.
+    static var alignPanelSize: CGSize {
+        let count = CGFloat(TextAlign.allCases.count)
+        return CGSize(
+            width: bubblePadding * 2 + count * alignWidth + (count - 1) * segmentGap,
+            height: bubbleHeight)
+    }
+    /// The family panel: `lg` padding, a ~28pt search field, an `sm` gap, and the
+    /// picker's 180pt list (``FontFamilyPicker``). Fixed rather than measured — the
+    /// list scrolls, so nothing in it needs the panel to grow.
+    static let fontPanelSize = CGSize(width: 260, height: 248)
+    static let sizePanelSize = CGSize(width: 124, height: 260)
+    /// The colour panel wraps its grid exactly: the swatch rows plus `lg` padding.
+    static var colorPanelSize: CGSize {
+        let columns = CGFloat(paletteColumns)
+        let rows = (CGFloat(TextPalette.swatches.count) / columns).rounded(.up)
+        return CGSize(
+            width: 2 * Theme.Spacing.lg + columns * swatchSize + (columns - 1) * swatchGap,
+            height: 2 * Theme.Spacing.lg + rows * swatchSize + (rows - 1) * swatchGap)
     }
 
-    /// The bubble's size for a given point-size label: `Aa | size | ●`, with the two
-    /// dividers and the gaps either side of each counted in — the panel's frame is set
-    /// from this number, so anything left out of it is squeezed out of the content.
+    /// The bubble's size for a given point-size label: `align | ● | Aa | size`, four
+    /// segments and the three gaps between them — the panel's frame is set from this
+    /// number, so anything left out of it is squeezed out of the content.
     static func bubbleSize(sizeLabel: String) -> CGSize {
-        let separators = 2 * (segmentGap + dividerWidth + segmentGap)
-        return CGSize(
-            width: panelPadding * 2 + aaWidth + sizeSegmentWidth(label: sizeLabel)
-                + swatchSegmentWidth + separators,
+        CGSize(
+            width: bubblePadding * 2 + alignWidth + swatchSegmentWidth + aaWidth
+                + sizeSegmentWidth(label: sizeLabel) + 3 * segmentGap,
             height: bubbleHeight)
     }
 
@@ -149,7 +166,7 @@ enum SpaceTextChromeLayout {
     /// levels, and a panel landing on a half point puts its hairline border — and the
     /// rings around its 16pt swatches — across two rows of pixels, which reads as a
     /// blurred, very slightly off-centre dot.
-    private static func clampedX(anchor: CGRect, width: CGFloat, bounds: CGSize) -> CGFloat {
+    static func clampedX(anchor: CGRect, width: CGFloat, bounds: CGSize) -> CGFloat {
         let centred = anchor.midX - width / 2
         return max(margin, min(centred, bounds.width - width - margin)).rounded()
     }
@@ -164,6 +181,23 @@ enum SpaceTextChromeLayout {
         var y = anchor.maxY + gap
         if y + size.height > bounds.height - margin { y = anchor.minY - size.height - gap }
         return CGPoint(x: clampedX(anchor: anchor, width: size.width, bounds: bounds), y: y.rounded())
+    }
+
+    /// A segment's panel stacks on the FAR side of the bubble from the box — the
+    /// reference geometry: box, then bubble, then panel, so a panel never lands
+    /// between the bubble and the text it formats. It falls back to the near side
+    /// only when the viewport leaves no room on the far one (where covering the box
+    /// is the lesser evil to leaving the screen).
+    static func panelOrigin(
+        bubble: CGRect, box: CGRect, size: CGSize, bounds: CGSize
+    ) -> CGPoint {
+        let below = bubble.maxY + gap
+        let above = bubble.minY - size.height - gap
+        var y = bubble.midY >= box.midY ? below : above
+        if y + size.height > bounds.height - margin { y = above }
+        if y < margin { y = below }
+        return CGPoint(
+            x: clampedX(anchor: bubble, width: size.width, bounds: bounds), y: y.rounded())
     }
 
     /// The preset point sizes the bubble's size popover offers (Nook's list).
@@ -212,20 +246,33 @@ final class SpaceTextChromeAnchor: ObservableObject {
 
 // MARK: - The chrome
 
-/// The bubble over the canvas, for ONE text box: font · size · colour.
+/// The bubble over the canvas, for ONE text box: align · colour · font · size.
 struct SpaceFormatChrome: View {
     @ObservedObject var anchor: SpaceTextChromeAnchor
     /// The target's current style — seeds every control (checkmark, ring, label).
     let style: ElementStyle
-    /// Whether each popover is open. Bound to `SpaceView` rather than held here: the
-    /// chrome is mounted only while a box is being edited, and presenting a popover
-    /// can end that edit — so the flag has to outlive this view's own state.
+    /// Whether each panel is open. Bound to `SpaceView` rather than held here: the
+    /// chrome is mounted only while a box is being edited, and a click that lands in
+    /// a panel can end that edit — so the flags have to outlive this view's own state.
+    @Binding var showAlign: Bool
     @Binding var showFont: Bool
     @Binding var showSize: Bool
     @Binding var showColor: Bool
     /// Apply an edited style. `SpaceView` routes this to `SpaceModel.updateStyle`,
     /// so one click is one undo step with the auto-size folded in (054 §4.3 · D5).
     let onChange: (ElementStyle) -> Void
+
+    /// The segments' panels. At most ONE is open — a segment click closes the rest —
+    /// so the four flags collapse to one case here.
+    private enum Panel { case align, font, size, color }
+
+    private var activePanel: Panel? {
+        if showAlign { return .align }
+        if showFont { return .font }
+        if showSize { return .size }
+        if showColor { return .color }
+        return nil
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -237,18 +284,142 @@ struct SpaceFormatChrome: View {
                         anchor: box, size: size, bounds: geo.size),
                     size: size)
 
-                bubbleBar
-                    .frame(width: bubble.width, height: bubble.height)
-                    .position(x: bubble.midX, y: bubble.midY)
+                ZStack(alignment: .topLeading) {
+                    // While a panel is up, the first click anywhere else dismisses it —
+                    // what `NSPopover`'s transient behaviour used to give for free.
+                    if activePanel != nil {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture { closeAll() }
+                    }
+
+                    bubbleBar
+                        .frame(width: bubble.width, height: bubble.height)
+                        .position(x: bubble.midX, y: bubble.midY)
+
+                    if let panel = activePanel {
+                        let panelSize = panelSize(of: panel)
+                        let origin = SpaceTextChromeLayout.panelOrigin(
+                            bubble: bubble, box: box, size: panelSize, bounds: geo.size)
+                        content(of: panel)
+                            .foregroundStyle(Theme.Colors.inkPrimary)
+                            .frame(width: panelSize.width, height: panelSize.height)
+                            .panelChrome(cornerRadius: cornerRadius(of: panel))
+                            .position(
+                                x: origin.x + panelSize.width / 2,
+                                y: origin.y + panelSize.height / 2)
+                    }
+                }
             }
         }
+    }
+
+    // MARK: Panels
+
+    private func panelSize(of panel: Panel) -> CGSize {
+        switch panel {
+        case .align: SpaceTextChromeLayout.alignPanelSize
+        case .font: SpaceTextChromeLayout.fontPanelSize
+        case .size: SpaceTextChromeLayout.sizePanelSize
+        case .color: SpaceTextChromeLayout.colorPanelSize
+        }
+    }
+
+    /// The align panel is a pill like the bubble; the other three are cards.
+    private func cornerRadius(of panel: Panel) -> CGFloat {
+        panel == .align ? SpaceTextChromeLayout.bubbleHeight / 2 : Theme.Radius.card
+    }
+
+    @ViewBuilder
+    private func content(of panel: Panel) -> some View {
+        switch panel {
+        case .align:
+            alignPanel
+        case .font:
+            SpaceTextFontPanel(style: style, onChange: onChange)
+        case .size:
+            SpaceTextSizePanel(
+                current: CGFloat(style.fontSize ?? ElementRendering.defaultFontSize),
+                onSelect: { size in change { $0.fontSize = Double(size) } })
+        case .color:
+            SpaceTextColorPanel(
+                current: style.textColor,
+                onSelect: { hex in change { $0.textColor = hex } })
+        }
+    }
+
+    /// The three alignments, flat icons in a pill, the current one on a raised fill.
+    /// It stays open after a pick — the highlight (and the bubble's own align icon)
+    /// moves instead, so trying all three is three clicks, not three round trips.
+    private var alignPanel: some View {
+        HStack(spacing: SpaceTextChromeLayout.segmentGap) {
+            ForEach(TextAlign.allCases, id: \.self) { align in
+                Button { change { $0.textAlign = align.rawValue } } label: {
+                    Image(systemName: align.symbolName)
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: SpaceTextChromeLayout.alignWidth,
+                               height: SpaceTextChromeLayout.segmentHeight)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .background(
+                    style.align == align ? Theme.Colors.selection : Color.clear,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
+                .help("Align \(align.rawValue)")
+            }
+        }
+    }
+
+    /// Open a segment's panel, closing the rest; re-clicking the open one closes it.
+    private func toggle(_ panel: Panel) {
+        let wasOpen = activePanel == panel
+        closeAll()
+        guard !wasOpen else { return }
+        switch panel {
+        case .align: showAlign = true
+        case .font: showFont = true
+        case .size: showSize = true
+        case .color: showColor = true
+        }
+    }
+
+    private func closeAll() {
+        showAlign = false
+        showFont = false
+        showSize = false
+        showColor = false
     }
 
     // MARK: Bubble
 
     private var bubbleBar: some View {
         HStack(spacing: SpaceTextChromeLayout.segmentGap) {
-            Button { showFont = true } label: {
+            // The align segment doubles as a readout: its icon is the box's CURRENT
+            // alignment, not a fixed glyph.
+            Button { toggle(.align) } label: {
+                Image(systemName: style.align.symbolName)
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: SpaceTextChromeLayout.alignWidth,
+                           height: SpaceTextChromeLayout.segmentHeight)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Text alignment")
+
+            // The colour segment shows the box's CURRENT colour and opens the eleven.
+            // A strip of all of them was the first cut, and it made the chrome twice
+            // the size of the thing it formats — 252pt of panel over a box that is
+            // often narrower than that.
+            Button { toggle(.color) } label: {
+                SwatchDotBody(swatch: currentSwatch, isCurrent: false, hovering: false)
+                    .frame(width: SpaceTextChromeLayout.swatchSegmentWidth,
+                           height: SpaceTextChromeLayout.segmentHeight)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Text colour")
+
+            Button { toggle(.font) } label: {
                 Text("Aa")
                     .font(.system(size: 15, weight: .medium))
                     .frame(width: SpaceTextChromeLayout.aaWidth,
@@ -256,14 +427,9 @@ struct SpaceFormatChrome: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Font, weight, and alignment")
-            .popover(isPresented: $showFont, arrowEdge: .bottom) {
-                SpaceTextFontPopover(style: style, onChange: onChange)
-            }
+            .help("Font family")
 
-            divider
-
-            Button { showSize = true } label: {
+            Button { toggle(.size) } label: {
                 Text(SpaceTextChromeLayout.sizeLabel(for: style))
                     .font(.system(size: 13))
                     .monospacedDigit()
@@ -275,41 +441,10 @@ struct SpaceFormatChrome: View {
             }
             .buttonStyle(.plain)
             .help("Text size")
-            .popover(isPresented: $showSize, arrowEdge: .bottom) {
-                SpaceTextSizePopover(
-                    current: CGFloat(style.fontSize ?? ElementRendering.defaultFontSize),
-                    onSelect: { size in change { $0.fontSize = Double(size) } })
-            }
-
-            divider
-
-            // The colour segment shows the box's CURRENT colour and opens the eleven.
-            // A strip of all of them was the first cut, and it made the chrome twice
-            // the size of the thing it formats — 252pt of panel over a box that is
-            // often narrower than that.
-            Button { showColor = true } label: {
-                SwatchDotBody(swatch: currentSwatch, isCurrent: false, hovering: false)
-                    .frame(width: SpaceTextChromeLayout.swatchSegmentWidth,
-                           height: SpaceTextChromeLayout.segmentHeight)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Text colour")
-            .popover(isPresented: $showColor, arrowEdge: .bottom) {
-                SpaceTextColorPopover(
-                    current: style.textColor,
-                    onSelect: { hex in change { $0.textColor = hex } })
-            }
         }
-        .padding(.horizontal, SpaceTextChromeLayout.panelPadding)
+        .padding(.horizontal, SpaceTextChromeLayout.bubblePadding)
         .foregroundStyle(Theme.Colors.inkPrimary)
         .panelChrome(cornerRadius: SpaceTextChromeLayout.bubbleHeight / 2)
-    }
-
-    private var divider: some View {
-        Divider()
-            .frame(width: SpaceTextChromeLayout.dividerWidth,
-                   height: SpaceTextChromeLayout.segmentHeight - 6)
     }
 
     /// The dot the colour segment shows: the matching palette swatch, or — for a
@@ -394,15 +529,15 @@ struct SwatchDotBody: View {
     }
 }
 
-// MARK: - Popovers
+// MARK: - Panels
 
-/// The "Aa" popover: family, weight, alignment.
+/// The "Aa" panel: the font family list, and only that.
 ///
-/// Nook's is Bold / Italic / Underline + a button to the native Fonts panel, because
-/// its text style carries those traits. Ours carries a four-step ``TextWeight`` and a
-/// ``TextAlign`` instead (054 §1.1), so the same three-controls-and-a-font-list shape
-/// is expressed in the vocabulary our model actually stores.
-struct SpaceTextFontPopover: View {
+/// It once carried weight, alignment, and the width toggle too. Alignment earned its
+/// own bubble segment; weight and width stayed where the inspector already offers
+/// them (``ElementInspector``) — so what the Aa segment opens is exactly what "Aa"
+/// says: which face the text is set in.
+struct SpaceTextFontPanel: View {
     let style: ElementStyle
     let onChange: (ElementStyle) -> Void
 
@@ -410,77 +545,28 @@ struct SpaceTextFontPopover: View {
     private static let systemFamily = FontFamilyCatalog.systemFamily
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            FontFamilyPicker(selection: binding(
-                get: { style.fontFamily ?? Self.systemFamily },
-                set: { $0.fontFamily = $1.isEmpty ? nil : $1 }))
-
-            Picker("Weight", selection: binding(
-                get: { style.weight },
-                set: { $0.fontWeight = $1.rawValue })) {
-                ForEach(TextWeight.allCases, id: \.self) { weight in
-                    Text(weight.rawValue.capitalized).tag(weight)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            Picker("Align", selection: binding(
-                get: { style.align },
-                set: { $0.textAlign = $1.rawValue })) {
-                ForEach(TextAlign.allCases, id: \.self) { align in
-                    Image(systemName: align.symbolName).tag(align)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            // Width (063). This control is the whole reason auto-width could come
-            // back: 062 rejected the mode because it would be reachable only by
-            // gesture — "a hidden consequence of an action rather than a state the
-            // user can see". Here it is a state they set, see, and can set back.
-            Picker("Width", selection: binding(
-                get: { style.hugsWidth },
-                set: { $0.textAutoWidth = $1 })) {
-                Text("Auto").tag(true)
-                Text("Fixed").tag(false)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-        }
-        // Popovers get no inset of their own, so the controls sit against the chrome
-        // unless the content supplies one. `lg` matches the inspector's, so the two
-        // ways into the same settings are padded alike.
-        .padding(Theme.Spacing.lg)
-        .frame(width: SpaceTextChromeLayout.fontPopoverWidth)
-        // A family name longer than the popover truncates the button's label rather
-        // than stretching the popover past the width the weight picker needs.
-        .lineLimit(1)
-    }
-
-    /// A `Binding` that reads the current style and writes an edited copy back —
-    /// the popover holds no state of its own, so it can't drift from the model.
-    private func binding<T: Equatable>(
-        get: @escaping () -> T, set: @escaping (inout ElementStyle, T) -> Void
-    ) -> Binding<T> {
-        Binding(
-            get: get,
+        FontFamilyPicker(selection: Binding(
+            get: { style.fontFamily ?? Self.systemFamily },
             set: { newValue in
-                guard newValue != get() else { return }
+                guard newValue != (style.fontFamily ?? Self.systemFamily) else { return }
                 var edited = style
-                set(&edited, newValue)
+                edited.fontFamily = newValue.isEmpty ? nil : newValue
                 onChange(edited)
-            })
+            }))
+            // The panel chrome supplies no inset of its own. `lg` matches the
+            // inspector's, so the two ways into the same setting are padded alike.
+            .padding(Theme.Spacing.lg)
+            .lineLimit(1)
     }
 }
 
-/// The colour popover: the eleven swatches, one click each.
+/// The colour panel: the eleven swatches, one click each.
 ///
 /// Nook floats all eleven permanently above the box. That reads well on its canvas
 /// and badly on ours — the strip is 252pt wide, wider than many of the text boxes it
 /// would be formatting, so the chrome dwarfed its subject. One dot in the bubble,
 /// opening these, keeps the one-click recolour a click deeper but the board legible.
-struct SpaceTextColorPopover: View {
+struct SpaceTextColorPanel: View {
     /// The box's stored colour, so the matching swatch shows its ring.
     let current: String?
     let onSelect: (String) -> Void
@@ -502,12 +588,11 @@ struct SpaceTextColorPopover: View {
             }
         }
         .padding(Theme.Spacing.lg)
-        .fixedSize()
     }
 }
 
-/// The size popover: the presets, with a check on the current one.
-struct SpaceTextSizePopover: View {
+/// The size panel: the presets, with a check on the current one.
+struct SpaceTextSizePanel: View {
     let current: CGFloat
     let onSelect: (CGFloat) -> Void
 
@@ -536,7 +621,6 @@ struct SpaceTextSizePopover: View {
             .padding(.horizontal, Theme.Spacing.xs)
             .padding(.vertical, Theme.Spacing.sm)
         }
-        .frame(width: 124, height: 260)
     }
 }
 

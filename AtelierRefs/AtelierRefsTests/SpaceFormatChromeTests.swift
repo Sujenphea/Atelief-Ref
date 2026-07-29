@@ -101,6 +101,70 @@ struct SpaceFormatChromeTests {
         }
     }
 
+    // MARK: - A segment's panel
+
+    /// The panel a bubble segment opens, for a box (via that box's bubble).
+    private func panel(
+        for box: CGRect, size: CGSize = SpaceTextChromeLayout.alignPanelSize,
+        bounds: CGSize? = nil
+    ) -> CGRect {
+        let bubble = bubble(for: box, bounds: bounds)
+        return CGRect(
+            origin: SpaceTextChromeLayout.panelOrigin(
+                bubble: bubble, box: box, size: size, bounds: bounds ?? self.bounds),
+            size: size)
+    }
+
+    @Test("a panel stacks past the bubble, away from the box: box, bubble, panel")
+    func panelStacksAwayFromTheBox() {
+        let box = CGRect(x: 400, y: 300, width: 300, height: 120)
+        let bubble = bubble(for: box)
+        let panel = panel(for: box)
+        #expect(panel.minY == bubble.maxY + gap)
+        #expect(!panel.intersects(box))
+        #expect(!panel.intersects(bubble))
+    }
+
+    @Test("when the bubble flips above the box, the panel stacks above the bubble")
+    func panelFollowsAFlippedBubble() {
+        let box = CGRect(x: 400, y: 740, width: 300, height: 50)
+        let bubble = bubble(for: box)
+        let panel = panel(for: box)
+        #expect(panel.maxY == bubble.minY - gap)
+        #expect(!panel.intersects(box))
+        #expect(!panel.intersects(bubble))
+    }
+
+    @Test("a panel with no room on its preferred side flips, staying on screen")
+    func panelFlipsAtTheViewportEdge() {
+        // The box sits low enough that the bubble still fits below it but a tall
+        // panel below the bubble would not: the panel gives up the far side rather
+        // than leave the screen.
+        let box = CGRect(x: 400, y: 460, width: 300, height: 120)
+        let tall = SpaceTextChromeLayout.sizePanelSize
+        let panel = panel(for: box, size: tall)
+        #expect(panel.maxY <= bounds.height - margin)
+        #expect(panel.minY >= margin)
+    }
+
+    @Test("a panel lands on whole points and inside the viewport, wherever the box is")
+    func panelStaysOnScreen() {
+        for y in stride(from: -100.0, through: 900.0, by: 50.0) {
+            for x in stride(from: -300.0, through: 1_400.0, by: 100.0) {
+                let box = CGRect(x: x + 0.37, y: y + 0.62, width: 300, height: 120)
+                for size in [SpaceTextChromeLayout.alignPanelSize,
+                             SpaceTextChromeLayout.fontPanelSize,
+                             SpaceTextChromeLayout.sizePanelSize,
+                             SpaceTextChromeLayout.colorPanelSize] {
+                    let panel = panel(for: box, size: size)
+                    #expect(panel.minX >= margin && panel.maxX <= bounds.width - margin)
+                    #expect(panel.origin.x == panel.origin.x.rounded())
+                    #expect(panel.origin.y == panel.origin.y.rounded())
+                }
+            }
+        }
+    }
+
     // MARK: - Sizing
 
     @Test("the bubble widens for a wider size label, never below its minimum")
@@ -109,18 +173,26 @@ struct SpaceFormatChromeTests {
         #expect(SpaceTextChromeLayout.sizeSegmentWidth(label: "8") >= 26)
     }
 
-    @Test("the bubble's width counts its dividers, so nothing is squeezed out")
+    @Test("the bubble's width counts all four segments and the gaps between them")
     func bubbleWidthCountsEverythingItDraws() {
-        // The panel's frame is set from this number: a separator left out of the sum
-        // is a separator squeezed out of the content at draw time.
+        // The panel's frame is set from this number: a gap left out of the sum is a
+        // gap squeezed out of the content at draw time.
         let label = "24"
-        let content = SpaceTextChromeLayout.aaWidth
-            + SpaceTextChromeLayout.sizeSegmentWidth(label: label)
+        let content = SpaceTextChromeLayout.alignWidth
             + SpaceTextChromeLayout.swatchSegmentWidth
-            + 2 * SpaceTextChromeLayout.dividerWidth
-            + 4 * SpaceTextChromeLayout.segmentGap
-            + 2 * SpaceTextChromeLayout.panelPadding
+            + SpaceTextChromeLayout.aaWidth
+            + SpaceTextChromeLayout.sizeSegmentWidth(label: label)
+            + 3 * SpaceTextChromeLayout.segmentGap
+            + 2 * SpaceTextChromeLayout.bubblePadding
         #expect(bubbleSize(label).width == content)
+    }
+
+    @Test("the pill leaves an even margin around its segments, top and bottom")
+    func bubbleHeightLeavesRoomAroundItsSegments() {
+        // The bar is centred in this height, so anything the pill doesn't add here
+        // is a segment drawn flush against the border.
+        let vertical = SpaceTextChromeLayout.bubbleHeight - SpaceTextChromeLayout.segmentHeight
+        #expect(vertical == SpaceTextChromeLayout.bubblePadding)
     }
 
     @Test("the size label reads the style, and falls back to the default")

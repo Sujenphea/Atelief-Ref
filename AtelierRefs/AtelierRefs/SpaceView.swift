@@ -70,13 +70,15 @@ struct SpaceView: View {
     /// republished imperatively from the same geometry notifications the editor
     /// listens to, so a pan / zoom / move / resize never re-evaluates this body.
     @StateObject private var chromeAnchor = SpaceTextChromeAnchor()
-    /// Whether the format chrome's font / size popover is open. Owned HERE, not by
-    /// the chrome, because it decides whether the chrome stays mounted: presenting a
-    /// popover takes key-window focus, which blurs the editor and commits — so a
-    /// chrome that showed only while editing would unmount the control mid-click.
-    @State private var showFontPopover = false
-    @State private var showSizePopover = false
-    @State private var showColorPopover = false
+    /// Whether each of the format chrome's panels is open. Owned HERE, not by the
+    /// chrome, because they decide whether the chrome stays mounted: a click that
+    /// lands inside a panel (the font panel's search field) can blur the editor and
+    /// commit — so a chrome that showed only while editing would unmount the control
+    /// mid-click.
+    @State private var showAlignPanel = false
+    @State private var showFontPanel = false
+    @State private var showSizePanel = false
+    @State private var showColorPanel = false
     /// The exact-gap control (066) and its last value, kept across opens so setting the
     /// same gap on several selections doesn't mean retyping it.
     @State private var showGapPopover = false
@@ -412,9 +414,10 @@ struct SpaceView: View {
                 SpaceFormatChrome(
                     anchor: chromeAnchor,
                     style: space.style(forItemID: target.itemID),
-                    showFont: $showFontPopover,
-                    showSize: $showSizePopover,
-                    showColor: $showColorPopover,
+                    showAlign: $showAlignPanel,
+                    showFont: $showFontPanel,
+                    showSize: $showSizePanel,
+                    showColor: $showColorPanel,
                     onChange: { space.updateStyle(itemID: target.itemID, style: $0) })
                     // Deferred: `onAppear` runs inside the view update, and the anchor
                     // publishes — the same "Publishing changes from within view
@@ -468,12 +471,13 @@ struct SpaceView: View {
     /// act of writing, and chrome that appears on every selection is chrome in the
     /// way of every drag.
     ///
-    /// The one exception is a popover the chrome itself opened. Presenting one takes
-    /// key-window focus, which blurs the `NSTextView` and commits the edit — so
-    /// editing-only, read literally, would unmount the bubble the instant its popover
-    /// appeared. While a popover is up the target therefore falls through to the sole
-    /// selected `.text` element, which is the box that was being edited a moment ago,
-    /// so the format still lands where the user aimed it.
+    /// The one exception is a panel the chrome itself opened. The custom panels don't
+    /// take key-window focus the way `NSPopover` did, so the edit usually stays live
+    /// while one is up — but a click that lands in a focusable control inside one
+    /// (the font panel's search field) still blurs the `NSTextView` and commits. So
+    /// while a panel is up the target falls through to the sole selected `.text`
+    /// element, which is the box that was being edited a moment ago, and the format
+    /// still lands where the user aimed it.
     ///
     /// The chrome anchors on the TILE (its on-screen frame) but writes to the ITEM,
     /// so both are resolved here, together.
@@ -482,7 +486,8 @@ struct SpaceView: View {
            detail.item.kind == .text {
             return (editingTileID, detail.item.id)
         }
-        guard showFontPopover || showSizePopover || showColorPopover else { return nil }
+        guard showAlignPanel || showFontPanel || showSizePanel || showColorPanel
+        else { return nil }
         guard let element = space.selectedElement, element.item.kind == .text,
               let tileID = content.tileID(forSpaceItemID: element.item.id) else { return nil }
         return (tileID, element.item.id)
