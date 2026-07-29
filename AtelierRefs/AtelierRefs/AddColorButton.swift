@@ -67,8 +67,7 @@ struct AddColorButton: View {
                         .disabled(canonical == nil)
                 }
             }
-            .padding()
-            .frame(width: 260)
+            .popoverContent(width: 260)
         }
     }
 

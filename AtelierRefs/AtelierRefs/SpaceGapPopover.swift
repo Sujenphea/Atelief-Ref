@@ -66,8 +66,7 @@ struct SpaceGapPopover: View {
             }
             .controlSize(.small)
         }
-        .padding(Theme.Spacing.lg)
-        .frame(width: 240)
+        .popoverContent(width: 240)
         .onAppear { fieldFocused = true }
     }
 

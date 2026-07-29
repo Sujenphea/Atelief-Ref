@@ -45,7 +45,8 @@ struct AddLinkButton: View {
                         .disabled(!isValid)
                 }
             }
-            .padding()
+            // No fixed width: the URL field's own 320 sizes this one.
+            .popoverContent()
         }
     }
 

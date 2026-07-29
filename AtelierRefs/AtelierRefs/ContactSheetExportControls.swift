@@ -114,8 +114,7 @@ struct ContactSheetExportButton: View {
                 .disabled(map.isEmpty)
             }
         }
-        .padding(16)
-        .frame(width: 300)
+        .popoverContent(width: 300)
     }
 
     /// The count line: refs, page count (letter PDF only), and any skipped rows.

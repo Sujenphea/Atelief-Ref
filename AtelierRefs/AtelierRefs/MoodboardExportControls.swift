@@ -95,8 +95,7 @@ struct MoodboardExportButton: View {
                 .disabled(map.isEmpty)
             }
         }
-        .padding(16)
-        .frame(width: 280)
+        .popoverContent(width: 280)
     }
 
     private func summary(refs: Int, pages: Int, skipped: Int) -> String {
@@ -194,7 +193,6 @@ struct ExportProgressRing: View {
                 }
             }
         }
-        .padding(14)
-        .frame(width: 220)
+        .popoverContent(width: 220)
     }
 }

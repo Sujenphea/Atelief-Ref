@@ -146,6 +146,27 @@ extension View {
             .overlay(shape.strokeBorder(Theme.Colors.hairline))
             .elevation(.hover)
     }
+
+    /// A system `.popover`'s CONTENT, wearing the app's own container: the inset, an
+    /// optional fixed width, ``popoverChrome()``, and a transparent host so only this
+    /// card shows.
+    ///
+    /// The order is the whole point — inset, then width, then chrome. A background
+    /// sizes to the view it decorates, so chrome applied before the frame draws
+    /// around the content and lets the frame pad it with nothing.
+    ///
+    /// Note this trades away the native popover's ARROW: a transparent host has
+    /// nothing to draw one from. The overflow menu made that trade first, and the
+    /// card's own shadow does the pointing well enough at this size.
+    func popoverContent(
+        padding: CGFloat = Theme.Spacing.lg, width: CGFloat? = nil
+    ) -> some View {
+        self
+            .padding(padding)
+            .frame(width: width)
+            .popoverChrome()
+            .presentationBackground(.clear)
+    }
 }
 
 // MARK: - The native translucent window material (D1b)

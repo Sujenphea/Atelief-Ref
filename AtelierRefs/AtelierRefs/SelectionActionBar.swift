@@ -90,11 +90,9 @@ extension View {
     /// own chrome transparent so ONLY this card shows. Fixed width so the section
     /// headers and rows all align. Replaces the raw system-menu look.
     func selectionMenuChrome() -> some View {
-        self
-            .padding(Theme.Spacing.xs)
-            .frame(width: 220)
-            .popoverChrome()
-            .presentationBackground(.clear)
+        // `xs`, not the `lg` every other popover takes: this one's ROWS carry their
+        // own inset (they are the click targets), so a wide outer pad would double it.
+        popoverContent(padding: Theme.Spacing.xs, width: 220)
     }
 }
 
