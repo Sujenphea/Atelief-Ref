@@ -12,7 +12,7 @@
 import AtelierCore
 import Foundation
 
-enum CollectionTargets {
+nonisolated enum CollectionTargets {
     /// The root collections ordered for the home gallery (004-P2): the protected
     /// Unsorted folder pinned FIRST, then the rest by `(name, id)` — a stable,
     /// deterministic order (id breaks a duplicate-name tie).

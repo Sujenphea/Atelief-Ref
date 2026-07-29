@@ -17,7 +17,7 @@ import OSLog
 /// The shared logging namespace (010 · Phase 3). New logging should route through
 /// `AppLog.<area>` rather than ad-hoc `Logger` instances, so diagnostics + Console
 /// filtering stay consistent.
-enum AppLog {
+nonisolated enum AppLog {
     static let subsystem = "com.atelierrefs.app"
     static let model = Logger(subsystem: subsystem, category: "model")
     static let capture = Logger(subsystem: subsystem, category: "capture")

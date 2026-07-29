@@ -51,7 +51,7 @@ struct ExportConfig: Equatable {
 
 /// The one home for the layout/render magic numbers, so the popover's page-count
 /// preview and the actual render can't drift.
-enum ExportDefaults {
+nonisolated enum ExportDefaults {
     /// Uniform page margin in points.
     static let margin: Double = 24
     /// Longest edge of a single fit page, in points (≈ 28" at 72dpi — plenty).
@@ -65,7 +65,7 @@ enum ExportDefaults {
 // MARK: - Mapping
 
 /// The pure bridge from board rows to the render package.
-enum MoodboardExport {
+nonisolated enum MoodboardExport {
 
     /// The mapped result: renderable elements, the id→URL table the provider
     /// resolves, and a count of rows that couldn't be represented at all
@@ -224,7 +224,7 @@ enum MoodboardExport {
 /// to its on-page footprint with the shared ``ImageDecoding`` downsampler
 /// (052 · 13A/16A). A value type holding only `Sendable` state, so it rides into
 /// the off-main render task cleanly.
-struct MoodboardURLImageProvider: MoodboardImageProvider, Sendable {
+nonisolated struct MoodboardURLImageProvider: MoodboardImageProvider, Sendable {
     let urls: [String: URL]
 
     func cgImage(forID id: String, maxPixelSize: Int) -> CGImage? {

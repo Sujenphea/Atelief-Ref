@@ -13,7 +13,7 @@
 import AtelierCore
 import Foundation
 
-enum SpaceTargets {
+nonisolated enum SpaceTargets {
     /// The spaces in manual order (043 · 2B): persisted `sortIndex` first, then
     /// `(createdAt DESC, id)` as a stable tiebreak — the exact order
     /// `AppServices.listSpaces` returns, so the view and the drop-index math agree.

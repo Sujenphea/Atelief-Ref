@@ -77,7 +77,7 @@ final class BakeoffScrollDriver {
     /// 2000-item grid to cross many band boundaries (035 §4 — the hitch is
     /// per-screenful, so a short run could miss them or catch an unrepresentative
     /// number) while staying short enough to iterate on.
-    static let defaultDuration: TimeInterval = 10
+    nonisolated static let defaultDuration: TimeInterval = 10
 
     private(set) var isRunning = false
 

@@ -112,7 +112,7 @@ final class SnapshotManager {
         if let newestDaily, Date().timeIntervalSince(newestDaily.date) < maxAge {
             return
         }
-        try? await snapshot(reason: .daily)
+        _ = try? await snapshot(reason: .daily)
     }
 
     /// Delete the snapshots retention rolls off (+ any `-wal`/`-shm` sidecars a

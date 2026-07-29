@@ -316,7 +316,7 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         children(of: item)[index]
     }
 
-    func outlineView(_ ov: NSOutlineView, isItemExpandable item: Any?) -> Bool {
+    func outlineView(_ ov: NSOutlineView, isItemExpandable item: Any) -> Bool {
         false                                             // flat — no row nests
     }
 

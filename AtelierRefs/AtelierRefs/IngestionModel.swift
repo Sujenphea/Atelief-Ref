@@ -259,15 +259,15 @@ final class IngestionModel: ObservableObject {
 
     /// Ingest-timing log (16A). A stall means generating the eager thumbnail tiers
     /// dominated the ingest — the signal to make the largest tier lazy (P16).
-    private static let ingestLog = Logger(subsystem: "so.atelier.refs", category: "ingest-timing")
+    nonisolated private static let ingestLog = Logger(subsystem: "so.atelier.refs", category: "ingest-timing")
     /// Above this thumbnail-phase time (ms) we log a stall. Tuned to catch the
     /// decode-heavy large tier without noise on ordinary small images.
-    private static let thumbnailStallMs = 250.0
+    nonisolated private static let thumbnailStallMs = 250.0
 
     /// The pipeline's timing sink: log only a thumbnail STALL (keeps the log quiet
-    /// on the common fast path + the P14 short-circuit). `@Sendable` static — no
+    /// on the common fast path + the P14 short-circuit). `nonisolated` static — no
     /// captured state, so it's safe to hand to the off-main pipeline.
-    @Sendable private static func logIngestTiming(_ timing: IngestTiming) {
+    nonisolated private static func logIngestTiming(_ timing: IngestTiming) {
         guard timing.thumbnailMillis >= thumbnailStallMs else { return }
         let thumbMs = Int(timing.thumbnailMillis)
         let totalMs = Int(timing.totalMillis)
@@ -474,12 +474,12 @@ final class IngestionModel: ObservableObject {
             // Any sweep still "open" at launch is abandoned (nothing is running yet),
             // so reconcile it to paused — otherwise a tab closed mid-sweep last session
             // would show as a phantom "running" job forever.
-            try? await services.pauseStaleOpenJobs(olderThan: 0, now: Date())
+            _ = try? await services.pauseStaleOpenJobs(olderThan: 0, now: Date())
 
             // Enforce known ⟺ blob present: forget any ledger row whose blob was
             // removed outside deleteAssets, so a future sweep re-imports that source
             // instead of dedup-skipping bytes that are gone.
-            try? await services.reconcileOrphanedKnownItems()
+            _ = try? await services.reconcileOrphanedKnownItems()
 
             // Daily-on-launch snapshot if the newest daily is >1 day stale (008
             // H3, confirmed on-by-default). Best-effort; never blocks launch.
@@ -535,8 +535,9 @@ final class IngestionModel: ObservableObject {
             coordinator: coordinator,
             defaultCollectionID: { Collection.unsortedID },
             onCapture: { [weak self] collectionID, outcomes in
+                guard let self else { return }
                 Task { @MainActor in
-                    self?.handleRemoteCapture(collectionID: collectionID, outcomes: outcomes)
+                    self.handleRemoteCapture(collectionID: collectionID, outcomes: outcomes)
                 }
             },
             jobLedger: services)
@@ -684,7 +685,7 @@ final class IngestionModel: ObservableObject {
     /// UserDefaults key for the bulk-import consent (7A / legal framing). The
     /// server's `/jobs` open gate reads this SAME flag, so a sweep can't start until
     /// the user accepts in-app.
-    static let bulkConsentKey = "AtelierBulkConsentGranted"
+    nonisolated static let bulkConsentKey = "AtelierBulkConsentGranted"
 
     /// An `open` sweep idle this long (seconds) is treated as interrupted and paused.
     /// Set safely past the engine's 30s max item backoff so a live-but-throttled sweep
@@ -746,7 +747,7 @@ final class IngestionModel: ObservableObject {
             // that hasn't advanced in `staleSweepSeconds` (safely past the 30s max item
             // backoff) as interrupted → paused, so it stops reading as "running". A
             // still-alive sweep halts cleanly on its next relay (7A jobStatus feedback).
-            try? await services.pauseStaleOpenJobs(olderThan: Self.staleSweepSeconds, now: Date())
+            _ = try? await services.pauseStaleOpenJobs(olderThan: Self.staleSweepSeconds, now: Date())
             let jobs = try await services.listJobs()
             var loaded: [SweepProgress] = []
             for job in jobs {
@@ -1539,7 +1540,7 @@ final class IngestionModel: ObservableObject {
         let count = assetIDs.count
         let snapshots = snapshotManager
         enqueueUndoable {
-            try? await snapshots?.snapshot(reason: .preDestructive)
+            _ = try? await snapshots?.snapshot(reason: .preDestructive)
             do {
                 let backup = try await services.deleteAssetsRecoverable(assetIDs)
                 await self.refreshFolders()

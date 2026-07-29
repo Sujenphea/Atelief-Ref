@@ -110,7 +110,8 @@ final class ExportController: ObservableObject {
 
         // Forward render progress back to the main actor for the ring.
         let onProgress: @Sendable (Double) -> Void = { [weak self] fraction in
-            Task { @MainActor in self?.progress = fraction }
+            guard let self else { return }
+            Task { @MainActor in self.progress = fraction }
         }
 
         task = Task { [weak self] in
@@ -167,7 +168,7 @@ final class ExportController: ObservableObject {
 
 /// A minimal thread-safe cancel flag. `Task.detached` does not inherit the
 /// parent's cancellation, so the render reads this instead of `Task.isCancelled`.
-final class CancelFlag: @unchecked Sendable {
+nonisolated final class CancelFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var flag = false
 

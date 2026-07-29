@@ -440,7 +440,7 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         children(of: item)[index]
     }
 
-    func outlineView(_ ov: NSOutlineView, isItemExpandable item: Any?) -> Bool {
+    func outlineView(_ ov: NSOutlineView, isItemExpandable item: Any) -> Bool {
         // Not `node.children` directly: a leaf parent hosting the draft row must
         // report expandable so the draft is reachable.
         !children(of: item).isEmpty
