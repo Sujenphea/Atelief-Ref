@@ -77,6 +77,10 @@ struct SpaceView: View {
     @State private var showFontPopover = false
     @State private var showSizePopover = false
     @State private var showColorPopover = false
+    /// The exact-gap control (066) and its last value, kept across opens so setting the
+    /// same gap on several selections doesn't mean retyping it.
+    @State private var showGapPopover = false
+    @State private var gapValue: Double = 24
     /// Whether this board has already been framed to fit. Owned here rather than by the
     /// canvas host so it is a fact about the BOARD, not about a view instance — the
     /// camera is the user's from the first frame onward.
@@ -558,8 +562,30 @@ struct SpaceView: View {
                 .disabled(!enabled)
                 .opacity(enabled ? 1 : 0.35)
         }
+        gapButton
         duplicateButton
         zOrderBar
+    }
+
+    /// Set an exact gap between the selected items (066).
+    ///
+    /// A popover, not a field in this bar. The bar floats over the canvas, and a
+    /// focusable field here would swallow ⌫ and the V/F/T tool keys — the bug 269 and
+    /// 271 both were. Focus is handed back to the canvas on dismiss, deferred off the
+    /// view update because `onDisappear` runs inside one.
+    @ViewBuilder private var gapButton: some View {
+        SelectionBarButton("ruler", help: "Set the gap between the selected items") {
+            showGapPopover = true
+        }
+        .popover(isPresented: $showGapPopover, arrowEdge: .bottom) {
+            SpaceGapPopover(gap: $gapValue) { axis in
+                space.pack(axis: axis, gap: CGFloat(gapValue))
+            }
+            .onDisappear {
+                guard let host = chromeAnchor.host else { return }
+                Task { @MainActor in host.window?.makeFirstResponder(host) }
+            }
+        }
     }
 
     /// Duplicate the selection (⌘D, 065) — in both `.single` and `.multi`, because a
@@ -608,6 +634,7 @@ struct SpaceView: View {
         case .alignBottom: "align.vertical.bottom"
         case .distributeHorizontal: "arrow.left.and.right"
         case .distributeVertical: "arrow.up.and.down"
+        case .tidyUp: "square.grid.2x2"
         }
     }
 

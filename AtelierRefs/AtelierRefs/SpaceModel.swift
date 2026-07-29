@@ -472,14 +472,42 @@ final class SpaceModel: ObservableObject {
     /// forward `reload: false` (tiles already moved), undo/redo `reload: true`
     /// (051 · 3A / 13A). Only x/y change: w/h/z are carried from the live rect.
     func arrange(_ op: CanvasArrange.Operation) {
+        applySelectionLayout(minimumCount: op.minimumCount, name: op.actionName) {
+            CanvasArrange.apply(op, to: $0)
+        }
+    }
+
+    /// Pack the selection along `axis` at an exact `gap` (066) — the numeric peer of
+    /// the ops above.
+    ///
+    /// Deliberately NOT a `CanvasArrange.Operation` case: `Operation` is `CaseIterable`
+    /// and the action bar renders it with `ForEach(allCases)`, and a case carrying an
+    /// associated value cannot be `CaseIterable`. Rather than break that wiring for
+    /// every other op, the gap gets its own entry point over the same kernel.
+    func pack(axis: CanvasArrange.Axis, gap: CGFloat) {
+        applySelectionLayout(minimumCount: 2, name: "Set Gap") {
+            CanvasArrange.pack($0, axis: axis, gap: gap)
+        }
+    }
+
+    /// The shared body every selection-layout op ends in: live rects → `transform` →
+    /// zip back to ids by index, apply IN-MEMORY (flicker-free, like a drag), and
+    /// persist through the shared placement path as ONE undo step.
+    ///
+    /// Extracted so `arrange` and `pack` cannot drift on any of it — the no-op filter,
+    /// the in-memory mirror, the `renderRevision` bump and the `reload: false` are each
+    /// load-bearing, and each is easy to omit when writing a second copy.
+    private func applySelectionLayout(
+        minimumCount: Int, name: String, transform: ([CGRect]) -> [CGRect]
+    ) {
         let ids = selectedItemIDs
         let selected = items.filter { ids.contains($0.item.id) }
-        guard selected.count >= op.minimumCount else { return }
+        guard selected.count >= minimumCount else { return }
         let content = self.content()
         // Live placements, index-aligned to the rects handed to the kernel.
         let entries = selected.map { (id: $0.item.id, p: livePlacement($0.item.id, in: content)) }
         let rects = entries.map { CGRect(x: $0.p.x, y: $0.p.y, width: $0.p.w, height: $0.p.h) }
-        let arranged = CanvasArrange.apply(op, to: rects)
+        let arranged = transform(rects)
 
         var edits: [(id: UUID, old: Placement, new: Placement)] = []
         for (index, entry) in entries.enumerated() {
@@ -499,7 +527,7 @@ final class SpaceModel: ObservableObject {
         // Tiles moved in memory but nothing triggers a redraw (no gesture, no
         // selection change, no reload) — bump the revision so the host re-syncs.
         renderRevision &+= 1
-        enqueue { await self.applyPlacementEdit(name: op.actionName, edits: edits, reload: false) }
+        enqueue { await self.applyPlacementEdit(name: name, edits: edits, reload: false) }
     }
 
     /// The freshest placement for `itemID`: the in-memory tile (which carries a

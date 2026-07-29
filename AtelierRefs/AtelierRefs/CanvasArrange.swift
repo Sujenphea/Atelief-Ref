@@ -29,6 +29,8 @@ enum CanvasArrange {
         case alignTop, alignVerticalCenter, alignBottom
         // Distributes (equal gaps): need ≥3 (two items have no interior gap).
         case distributeHorizontal, distributeVertical
+        // Tidy up (066): snap the selection into clean rows at a uniform gap.
+        case tidyUp
 
         /// The undo action name shown in the ⌘Z menu — carried by the op so the
         /// model doesn't scatter string literals.
@@ -42,6 +44,7 @@ enum CanvasArrange {
             case .alignBottom: "Align Bottom"
             case .distributeHorizontal: "Distribute Horizontally"
             case .distributeVertical: "Distribute Vertically"
+            case .tidyUp: "Tidy Up"
             }
         }
 
@@ -88,7 +91,134 @@ enum CanvasArrange {
             return distribute(rects, axis: .horizontal)
         case .distributeVertical:
             return distribute(rects, axis: .vertical)
+        case .tidyUp:
+            return tidy(rects)
         }
+    }
+
+    // MARK: - Tidy up (066)
+
+    /// Snap a messy selection into clean rows at one uniform gap — Figma's ⌃⌥⌘T.
+    ///
+    /// One algorithm covers a row, a column and a grid, because all three ARE the same
+    /// thing: cluster the rects into rows by vertical overlap, then lay each row out
+    /// left-to-right. Everything in one cluster is a row; one item per cluster is a
+    /// column; anything else is a grid. No mode to infer, so no mode to infer wrongly.
+    ///
+    /// **Idempotence is the design constraint, not a nice property.** `allCases` is
+    /// tested for "re-applying changes nothing", and it is also what the user expects —
+    /// clicking Tidy Up twice must not creep. Every rule below is chosen to survive its
+    /// own output:
+    ///
+    /// - the anchor is the selection's top-left, which does not move, so the box is
+    ///   unchanged and a second pass starts from the same place;
+    /// - rows are clustered on STRICT overlap, so rows laid out `gap` apart (even
+    ///   `gap == 0`, where they merely touch) re-cluster identically;
+    /// - the gap is the SMALLEST observed gap, and after a pass every gap is exactly
+    ///   that, so re-deriving it returns the same number;
+    /// - items in a row share a top edge afterwards, which is total overlap, so they
+    ///   re-cluster into the same row.
+    private static func tidy(_ rects: [CGRect]) -> [CGRect] {
+        let rows = tidyRows(rects)
+        let gap = tidyGap(rects, rows: rows)
+        let box = boundingBox(rects)
+
+        var result = rects
+        var y = box.minY
+        for row in rows {
+            var x = box.minX
+            var rowHeight: CGFloat = 0
+            for index in row {
+                let size = rects[index].size
+                result[index] = CGRect(x: x, y: y, width: size.width, height: size.height)
+                x += size.width + gap
+                rowHeight = max(rowHeight, size.height)
+            }
+            y += rowHeight + gap
+        }
+        return result
+    }
+
+    /// Cluster indices into rows by vertical overlap — top-to-bottom, each row ordered
+    /// left-to-right. Ties break on the original index so the result is deterministic.
+    ///
+    /// A rect joins the open row when it starts ABOVE that row's lowest edge so far.
+    /// Strictly above: a rect starting exactly at the edge is touching, not overlapping,
+    /// and must begin a new row — that is what makes a `gap == 0` tidy stable.
+    private static func tidyRows(_ rects: [CGRect]) -> [[Int]] {
+        let topDown = rects.indices.sorted { a, b in
+            let (ra, rb) = (rects[a], rects[b])
+            if ra.minY != rb.minY { return ra.minY < rb.minY }
+            if ra.minX != rb.minX { return ra.minX < rb.minX }
+            return a < b
+        }
+        var rows: [[Int]] = []
+        var openBottom: CGFloat = 0
+        for index in topDown {
+            if !rows.isEmpty, rects[index].minY < openBottom {
+                rows[rows.count - 1].append(index)
+                openBottom = max(openBottom, rects[index].maxY)
+            } else {
+                rows.append([index])
+                openBottom = rects[index].maxY
+            }
+        }
+        return rows.map { row in
+            row.sorted { a, b in
+                rects[a].minX == rects[b].minX ? a < b : rects[a].minX < rects[b].minX
+            }
+        }
+    }
+
+    /// The gap a tidy should use: the smallest gap the user already has.
+    ///
+    /// Smallest rather than average or largest because it is the only choice that is
+    /// stable under its own output (after a pass every gap equals it) AND never makes a
+    /// layout bigger than the user built. Overlaps contribute negative gaps and are
+    /// ignored; a selection with no measurable gap at all falls back to
+    /// ``defaultTidyGap`` rather than collapsing everything onto one point.
+    private static func tidyGap(_ rects: [CGRect], rows: [[Int]]) -> CGFloat {
+        var gaps: [CGFloat] = []
+        for row in rows {
+            for (a, b) in zip(row, row.dropFirst()) {
+                gaps.append(rects[b].minX - rects[a].maxX)
+            }
+        }
+        for (above, below) in zip(rows, rows.dropFirst()) {
+            let bottom = above.map { rects[$0].maxY }.max() ?? 0
+            let top = below.map { rects[$0].minY }.min() ?? 0
+            gaps.append(top - bottom)
+        }
+        return gaps.filter { $0 >= 0 }.min() ?? defaultTidyGap
+    }
+
+    /// The spacing a tidy falls back to when the selection has no measurable gap —
+    /// everything overlapping, or a single row of one. World units.
+    static let defaultTidyGap: CGFloat = 20
+
+    // MARK: - Pack at an exact gap (066)
+
+    /// Lay the rects out along `axis` with EXACTLY `gap` between adjacent edges,
+    /// anchored on the leading-most rect so the selection grows away from where it
+    /// already starts.
+    ///
+    /// The numeric peer of ``distribute(_:axis:)``: same sort, same cursor walk, but the
+    /// gap is given rather than derived from the span. Negative input is clamped — a
+    /// gap is a space, and letting one be negative would silently overlap the layout.
+    static func pack(_ rects: [CGRect], axis: Axis, gap: CGFloat) -> [CGRect] {
+        guard rects.count >= 2 else { return rects }
+        let gap = max(0, gap)
+        let order = rects.indices.sorted { a, b in
+            let la = leading(rects[a], axis), lb = leading(rects[b], axis)
+            return la == lb ? a < b : la < lb
+        }
+        var result = rects
+        var cursor = leading(rects[order.first!], axis) // the first anchor stays put
+        for index in order {
+            result[index] = withLeading(rects[index], axis, cursor)
+            cursor += extent(rects[index], axis) + gap
+        }
+        return result
     }
 
     // MARK: - Align
@@ -114,7 +244,10 @@ enum CanvasArrange {
 
     // MARK: - Distribute (equal gaps)
 
-    private enum Axis { case horizontal, vertical }
+    /// Which way a distribute / pack runs. Internal rather than private since 066:
+    /// ``pack(_:axis:gap:)`` takes it from the caller, because an exact gap is not one
+    /// of the ``Operation`` cases (see ``SpaceModel/pack(axis:gap:)`` for why).
+    enum Axis: Equatable, CaseIterable { case horizontal, vertical }
 
     /// Equal-gaps distribution along `axis` ([6A]): sort by leading edge (stable on
     /// ties by original index), keep the first & last as fixed anchors, and space
