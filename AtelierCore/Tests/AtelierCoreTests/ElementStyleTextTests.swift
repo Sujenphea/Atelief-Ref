@@ -96,6 +96,44 @@ struct ElementStyleTextTests {
         #expect(back.weight == .regular)          // but the accessor still defaults
     }
 
+    // MARK: - Auto-width (063)
+
+    @Test("textAutoWidth round-trips both ways", arguments: [true, false])
+    func autoWidthRoundTrips(_ flag: Bool) throws {
+        let style = ElementStyle(text: "x", textAutoWidth: flag)
+        let back = try #require(ElementStyle(jsonString: #require(style.jsonString())))
+        #expect(back.textAutoWidth == flag)
+        #expect(back.hugsWidth == flag)
+    }
+
+    @Test("absent textAutoWidth reads as not hugging")
+    func autoWidthAbsentDefaultsFalse() throws {
+        #expect(ElementStyle(text: "x").hugsWidth == false)
+        // A row written before 063 carries no key at all.
+        let style = try #require(ElementStyle(jsonString: ##"{"text":"hi","fontSize":16}"##))
+        #expect(style.textAutoWidth == nil)
+        #expect(style.hugsWidth == false)
+    }
+
+    @Test("a legacy resizeMode of autoWidth does NOT make the box hug")
+    func legacyResizeModeStaysInert() throws {
+        // The one that matters: pre-062 `.autoWidth` rows are the runaway single-line
+        // boxes 062 removed. Reviving them on load would re-flow existing boards, so
+        // `hugsWidth` must read the new field and only the new field.
+        let legacy = ##"{"text":"hi","resizeMode":"autoWidth"}"##
+        let style = try #require(ElementStyle(jsonString: legacy))
+        #expect(style.resizeMode == "autoWidth")   // still preserved verbatim…
+        #expect(style.hugsWidth == false)          // …and still inert
+    }
+
+    @Test("the two fields are independent — a hugging box keeps its legacy token")
+    func autoWidthAndResizeModeCoexist() throws {
+        let style = ElementStyle(text: "x", textAutoWidth: true, resizeMode: "fixed")
+        let back = try #require(ElementStyle(jsonString: #require(style.jsonString())))
+        #expect(back.hugsWidth == true)
+        #expect(back.resizeMode == "fixed")
+    }
+
     // MARK: - Enum vocabulary
 
     @Test("the text enums carry the expected token sets")

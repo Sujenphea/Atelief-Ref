@@ -58,6 +58,16 @@ public struct ElementStyle: Sendable, Equatable, Hashable, Codable {
     public var fontWeight: String?
     /// ``TextAlign`` rawValue; nil → `.left`. Read via `align` (§1.1).
     public var textAlign: String?
+    /// Text hugs its own width (063): the box's WIDTH is derived from the text, exactly
+    /// as 062 derives the height, and it never wraps — only an explicit newline breaks a
+    /// line. nil / false → 062's behaviour, where the user owns the width via the
+    /// handles. Read via `hugsWidth` (§1.1).
+    ///
+    /// Deliberately **not** the legacy `resizeMode` below. Rows written by pre-062
+    /// builds carry `resizeMode: "autoWidth"`, and those are precisely the runaway
+    /// single-line boxes 062 removed; giving that string meaning again would re-flow
+    /// existing boards on load. A new field starts every existing row at `false`.
+    public var textAutoWidth: Bool?
     /// **Legacy, ignored (062).** Text used to carry a three-way resize mode
     /// (`fixed` / `autoWidth` / `autoHeight`); a text box now has exactly one
     /// behaviour — the user owns the width, the height is derived from the wrapped
@@ -75,6 +85,7 @@ public struct ElementStyle: Sendable, Equatable, Hashable, Codable {
         fontFamily: String? = nil,
         fontWeight: String? = nil,
         textAlign: String? = nil,
+        textAutoWidth: Bool? = nil,
         resizeMode: String? = nil
     ) {
         self.text = text
@@ -86,6 +97,7 @@ public struct ElementStyle: Sendable, Equatable, Hashable, Codable {
         self.fontFamily = fontFamily
         self.fontWeight = fontWeight
         self.textAlign = textAlign
+        self.textAutoWidth = textAutoWidth
         self.resizeMode = resizeMode
     }
 
@@ -115,6 +127,9 @@ public extension ElementStyle {
     var weight: TextWeight { TextWeight(rawValue: fontWeight ?? "") ?? .regular }
     /// The parsed alignment; unknown/nil → `.left`.
     var align: TextAlign { TextAlign(rawValue: textAlign ?? "") ?? .left }
+    /// Whether the box derives its own width (063); absent → `false`, i.e. 062's
+    /// user-owned width. The legacy `resizeMode` is not consulted, by design.
+    var hugsWidth: Bool { textAutoWidth ?? false }
 }
 
 /// One row on a ``Space`` board (005 §entity O1). `assetID` is set iff
