@@ -936,23 +936,50 @@ final class SpaceModel: ObservableObject {
     /// Mirrors ``moveTile(tileID:to:in:)`` — the tile is updated in the live content
     /// first (so nothing snaps between the drop and the write), then persisted with
     /// `reload: false`.
+    ///
+    /// **A drag that changes the width of a hugging box makes it fixed** (063 §3.4).
+    /// Setting a width by hand is the plainest possible statement that the user wants
+    /// to own it, so the box stops deriving one — otherwise the very next keystroke
+    /// would undo the drag. A `.top` / `.bottom` drag changes no width and leaves the
+    /// box hugging, which is what those handles imply. Turning hugging back ON is the
+    /// Width control, never a gesture: that asymmetry is deliberate, and is only
+    /// acceptable because the state is visible in the UI (062 §2's objection).
     func resizeTile(tileID: Int, to worldRect: CGRect, in content: SpaceContent) {
         guard let tile = content.tile(forTileID: tileID),
               let itemID = content.spaceItemID(forTileID: tileID),
               var item = items.first(where: { $0.item.id == itemID })?.item else { return }
         let old = Placement(x: tile.x, y: tile.y, w: tile.w, h: tile.h, z: tile.z)
 
+        let oldStyle = style(forItemID: itemID)
+        let converts = oldStyle.hugsWidth && Double(worldRect.width) != old.w
+        var newStyle = oldStyle
+        if converts { newStyle.textAutoWidth = false }
+
         // Anchor on the DRAGGED geometry before deriving, so the height is measured
-        // against the width the user just chose rather than the stale one.
+        // against the width the user just chose rather than the stale one — and under
+        // the NEW style, so a converting box derives its height at the dragged width
+        // rather than re-hugging and discarding the drag.
         item.x = Double(worldRect.minX)
         item.y = Double(worldRect.minY)
         item.w = Double(worldRect.width)
         item.h = Double(worldRect.height)
-        let derived = autosizedFrame(item: item, style: style(forItemID: itemID))
+        let derived = autosizedFrame(item: item, style: newStyle)
         let new = Placement(
             x: Double(worldRect.minX), y: Double(worldRect.minY),
             w: Double(worldRect.width), h: Double(derived?.height ?? worldRect.height), z: tile.z)
-        guard old != new else { return }
+        guard old != new || converts else { return }
+
+        // A conversion is a style change AND a geometry change, so it goes through the
+        // path that already folds both into one undo entry rather than a second
+        // registration next to the placement edit — two entries would mean two ⌘Zs to
+        // undo one drag, with a half-converted box in between.
+        if converts {
+            applyRestyle(itemID, newStyle, placement: new)
+            registerReversible("Resize",
+                primary: { self.applyRestyle(itemID, newStyle, placement: new) },
+                inverse: { self.applyRestyle(itemID, oldStyle, placement: old) })
+            return
+        }
 
         content.setPlacement(tileID: tileID, x: new.x, y: new.y, w: new.w, h: new.h)
         renderRevision += 1 // geometry changed in place → re-sync

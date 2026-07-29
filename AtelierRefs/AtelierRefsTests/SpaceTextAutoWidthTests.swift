@@ -225,6 +225,85 @@ struct SpaceTextAutoWidthTests {
         #expect(item(model, id).w == huggedWidth(model, id))
     }
 
+    // MARK: - Conversion (§3.4)
+
+    @Test("a side drag turns hugging off and keeps the width you dropped")
+    func sideDragConvertsToFixed() async throws {
+        let model = try await makeModel()
+        let id = await seedClicked(model, at: .zero)
+        await restyle(model, id, text: "Hi")
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+
+        model.resizeTile(tileID: tid, to: CGRect(x: 0, y: 0, width: 240, height: 30), in: content)
+        await model.waitForWrites()
+        await model.load()
+
+        #expect(model.style(forItemID: id).hugsWidth == false)
+        #expect(item(model, id).w == 240)
+        // …and it stays 240 through the next edit, which is the point of converting.
+        await restyle(model, id, text: "Hi again")
+        #expect(item(model, id).w == 240)
+    }
+
+    @Test("a top/bottom drag changes no width, so the box keeps hugging")
+    func verticalDragKeepsHugging() async throws {
+        let model = try await makeModel()
+        let id = await seedClicked(model, at: .zero)
+        await restyle(model, id, text: "Hi")
+        let before = item(model, id)
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+
+        // The same width, a different y/height — what a `.bottom` handle produces.
+        model.resizeTile(
+            tileID: tid,
+            to: CGRect(x: before.x, y: before.y, width: before.w, height: before.h + 50),
+            in: content)
+        await model.waitForWrites()
+        await model.load()
+
+        #expect(model.style(forItemID: id).hugsWidth)
+        #expect(item(model, id).w == before.w)   // re-hugged, not stretched
+    }
+
+    @Test("ONE undo restores both the width and the hugging state")
+    func oneUndoRevertsTheConversion() async throws {
+        let model = try await makeModel()
+        let id = await seedClicked(model, at: .zero)
+        await restyle(model, id, text: "Hi")
+        let before = item(model, id)
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+
+        model.resizeTile(tileID: tid, to: CGRect(x: 0, y: 0, width: 240, height: 30), in: content)
+        await model.waitForWrites()
+        #expect(model.undoActionName == "Resize")
+
+        model.undo()
+        await model.waitForWrites()
+        await model.load()
+        #expect(model.style(forItemID: id).hugsWidth)   // the flag came back…
+        #expect(item(model, id).w == before.w)          // …and so did the width
+    }
+
+    @Test("resizing a box that never hugged is unchanged — one undo entry, no restyle")
+    func fixedResizeIsUntouched() async throws {
+        let model = try await makeModel()
+        model.addText(worldRect: CGRect(x: 0, y: 0, width: 160, height: 24))
+        await model.waitForWrites()
+        let id = model.selectedItemID!
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+
+        model.resizeTile(tileID: tid, to: CGRect(x: 0, y: 0, width: 260, height: 24), in: content)
+        await model.waitForWrites()
+        await model.load()
+        #expect(item(model, id).w == 260)
+        #expect(model.style(forItemID: id).hugsWidth == false)
+        #expect(model.undoActionName == "Resize")
+    }
+
     // MARK: - Load
 
     @Test("a hugging row is re-derived on load; a fixed row is left alone")
