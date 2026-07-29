@@ -693,11 +693,19 @@ final class SpaceModel: ObservableObject {
     func addText(worldRect: CGRect, string: String? = nil) {
         var style = ElementRendering.defaultTextStyle()
         if let string { style.text = string }
+        // The gesture decides who owns the width (063). A rubber-band drag hands over
+        // the rect the user dragged — they chose that width, so honour it. A CLICK
+        // arrives as an origin-only rect (`CanvasHostView.finishCreate`), which is the
+        // host saying "no width was chosen": the box is born hugging and measures its
+        // own, rather than starting at a literal nobody picked.
+        let hugs = worldRect.width <= 0
+        if hugs { style.textAutoWidth = true }
         let ts = ElementRendering.textStyle(for: style)
-        let measured = TextMetrics.size(
-            for: ts, maxWidth: max(1, worldRect.width - 2 * TextMetrics.padding))
+        let measured = Self.measuredTextSize(
+            for: ts, hugging: hugs, outerWidth: worldRect.width)
         let rect = CGRect(
-            x: worldRect.minX, y: worldRect.minY, width: worldRect.width,
+            x: worldRect.minX, y: worldRect.minY,
+            width: hugs ? measured.width + 2 * TextMetrics.padding : worldRect.width,
             height: measured.height + 2 * TextMetrics.padding)
         addElement(kind: .text, style: style, rect: rect, behind: false)
     }
@@ -855,11 +863,18 @@ final class SpaceModel: ObservableObject {
     /// no geometry write is due — a non-`.text` row, or one whose measured fit
     /// already matches its current box (054 §4.2 · R4 · D7 · 062).
     ///
-    /// A text box has ONE sizing behaviour: **the user owns the width, the height is
-    /// derived** from the text wrapped to that width. There is no mode to consult —
-    /// `x`, `y` and `w` are frozen here and only ever change through a deliberate
-    /// gesture (a move or a handle drag, see ``resizeTile(tileID:to:in:)``), so the
-    /// box grows and shrinks downward from a fixed top-left as the text changes.
+    /// The **height** is always derived from the text and is never the user's to set
+    /// (062's invariant, unchanged). What 063 adds is a second, opt-in question — who
+    /// owns the *width*:
+    ///
+    /// | `style.hugsWidth` | measured with | result |
+    /// | --- | --- | --- |
+    /// | `false` (062) | the box's own width | `x`, `y`, `w` frozen; `h` derived |
+    /// | `true` (063) | unconstrained, capped | `y` frozen; `w` derived; `x` anchored |
+    ///
+    /// So a fixed box still grows and shrinks downward from a stationary top-left, and
+    /// a hugging box additionally grows sideways from whichever edge its alignment
+    /// names (see ``anchoredMinX(oldMinX:oldWidth:newWidth:alignment:)``).
     ///
     /// Measurement uses the SAME font as drawing (``ElementRendering/textStyle`` →
     /// ``TextMetrics``, which shapes through ``TextShaper``), so the box can't drift
@@ -868,12 +883,56 @@ final class SpaceModel: ObservableObject {
         guard item.kind == .text else { return nil }
         let pad = Double(TextMetrics.padding)
         let ts = ElementRendering.textStyle(for: style)
-        let maxWidth = max(1, CGFloat(item.w) - 2 * TextMetrics.padding)
-        let measured = TextMetrics.size(for: ts, maxWidth: maxWidth)
+        let measured = Self.measuredTextSize(
+            for: ts, hugging: style.hugsWidth, outerWidth: CGFloat(item.w))
         let newHeight = Double(measured.height) + 2 * pad
+        let newWidth = style.hugsWidth ? Double(measured.width) + 2 * pad : item.w
+        let newX = style.hugsWidth
+            ? Double(Self.anchoredMinX(
+                oldMinX: CGFloat(item.x), oldWidth: CGFloat(item.w),
+                newWidth: CGFloat(newWidth), alignment: style.align))
+            : item.x
         // No change → no geometry write (the shrink-back / grow tests pin this).
-        guard newHeight != item.h else { return nil }
-        return CGRect(x: item.x, y: item.y, width: item.w, height: newHeight)
+        guard newHeight != item.h || newWidth != item.w || newX != item.x else { return nil }
+        return CGRect(x: newX, y: item.y, width: newWidth, height: newHeight)
+    }
+
+    /// The inner (unpadded) size of a text box's text.
+    ///
+    /// Hugging measures unconstrained, then — if the longest line exceeds
+    /// ``TextMetrics/maxAutoWidth`` — measures *again* wrapped to the cap. The second
+    /// pass is what makes the cap a **wrap** rather than a clip: the box stops growing
+    /// and starts growing downward instead, and shrinking the text below the cap lets
+    /// it hug again, because nothing about the flag changed.
+    static func measuredTextSize(
+        for ts: TextStyle, hugging: Bool, outerWidth: CGFloat
+    ) -> CGSize {
+        guard hugging else {
+            return TextMetrics.size(
+                for: ts, maxWidth: max(1, outerWidth - 2 * TextMetrics.padding))
+        }
+        let free = TextMetrics.size(for: ts, maxWidth: nil)
+        guard free.width > TextMetrics.maxAutoWidth else { return free }
+        return TextMetrics.size(for: ts, maxWidth: TextMetrics.maxAutoWidth)
+    }
+
+    /// Where a hugging box's left edge goes when its width changes.
+    ///
+    /// The alignment names the edge the user thinks of as fixed: left-aligned text
+    /// grows rightwards from a stationary left edge, right-aligned grows leftwards
+    /// from a stationary right edge, and centred grows both ways about its centre.
+    ///
+    /// Called on every keystroke of an open edit, so it is exact arithmetic rather
+    /// than approximately right — a half-pixel of drift per character is a visible
+    /// crawl across a sentence.
+    nonisolated static func anchoredMinX(
+        oldMinX: CGFloat, oldWidth: CGFloat, newWidth: CGFloat, alignment: TextAlign
+    ) -> CGFloat {
+        switch alignment {
+        case .left: oldMinX
+        case .right: oldMinX + oldWidth - newWidth
+        case .center: oldMinX + (oldWidth - newWidth) / 2
+        }
     }
 
     /// Bring every `.text` row's stored height into line with its text (062).
@@ -895,6 +954,10 @@ final class SpaceModel: ObservableObject {
                     item: detail.item, style: ElementStyle(jsonString: detail.item.style) ?? ElementStyle())
             else { return detail }
             var item = detail.item
+            // The whole fitted rect, not just the height: a hugging row (063) derives
+            // its x and width too, and for a fixed row those are returned unchanged.
+            item.x = Double(fitted.minX)
+            item.w = Double(fitted.width)
             item.h = Double(fitted.height)
             return SpaceItemDetail(item: item, asset: detail.asset, source: detail.source)
         }

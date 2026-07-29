@@ -937,10 +937,12 @@ public final class CanvasHostView: NSView {
         switch tool {
         case .text:
             if worldRect.width < Self.minCreateWorldEdge || worldRect.height < Self.minCreateWorldEdge {
-                let origin = engine.transform.screenToWorld(a)
-                worldRect = CGRect(
-                    origin: origin,
-                    size: CGSize(width: Self.defaultTextWorldWidth, height: Self.defaultTextWorldHeight))
+                // A click, not a drag: report the origin and a ZERO size. The host has
+                // no business inventing a width here — only the app layer can measure
+                // text — so an empty rect is it saying "no width was chosen" and
+                // `SpaceModel.addText` sizes the box to its own glyphs (063). This
+                // replaced a 260×72 literal that every click-placed box inherited.
+                worldRect = CGRect(origin: engine.transform.screenToWorld(a), size: .zero)
             }
         case .frame:
             guard worldRect.width >= Self.minCreateWorldEdge,
@@ -971,9 +973,6 @@ public final class CanvasHostView: NSView {
 
     /// Smallest world edge a rubber-band must reach to count as a deliberate drag.
     static let minCreateWorldEdge: CGFloat = 12
-    /// Default world size for a click-placed (undragged) text box.
-    static let defaultTextWorldWidth: CGFloat = 260
-    static let defaultTextWorldHeight: CGFloat = 72
 
     // MARK: Marquee (rubber-band selection → live hit set)
 

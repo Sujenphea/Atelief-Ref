@@ -84,6 +84,17 @@ public enum TextMetrics {
     /// measured inset at every zoom. Frame labels keep their own screen-space pad.
     public static let padding: CGFloat = 4
 
+    /// How wide an auto-width box (063) may grow before it starts wrapping — the
+    /// measured text width, so a box's outer width caps at `maxAutoWidth + 2·padding`.
+    ///
+    /// A deliberate deviation from Figma, which grows without limit. Text arrives here
+    /// by paste as often as by typing, and an unbounded hug turns a pasted paragraph
+    /// into a single line tens of thousands of world units wide — unreadable at any
+    /// zoom that fits it, and awkward to select. Past the cap the box wraps and behaves
+    /// like a fixed box of this width *while staying flagged auto*, so deleting text
+    /// lets it hug again. A safety valve, not a second mode.
+    public static let maxAutoWidth: CGFloat = 1200
+
     /// The world-space size the styled text occupies, measured with the drawing
     /// font at the world `fontSize` (so it is zoom-independent). `maxWidth == nil`
     /// → unconstrained (grows to the longest line); a value → wrapped to that width
