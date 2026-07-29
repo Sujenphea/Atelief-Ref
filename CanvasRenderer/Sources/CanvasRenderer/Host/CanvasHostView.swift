@@ -88,18 +88,19 @@ public final class CanvasHostView: NSView {
     /// per carried tile. `nil` disables drag-to-place.
     public var onMoveTile: ((Int, CGPoint) -> Void)?
 
-    /// Called when an ⌥-drag finishes on tiles that cannot be dragged OUT (065): the
-    /// carried tile ids and how far the drag moved them, in WORLD units. The app is
-    /// expected to create copies at that offset and leave the originals alone.
+    /// Called when an ⌥-drag finishes: the carried tile ids and how far the drag moved
+    /// them, in WORLD units. The app is expected to create copies at that offset and
+    /// leave the originals alone.
     ///
     /// An offset rather than per-tile origins because the copies do not exist yet —
     /// there is no tile id to report an origin against, only a displacement from
     /// whatever each source's own position is.
     ///
-    /// ⌥ is shared with the drag-OUT gesture and drag-out wins where it applies (059 ·
-    /// SP7): asset tiles leave the board, element tiles — which have no asset payload
-    /// to carry — duplicate in place. `nil` disables ⌥-duplicate, leaving ⌥ a plain
-    /// move exactly as before.
+    /// **⌥ duplicates every kind of tile** (065b). It used to duplicate only the tiles
+    /// that yielded no drag-out payload, because it shared the modifier with drag-out —
+    /// which meant assets could not be duplicated by drag at all, and that ⌥ meant two
+    /// different things depending on what you grabbed. Drag-out moved to ⌘.
+    /// `nil` disables ⌥-duplicate, leaving ⌥ a plain move.
     public var onDuplicateTiles: ((Set<Int>, CGSize) -> Void)?
 
     /// Called when a create tool (``CanvasTool/frame`` / ``CanvasTool/text``)
@@ -173,6 +174,15 @@ public final class CanvasHostView: NSView {
 
     /// ⌥ state captured at `mouseDown`, gating ⌥-drag drag-out at the threshold.
     private var pressOptionDown = false
+
+    /// ⌘ at mouse-DOWN → drag-out (065b). Latched for the same reason as
+    /// ``pressOptionDown``: what a drop means is settled when the drag starts.
+    ///
+    /// Read ONLY at drag-start, which is what lets ⌘ keep its other job on this path
+    /// without ambiguity — pressed once a move is already running it turns snapping
+    /// off. Held from the start it is a drag-out, which returns before the snapping
+    /// line is ever reached.
+    private var pressCommandDown = false
 
     /// Whether the running drag duplicates rather than moves (065) — latched at
     /// drag-start from `pressOptionDown`, so releasing ⌥ mid-drag cannot change what
@@ -679,7 +689,8 @@ public final class CanvasHostView: NSView {
 
         let shift = event.modifierFlags.contains(.shift)
         let command = event.modifierFlags.contains(.command)
-        pressOptionDown = event.modifierFlags.contains(.option) // ⌥ → drag-out (SP7)
+        pressOptionDown = event.modifierFlags.contains(.option)   // ⌥ → duplicate (065b)
+        pressCommandDown = command                                 // ⌘ → drag-out (065b)
 
         // Gesture precedence lives in `canvasPressTarget` (049 · D8 · 062) so the
         // ORDER is pinned by tests rather than by the shape of this method — the
@@ -720,7 +731,7 @@ public final class CanvasHostView: NSView {
             let routing = canvasPressRouting(
                 tileID: tileID,
                 isSelected: engine.selectedTileIDs.contains(tileID),
-                shift: shift, command: command)
+                shift: shift)
             if let press = routing.pressAction { applySelection(press) }
             pendingClickAction = routing.clickAction
             dragStartPoint = point
@@ -753,6 +764,7 @@ public final class CanvasHostView: NSView {
         marqueeBase = []
         isMarqueeing = false
         pressOptionDown = false
+        pressCommandDown = false
         isDuplicatingDrag = false
         resizeCandidate = nil
         isResizing = false
@@ -816,28 +828,38 @@ public final class CanvasHostView: NSView {
             // on a selected tile keeps the whole selection.
             if !engine.selectedTileIDs.contains(tileID) { applySelection(.selectOnly(tileID)) }
             let carry = canvasDragCarry(grabbed: tileID, selection: engine.selectedTileIDs)
-            // SP7: an ⌥-drag on a tile is a drag-OUT (board→board / →collection via
-            // the sidebar), not an in-view move — start an NSDraggingSession with the
-            // app's asset payload. If the carried tiles yield no payload (e.g. only
-            // element tiles), fall through to the normal in-view move.
-            // Asked only under ⌥, exactly as before: building a drag-out payload walks
-            // the carried tiles, and an ordinary move has no use for one.
-            let dragOutItem = pressOptionDown ? onBeginTileDragOut?(carry.union([tileID])) : nil
+            // SP7 / 065b: a ⌘-drag on a tile is a drag-OUT (board→board / →collection
+            // via the sidebar), not an in-view move — start an NSDraggingSession with
+            // the app's asset payload. Asked only under ⌘: building the payload walks
+            // the carried tiles, and neither a move nor a duplicate has a use for one.
+            let dragOutItem = pressCommandDown ? onBeginTileDragOut?(carry.union([tileID])) : nil
             let intent = Self.dragIntent(
                 optionDown: pressOptionDown,
+                commandDown: pressCommandDown,
                 hasDragOutPayload: dragOutItem != nil,
                 canDuplicate: onDuplicateTiles != nil)
             if intent == .dragOut, let dragOutItem {
                 beginTileDragOut(pasteboardItem: dragOutItem, primaryTileID: tileID, event: event)
                 return
             }
-            // Latched at drag-START, not read again at drop: `pressOptionDown` is the
-            // modifier state from mouse-DOWN, so re-reading ⌥ on mouse-UP would let
-            // releasing the key mid-drag silently turn a duplicate back into a move.
+            // ⌘ on tiles nothing can accept: the drag does not happen. Reset rather
+            // than return, so the half-armed gesture cannot resume if the pointer keeps
+            // moving — one refusal, not a drag that starts on the next tick.
+            if intent == .none {
+                resetGestureState()
+                return
+            }
+            // Latched at drag-START, not read again at drop: both flags are the modifier
+            // state from mouse-DOWN, so releasing ⌥ mid-drag cannot silently turn a
+            // duplicate back into a move.
             isDuplicatingDrag = intent == .duplicate
             engine.beginDrag(tileID: tileID, alsoCarry: carry)
         }
-        // ⌘ turns snapping off mid-drag, exactly as it does for a resize.
+        // ⌘ turns snapping off mid-drag, exactly as it does for a resize. This reads the
+        // LIVE flag, not the latch, and that is what lets ⌘ carry two meanings on one
+        // gesture without ambiguity: held from mouse-down it is a drag-out, which
+        // returned above and never reaches here; pressed once a move is already running
+        // it suppresses snapping.
         engine.updateDrag(
             byScreenDelta: delta, snapping: !event.modifierFlags.contains(.command))
     }
@@ -1116,26 +1138,38 @@ public final class CanvasHostView: NSView {
         case duplicate
         /// Move the tiles.
         case move
+        /// Do nothing at all — the drag never begins (065b).
+        ///
+        /// Reached by ⌘-dragging a tile that cannot leave the board: a frame or a text
+        /// box, which no collection can hold. Falling through to a plain move was
+        /// considered and rejected, because it would make ⌘ mean "leave the board" on
+        /// an asset and "move without snapping" on an element — a modifier whose
+        /// meaning depends on what you happen to have grabbed is not one you can learn,
+        /// and that ambiguity is the whole reason drag-out moved off ⌥.
+        case none
     }
 
-    /// Resolve what ⌥ means for this drag. Pure, so the PRECEDENCE is pinned by tests
-    /// rather than by the shape of an `if` — the same posture `canvasPressTarget` took
-    /// after gesture ordering in this file shipped a bug.
+    /// Resolve what the held modifiers mean for this drag. Pure, so the PRECEDENCE is
+    /// pinned by tests rather than by the shape of an `if` — the same posture
+    /// `canvasPressTarget` took after gesture ordering in this file shipped a bug.
     ///
-    /// ⌥ is overloaded, and the tie-break is "can these tiles leave the board at all":
+    /// **One modifier, one meaning** (065b). 065 shipped both gestures on ⌥ and split
+    /// them by whether the tiles could leave the board, so ⌥ meant *drag-out* on an
+    /// asset and *duplicate* on a frame. That is unlearnable, and it also meant assets
+    /// could not be duplicated by drag at all. So:
     ///
-    /// - Drag-out wins wherever it applies (059 · SP7), because it is the older,
-    ///   already-shipped meaning and asset tiles have nowhere else to go under ⌥.
-    /// - Element tiles — a frame, a text box — yield no drag-out payload, so ⌥ on them
-    ///   used to fall through to a plain move. That fall-through is where duplicate
-    ///   lives (065): it takes a gesture that previously did nothing special.
-    /// - Without an `onDuplicateTiles` handler, ⌥ stays exactly what it was.
+    /// - **⌥ duplicates**, every tile kind, always.
+    /// - **⌘ drags out**, and on tiles nothing can accept it does nothing rather than
+    ///   quietly degrading to a move (see ``CanvasDragIntent/none``).
+    /// - Holding both is a drag-out: leaving the board is the more consequential of the
+    ///   two and the one you have to mean, whereas an unwanted duplicate is one ⌘Z away.
+    /// - Without an `onDuplicateTiles` handler, ⌥ is a plain move.
     static func dragIntent(
-        optionDown: Bool, hasDragOutPayload: Bool, canDuplicate: Bool
+        optionDown: Bool, commandDown: Bool, hasDragOutPayload: Bool, canDuplicate: Bool
     ) -> CanvasDragIntent {
-        guard optionDown else { return .move }
-        if hasDragOutPayload { return .dragOut }
-        return canDuplicate ? .duplicate : .move
+        if commandDown { return hasDragOutPayload ? .dragOut : .none }
+        if optionDown, canDuplicate { return .duplicate }
+        return .move
     }
 
     /// The tool a bare keystroke asks for, or `nil`. Pure, so the mapping is pinned by

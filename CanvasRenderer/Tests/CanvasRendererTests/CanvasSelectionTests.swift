@@ -98,56 +98,54 @@ struct CanvasSelectionTests {
 
     @Test("plain click selects only")
     func clickPlain() {
-        #expect(canvasClickAction(tileID: 3, shift: false, command: false) == .selectOnly(3))
+        #expect(canvasClickAction(tileID: 3, shift: false) == .selectOnly(3))
     }
 
-    @Test("⌘-click toggles")
-    func clickCommand() {
-        #expect(canvasClickAction(tileID: 3, shift: false, command: true) == .toggle(3))
-    }
-
-    @Test("⇧-click adds (additive, not range)")
-    func clickShift() {
-        #expect(canvasClickAction(tileID: 3, shift: true, command: false) == .add(3))
-    }
-
-    @Test("⇧ wins over ⌘ when both are held")
-    func clickShiftBeatsCommand() {
-        #expect(canvasClickAction(tileID: 3, shift: true, command: true) == .add(3))
+    @Test("⇧-click TOGGLES — one modifier does both halves of multi-select (065b)")
+    func clickShiftToggles() {
+        // ⇧ used to be purely additive with ⌘ carrying the toggle. Folding them onto ⇧
+        // keeps both behaviours and frees ⌘ for drag-out; a board has no order for
+        // "additive" to have meant anything more than "toggle" anyway.
+        #expect(canvasClickAction(tileID: 3, shift: true) == .toggle(3))
     }
 
     // MARK: - canvasPressRouting (down-edge vs deferred click)
 
     @Test("plain press on an UNSELECTED tile selects it on the down edge")
     func pressUnselectedActsOnDown() {
-        let r = canvasPressRouting(tileID: 5, isSelected: false, shift: false, command: false)
+        let r = canvasPressRouting(tileID: 5, isSelected: false, shift: false)
         #expect(r.pressAction == .selectOnly(5))
         #expect(r.clickAction == nil)
     }
 
     @Test("plain press on a SELECTED tile defers — nothing on down, collapse on click")
     func pressSelectedDefers() {
-        let r = canvasPressRouting(tileID: 5, isSelected: true, shift: false, command: false)
+        let r = canvasPressRouting(tileID: 5, isSelected: true, shift: false)
         // Deferred so a drag keeps and carries the whole selection…
         #expect(r.pressAction == nil)
         // …and a plain click (no drag) collapses to that one tile on up.
         #expect(r.clickAction == .selectOnly(5))
     }
 
-    @Test("⇧ press acts on the down edge regardless of selected state")
+    @Test("⇧ press toggles on the down edge regardless of selected state")
     func pressShiftOnDown() {
-        #expect(canvasPressRouting(tileID: 5, isSelected: false, shift: true, command: false)
-            == CanvasPressRouting(pressAction: .add(5), clickAction: nil))
-        #expect(canvasPressRouting(tileID: 5, isSelected: true, shift: true, command: false)
-            == CanvasPressRouting(pressAction: .add(5), clickAction: nil))
+        #expect(canvasPressRouting(tileID: 5, isSelected: false, shift: true)
+            == CanvasPressRouting(pressAction: .toggle(5), clickAction: nil))
+        #expect(canvasPressRouting(tileID: 5, isSelected: true, shift: true)
+            == CanvasPressRouting(pressAction: .toggle(5), clickAction: nil))
     }
 
-    @Test("⌘ press acts on the down edge regardless of selected state")
-    func pressCommandOnDown() {
-        #expect(canvasPressRouting(tileID: 5, isSelected: false, shift: false, command: true)
-            == CanvasPressRouting(pressAction: .toggle(5), clickAction: nil))
-        #expect(canvasPressRouting(tileID: 5, isSelected: true, shift: false, command: true)
-            == CanvasPressRouting(pressAction: .toggle(5), clickAction: nil))
+    @Test("a ⌘ press routes as a PLAIN press — ⌘ no longer touches the selection (065b)")
+    func commandPressIsPlain() {
+        // The routing takes no `command` any more, so this states the consequence: ⌘ is
+        // the drag-out modifier, and a modifier that mutated the selection on the press
+        // edge would deselect the very tile the drag is about to carry.
+        //
+        // What falls out is exactly what a drag-out wants: grab an unselected tile and
+        // it becomes the selection; grab a selected one and the whole selection goes.
+        #expect(canvasPressRouting(tileID: 5, isSelected: false, shift: false).pressAction
+            == .selectOnly(5))
+        #expect(canvasPressRouting(tileID: 5, isSelected: true, shift: false).pressAction == nil)
     }
 
     // MARK: - canvasDragCarry (the Finder-scope carry predicate)
@@ -174,7 +172,7 @@ struct CanvasSelectionTests {
         // Press on a selected tile defers (no down-edge change), so at drag-begin
         // the selection still holds every id — the carry set is the whole thing.
         var sel = CanvasSelection(ids: [1, 2, 3])
-        let r = canvasPressRouting(tileID: 2, isSelected: true, shift: false, command: false)
+        let r = canvasPressRouting(tileID: 2, isSelected: true, shift: false)
         if let a = r.pressAction { sel = sel.applying(a) } // nil → unchanged
         #expect(sel.ids == [1, 2, 3])
         #expect(canvasDragCarry(grabbed: 2, selection: sel.ids) == [1, 2, 3])
@@ -183,7 +181,7 @@ struct CanvasSelectionTests {
     @Test("a drag on an unselected tile selects then carries only it")
     func dragUnselectedCarriesOne() {
         var sel = CanvasSelection(ids: [1, 2, 3])
-        let r = canvasPressRouting(tileID: 9, isSelected: false, shift: false, command: false)
+        let r = canvasPressRouting(tileID: 9, isSelected: false, shift: false)
         if let a = r.pressAction { sel = sel.applying(a) } // selectOnly(9)
         #expect(sel.ids == [9])
         #expect(canvasDragCarry(grabbed: 9, selection: sel.ids) == [9])

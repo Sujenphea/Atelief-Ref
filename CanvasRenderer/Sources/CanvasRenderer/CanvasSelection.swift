@@ -82,13 +82,16 @@ public extension CanvasSelection {
 
 /// Map a raw tile click (which id, which modifiers held) to its selection action
 /// (049 · D6). Pure so the modifier routing is unit-testable independent of the
-/// AppKit `NSEvent.modifierFlags` read that supplies the booleans. ⇧ wins over ⌘
-/// when both are held (⇧ signals additive intent, the stronger signal — parity
-/// with `gridClickAction`).
-public func canvasClickAction(tileID id: Int, shift: Bool, command: Bool) -> CanvasSelectionAction {
-    if shift { return .add(id) }
-    if command { return .toggle(id) }
-    return .selectOnly(id)
+/// AppKit `NSEvent.modifierFlags` read that supplies the booleans.
+///
+/// **⇧ TOGGLES (065b), and ⌘ no longer routes selection at all.** ⇧ used to be purely
+/// additive and ⌘ carried the toggle, which meant two modifiers for one job — and the
+/// board has no order for ⇧ to range over, so "additive" was never the distinction it
+/// is in a list. Folding the toggle onto ⇧ loses nothing (⇧-click an unselected tile
+/// adds it, a selected one removes it) and frees ⌘ entirely for the drag-out gesture,
+/// which cannot share a modifier that mutates the selection on the press edge.
+public func canvasClickAction(tileID id: Int, shift: Bool) -> CanvasSelectionAction {
+    shift ? .toggle(id) : .selectOnly(id)
 }
 
 /// What a mouse-DOWN on a tile does vs. what it defers to the mouse-UP click
@@ -181,18 +184,24 @@ public func canvasPressTarget(
 
 /// Route a mouse-DOWN on the tile `id` to its press/click selection actions
 /// (049 · D6, the Finder rule):
-///  - **⇧** adds on down; **⌘** toggles on down (modifiers act immediately, never
-///    defer — parity with `gridPressRouting`).
+///  - **⇧** toggles on down (065b — it acts immediately, never defers).
 ///  - A plain press on an **unselected** tile selects it on down (immediate
 ///    highlight; a following drag carries just it).
 ///  - A plain press on a **selected** tile DEFERS: nothing on down (so a drag keeps
 ///    and carries the whole selection); on up — if it stayed a click — it collapses
 ///    to that one tile.
+///
+/// **⌘ is deliberately absent** (065b). It is the drag-out modifier now, and a
+/// modifier that mutates the selection on the press edge cannot also start a drag:
+/// ⌘-pressing a selected tile would remove it from the selection and then drag out a
+/// set that no longer contains the tile under the cursor. Dropping it here leaves ⌘
+/// falling through to the plain-press rules above, which is exactly what a drag-out
+/// wants — grab an unselected tile and it becomes the selection; grab a selected one
+/// and the whole selection goes.
 public func canvasPressRouting(
-    tileID id: Int, isSelected: Bool, shift: Bool, command: Bool
+    tileID id: Int, isSelected: Bool, shift: Bool
 ) -> CanvasPressRouting {
-    if shift { return CanvasPressRouting(pressAction: .add(id), clickAction: nil) }
-    if command { return CanvasPressRouting(pressAction: .toggle(id), clickAction: nil) }
+    if shift { return CanvasPressRouting(pressAction: .toggle(id), clickAction: nil) }
     if isSelected { return CanvasPressRouting(pressAction: nil, clickAction: .selectOnly(id)) }
     return CanvasPressRouting(pressAction: .selectOnly(id), clickAction: nil)
 }

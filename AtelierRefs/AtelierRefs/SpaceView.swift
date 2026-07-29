@@ -278,8 +278,9 @@ struct SpaceView: View {
                 onMoveTile: { tileID, worldOrigin in
                     space.moveTile(tileID: tileID, to: worldOrigin, in: content)
                 },
-                // ⌥-drag on tiles with nothing to drag OUT (i.e. frames and text) —
-                // asset tiles keep ⌥ for the board→collection drag-out (059 · SP7).
+                // ⌥-drag duplicates ANY tile (065b). It used to fire only for tiles
+                // with nothing to drag out — so an asset could not be ⌥-duplicated at
+                // all — because ⌥ was shared with the drag-out gesture, which is now ⌘.
                 onDuplicateTiles: { tileIDs, worldOffset in
                     space.duplicateTiles(tileIDs: tileIDs, offset: worldOffset, in: content)
                 },
@@ -369,9 +370,14 @@ struct SpaceView: View {
                 onPaste: { pasteboard, worldPoint in
                     pasteOntoBoard(from: pasteboard, at: worldPoint)
                 },
-                // SP7: ⌥-drag a tile out to a sidebar space / collection row (adds a
-                // copy there). Maps the carried tiles → an asset-drag payload; nil
-                // (no asset tiles) leaves it an ordinary in-view move.
+                // SP7 / 065b: ⌘-drag a tile out to a sidebar space / collection row
+                // (adds a copy there). Maps the carried tiles → an asset-drag payload;
+                // nil (no asset tiles) means the drag simply does not start, rather than
+                // degrading to a move — see `CanvasDragIntent.none`.
+                //
+                // ⌥ still selects copy-vs-move at DROP time on the destination side
+                // (009 · N3, `DropRouter`). No conflict: the gesture modifier is latched
+                // at mouse-down and the drop modifier is read when you let go.
                 onBeginTileDragOut: { tileIDs in
                     content.dragOutPayload(forTileIDs: tileIDs)?.makePasteboardItem()
                 },
