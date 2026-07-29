@@ -4,6 +4,9 @@
 > deleted, as a persistent per-box state with a visible control.
 > Follows [060](./060-spaces-text-render-design.md) / [061](./061-spaces-text-render-plan.md)
 > (zoom-stable rendering) and 062 (resize handles, derived height).
+>
+> **Status: implemented**, all six stages. See §10 for where the build departed from
+> this plan and why.
 
 ## 1. The problem
 
@@ -172,14 +175,22 @@ sentence is retracted in the same commit.
 
 The `NSTextView` itself needs no mode: its container tracks the view width, and the view
 is sized to the measurement, so with the box exactly as wide as the longest line there
-is nothing to wrap. **The one risk worth naming**: the measurement is CoreText's and the
-editor's layout is TextKit's, and those two disagree about line *breaking* (the open
-Stage 4 problem in the previous plan). Here that disagreement would show as the last
-word jumping to a second line mid-typing. It is unlikely to bite because `TextShaper`
-already `ceil`s `suggested.width` — the rounding error is in the safe direction, and no
-break opportunity is being taken at all in the common single-line case. Pin it with a
-test (§5) rather than trusting the argument, and if it does bite, the fix is a 1pt slack
-on the container, not a redesign.
+is nothing to wrap.
+
+**The risk this section named did not materialise, and is now measured rather than
+argued.** The concern was that the measurement is CoreText's and the editor's layout is
+TextKit's, and that the two disagree about line breaking — which here would show as the
+last word jumping to a second line mid-typing. Two things closed it:
+
+- [067](./067-spaces-text-engine-research.md) measured **0/384** line-break
+  disagreements between CoreText, TextKit 1 and TextKit 2. The premise was wrong, not
+  merely unlikely.
+- `TextAutoWidthTests` pins the specific arithmetic anyway, because engine agreement
+  does not by itself guarantee that *measure → +2·padding → re-shape at that width*
+  round-trips. `noWrapAtTheHuggedWidth` and `editorAgreesAtTheHuggedWidth` both pass
+  across the full matrix, the second including an unbreakable token and CJK.
+
+The 1pt-container-slack fallback was therefore not needed and is **not** in the build.
 
 ### 3.4 Conversion — the gesture
 
@@ -336,3 +347,43 @@ Per stage, and these are the ones that would catch a real regression:
 - `.docs/054-spaces-text-design.md` §4.1–4.3 — `autosizedFrame`, restyle-folds-autosize.
 - `ref/Nook/Components/Easel/InfiniteCanvasView.swift:1408-1443` — auto-grow + debounced
   persist. Nook grows height only, so it is prior art for the loop, not for the mode.
+
+
+## 10. What the build changed about this plan
+
+Three departures, all in the same direction — one copy of each rule instead of two.
+
+**`anchoredMinX` and the capped measure live in the RENDERER, not `SpaceModel`.** The
+plan put both in the app layer. That could not survive Stage 3: the inline editor is
+inside `CanvasRenderer` and needs both to derive the live box, so the app-layer versions
+would have had renderer twins. Two answers to *"how wide is this box"* and *"where does
+its left edge go"* is precisely the drift 060 exists to prevent, so they became
+`TextMetrics.size(for:hugging:outerWidth:)` and
+`canvasInlineEditorAnchoredMinX(oldMinX:oldWidth:newWidth:alignment:)`, and `SpaceModel`
+calls them.
+
+**The editor anchors on `storedWorldFrame`, a new engine accessor.** Not in the plan, and
+load-bearing. `reposition()` runs per keystroke, and `screenFrame(forTileID:)` already
+includes the editor's own span override — so anchoring against it would mean anchoring
+against the previous keystroke's answer, compounding into a sideways crawl for a centred
+box. Anchoring against the committed frame is idempotent, which is what makes the live
+box and the committed box land in the same place.
+
+**Conversion routes through `applyRestyle`, not `applyPlacementEdit`.** §3.4 said the
+rule folds into "the same single undo step as the geometry", but a conversion changes
+the *style* as well, and the placement path carries no style. Registering a second
+reversible next to it would have meant two ⌘Zs to undo one drag, with a half-converted
+box in between. `applyRestyle` already folds style + geometry into one entry, so the
+converting branch uses it and the non-converting one is untouched.
+
+Also worth recording: **`defaultTextWorldHeight` went with `defaultTextWorldWidth`.** The
+plan only named the width, but once a click reports an origin-only rect the height
+literal has nothing to size either — the height was always derived.
+
+## 11. Verified
+
+- 851 app tests, 390 renderer tests, 553 core tests. New: `SpaceTextAutoWidthTests` (19),
+  `TextAutoWidthTests` (9), `ElementStyleTextTests` +4, `EngineResizeTests` +7.
+- The risk table's top row — the CoreText/TextKit wrap disagreement, rated *"high if it
+  bites"* — is measured closed (§3.3).
+- §6's manual checklist is **not** yet run; it is the remaining verification.

@@ -1,5 +1,17 @@
 # 062 — Spaces Text Resizing: one behaviour, plus handles
 
+> **Amended by [063](./063-spaces-text-autowidth-plan.md).** §2's decision to drop
+> auto-width was **reversed**, on the grounds 062 itself named. Its objection was that
+> the mode would be reachable only by gesture — *"a hidden consequence of an action
+> rather than a state the user can see"* — and that was correct at the time, because
+> the segmented picker had just been deleted and the format bubble did not yet exist in
+> its current form. 063 gives the mode a labelled Width control in both the bubble and
+> the inspector, which is the condition 062 set. Everything else here stands, including
+> the invariant that matters most: **the height is always derived from the text and is
+> never the user's to set.** 063 extends that reasoning to the width for boxes that opt
+> in; it does not weaken it. The legacy `resizeMode` field remains inert — 063 uses a
+> new `textAutoWidth` flag precisely so pre-062 rows stay unaffected.
+
 > Retires the three-way text resize mode and gives text boxes drag handles.
 > Modelled on Nook's Easel (`ref/Nook`), which solves this with a single rule.
 > Follows [060](./060-spaces-text-render-design.md) / [061](./061-spaces-text-render-plan.md),
