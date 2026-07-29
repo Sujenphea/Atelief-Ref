@@ -823,18 +823,26 @@ public final class CanvasEngine {
         scheduler.retainOnly(neededKeys)
     }
 
-    /// Show / move / drop the eight handle dots on the single selected resizable
+    /// Show / move / drop the four CORNER dots on the single selected resizable
     /// tile. Sized in SCREEN points, so they stay the same physical size at every
     /// zoom — the whole reason the hit-test lives in screen space too.
+    ///
+    /// Only the corners are drawn; the edge handles keep their grab zones but no
+    /// dot — an edge is its own affordance, and a dot on a short text box's edge
+    /// midpoint sat on top of the text it resizes. The box being EDITED draws no
+    /// dots at all (its border is chrome enough over live text), though its
+    /// reduced grab zones stay live — resize-while-editing (062) is undrawn, not
+    /// gone.
     private func updateResizeHandles(in visible: [Tile]) {
-        guard let tile = handleTile(in: visible) else {
+        guard let tile = handleTile(in: visible), tile.id != editingTileID else {
             for layer in handleLayers.values { layer.removeFromSuperlayer() }
             handleLayers.removeAll()
             return
         }
         let screenFrame = transform.worldToScreen(displayWorldFrame(for: tile))
         let size = ResizeGeometry.handleSize
-        for (handle, centre) in ResizeGeometry.handleCentres(in: screenFrame) {
+        for (handle, centre) in ResizeGeometry.handleCentres(in: screenFrame)
+        where handle.isCorner {
             let layer: CALayer
             if let existing = handleLayers[handle] {
                 layer = existing
@@ -1200,7 +1208,7 @@ public final class CanvasEngine {
 
     private func makeSelectionLayer() -> CALayer {
         let layer = CALayer()
-        layer.borderWidth = 3
+        layer.borderWidth = 1.5
         layer.borderColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 1.0) // accent blue
         layer.cornerRadius = 3
         layer.backgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0) // border only

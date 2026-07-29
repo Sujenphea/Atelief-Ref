@@ -72,19 +72,37 @@ struct EngineResizeTests {
         #expect(e.resizeHandle(atScreenPoint: .zero) == nil)
     }
 
-    @Test("a selected TEXT tile shows all eight handles")
+    @Test("a selected TEXT tile draws its four corner dots — edges stay undrawn")
     func selectedTextShowsHandles() {
         let e = engine()
         e.setSelected(0)
-        #expect(e.resizeHandleCount == 8)
+        #expect(e.resizeHandleCount == 4)
+        // The edge handles keep their grab zones without a dot: hit-testable...
+        #expect(e.resizeHandle(atScreenPoint: CGPoint(x: 150, y: 0))?.handle == .top)
+        // ...but never drawn.
+        #expect(e.resizeHandlePositions[.top] == nil)
     }
 
     @Test("a selected IMAGE tile shows handles too")
     func selectedImageShowsHandles() {
         let e = engine()
         e.setSelected(1)
-        #expect(e.resizeHandleCount == 8)
+        #expect(e.resizeHandleCount == 4)
         #expect(e.resizeHandle(atScreenPoint: CGPoint(x: 400, y: 0))?.handle == .topLeft)
+    }
+
+    @Test("the box being edited draws NO dots, but its grab zones stay live")
+    func editingHidesDotsKeepsZones() {
+        let e = engine()
+        e.setSelected(0)
+        #expect(e.resizeHandleCount == 4)
+        e.editingTileID = 0
+        // No dots over live text — but resize-while-editing (062) still works
+        // through the reduced editing grab zones.
+        #expect(e.resizeHandleCount == 0)
+        #expect(e.resizeHandle(atScreenPoint: .zero)?.handle == .topLeft)
+        e.editingTileID = nil
+        #expect(e.resizeHandleCount == 4)
     }
 
     @Test("an image keeps its aspect ratio with no modifier held")
@@ -123,7 +141,7 @@ struct EngineResizeTests {
     func deselectDropsHandles() {
         let e = engine()
         e.setSelected(0)
-        #expect(e.resizeHandleCount == 8)
+        #expect(e.resizeHandleCount == 4)
         e.setSelected(nil)
         #expect(e.resizeHandleCount == 0)
     }
@@ -132,7 +150,7 @@ struct EngineResizeTests {
     func offscreenDropsHandles() {
         let e = engine()
         e.setSelected(0)
-        #expect(e.resizeHandleCount == 8)
+        #expect(e.resizeHandleCount == 4)
         // Pan the text tile far off-screen.
         e.setTransform(CanvasTransform(scale: 1, translation: CGPoint(x: -50_000, y: 0)))
         #expect(e.resizeHandleCount == 0)
@@ -202,7 +220,7 @@ struct EngineResizeTests {
         e.setSelected(0)
         e.beginResize(tileID: 0, handle: .right)
         e.updateResize(toWorldPoint: CGPoint(x: 500, y: 0))
-        #expect(e.resizeHandleCount == 8)
+        #expect(e.resizeHandleCount == 4)
         // The right handle sits on the LIVE edge, not the stored one. Its y comes
         // from the live frame too: the height is DERIVED from the wrapped text
         // (062), so the box is nothing like the 200pt the provider stores.
@@ -357,19 +375,18 @@ struct EngineResizeLiveChromeTests {
     func handleDotsFollowTheLiveBox() {
         let e = engine()
         let before = e.resizeHandlePositions
-        #expect(before[.right]?.x == 400)
+        #expect(before[.topRight]?.x == 400)
 
         e.beginResize(tileID: 0, handle: .right)
         e.updateResize(toWorldPoint: CGPoint(x: 250, y: 0))
 
         let during = e.resizeHandlePositions
-        // Every handle that owns the right edge must have moved with it.
-        #expect(during[.right]?.x == 250)
+        // Every drawn corner that owns the right edge must have moved with it.
         #expect(during[.topRight]?.x == 250)
         #expect(during[.bottomRight]?.x == 250)
-        // The left edge is anchored, and the top/bottom midpoints re-centre.
-        #expect(during[.left]?.x == 0)
-        #expect(during[.top]?.x == 125)
+        // The left edge is anchored.
+        #expect(during[.topLeft]?.x == 0)
+        #expect(during[.bottomLeft]?.x == 0)
     }
 
     @Test("the text re-wraps to the live width while the box is being resized")
@@ -407,7 +424,7 @@ struct EngineResizeLiveChromeTests {
         e.updateResize(toWorldPoint: CGPoint(x: 120, y: 0))
         e.endResize()
         e.sync()
-        #expect(e.resizeHandlePositions[.right]?.x == 400)
+        #expect(e.resizeHandlePositions[.topRight]?.x == 400)
         #expect(e.textLayer(forTileID: 0)?.shaped?.key == stored)
     }
 }

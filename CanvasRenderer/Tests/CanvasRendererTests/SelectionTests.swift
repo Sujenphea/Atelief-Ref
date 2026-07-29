@@ -49,7 +49,7 @@ struct SelectionTests {
         #expect(engine.selectedTileID == 1)
         #expect(engine.isSelectionHighlightVisible)
         // Exactly one highlight layer. (Asserted directly rather than as a total
-        // sublayer count: a selected tile also carries eight resize handles now,
+        // sublayer count: a selected tile also carries its corner resize handles,
         // and this test is about the highlight, not the chrome around it.)
         #expect(engine.selectionHighlightCount == 1)
     }
