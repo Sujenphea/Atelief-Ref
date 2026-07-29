@@ -35,6 +35,10 @@ struct ElementInspector: View {
     @State private var fontFamily: String
     @State private var weight: TextWeight
     @State private var align: TextAlign
+    /// 063 — whether the box derives its own width. `Bool` rather than the
+    /// `ElementStyle` optional: the control has two positions, and an absent value
+    /// means "fixed" everywhere else too.
+    @State private var autoWidth: Bool
 
     /// The system-font sentinel used as the "System" picker tag / empty family.
     /// ``FontFamilyPicker`` owns the list itself (064), shared with the board's own
@@ -60,6 +64,7 @@ struct ElementInspector: View {
         _fontFamily = State(initialValue: initialStyle.fontFamily ?? Self.systemFamily)
         _weight = State(initialValue: initialStyle.weight)
         _align = State(initialValue: initialStyle.align)
+        _autoWidth = State(initialValue: initialStyle.hugsWidth)
     }
 
     var body: some View {
@@ -103,9 +108,13 @@ struct ElementInspector: View {
     }
 
     // The string is edited on-canvas (2B), not here (R3) — the popover keeps only
-    // the STYLE controls (family / weight / align / size / colour). Sizing is not a
-    // setting: the box's width follows its resize handles and its height follows the
-    // text (062).
+    // the STYLE controls (family / weight / align / width / size / colour).
+    //
+    // The HEIGHT is still not a setting and never will be: it follows the text (062).
+    // The WIDTH became one in 063 — a box either hugs its text or holds the width the
+    // handles gave it, and that is a state the user picks rather than infers. This
+    // comment previously read "sizing is not a setting"; half of it is now wrong,
+    // which is why it says so rather than being quietly deleted.
     @ViewBuilder private var textEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
             FontFamilyPicker(selection: $fontFamily)
@@ -117,6 +126,11 @@ struct ElementInspector: View {
                 ForEach(TextAlign.allCases, id: \.self) { alignment in
                     Image(systemName: alignment.symbolName).tag(alignment)
                 }
+            }
+            .pickerStyle(.segmented)
+            Picker("Width", selection: $autoWidth) {
+                Text("Auto").tag(true)
+                Text("Fixed").tag(false)
             }
             .pickerStyle(.segmented)
             HStack {
@@ -161,6 +175,7 @@ struct ElementInspector: View {
             style.fontFamily = fontFamily.isEmpty ? nil : fontFamily
             style.fontWeight = weight.rawValue
             style.textAlign = align.rawValue
+            style.textAutoWidth = autoWidth
         case .frame:
             style.text = text.isEmpty ? nil : text
             style.textColor = ElementRendering.hex(from: textColor.rgbaComponents())

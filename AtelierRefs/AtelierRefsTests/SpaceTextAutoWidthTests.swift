@@ -304,6 +304,42 @@ struct SpaceTextAutoWidthTests {
         #expect(model.undoActionName == "Resize")
     }
 
+    // MARK: - The control (§3.5)
+
+    @Test("switching to Fixed freezes the box at the width it had just hugged")
+    func fixedFreezesTheCurrentWidth() async throws {
+        let model = try await makeModel()
+        let id = await seedClicked(model, at: .zero)
+        await restyle(model, id, text: "A line of text")
+        let hugged = item(model, id).w
+
+        await restyle(model, id, hugs: false)
+        #expect(item(model, id).w == hugged)   // frozen where it was, not reset
+
+        // …and it now behaves as any fixed box: the text grows downward.
+        await restyle(model, id, text: "A considerably longer line that must now wrap")
+        #expect(item(model, id).w == hugged)
+        #expect(item(model, id).h > 0)
+    }
+
+    @Test("switching back to Auto re-hugs — the state is reversible, unlike the gesture")
+    func autoReHugs() async throws {
+        let model = try await makeModel()
+        let id = await seedClicked(model, at: .zero)
+        await restyle(model, id, text: "A line of text")
+        let hugged = item(model, id).w
+
+        await restyle(model, id, hugs: false)
+        let content = model.content()
+        let tid = content.tileID(forSpaceItemID: id)!
+        model.resizeTile(tileID: tid, to: CGRect(x: 0, y: 0, width: 500, height: 30), in: content)
+        await model.waitForWrites(); await model.load()
+        #expect(item(model, id).w == 500)
+
+        await restyle(model, id, hugs: true)
+        #expect(item(model, id).w == hugged)   // back to snug
+    }
+
     // MARK: - Load
 
     @Test("a hugging row is re-derived on load; a fixed row is left alone")

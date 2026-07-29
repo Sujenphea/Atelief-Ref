@@ -434,6 +434,19 @@ struct SpaceTextFontPopover: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+
+            // Width (063). This control is the whole reason auto-width could come
+            // back: 062 rejected the mode because it would be reachable only by
+            // gesture — "a hidden consequence of an action rather than a state the
+            // user can see". Here it is a state they set, see, and can set back.
+            Picker("Width", selection: binding(
+                get: { style.hugsWidth },
+                set: { $0.textAutoWidth = $1 })) {
+                Text("Auto").tag(true)
+                Text("Fixed").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
         }
         // Popovers get no inset of their own, so the controls sit against the chrome
         // unless the content supplies one. `lg` matches the inspector's, so the two
