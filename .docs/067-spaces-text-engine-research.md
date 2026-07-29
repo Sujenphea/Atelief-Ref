@@ -66,25 +66,57 @@ Two consequences for the record:
   060's "rare difference, already contained" reasoning *"is wrong and must be
   retracted"*. On this evidence the difference is not merely rare, it is absent across
   the matrix, and it is the retraction that should be withdrawn.
-- **Nook is not evidence for the port either.** It measures with TextKit 1, draws with
-  `NSString.draw`, and edits in an `NSTextView` it never downgrades — i.e. it ships the
-  mixed configuration its own comment claims to have unified. Note also that
-  `NSStringDrawing` disagrees with TextKit 1 on height in 114/384 cases here, so Nook's
-  measure path and draw path are not the single engine that comment describes.
+- **Nook is not evidence for the port either — but not for the reason first written
+  here.** An earlier draft of this section said Nook "ships the mixed configuration its
+  own comment claims to have unified". That was wrong: Nook deliberately excludes text
+  from its Core Text tile path (`InfiniteCanvasView.swift:2422`) and draws it in a
+  screen-space overlay instead.
 
-## 4. If the re-wrap still reproduces
+  What Nook's comment — *"the tile's Core Text path can't be made to agree"* — is
+  actually comparing is not two engines. Its tile path lays out at **tile scale**
+  (`max(8 / pts, 14)`, font size varying with the rasterization scale); its overlay lays
+  out at a fixed reference size and applies zoom as a geometric transform. That is the
+  fused layout/rasterization bug 060 §2 describes, not an engine difference. Nook
+  changed engine *and* removed the zoom-baking in one move and credited the engine. We
+  removed the zoom-baking and kept Core Text — and the matrix above says the engine half
+  was never carrying weight.
 
-It was reported before Stage 3 landed, and Stage 3 both unified font construction and
-zeroed `lineFragmentPadding` — either of which could have been the actual cause. **Check
-by hand first**: a box whose text wraps onto 3+ lines, double-clicked, should not move a
-single break.
+  Copying Nook's engine choice would also be a downgrade. It measures with
+  `NSLayoutManager` and draws with `NSString.draw`, and that pair is the **only**
+  combination measured here that disagrees — 114/384 on height. `TextShaper` both
+  measures and draws, so our measurement and rendering cannot drift by construction.
 
-If it still moves, this suite has ruled out: the engines, the TextKit version, font
-construction, and the wrap-width arithmetic. What remains unexamined is the live path
-around them — the world-width the editor is handed at fractional zoom, the paragraph
-style `textView.alignment` writes versus the shaper's alignment-free one, and the
-`ShapeKey` 1/16pt width quantization. Those are all small, local investigations, and
-none of them is a port.
+## 4. The re-wrap does not reproduce — verified by hand
+
+**Confirmed fixed.** The symptom was reported *before* Stage 3, which both unified font
+construction and zeroed `lineFragmentPadding`; a wrapped box double-clicked today does
+not move a break. So Stage 4 would have been a rewrite of the text layer aimed at a bug
+that was already gone, diagnosed to a mechanism that was never there.
+
+One asymmetry remains open, and it is ours rather than anything to do with Nook: the
+shaper keeps its paragraph style **alignment-free on purpose**
+(`TextShaper.swift:154`) and applies alignment as a per-line flush offset, while the
+editor sets `textView.alignment`, which installs an aligned paragraph style. Alignment
+does not affect word wrapping in either engine, so this is not the fixed symptom coming
+back — but it is a real difference between the two configurations and worth closing if
+anything in this area is ever reported again. Nook sidesteps it by stripping
+`.paragraphStyle` from the editor's storage entirely (`InfiniteCanvasView.swift:1375`).
+
+## 4a. Where we already match Nook
+
+Worth recording, because it is the part that turned out to matter. The editor's
+zoom handling is the same design in both codebases — a screen-space frame over a
+world-space bounds, so the text view lays out in world units at scale 1 and the zoom is
+pure rasterization:
+
+| | Atelier | Nook |
+| --- | --- | --- |
+| editor container | `CanvasTextEditController.swift:227-232` | `InfiniteCanvasView.swift:1382-1384` |
+| `lineFragmentPadding` | 0 | 0 |
+| layout point size | world size, zoom-independent | world size, zoom-independent |
+| renderer | `drawScale` only; zoom excluded from `ShapeKey` | reference-size raster, geometric scale |
+
+The engine is the one thing that differs, and §3 covers why it should stay that way.
 
 ## 5. What to keep
 
