@@ -64,8 +64,10 @@ public final class CanvasEngine {
         didSet {
             guard editingTileID != oldValue else { return }
             // A height belongs to ONE edit. Carrying it into the next one would draw
-            // the new box at the old box's height until its first keystroke.
+            // the new box at the old box's height until its first keystroke. Same
+            // reasoning for the auto-width span (063), so they clear together.
             editingWorldHeight = nil
+            editingWorldSpan = nil
             sync()
         }
     }
@@ -73,6 +75,16 @@ public final class CanvasEngine {
     /// The world height the open editor currently needs, or `nil` when no editor is
     /// up (or before it has measured). Applied to ``editingTileID``'s displayed frame.
     private var editingWorldHeight: CGFloat?
+
+    /// The world `minX` + width an open editor needs for an **auto-width** box (063),
+    /// or `nil`. Never set for a fixed box, whose width is the user's and must not
+    /// follow the text.
+    ///
+    /// Its own property rather than a wider `editingWorldFrame` on purpose: the two
+    /// axes are owned by different rules — the height always follows the text, the
+    /// width only does so when the box is flagged — and one optional per rule means a
+    /// fixed box cannot accidentally inherit a width override.
+    private var editingWorldSpan: (minX: CGFloat, width: CGFloat)?
 
     /// Relayouts served — introspection for the tests, in the same spirit as
     /// ``TextRenderLayer/drawCount``: the per-keystroke paths must cost nothing when
@@ -198,6 +210,19 @@ public final class CanvasEngine {
     public func screenFrame(forTileID id: Int) -> CGRect? {
         guard let tile = tile(withID: id) else { return nil }
         return transform.worldToScreen(displayWorldFrame(for: tile))
+    }
+
+    /// The tile's **committed** world frame — what the provider last supplied, with no
+    /// live drag, resize or editing override applied.
+    ///
+    /// The peer of ``screenFrame(forTileID:)``, and the two answer deliberately
+    /// different questions: that one is *where it is drawn right now*, this one is
+    /// *what it actually is*. An auto-width editor (063) needs the second, because it
+    /// re-anchors on every keystroke and anchoring against the live frame would mean
+    /// anchoring against its own previous answer — which compounds into a sideways
+    /// crawl. See ``canvasInlineEditorAnchoredMinX(oldMinX:oldWidth:newWidth:alignment:)``.
+    public func storedWorldFrame(forTileID id: Int) -> CGRect? {
+        tile(withID: id)?.worldFrame
     }
 
     /// Whether a tile is in the culled-visible set right now — i.e. whether the user
@@ -434,6 +459,14 @@ public final class CanvasEngine {
         if tile.id == editingTileID, let height = editingWorldHeight {
             frame.size.height = height
         }
+        // The auto-width span, but never while a resize drag owns this tile: a drag is
+        // the user taking the width back, and what they see during it must be what
+        // they get. The height override above has no such guard because a resize
+        // re-derives the height anyway — only the width is contested.
+        if tile.id == editingTileID, tile.id != resizeTileID, let span = editingWorldSpan {
+            frame.origin.x = span.minX
+            frame.size.width = span.width
+        }
         return frame
     }
 
@@ -459,6 +492,26 @@ public final class CanvasEngine {
     public func setEditingBoxHeight(_ height: CGFloat?) {
         guard editingWorldHeight != height else { return }
         editingWorldHeight = height
+        sync()
+    }
+
+    /// Draw the tile being edited at the left edge + width its editor currently needs
+    /// (063), or `nil` to fall back to the stored ones.
+    ///
+    /// The horizontal peer of ``setEditingBoxHeight(_:)``, and set only for a box that
+    /// hugs its text. Both edges come together because they move together: growing a
+    /// centre- or right-aligned box changes where its left edge is, so pushing a width
+    /// without the matching `minX` would slide the box sideways as you type.
+    ///
+    /// Same cost and same discipline as the height override — a compare, then a
+    /// ``sync()`` that re-lays existing layers; no provider mutation, no write, and
+    /// no ``onLiveFrameChanged`` (the editor is the caller).
+    public func setEditingBoxSpan(minX: CGFloat?, width: CGFloat?) {
+        let span: (minX: CGFloat, width: CGFloat)? =
+            if let minX, let width { (minX, width) } else { nil }
+        guard span?.minX != editingWorldSpan?.minX
+                || span?.width != editingWorldSpan?.width else { return }
+        editingWorldSpan = span
         sync()
     }
 

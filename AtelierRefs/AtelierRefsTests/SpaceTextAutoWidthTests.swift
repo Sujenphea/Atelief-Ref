@@ -60,7 +60,7 @@ struct SpaceTextAutoWidthTests {
     /// The outer width a hugging box should settle at for `text`.
     private func huggedWidth(_ model: SpaceModel, _ id: UUID) -> Double {
         let ts = ElementRendering.textStyle(for: model.style(forItemID: id))
-        let measured = SpaceModel.measuredTextSize(for: ts, hugging: true, outerWidth: 0)
+        let measured = TextMetrics.size(for: ts, hugging: true, outerWidth: 0)
         return Double(measured.width) + 2 * Double(TextMetrics.padding)
     }
 
@@ -68,45 +68,45 @@ struct SpaceTextAutoWidthTests {
 
     @Test("left-aligned text grows and shrinks from a stationary LEFT edge")
     func anchorLeft() {
-        #expect(SpaceModel.anchoredMinX(
+        #expect(canvasInlineEditorAnchoredMinX(
             oldMinX: 100, oldWidth: 50, newWidth: 80, alignment: .left) == 100)
-        #expect(SpaceModel.anchoredMinX(
+        #expect(canvasInlineEditorAnchoredMinX(
             oldMinX: 100, oldWidth: 50, newWidth: 20, alignment: .left) == 100)
     }
 
     @Test("right-aligned text grows and shrinks from a stationary RIGHT edge")
     func anchorRight() {
         // Growing 50 → 80 pushes the left edge back by 30; the right edge stays at 150.
-        #expect(SpaceModel.anchoredMinX(
+        #expect(canvasInlineEditorAnchoredMinX(
             oldMinX: 100, oldWidth: 50, newWidth: 80, alignment: .right) == 70)
-        #expect(SpaceModel.anchoredMinX(
+        #expect(canvasInlineEditorAnchoredMinX(
             oldMinX: 100, oldWidth: 50, newWidth: 20, alignment: .right) == 130)
     }
 
     @Test("centred text grows both ways — the left edge moves back by half")
     func anchorCenterGrow() {
-        #expect(SpaceModel.anchoredMinX(
+        #expect(canvasInlineEditorAnchoredMinX(
             oldMinX: 100, oldWidth: 50, newWidth: 80, alignment: .center) == 85)
     }
 
     @Test("centred text shrinks both ways — the left edge moves in by half")
     func anchorCenterShrink() {
-        #expect(SpaceModel.anchoredMinX(
+        #expect(canvasInlineEditorAnchoredMinX(
             oldMinX: 100, oldWidth: 50, newWidth: 20, alignment: .center) == 115)
     }
 
     @Test("the centre is what a centred box actually holds still")
     func anchorCenterKeepsTheCentre() {
         let oldMinX: CGFloat = 100, oldWidth: CGFloat = 50, newWidth: CGFloat = 80
-        let newX = SpaceModel.anchoredMinX(
+        let newX = canvasInlineEditorAnchoredMinX(
             oldMinX: oldMinX, oldWidth: oldWidth, newWidth: newWidth, alignment: .center)
         #expect(newX + newWidth / 2 == oldMinX + oldWidth / 2)
     }
 
     @Test("an unchanged width never moves the box, whatever the alignment")
     func anchorNoOpOnEqualWidth() {
-        for align in TextAlign.allCases {
-            #expect(SpaceModel.anchoredMinX(
+        for align in TextAlignment.allCases {
+            #expect(canvasInlineEditorAnchoredMinX(
                 oldMinX: 42, oldWidth: 77, newWidth: 77, alignment: align) == 42)
         }
     }

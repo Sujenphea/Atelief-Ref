@@ -108,6 +108,30 @@ public enum TextMetrics {
     public static func size(for style: TextStyle, maxWidth: CGFloat?) -> CGSize {
         TextShaper.shape(style, maxWidth: maxWidth).size
     }
+
+    /// The inner (unpadded) size of a text box's text, for a box that is either given
+    /// its outer width or derives one (063).
+    ///
+    /// Hugging measures unconstrained, then — if the longest line exceeds
+    /// ``maxAutoWidth`` — measures *again* wrapped to the cap. The second pass is what
+    /// makes the cap a **wrap** rather than a clip: the box stops growing sideways and
+    /// grows downward instead, and shrinking the text below the cap lets it hug again,
+    /// because nothing about the flag changed.
+    ///
+    /// Lives here, in the renderer, because BOTH sides need it and they must agree:
+    /// the app derives the committed box from it, and the inline editor derives the
+    /// live one. Two copies of this rule would be two answers to "how wide is this
+    /// box", which is precisely the drift 060 exists to prevent.
+    public static func size(
+        for style: TextStyle, hugging: Bool, outerWidth: CGFloat
+    ) -> CGSize {
+        guard hugging else {
+            return size(for: style, maxWidth: max(1, outerWidth - 2 * padding))
+        }
+        let free = size(for: style, maxWidth: nil)
+        guard free.width > maxAutoWidth else { return free }
+        return size(for: style, maxWidth: maxAutoWidth)
+    }
 }
 
 extension FontWeight {

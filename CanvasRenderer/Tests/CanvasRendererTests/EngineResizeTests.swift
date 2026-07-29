@@ -766,6 +766,85 @@ struct EngineEditingResizeTests {
         #expect(e.syncCount == before)
     }
 
+    // MARK: The box grows SIDEWAYS as you type (063 · auto-width)
+
+    @Test("the edited box is drawn at the left edge + width its editor asks for")
+    func editingSpanDrivesTheBox() {
+        let e = editingEngine()
+        e.setEditingBoxSpan(minX: 30, width: 250)
+        let frame = e.currentScreenFrame(forTileID: 0)
+        #expect(frame?.minX == 30)
+        #expect(frame?.width == 250)
+        #expect(frame?.height == 60)   // the height override is separate and unset
+    }
+
+    @Test("clearing the span hands the width back to the stored geometry")
+    func clearingRestoresTheStoredWidth() {
+        let e = editingEngine()
+        e.setEditingBoxSpan(minX: 30, width: 250)
+        e.setEditingBoxSpan(minX: nil, width: nil)
+        let frame = e.currentScreenFrame(forTileID: 0)
+        #expect(frame?.minX == 0 && frame?.width == 400)
+    }
+
+    @Test("the span belongs to ONE edit — moving the editor drops it")
+    func spanDoesNotOutliveItsEdit() {
+        // Same reasoning as the height: carried into the next edit it would draw the
+        // new box at the old box's width until its first keystroke.
+        let e = editingEngine()
+        e.setEditingBoxSpan(minX: 30, width: 250)
+        e.editingTileID = nil
+        let frame = e.currentScreenFrame(forTileID: 0)
+        #expect(frame?.minX == 0 && frame?.width == 400)
+    }
+
+    @Test("a resize drag OUTRANKS the auto-width span — the width is the user's again")
+    func resizeBeatsTheAutoWidthSpan() {
+        // The one precedence that matters. Dragging a handle is the user taking the
+        // width back; if the editor kept pushing a hugged width during the drag, the
+        // box would fight the pointer.
+        let e = editingEngine()
+        e.setEditingBoxHeight(140)
+        e.setEditingBoxSpan(minX: 30, width: 250)
+        e.beginResize(tileID: 0, handle: .right)
+        e.updateResize(toWorldPoint: CGPoint(x: 220, y: 30), snapping: false)
+        let frame = e.currentScreenFrame(forTileID: 0)
+        #expect(frame?.width == 220)    // the drag, not the 250 the editor wanted
+        #expect(frame?.minX == 0)       // and not the span's origin either
+        #expect(frame?.height == 140)   // the height still follows the text
+    }
+
+    @Test("setting the same span again does not re-sync")
+    func repeatedSpanIsANoOp() {
+        // Called on every keystroke, and most keystrokes do not change the width.
+        let e = editingEngine()
+        e.setEditingBoxSpan(minX: 30, width: 250)
+        let before = e.syncCount
+        e.setEditingBoxSpan(minX: 30, width: 250)
+        #expect(e.syncCount == before)
+    }
+
+    @Test("a half-set span is no span — both edges or neither")
+    func partialSpanIsIgnored() {
+        // The two edges move together by construction: a width without its minX would
+        // slide a centred box sideways as it grows.
+        let e = editingEngine()
+        e.setEditingBoxSpan(minX: 30, width: nil)
+        #expect(e.currentScreenFrame(forTileID: 0)?.width == 400)
+        e.setEditingBoxSpan(minX: nil, width: 250)
+        #expect(e.currentScreenFrame(forTileID: 0)?.width == 400)
+    }
+
+    @Test("storedWorldFrame reports the committed box, ignoring every live override")
+    func storedFrameIgnoresOverrides() {
+        // This is what the editor anchors against, so it must NOT see the editor's own
+        // last answer — otherwise each keystroke re-anchors on the previous one.
+        let e = editingEngine()
+        e.setEditingBoxHeight(140)
+        e.setEditingBoxSpan(minX: 30, width: 250)
+        #expect(e.storedWorldFrame(forTileID: 0) == CGRect(x: 0, y: 0, width: 400, height: 60))
+    }
+
     // MARK: A move drag moves the displayed frame too (062)
 
     /// A plain engine — no edit open. The drag half of the notification exists for

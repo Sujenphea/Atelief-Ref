@@ -83,7 +83,8 @@ enum ElementRendering {
             color: rgba(fromHex: style.textColor) ?? defaultTextColor,
             fontFamily: style.fontFamily,
             weight: FontWeight(rawValue: style.weight.rawValue) ?? .regular,
-            alignment: TextAlignment(rawValue: style.align.rawValue) ?? .left)
+            alignment: TextAlignment(rawValue: style.align.rawValue) ?? .left,
+            hugsWidth: style.hugsWidth)
     }
 
     /// What an asset row draws on a board. A byte-backed asset — an image / video,

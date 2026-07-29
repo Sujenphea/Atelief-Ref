@@ -207,16 +207,35 @@ final class CanvasTextEditController: NSObject, NSTextViewDelegate {
         let scale = max(0.0001, engine.transform.scale)
 
         style.string = textView.string
+        // A hugging box measures unconstrained (capped), a fixed one against the width
+        // it already has. `TextMetrics` owns that rule so the committed box and this
+        // one cannot answer it differently.
         let measured = TextMetrics.size(
-            for: style, maxWidth: max(1, frame.width / scale - 2 * TextMetrics.padding))
+            for: style, hugging: style.hugsWidth, outerWidth: frame.width / scale)
         let worldSize = canvasInlineEditorWorldBox(
-            tileScreenFrame: frame, scale: scale, measuredWorldSize: measured)
+            tileScreenFrame: frame, scale: scale, measuredWorldSize: measured,
+            hugsWidth: style.hugsWidth)
 
         // The canvas draws the box, its border and its handles; the editor draws the
         // glyphs. Hand over the height so the two agree at every keystroke (062) —
         // without this the box keeps its committed height and the text grows straight
         // out through its own border.
         engine.setEditingBoxHeight(worldSize.height)
+
+        // …and the width too, for a hugging box (063). Anchored on the COMMITTED frame,
+        // never on the live one: this runs per keystroke, and re-anchoring against the
+        // previous keystroke's result would walk a centred box sideways across the
+        // board. A fixed box pushes nothing and keeps the width the user set.
+        var originX = frame.minX
+        if style.hugsWidth, let stored = engine.storedWorldFrame(forTileID: tileID) {
+            let minX = canvasInlineEditorAnchoredMinX(
+                oldMinX: stored.minX, oldWidth: stored.width,
+                newWidth: worldSize.width, alignment: style.alignment)
+            engine.setEditingBoxSpan(minX: minX, width: worldSize.width)
+            // Re-read: the span just changed where the canvas draws this tile, and the
+            // overlay must sit on top of the box the user can actually see.
+            originX = engine.screenFrame(forTileID: tileID)?.minX ?? frame.minX
+        }
 
         // The zoom lives HERE and nowhere else: a screen-space frame over a world-space
         // bounds makes the box's scale exactly the camera's, and the text view inside
@@ -225,7 +244,7 @@ final class CanvasTextEditController: NSObject, NSTextViewDelegate {
         // committed box, measured against the same world width.
         let padded = NSSize(width: TextMetrics.padding, height: TextMetrics.padding)
         scaleBox.frame = CGRect(
-            x: frame.minX, y: frame.minY,
+            x: originX, y: frame.minY,
             width: worldSize.width * scale, height: worldSize.height * scale)
         scaleBox.bounds = CGRect(origin: .zero, size: worldSize)
         textView.textContainerInset = padded

@@ -93,9 +93,15 @@ public func canvasTextEditOutcome(
 /// you pinch, and what makes the editor's line breaks agree with the committed box
 /// (measured against the same world width).
 ///
-/// The width is the tile's — the user owns it, and only a resize-handle drag changes it
-/// (062). The height follows `measuredWorldSize`, so the editor grows and shrinks
-/// exactly as the committed box will.
+/// The height always follows `measuredWorldSize`, so the editor grows and shrinks
+/// exactly as the committed box will (062).
+///
+/// The width depends on who owns it. This doc used to say *"the width is the tile's —
+/// the user owns it, and only a resize-handle drag changes it"*; **that is now true only
+/// of a fixed box.** An auto-width box (063) derives its width from the same measurement
+/// as its height, and `hugsWidth` selects between the two. A fixed box's behaviour is
+/// unchanged.
+///
 /// Main-actor isolated only because its default `padding` reads ``TextMetrics``, which
 /// is — the arithmetic itself is pure.
 @MainActor
@@ -103,13 +109,40 @@ public func canvasInlineEditorWorldBox(
     tileScreenFrame: CGRect,
     scale: CGFloat,
     measuredWorldSize: CGSize,
+    hugsWidth: Bool = false,
     padding: CGFloat = TextMetrics.padding
 ) -> CGSize {
     // A degenerate camera must not divide by zero — clamp rather than trap.
     let scale = max(0.0001, scale)
     return CGSize(
-        width: tileScreenFrame.width / scale,
+        width: hugsWidth
+            ? measuredWorldSize.width + 2 * padding
+            : tileScreenFrame.width / scale,
         height: measuredWorldSize.height + 2 * padding)
+}
+
+/// Where an auto-width box's left edge goes when its width changes (063).
+///
+/// The alignment names the edge the user thinks of as fixed: left-aligned text grows
+/// rightwards from a stationary left edge, right-aligned grows leftwards from a
+/// stationary right edge, and centred grows both ways about its centre.
+///
+/// Always call it against the box's **committed** geometry rather than its currently
+/// displayed geometry. Feeding it its own output would compound: each keystroke would
+/// re-anchor against the previous keystroke's answer and a centred box would crawl
+/// sideways. Against a fixed base it is idempotent, which is what makes the live
+/// editor's box and the committed box land in the same place.
+///
+/// Pure arithmetic, and shared: the app derives the committed box with it and the
+/// inline editor derives the live one, so there is exactly one anchoring rule.
+public func canvasInlineEditorAnchoredMinX(
+    oldMinX: CGFloat, oldWidth: CGFloat, newWidth: CGFloat, alignment: TextAlignment
+) -> CGFloat {
+    switch alignment {
+    case .left: oldMinX
+    case .right: oldMinX + oldWidth - newWidth
+    case .center: oldMinX + (oldWidth - newWidth) / 2
+    }
 }
 
 /// Whether an open edit should commit because its tile has left the viewport

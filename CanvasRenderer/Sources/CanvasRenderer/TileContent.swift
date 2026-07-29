@@ -96,6 +96,18 @@ public struct TextStyle: Equatable, Hashable, Sendable {
     public var weight: FontWeight
     /// Horizontal alignment (default `.left`).
     public var alignment: TextAlignment
+    /// The box derives its own width from the text rather than being given one (063).
+    ///
+    /// Read by the inline editor, to decide whether to measure unconstrained. The DRAW
+    /// path ignores it: a committed hugging box already has its hugged width stored in
+    /// `tile.w`, so the renderer stays mode-agnostic (054 §R1) and wraps at whatever
+    /// width it is handed.
+    ///
+    /// It does ride into ``TextShaper/ShapeKey`` — which stores the whole style — but
+    /// is not a shaping input: `maxWidth` comes from the caller. Harmless (two boxes
+    /// differing only in this flag get separate cache entries and identical layouts);
+    /// noted so a future reader doesn't mistake it for one.
+    public var hugsWidth: Bool
 
     public init(
         string: String,
@@ -103,7 +115,8 @@ public struct TextStyle: Equatable, Hashable, Sendable {
         color: RGBAColor,
         fontFamily: String? = nil,
         weight: FontWeight = .regular,
-        alignment: TextAlignment = .left
+        alignment: TextAlignment = .left,
+        hugsWidth: Bool = false
     ) {
         self.string = string
         self.fontSize = fontSize
@@ -111,5 +124,6 @@ public struct TextStyle: Equatable, Hashable, Sendable {
         self.fontFamily = fontFamily
         self.weight = weight
         self.alignment = alignment
+        self.hugsWidth = hugsWidth
     }
 }

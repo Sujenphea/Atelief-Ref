@@ -701,7 +701,7 @@ final class SpaceModel: ObservableObject {
         let hugs = worldRect.width <= 0
         if hugs { style.textAutoWidth = true }
         let ts = ElementRendering.textStyle(for: style)
-        let measured = Self.measuredTextSize(
+        let measured = TextMetrics.size(
             for: ts, hugging: hugs, outerWidth: worldRect.width)
         let rect = CGRect(
             x: worldRect.minX, y: worldRect.minY,
@@ -883,57 +883,20 @@ final class SpaceModel: ObservableObject {
         guard item.kind == .text else { return nil }
         let pad = Double(TextMetrics.padding)
         let ts = ElementRendering.textStyle(for: style)
-        let measured = Self.measuredTextSize(
+        let measured = TextMetrics.size(
             for: ts, hugging: style.hugsWidth, outerWidth: CGFloat(item.w))
         let newHeight = Double(measured.height) + 2 * pad
         let newWidth = style.hugsWidth ? Double(measured.width) + 2 * pad : item.w
         let newX = style.hugsWidth
-            ? Double(Self.anchoredMinX(
+            ? Double(canvasInlineEditorAnchoredMinX(
                 oldMinX: CGFloat(item.x), oldWidth: CGFloat(item.w),
-                newWidth: CGFloat(newWidth), alignment: style.align))
+                newWidth: CGFloat(newWidth), alignment: ts.alignment))
             : item.x
         // No change → no geometry write (the shrink-back / grow tests pin this).
         guard newHeight != item.h || newWidth != item.w || newX != item.x else { return nil }
         return CGRect(x: newX, y: item.y, width: newWidth, height: newHeight)
     }
 
-    /// The inner (unpadded) size of a text box's text.
-    ///
-    /// Hugging measures unconstrained, then — if the longest line exceeds
-    /// ``TextMetrics/maxAutoWidth`` — measures *again* wrapped to the cap. The second
-    /// pass is what makes the cap a **wrap** rather than a clip: the box stops growing
-    /// and starts growing downward instead, and shrinking the text below the cap lets
-    /// it hug again, because nothing about the flag changed.
-    static func measuredTextSize(
-        for ts: TextStyle, hugging: Bool, outerWidth: CGFloat
-    ) -> CGSize {
-        guard hugging else {
-            return TextMetrics.size(
-                for: ts, maxWidth: max(1, outerWidth - 2 * TextMetrics.padding))
-        }
-        let free = TextMetrics.size(for: ts, maxWidth: nil)
-        guard free.width > TextMetrics.maxAutoWidth else { return free }
-        return TextMetrics.size(for: ts, maxWidth: TextMetrics.maxAutoWidth)
-    }
-
-    /// Where a hugging box's left edge goes when its width changes.
-    ///
-    /// The alignment names the edge the user thinks of as fixed: left-aligned text
-    /// grows rightwards from a stationary left edge, right-aligned grows leftwards
-    /// from a stationary right edge, and centred grows both ways about its centre.
-    ///
-    /// Called on every keystroke of an open edit, so it is exact arithmetic rather
-    /// than approximately right — a half-pixel of drift per character is a visible
-    /// crawl across a sentence.
-    nonisolated static func anchoredMinX(
-        oldMinX: CGFloat, oldWidth: CGFloat, newWidth: CGFloat, alignment: TextAlign
-    ) -> CGFloat {
-        switch alignment {
-        case .left: oldMinX
-        case .right: oldMinX + oldWidth - newWidth
-        case .center: oldMinX + (oldWidth - newWidth) / 2
-        }
-    }
 
     /// Bring every `.text` row's stored height into line with its text (062).
     ///
