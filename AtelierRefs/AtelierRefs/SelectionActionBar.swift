@@ -28,7 +28,7 @@ struct SelectionBarIcon: View {
             .font(.system(size: 15, weight: .medium))
             .frame(width: 30, height: 28)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                     .fill(isHovering ? Theme.Colors.hoverControl : .clear))
             .contentShape(Rectangle())
             .onHover { isHovering = $0 }
@@ -148,7 +148,7 @@ struct SelectionMenuSectionHeader: View {
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous)
                     .fill(isHovering ? Theme.Colors.hoverRow : .clear))
             .contentShape(Rectangle())
         }
@@ -199,7 +199,7 @@ struct SelectionMenuRow: View {
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous)
                     .fill(isEnabled && isHovering ? Theme.Colors.hoverRow : .clear))
             .contentShape(Rectangle())
         }

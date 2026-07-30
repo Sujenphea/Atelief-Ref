@@ -474,7 +474,7 @@ private struct LinkDetailView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(maxHeight: 320)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
             } else {
                 Image(systemName: "link")
                     .font(.system(size: 48))
@@ -542,7 +542,7 @@ private struct TweetDetailView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(maxHeight: 320)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
             } else {
                 Image(systemName: "bubble.left.and.text.bubble.right")
                     .font(.system(size: 48))
@@ -599,10 +599,10 @@ private struct ColorDetailView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            RoundedRectangle(cornerRadius: 20)
+            RoundedRectangle(cornerRadius: Theme.Radius.panel)
                 .fill(Color(hexString: hex) ?? Color(.quaternaryLabelColor))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 20)
+                    RoundedRectangle(cornerRadius: Theme.Radius.panel)
                         .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
                 }
                 .aspectRatio(1, contentMode: .fit)

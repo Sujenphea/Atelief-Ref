@@ -99,16 +99,16 @@ struct FanCard: View {
 
     private func tile(hash: String, side: CGFloat) -> some View {
         AsyncThumbnail(
-            hash: hash, url: thumbnailURL(hash), cornerRadius: 12,
+            hash: hash, url: thumbnailURL(hash), cornerRadius: Theme.Radius.card,
             bucket: thumbnailPixelBucket(pointLongSide: side, scale: displayScale))
             .frame(width: side, height: side)
             .background(Theme.Colors.mediaBackdrop, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
             .shadow(color: .black.opacity(0.2), radius: 3, x: 0, y: 2)
     }
 
     private func placeholder(side: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 12)
+        RoundedRectangle(cornerRadius: Theme.Radius.card)
             .fill(accent ? Theme.Colors.field : Theme.Colors.mediaBackdrop)
             .overlay {
                 Image(systemName: placeholderSymbol)

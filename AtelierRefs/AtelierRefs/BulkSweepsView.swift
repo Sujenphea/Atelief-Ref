@@ -164,7 +164,7 @@ private struct SweepRow: View {
             if sweep.failed > 0 { failuresSection }
         }
         .padding(14)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: Theme.Radius.card))
         .confirmationDialog(
             "Cancel this sweep?",
             isPresented: $confirmingCancel,

@@ -321,11 +321,11 @@ struct CoverCard: View {
             ZStack {
                 if let coverHash {
                     AsyncThumbnail(
-                        hash: coverHash, url: coverURL, cornerRadius: 12,
+                        hash: coverHash, url: coverURL, cornerRadius: Theme.Radius.card,
                         bucket: thumbnailPixelBucket(
                             pointLongSide: coverPointSide, scale: displayScale))
                 } else {
-                    RoundedRectangle(cornerRadius: 12)
+                    RoundedRectangle(cornerRadius: Theme.Radius.card)
                         .fill(accent ? Theme.Colors.field : Theme.Colors.mediaBackdrop)
                         .aspectRatio(1, contentMode: .fit)
                         .overlay {

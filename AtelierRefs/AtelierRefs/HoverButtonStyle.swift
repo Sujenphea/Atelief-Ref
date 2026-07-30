@@ -26,7 +26,7 @@ import SwiftUI
 /// gives a bare template-`Image` label a real hit / tooltip area, which
 /// `.buttonStyle(.plain)` alone does not.
 struct HoverHighlight: ViewModifier {
-    var cornerRadius: CGFloat = 7
+    var cornerRadius: CGFloat = Theme.Radius.control
     var fill: Color = Theme.Colors.hoverControl
     var padding: CGFloat = 6
 
@@ -49,7 +49,7 @@ extension View {
     /// `ButtonStyle`). For `Button`s prefer `.buttonStyle(HoverButtonStyle())`.
     /// Pass ``Theme/Colors/hoverRow`` for a full-width row; the default suits glyphs.
     func hoverHighlight(
-        cornerRadius: CGFloat = 7,
+        cornerRadius: CGFloat = Theme.Radius.control,
         fill: Color = Theme.Colors.hoverControl,
         padding: CGFloat = 6
     ) -> some View {
@@ -63,7 +63,7 @@ extension View {
 /// The shared hover treatment as a `ButtonStyle`: the same rounded fill on hover plus a
 /// pressed dim, matching the selection action bar's glyphs.
 struct HoverButtonStyle: ButtonStyle {
-    var cornerRadius: CGFloat = 7
+    var cornerRadius: CGFloat = Theme.Radius.control
     var fill: Color = Theme.Colors.hoverControl
     var padding: CGFloat = 6
 

@@ -91,11 +91,20 @@ enum Theme {
     // MARK: - Radius
 
     enum Radius {
+        /// Small rounded backgrounds: chips, sidebar + menu rows, filter pills.
+        /// Deliberately the same value as ``field`` — everything small rounds the
+        /// same; the two names record what a call site IS, not two measurements.
         static let chip: CGFloat = 6
         static let field: CGFloat = 6
+        /// A glyph button's hover fill — the ``HoverHighlight`` default and the
+        /// selection bar's icons. Its own step because it sits between a chip and a
+        /// tile, hugging a 15pt icon in a 30×28 hit area.
+        static let control: CGFloat = 7
         static let tile: CGFloat = 8
         static let card: CGFloat = 12
         static let cover: CGFloat = 14
+        /// The largest rounded surface: the content panel, and the detail page's hero
+        /// colour swatch.
         static let panel: CGFloat = 16
         // No `sheet`: the app's three sheets are system `.sheet` presentations and
         // AppKit draws their corners. The token named a radius the app never got to

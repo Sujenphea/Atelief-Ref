@@ -552,6 +552,9 @@ private struct SearchToolbarField: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.Colors.inkSecondary)
                 }
+                // Tighter than `Radius.control`, deliberately: the hover fill hugs a
+                // 12pt glyph at 3pt padding, and the token's 7 would round it to a
+                // near-circle. Scales with the control, so it is not a token.
                 .buttonStyle(HoverButtonStyle(cornerRadius: 5, padding: 3))
                 .help("Clear search")
             }
@@ -625,6 +628,8 @@ private struct SearchTokenChip: View {
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(Theme.Colors.inkSecondary)
             }
+            // Tighter again — an 8pt glyph at 2pt padding, the smallest control the
+            // app draws. See the note on the search field's clear button.
             .buttonStyle(HoverButtonStyle(cornerRadius: 4, padding: 2))
             .help("Remove filter")
         }

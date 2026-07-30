@@ -94,7 +94,7 @@ struct OnboardingSheet: View {
                 endpointStatus
             }
             .padding(10)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: Theme.Radius.tile))
         )
     }
 
@@ -139,7 +139,7 @@ struct OnboardingSheet: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
         .accessibilityElement(children: .combine)
     }
 
