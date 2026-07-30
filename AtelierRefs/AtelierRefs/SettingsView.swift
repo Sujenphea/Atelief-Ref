@@ -23,11 +23,15 @@ struct SettingsView: View {
         Form {
             captureSection
             librarySection
+            backupSection
             setupSection
             diagnosticsSection
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 380)
+        .frame(width: 460, height: 460)
+        // Re-resolve on every appearance: the window outlives any single visit,
+        // and a drive can be unplugged between two of them.
+        .onAppear { model.refreshBackupFolder() }
     }
 
     // MARK: - Browser capture
@@ -78,6 +82,53 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: - Off-device backup (008 H4)
+
+    private var backupSection: some View {
+        Section("Backup") {
+            LabeledContent("Folder") {
+                Text(backupFolderText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .foregroundStyle(model.backupFolderURL == nil ? .secondary : .primary)
+            }
+            HStack {
+                Button(model.backupFolder.hasFolder ? "Change Folder…" : "Choose Folder…") {
+                    BackupFolderPanel.present { url in
+                        if let url { model.setBackupFolder(url) }
+                    }
+                }
+                if model.backupFolder.hasFolder {
+                    Button("Clear", role: .destructive) { model.clearBackupFolder() }
+                }
+            }
+            // Shown only when something is actually wrong — an unreachable drive,
+            // a revoked grant, a folder inside the library.
+            if let message = model.backupFolderMessage {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(BackupTarget.explainer)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The folder row's text: the resolved path, else the reason there isn't one.
+    /// A chosen-but-unreachable target reads as "Unavailable" rather than blank,
+    /// so the row never implies the target was forgotten (it wasn't — the
+    /// bookmark is kept precisely so reconnecting a drive is enough).
+    private var backupFolderText: String {
+        if let url = model.backupFolderURL {
+            return url.path(percentEncoded: false)
+        }
+        return model.backupFolder.hasFolder ? "Unavailable" : "None chosen"
     }
 
     // MARK: - Setup

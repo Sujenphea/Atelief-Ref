@@ -142,6 +142,25 @@ testable enum, layout left to each surface.
 **Tests:** bookmark round-trip and staleness against an injected defaults +
 fake resolver; picker glue is compile-only + manual (repo convention).
 
+**As built (changelog 299):** steps 1 and 2 shipped with F2. Step 3 shipped as
+`BackupFolderPanel` (the picker) + `BackupTarget` (rules and words, AppKit-free
+and fully tested) + a **Backup** section in `SettingsView`, with the target state
+on `IngestionModel` per the placement rule above.
+
+Two departures from the sketch:
+
+- **"Back Up Now" and last-run status are NOT in H4.** Both need H5's engine, and
+  an inert button — or a status line about runs that cannot happen — is worse
+  than an absent one. The section is shaped so both drop in without rework.
+- **A containment guard was added**, unplanned but belonging to *choosing*
+  rather than running: a target that is the library, or inside it, is rejected.
+  Compared by path component after symlink resolution — a string-prefix check
+  would reject `…/Atelier2` as being inside `…/Atelier`. The library's *parent*
+  is allowed, since backups land in `<target>/<library-id>/` and never recurse.
+
+H5 therefore starts from: a resolved, vetted `FolderAccess` and a Settings
+section with two empty slots in it.
+
 ## H5 — Incremental blob backup + restore (M)
 
 ### Destination layout

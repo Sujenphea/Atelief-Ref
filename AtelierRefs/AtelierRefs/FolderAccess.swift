@@ -25,7 +25,7 @@ import Foundation
 
 /// A failure reaching the chosen folder — each case maps to a distinct thing to
 /// tell the user, which is why this is not one opaque error.
-enum FolderAccessError: Error, Equatable {
+nonisolated enum FolderAccessError: Error, Equatable {
     /// No folder has been chosen yet (or it was cleared) — ask the user to pick.
     case noFolderChosen
     /// The bookmark no longer resolves: the folder was deleted, renamed beyond

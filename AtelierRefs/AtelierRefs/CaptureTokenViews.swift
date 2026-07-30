@@ -19,7 +19,7 @@
 import SwiftUI
 
 /// The strings and display rules both capture surfaces share.
-enum CaptureCopy {
+nonisolated enum CaptureCopy {
     /// The loopback host the extension posts captures to.
     static let host = "127.0.0.1"
 

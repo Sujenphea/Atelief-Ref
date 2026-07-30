@@ -234,6 +234,19 @@ final class IngestionModel: ObservableObject {
     /// Set after a restore is staged — an alert asks the user to relaunch.
     @Published var restoreStagedMessage: String?
 
+    // MARK: - Off-device backup target (008 H4)
+
+    /// The user's chosen off-device backup folder, remembered across launches as
+    /// a security-scoped bookmark. Owned here rather than by the Settings view:
+    /// that window can be closed and reopened at will, and view state would go
+    /// with it.
+    let backupFolder = StoredFolderAccess()
+    /// The target as currently resolved, for display. `nil` when none is chosen
+    /// or it can't be reached right now (see ``backupFolderMessage``).
+    @Published private(set) var backupFolderURL: URL?
+    /// Why the target isn't usable, in words — `nil` when all is well.
+    @Published private(set) var backupFolderMessage: String?
+
     /// Monotonic id for ``loadContents(of:)`` so a slow read can never clobber a
     /// newer one (fast folder switch, or a mutation-triggered reload).
     private var contentsLoadID = 0
@@ -671,6 +684,57 @@ final class IngestionModel: ObservableObject {
     func revealLibraryInFinder() {
         guard let libraryRoot else { return }
         NSWorkspace.shared.activateFileViewerSelecting([libraryRoot])
+    }
+
+    // MARK: - Off-device backup target (008 H4)
+
+    /// Re-read the chosen backup folder and publish either its URL or the reason
+    /// it can't be reached. Cheap enough to call whenever Settings appears, and
+    /// deliberately re-run there: an external drive can be unplugged between two
+    /// visits, and a target shown as fine when it isn't is worse than no target.
+    func refreshBackupFolder() {
+        guard backupFolder.hasFolder else {
+            backupFolderURL = nil
+            backupFolderMessage = nil        // "none chosen" is a state, not a fault
+            return
+        }
+        do {
+            backupFolderURL = try backupFolder.resolve()
+            backupFolderMessage = nil
+        } catch let error as FolderAccessError {
+            // The bookmark is KEPT (see `StoredFolderAccess.resolve`), so the row
+            // still shows a target — with the reason it's unreachable beside it.
+            backupFolderURL = nil
+            backupFolderMessage = BackupTarget.message(for: error)
+        } catch {
+            backupFolderURL = nil
+            backupFolderMessage = BackupTarget.message(for: .bookmarkUnresolvable)
+        }
+    }
+
+    /// Adopt a folder the picker just granted, after vetting it.
+    func setBackupFolder(_ url: URL) {
+        if let rejection = BackupTarget.rejection(choosing: url, libraryRoot: libraryRoot) {
+            backupFolderURL = nil
+            backupFolderMessage = BackupTarget.message(for: rejection)
+            return
+        }
+        do {
+            try backupFolder.setFolder(url)
+            refreshBackupFolder()
+        } catch {
+            // `setFolder` persists nothing when the bookmark can't be made, so
+            // there is no half-chosen target to clean up here.
+            AppLog.model.error("backup folder bookmark failed: \(error, privacy: .public)")
+            backupFolderURL = nil
+            backupFolderMessage = BackupTarget.couldNotRemember
+        }
+    }
+
+    /// Forget the target entirely.
+    func clearBackupFolder() {
+        backupFolder.clearFolder()
+        refreshBackupFolder()
     }
 
     // MARK: - Diagnostics (010 · Phase 3)
