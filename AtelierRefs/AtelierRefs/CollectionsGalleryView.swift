@@ -58,12 +58,12 @@ struct CollectionsGalleryView: View {
                 // area starts a marquee while a tap on a card still navigates.
                 marqueeCatcher
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxl) {
-                    collectionsSection
                     // Spaces are additive — hidden entirely until the user has one,
                     // so Home stays collection-focused for a fresh library.
                     if !model.spaces.isEmpty {
                         spacesSection
                     }
+                    collectionsSection
                 }
                 .padding(Theme.Spacing.xl)
                 marqueeOverlay
