@@ -2,7 +2,9 @@
 //  MoodboardExportControls.swift
 //  AtelierRefs
 //
-//  052 · B3 — the Space board's export chrome, both in the top-bar header:
+//  052 · B3 — the Space board's export chrome. Both live in the board's FLOATING
+//  action bar (they were in the top-bar header until the header shrank to the
+//  board's name, for parity with the Collection screen):
 //   • ``MoodboardExportButton`` — a Figma-style popover: format + one contextual
 //     row (PDF layout / PNG scale) + a live count, then Export… hands off to the
 //     save panel via ``ExportController``.
@@ -26,14 +28,22 @@ struct MoodboardExportButton: View {
     @State private var showPanel = false
 
     var body: some View {
-        Button {
+        // Dimmed-not-hidden while there's nothing to export, the idiom every other
+        // button in the board's floating bar follows — `.plain` drops the system's
+        // own disabled dimming, so the opacity is explicit.
+        let isDisabled = space.items.isEmpty || controller.isExporting
+        return Button {
             showPanel.toggle()
         } label: {
-            Label("Export", systemImage: "square.and.arrow.up")
+            SelectionBarIcon(systemName: "square.and.arrow.up")
         }
-        .disabled(space.items.isEmpty || controller.isExporting)
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.35 : 1)
         .help("Export this board as a moodboard PDF or PNG")
-        .popover(isPresented: $showPanel, arrowEdge: .bottom) { panel }
+        // Opens ABOVE the floating bar, like the collection's export popover.
+        .popover(isPresented: $showPanel, arrowEdge: .top) { panel }
     }
 
     /// The current selection-or-whole-board mapping (052 · B3 scope: selection if
@@ -139,7 +149,7 @@ struct ExportMoodboardCommand: View {
     }
 }
 
-// MARK: - Top-bar progress ring
+// MARK: - Floating-bar progress ring
 
 struct ExportProgressRing: View {
     @EnvironmentObject private var controller: ExportController
@@ -152,7 +162,9 @@ struct ExportProgressRing: View {
                 Button { showCancel.toggle() } label: { ring }
                     .buttonStyle(.plain)
                     .help("Exporting…")
-                    .popover(isPresented: $showCancel, arrowEdge: .bottom) { cancelPanel }
+                    // Both hosts are floating BOTTOM bars now, so the cancel panel
+                    // opens upward — downward would clip off the window edge.
+                    .popover(isPresented: $showCancel, arrowEdge: .top) { cancelPanel }
             } else if showDone {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
