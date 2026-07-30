@@ -22,7 +22,7 @@ import PackageDescription
 let package = Package(
     name: "AtelierExport",
     platforms: [
-        .macOS(.v14)
+        .macOS("26.0")
     ],
     products: [
         .library(name: "AtelierExport", targets: ["AtelierExport"])

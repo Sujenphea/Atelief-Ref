@@ -13,7 +13,7 @@ import PackageDescription
 let package = Package(
     name: "CanvasRenderer",
     platforms: [
-        .macOS(.v14)
+        .macOS("26.0")
     ],
     products: [
         .library(name: "CanvasRenderer", targets: ["CanvasRenderer"])

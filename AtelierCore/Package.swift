@@ -14,7 +14,15 @@ import PackageDescription
 let package = Package(
     name: "AtelierCore",
     platforms: [
-        .macOS(.v14)
+        // Matches the app's `MACOSX_DEPLOYMENT_TARGET`. It read `.v14` for a long
+        // while — a 12-major-version phantom constraint on a package that only ever
+        // ships inside a macOS 26 app, which meant any modern API would have needed
+        // an `@available` guard for a deployment target nothing actually used.
+        //
+        // The STRING form, not `.vNN`: the `SupportedPlatform` enum stops at `.v15`
+        // under swift-tools-version 6.0, so 26 cannot be named any other way without
+        // moving the tools version too.
+        .macOS("26.0")
     ],
     products: [
         .library(name: "AtelierCore", targets: ["AtelierCore"])
