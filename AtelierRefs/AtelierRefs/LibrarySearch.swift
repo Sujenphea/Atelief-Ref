@@ -426,6 +426,9 @@ struct LibrarySearchable<Content: View>: View {
     /// The global grid density notch — search results honour the SAME persisted
     /// density (and zoom controls) as the collection grid, instead of a fixed 4-up.
     @ObservedObject var gridPrefs: GridViewPreferences
+    /// Observed for `navigationPulse` only — a sidebar click means "show me this
+    /// destination", which has to drop whatever query is currently covering it.
+    @ObservedObject var nav: NavModel
     /// The screen's collection, or `nil` for the global gallery.
     let collectionID: UUID?
     @ViewBuilder let content: () -> Content
@@ -487,6 +490,16 @@ struct LibrarySearchable<Content: View>: View {
             }
         }
         .task(id: model.isReady) {
+            search.configure(services: model.services, collectionID: collectionID)
+        }
+        // The user navigated — drop the previous pane's query so the destination's
+        // CONTENT is what appears. Without this the results grid stayed up across a
+        // sidebar click (this wrapper's `@StateObject` survives a same-branch change),
+        // leaving the field's `×` as the only way back. The re-`configure` also re-points
+        // the model at the NEW `collectionID`, which nothing else refreshed — a
+        // This-collection scope kept querying the collection the panel had left.
+        .onChange(of: nav.navigationPulse) { _, _ in
+            search.reset()
             search.configure(services: model.services, collectionID: collectionID)
         }
         .onChange(of: search.text) { _, _ in search.textChanged() }

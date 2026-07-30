@@ -378,9 +378,18 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         nav.openSpace(node.id)
     }
 
-    /// A click selects (flat list — nothing to expand). Kept so the whole row is
-    /// the hit target and selection routes through the delegate.
-    @objc private func rowClicked() {}
+    /// A click selects (flat list — nothing to expand), and re-asserts nav even when
+    /// the row is ALREADY highlighted. `outlineViewSelectionDidChange` fires only when
+    /// the outline's selection actually changes, so clicking the open space used to do
+    /// literally nothing — which is exactly the click a user makes to get back to the
+    /// board after the toolbar search field swapped results in over it. Mirrors the
+    /// same correction in `CollectionsOutlineView.rowClicked`.
+    @objc private func rowClicked() {
+        let row = outlineView.clickedRow
+        guard row >= 0, let node = outlineView.item(atRow: row) as? SpaceNode,
+              !isDraftNode(node) else { return }
+        nav.openSpace(node.id)
+    }
 
     // MARK: - Drag source
 
