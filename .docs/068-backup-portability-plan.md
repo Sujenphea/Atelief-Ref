@@ -25,6 +25,9 @@ already anticipates exactly this ("one export naming rule, not two").
 
 ## Shared foundations (build once, both halves consume)
 
+> **Status: F1–F3 are BUILT** (changelog 291, branch `feat/backup-offdevice`).
+> The sections below describe them as shipped; H4–H7 remain plans.
+
 ### F1 — `BlobRef`: the `(hash, mimeType)` pair as a Core read
 
 `referencedBlobHashes()` (`AppServices.swift:1384`) returns hashes only, but
@@ -33,12 +36,20 @@ the mime type (`ImageMetadata.fileExtension(forMIMEType:)`). The delete side
 already solved this with `OrphanedBlob { blobHash, mimeType }`
 (`OrphanedBlob.swift:20`) crossing the Core→Ingestion seam.
 
-Add the symmetric read: `AppServices.referencedBlobs() async throws -> [BlobRef]`
-(`SELECT DISTINCT blob_hash, mime_type FROM asset WHERE blob_hash IS NOT NULL`).
-The alternative — paging `searchAssets` 500 at a time purely to recover mime
-types, or re-deriving extensions by walking the destination directory — is
-strictly worse. Keep `referencedBlobHashes()` for the GC path that genuinely
-only needs hashes.
+**As built:** `OrphanedBlob` was **renamed to `BlobRef`** rather than joined by a
+second identical struct — "a blob hash plus the mime that yields its file
+extension" is one concept, and the *guarantee* (reclaimable vs live) is carried
+by the API that returns it, not by the type. `deleteAssets` still returns them;
+`reap(_ orphans:)` keeps its parameter name so the danger signal survives.
+
+`AppServices.referencedBlobs() async throws -> [BlobRef]` groups by hash so a
+shared blob is emitted once, and settles two nuances in SQL rather than leaving
+them to chance: a NULL mime becomes `""` (matching the dotless path `MediaStore`
+already writes for an unresolvable mime), and a hash carrying conflicting mimes
+resolves via `MIN` so a backup diff is reproducible run-to-run. A caller finding
+no file at the derived extension must report a miss, not crash — the bytes carry
+whichever extension ingest wrote first. `referencedBlobHashes()` stays for the
+GC path that genuinely only needs hashes.
 
 **Watch the extension trap:** `UTType(mimeType: "image/jpeg").preferredFilenameExtension`
 is `"jpeg"`, **not** `"jpg"`; thumbnails are separately hardcoded `"jpg"`
@@ -59,7 +70,18 @@ protocol FolderAccess: Sendable {
 }
 ```
 
-The real implementation: `NSOpenPanel` with `canChooseDirectories = true`,
+**As built:** two protocols, each with an immediate test consumer —
+`FolderAccess` (what H5's engine depends on; `DirectFolderAccess` lets its tests
+use a plain temp dir with no bookmarks at all) and `BookmarkVault` (what
+`StoredFolderAccess` depends on, so persistence/staleness/error logic is tested
+without the sandbox, which cannot produce a powerbox-granted URL in-process).
+`SecurityScopedBookmarkVault` is therefore compile-only + manual by design.
+Behaviours pinned by tests: a failed bookmark persists **nothing** (never a
+half-chosen target), and an unresolvable bookmark is **kept**, not forgotten —
+an unplugged drive must mean "plug it back in", not "set up your backup again".
+The entitlement is in place, with a matching `verify-release.sh` assertion.
+
+The picker (H4): `NSOpenPanel` with `canChooseDirectories = true`,
 `canCreateDirectories = true`, `canChooseFiles = false`, cloning the
 sheet-if-keyWindow-else-modal idiom from `ImportFilesPanel.swift:38`; bookmark
 blob in `UserDefaults` under `"AtelierBackupFolderBookmark"` (the ad-hoc
@@ -83,11 +105,13 @@ launching new work, index-aligned results — but its signature is **hardcoded t
 `[IngestInput]`**. Its `ProgressReporter` actor (:133) that serializes
 completion counts to strictly 1…total is equally reusable.
 
-Generalize both over `Element: Sendable` in AtelierIngestion and have
-`IngestCoordinator` call the generic version (its existing tests then guard the
-refactor). Copying the pattern into a backup type would be the third
-hand-rolled concurrency loop in the codebase — precisely the DRY failure the
-`SQLiteFileSet` extraction just cleaned up on the file-handling side.
+**As built:** both moved to `BoundedWork.swift`, generalized over
+`Element: Sendable` and made `public` so the app target can use them;
+`IngestCoordinator` now consumes them, so its existing suite guards the
+refactor. One caveat documented at the definition: `runBounded` reads the
+*surrounding* task's cancellation, and `Task.detached` does NOT inherit it — a
+detached backup run must thread its own flag (the `CancelFlag` precedent in
+`ExportController`).
 
 ## H4 — Folder target (S)
 

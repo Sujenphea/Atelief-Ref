@@ -3,7 +3,7 @@
 // Verifies the delete-side media layout: a reaped blob's file AND every
 // thumbnail tier leave their content-addressed paths (moved to Trash), the blob
 // extension is recovered from the mime type, removal is idempotent, and the
-// batch/[OrphanedBlob] entry point works. Trashed files are cleaned up from the
+// batch/[BlobRef] entry point works. Trashed files are cleaned up from the
 // returned Trash URLs so the suite never pollutes the developer's Trash.
 
 import AtelierCore
@@ -118,7 +118,7 @@ struct MediaReaperTests {
         #expect(trashed.isEmpty)
     }
 
-    @Test("reap([OrphanedBlob]) reclaims every blob in the batch")
+    @Test("reap([BlobRef]) reclaims every blob in the batch")
     func reapBatch() throws {
         let lib = try makeTempLibrary()
         defer { lib.cleanup() }
@@ -127,8 +127,8 @@ struct MediaReaperTests {
         try seedFullBlob(lib.store, hash: other, blobExt: "png")
 
         let orphans = [
-            OrphanedBlob(blobHash: Self.hash, mimeType: "image/png"),
-            OrphanedBlob(blobHash: other, mimeType: "image/png"),
+            BlobRef(blobHash: Self.hash, mimeType: "image/png"),
+            BlobRef(blobHash: other, mimeType: "image/png"),
         ]
         let trashed = MediaReaper(store: lib.store).reap(orphans)
         defer { emptyTrash(trashed) }

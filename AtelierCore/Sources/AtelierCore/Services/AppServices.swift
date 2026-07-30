@@ -1199,18 +1199,18 @@ public final class AppServices: Sendable {
     /// - **Blobs** — a blob hash is reported reclaimable ONLY when no remaining
     ///   asset shares it (dedup-safe: content-identical assets keep the file).
     ///
-    /// Returns the reclaimable blobs as ``OrphanedBlob`` so the caller (which
+    /// Returns the reclaimable blobs as ``BlobRef`` so the caller (which
     /// owns the `MediaStore`) can trash the on-disk blob + thumbnail files; Core
     /// itself never touches the filesystem. Tag rows survive (only the
     /// `asset_tag` join cascades), matching ``removeTag(_:from:source:)``.
     @discardableResult
-    public func deleteAssets(_ assetIDs: [UUID]) async throws -> [OrphanedBlob] {
+    public func deleteAssets(_ assetIDs: [UUID]) async throws -> [BlobRef] {
         try await write { db in try Self.performDelete(assetIDs, in: db) }
     }
 
     /// The delete cascade, shared by ``deleteAssets(_:)`` and the recoverable
     /// variant so both run the SAME transaction logic (010 · delete-undo).
-    private static func performDelete(_ assetIDs: [UUID], in db: Database) throws -> [OrphanedBlob] {
+    private static func performDelete(_ assetIDs: [UUID], in db: Database) throws -> [BlobRef] {
         // Resolve the targets that actually exist and remove them. Track a
         // representative mime per distinct hash (for extension round-trip)
         // and the set of sources touched, both in stable first-seen order.
@@ -1246,13 +1246,13 @@ public final class AppServices: Sendable {
         }
 
         // A blob is reclaimable only when no remaining asset shares its hash.
-        var orphans: [OrphanedBlob] = []
+        var orphans: [BlobRef] = []
         for hash in orderedHashes {
             let stillReferenced = try Asset
                 .filter(Column("blob_hash") == hash)
                 .fetchCount(db) > 0
             if !stillReferenced {
-                orphans.append(OrphanedBlob(blobHash: hash, mimeType: mimeByHash[hash]!))
+                orphans.append(BlobRef(blobHash: hash, mimeType: mimeByHash[hash]!))
             }
         }
         // "Delete is forgotten": the orphaned bytes are leaving the store, so drop
@@ -1381,10 +1381,43 @@ public final class AppServices: Sendable {
 
     /// Every distinct non-null `blob_hash` an asset currently references — the
     /// "keep" set for the launch orphan-blob GC (010 · delete-undo).
+    ///
+    /// Hashes only. When the caller also needs each blob's FILE (to copy it, or
+    /// to name it on disk), use ``referencedBlobs()`` instead — deriving the
+    /// stored extension needs the mime type.
     public func referencedBlobHashes() async throws -> Set<String> {
         try await read { db in
             Set(try String.fetchAll(
                 db, sql: "SELECT DISTINCT blob_hash FROM asset WHERE blob_hash IS NOT NULL"))
+        }
+    }
+
+    /// Every blob an asset currently references, as ``BlobRef`` — the read half
+    /// of the file-level operations Core can't perform itself (008 H5's backup
+    /// copy set). The symmetric counterpart of ``deleteAssets(_:)``'s return:
+    /// same descriptor, opposite guarantee (these are LIVE, never reap them).
+    ///
+    /// Exactly one row per distinct hash. Two nuances the SQL settles
+    /// deliberately rather than leaving to chance:
+    /// - `mime_type` is nullable; a NULL yields `""`, which
+    ///   `ImageMetadata.fileExtension(forMIMEType:)` also yields for anything it
+    ///   can't resolve, and which `MediaStore` stores as a dotless path. So the
+    ///   empty string round-trips correctly instead of needing a special case.
+    /// - Content-identical assets normally share a mime, but nothing enforces
+    ///   it. `MIN` picks one **deterministically** so a backup diff is
+    ///   reproducible run-to-run; a caller that finds no file at the derived
+    ///   extension must treat it as a miss to report, not a crash — the bytes on
+    ///   disk carry whichever extension ingest wrote first.
+    public func referencedBlobs() async throws -> [BlobRef] {
+        try await read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT blob_hash, COALESCE(MIN(mime_type), '') AS mime_type
+                FROM asset
+                WHERE blob_hash IS NOT NULL
+                GROUP BY blob_hash
+                ORDER BY blob_hash
+                """)
+                .map { BlobRef(blobHash: $0["blob_hash"], mimeType: $0["mime_type"]) }
         }
     }
 

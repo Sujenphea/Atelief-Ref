@@ -7,7 +7,7 @@
 // "extension + tiers + jpg" knowledge isn't scattered.
 //
 // `AppServices.deleteAssets` (AtelierCore) decides WHICH blobs are reclaimable
-// (dedup-safe reference counting) and returns them as `OrphanedBlob`; this turns
+// (dedup-safe reference counting) and returns them as `BlobRef`; this turns
 // each into file removals. Best-effort by design: the DB rows are already gone,
 // so a file that fails to move is harmless leftover disk, never a correctness
 // problem — hence per-file `try?` rather than aborting the batch.
@@ -28,7 +28,7 @@ public struct MediaReaper: Sendable {
     /// Reap a batch of orphaned blobs, returning the Trash locations of every
     /// file actually moved (for logging / test cleanup). Order is not meaningful.
     @discardableResult
-    public func reap(_ orphans: [OrphanedBlob]) -> [URL] {
+    public func reap(_ orphans: [BlobRef]) -> [URL] {
         orphans.flatMap { reap(blobHash: $0.blobHash, mimeType: $0.mimeType) }
     }
 

@@ -143,6 +143,17 @@ check_runtime_and_entitlements() {
     fail "network.server entitlement present"
   fi
 
+  # 008 · H4 — off-device backup re-reaches the user's chosen folder on later
+  # launches through a security-scoped bookmark. Without app-scope bookmarks in
+  # the SIGNED binary, resolving that bookmark fails at runtime and every
+  # scheduled backup silently degrades to "pick the folder again" — a failure
+  # the unsigned CI build cannot reproduce, so it is asserted here.
+  if grep -q 'com.apple.security.files.bookmarks.app-scope' <<<"${ents}"; then
+    pass "app-scope bookmarks entitlement present"
+  else
+    fail "app-scope bookmarks entitlement present"
+  fi
+
   # Sparkle's sandboxed Installer/Downloader XPC services are reached over the
   # per-app mach names Sparkle derives from the bundle id (`<id>-spks`/`-spki`);
   # the temporary-exception.mach-lookup.global-name entitlement (A3) must survive

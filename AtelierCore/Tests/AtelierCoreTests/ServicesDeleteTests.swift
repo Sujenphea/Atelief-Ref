@@ -63,7 +63,7 @@ struct ServicesDeleteTests {
         #expect(try assetCount(temp) == 0)
         #expect(try itemCount(temp) == 0)   // membership CASCADEd
         #expect(try sourceCount(temp) == 0) // last-asset source GC'd
-        #expect(orphans == [OrphanedBlob(blobHash: "abc123", mimeType: "image/png")])
+        #expect(orphans == [BlobRef(blobHash: "abc123", mimeType: "image/png")])
     }
 
     @Test("delete cascades memberships across every folder the asset was in")
@@ -104,7 +104,7 @@ struct ServicesDeleteTests {
 
         // Now delete the second — the last reference is gone, so it's reported.
         let orphans2 = try await services.deleteAssets([b.asset.id])
-        #expect(orphans2 == [OrphanedBlob(blobHash: "deadbeef", mimeType: "image/png")])
+        #expect(orphans2 == [BlobRef(blobHash: "deadbeef", mimeType: "image/png")])
         #expect(try assetCount(temp) == 0)
         #expect(try sourceCount(temp) == 0)
     }
@@ -122,7 +122,7 @@ struct ServicesDeleteTests {
             from: sourceDraft(url: "https://pinterest.com/y"), into: c.id)
 
         let orphans = try await services.deleteAssets([a.asset.id, b.asset.id])
-        #expect(orphans == [OrphanedBlob(blobHash: "deadbeef", mimeType: "image/png")])
+        #expect(orphans == [BlobRef(blobHash: "deadbeef", mimeType: "image/png")])
         #expect(try assetCount(temp) == 0)
         #expect(try sourceCount(temp) == 0)
     }
@@ -155,7 +155,7 @@ struct ServicesDeleteTests {
 
         // Delete the asset → its blob orphans → the ledger row is forgotten.
         let orphans = try await services.deleteAssets([r.asset.id])
-        #expect(orphans == [OrphanedBlob(blobHash: "a1b2", mimeType: "image/png")])
+        #expect(orphans == [BlobRef(blobHash: "a1b2", mimeType: "image/png")])
         #expect(try await services.knownSourceIDs(forJob: job.id).isEmpty)   // re-sweep re-ingests
         // The denormalized counter stays drift-free (recomputed in the same txn).
         #expect(try await jobIngestedCount(services, job.id) == 0)
@@ -410,8 +410,8 @@ struct ServicesDeleteTests {
 
         let orphans = try await services.deleteAssets([a.asset.id, b.asset.id])
         #expect(Set(orphans) == [
-            OrphanedBlob(blobHash: "11ab", mimeType: "image/png"),
-            OrphanedBlob(blobHash: "22cd", mimeType: "image/jpeg"),
+            BlobRef(blobHash: "11ab", mimeType: "image/png"),
+            BlobRef(blobHash: "22cd", mimeType: "image/jpeg"),
         ])
         #expect(try assetCount(temp) == 0)
         #expect(try sourceCount(temp) == 0)

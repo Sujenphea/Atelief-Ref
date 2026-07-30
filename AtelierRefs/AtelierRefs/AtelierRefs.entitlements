@@ -6,6 +6,16 @@
 	<true/>
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
+	<!--
+	  008 · H4 — off-device backup to a user-chosen folder. The picker grant
+	  above lasts only for this process; reaching the SAME folder on a later
+	  launch (the whole point of a recurring backup) requires a security-scoped
+	  bookmark, which is what app-scope enables. See `FolderAccess.swift`.
+	  App-scope (not document-scope): the target belongs to the app, not to a
+	  document the user opened.
+	-->
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
 	<key>com.apple.security.network.server</key>
