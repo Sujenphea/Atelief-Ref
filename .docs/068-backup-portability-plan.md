@@ -122,12 +122,22 @@ detached backup run must thread its own flag (the `CancelFlag` precedent in
    `SettingsView` beside `librarySection` — showing the target path, "Choose
    Folder…", "Back Up Now", last-run status.
 
-**State placement gotcha:** `SettingsView` is rendered **twice** — as the ⌘,
-`Settings` scene (`AtelierRefsApp.swift:74`) and as a sidebar pane
-(`AppShellView.swift:132`). Backup progress must therefore live on
-`IngestionModel` or a `@StateObject` on `ContentView` injected via
-`.environmentObject` (the `ExportController` precedent), **never** `@State` on
-`SettingsView`, which would fork into two disagreeing copies.
+**State placement:** `SettingsView` used to be rendered **twice** — as the ⌘,
+`Settings` scene and as a sidebar pane — which would have forked backup progress
+into two disagreeing copies. Changelog 297 collapsed that to one surface (the ⌘,
+window; the sidebar gear now *opens* it), so the duplication is gone.
+
+The rule still stands for a different reason: the Settings **window can be closed
+and reopened mid-backup**, and `@State` on `SettingsView` would reset with it —
+showing a fresh "Choose Folder…" over a copy that is still running. Backup
+progress therefore belongs on `IngestionModel`, or on a `@StateObject` at
+`ContentView` injected via `.environmentObject` (the `ExportController`
+precedent), **never** `@State` on `SettingsView`.
+
+Capture-token UI in that view now comes from the shared `CaptureTokenViews.swift`
+pieces (`CaptureCopy` + the three small views). The Backup section should follow
+the same split if it grows a second surface: shared **facts and rules** in a
+testable enum, layout left to each surface.
 
 **Tests:** bookmark round-trip and staleness against an injected defaults +
 fake resolver; picker glue is compile-only + manual (repo convention).
