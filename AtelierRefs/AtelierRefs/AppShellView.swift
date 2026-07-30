@@ -10,7 +10,9 @@
 //  keeps within-collection subfolder drill-down (⌘[ back) + the item-detail overlay.
 //
 //  App-level affordances that used to be toolbar tabs — Spaces, Capture — are now
-//  sidebar destinations; Sweeps / Snapshots stay as sheets.
+//  sidebar destinations; Sweeps / Snapshots stay as sheets. Settings is NOT a
+//  destination: the sidebar's gear opens the standard ⌘, window (the app's single
+//  settings surface), so nothing here routes to ``SettingsView``.
 //
 
 import AppKit
@@ -129,11 +131,6 @@ struct AppShellView: View {
             LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: nil) {
                 CapturePane(model: model, onOpenSweeps: { showSweeps = true })
             }
-        case .settings:
-            LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: nil) {
-                SettingsView(model: model)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
         case let .collection(id):
             LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: id) {
                 CollectionView(model: model, nav: nav, gridPrefs: gridPrefs, collectionID: id)
@@ -230,9 +227,8 @@ private struct CapturePane: View {
                 Circle()
                     .fill(model.captureEndpointRunning ? Color.green : Color.orange)
                     .frame(width: 8, height: 8)
-                Text(model.captureEndpointRunning
-                     ? "Listening on 127.0.0.1:\(model.capturePort)"
-                     : "Endpoint unavailable (port \(model.capturePort) in use)")
+                Text(CaptureCopy.endpointStatus(
+                        port: model.capturePort, running: model.captureEndpointRunning))
                     .foregroundStyle(.secondary)
             }
 
@@ -240,21 +236,12 @@ private struct CapturePane: View {
 
             Text("Extension token").font(.caption).foregroundStyle(.secondary)
             HStack {
-                Text(model.captureToken.isEmpty ? "—" : model.captureToken)
-                    .font(.system(.callout, design: .monospaced))
-                    .lineLimit(1).truncationMode(.middle)
-                    .textSelection(.enabled)
+                CaptureTokenText(token: model.captureToken, style: .callout)
                 Spacer()
-                Button { model.copyCaptureToken() } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                .disabled(model.captureToken.isEmpty)
+                CaptureTokenCopyButton(model: model, icon: true)
             }
 
-            Text("Paste this token into the AtelierRefs Chrome extension's options to "
-                 + "authorize captures. It never leaves your Mac.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            CaptureTokenExplainer()
 
             Divider()
 

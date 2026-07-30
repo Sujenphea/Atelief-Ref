@@ -4,8 +4,10 @@
 //
 //  006 — the split-view shell's left sidebar (Figma nodes 1:3 expanded / 5:92
 //  collapsed). Two states, driven by ``NavModel/sidebarCollapsed``:
-//   • Expanded (273pt): traffic-light space, the Home/Search/Capture/Settings nav,
-//     the Spaces section, the Collections tree, and a footer (sort + trash).
+//   • Expanded (273pt): traffic-light space, the Home / Capture nav plus a Settings
+//     gear that OPENS the ⌘, window (settings is not a destination — see
+//     ``SidebarItem``), the Spaces section, the Collections tree, and a footer
+//     (sort + trash).
 //   • Collapsed (60pt = the traffic-light footprint): the toggle at top, sort +
 //     trash at the bottom — the same rail the item-detail view reuses.
 //
@@ -21,6 +23,9 @@ import UniformTypeIdentifiers
 struct SidebarView: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
+
+    /// Opens the `Settings` scene (⌘,) — the app's only settings surface.
+    @Environment(\.openSettings) private var openSettings
 
     /// Rename a collection from the tree row's context menu (043).
     @State private var renameTargetID: UUID?
@@ -127,14 +132,32 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 6) {
             navRow(.home, "Home", "house")
             navRow(.capture, "Capture", "puzzlepiece.extension")
-            navRow(.settings, "Settings", "gearshape")
+            settingsRow
         }
     }
 
     private func navRow(_ item: SidebarItem, _ title: String, _ symbol: String) -> some View {
-        Button {
+        rowButton(title, symbol, selected: nav.sidebarSelection == item) {
             nav.selectSidebar(item)
-        } label: {
+        }
+    }
+
+    /// Settings is not a sidebar DESTINATION — this opens the standard macOS
+    /// Settings window (⌘,), the app's single settings surface. The row keeps its
+    /// place because that is where people look for it; only the door changed, so
+    /// it never draws a selected state (the panel behind it doesn't move).
+    private var settingsRow: some View {
+        rowButton("Settings", "gearshape", selected: false) { openSettings() }
+            .help("Open Settings (⌘,)")
+    }
+
+    /// The nav rows' shared chrome — icon, title, and selection fill. Both the
+    /// destination rows and the Settings row draw through this so a styling change
+    /// can't reach one and miss the other.
+    private func rowButton(
+        _ title: String, _ symbol: String, selected: Bool, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: symbol)
                     .font(.system(size: 13))
@@ -145,7 +168,7 @@ struct SidebarView: View {
             .foregroundStyle(Theme.Colors.inkPrimary)
             .padding(.horizontal, Theme.Spacing.sm)
             .padding(.vertical, 7)
-            .background(rowHighlight(selected: nav.sidebarSelection == item))
+            .background(rowHighlight(selected: selected))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

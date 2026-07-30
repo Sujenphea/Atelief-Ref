@@ -35,23 +35,18 @@ struct SettingsView: View {
     private var captureSection: some View {
         Section("Browser Capture") {
             LabeledContent("Endpoint") {
-                Text("127.0.0.1:\(String(model.capturePort))")
+                Text(CaptureCopy.endpoint(port: model.capturePort))
                     .textSelection(.enabled)
                     .foregroundStyle(model.captureEndpointRunning ? .primary : .secondary)
             }
             LabeledContent("Pairing token") {
                 HStack(spacing: 8) {
-                    Text(model.captureToken.isEmpty ? "—" : model.captureToken)
-                        .font(.system(.body, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                    Button("Copy") { model.copyCaptureToken() }
-                        .disabled(model.captureToken.isEmpty)
+                    CaptureTokenText(token: model.captureToken)
+                    CaptureTokenCopyButton(model: model)
                 }
             }
             Button("Regenerate Token…", role: .destructive) { confirmRegenerate = true }
-                .disabled(model.captureToken.isEmpty)
+                .disabled(!CaptureCopy.hasToken(model.captureToken))
                 .confirmationDialog(
                     "Regenerate the pairing token?",
                     isPresented: $confirmRegenerate, titleVisibility: .visible
@@ -60,12 +55,9 @@ struct SettingsView: View {
                     Button("Cancel", role: .cancel) {}
                 } message: {
                     Text("The current token stops working immediately. You'll need to "
-                         + "paste the new token into the browser extension to re-pair.")
+                         + "paste the new token into the Chrome extension to re-pair.")
                 }
-            Text("Paste this token into the AtelierRefs browser extension's options to "
-                 + "authorize captures. It never leaves your Mac.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            CaptureTokenExplainer()
         }
     }
 

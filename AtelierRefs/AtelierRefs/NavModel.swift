@@ -28,11 +28,16 @@ nonisolated enum AppRoute: Hashable {
 
 /// A top-level sidebar destination (006 split-view shell). The sidebar owns this
 /// selection; `NavModel.path` is kept only for within-collection drill-down.
+///
+/// Settings is deliberately NOT a case: it lives in the standard macOS Settings
+/// window (⌘, — the `Settings` scene in ``AtelierRefsApp``), which is the app's
+/// single settings surface. The sidebar still shows a gear, but it *opens* that
+/// window rather than selecting a destination, so there is one settings view with
+/// one door. See ``SidebarView``'s `settingsRow`.
 nonisolated enum SidebarItem: Hashable {
     case home
     case search
     case capture
-    case settings
     /// A collection selected in the sidebar tree (the panel shows its grid).
     case collection(UUID)
     /// A space selected in the sidebar's Spaces section.
