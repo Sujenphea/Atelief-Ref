@@ -150,6 +150,38 @@ struct ThumbnailFallbackTests {
         #expect(thumbnailCacheCostLimit(physicalMemory: 8 * 1024 * UInt64(mb)) == 512 * mb)
         #expect(thumbnailCacheCostLimit(physicalMemory: 0) == 128 * mb)
     }
+
+    @Test("a real decoded cost is plausible at every bucket, at 8 and 16 bpc")
+    func realCostsArePlausible() {
+        for bucket in thumbnailPixelBuckets {
+            // 8-bit RGBA, the production format.
+            #expect(thumbnailCostIsPlausible(cost: bucket * bucket * 4, bucket: bucket))
+            // 16 bits per component — still well inside the bound, so widening
+            // the decode format can never trip the guard on its own.
+            #expect(thumbnailCostIsPlausible(cost: bucket * bucket * 8, bucket: bucket))
+            // Generous row alignment on top of that.
+            #expect(thumbnailCostIsPlausible(cost: bucket * bucket * 8 + bucket * 64,
+                                             bucket: bucket))
+        }
+    }
+
+    @Test("a corrupt cost is caught")
+    func corruptCostIsImplausible() {
+        #expect(!thumbnailCostIsPlausible(cost: 256 * 256 * 17, bucket: 256))
+        #expect(!thumbnailCostIsPlausible(cost: 512 * 1024 * 1024, bucket: 128))
+        #expect(!thumbnailCostIsPlausible(cost: Int.max, bucket: 512))
+    }
+
+    @Test("the bound never traps and never false-positives on degenerate input")
+    func plausibilityIsTotal() {
+        // A zero/negative bucket carries no information, so nothing is claimed.
+        #expect(thumbnailCostIsPlausible(cost: Int.max, bucket: 0))
+        #expect(thumbnailCostIsPlausible(cost: Int.max, bucket: -1))
+        // A bucket large enough to overflow the bound must not trap — the guard
+        // exists to report a bug, never to become one.
+        #expect(thumbnailCostIsPlausible(cost: Int.max, bucket: Int.max))
+        #expect(thumbnailCostIsPlausible(cost: 0, bucket: 512))
+    }
 }
 
 // MARK: - Pipeline test support
@@ -367,6 +399,59 @@ struct ThumbnailPipelineTests {
             roomy.cachedExact(hash: "k\($0)", bucket: side) != nil
         }.count
         #expect(residentUnderRoomyBudget == 8)
+    }
+
+    @Test("an entry costing more than the WHOLE budget is still cached, not dropped")
+    func oversizedEntryIsClampedNotDropped() async {
+        // `NSCache` refuses an object whose cost exceeds `totalCostLimit` outright
+        // and says nothing, so an over-charged entry does not evict one thing — it
+        // makes the cache hold NOTHING, permanently. Charging at most the budget
+        // is what keeps that failure from being silent and total.
+        let side = 512
+        let probe = DecodeProbe()
+        let oneEntry = makeImage(side: side).bytesPerRow * side
+        let pipeline = ThumbnailPipeline(decode: probe.decode, totalCostLimit: oneEntry / 2)
+
+        _ = await pipeline.image(hash: "a", url: url("a"), bucket: side)
+
+        // Without the clamp this is nil: the insert is refused on arrival and the
+        // cache holds nothing at all. Nothing further is asserted — which entry
+        // survives once several oversized ones compete is `NSCache`'s discretion,
+        // and pinning it here would be asserting a guarantee it does not make.
+        #expect(pipeline.cachedExact(hash: "a", bucket: side) != nil)
+    }
+
+    @Test("a visible request joining an in-flight prefetch makes it uncancellable")
+    func visibleJoinPromotesOutOfPrefetch() async {
+        // The hazard: a hash crosses from the prefetch ring into the visible
+        // window. `image` JOINS the running prefetch task rather than starting a
+        // new one, so if that task stays in the cancellable-prefetch set, the
+        // next `cancelPrefetch` for it cancels the work an on-screen cell is
+        // awaiting — and the cell paints nothing.
+        let probe = DecodeProbe(blocking: ["a"])
+        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
+
+        pipeline.prefetch([request("a")])
+        // Block until the decode has genuinely STARTED, so the visible request
+        // takes `join`'s in-flight branch and not its queued one.
+        while probe.callCount("a") == 0 { await Task.yield() }
+        #expect(pipeline.cancellablePrefetchKeys.count == 1)
+
+        async let visible = pipeline.image(hash: "a", url: url("a"), bucket: 256)
+
+        // Bounded wait: the promotion happens as `image` joins. Without it the
+        // key stays cancellable and this times out rather than passing by luck.
+        var promoted = false
+        for _ in 0..<200 where !promoted {
+            if pipeline.cancellablePrefetchKeys.isEmpty { promoted = true; break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(promoted, "the joined task is still cancellable as a prefetch")
+
+        // Now prove the consequence: cancelling the hash must not blank the cell.
+        pipeline.cancelPrefetch(hashes: ["a"])
+        probe.release()
+        #expect(await visible != nil)
     }
 
     @Test("a cancelled prefetch that is still queued never decodes")

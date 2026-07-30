@@ -49,6 +49,7 @@
 import AtelierIngestion
 import CoreGraphics
 import Foundation
+import OSLog
 
 // MARK: - The bucket ladder (pure)
 
@@ -94,6 +95,26 @@ nonisolated func thumbnailCacheCostLimit(physicalMemory: UInt64) -> Int {
     let floorBytes: UInt64 = 128 * 1024 * 1024
     let ceilingBytes: UInt64 = 512 * 1024 * 1024
     return Int(min(max(physicalMemory / 16, floorBytes), ceilingBytes))
+}
+
+/// Whether `cost` is a plausible `bytesPerRow * height` for a bitmap decoded to
+/// `bucket` — i.e. whether the number is merely large or actually *corrupt*.
+///
+/// A bucket-sized bitmap costs at most `bucket² × 4` at 8 bits per component, or
+/// `× 8` at 16, plus row alignment. The bound is **16×**, so it cannot fire on
+/// any plausible pixel format and only trips on a nonsense value.
+///
+/// Separated out and pure because the branch that consumes it is unreachable
+/// from a test — ``DecodedThumbnail`` computes `byteCost` in its own
+/// initialiser, so a wrong one cannot be injected. This keeps the *rule* under
+/// test even though the trigger is not.
+nonisolated func thumbnailCostIsPlausible(cost: Int, bucket: Int) -> Bool {
+    guard bucket > 0 else { return true }
+    let (ceiling, overflowed) = bucket.multipliedReportingOverflow(by: bucket)
+    guard !overflowed else { return true }
+    let (bounded, boundOverflowed) = ceiling.multipliedReportingOverflow(by: 16)
+    guard !boundOverflowed else { return true }
+    return cost <= bounded
 }
 
 // MARK: - Keys
@@ -273,6 +294,16 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
     private func join(_ request: ThumbnailRequest, visible: Bool) -> Task<Void, Never> {
         lock.lock()
         if let existing = inFlight[request.key] {
+            // Promotion, in-flight edition. A visible caller is now awaiting this
+            // task, so it must stop being cancellable: `inFlightPrefetches` is
+            // exactly the set `cancelPrefetch(hashes:)` cancels, and cancelling
+            // it here would blank a cell that is ON SCREEN — `image` would await
+            // a task that skipped its decode and then read back a miss.
+            // `activePrefetches` is deliberately NOT adjusted: the task really
+            // does still occupy a decode slot, and `finish` decrements it from
+            // the `isPrefetch` captured at creation. The `remove` there becomes
+            // a no-op, which is correct.
+            if visible { inFlightPrefetches.remove(request.key) }
             lock.unlock()
             return existing
         }
@@ -304,9 +335,58 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
         return task
     }
 
+    /// Charge the real decoded size — but never more than the entire budget.
+    ///
+    /// `NSCache` refuses an object whose cost exceeds `totalCostLimit` outright
+    /// rather than evicting to make room, and it does so SILENTLY. Charging one
+    /// oversized cost therefore does not cost you one entry, it costs you the
+    /// cache: every insert is refused, every read misses, every cell re-decodes,
+    /// forever, with nothing logged. Measured: at a 64 MB limit, 8 inserts at
+    /// 1 MB leave 8 resident; the same 8 at limit+1 leave **zero**.
+    ///
+    /// Clamping keeps the bitmap a cell is actually waiting on resident. It will
+    /// evict the rest of the cache to do so, which is the right trade for a
+    /// thumbnail that has already been decoded and is about to be drawn — and it
+    /// is what the byte budget is for. Today production cannot reach this (the
+    /// ladder caps at 512 px ≈ 1 MB against a ≥128 MB budget), so this is a guard
+    /// against a wrong cost, not a large one.
     private func store(_ decoded: DecodedThumbnail, for key: ThumbnailKey) {
+        let cost = max(0, decoded.byteCost)
+        let budget = cache.totalCostLimit          // 0 means "no limit"
+        assertCostIsPlausible(cost, for: key)
+        if budget > 0, cost > budget {
+            // Legitimate on a deliberately tiny budget (the tests do exactly
+            // this), so it is not an error — but it does mean this cache can
+            // hold one entry at a time, which is worth being able to see.
+            AppLog.thumbnails.notice(
+                "thumbnail cost \(cost) exceeds the whole budget \(budget); clamping")
+        }
         cache.setObject(
-            Box(decoded.image), forKey: key.cacheKey as NSString, cost: max(0, decoded.byteCost))
+            Box(decoded.image), forKey: key.cacheKey as NSString,
+            cost: budget > 0 ? min(cost, budget) : cost)
+    }
+
+    /// Catch a `byteCost` that is *wrong* rather than merely large.
+    ///
+    /// This exists because the clamp in ``store(_:for:)`` is deliberately
+    /// forgiving, and forgiving means SILENT: a bogus cost would degrade the
+    /// cache to holding one entry at a time and show up only as scroll jank,
+    /// weeks later, with nothing to point at. The check is against the bucket
+    /// rather than the budget, so it identifies the actual pathology
+    /// independently of how the cache happens to be configured.
+    ///
+    /// The bound itself lives in ``thumbnailCostIsPlausible(cost:bucket:)`` so it
+    /// can be unit tested; see `.change-log/284` for the failure it watches for.
+    private func assertCostIsPlausible(_ cost: Int, for key: ThumbnailKey) {
+        guard !thumbnailCostIsPlausible(cost: cost, bucket: key.bucket) else { return }
+        AppLog.thumbnails.error(
+            """
+            implausible thumbnail byteCost \(cost) at bucket \(key.bucket) — the \
+            cost is corrupt, not just large; the cache will hold one entry at a \
+            time until this is fixed
+            """)
+        assertionFailure(
+            "thumbnail byteCost \(cost) implausible at bucket \(key.bucket)")
     }
 
     private func finish(_ key: ThumbnailKey, wasPrefetch: Bool) {
@@ -338,6 +418,14 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
             _ = startLocked(next, visible: false)
             lock.unlock()
         }
+    }
+
+    /// The in-flight keys still cancellable as prefetches. Test support — this is
+    /// the set a visible `join` must remove itself from.
+    var cancellablePrefetchKeys: Set<ThumbnailKey> {
+        lock.lock()
+        defer { lock.unlock() }
+        return inFlightPrefetches
     }
 
     /// Await everything currently in flight. Test/diagnostic support — the render

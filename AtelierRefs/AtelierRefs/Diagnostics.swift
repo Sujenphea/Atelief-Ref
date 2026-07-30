@@ -22,6 +22,7 @@ nonisolated enum AppLog {
     static let model = Logger(subsystem: subsystem, category: "model")
     static let capture = Logger(subsystem: subsystem, category: "capture")
     static let diagnostics = Logger(subsystem: subsystem, category: "diagnostics")
+    static let thumbnails = Logger(subsystem: subsystem, category: "thumbnails")
 }
 
 /// The non-sensitive facts a diagnostics report is built from. No titles, URLs,
