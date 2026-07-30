@@ -534,7 +534,7 @@ private struct SearchToolbarField: View {
 
             TextField(Self.prompt, text: $search.text)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(Theme.Typography.body)
                 .foregroundStyle(Theme.Colors.inkPrimary)
                 .focused($focused)
                 .onKeyPress(.escape) {
@@ -736,7 +736,7 @@ private struct LibrarySearchResults: View {
             // so search reads as another counted surface.
             if !search.results.isEmpty {
                 Text("\(search.results.count) results")
-                    .font(.callout)
+                    .font(Theme.Typography.body)
                     .foregroundStyle(Theme.Colors.inkSecondary)
             }
             Spacer(minLength: 0)
@@ -882,7 +882,7 @@ private struct LibrarySearchResults: View {
             .overlay(alignment: .topTrailing) {
                 if count > 1 {
                     Text("\(count)")
-                        .font(.caption2).bold().monospacedDigit()
+                        .font(Theme.Typography.caption).bold().monospacedDigit()
                         .foregroundStyle(.white)
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(Capsule().fill(Color.accentColor))
@@ -954,7 +954,7 @@ private struct SearchModeToggle: View {
                 : (isHovering ? Theme.Colors.hoverRow : .clear)
             return Button { mode = value } label: {
                 Text(title)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(Theme.Typography.body).fontWeight(.medium)
                     .foregroundStyle(isSelected ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
                     .padding(.horizontal, Theme.Spacing.md)
                     .padding(.vertical, 5)

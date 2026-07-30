@@ -139,7 +139,7 @@ struct SidebarView: View {
                 Image(systemName: symbol)
                     .font(.system(size: 13))
                     .frame(width: 16)
-                Text(title).font(.system(size: 14))
+                Text(title).font(Theme.Typography.row)
                 Spacer()
             }
             .foregroundStyle(Theme.Colors.inkPrimary)

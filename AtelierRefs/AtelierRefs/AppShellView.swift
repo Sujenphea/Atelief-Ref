@@ -200,7 +200,7 @@ struct AppShellView: View {
     private var sweepsSheet: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Sweeps").font(.headline)
+                Text("Sweeps").font(Theme.Typography.bodyEmphasis)
                 Spacer()
                 Button("Done") { showSweeps = false }
             }
@@ -224,7 +224,7 @@ private struct CapturePane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             Label("Browser Capture", systemImage: "puzzlepiece.extension")
-                .font(.title2).bold()
+                .font(Theme.Typography.pageTitle)
 
             HStack(spacing: 6) {
                 Circle()
@@ -238,7 +238,7 @@ private struct CapturePane: View {
 
             Divider()
 
-            Text("Extension token").font(.caption).foregroundStyle(.secondary)
+            Text("Extension token").font(Theme.Typography.caption).foregroundStyle(.secondary)
             HStack {
                 Text(model.captureToken.isEmpty ? "—" : model.captureToken)
                     .font(.system(.callout, design: .monospaced))
@@ -253,7 +253,7 @@ private struct CapturePane: View {
 
             Text("Paste this token into the AtelierRefs Chrome extension's options to "
                  + "authorize captures. It never leaves your Mac.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(Theme.Typography.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Divider()

@@ -21,7 +21,7 @@ struct ImportProgressPill: View {
                     total: Double(max(progress.total, 1)))
                 .frame(width: 120)
                 Text("\(progress.completed) / \(progress.total)")
-                    .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    .font(Theme.Typography.caption).monospacedDigit().foregroundStyle(.secondary)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, Theme.Spacing.sm)

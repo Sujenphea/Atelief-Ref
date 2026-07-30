@@ -28,7 +28,7 @@ struct AddLinkForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            Text("Add Link").font(.headline)
+            Text("Add Link").font(Theme.Typography.bodyEmphasis)
             TextField("https://example.com/…", text: $urlText)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 320)

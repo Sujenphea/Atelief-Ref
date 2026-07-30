@@ -58,7 +58,7 @@ struct MoodboardExportButton: View {
         let map = mapping
         let pageCount = MoodboardExport.pages(for: map.elements, config: config).count
         return VStack(alignment: .leading, spacing: 12) {
-            Text("Export moodboard").font(.headline)
+            Text("Export moodboard").font(Theme.Typography.bodyEmphasis)
 
             LabeledContent("Format") {
                 Picker("Format", selection: $config.format) {
@@ -92,7 +92,7 @@ struct MoodboardExportButton: View {
             }
 
             Text(summary(refs: map.elements.count, pages: pageCount, skipped: map.skipped))
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
 
             HStack {
@@ -195,7 +195,7 @@ struct ExportProgressRing: View {
 
     private var cancelPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Exporting…").font(.callout)
+            Text("Exporting…").font(Theme.Typography.body)
             ProgressView(value: controller.progress).frame(width: 180)
             HStack {
                 Spacer()

@@ -265,7 +265,10 @@ struct ItemDetailView: View {
             }
         } label: {
             Image(systemName: "ellipsis")
-                .font(Theme.Typography.row)
+                // A GLYPH size, not a text role. It read `Typography.row`, which is
+                // a sidebar-row text token — so the overflow icon tracked a
+                // typography decision it has nothing to do with.
+                .font(.system(size: 14))
                 .padding(.horizontal, Theme.Spacing.md)
                 .padding(.vertical, Theme.Spacing.xs + 2)
         }
@@ -483,15 +486,15 @@ private struct LinkDetailView: View {
 
             if let title = link.title, !title.isEmpty {
                 Text(title)
-                    .font(.title2).bold()
+                    .font(Theme.Typography.pageTitle)
                     .multilineTextAlignment(.center)
             }
             if let host {
-                Text(host).font(.callout).foregroundStyle(.secondary)
+                Text(host).font(Theme.Typography.body).foregroundStyle(.secondary)
             }
             if let description = link.description, !description.isEmpty {
                 Text(description)
-                    .font(.callout)
+                    .font(Theme.Typography.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .lineLimit(4)
@@ -550,13 +553,13 @@ private struct TweetDetailView: View {
             }
 
             if let name = tweet.authorName, !name.isEmpty {
-                Text(name).font(.title3).bold()
+                Text(name).font(Theme.Typography.sectionTitle)
             }
-            Text(byline).font(.callout).foregroundStyle(.secondary)
+            Text(byline).font(Theme.Typography.body).foregroundStyle(.secondary)
 
             if let text = tweet.text, !text.isEmpty {
                 Text(text)
-                    .font(.callout)
+                    .font(Theme.Typography.body)
                     .multilineTextAlignment(.center)
                     .textSelection(.enabled)
             }
@@ -564,12 +567,12 @@ private struct TweetDetailView: View {
             if !tweet.media.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("^[\(tweet.media.count) media](inflect: true)")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(Theme.Typography.caption).foregroundStyle(.secondary)
                     ForEach(tweet.media, id: \.url) { media in
                         if let mediaURL = URL(string: media.url) {
                             Link(destination: mediaURL) {
                                 Label(media.url, systemImage: "photo")
-                                    .font(.caption)
+                                    .font(Theme.Typography.caption)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                             }

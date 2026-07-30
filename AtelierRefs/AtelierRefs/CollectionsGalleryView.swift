@@ -403,7 +403,7 @@ struct CollectionsGalleryView: View {
             // The section count, styled like every other page's "N items" subtitle
             // (`.callout`, secondary ink) so counts read the same app-wide.
             Text("\(count)")
-                .font(.callout)
+                .font(Theme.Typography.body)
                 .foregroundStyle(Theme.Colors.inkSecondary)
         }
     }

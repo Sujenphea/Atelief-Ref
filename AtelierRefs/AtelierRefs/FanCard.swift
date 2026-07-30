@@ -54,11 +54,11 @@ struct FanCard: View {
                 .aspectRatio(1, contentMode: .fit)
                 .frame(maxWidth: .infinity)
             Text(title)
-                .font(.callout).fontWeight(.medium)
+                .font(Theme.Typography.body).fontWeight(.medium)
                 .lineLimit(1)
                 .foregroundStyle(.primary)
             Text("\(itemCount) items")
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }

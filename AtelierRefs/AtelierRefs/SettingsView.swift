@@ -64,7 +64,7 @@ struct SettingsView: View {
                 }
             Text("Paste this token into the AtelierRefs browser extension's options to "
                  + "authorize captures. It never leaves your Mac.")
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
         }
     }
@@ -83,7 +83,7 @@ struct SettingsView: View {
                 .disabled(model.libraryRoot == nil)
             Text("Your images, database, and thumbnails live here. Snapshots (File ▸ "
                  + "Snapshot Now) are your in-app recovery points.")
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
         }
     }
@@ -95,7 +95,7 @@ struct SettingsView: View {
             Button("Show Setup Guide Again") { didCompleteOnboarding = false }
             Text("Re-opens the first-run walkthrough (install the extension, pair the "
                  + "token, capture something) on the main window.")
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
         }
     }
@@ -105,7 +105,7 @@ struct SettingsView: View {
             Button("Export Diagnostics…") { model.exportDiagnostics() }
             Text("Saves a plain-text report (versions, sizes, counts) and reveals it in "
                  + "Finder — for attaching to a bug report. It contains no library content.")
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
         }
     }

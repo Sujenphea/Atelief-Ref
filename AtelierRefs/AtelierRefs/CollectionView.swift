@@ -540,7 +540,7 @@ struct CollectionView: View {
             // reads the shared `items` — redact it until this collection's load
             // resolves so it can't show the previous collection's count on switch.
             Text("\(isLoaded ? model.items.count : 0) items")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Theme.Typography.body).foregroundStyle(.secondary)
                 .redacted(reason: isLoaded ? [] : .placeholder)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -750,7 +750,7 @@ struct CollectionView: View {
             .overlay(alignment: .topTrailing) {
                 if count > 1 {
                     Text("\(count)")
-                        .font(.caption2).bold().monospacedDigit()
+                        .font(Theme.Typography.caption).bold().monospacedDigit()
                         .foregroundStyle(.white)
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(Capsule().fill(Color.accentColor))
