@@ -110,13 +110,13 @@ struct NavReconcileTests {
 
     @Test("non-collection routes are left untouched")
     func nonCollectionRoutesUntouched() {
-        let s = UUID()
+        let s = UUID(), t = UUID()
         let r = NavModel.reconciled(
-            selection: .search,
-            path: [.space(s), .spaces],
+            selection: .capture,
+            path: [.space(s), .space(t)],
             existing: Set([UUID()]))            // no collections referenced
-        #expect(r.selection == .search)
-        #expect(r.path == [.space(s), .spaces])
+        #expect(r.selection == .capture)
+        #expect(r.path == [.space(s), .space(t)])
     }
 
     @Test("a space drill-down survives a sibling collection deletion")

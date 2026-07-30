@@ -123,7 +123,7 @@ struct AppShellView: View {
         // panes. Search is global (`collectionID: nil`) except on a Collection,
         // which scopes it.
         switch nav.sidebarSelection {
-        case .home, .search:
+        case .home:
             LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: nil) {
                 CollectionsGalleryView(model: model, nav: nav)
             }
@@ -156,8 +156,6 @@ struct AppShellView: View {
         switch route {
         case .collection(let id):
             CollectionView(model: model, nav: nav, gridPrefs: gridPrefs, collectionID: id)
-        case .spaces:
-            EmptyView()  // legacy route — Spaces now lives in the sidebar
         case .space(let id):
             spaceDestination(id)
         }

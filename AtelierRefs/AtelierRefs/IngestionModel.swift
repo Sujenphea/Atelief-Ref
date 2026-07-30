@@ -403,7 +403,7 @@ final class IngestionModel: ObservableObject {
     }
 
     /// The space a confirmed delete will remove (UX-batch · space-delete undo).
-    /// Drives the ``SpacesListView`` confirmation dialog; `nil` when none staged.
+    /// Drives ``ContentView``'s confirmation dialog; `nil` when none staged.
     @Published var pendingSpaceDeletion: PendingSpaceDeletion?
 
     /// The space staged for a confirmed, undoable delete.

@@ -20,8 +20,6 @@ import Foundation
 nonisolated enum AppRoute: Hashable {
     /// A deeper collection drilled into from a subfolder chip.
     case collection(UUID)
-    /// The list of spaces (legacy route; retained for compatibility).
-    case spaces
     /// One open space (freeform board).
     case space(UUID)
 }
@@ -36,7 +34,6 @@ nonisolated enum AppRoute: Hashable {
 /// one door. See ``SidebarView``'s `settingsRow`.
 nonisolated enum SidebarItem: Hashable {
     case home
-    case search
     case capture
     /// A collection selected in the sidebar tree (the panel shows its grid).
     case collection(UUID)

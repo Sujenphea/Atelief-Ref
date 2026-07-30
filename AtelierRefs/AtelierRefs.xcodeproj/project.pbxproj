@@ -23,19 +23,11 @@
 			remoteGlobalIDString = 9907786D2FF364EF00718815;
 			remoteInfo = AtelierRefs;
 		};
-		990778862FF364F000718815 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 990778662FF364EF00718815 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 9907786D2FF364EF00718815;
-			remoteInfo = AtelierRefs;
-		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		9907786E2FF364EF00718815 /* AtelierRefs.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AtelierRefs.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9907787B2FF364F000718815 /* AtelierRefsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtelierRefsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		990778852FF364F000718815 /* AtelierRefsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtelierRefsUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000001 /* Config/Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Release.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -48,11 +40,6 @@
 		9907787E2FF364F000718815 /* AtelierRefsTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = AtelierRefsTests;
-			sourceTree = "<group>";
-		};
-		990778882FF364F000718815 /* AtelierRefsUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = AtelierRefsUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -78,13 +65,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		990778822FF364F000718815 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -93,7 +73,6 @@
 			children = (
 				990778702FF364EF00718815 /* AtelierRefs */,
 				9907787E2FF364F000718815 /* AtelierRefsTests */,
-				990778882FF364F000718815 /* AtelierRefsUITests */,
 				AA0000000000000000000001 /* Config/Release.xcconfig */,
 				9907786F2FF364EF00718815 /* Products */,
 			);
@@ -104,7 +83,6 @@
 			children = (
 				9907786E2FF364EF00718815 /* AtelierRefs.app */,
 				9907787B2FF364F000718815 /* AtelierRefsTests.xctest */,
-				990778852FF364F000718815 /* AtelierRefsUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -163,29 +141,6 @@
 			productReference = 9907787B2FF364F000718815 /* AtelierRefsTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		990778842FF364F000718815 /* AtelierRefsUITests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 990778952FF364F000718815 /* Build configuration list for PBXNativeTarget "AtelierRefsUITests" */;
-			buildPhases = (
-				990778812FF364F000718815 /* Sources */,
-				990778822FF364F000718815 /* Frameworks */,
-				990778832FF364F000718815 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				990778872FF364F000718815 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				990778882FF364F000718815 /* AtelierRefsUITests */,
-			);
-			name = AtelierRefsUITests;
-			packageProductDependencies = (
-			);
-			productName = AtelierRefsUITests;
-			productReference = 990778852FF364F000718815 /* AtelierRefsUITests.xctest */;
-			productType = "com.apple.product-type.bundle.ui-testing";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -200,10 +155,6 @@
 						CreatedOnToolsVersion = 26.6;
 					};
 					9907787A2FF364F000718815 = {
-						CreatedOnToolsVersion = 26.6;
-						TestTargetID = 9907786D2FF364EF00718815;
-					};
-					990778842FF364F000718815 = {
 						CreatedOnToolsVersion = 26.6;
 						TestTargetID = 9907786D2FF364EF00718815;
 					};
@@ -233,7 +184,6 @@
 			targets = (
 				9907786D2FF364EF00718815 /* AtelierRefs */,
 				9907787A2FF364F000718815 /* AtelierRefsTests */,
-				990778842FF364F000718815 /* AtelierRefsUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -247,13 +197,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		990778792FF364F000718815 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		990778832FF364F000718815 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -277,13 +220,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		990778812FF364F000718815 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -291,11 +227,6 @@
 			isa = PBXTargetDependency;
 			target = 9907786D2FF364EF00718815 /* AtelierRefs */;
 			targetProxy = 9907787C2FF364F000718815 /* PBXContainerItemProxy */;
-		};
-		990778872FF364F000718815 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 9907786D2FF364EF00718815 /* AtelierRefs */;
-			targetProxy = 990778862FF364F000718815 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -532,44 +463,6 @@
 			};
 			name = Release;
 		};
-		990778962FF364F000718815 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = L25247V6JG;
-				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = sujenphea.AtelierRefsUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TEST_TARGET_NAME = AtelierRefs;
-			};
-			name = Debug;
-		};
-		990778972FF364F000718815 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = L25247V6JG;
-				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = sujenphea.AtelierRefsUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TEST_TARGET_NAME = AtelierRefs;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -596,15 +489,6 @@
 			buildConfigurations = (
 				990778932FF364F000718815 /* Debug */,
 				990778942FF364F000718815 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		990778952FF364F000718815 /* Build configuration list for PBXNativeTarget "AtelierRefsUITests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				990778962FF364F000718815 /* Debug */,
-				990778972FF364F000718815 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -214,7 +214,7 @@ struct CollectionActivationTests {
             fallback: stale) == drilled)
 
         // Non-collection destinations leave the captured id in charge.
-        for item in [SidebarItem.home, .search, .capture, .space(UUID())] {
+        for item in [SidebarItem.home, .capture, .space(UUID())] {
             #expect(CollectionView.resolveImportTarget(
                 path: [], sidebar: item, fallback: stale) == stale)
         }
