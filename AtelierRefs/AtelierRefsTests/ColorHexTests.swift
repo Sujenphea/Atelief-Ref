@@ -30,8 +30,13 @@ struct ColorHexTests {
         #expect(Color(hexString: "ff0000") != nil)   // no '#'
         #expect(Color(hexString: "#ff0000") != nil)
         #expect(Color(hexString: "nope") == nil)
-        #expect(Color(hexString: "#fff") == nil)      // shorthand is canonicalized upstream, not here
         #expect(Color(hexString: "") == nil)
+        // Shorthand now PARSES. It used to be rejected here on the grounds that it is
+        // "canonicalized upstream" — true of a `ColorPayload`, which `AppServices`
+        // rewrites to `#rrggbb` on write, but NOT of an `ElementStyle` colour, which
+        // is stored as given. The three parsers that read these strings disagreed
+        // about shorthand until `HexGrammarTests` pinned them to one grammar.
+        #expect(Color(hexString: "#fff") != nil)
     }
 
     @Test("toHexString emits lowercase #rrggbb")

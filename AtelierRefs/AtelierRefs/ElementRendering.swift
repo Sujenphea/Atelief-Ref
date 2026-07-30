@@ -154,12 +154,31 @@ enum ElementRendering {
 
     // MARK: Hex ↔ RGBAColor
 
-    /// Parse `#rrggbb` / `#rrggbbaa` (leading `#` optional) into an `RGBAColor`,
-    /// or `nil` for a nil / malformed string (so an unset colour stays unset).
+    /// Parse a CSS-style hex string into an `RGBAColor`, or `nil` for a nil /
+    /// malformed string (so an unset colour stays unset).
+    ///
+    /// Accepts an optional leading `#`, surrounding whitespace, case-insensitive
+    /// digits, and four lengths: `rgb` (3), `rgba` (4), `rrggbb` (6), `rrggbbaa` (8),
+    /// with the short forms expanding each nibble exactly like CSS.
+    ///
+    /// This grammar is deliberately identical to `AtelierExport`'s `RGBA.init(hex:)`
+    /// and to `Color.init?(hexString:)`. The three cannot share an implementation —
+    /// they live in three modules, and `AtelierExport` has zero product dependencies
+    /// by design — but they read the SAME stored strings, and they used to disagree:
+    /// this one took 6/8, the export package took 3/4/6/8, and `Color` took 6 only,
+    /// so a `#f3a` rendered in an export and vanished on the board.
+    /// `HexGrammarTests` pins them together.
     nonisolated static func rgba(fromHex hex: String?) -> RGBAColor? {
-        guard var s = hex else { return nil }
+        guard let raw = hex else { return nil }
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if s.hasPrefix("#") { s.removeFirst() }
-        guard s.count == 6 || s.count == 8, let v = UInt64(s, radix: 16) else { return nil }
+        guard s.allSatisfy(\.isHexDigit) else { return nil }
+        switch s.count {
+        case 3, 4: s = s.map { "\($0)\($0)" }.joined()
+        case 6, 8: break
+        default: return nil
+        }
+        guard let v = UInt64(s, radix: 16) else { return nil }
         if s.count == 8 {
             return RGBAColor(
                 red: Double((v >> 24) & 0xff) / 255, green: Double((v >> 16) & 0xff) / 255,
@@ -171,8 +190,13 @@ enum ElementRendering {
     }
 
     /// Encode an `RGBAColor` as `#rrggbb` (or `#rrggbbaa` when translucent).
+    ///
+    /// LOWERCASE, matching `Color.toHexString()` and `ColorPayload.canonicalHex` —
+    /// this was the app's only uppercase hex emitter, so the same colour was written
+    /// two ways depending on which path stored it. Nothing compares these as strings
+    /// (the swatch chrome compares components), so the case was pure inconsistency.
     static func hex(from c: RGBAColor) -> String {
-        func h(_ x: Double) -> String { String(format: "%02X", Int((max(0, min(1, x)) * 255).rounded())) }
+        func h(_ x: Double) -> String { String(format: "%02x", Int((max(0, min(1, x)) * 255).rounded())) }
         if c.alpha < 1 { return "#\(h(c.red))\(h(c.green))\(h(c.blue))\(h(c.alpha))" }
         return "#\(h(c.red))\(h(c.green))\(h(c.blue))"
     }

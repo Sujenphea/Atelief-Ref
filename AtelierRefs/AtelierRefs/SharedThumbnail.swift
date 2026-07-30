@@ -353,13 +353,33 @@ struct CoverCard: View {
 }
 
 extension Color {
-    /// A SwiftUI `Color` from a canonical `#rrggbb` hex (as produced by
-    /// `ColorPayload.canonicalHex`); `nil` for anything unparseable. Kept in the
-    /// view layer — the domain stores the hex string, the UI renders it.
+    /// A SwiftUI `Color` from a hex string; `nil` for anything unparseable. Kept in
+    /// the view layer — the domain stores the hex string, the UI renders it.
+    ///
+    /// Accepts the same grammar as `ElementRendering.rgba(fromHex:)` and
+    /// `AtelierExport`'s `RGBA.init(hex:)` — `#`-optional, whitespace-tolerant,
+    /// case-insensitive, 3/4/6/8 digits (see `HexGrammarTests`). It used to take 6
+    /// digits only, which was safe for a `ColorPayload` (canonicalised to `#rrggbb`
+    /// on write) but wrong for anything else that reached it.
     init?(hexString: String) {
-        var s = hexString
+        var s = hexString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if s.hasPrefix("#") { s.removeFirst() }
-        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        guard s.allSatisfy(\.isHexDigit) else { return nil }
+        switch s.count {
+        case 3, 4: s = s.map { "\($0)\($0)" }.joined()
+        case 6, 8: break
+        default: return nil
+        }
+        guard let v = UInt32(s, radix: 16) else { return nil }
+        if s.count == 8 {
+            self.init(
+                .sRGB,
+                red: Double((v >> 24) & 0xff) / 255,
+                green: Double((v >> 16) & 0xff) / 255,
+                blue: Double((v >> 8) & 0xff) / 255,
+                opacity: Double(v & 0xff) / 255)
+            return
+        }
         self.init(
             .sRGB,
             red: Double((v >> 16) & 0xff) / 255,
