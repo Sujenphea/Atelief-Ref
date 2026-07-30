@@ -107,7 +107,6 @@ struct AppShellView: View {
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.panel))
         .padding(.trailing, Theme.Spacing.md)
         .padding(.bottom, Theme.Spacing.md)
-        .overlay(alignment: .bottomTrailing) { floatingAdd }
     }
 
     /// The panel root for the current sidebar selection. Browsing surfaces (Home +
@@ -146,41 +145,12 @@ struct AppShellView: View {
         }
     }
 
-    /// The floating circular add affordance (Figma) — white glyph on ink. Native
-    /// AppKit (`FloatingAddButton`): the SwiftUI `Menu` refused to render its label's
-    /// fill / glyph under `.borderlessButton` and swallowed the click, so this is an
-    /// `NSButton` + `NSMenu` instead.
-    private var floatingAdd: some View {
-        // Pin the SwiftUI frame to a hard 40×40 square. Relying on `.fixedSize()` let
-        // SwiftUI adopt the `NSButton` cell's own (non-square) fitting size, which
-        // rendered the layer's rounded corners as a rounded RECTANGLE. An explicit
-        // square frame forces square bounds so `cornerRadius` reads as a full circle.
-        FloatingAddButton(diameter: 40, items: addMenuItems)
-            .frame(width: 40, height: 40)
-            .padding(.trailing, Theme.Spacing.xl)
-            // Match the floating action bar's baseline (`selectionBarChrome`'s bottom
-            // inset) so the two share a bottom edge when both are on screen.
-            .padding(.bottom, 26)
-    }
-
-    /// The add menu's items, rebuilt for the current selection.
-    private var addMenuItems: [FloatingAddItem] {
-        var items: [FloatingAddItem] = []
-        if case .collection(let id) = nav.sidebarSelection {
-            items.append(FloatingAddItem(title: "New Space from Collection") {
-                Task {
-                    if let sid = await model.newSpaceFromCollection(id) { nav.openSpace(sid) }
-                }
-            })
-        }
-        // Adds a neutral placeholder swatch to the active collection; the
-        // detail/inspector edits the hex. (Add-Color/Link pickers relocate here from
-        // the old toolbar — a follow-up wires the pickers.)
-        items.append(FloatingAddItem(title: "Add Color…") {
-            model.addColor(hex: "#2C2C30")
-        })
-        return items
-    }
+    // The floating "+" is no longer here. A single shell-level button had to guess ONE
+    // menu for whatever pane was showing: it offered "Add Color…" on Settings and
+    // Capture, floated over the full-window item detail, and could never reach a Space
+    // at all — `SpaceModel`, the only writer that reloads an open board, lives inside
+    // `SpaceView`, below this. Each pane now floats its own via `.floatingAdd(...)`;
+    // see `FloatingAddControl`.
 
     // MARK: - Routing
 

@@ -451,6 +451,32 @@ struct SpaceView: View {
             ImportProgressPill(progress: model.progress)
                 .padding(.top, Theme.Spacing.md)
         }
+        // The floating "+". A board has exactly ONE thing to add from outside the app,
+        // so this is a direct action rather than a menu of one — the tooltip carries
+        // the label a bare disc can't. (Frames and text come from the tool picker; the
+        // library comes in by drag.)
+        .floatingAdd(help: "Import images onto this board", action: importFilesOntoBoard)
+    }
+
+    /// "+" on a board: choose files, ingest them, and flow them in below the content.
+    ///
+    /// Into UNSORTED, matching the canvas's drop and ⌘V paths (`importExternal`) — a
+    /// board is not a collection, so an import here has no collection context to
+    /// inherit, and inventing one would file the user's images somewhere they never
+    /// chose. Placement goes through `SpaceModel`, the only writer that reloads an
+    /// OPEN board; `IngestionModel.addAssetsToSpace` writes the rows but refreshes the
+    /// spaces LIST, so an import routed that way would not appear until reopen.
+    private func importFilesOntoBoard() {
+        let folder = model.unsortedFolderID
+        ImportFilesPanel.present { urls in
+            guard !urls.isEmpty else { return }
+            Task {
+                let assets = await model.importInputs(
+                    IngestionModel.fileInputs(urls, into: folder))
+                await model.refreshFolders()
+                space.addAssets(assets)
+            }
+        }
     }
 
     /// Apply the outcome of an inline edit the canvas host just finished (054 §5.3).

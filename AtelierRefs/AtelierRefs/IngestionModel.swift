@@ -1096,6 +1096,25 @@ final class IngestionModel: ObservableObject {
         }
     }
 
+    /// ``perform(after:_:)`` for a write whose target is KNOWN — reload that folder
+    /// rather than `selectedFolderID`. The two differ whenever the add was triggered
+    /// from a pane that isn't the last-loaded collection, which is precisely when
+    /// reloading the selection shows the user nothing.
+    private func perform(
+        reloading folder: UUID, _ body: @escaping (AppServices) async throws -> Void
+    ) {
+        guard let services else { return }
+        Task {
+            do {
+                try await body(services)
+                await refreshFolders()
+                loadContents(of: folder)
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
     // MARK: - Folder contents
 
     /// Load the DIRECT items + immediate subfolders of `id` (decision F5).
@@ -2026,6 +2045,20 @@ final class IngestionModel: ObservableObject {
         }
     }
 
+    /// Ingest inputs for files the user CHOSE (the "Import Images…" panel), targeting
+    /// `folder`. Routes through the same ``DirectInputReader/fileInput(fileURL:into:at:)``
+    /// factory a Finder DROP builds, so a chosen file and a dropped file are the same
+    /// import — one decode order, one dedup, one provenance shape.
+    ///
+    /// Static + input-returning rather than a whole import method, so each caller keeps
+    /// the completion it needs: the grid hands these to ``run(inputs:undecoded:)``
+    /// (which reloads the folder), the board to ``importInputs(_:undecoded:)`` (which
+    /// returns the assets to place).
+    nonisolated static func fileInputs(_ urls: [URL], into folder: UUID) -> [IngestInput] {
+        let now = Date()
+        return urls.map { DirectInputReader.fileInput(fileURL: $0, into: folder, at: now) }
+    }
+
     /// The awaitable ingest CORE shared by the grid path (``run``, fire-and-forget)
     /// and the canvas drop path (059 · SP3 / 1A·2A — `await` → place). Runs the
     /// batch through the coordinator, drives `progress` / `status`, and RETURNS the
@@ -2208,14 +2241,19 @@ final class IngestionModel: ObservableObject {
         return url
     }
 
-    /// Add a color item (003 · C1) to the current folder from a user-typed hex or
-    /// color-picker selection. Media-less, so it skips the blob pipeline entirely
-    /// and goes straight through `ingestContent` with local-paste provenance;
-    /// canonicalization + dedup happen in the funnel. A malformed hex surfaces via
-    /// ``lastError``. Reloads the folder on success (`perform`).
-    func addColor(hex: String) {
-        let folder = selectedFolderID
-        perform { services in
+    /// Add a color item (003 · C1) to `folder` from a user-typed hex or color-picker
+    /// selection. Media-less, so it skips the blob pipeline entirely and goes straight
+    /// through `ingestContent` with local-paste provenance; canonicalization + dedup
+    /// happen in the funnel. A malformed hex surfaces via ``lastError``. Reloads the
+    /// target folder on success.
+    ///
+    /// The target is a PARAMETER, not `selectedFolderID`. That field is the last
+    /// collection whose contents were loaded, which is not the collection the user is
+    /// looking at when the add is triggered from Home or a Space — a swatch added
+    /// there landed in an off-screen folder and read as "nothing happened". Callers
+    /// pass the same resolved target their drop / ⌘V paths use.
+    func addColor(hex: String, into folder: UUID) {
+        perform(reloading: folder) { services in
             _ = try await services.ingestContent(
                 .color(hex: hex),
                 from: SourceDraft(platform: .localPaste, capturedAt: Date()),
@@ -2223,16 +2261,17 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Add a link item (003 · C2) to the current folder from a user-typed URL. When
-    /// the input is a usable http(s) URL it is RESOLVED (001 · C2b) — og:title /
-    /// description / og:image fill the card (SSRF-walled). A resolution failure still
-    /// saves a bare link keyed by the URL. A non-URL string falls through to the funnel,
-    /// which surfaces `.invalidLinkURL` into ``lastError``.
-    func addLink(url raw: String) {
+    /// Add a link item (003 · C2) to `folder` from a user-typed URL. When the input is
+    /// a usable http(s) URL it is RESOLVED (001 · C2b) — og:title / description /
+    /// og:image fill the card (SSRF-walled). A resolution failure still saves a bare
+    /// link keyed by the URL. A non-URL string falls through to the funnel, which
+    /// surfaces `.invalidLinkURL` into ``lastError``.
+    ///
+    /// Takes its target explicitly, for the reason ``addColor(hex:into:)`` explains.
+    func addLink(url raw: String, into folder: UUID) {
         guard isReady else { return }
-        let folder = selectedFolderID
         guard let url = Self.webURL(fromUserInput: raw) else {
-            perform { services in
+            perform(reloading: folder) { services in
                 _ = try await services.ingestContent(
                     .link(url: raw),
                     from: SourceDraft(platform: .web, originalURL: raw, capturedAt: Date()),

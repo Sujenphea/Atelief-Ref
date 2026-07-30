@@ -297,6 +297,52 @@ struct CollectionView: View {
             // otherwise the lone import pill needs its own.
             .padding(.bottom, model.selection.isSelecting ? 0 : Theme.Spacing.lg)
         }
+        // The floating "+" (moved down from the shell). Hidden while the full-window
+        // item detail is up: this is an overlay on the PANE, and the detail host is a
+        // later sibling in `body`'s ZStack, so a visible "+" would float over a page
+        // it can add nothing to.
+        .floatingAdd(isPresented: nav.presentedItemID == nil, items: addItems)
+    }
+
+    /// What "+" offers on a collection: the three ways content enters it, then — below
+    /// a rule, because it's a different kind of act — promoting the whole collection to
+    /// a board.
+    ///
+    /// Every entry resolves its target through `resolve()` AT INVOCATION rather than
+    /// capturing `importTargetID` when the menu is built, for the reason
+    /// ``importTargetID`` documents at length: this screen has one view identity across
+    /// every collection, so a closure can outlive the `collectionID` it was built with.
+    /// `nav` is a reference type, so reading it inside the closure is always current.
+    private var addItems: [FloatingAddItem] {
+        let nav = self.nav
+        let fallback = collectionID
+        let resolve = {
+            Self.resolveImportTarget(
+                path: nav.path, sidebar: nav.sidebarSelection, fallback: fallback)
+        }
+        return [
+            .action("Import Images…", systemImage: "photo.badge.plus") {
+                let target = resolve()
+                ImportFilesPanel.present { urls in
+                    model.run(inputs: IngestionModel.fileInputs(urls, into: target))
+                }
+            },
+            .popover("Add Link…", systemImage: "link.badge.plus") { dismiss in
+                AddLinkForm(
+                    onAdd: { model.addLink(url: $0, into: resolve()) }, onDismiss: dismiss)
+            },
+            .popover("Add Color…", systemImage: "paintpalette") { dismiss in
+                AddColorForm(
+                    onAdd: { model.addColor(hex: $0, into: resolve()) }, onDismiss: dismiss)
+            },
+            .separator,
+            .action("New Space from Collection", systemImage: "square.on.square") {
+                let target = resolve()
+                Task {
+                    if let sid = await model.newSpaceFromCollection(target) { nav.openSpace(sid) }
+                }
+            },
+        ]
     }
 
     /// This screen's move/copy targets, memoized (012 · CQ 1A) so every eager

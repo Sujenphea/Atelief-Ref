@@ -11,10 +11,64 @@
 import AppKit
 import SwiftUI
 
-/// One entry in the floating add menu — a title and the closure to run when picked.
+/// One entry in the floating add menu.
+///
+/// Three shapes, all carried by the same value so a pane can describe its whole menu
+/// as one array literal:
+///
+///  - an **action** — a title, an optional glyph, and the closure to run when picked;
+///  - a **popover** — the same, but picking it raises a SwiftUI form ANCHORED on the
+///    "+" instead of running immediately. An `NSMenu` can't host a SwiftUI popover, so
+///    the item only names the content; ``FloatingAddControl`` owns the presentation
+///    (see its `openPopover`) and hands the body a `dismiss` closure to close itself
+///    once it commits;
+///  - a **separator** — an `NSMenuItem.separator()`, to group by weight.
+///
+/// `title` doubles as the identity ``FloatingAddControl`` looks a popover body up by
+/// (menu titles are unique within a menu). Deliberately NOT a per-instance `UUID`:
+/// the menu is rebuilt on every body pass, so a fresh id would change under an OPEN
+/// popover and the lookup would come back empty mid-edit.
 struct FloatingAddItem {
     let title: String
+    let systemImage: String?
     let action: () -> Void
+    /// The popover body, given a closure that dismisses it. `nil` for a plain action.
+    let popover: ((@escaping () -> Void) -> AnyView)?
+    let isSeparator: Bool
+
+    init(
+        title: String,
+        systemImage: String? = nil,
+        popover: ((@escaping () -> Void) -> AnyView)? = nil,
+        isSeparator: Bool = false,
+        action: @escaping () -> Void = {}
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.popover = popover
+        self.isSeparator = isSeparator
+        self.action = action
+    }
+
+    /// A menu entry that runs `action` immediately.
+    static func action(
+        _ title: String, systemImage: String? = nil, _ action: @escaping () -> Void
+    ) -> FloatingAddItem {
+        FloatingAddItem(title: title, systemImage: systemImage, action: action)
+    }
+
+    /// A menu entry that raises `content` as a popover on the "+".
+    static func popover(
+        _ title: String, systemImage: String? = nil,
+        @ViewBuilder content: @escaping (@escaping () -> Void) -> some View
+    ) -> FloatingAddItem {
+        FloatingAddItem(
+            title: title, systemImage: systemImage,
+            popover: { dismiss in AnyView(content(dismiss)) })
+    }
+
+    /// A grouping rule between two runs of entries.
+    static let separator = FloatingAddItem(title: "—", isSeparator: true)
 }
 
 /// A circular `NSButton` whose visible disc is drawn in a dedicated sublayer kept as a
@@ -62,8 +116,10 @@ private final class RoundButton: NSButton {
     private func setHovered(_ hovered: Bool) {
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.12)
-        disc.shadowRadius = hovered ? 16 : 12
-        disc.shadowOpacity = hovered ? 0.7 : 0.55
+        // Hover DEEPENS the resting elevation rather than replacing it, so the two
+        // states can't drift apart when the token moves.
+        disc.shadowRadius = Theme.Elevation.hover.radius + (hovered ? 2 : 0)
+        disc.shadowOpacity = Float(Theme.Elevation.hover.opacity) + (hovered ? 0.15 : 0)
         // Scale about each layer's center (default anchor 0.5,0.5) so the disc + glyph
         // grow in place; `layout()` only rewrites frames, never the transform.
         let t = CATransform3DMakeScale(hovered ? 1.06 : 1, hovered ? 1.06 : 1, 1)
@@ -120,10 +176,17 @@ private func plusGlyphImage(_ color: NSColor) -> CGImage? {
     return out.cgImage(forProposedRect: &rect, context: nil, hints: nil)
 }
 
-/// A circular ink-on-white `NSButton` that pops an `NSMenu` built from `items`.
+/// A circular ink-on-white `NSButton` that pops an `NSMenu` built from `items` — or,
+/// when `directAction` is set, runs that one action on click and shows no menu at all.
+/// A pane with exactly one thing to add shouldn't make the user pick it out of a menu
+/// of one (the Space board's "import images").
 struct FloatingAddButton: NSViewRepresentable {
     var diameter: CGFloat = 40
-    var items: [FloatingAddItem]
+    var items: [FloatingAddItem] = []
+    /// When non-nil, a click runs this instead of popping the menu.
+    var directAction: (() -> Void)?
+    /// The button's tooltip — the only affordance label a bare "+" disc can carry.
+    var help: String?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -147,17 +210,13 @@ struct FloatingAddButton: NSViewRepresentable {
         button.layer?.masksToBounds = false
 
         // The visible circle + shadow live on `disc`; `layout()` keeps it a centered
-        // square. Mirrors `Theme.Elevation.hover` (AppKit y is not flipped → negative
-        // offset = downward shadow).
-        button.disc.backgroundColor = NSColor(hex: 0xF2F1EE).cgColor
-        button.disc.masksToBounds = false
-        button.disc.shadowColor = NSColor.black.cgColor
-        button.disc.shadowOpacity = 0.55
-        button.disc.shadowRadius = 12
-        button.disc.shadowOffset = CGSize(width: 0, height: -6)
+        // square. The resting lift is `Theme.Elevation.hover` itself now, not a
+        // hand-copy of it — see `applyElevation`.
+        button.disc.backgroundColor = Theme.NS.inkPrimary.cgColor
+        button.disc.applyElevation(.hover)
 
         button.glyph.contentsGravity = .resizeAspect
-        button.glyph.contents = plusGlyphImage(NSColor(hex: 0x141416))
+        button.glyph.contents = plusGlyphImage(Theme.NS.mediaBackdrop)
 
         // Order matters: `disc` behind, `glyph` in front.
         button.layer?.addSublayer(button.disc)
@@ -170,6 +229,8 @@ struct FloatingAddButton: NSViewRepresentable {
 
     func updateNSView(_ button: NSButton, context: Context) {
         context.coordinator.items = items
+        context.coordinator.directAction = directAction
+        button.toolTip = help
         (button as? RoundButton)?.diameter = diameter
     }
 
@@ -184,14 +245,29 @@ struct FloatingAddButton: NSViewRepresentable {
 
     final class Coordinator: NSObject {
         var items: [FloatingAddItem] = []
+        var directAction: (() -> Void)?
 
         @objc func clicked(_ sender: NSButton) {
+            // One thing to add → do it. No menu.
+            if let directAction {
+                directAction()
+                return
+            }
+
             let menu = NSMenu()
             for item in items {
+                guard !item.isSeparator else {
+                    menu.addItem(.separator())
+                    continue
+                }
                 let mi = NSMenuItem(
                     title: item.title, action: #selector(fire(_:)), keyEquivalent: "")
                 mi.target = self
                 mi.representedObject = item.action
+                if let symbol = item.systemImage {
+                    mi.image = NSImage(
+                        systemSymbolName: symbol, accessibilityDescription: item.title)
+                }
                 menu.addItem(mi)
             }
 
