@@ -34,7 +34,7 @@ import SwiftUI
 /// A fixed palette rather than a colour well is the point of the feature: recolouring
 /// is one click on a board, not a trip through the system picker. The full-fidelity
 /// `ColorPicker` stays in ``ElementInspector`` for anything off-palette.
-enum TextPalette {
+nonisolated enum TextPalette {
     /// A named swatch. The hex is stored verbatim in ``ElementStyle/textColor``.
     struct Swatch: Identifiable, Equatable {
         let name: String

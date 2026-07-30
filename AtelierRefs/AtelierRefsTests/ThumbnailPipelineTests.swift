@@ -297,7 +297,7 @@ struct ThumbnailPipelineTests {
         // this isolation and land a bitmap decode mid-scroll on the main thread —
         // 036 §5's named suspect. `Task.detached` is what prevents that, and this
         // is the regression guard on it.
-        #expect(Thread.isMainThread)
+        dispatchPrecondition(condition: .onQueue(.main))
         let probe = DecodeProbe()
         let pipeline = ThumbnailPipeline(decode: probe.decode)
 

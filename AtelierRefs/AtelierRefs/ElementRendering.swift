@@ -143,7 +143,7 @@ enum ElementRendering {
 
     /// Parse `#rrggbb` / `#rrggbbaa` (leading `#` optional) into an `RGBAColor`,
     /// or `nil` for a nil / malformed string (so an unset colour stays unset).
-    static func rgba(fromHex hex: String?) -> RGBAColor? {
+    nonisolated static func rgba(fromHex hex: String?) -> RGBAColor? {
         guard var s = hex else { return nil }
         if s.hasPrefix("#") { s.removeFirst() }
         guard s.count == 6 || s.count == 8, let v = UInt64(s, radix: 16) else { return nil }
@@ -191,7 +191,7 @@ extension TweetContent {
 
 extension Color {
     /// Build a SwiftUI colour from a renderer `RGBAColor` (sRGB).
-    init(rgba c: RGBAColor) {
+    nonisolated init(rgba c: RGBAColor) {
         self.init(.sRGB, red: c.red, green: c.green, blue: c.blue, opacity: c.alpha)
     }
 

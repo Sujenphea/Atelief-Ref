@@ -30,7 +30,7 @@ enum DropTarget: Equatable {
 /// The resolved effect of a drop. `reorder` carries the dragged ids PLUS the
 /// insertion slot (040) — the WYSIWYG commit reproduces exactly the previewed
 /// order via `reorderedIDs(ids:movingIDs:insertAt:)`.
-enum DropOutcome: Equatable {
+nonisolated enum DropOutcome: Equatable {
     /// Refuse the drop (no state change, never a crash).
     case reject
     /// Reorder the dragged block to `insertAt` in the block-removed order.

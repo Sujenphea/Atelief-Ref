@@ -20,7 +20,7 @@ import Foundation
 /// The Library grid's selection state (009 · N2). Selection MODE is derived, not
 /// stored — "selecting" is simply `!ids.isEmpty`, so there is no separate flag to
 /// drift out of sync.
-struct GridSelection: Equatable {
+nonisolated struct GridSelection: Equatable {
     /// The selected membership ids (order-independent; feed order lives in the
     /// grid's `items`).
     var ids: Set<UUID> = []
@@ -46,7 +46,7 @@ struct GridSelection: Equatable {
 /// What the view must do after a selection transition (009 · N2). The reducer
 /// decides; the view executes — so the mode-dependent "does this open detail?"
 /// rule is testable without any UI.
-enum GridSelectionEffect: Equatable {
+nonisolated enum GridSelectionEffect: Equatable {
     /// Nothing beyond publishing the new selection.
     case none
     /// Open the full-window detail page for this membership id.
@@ -56,7 +56,7 @@ enum GridSelectionEffect: Equatable {
 }
 
 /// A user gesture or key, resolved against the grid's feed order + column count.
-enum GridSelectionAction: Equatable {
+nonisolated enum GridSelectionAction: Equatable {
     /// A plain click on the thumbnail image: opens detail when idle, toggles
     /// while selecting (never opens detail mid-triage).
     case tapImage(UUID)
@@ -255,7 +255,7 @@ func gridClickAction(imageID id: UUID, shift: Bool, command: Bool) -> GridSelect
 /// What the mouse-DOWN edge of a cell-image interaction does. `pressAction` is
 /// applied immediately on press; `consumesRelease` tells the cell to swallow the
 /// matching mouse-up click so the action isn't applied twice.
-struct GridPressRouting: Equatable {
+nonisolated struct GridPressRouting: Equatable {
     var pressAction: GridSelectionAction?
     var consumesRelease: Bool
 }

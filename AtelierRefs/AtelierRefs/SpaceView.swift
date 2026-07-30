@@ -22,7 +22,7 @@ import SwiftUI
 /// (051 · 2A). Extracted + pure so the thresholds are unit-tested (051 · 12A) and
 /// the rendering stays compile-only. Selection drives it, never the active tool
 /// (051 · E-4).
-enum SpaceBarMode: Equatable {
+nonisolated enum SpaceBarMode: Equatable {
     case idle   // nothing selected → create tools
     case single // one row → Edit + z-order
     case multi  // 2+ rows → align + distribute + z-order

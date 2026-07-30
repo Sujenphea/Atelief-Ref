@@ -148,7 +148,7 @@ struct ContactSheetMapTests {
 
     @Test("Square images pack round-robin into columns; no captions ⇒ one element each")
     func roundRobinNoCaptions() throws {
-        try Fixture.withTempPNG { url in
+        Fixture.withTempPNG { url in
             let details = (0..<2).map { _ in Fixture.detail(Fixture.asset()) } // 10×10 ⇒ aspect 1
             let map = ContactSheetExport.map(
                 details: details, config: config(columns: 2, captions: false),
@@ -166,7 +166,7 @@ struct ContactSheetMapTests {
 
     @Test("Captions add a text element below each image, in reserved space")
     func captionsBelowImage() throws {
-        try Fixture.withTempPNG { url in
+        Fixture.withTempPNG { url in
             let d = Fixture.detail(Fixture.asset(name: "Ref"))
             let map = ContactSheetExport.map(
                 details: [d], config: config(columns: 1, captions: true),
@@ -188,7 +188,7 @@ struct ContactSheetMapTests {
 
     @Test("Caption height is reserved so the next cell in a column doesn't overlap")
     func captionReservationStacks() throws {
-        try Fixture.withTempPNG { url in
+        Fixture.withTempPNG { url in
             // Two squares in ONE column, captions on: cell height = image(240)+block(22)=262,
             // so the 2nd image starts at 262 + spacing(12) = 274 (not 252 — which would
             // overlap the first caption).
@@ -205,7 +205,7 @@ struct ContactSheetMapTests {
 
     @Test("An un-resolvable row is skipped AND takes no cell (grid stays gap-free)")
     func skipTakesNoCell() throws {
-        try Fixture.withTempPNG { url in
+        Fixture.withTempPNG { url in
             // [image, link-with-no-url, image] in one column, captions off.
             let details = [
                 Fixture.detail(Fixture.asset()),
@@ -239,7 +239,7 @@ struct ContactSheetMapTests {
 
     @Test("Image ids resolve to their registered URLs")
     func registersURLs() throws {
-        try Fixture.withTempPNG { url in
+        Fixture.withTempPNG { url in
             let asset = Fixture.asset()
             let map = ContactSheetExport.map(
                 details: [Fixture.detail(asset)], config: config(columns: 3, captions: false),

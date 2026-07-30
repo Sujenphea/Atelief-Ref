@@ -17,7 +17,7 @@ import Foundation
 /// A screen pushed onto the detail panel's WITHIN-collection drill-down stack
 /// (006 shell). Top-level destinations now live in ``SidebarItem``; `path` carries
 /// only subfolder drill-down (so ⌘[ back still works) and nothing else.
-enum AppRoute: Hashable {
+nonisolated enum AppRoute: Hashable {
     /// A deeper collection drilled into from a subfolder chip.
     case collection(UUID)
     /// The list of spaces (legacy route; retained for compatibility).
@@ -28,7 +28,7 @@ enum AppRoute: Hashable {
 
 /// A top-level sidebar destination (006 split-view shell). The sidebar owns this
 /// selection; `NavModel.path` is kept only for within-collection drill-down.
-enum SidebarItem: Hashable {
+nonisolated enum SidebarItem: Hashable {
     case home
     case search
     case capture

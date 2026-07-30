@@ -22,7 +22,7 @@ import UniformTypeIdentifiers
 /// as, and the type the file promise advertises. Built by
 /// ``AssetExport/exportItem(asset:source:blobURL:)`` and consumed by the grid's
 /// file-promise drag and the detail view's `.onDrag`.
-struct AssetExportItem: Equatable {
+nonisolated struct AssetExportItem: Equatable {
     /// The on-disk full-resolution original (verified to exist at build time).
     let blobURL: URL
     /// `<title-or-source>-<shorthash>.<ext>`, sanitized.

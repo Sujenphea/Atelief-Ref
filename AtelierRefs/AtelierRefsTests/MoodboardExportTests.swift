@@ -242,7 +242,7 @@ struct MoodboardProviderConfigTests {
 
     @Test("Provider decodes a known id and misses an unknown one")
     func provider() throws {
-        try Fixture.withTempPNG { url in
+        Fixture.withTempPNG { url in
             let provider = MoodboardURLImageProvider(urls: ["k": url])
             #expect(provider.cgImage(forID: "k", maxPixelSize: 64) != nil)
             #expect(provider.cgImage(forID: "missing", maxPixelSize: 64) == nil)
