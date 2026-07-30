@@ -315,14 +315,14 @@ struct ItemDetailView: View {
     /// Multiply the zoom by `factor`, clamped to `[1, maxZoom]`; snap the pan back
     /// to centre once we're at fit (nothing to pan there).
     private func zoomBy(_ factor: CGFloat) {
-        withAnimation(.easeOut(duration: 0.15)) {
+        withAnimation(Theme.Motion.gentle) {
             zoom = min(max(zoom * factor, 1), maxZoom)
             if zoom == 1 { pan = .zero }
         }
     }
 
     private func resetZoom() {
-        withAnimation(.easeOut(duration: 0.15)) {
+        withAnimation(Theme.Motion.gentle) {
             zoom = 1
             pan = .zero
         }

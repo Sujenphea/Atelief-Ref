@@ -27,7 +27,7 @@ struct ImportProgressPill: View {
             .padding(.vertical, Theme.Spacing.sm)
             .background(Theme.Colors.field, in: Capsule())
             .overlay(Capsule().strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.35), radius: 14, y: 5)
+            .elevation(.floating)
         }
     }
 }

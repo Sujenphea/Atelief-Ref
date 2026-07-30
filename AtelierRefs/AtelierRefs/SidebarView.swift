@@ -151,7 +151,7 @@ struct SidebarView: View {
         .buttonStyle(.plain)
         // Hover sits BEHIND the row's own selection fill (padding 0 → same rect), so it
         // only reads on non-selected rows; the opaque `selection` fill covers it when active.
-        .hoverHighlight(cornerRadius: 6, opacity: 0.06, padding: 0)
+        .hoverHighlight(cornerRadius: 6, fill: Theme.Colors.hoverRow, padding: 0)
     }
 
     // MARK: - Spaces

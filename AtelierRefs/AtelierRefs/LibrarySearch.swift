@@ -613,7 +613,7 @@ private struct SearchTokenChip: View {
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(Theme.Colors.inkSecondary)
             }
-            .buttonStyle(HoverButtonStyle(cornerRadius: 4, opacity: 0.15, padding: 2))
+            .buttonStyle(HoverButtonStyle(cornerRadius: 4, padding: 2))
             .help("Remove filter")
         }
         .foregroundStyle(Theme.Colors.inkPrimary)
@@ -934,7 +934,7 @@ private struct SearchModeToggle: View {
             let isSelected = mode == value
             let fill: Color = isSelected
                 ? Theme.Colors.selection
-                : (isHovering ? Color.primary.opacity(0.06) : .clear)
+                : (isHovering ? Theme.Colors.hoverRow : .clear)
             return Button { mode = value } label: {
                 Text(title)
                     .font(.system(size: 12, weight: .medium))

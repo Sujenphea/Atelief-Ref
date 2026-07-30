@@ -76,7 +76,7 @@ struct ToastHostView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: center.queue.toasts)
+        .animation(Theme.Motion.toast, value: center.queue.toasts)
     }
 }
 

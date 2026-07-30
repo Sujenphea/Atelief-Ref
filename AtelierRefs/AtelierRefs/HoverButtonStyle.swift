@@ -4,7 +4,7 @@
 //
 //  The one reusable hover treatment for app-chrome buttons. Generalizes the recipe
 //  `SelectionBarIcon` pioneered in the selection action bar — a rounded
-//  `Color.primary` fill that appears on `.onHover`, over a padded
+//  ``Theme/Colors/hoverControl`` fill that appears on `.onHover`, over a padded
 //  `.contentShape` hit area — so every plain chrome button (sidebar toggle / sort /
 //  trash, section disclosure + add, nav rows, the search × controls) reads with the
 //  SAME feedback instead of staying inert under `.buttonStyle(.plain)`.
@@ -12,6 +12,10 @@
 //  Two entry points share one implementation: `HoverButtonStyle` for `Button`s and
 //  `.hoverHighlight()` for the views that aren't buttons (the sort `Menu`, whose
 //  `.menuStyle` ignores a `ButtonStyle`).
+//
+//  The fill is a TOKEN, not a free opacity: `hoverControl` for a glyph button and
+//  `hoverRow` for a full-width row are the only two strengths the app has, and
+//  `selection` is never a hover — it marks where you are.
 //
 
 import SwiftUI
@@ -23,7 +27,7 @@ import SwiftUI
 /// `.buttonStyle(.plain)` alone does not.
 struct HoverHighlight: ViewModifier {
     var cornerRadius: CGFloat = 7
-    var hoverOpacity: Double = 0.10
+    var fill: Color = Theme.Colors.hoverControl
     var padding: CGFloat = 6
 
     @State private var isHovering = false
@@ -34,7 +38,7 @@ struct HoverHighlight: ViewModifier {
             .padding(padding)
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color.primary.opacity(isHovering && isEnabled ? hoverOpacity : 0)))
+                    .fill(isHovering && isEnabled ? fill : .clear))
             .contentShape(Rectangle())
             .onHover { isHovering = $0 }
     }
@@ -43,11 +47,14 @@ struct HoverHighlight: ViewModifier {
 extension View {
     /// Apply the shared chrome hover fill to any view (e.g. a `Menu` that can't take a
     /// `ButtonStyle`). For `Button`s prefer `.buttonStyle(HoverButtonStyle())`.
+    /// Pass ``Theme/Colors/hoverRow`` for a full-width row; the default suits glyphs.
     func hoverHighlight(
-        cornerRadius: CGFloat = 7, opacity: Double = 0.10, padding: CGFloat = 6
+        cornerRadius: CGFloat = 7,
+        fill: Color = Theme.Colors.hoverControl,
+        padding: CGFloat = 6
     ) -> some View {
         modifier(HoverHighlight(
-            cornerRadius: cornerRadius, hoverOpacity: opacity, padding: padding))
+            cornerRadius: cornerRadius, fill: fill, padding: padding))
     }
 }
 
@@ -57,13 +64,13 @@ extension View {
 /// pressed dim, matching the selection action bar's glyphs.
 struct HoverButtonStyle: ButtonStyle {
     var cornerRadius: CGFloat = 7
-    var opacity: Double = 0.10
+    var fill: Color = Theme.Colors.hoverControl
     var padding: CGFloat = 6
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .opacity(configuration.isPressed ? 0.6 : 1)
             .hoverHighlight(
-                cornerRadius: cornerRadius, opacity: opacity, padding: padding)
+                cornerRadius: cornerRadius, fill: fill, padding: padding)
     }
 }

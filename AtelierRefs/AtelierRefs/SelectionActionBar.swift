@@ -29,7 +29,7 @@ struct SelectionBarIcon: View {
             .frame(width: 30, height: 28)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(isHovering ? 0.10 : 0)))
+                    .fill(isHovering ? Theme.Colors.hoverControl : .clear))
             .contentShape(Rectangle())
             .onHover { isHovering = $0 }
     }
@@ -81,7 +81,7 @@ extension View {
             .padding(.vertical, 6)
             .background(Theme.Colors.field, in: Capsule())
             .overlay(Capsule().strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.35), radius: 14, y: 5)
+            .elevation(.floating)
             .padding(.bottom, 16)
     }
 
@@ -149,7 +149,7 @@ struct SelectionMenuSectionHeader: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.primary.opacity(isHovering ? 0.06 : 0)))
+                    .fill(isHovering ? Theme.Colors.hoverRow : .clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -158,8 +158,8 @@ struct SelectionMenuSectionHeader: View {
 }
 
 /// One tappable row in the overflow popover — a destination collection or a leaf
-/// action (Set as Cover). Full-width with the app's radius-6 `selection` hover fill
-/// (the `SidebarView.rowHighlight` idiom), 14pt ink. Pass `isEnabled: false` for a
+/// action (Set as Cover). Full-width with the app's radius-6 `hoverRow` fill (the
+/// `SidebarView` nav-row idiom), 14pt ink. Pass `isEnabled: false` for a
 /// non-tappable empty-state row ("No collections").
 struct SelectionMenuRow: View {
     let title: String
@@ -200,7 +200,7 @@ struct SelectionMenuRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isEnabled && isHovering ? Theme.Colors.selection : .clear))
+                    .fill(isEnabled && isHovering ? Theme.Colors.hoverRow : .clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

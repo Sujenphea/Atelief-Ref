@@ -51,7 +51,7 @@ struct AddColorForm: View {
                     .frame(width: 28, height: 28)
                     .overlay {
                         RoundedRectangle(cornerRadius: Theme.Radius.chip)
-                            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
+                            .strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 1)
                     }
             }
 

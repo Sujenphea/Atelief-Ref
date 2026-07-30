@@ -501,7 +501,7 @@ private struct SwatchDot: View {
         .buttonStyle(.plain)
         .help(swatch.name)
         .onHover { hovering = $0 }
-        .animation(.easeInOut(duration: 0.12), value: hovering)
+        .animation(Theme.Motion.gentle, value: hovering)
     }
 }
 
@@ -657,6 +657,6 @@ private extension View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return background(Theme.Colors.field, in: shape)
             .overlay(shape.strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.35), radius: 14, y: 5)
+            .elevation(.floating)
     }
 }
