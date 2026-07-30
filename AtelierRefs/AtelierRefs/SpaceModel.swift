@@ -622,8 +622,8 @@ final class SpaceModel: ObservableObject {
     /// `IngestionModel.importInputs` / `importRemoteURL`; tests inject a fake. The
     /// ingest runs OFF the serial write chain so a slow download never freezes board
     /// edits (undo / move); only the fast placement is enqueued, once the assets are
-    /// ready. A drop that yields no assets is a silent no-op (the ingest step
-    /// already reported why via `status`). Awaitable so tests can settle it.
+    /// ready. A drop that yields no assets is a no-op here — the ingest step has
+    /// already raised its own notice toast saying why. Awaitable so tests can settle it.
     func importAndPlace(at worldPoint: CGPoint, ingest: @escaping () async -> [Asset]) async {
         let assets = await ingest()
         guard !assets.isEmpty else { return }

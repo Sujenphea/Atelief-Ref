@@ -54,43 +54,11 @@ struct ContentView: View {
             ) {
                 OnboardingSheet(model: model) { didCompleteOnboarding = true }
             }
-            // The toast stack floats over the whole shell (bottom-trailing).
+            // The toast stack floats over the whole shell (bottom-trailing), and
+            // every model event that feeds it is routed in ONE modifier — the shell's
+            // `body` is already at the type-checker's budget (see ``ExportReportToast``).
             .overlay { ToastHostView(center: toasts, onJump: handleJump, onUndo: handleUndo) }
-            // A reversible destructive verb (delete / remove / move) raises ONE
-            // "…— Undo" toast (034 P1). Coalesced into a single slot so a rapid
-            // sequence refreshes the same card — and, since UndoManager is a LIFO
-            // stack, the visible toast always describes the top action its button
-            // will reverse. `handleUndo` re-checks the token before firing.
-            .onChange(of: model.lastUndoableAction) { _, event in
-                guard let event else { return }
-                toasts.post(
-                    message: event.message,
-                    action: .undo(undoToken: event.undoToken),
-                    coalesceKey: "undo-action")
-            }
-            // A landed browser-capture batch raises ONE "Saved — Jump" toast,
-            // coalesced per target folder so a burst never spams one-per-item.
-            .onChange(of: model.lastCaptureBatch) { _, batch in
-                guard let batch else { return }
-                toasts.post(
-                    message: "Saved \(batch.importedCount) to \(batch.collectionName)",
-                    action: .jump(JumpTarget(
-                        collectionID: batch.collectionID, assetIDs: batch.assetIDs)),
-                    coalesceKey: "capture-\(batch.collectionID.uuidString)")
-            }
-            // A ⌘C that couldn't copy everything raises ONE partial-copy toast (052 ·
-            // B1 · 7A). A fully-successful copy is silent — the pasteboard content is
-            // the feedback, matching standard macOS Copy. Coalesced so a rapid repeat
-            // refreshes one card.
-            .onChange(of: model.lastCopyReport) { _, report in
-                guard let report, report.skipped > 0 else { return }
-                let noun = report.skipped == 1 ? "item" : "items"
-                toasts.post(
-                    message: report.copied > 0
-                        ? "Copied \(report.copied) — \(report.skipped) \(noun) had no image"
-                        : "Nothing to copy — \(report.skipped) \(noun) had no image",
-                    coalesceKey: "copy-report")
-            }
+            .modifier(ModelToastRouting(model: model, toasts: toasts))
             // A finished moodboard export raises ONE toast (052 · B3 · 7A): a
             // confirmation on success (noting any skipped media-less refs), an
             // error on failure. A user-cancelled export stays silent. Coalesced.
@@ -195,6 +163,63 @@ struct ContentView: View {
         Binding(
             get: { model.pendingSpaceDeletion != nil },
             set: { if !$0 { model.cancelSpaceDeletion() } })
+    }
+}
+
+/// Every toast the MODEL raises, routed in one place: the four publisher→toast
+/// hops that used to sit inline in the shell's `body`. Split out for the same
+/// reason as ``ExportReportToast`` — the chain had reached the type-checker's
+/// budget, and adding the notice route tipped it over.
+///
+/// Each event owns its own `coalesceKey`, so the four kinds occupy independent
+/// slots and a burst within one kind refreshes a single card.
+private struct ModelToastRouting: ViewModifier {
+    @ObservedObject var model: IngestionModel
+    let toasts: ToastCenter
+
+    func body(content: Content) -> some View {
+        content
+            // A reversible verb raises ONE "…— Undo" toast (034 P1). Coalesced into a
+            // single slot so a rapid sequence refreshes the same card — and, since
+            // UndoManager is a LIFO stack, the visible toast always describes the top
+            // action its button will reverse. `handleUndo` re-checks the token first.
+            .onChange(of: model.lastUndoableAction) { _, event in
+                guard let event else { return }
+                toasts.post(
+                    message: event.message,
+                    action: .undo(undoToken: event.undoToken),
+                    coalesceKey: "undo-action")
+            }
+            // A plain notice (import outcome, restore, snapshot, an unreadable drop).
+            // One shared slot, so a sequence describing one operation — "Downloading
+            // image…" then "Imported 1." — refreshes a card instead of stacking,
+            // exactly as the toolbar status line behaved before 006 removed its reader.
+            .onChange(of: model.lastNotice) { _, notice in
+                guard let notice else { return }
+                toasts.post(message: notice.message, coalesceKey: "notice")
+            }
+            // A landed browser-capture batch raises ONE "Saved — Jump" toast,
+            // coalesced per target folder so a burst never spams one-per-item.
+            .onChange(of: model.lastCaptureBatch) { _, batch in
+                guard let batch else { return }
+                toasts.post(
+                    message: "Saved \(batch.importedCount) to \(batch.collectionName)",
+                    action: .jump(JumpTarget(
+                        collectionID: batch.collectionID, assetIDs: batch.assetIDs)),
+                    coalesceKey: "capture-\(batch.collectionID.uuidString)")
+            }
+            // A ⌘C that couldn't copy everything raises ONE partial-copy toast (052 ·
+            // B1 · 7A). A fully-successful copy is silent — the pasteboard content is
+            // the feedback, matching standard macOS Copy.
+            .onChange(of: model.lastCopyReport) { _, report in
+                guard let report, report.skipped > 0 else { return }
+                let noun = report.skipped == 1 ? "item" : "items"
+                toasts.post(
+                    message: report.copied > 0
+                        ? "Copied \(report.copied) — \(report.skipped) \(noun) had no image"
+                        : "Nothing to copy — \(report.skipped) \(noun) had no image",
+                    coalesceKey: "copy-report")
+            }
     }
 }
 
