@@ -23,3 +23,8 @@ DerivedData/
 # A stray raw capture at the repo root (belongs in /resources/) — ignored so real
 # bookmark data can't be committed by accident.
 /twitter-bookmark-folder-response.json
+
+# Vendored reference apps read for comparison (e.g. Nook), not part of the build.
+# ~10 MB of third-party source that sat untracked in every `git status`, one
+# `git add .` away from being committed into this repo's history.
+/ref/

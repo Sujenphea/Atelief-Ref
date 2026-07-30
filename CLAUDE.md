@@ -18,8 +18,15 @@ Format: `[type]: [scope] - [message]` (max 80 chars)
     `002-glass-research.md`, `003-glass-design.md`, `004-glass-plan.md`)
   - Where xxx is the index number of the file.
   - Kinds: `overview` (synthesis, decisions, index), `research`, `design` (spec),
-    `plan` (implementation plan)
+    `plan` (implementation plan). A measured exercise may also produce
+    `protocol` (how the measurement is run), `results` and `verification`.
   - One file per kind — merge related notes rather than scattering files
+  - A doc may own a sibling `xxx-results/` directory for raw artifacts (traces,
+    captures) that are too bulky to inline.
+  - Indices are allocation-order, not a sort key, and are **never reused** — docs
+    cross-reference each other by number in prose and in relative links, so
+    renumbering an existing doc silently breaks them. Two docs currently share
+    `039` and `059`; leave them, and take the next free number.
 
 
 ## Tooling

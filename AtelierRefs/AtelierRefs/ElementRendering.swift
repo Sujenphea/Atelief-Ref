@@ -25,14 +25,25 @@ enum ElementRendering {
     /// The same colour as stored — ONE source, so a new box and a legacy row with no
     /// colour can't disagree.
     static var defaultTextColorHex: String { hex(from: defaultTextColor) }
-    static let defaultLabelColorHex = "#3A3A3C"
+    /// A frame's LABEL. The same white as body text, and defined in terms of it so
+    /// the two cannot drift apart again.
+    ///
+    /// A frame defaults to no fill (see ``defaultFrameStyle()``), so its label sits
+    /// directly on the dark board — the near-black this used to be was invisible
+    /// there, exactly as ``defaultTextColor`` was before it was flipped.
+    static var defaultLabelColorHex: String { defaultTextColorHex }
     static let defaultFrameStrokeHex = "#8E8E93"
     static let defaultFrameStrokeWidth: Double = 2
     static let frameCornerRadius: Double = 4
 
     // Media-less kind tiles (003 · O1) — a color swatch / a bare link·tweet card,
-    // drawn as vector frames (no blob to decode). Dark label on a light card,
-    // matching the freeform frame/text defaults (a light canvas).
+    // drawn as vector frames (no blob to decode).
+    //
+    // These stay a DARK label on a LIGHT card, and that is not a leftover from the
+    // light-canvas era: the card draws its own opaque `mediaLessCardFill`, so it
+    // reads as a physical card lying on the dark board, and its label has to
+    // contrast with the CARD rather than with the board. A frame element is the
+    // opposite case — no fill, so its label contrasts with the board.
     static let mediaLessCardFill = RGBAColor(red: 0.93, green: 0.93, blue: 0.95)
     static let mediaLessCardStroke = RGBAColor(red: 0.56, green: 0.56, blue: 0.58) // #8E8E93
     static let mediaLessLabelColor = RGBAColor(red: 0.23, green: 0.23, blue: 0.25) // #3A3A3C
@@ -59,7 +70,9 @@ enum ElementRendering {
                 guard let text = style.text, !text.isEmpty else { return nil }
                 return TextStyle(
                     string: text, fontSize: style.fontSize ?? 16,
-                    color: rgba(fromHex: style.textColor) ?? RGBAColor(red: 0.23, green: 0.23, blue: 0.25))
+                    // A frame draws on the bare board, so a label with no stored
+                    // colour takes the board's text default, not a dark literal.
+                    color: rgba(fromHex: style.textColor) ?? defaultTextColor)
             }()
             return .frame(FrameStyle(
                 fill: rgba(fromHex: style.fillColor),

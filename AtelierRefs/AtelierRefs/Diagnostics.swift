@@ -14,15 +14,27 @@
 import Foundation
 import OSLog
 
-/// The shared logging namespace (010 · Phase 3). New logging should route through
+/// The shared logging namespace (010 · Phase 3). New logging routes through
 /// `AppLog.<area>` rather than ad-hoc `Logger` instances, so diagnostics + Console
 /// filtering stay consistent.
+///
+/// That instruction had drifted: four subsystems were in use across one app —
+/// `com.atelierrefs.app` here, `so.atelier.refs` in three hand-rolled `Logger`s, and
+/// `so.atelier.capture` in the server — so no single Console filter showed the app's
+/// output. There is now one, and it is the BUNDLE ID, which is what Console offers
+/// to filter by and the only one of the four that matched anything real.
 nonisolated enum AppLog {
-    static let subsystem = "com.atelierrefs.app"
+    static let subsystem = "sujenphea.AtelierRefs"
     static let model = Logger(subsystem: subsystem, category: "model")
     static let capture = Logger(subsystem: subsystem, category: "capture")
     static let diagnostics = Logger(subsystem: subsystem, category: "diagnostics")
     static let thumbnails = Logger(subsystem: subsystem, category: "thumbnails")
+    /// Library search (044/045).
+    static let search = Logger(subsystem: subsystem, category: "search")
+    /// The background analysis coordinator.
+    static let analysis = Logger(subsystem: subsystem, category: "analysis")
+    /// Per-batch ingest timing (059).
+    static let ingestTiming = Logger(subsystem: subsystem, category: "ingest-timing")
 }
 
 /// The non-sensitive facts a diagnostics report is built from. No titles, URLs,

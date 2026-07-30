@@ -276,7 +276,6 @@ final class IngestionModel: ObservableObject {
 
     /// Ingest-timing log (16A). A stall means generating the eager thumbnail tiers
     /// dominated the ingest — the signal to make the largest tier lazy (P16).
-    nonisolated private static let ingestLog = Logger(subsystem: "so.atelier.refs", category: "ingest-timing")
     /// Above this thumbnail-phase time (ms) we log a stall. Tuned to catch the
     /// decode-heavy large tier without noise on ordinary small images.
     nonisolated private static let thumbnailStallMs = 250.0
@@ -289,7 +288,7 @@ final class IngestionModel: ObservableObject {
         let thumbMs = Int(timing.thumbnailMillis)
         let totalMs = Int(timing.totalMillis)
         let tiers = timing.tiersGenerated
-        ingestLog.notice("thumbnail stall: \(thumbMs)ms for \(tiers) tiers (total \(totalMs)ms)")
+        AppLog.ingestTiming.notice("thumbnail stall: \(thumbMs)ms for \(tiers) tiers (total \(totalMs)ms)")
     }
 
     /// The protected default import target (available before the Library opens).

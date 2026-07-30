@@ -26,7 +26,7 @@
 import AtelierCore
 import AtelierIngestion
 import Foundation
-import os
+import OSLog
 
 /// Drains the analysis + embedding backfills on an idle background loop (047 · 3a).
 /// A value type composing the collaborators; the owning model holds its `Task` and
@@ -38,7 +38,6 @@ struct AnalysisCoordinator: Sendable {
     /// embedding + re-verify passes are skipped (analysis still runs).
     private let embeddingAvailable: Bool
 
-    private static let log = Logger(subsystem: "so.atelier.refs", category: "analysis-coordinator")
 
     /// How many already-embedded assets to re-hash for text drift per pass — bounded
     /// so a pass stays cheap; the sweep covers the library over successive passes.
@@ -72,7 +71,7 @@ struct AnalysisCoordinator: Sendable {
         } catch is CancellationError {
             // Coordinator torn down mid-pass — silent.
         } catch {
-            Self.log.error("backfill pass failed: \(String(describing: error))")
+            AppLog.analysis.error("backfill pass failed: \(String(describing: error))")
         }
         return didWork
     }

@@ -18,7 +18,7 @@ import AppKit
 import AtelierCore
 import AtelierIngestion
 import Combine
-import os
+import OSLog
 import SwiftUI
 
 // MARK: - Token + scope
@@ -111,7 +111,6 @@ final class LibrarySearchModel: ObservableObject {
     private var queryTask: Task<Void, Never>?
     private var suggestTask: Task<Void, Never>?
 
-    private static let logger = Logger(subsystem: "so.atelier.refs", category: "search")
 
     /// The query executor — the injectable seam (12A). Defaults to the live
     /// service call; tests replace it to drive success / failure / cancellation
@@ -286,7 +285,7 @@ final class LibrarySearchModel: ObservableObject {
                 // relevance), so trap it in debug; other errors are runtime DB
                 // failures — log and surface distinctly (an empty `results` alone
                 // reads as "no matches" and hides that the search errored).
-                Self.logger.error("search query failed: \(String(describing: error))")
+                AppLog.search.error("search query failed: \(String(describing: error))")
                 if case AtelierError.relevanceSortUnpageable = error {
                     assertionFailure("relevance sort must never be paged from the search UI")
                 }
@@ -319,7 +318,7 @@ final class LibrarySearchModel: ObservableObject {
                 return
             } catch {
                 guard !Task.isCancelled else { return }
-                Self.logger.error("suggestion fetch failed: \(String(describing: error))")
+                AppLog.search.error("suggestion fetch failed: \(String(describing: error))")
                 suggestions = []
             }
         }

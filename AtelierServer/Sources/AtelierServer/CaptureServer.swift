@@ -38,12 +38,26 @@ public actor CaptureServer {
 
     // MARK: - Version handshake (010 · Phase 3)
 
-    /// This app's version, reported on `/health`. Source of truth for the
-    /// extension↔app compatibility check; bump alongside the extension `manifest`.
-    public static let appVersion = "0.1.0"
+    /// This app's version, reported on `/health` — read from the host bundle.
+    ///
+    /// It was the literal `"0.1.0"` under a comment calling itself the source of
+    /// truth, while the app's `MARKETING_VERSION` said `1.0`. So `/health` reported a
+    /// version the app did not have, and the diagnostics report — which reads
+    /// `CFBundleShortVersionString` — disagreed with it. A version the build already
+    /// knows should not be maintained by hand in a second place.
+    ///
+    /// The fallback covers a host-less run (`swift test`), where this value is not
+    /// under test.
+    public static let appVersion =
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+
     /// The extension version range this app accepts. The extension GETs `/health`,
     /// compares its own `manifest.version`, and warns the user to update when it
     /// falls outside — instead of silently drifting out of contract.
+    ///
+    /// These stay hand-maintained on purpose: they are a PROTOCOL range, not the
+    /// app's version. They move when the wire contract changes, which is a different
+    /// event from shipping a build — hence bumped alongside the extension manifest.
     public static let minExtensionVersion = "0.1.0"
     public static let maxExtensionVersion = "0.1.0"
 
@@ -120,7 +134,10 @@ struct CaptureHTTPHandler: HTTPHandler {
 
     /// Request/outcome observability (decision 4A). Method/path/status are logged
     /// `.public`; the token, image bytes and provenance are NEVER logged.
-    private static let log = Logger(subsystem: "so.atelier.capture", category: "endpoint")
+    /// The app's bundle id, restated: this package cannot see the app's `AppLog`, so
+    /// it mirrors the subsystem the way `Theme.NS` mirrors the palette. One filter in
+    /// Console then shows the endpoint's traffic alongside everything else.
+    private static let log = Logger(subsystem: "sujenphea.AtelierRefs", category: "capture-endpoint")
 
     /// Raised while streaming a body when it exceeds the cap — distinguishes a
     /// too-large upload (→ 413) from an I/O failure (→ 500).
