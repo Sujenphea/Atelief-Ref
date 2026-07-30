@@ -486,6 +486,16 @@ final class IngestionModel: ObservableObject {
                 services: services, directory: layout.snapshots)
             self.snapshotManager = snapshots
 
+            // The safety nets must not fail silently (008 review, 8A): if the
+            // last open migrated the library WITHOUT its pre-migration snapshot,
+            // say so — once — and point at the manual remedy.
+            if snapshots.consumePreMigrationSnapshotFailure() {
+                AppLog.model.error(
+                    "pre-migration snapshot failed; library migrated without a safety copy")
+                notify("Couldn't take the pre-update safety snapshot — "
+                    + "consider Snapshot Now in Settings.")
+            }
+
             // Any sweep still "open" at launch is abandoned (nothing is running yet),
             // so reconcile it to paused — otherwise a tab closed mid-sweep last session
             // would show as a phantom "running" job forever.
@@ -495,10 +505,6 @@ final class IngestionModel: ObservableObject {
             // removed outside deleteAssets, so a future sweep re-imports that source
             // instead of dedup-skipping bytes that are gone.
             _ = try? await services.reconcileOrphanedKnownItems()
-
-            // Daily-on-launch snapshot if the newest daily is >1 day stale (008
-            // H3, confirmed on-by-default). Best-effort; never blocks launch.
-            await snapshots.snapshotIfStale()
 
             await refreshFolders()
             // Spaces load here too — the sidebar's `.task` can run BEFORE this
@@ -512,7 +518,25 @@ final class IngestionModel: ObservableObject {
             // Reclaim blobs orphaned by deletes that were never undone (010 ·
             // delete-undo). Off-main, after the UI is up; the undo history is empty
             // at launch, so any unreferenced blob is unreachable.
-            runOrphanBlobGC(services: services, store: store)
+            //
+            // EXCEPT on the first launch after a restore (008 review, 3A): the
+            // restored DB is older than the disk, so "unreferenced" includes media
+            // captured AFTER the snapshot — reaping now would silently trash it.
+            // That launch reconciles and REPORTS both divergence directions
+            // instead; the next launch's GC reclaims whatever isn't rescued.
+            if snapshots.consumeJustRestored() {
+                runPostRestoreBlobReconcile(services: services, store: store)
+            } else {
+                runOrphanBlobGC(services: services, store: store)
+            }
+
+            // Daily-on-launch snapshot if the newest daily is >1 day stale (008
+            // H3, confirmed on-by-default). Fired AFTER content loads (008
+            // review, 13A): the `VACUUM INTO` cost grows with the DB (analysis
+            // tables), and it has no ordering dependency on anything above — a
+            // concurrent capture write just queues behind the writer briefly.
+            // Best-effort; never blocks or disrupts launch.
+            Task { await snapshots.snapshotIfStale() }
 
             // Wire the (previously dormant) on-device analysis pipeline: an idle
             // .background loop that drains OCR/colors/phash then the semantic
@@ -1595,7 +1619,17 @@ final class IngestionModel: ObservableObject {
         let count = assetIDs.count
         let snapshots = snapshotManager
         enqueueUndoable {
-            _ = try? await snapshots?.snapshot(reason: .preDestructive)
+            // The coarse net, freshness-gated (008 review, 14A): skipped when any
+            // snapshot is <10 min old. Its failure is surfaced but never blocks
+            // the delete — the in-DB recoverable backup below still protects it
+            // (008 review, 8A).
+            do {
+                _ = try await snapshots?.snapshotBeforeDestruction()
+            } catch {
+                AppLog.model.error(
+                    "pre-destructive snapshot failed: \(String(describing: error))")
+                self.notify("Safety snapshot failed — the delete is still undoable.")
+            }
             do {
                 let backup = try await services.deleteAssetsRecoverable(assetIDs)
                 await self.refreshFolders()
@@ -1647,6 +1681,36 @@ final class IngestionModel: ObservableObject {
             if !reaped.isEmpty {
                 AppLog.model.info(
                     "launch orphan-GC reclaimed \(reaped.count, privacy: .public) file(s)")
+            }
+        }
+    }
+
+    /// The first launch after a restore (008 review, 3A): diff the restored DB's
+    /// referenced blobs against the disk and REPORT both divergence directions —
+    /// items whose media vanished after the snapshot (check the Trash), and media
+    /// captured after the snapshot that the restored DB doesn't know (kept this
+    /// launch, reclaimed by the next launch's GC). Reaps nothing.
+    private func runPostRestoreBlobReconcile(services: AppServices, store: MediaStore) {
+        Task.detached(priority: .utility) {
+            guard let referenced = try? await services.referencedBlobHashes() else { return }
+            let onDisk = Set(store.enumerateBlobFiles().map(\.hash))
+            let report = PostRestoreBlobReport(referenced: referenced, onDisk: onDisk)
+            AppLog.model.info(
+                """
+                post-restore reconcile: \
+                \(report.missingReferenced, privacy: .public) referenced-but-missing, \
+                \(report.keptUnreferenced, privacy: .public) unreferenced-but-kept
+                """)
+            guard !report.isClean else { return }
+            await MainActor.run {
+                if report.missingReferenced > 0 {
+                    self.notify("Restore: \(report.missingReferenced) item(s) reference "
+                        + "media no longer on disk — it may still be in the Trash.")
+                }
+                if report.keptUnreferenced > 0 {
+                    self.notify("Restore: kept \(report.keptUnreferenced) media file(s) "
+                        + "newer than the snapshot; they're cleaned up next launch.")
+                }
             }
         }
     }

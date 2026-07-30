@@ -53,6 +53,54 @@ struct PreMigrationSnapshotTests {
         #expect(preMigrationSnapshots(in: dir).count == 1)
     }
 
+    @Test("an unclean-close library (live -wal) yields a self-contained, healthy snapshot")
+    func uncleanWALSnapshot() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let liveURL = dir.appendingPathComponent("library.sqlite")
+
+        // Build a v3 library whose latest committed rows live ONLY in the -wal:
+        // autocheckpoint off, write, then copy the whole file set aside while the
+        // pool is still open — the copy is exactly what an unclean exit leaves
+        // behind (main file without the newest rows, live -wal, stale -shm).
+        let workURL = dir.appendingPathComponent("work.sqlite")
+        do {
+            let pool = try DatabasePool(path: workURL.path)
+            try Migrator.makeMigrator().migrate(pool, upTo: "v3")
+            try pool.writeWithoutTransaction { db in
+                try db.execute(sql: "PRAGMA wal_autocheckpoint=0")
+                try db.execute(sql: "CREATE TABLE wal_probe(x TEXT NOT NULL)")
+                try db.execute(sql: "INSERT INTO wal_probe VALUES ('committed-in-wal')")
+            }
+            for sidecar in ["", "-wal", "-shm"] {
+                try FileManager.default.copyItem(
+                    atPath: workURL.path + sidecar, toPath: liveURL.path + sidecar)
+            }
+        }
+        #expect(FileManager.default.fileExists(atPath: liveURL.path + "-wal"))
+
+        // Opening through LibraryDatabase stages + promotes a pre-migration snapshot.
+        let db = try LibraryDatabase(path: liveURL.path)
+        _ = db
+        let names = preMigrationSnapshots(in: dir)
+        #expect(names.count == 1)
+        let snapshot = dir.appendingPathComponent("snapshots")
+            .appendingPathComponent(names[0])
+
+        // The snapshot is ONE self-contained file — no sidecars…
+        #expect(!FileManager.default.fileExists(atPath: snapshot.path + "-wal"))
+        #expect(!FileManager.default.fileExists(atPath: snapshot.path + "-shm"))
+        // …that passes the read-only health check (a read-only open must not need
+        // WAL recovery — the exact failure a raw file-copy snapshot hits)…
+        #expect(try AppServices.isHealthy(databaseFileAt: snapshot))
+        // …and contains the rows that were only in the WAL at copy time.
+        var config = Configuration()
+        config.readonly = true
+        let queue = try DatabaseQueue(path: snapshot.path, configuration: config)
+        let probe = try queue.read { try String.fetchAll($0, sql: "SELECT x FROM wal_probe") }
+        #expect(probe == ["committed-in-wal"])
+    }
+
     @Test("a fresh library (first open) takes no pre-migration snapshot")
     func noSnapshotOnFirstOpen() throws {
         let dir = try makeTempDir()

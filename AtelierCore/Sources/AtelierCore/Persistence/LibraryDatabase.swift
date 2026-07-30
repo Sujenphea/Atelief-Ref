@@ -35,14 +35,34 @@ final class LibraryDatabase: Sendable {
     /// never block opening the library.
     init(path: String) throws {
         let migrator = Migrator.makeMigrator()
+        let hadExistingFile = FileManager.default.fileExists(atPath: path)
         // Stage a copy of the existing file BEFORE any connection opens.
         let staged = Self.stagePreMigrationCopy(path: path)
         pool = try DatabasePool(path: path)
         // A read-write pool read avoids the readonly-WAL open hazard. Default to
         // "complete" (discard the staged copy) if the check itself fails.
         let complete = (try? pool.read { try migrator.hasCompletedMigrations($0) }) ?? true
-        Self.finalizePreMigrationSnapshot(staged: staged, keep: !complete)
+        let promoted = Self.finalizePreMigrationSnapshot(staged: staged, keep: !complete)
+        if !complete, hadExistingFile, !promoted {
+            // The migration below proceeds WITHOUT its safety copy. Never block
+            // the open over it — but never let it pass silently either: the app
+            // consumes this marker at bootstrap and tells the user.
+            Self.recordPreMigrationSnapshotFailure(path: path)
+        }
         try migrator.migrate(pool)
+    }
+
+    /// Drop the `.pre-migration-snapshot-failed` marker beside the snapshots so
+    /// the app can surface "your library migrated without a safety copy" on the
+    /// next bootstrap. Best-effort — a disk that can't take a snapshot may not
+    /// take a marker either.
+    private static func recordPreMigrationSnapshotFailure(path: String) {
+        let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
+            .appendingPathComponent("snapshots", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let marker = dir.appendingPathComponent(".pre-migration-snapshot-failed")
+        try? ISO8601DateFormatter().string(from: Date())
+            .write(to: marker, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Pre-migration snapshot (008 H3)
@@ -50,53 +70,94 @@ final class LibraryDatabase: Sendable {
     /// Copy the existing DB (+ `-wal`/`-shm` sidecars) to a staging file next to
     /// it, before any connection opens. Returns the staging base URL, or `nil`
     /// when there's nothing to copy (fresh library) or the copy fails.
+    ///
+    /// Performance invariant: this runs on EVERY launch (the pending-migration
+    /// check needs an open pool, which must come after the copy), but on APFS
+    /// `copyItem` is a copy-on-write clone — metadata-cheap at any DB size — so
+    /// stage-then-discard is deliberately unguarded by a schema pre-check. Keep
+    /// anything with real cost (checkpointing, integrity checks) in
+    /// `finalizePreMigrationSnapshot`, which only runs when a migration is
+    /// actually pending; this hot path must stay clone + delete.
     private static func stagePreMigrationCopy(path: String) -> URL? {
         let fm = FileManager.default
         guard fm.fileExists(atPath: path) else { return nil }
         let fileURL = URL(fileURLWithPath: path)
         let dir = fileURL.deletingLastPathComponent()
             .appendingPathComponent("snapshots", isDirectory: true)
+        let staging = dir.appendingPathComponent(
+            ".staging-\(UUID().uuidString.prefix(8).lowercased()).sqlite")
         do {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            let staging = dir.appendingPathComponent(
-                ".staging-\(UUID().uuidString.prefix(8).lowercased()).sqlite")
-            try fm.copyItem(at: fileURL, to: staging)
-            for sidecar in ["-wal", "-shm"] {
-                let src = URL(fileURLWithPath: path + sidecar)
-                if fm.fileExists(atPath: src.path) {
-                    try? fm.copyItem(
-                        at: src, to: URL(fileURLWithPath: staging.path + sidecar))
-                }
-            }
+            // All-or-nothing: a copy missing its WAL is a snapshot missing
+            // committed transactions — fail the whole staging instead.
+            try SQLiteFileSet(base: fileURL).copy(to: SQLiteFileSet(base: staging))
             return staging
         } catch {
+            SQLiteFileSet(base: staging).remove() // no partial staging litter
             return nil
         }
     }
 
     /// Promote the staged copy to a `pre-migration-…` snapshot (`keep`), or delete
     /// it (migration wasn't needed / no staging). Best-effort.
-    private static func finalizePreMigrationSnapshot(staged: URL?, keep: Bool) {
-        guard let staged else { return }
-        let fm = FileManager.default
-        let sidecars = ["", "-wal", "-shm"]
+    ///
+    /// Promotion first NORMALIZES the staged copy — checkpoints its WAL so the
+    /// snapshot is one self-contained `.sqlite` file, like every `VACUUM INTO`
+    /// snapshot. Without this, a copy taken after an unclean exit carries a live
+    /// `-wal`/stale `-shm`, and a sidecar-carrying snapshot is fragile: read-only
+    /// opens may need WAL recovery they cannot perform, and every downstream
+    /// consumer (size, delete, prune, restore) has to know about sidecars. If
+    /// normalization fails (the copy can't even open), the snapshot is promoted
+    /// as-is with its sidecars — a degraded recovery point beats none.
+    /// Returns whether the snapshot obligation was met: `true` when the staged
+    /// copy was promoted, or when no promotion was wanted (`keep == false`);
+    /// `false` when a wanted snapshot could not be produced (no staging, or the
+    /// promote itself failed) — the caller surfaces that.
+    @discardableResult
+    private static func finalizePreMigrationSnapshot(staged: URL?, keep: Bool) -> Bool {
+        guard let staged else { return !keep }
+        let stagedSet = SQLiteFileSet(base: staged)
         guard keep else {
-            for s in sidecars { try? fm.removeItem(atPath: staged.path + s) }
-            return
+            stagedSet.remove()
+            return true
         }
+        normalize(staged: staged)
         let dest = SnapshotFile.makeURL(
             in: staged.deletingLastPathComponent(), reason: .preMigration, date: Date())
         do {
-            try fm.moveItem(at: staged, to: dest)
-            for s in ["-wal", "-shm"] {
-                let src = staged.path + s
-                if fm.fileExists(atPath: src) {
-                    try? fm.moveItem(atPath: src, toPath: dest.path + s)
-                }
-            }
+            try stagedSet.move(to: SQLiteFileSet(base: dest))
+            return true
         } catch {
             // Couldn't promote — don't leave staging litter behind.
-            for s in sidecars { try? fm.removeItem(atPath: staged.path + s) }
+            stagedSet.remove()
+            return false
+        }
+    }
+
+    /// Fold the staged copy's WAL into its main file AND leave the file in
+    /// rollback-journal mode, so the promoted snapshot is one self-contained
+    /// `.sqlite` — the same shape as `VACUUM INTO` output. Both halves matter:
+    /// macOS SQLite runs persistent-WAL (sidecars survive a clean close), and a
+    /// read-only open of a WAL-mode file REQUIRES its sidecars (`SQLITE_CANTOPEN`
+    /// without them — verified against macOS 26's SQLite), so merely checkpointing
+    /// and deleting the sidecars would produce a snapshot that health checks
+    /// cannot open. `journal_mode=DELETE` checkpoints, removes the `-wal`, and
+    /// rewrites the header; the leftover `-shm` is removed explicitly. Restore
+    /// installing this file is fine — `DatabasePool` flips it back to WAL.
+    /// Best-effort — see the caller for the promote-as-staged fallback.
+    private static func normalize(staged: URL) {
+        do {
+            let queue = try DatabaseQueue(path: staged.path)
+            try queue.writeWithoutTransaction { db in
+                try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+                try db.execute(sql: "PRAGMA journal_mode=DELETE")
+            }
+            try queue.close()
+            for s in SQLiteFileSet.sidecarSuffixes {
+                try? FileManager.default.removeItem(atPath: staged.path + s)
+            }
+        } catch {
+            // Leave the copy (and its sidecars) exactly as staged.
         }
     }
 

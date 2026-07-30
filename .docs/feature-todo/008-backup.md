@@ -2,177 +2,187 @@
 
 > Covers the "Backup" group: **snapshot** + **export**. Settled scope (user): all three
 > goals — (a) corruption/mistake recovery, (b) machine-loss/off-device, (c)
-> portability/data-freedom. Entitlement additions for (b) are **approved**. Nothing
-> exists today; the README's manual `rm` is the only library lifecycle tooling.
+> portability/data-freedom. Entitlement additions for (b) are **approved**.
+>
+> **Re-baselined 2026-07-31** after the 008 plan review: goal (a) — phases H1–H3 —
+> is **SHIPPED and hardened**; this doc now records the as-built design (including
+> deviations from the original plan) and respecs the remaining phases H4–H7
+> against it. Review decisions are inlined as settled.
 
-## Current state (verified)
+## Status
 
-- Library: `<container>/Application Support/ref-atelier/` → `library.sqlite` (+WAL,
-  GRDB 7.11.1 `DatabasePool`), `blobs/` (content-addressed, immutable-while-referenced),
-  `thumbnails/` (regenerable tiers).
-- `LibraryLayout.swift:35` **claims** thumbnails are "excluded from backups" — nothing
-  implements it; `isExcludedFromBackup` appears nowhere. Time Machine currently copies
-  live WAL sqlite + regenerable thumbnails.
-- Entitlements: sandbox, `files.user-selected.read-only`, network client/server —
-  **no read-write, no security-scoped bookmarks** → writing to a user-chosen folder is
-  currently impossible.
-- `MediaReaper` (`MediaReaper.swift:41`) moves orphaned blobs + thumbnails to **Trash**
-  (not `rm`) after `deleteAssets` reference-counting — the immutability caveat every
-  snapshot design must reconcile.
-- GRDB 7 exposes `backup(to:)`; SQLite on macOS 26 supports `VACUUM INTO`.
+- **H1 (done)** — `AppServices.snapshot(to:)` via `VACUUM INTO`;
+  `integrityCheck()`; static `isHealthy(databaseFileAt:)` (read-only file check).
+- **H2 (done)** — `MediaStore.excludeDerivedFromBackup()` sets
+  `isExcludedFromBackup` on `thumbnails/` + `cache/` at every bootstrap.
+- **H3 (done, hardened 2026-07-31)** — `SnapshotFile` naming (Core),
+  pre-migration snapshot in `LibraryDatabase.init` (Core), app-side
+  `SnapshotManager` (retention, daily-on-launch, pre-destructive gate, staged
+  restore), `SnapshotsSheet` UI, `SQLiteFileSet` file-set helper (Core).
+- **H4–H7 (not started)** — folder backup + export/import; respecced below.
 
-## Architecture (cross-cutting)
+## As-built architecture (deviations from the original plan, all settled)
 
-New **`AtelierBackup` package** (depends on AtelierCore + AtelierIngestion). GRDB stays
-confined to Core: Core gains only `snapshot(to:)` (`VACUUM INTO`) and `integrityCheck()`
-(`PRAGMA integrity_check`); orchestration (retention, blob copy, manifest, restore,
-progress) is GRDB-free in AtelierBackup — the same seam discipline as
-MediaReaper-consumes-`OrphanedBlob`.
+1. **No `AtelierBackup` package.** Primitives live in Core (`snapshot(to:)`,
+   `isHealthy`, `SnapshotFile`, `SQLiteFileSet`); orchestration lives in the app
+   target beside its tests (`SnapshotManager`, `SnapshotManagerTests`). The
+   package's stated purpose (GRDB-free orchestration seam) is achieved by
+   discipline instead of a package boundary. H4–H7 follow the same split —
+   revisit only if importers ever ship outside the app.
+2. **Restore is staged, not live.** `stageRestore` validates + writes a
+   `.pending-restore` marker; the swap happens at next bootstrap in
+   `applyPendingRestore`, before the pool opens (the only safe time to move the
+   live DB). The original "close the pool → swap → reopen" design is dead.
+   Install is anti-truncation by construction: snapshot **copies to a staging
+   name first**, live set moves aside (`library.corrupt-<epoch>`, never
+   destroyed), staging **renames** into place (same-volume, atomic per file);
+   the failure path removes staging litter *before* the rollback check.
+3. **Every snapshot is one self-contained `.sqlite` file.** `VACUUM INTO`
+   produces that shape natively; pre-migration file copies are **normalized at
+   promotion** (checkpoint + `journal_mode=DELETE`). Platform fact that forced
+   this (verified on macOS 26): macOS SQLite runs persistent-WAL, and a
+   **read-only open of a WAL-mode file requires its sidecars** — a bare WAL main
+   file fails `SQLITE_CANTOPEN`. Normalization is deliberately at *promotion*,
+   not staging: the every-launch staging copy is an APFS COW clone
+   (metadata-cheap), and must stay clone + delete.
+4. **The `{db, -wal, -shm}` trio moves as a unit** via `SQLiteFileSet`
+   (copy/move strict, remove best-effort, summed sizes) — the one home for
+   sidecar handling; sidecar paths survive only as the compatibility net for
+   pre-normalization snapshots.
+5. **Safety nets never fail silently** (and never block): a failed
+   pre-migration snapshot drops a `.pre-migration-snapshot-failed` marker that
+   bootstrap surfaces once; a failed pre-destructive snapshot logs + toasts and
+   the delete proceeds (the in-DB recoverable-delete backup still protects it).
+6. **Pre-destructive snapshots are freshness-gated and floor-protected**:
+   `snapshotBeforeDestruction` skips when any snapshot is <10 min old (a
+   pre-existing snapshot predates the destruction by definition); retention
+   exempts pre-destructive snapshots younger than 30 days from pruning.
+7. **Post-restore blob reconcile** (`.just-restored` marker): the first launch
+   after a restore *reports* both divergence directions instead of reaping —
+   referenced-but-missing blobs ("may still be in the Trash") and
+   unreferenced-but-kept blobs captured after the snapshot (reclaimed by the
+   *next* launch's orphan GC). The original "best-effort Trash recovery" idea is
+   dead: a sandboxed app cannot enumerate `~/.Trash`.
+8. **Daily-on-launch snapshot runs post-load** in a background task — the
+   `VACUUM INTO` cost grows with the analysis tables and must not hold up an
+   empty shell at launch.
+9. **Clock is injected** into `SnapshotManager` (`now:`) so staleness
+   boundaries, the freshness gate, and the retention floor are unit-tested.
 
-## (a) Snapshots — corruption/mistake recovery
+### Retention (as built)
 
-### Mechanism
-- **M1 — `VACUUM INTO` (recommended):** one statement through the funnel produces a
-  single, checkpointed, self-consistent `.sqlite` file (no `-wal` sidecar hazard).
-- M2 — GRDB `makeSnapshot()` + `backup(to:)`: works, more moving parts. Fallback only.
-- M3 — file copy after `wal_checkpoint(TRUNCATE)`: fragile, mutates the live DB.
-  **Rejected.**
+7 newest rolling + newest-per-week for 4 further ISO weeks; **pre-migration
+never auto-pruned**; **pre-destructive exempt for 30 days**, then rolling.
+Manual delete of ANY snapshot (including pre-migration) is honoured in the
+sheet. Location: `<root>/snapshots/` — deliberately NOT excluded from backups.
 
-### Blob consistency (the MediaReaper hazard, reconciled)
-Snapshots are **DB-only** — blobs are immutable while referenced, so the DB file is the
-state. The one hole: a snapshot's DB may reference a blob orphaned+trashed *after* the
-snapshot. Mitigations: (1) snapshot **always before destructive multi-delete and before
-every migration**; (2) orphans go to **Trash**, so restore can recover referenced-but-
-trashed blobs best-effort. Rejected: pinning snapshot-referenced hashes in MediaReaper
-(reference-counting coupling — over-engineered for goal (a)); per-snapshot blob
-hardlinks (the off-device path covers full copies).
+## (b) Off-device — machine loss (H4–H5, not started)
 
-### Policy
-Triggers: pre-migration (always), pre-destructive-delete, manual "Snapshot now",
-optional daily-on-launch (bootstrap checks age). Retention: 7 daily + 4 weekly +
-**all pre-migration snapshots** (never auto-pruned). Location: `<root>/snapshots/`
-(recovery artifact, not user-facing). Size: DB-only → KB–MB each, trivial.
+- **Entitlements**: `files.user-selected.read-write` **already present**
+  (shipped for other features); the only addition needed is
+  `files.bookmarks.app-scope`. Folder picker → persist a security-scoped
+  bookmark; each run wraps `startAccessingSecurityScopedResource()`.
+- **Incremental backup**: diff live `blob_hash` set against destination
+  `blobs/` (same shard layout) → copy missing; write a fresh `VACUUM INTO` DB
+  snapshot + a small manifest. Content-addressing makes runs idempotent and
+  resumable. Verification: spot-check re-hash of sampled copied blobs;
+  `isHealthy` on the snapshot.
+- **Restore reuses the ONE restore seam** (review 4A): copy missing blobs back
+  into `blobs/` (content-addressed, idempotent, safe while the app runs), then
+  stage the backup's DB through the existing `.pending-restore` marker — the
+  relaunch applies it via the same tested `applyPendingRestore`. **No second
+  swap path.**
+- **iCloud Drive**: just a folder target. **Never place the live
+  `library.sqlite` in iCloud** (partial sync + WAL = corruption); self-contained
+  snapshot copies are fine — document in the target picker. An iCloud
+  destination can hold **dataless files**: enumeration stays metadata-cheap, but
+  the verify spot-check *downloads* each sampled blob — cap the sample and show
+  it in progress UI.
+- Rejected: background sync engine/daemon (app isn't always running); multi-Mac
+  sync (explicit NON-GOAL, user 2026-07-13).
 
-### Restore (an unrestorable backup is theater)
-`restore(snapshot:)`: `integrityCheck` the snapshot → close the pool → move live
-`library.sqlite`(+wal/shm) aside as `library.corrupt-<ts>.sqlite` → install → reopen
-(migrations re-run idempotently) → `reconcileOrphanedKnownItems()`
-(`AppServices.swift:797`) → best-effort Trash recovery for missing referenced blobs.
-Round-trip tested.
+## (c) Export — portability / data freedom (H6–H7, not started)
 
-**Effort: M.** Pre-migration hook note: before the pool first opens, a plain file copy
-is safe (no writer yet) — the hook can live in `LibraryDatabase.init` ahead of
-`migrate()`.
+- **X1 layout (settled)**: folder tree mirroring the collection hierarchy;
+  originals named `<title-or-source>-<shorthash>.<ext>` — **reuse the shipped
+  `AssetExport` base-name/sanitizer helpers and their test suite** (011 U1
+  landed first; do not grow a second sanitizer). One versioned `manifest.json`
+  at the root (sources/provenance, assets, tags, collections + nesting,
+  memberships + manual order, timestamps). Multi-collection assets are copied
+  into each folder; the manifest records the single canonical asset. Optional
+  zip wrapper (open question).
+- **Re-import is a first-class round trip**: `manifest_version` is a contract
+  (also records `schema_version`). Import replays through existing AppServices
+  writers (`createCollection`, `ingest`, `applyTag`, `addAssets`,
+  `setGridOrder`) — validation + 18A dedup for free; blob re-import idempotent
+  by content hash. Newer-version manifest → refuse clearly. Import targets a
+  fresh/merge library by explicit choice. The replay layer is **shared with
+  016's competitor importers** — build it here.
+- `asset_analysis` is derived data — excluded from export (recomputable),
+  included in snapshots (it's in the DB anyway).
 
-## (b) Off-device — machine loss
+## Remaining phases
 
-### Phase 1 (S) — Time Machine hardening, ship immediately
-Set `isExcludedFromBackup` on `thumbnails/` (+ future `cache/`) at bootstrap — fulfills
-the existing doc-comment promise, shrinks TM/iCloud footprint, derived data regenerates.
-
-### Phase 2 (L) — user-chosen-folder incremental backup (entitlements approved)
-Add `files.user-selected.read-write` + `files.bookmarks.app-scope`; folder picker →
-persist a security-scoped bookmark; each run wraps
-`startAccessingSecurityScopedResource()`.
-
-Content-addressing makes incremental trivial and **idempotent/resumable**: diff live
-`blob_hash` set against destination `blobs/` (same shard layout) → copy missing; write a
-fresh `VACUUM INTO` DB snapshot + a small manifest. Verification: filename-is-hash means
-a spot-check re-hash of sampled copied blobs is cheap; `integrityCheck` the snapshot;
-optional full-verify command.
-
-**Restore**: verify snapshot → copy blobs back (skip present) → install DB (same
-swap-aside flow as (a)) → reconcile.
-
-**iCloud Drive**: it's just a folder target for Phase 2. **Never place the live
-`library.sqlite` in iCloud** (partial sync + WAL = corruption); self-contained snapshot
-copies are fine. Document this sharp edge in-app (target picker help text).
-
-Rejected: a background sync engine/daemon — the app isn't always running; manual +
-on-launch-if-stale covers the need ("engineered enough").
-
-## (c) Export — portability / data freedom
-
-### Layout
-- **X1 (recommended):** folder tree mirroring the collection hierarchy; each asset's
-  original written into its collection folder(s) as `<title-or-source>-<shorthash>.<ext>`
-  (sanitized); **one versioned `manifest.json`** at the root capturing the full graph —
-  sources/provenance, assets, tags, collections + nesting, memberships + manual order,
-  timestamps. Multi-collection assets are **copied into each folder** for human
-  browsability; the manifest records the single canonical asset (no duplication in the
-  contract). Optional zip wrapper.
-- X2 — per-item sidecar JSONs: N files, per-membership duplication, harder atomic
-  re-import. **Rejected as default.**
-
-### Re-import is a first-class round trip
-`manifest_version` is a **contract** (also records the DB `schema_version`). Import
-replays through existing AppServices writers (`createCollection`, `ingest`, `applyTag`,
-`addAssets`, `setGridOrder`) — validation + dedup (18A) for free; blob re-import is
-idempotent by content-addressing. A newer-version manifest → refuse with a clear
-message. Import targets a fresh/merge library by explicit choice — never silently
-clobbers.
-
-**Effort: L** (the importer is where the cost is).
-
-## Schema / migration impact
-
-**None across all three.** Snapshots/exports are file artifacts; the backup bookmark
-lives in app storage, not the library.
-
-## Phased implementation (whole feature)
-
-1. **H1 (S):** `snapshot(to:)` + `integrityCheck()` in Core; manual snapshot action.
-2. **H2 (S):** TM hardening (`isExcludedFromBackup`).
-3. **H3 (M):** AtelierBackup snapshot manager — retention, pre-migration +
-   pre-destructive hooks, daily-on-launch; **restore flow**.
-4. **H4 (S):** entitlements + bookmark plumbing + folder picker.
-5. **H5 (M):** incremental blob backup + verify + progress/cancel; backup restore.
-6. **H6 (M):** manifest model + exporter.
-7. **H7 (M):** importer + round-trip harness.
-
-Do H1–H3 **early in the roadmap** — pre-migration snapshots protect the risky
-[003](../030-multi-kind-items-overview.md) rebuild and every other migration.
+1. **H4 (S)** — `files.bookmarks.app-scope` + bookmark plumbing + folder picker.
+2. **H5 (M)** — incremental blob backup + verify + progress/cancel; restore via
+   the staged-restore seam.
+3. **H6 (M)** — manifest model + exporter (reusing `AssetExport` naming).
+4. **H7 (M)** — importer + round-trip harness (the replay layer 016 consumes).
 
 ## Test strategy
 
-- Snapshot: produces an openable DB equal to source rows (TempLibrary); integrity pass;
-  retention pruning over a fake clock/fs (pure); restore round-trip (snapshot → mutate →
-  restore → rows match); pre-migration snapshot exists after a version bump.
-- Backup: missing-hash diff is a pure function — empty/partial/identical/extra-at-dest;
-  A→folder→B round-trip (rows + blob bytes equal); corrupted-dest-blob → verify fails;
-  interrupted-run resume (idempotency). Bookmark/sandbox glue behind an injectable
-  `FolderAccess` protocol.
-- Export/import: manifest golden-file (de)serialization + version refusal; full
-  round-trip over TempLibraries (collections/nesting/memberships/order/tags/provenance/
-  blobs equal); filename sanitization matrix (illegal chars, collisions → shorthash,
-  overlong); multi-collection asset → N files, 1 asset on import.
+- **Shipped** (Core: `PreMigrationSnapshotTests`, `ServicesSnapshotTests`,
+  `SnapshotFileTests`, `SQLiteFileSetTests`; app: `SnapshotManagerTests`):
+  snapshot round-trip + integrity + no-overwrite; behind-schema/fresh/current
+  opens; **unclean-WAL repro** (live `-wal` → self-contained healthy snapshot —
+  the normalization regression test); file-set copy/move/remove/size; retention
+  incl. the pre-destructive floor; staleness boundary + freshness gate over the
+  injected clock; restore round-trip incl. **aside-content verification**
+  ("set aside, not deleted" is asserted, not assumed); restore failure paths
+  (empty/dangling/unhealthy marker, install failure with rollback, crash
+  resume, restore over a corrupt live DB); marker consumption (pre-migration
+  failure, just-restored); post-restore report set-math; manager-level prune
+  over real files; byteSize sidecar sum.
+- **H4–H7 (planned)**: missing-hash diff as a pure function
+  (empty/partial/identical/extra-at-dest); A→folder→B round-trip (rows + blob
+  bytes equal); corrupted-dest-blob → verify fails; interrupted-run resume
+  (idempotency); bookmark/sandbox glue behind an injectable `FolderAccess`
+  protocol; manifest golden-file (de)serialization + version refusal; full
+  export/import round-trip over TempLibraries; filename matrix stays in
+  `AssetExportTests`; multi-collection asset → N files, 1 asset on import.
 
-## Effort: snapshot **M** · off-device **S + L** · export **L**
+## Risks & edge cases (live ones)
 
-## Risks & edge cases
-
-- Restore must handle `-wal`/`-shm` sidecars and a mid-restore crash (swap-aside means
-  the old DB is never destroyed).
-- Disk-full during snapshot/backup → fail loudly, never prune existing artifacts on a
-  failed run.
-- Stale bookmark (folder moved/unplugged) → clear re-pick prompt.
-- Trash recovery is best-effort (user may empty Trash) — document the window honestly.
-- Huge libraries: stream export, progress + cancel; never hold all bytes in memory.
-- Two libraries → one backup folder: namespace by library id.
+- Restore hazards are now *reported*, not silent — but recovery from the
+  backward hole is still the user's Trash; the honest window is documented in
+  the post-restore toasts.
+- Disk-full during snapshot/backup → fail loudly (surfaced per above), never
+  prune existing artifacts on a failed run.
+- Stale bookmark (folder moved/unplugged) → clear re-pick prompt (H4).
+- Huge libraries: stream export, progress + cancel; never hold all bytes in
+  memory (H6).
+- Two libraries → one backup folder: namespace by library id (H5).
 
 ## Settled decisions
 
-- All three goals in scope; entitlements approved (user, 2026-07-13). AtelierBackup
-  package; VACUUM INTO; DB-only local snapshots; TM hardening ships first; export→import
-  is a supported round trip.
-- **Multi-Mac sync is an explicit NON-GOAL** (user, 2026-07-13) — backup moves data
-  off-device; nothing here attempts live reconciliation between machines, and the
-  "never live sqlite on iCloud" rule stands. Revisit only as its own future epic.
+- All three goals in scope; entitlements approved (user, 2026-07-13).
+- Multi-Mac sync is an explicit NON-GOAL (user, 2026-07-13).
+- Export→import is a supported round trip; replay layer shared with 016.
+- 2026-07-13: retention 7 daily + 4 weekly; daily-on-launch ON.
+- **2026-07-31 (008 plan review, all user-confirmed)**: re-baseline this doc
+  (1A); app-target home for H4–H7, no `AtelierBackup` package (2A);
+  post-restore detect/report + deferred first-launch GC (3A); single restore
+  seam for H5 + only the bookmarks entitlement (4A); atomic staged install
+  (5A); snapshot normalization at promotion (6A/15A); `SQLiteFileSet`
+  consolidation (7A); surfaced-never-blocking net failures + 30-day
+  pre-destructive floor (8A); failure-path/WAL-repro/clock/assertion test
+  hardening (9A/10A/11A/12A); daily snapshot off the bootstrap critical path
+  (13A); 10-min pre-destructive freshness gate (14A); no sheet-render caching
+  (16A — measured as noise).
 
-## Open questions
+## Open questions (H4–H7 only)
 
-1. Retention defaults 7 daily / 4 weekly OK?
-2. Daily-on-launch auto-snapshot on, or manual + pre-migration/pre-destructive only?
-3. Export duplicates multi-collection files per folder (recommended) — or a single
-   `_assets/` pool + links (compact, less browsable)?
-4. Zip wrapper in v1 or folder-tree only?
+1. Export duplicates multi-collection files per folder (recommended) — or a
+   single `_assets/` pool + links (compact, less browsable)?
+2. Zip wrapper in v1 or folder-tree only?
+3. H5 backup cadence: manual + on-launch-if-stale (recommended) — confirm.
