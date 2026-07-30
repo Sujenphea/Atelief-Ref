@@ -110,6 +110,32 @@ struct MoodboardMapTests {
         #expect(rgba == RGBA(hex: "#ff8800"))
     }
 
+    @Test("A board renders on the board's own dark ground")
+    func boardKeepsItsGround() {
+        let asset = Fixture.asset(kind: .color, payload: Fixture.colorPayload("#ff8800"))
+        let detail = Fixture.detail(Fixture.item(kind: .asset, assetID: asset.id), asset: asset)
+        // A text element created on a board persists WHITE, so a white page made every
+        // caption the user typed invisible. The export carries the ground it was
+        // composed against.
+        #expect(MoodboardExport.map(details: [detail], imageURL: Fixture.never).background
+            == .boardGround)
+    }
+
+    @Test("Text with no stored colour matches the board's default, not black")
+    func colourlessTextIsWhite() throws {
+        var style = ElementStyle()
+        style.text = "hi"
+        style.fontSize = 17
+        let item = Fixture.item(kind: .text, style: style)
+        let mapping = MoodboardExport.map(details: [Fixture.detail(item)], imageURL: Fixture.never)
+        guard case .text(let style) = try #require(mapping.elements.first).content else {
+            Issue.record("expected .text"); return
+        }
+        // Was `.black`: the same element drew white on the board and black in the
+        // export. One default, named once in `ElementRendering`.
+        #expect(style.color == .white)
+    }
+
     @Test("A colour with an unparseable hex is skipped")
     func badColorSkipped() {
         let asset = Fixture.asset(kind: .color, payload: Fixture.colorPayload("nothex"))
@@ -267,7 +293,8 @@ struct MoodboardProviderConfigTests {
             let result = try MoodboardExport.render(
                 pages: pages,
                 provider: MoodboardURLImageProvider(urls: mapping.imageURLs),
-                config: config, isCancelled: { false }, onProgress: { _ in })
+                config: config, background: mapping.background,
+                isCancelled: { false }, onProgress: { _ in })
             #expect(!result.data.isEmpty)
             #expect(result.skipped.isEmpty)
         }

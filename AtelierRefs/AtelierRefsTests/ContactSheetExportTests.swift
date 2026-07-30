@@ -276,8 +276,26 @@ struct ContactSheetRenderTests {
 
             let result = try MoodboardExport.render(
                 pages: pages, provider: MoodboardURLImageProvider(urls: map.imageURLs),
-                config: config, isCancelled: { false }, onProgress: { _ in })
+                config: config, background: map.background,
+                isCancelled: { false }, onProgress: { _ in })
             #expect(!result.data.isEmpty)
         }
+    }
+
+    @Test("A contact sheet renders on paper, not the board's dark ground")
+    func sheetKeepsWhitePage() {
+        let map = ContactSheetExport.map(
+            details: [Fixture.detail(Fixture.asset(name: "a"))],
+            config: ContactSheetConfig(), imageURL: { _ in nil })
+        // The captions are a mid grey picked to read on white; a dark page would
+        // sink them. Only a BOARD export inherits the board's ground.
+        #expect(map.background == .white)
+    }
+
+    @Test("An empty contact sheet still declares its page ground")
+    func emptySheetKeepsWhitePage() {
+        let map = ContactSheetExport.map(
+            details: [], config: ContactSheetConfig(), imageURL: { _ in nil })
+        #expect(map.background == .white)
     }
 }

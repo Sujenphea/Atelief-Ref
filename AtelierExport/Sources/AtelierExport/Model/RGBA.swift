@@ -29,8 +29,16 @@ public struct RGBA: Equatable, Sendable {
 
     /// Opaque black — the fallback for a text colour that fails to parse.
     public static let black = RGBA(red: 0, green: 0, blue: 0)
-    /// Opaque white — the default page background.
+    /// Opaque white — paper. The right ground for a CONTACT SHEET, whose captions
+    /// are a mid grey chosen to read on it.
     public static let white = RGBA(red: 1, green: 1, blue: 1)
+    /// The dark ground a Space board is composed against (`#141416` — the mirror of
+    /// the app's `Theme.Colors.mediaBackdrop`; this package cannot see `Theme`).
+    ///
+    /// A moodboard export renders it because the board's own defaults assume it: a
+    /// text element created on a board persists white (`#FFFFFF`), so on white paper
+    /// every caption the user typed came out invisible.
+    public static let boardGround = RGBA(red: 0x14 / 255, green: 0x14 / 255, blue: 0x16 / 255)
 
     /// Parse a CSS-style hex string into an ``RGBA``, or `nil` when the string
     /// is not a recognised hex colour.

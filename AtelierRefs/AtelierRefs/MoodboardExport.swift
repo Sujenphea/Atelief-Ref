@@ -74,6 +74,15 @@ nonisolated enum MoodboardExport {
         var elements: [MoodboardElement]
         var imageURLs: [String: URL]
         var skipped: Int
+        /// The page ground these elements were composed against.
+        ///
+        /// It rides on the MAPPING, not on ``ExportConfig``, because it follows from
+        /// what is being exported rather than from what the user picked in the
+        /// popover — and because both producers feed one renderer. A board carries
+        /// `.boardGround`; a contact sheet carries `.white`. Putting it here means
+        /// every entry point (button, File menu) inherits the right one without
+        /// having to remember.
+        var background: RGBA = .boardGround
 
         var isEmpty: Bool { elements.isEmpty }
     }
@@ -151,11 +160,16 @@ nonisolated enum MoodboardExport {
     }
 
     /// A ``TextStyle`` from an `ElementStyle`, applying moodboard defaults.
+    ///
+    /// The colourless fallback is WHITE, matching `ElementRendering.defaultTextColor`
+    /// — the board's own default since the canvas went dark. It used to be `.black`,
+    /// which meant a legacy text row with no stored colour drew white on the board
+    /// and black in the export: the same element, two colours.
     private static func textStyle(from style: ElementStyle?) -> TextStyle {
         TextStyle(
             string: style?.text ?? "",
             fontSize: style?.fontSize ?? 17,
-            color: style?.textColor.flatMap(RGBA.init(hex:)) ?? .black)
+            color: style?.textColor.flatMap(RGBA.init(hex:)) ?? .white)
     }
 
     /// A ``FrameStyle`` from an `ElementStyle` (fill / stroke + optional label).
@@ -199,6 +213,7 @@ nonisolated enum MoodboardExport {
         pages: [LayoutPage],
         provider: MoodboardImageProvider,
         config: ExportConfig,
+        background: RGBA,
         isCancelled: () -> Bool,
         onProgress: (Double) -> Void
     ) throws -> RenderResult {
@@ -206,13 +221,15 @@ nonisolated enum MoodboardExport {
         case .pdf:
             return try MoodboardRenderer.renderPDF(
                 pages: pages, provider: provider,
-                options: RenderOptions(background: .white, pixelsPerPoint: ExportDefaults.pdfImageScale),
+                options: RenderOptions(
+                    background: background, pixelsPerPoint: ExportDefaults.pdfImageScale),
                 isCancelled: isCancelled, onProgress: onProgress)
         case .png:
             guard let page = pages.first else { throw ExportError.noPages }
             return try MoodboardRenderer.renderPNG(
                 page: page, provider: provider,
-                options: RenderOptions(background: .white, pixelsPerPoint: Double(config.pngScale)),
+                options: RenderOptions(
+                    background: background, pixelsPerPoint: Double(config.pngScale)),
                 isCancelled: isCancelled, onProgress: onProgress)
         }
     }
