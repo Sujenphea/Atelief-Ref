@@ -177,7 +177,10 @@ final class MasonryGridItem: NSCollectionViewItem {
             layer.contentsGravity = .resizeAspectFill
             layer.masksToBounds = true
             layer.cornerRadius = cornerRadius
-            layer.backgroundColor = NSColor.quaternaryLabelColor.cgColor
+            // The token, not `quaternaryLabelColor`: a translucent, appearance-derived
+            // system grey was the one thing `Theme`'s header names as drift — and it
+            // shifted tone with whatever showed through it.
+            layer.backgroundColor = Theme.NS.mediaBackdrop.cgColor
         }
 
         // Selected-cell dim scrim (below the rings so they stay crisp). Sized in
@@ -430,7 +433,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         CATransaction.setDisableActions(true)
         view.layer?.contents = image
         view.layer?.backgroundColor =
-            image == nil ? NSColor.quaternaryLabelColor.cgColor : NSColor.clear.cgColor
+            image == nil ? Theme.NS.mediaBackdrop.cgColor : NSColor.clear.cgColor
         CATransaction.commit()
     }
 

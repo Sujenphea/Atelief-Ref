@@ -22,8 +22,9 @@ enum Theme {
 
     enum Colors {
         /// Outermost window ground + the collapsed sidebar rail. Under the native
-        /// translucent window (D1b) the material supplies this tone; the token is
-        /// the opaque fallback / reference value.
+        /// translucent window (D1b) the material supplies this tone; this is painted
+        /// BENEATH it as the opaque fallback, for Reduce Transparency and anywhere
+        /// else the material has nothing to sample.
         static let canvasOuter = Color(hex: 0x131313)
         /// The inset content panel the grid + detail live inside (opaque, radius 16).
         static let panel = Color(hex: 0x212121)
@@ -61,14 +62,17 @@ enum Theme {
     /// (`MasonryGridItem`), the sidebar outline view and the floating add button need.
     /// Every `NSView` / `CALayer` seam draws from HERE — an `NSColor(hex:)` literal in a
     /// view file is a token that has drifted, not a colour choice.
+    ///
+    /// Only the mirrors an AppKit seam actually reads live here. `field`, `panel` and
+    /// `hairline` were mirrored speculatively and read by nothing; a mirror with no
+    /// reader is a second copy of a value that can silently fall out of step with the
+    /// `Colors` original — which is how three of these had already drifted before.
+    /// Add one back when a seam needs it, not before.
     enum NS {
         static let mediaBackdrop = NSColor(hex: 0x141416)
-        static let field = NSColor(hex: 0x2C2C30)
-        static let panel = NSColor(hex: 0x212121)
         static let selection = NSColor(hex: 0x3A3A40)
         static let inkPrimary = NSColor(hex: 0xF2F1EE)
         static let inkSecondary = NSColor(hex: 0x9A9A9E)
-        static let hairline = NSColor.white.withAlphaComponent(0.08)
         static let hairlineStrong = NSColor.white.withAlphaComponent(0.14)
         static let hoverRow = NSColor.white.withAlphaComponent(0.06)
     }
@@ -93,7 +97,9 @@ enum Theme {
         static let card: CGFloat = 12
         static let cover: CGFloat = 14
         static let panel: CGFloat = 16
-        static let sheet: CGFloat = 16
+        // No `sheet`: the app's three sheets are system `.sheet` presentations and
+        // AppKit draws their corners. The token named a radius the app never got to
+        // choose.
     }
 
     // MARK: - Motion (one canonical set — replaces the per-site springs)
@@ -116,7 +122,10 @@ enum Theme {
 
         var color: Color { .black.opacity(opacity) }
 
-        static let rest = Elevation(opacity: 0.40, radius: 2, y: 1)
+        // No `rest`: nothing rested at 0.40 / 2 / 1. The two small resting shadows the
+        // app does draw — `ToastCard` (0.15 / 8 / 3) and `FanCard` (0.2 / 3 / 2) — are
+        // genuinely different weights rather than drifted copies of it, so collapsing
+        // them onto one token would be inventing a rule, not recording one.
         static let hover = Elevation(opacity: 0.55, radius: 14, y: 8)
         /// A floating BAR or pill riding directly over content it did not lay out — the
         /// selection action bar, the import pill, the Space format bubble. Softer and

@@ -63,8 +63,8 @@ struct FanCard: View {
                 .lineLimit(1)
         }
         .padding(8)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color(.controlBackgroundColor).opacity(0.5)))
-        .contentShape(RoundedRectangle(cornerRadius: 14))
+        .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.cover))
+        .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.cover))
     }
 
     /// The fanned pile: up to three thumbnails, back-to-front, each tilted by its
@@ -102,18 +102,18 @@ struct FanCard: View {
             hash: hash, url: thumbnailURL(hash), cornerRadius: 12,
             bucket: thumbnailPixelBucket(pointLongSide: side, scale: displayScale))
             .frame(width: side, height: side)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color(.windowBackgroundColor)))
+            .background(Theme.Colors.mediaBackdrop, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .shadow(color: .black.opacity(0.2), radius: 3, x: 0, y: 2)
     }
 
     private func placeholder(side: CGFloat) -> some View {
         RoundedRectangle(cornerRadius: 12)
-            .fill(accent ? Color.accentColor.opacity(0.12) : Color(.quaternaryLabelColor).opacity(0.4))
+            .fill(accent ? Theme.Colors.field : Theme.Colors.mediaBackdrop)
             .overlay {
                 Image(systemName: placeholderSymbol)
                     .font(.system(size: 30))
-                    .foregroundStyle(accent ? Color.accentColor : .secondary)
+                    .foregroundStyle(accent ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
             }
             .frame(width: side, height: side)
     }

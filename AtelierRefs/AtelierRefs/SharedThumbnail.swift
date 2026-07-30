@@ -326,12 +326,12 @@ struct CoverCard: View {
                             pointLongSide: coverPointSide, scale: displayScale))
                 } else {
                     RoundedRectangle(cornerRadius: 12)
-                        .fill(accent ? Color.accentColor.opacity(0.12) : Color(.quaternaryLabelColor).opacity(0.4))
+                        .fill(accent ? Theme.Colors.field : Theme.Colors.mediaBackdrop)
                         .aspectRatio(1, contentMode: .fit)
                         .overlay {
                             Image(systemName: placeholderSymbol)
                                 .font(.system(size: 34))
-                                .foregroundStyle(accent ? Color.accentColor : .secondary)
+                                .foregroundStyle(accent ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
                         }
                 }
             }
@@ -347,8 +347,8 @@ struct CoverCard: View {
             }
         }
         .padding(8)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color(.controlBackgroundColor).opacity(0.5)))
-        .contentShape(RoundedRectangle(cornerRadius: 14))
+        .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.cover))
+        .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.cover))
     }
 }
 

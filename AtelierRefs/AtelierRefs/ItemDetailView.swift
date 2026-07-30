@@ -139,6 +139,12 @@ struct ItemDetailView: View {
             HStack(spacing: 0) {
                 mediaArea
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // The art's stable dark ground, a shade below the panel: a light
+                    // image and a dark one then sit on the same tone instead of the
+                    // image's own edges reading as part of the chrome. `mediaBackdrop`
+                    // has claimed this surface in its doc since it was written; it
+                    // just was not applied, so the media sat on `panel`.
+                    .background(Theme.Colors.mediaBackdrop)
                     // B3: measure the media area and report its FIT size + zoom up to
                     // the `DetailSession`, which picks the decode tier. `zoom` (the
                     // @State, not the transient pinch) only changes at a settle point

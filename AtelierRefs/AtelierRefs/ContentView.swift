@@ -44,7 +44,15 @@ struct ContentView: View {
             // Keep the native translucent window (D1b): a behind-window material
             // ground so the desktop shows through the window's margins + the sidebar
             // rail. Opaque studio panels are drawn on top of this.
-            .background(VisualEffectBackground().ignoresSafeArea())
+            // `canvasOuter` sits UNDER the material as its opaque fallback, which is
+            // what the token always claimed to be — but it was referenced nowhere, so
+            // with Reduce Transparency on (or wherever the material can't sample a
+            // desktop) the ground fell through to whatever AppKit chose.
+            .background {
+                Theme.Colors.canvasOuter
+                    .overlay(VisualEffectBackground())
+                    .ignoresSafeArea()
+            }
             .onAppear { NSApp.appearance = NSAppearance(named: .darkAqua) }
             // First-run setup guide — surfaces the (previously undiscoverable)
             // extension-pairing flow. Gated so it shows once, replayable from ⌘,.
