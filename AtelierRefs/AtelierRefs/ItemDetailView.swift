@@ -20,6 +20,26 @@ import AppKit
 import AtelierCore
 import SwiftUI
 
+/// Force AVKit into the process before the first ``VideoPlayer`` is built.
+///
+/// `VideoPlayer` lives in the `_AVKit_SwiftUI` cross-import overlay, and its
+/// backing `NSView` subclasses AVKit's `AVPlayerView` — resolved lazily, by
+/// mangled name (`So12AVPlayerViewC`), when SwiftUI first instantiates the
+/// representable. But neither the overlay nor this app references an AVKit
+/// symbol directly, so the linker drops the framework the `import AVKit`
+/// autolink asked for, and the runtime lookup finds nothing:
+///
+///     failed to demangle superclass of VideoPlayerView from mangled name
+///     'So12AVPlayerViewC'
+///
+/// — a `swift::fatalError` → `abort()`, i.e. a hard crash on the first video
+/// item opened. Touching the class is a real symbol reference, so AVKit keeps
+/// its load command (verified: `otool -L` lists AVKit only with this call in).
+@inline(never)
+private func linkAVKit() {
+    _ = NSStringFromClass(AVPlayerView.self)
+}
+
 /// Prev/next stepping for the detail page. Absent (`nil`) when the item has no
 /// ordered set behind it — e.g. an asset opened from a Space board.
 struct ItemDetailNavigator {
@@ -440,6 +460,8 @@ struct ItemDetailView: View {
         guard let url = blobURL else { return }
         switch asset.kind {
         case .video:
+            // Before the media area builds its `VideoPlayer` — see `linkAVKit`.
+            linkAVKit()
             player = AVPlayer(url: url)
         case .image, .link, .tweet:
             // The loader owns the image on the collection detail path.
