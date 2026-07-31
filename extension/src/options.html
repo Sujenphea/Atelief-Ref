@@ -7,7 +7,7 @@
       body { font: 13px -apple-system, system-ui, sans-serif; margin: 20px; max-width: 460px; }
       h1 { font-size: 15px; }
       label { display: block; margin: 12px 0 4px; color: #444; }
-      input { width: 100%; padding: 6px 8px; font-family: ui-monospace, monospace; box-sizing: border-box; }
+      input, select { width: 100%; padding: 6px 8px; font-family: ui-monospace, monospace; box-sizing: border-box; }
       button { margin-top: 12px; padding: 6px 14px; }
       .hint { color: #666; margin-top: 8px; line-height: 1.4; }
       .status { margin-top: 10px; color: #2e8b57; height: 1em; }
@@ -17,7 +17,6 @@
     <h1>Atelier Capture</h1>
     <p class="hint">
       Paste the token shown in the ref-atelier app (toolbar → Browser Capture).
-      Captures POST to <code>http://127.0.0.1:47321</code>.
     </p>
     <p class="hint">
       Before a bulk sweep after ~2 weeks idle, refresh the platform drift canary:
@@ -26,8 +25,23 @@
     </p>
     <label for="token">Extension token</label>
     <input id="token" type="text" autocomplete="off" spellcheck="false" placeholder="paste token…" />
+
+    <label for="target">Which app receives captures</label>
+    <select id="target">
+      <option value="auto">Auto — whichever is running (prefers the stable app)</option>
+      <option value="http://127.0.0.1:47321">Stable only — 127.0.0.1:47321</option>
+      <option value="http://127.0.0.1:47322">Dev only — 127.0.0.1:47322</option>
+    </select>
+    <p class="hint">
+      The stable and dev builds listen on different ports, so Auto probes
+      <code>/health</code> and uses whichever answers. Pin one when you run both at
+      once and want a specific target.
+    </p>
+
     <button id="save">Save</button>
     <div id="status" class="status"></div>
-    <script src="options.js"></script>
+    <!-- `type="module"`: options.js now imports the shared storage keys from
+         base-url.js, so the two can't drift out of sync. -->
+    <script type="module" src="options.js"></script>
   </body>
 </html>

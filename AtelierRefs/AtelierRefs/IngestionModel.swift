@@ -208,7 +208,22 @@ final class IngestionModel: ObservableObject {
     /// can paste it into the extension's options). Empty until the Library opens.
     @Published private(set) var captureToken: String = ""
     /// The loopback port the capture endpoint listens on.
-    let capturePort = CaptureServer.defaultPort
+    let capturePort = IngestionModel.capturePort()
+
+    /// The capture port for THIS build.
+    ///
+    /// The extension hard-codes ``CaptureServer/defaultPort`` (P4), so the shipping
+    /// bundle must keep it; a dev build installed alongside it (the `.dev` bundle id)
+    /// offsets by one. Without the offset the two builds race for the same bind and
+    /// whichever launched first wins, leaving the other's endpoint silently dead —
+    /// the loser only says so through the `port … is in use` notice.
+    static func capturePort(
+        bundleID: String? = Bundle.main.bundleIdentifier
+    ) -> UInt16 {
+        (bundleID?.hasSuffix(".dev") ?? false)
+            ? CaptureServer.defaultPort + 1
+            : CaptureServer.defaultPort
+    }
     /// The on-disk Library root (set once the Library opens) — surfaced in the
     /// Settings scene (010 · Phase 2) so the user can locate/back up their data.
     @Published private(set) var libraryRoot: URL?
@@ -590,6 +605,7 @@ final class IngestionModel: ObservableObject {
                 maxVideoBodyBytes: CaptureServer.defaultMaxVideoBodyBytes),
             consentGranted: { UserDefaults.standard.bool(forKey: Self.bulkConsentKey) })
         let server = CaptureServer(
+            port: capturePort,
             auth: CaptureAuth(token: token), routes: routes, jobRoutes: jobRoutes)
         self.captureServer = server
 
