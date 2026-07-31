@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -237,6 +237,167 @@ struct MigrationV15Tests {
         }
         #expect(rows.map(\.0) == ["s-a", "s-b", "s-c"])
         #expect(rows.map(\.1) == [0, 1, 2])
+    }
+}
+
+// MARK: - v16 · Unsorted invariant back-fill (F3)
+
+@Suite("Migration v16: Unsorted reconcile")
+struct MigrationV16Tests {
+
+    private static let unsorted = "00000000-0000-0000-0000-000000000001"
+
+    /// A migrator applied only THROUGH v15 — the state before the invariant, so a
+    /// test can seed the two illegal shapes (in Unsorted AND a folder / in nothing)
+    /// and then migrate v16 over them.
+    private func makeQueueThroughV15() throws -> DatabaseQueue {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v15")
+        return dbQueue
+    }
+
+    /// Seed one source + one asset via raw SQL, returning the asset id.
+    @discardableResult
+    private func seedAsset(_ db: Database, createdAt: String = ts) throws -> String {
+        let sourceID = newID(), assetID = newID()
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, captured_at, raw_metadata)
+            VALUES (?, 'web', ?, '{}');
+            """, arguments: [sourceID, createdAt])
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, download_state, created_at, source_id)
+            VALUES (?, 'image', 'downloaded', ?, ?);
+            """, arguments: [assetID, createdAt, sourceID])
+        return assetID
+    }
+
+    private func seedFolder(_ db: Database, id: String, name: String) throws {
+        try db.execute(sql: """
+            INSERT INTO collection (id, name, description, cover_asset_id,
+                created_at, updated_at, parent_collection_id, sort_mode, sort_index)
+            VALUES (?, ?, NULL, NULL, ?, ?, NULL, 'manual', 1);
+            """, arguments: [id, name, ts, ts])
+    }
+
+    private func seedMembership(
+        _ db: Database, collection: String, asset: String, order: Int?
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO collection_item (id, collection_id, asset_id, added_at, manual_order)
+            VALUES (?, ?, ?, ?, ?);
+            """, arguments: [newID(), collection, asset, ts, order])
+    }
+
+    /// The collections an asset belongs to, in id order.
+    private func collections(_ db: Database, of assetID: String) throws -> [String] {
+        try String.fetchAll(db, sql: """
+            SELECT collection_id FROM collection_item WHERE asset_id = ?
+            ORDER BY collection_id
+            """, arguments: [assetID])
+    }
+
+    @Test("an asset in Unsorted AND a real folder loses only its Unsorted row")
+    func dropsRedundantUnsortedMembership() throws {
+        let dbQueue = try makeQueueThroughV15()
+        let (both, onlyUnsorted, onlyFolder) = try dbQueue.write { db -> (String, String, String) in
+            try seedFolder(db, id: "f-refs", name: "Refs")
+            let both = try seedAsset(db)
+            let onlyUnsorted = try seedAsset(db)
+            let onlyFolder = try seedAsset(db)
+            try seedMembership(db, collection: Self.unsorted, asset: both, order: 0)
+            try seedMembership(db, collection: "f-refs", asset: both, order: 0)
+            try seedMembership(db, collection: Self.unsorted, asset: onlyUnsorted, order: 1)
+            try seedMembership(db, collection: "f-refs", asset: onlyFolder, order: 1)
+            return (both, onlyUnsorted, onlyFolder)
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v16
+
+        let (bothHomes, unsortedHomes, folderHomes) = try dbQueue.read {
+            db -> ([String], [String], [String]) in
+            (try collections(db, of: both),
+             try collections(db, of: onlyUnsorted),
+             try collections(db, of: onlyFolder))
+        }
+        // The both-places asset is now only in the real folder…
+        #expect(bothHomes == ["f-refs"])
+        // …while the two already-legal assets are untouched.
+        #expect(unsortedHomes == [Self.unsorted])
+        #expect(folderHomes == ["f-refs"])
+    }
+
+    @Test("an asset in NO collection is re-homed to Unsorted, appended in age order")
+    func rehomesOrphansAppended() throws {
+        let dbQueue = try makeQueueThroughV15()
+        let (resident, newer, older) = try dbQueue.write { db -> (String, String, String) in
+            // One asset already sitting in Unsorted at manual_order 7 — the
+            // re-homed rows must land AFTER it, not ahead of it.
+            let resident = try seedAsset(db)
+            try seedMembership(db, collection: Self.unsorted, asset: resident, order: 7)
+            let newer = try seedAsset(db, createdAt: "2026-07-01T00:00:00Z")
+            let older = try seedAsset(db, createdAt: "2026-01-01T00:00:00Z")
+            return (resident, newer, older)
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v16
+
+        let rows = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT asset_id, manual_order FROM collection_item
+                WHERE collection_id = ? ORDER BY manual_order
+                """, arguments: [Self.unsorted])
+                .map { row -> (String, Int) in (row["asset_id"], row["manual_order"]) }
+        }
+        // Appended after the resident's 7, oldest asset first.
+        #expect(rows.map(\.0) == [resident, older, newer])
+        #expect(rows.map(\.1) == [7, 8, 9])
+    }
+
+    @Test("re-homed memberships inherit the asset's own created_at as added_at")
+    func rehomeUsesAssetCreatedAt() throws {
+        let dbQueue = try makeQueueThroughV15()
+        let orphan = try dbQueue.write { db in
+            try seedAsset(db, createdAt: "2025-05-05T05:05:05Z")
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v16
+
+        let addedAt = try dbQueue.read { db in
+            try String.fetchOne(db, sql: """
+                SELECT added_at FROM collection_item WHERE asset_id = ?
+                """, arguments: [orphan])
+        }
+        #expect(addedAt == "2025-05-05T05:05:05Z")
+    }
+
+    @Test("re-running the reconcile changes nothing (idempotent)")
+    func reconcileIsIdempotent() throws {
+        let dbQueue = try makeQueueThroughV15()
+        try dbQueue.write { db in
+            try seedFolder(db, id: "f-refs", name: "Refs")
+            let both = try seedAsset(db)
+            try seedMembership(db, collection: Self.unsorted, asset: both, order: 0)
+            try seedMembership(db, collection: "f-refs", asset: both, order: 0)
+            try seedAsset(db)   // an orphan
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v16
+        let after = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT collection_id, asset_id, manual_order FROM collection_item
+                ORDER BY collection_id, asset_id
+                """).map { "\($0["collection_id"] as String)/\($0["asset_id"] as String)" }
+        }
+
+        // A second pass over an already-reconciled db must be a no-op.
+        try dbQueue.write { db in try Migrator.reconcileV16Unsorted(db) }
+        let again = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT collection_id, asset_id, manual_order FROM collection_item
+                ORDER BY collection_id, asset_id
+                """).map { "\($0["collection_id"] as String)/\($0["asset_id"] as String)" }
+        }
+        #expect(again == after)
     }
 }
 
