@@ -511,7 +511,7 @@ struct CollectionView: View {
     /// Run the chosen destination action on the current selection and dismiss.
     private func moveOrCopy(copy: Bool, to id: UUID) {
         if copy {
-            model.copyToCollection(assetIDs: selectedAssetIDs, to: id)
+            model.copyToCollection(assetIDs: selectedAssetIDs, to: id, from: collectionID)
         } else {
             model.moveToCollection(assetIDs: selectedAssetIDs, to: id)
         }
@@ -681,7 +681,7 @@ struct CollectionView: View {
             actionTargets: { model.actionTargets(forCellItemID: $0) },
             moveTargets: moveTargets,
             onMoveToCollection: { model.moveToCollection(assetIDs: $0, to: $1) },
-            onCopyToCollection: { model.copyToCollection(assetIDs: $0, to: $1) },
+            onCopyToCollection: { model.copyToCollection(assetIDs: $0, to: $1, from: collectionID) },
             onSetCover: { model.setCollectionCover(collectionID: collectionID, assetID: $0) },
             onRemoveFromCollection: { model.removeFromFolder(assetIDs: $0) },
             onDelete: { model.requestDelete(assetIDs: $0) },
