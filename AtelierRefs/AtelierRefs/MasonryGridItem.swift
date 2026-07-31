@@ -128,7 +128,8 @@ private func gridCellBaseAccessibilityLabel(for detail: CollectionItemDetail) ->
 /// Pure so the "no card is ever clipped" invariant is testable across aspect ratios
 /// instead of being eyeballed at one cell size.
 func fanPileGeometry(
-    in size: CGSize, maxDegrees: Double, maxInset: CGFloat, minInset: CGFloat
+    in size: CGSize, maxDegrees: Double, maxInset: CGFloat, minInset: CGFloat,
+    cornerRadius: CGFloat
 ) -> (inset: CGFloat, degrees: Double) {
     let w = max(size.width, 1), h = max(size.height, 1)
     let longest = max(w, h)
@@ -140,7 +141,12 @@ func fanPileGeometry(
     // Both axes, since a wide tile overflows vertically for the same reason.
     let horizontal = (w * (c - 1) + h * s) / (2 * (c + s))
     let vertical = (h * (c - 1) + w * s) / (2 * (c + s))
-    let needed = max(horizontal, vertical)
+    // Fitting the rotated BOUNDING BOX inside the rectangle is not enough: the cell
+    // clips to a ROUNDED rect, so a corner landing exactly on the edge is shaved off
+    // by the radius. Pull in by the corner's own sagitta — the gap between a corner
+    // point and the arc is `r(1 − 1/√2)` — plus a point of slack for pixel snapping.
+    let cornerAllowance = cornerRadius * (1 - 1 / 2.squareRoot()) + 1
+    let needed = max(horizontal, vertical) + cornerAllowance
     // Never eat more than half the cell, however extreme the aspect ratio.
     let ceiling = min(w, h) / 2 - 1
     return (min(max(minInset, needed), max(1, ceiling)), degrees)
@@ -491,7 +497,8 @@ final class MasonryGridItem: NSCollectionViewItem {
     private var fanGeometry: (inset: CGFloat, degrees: Double) {
         fanPileGeometry(
             in: view.bounds.size, maxDegrees: Self.fanMaxDegrees,
-            maxInset: Self.fanMaxInset, minInset: Self.fanMinInset)
+            maxInset: Self.fanMaxInset, minInset: Self.fanMinInset,
+            cornerRadius: cornerRadius)
     }
 
     /// Place the two cards behind the artwork, tilted by the SAME seeded rotation the
@@ -509,7 +516,12 @@ final class MasonryGridItem: NSCollectionViewItem {
             seed: fanSeed, count: 3, maxDegrees: fanGeometry.degrees)
         for (offset, card) in fanLayers.enumerated() {
             card.isHidden = false
-            card.frame = rect
+            // `bounds` + `position`, NOT `frame`. `frame` is derived, so assigning it
+            // while a rotation is already applied makes Core Animation back-solve the
+            // bounds such that the ROTATED box equals the rect — the card shrinks a
+            // little more on every relayout.
+            card.bounds = CGRect(origin: .zero, size: rect.size)
+            card.position = CGPoint(x: rect.midX, y: rect.midY)
             card.transform = CATransform3DMakeRotation(
                 CGFloat(angles[offset + 1] * .pi / 180), 0, 0, 1)
         }

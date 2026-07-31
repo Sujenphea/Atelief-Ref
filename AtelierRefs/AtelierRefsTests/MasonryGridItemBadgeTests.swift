@@ -86,7 +86,20 @@ struct MasonryGridItemBadgeTests {
     /// inside the cell, because the cell clips and the overflow scales with the
     /// OTHER dimension — so a tall tile at the same angle needs far more room than a
     /// square one. Checked across the aspect ratios a masonry grid really produces.
-    @Test("no card is clipped, at any aspect ratio", arguments: [
+    /// Whether `point` is inside a rounded rect of `size` centred on the origin —
+    /// the shape the cell actually clips to. Outside the straight edges the corner
+    /// arc governs, which is why a bounding-box check is not enough.
+    private func insideRounded(_ point: CGPoint, size: CGSize, radius: CGFloat) -> Bool {
+        let dx = max(0, abs(point.x) - (size.width / 2 - radius))
+        let dy = max(0, abs(point.y) - (size.height / 2 - radius))
+        return dx * dx + dy * dy <= radius * radius + 0.01
+    }
+
+    /// The invariant a fixed inset got wrong twice over: a tilted card must fit the
+    /// cell's ROUNDED rect. Checking the four rotated corners catches both the
+    /// aspect-ratio overflow (a tall tile swings much further) and the corner radius
+    /// shaving a card that only fits the straight edges.
+    @Test("no card corner escapes the rounded cell, at any aspect ratio", arguments: [
         CGSize(width: 200, height: 200),    // square
         CGSize(width: 200, height: 400),    // tall portrait
         CGSize(width: 200, height: 900),    // the extreme a screenshot produces
@@ -94,29 +107,37 @@ struct MasonryGridItemBadgeTests {
         CGSize(width: 90, height: 90),      // a dense zoom notch
     ])
     func pileNeverClips(size: CGSize) {
+        let radius = Theme.Radius.tile
         let (inset, degrees) = fanPileGeometry(
-            in: size, maxDegrees: 5, maxInset: 12, minInset: 5)
+            in: size, maxDegrees: 5, maxInset: 12, minInset: 5, cornerRadius: radius)
         let w = size.width - 2 * inset, h = size.height - 2 * inset
+        #expect(w > 0 && h > 0)
         let t = CGFloat(degrees * .pi / 180)
-        // The rotated card's axis-aligned bounding box.
-        let spanX = w * cos(t) + h * sin(t)
-        let spanY = w * sin(t) + h * cos(t)
-        #expect(spanX <= size.width + 0.01)
-        #expect(spanY <= size.height + 0.01)
-        #expect(inset > 0)
+        // The card's own corners, rotated about the shared centre.
+        for sx in [CGFloat(-1), 1] {
+            for sy in [CGFloat(-1), 1] {
+                let x = sx * w / 2, y = sy * h / 2
+                let rotated = CGPoint(
+                    x: x * cos(t) - y * sin(t),
+                    y: x * sin(t) + y * cos(t))
+                #expect(insideRounded(rotated, size: size, radius: radius))
+            }
+        }
     }
 
     @Test("a tall tile trades tilt for inset rather than shrinking to nothing")
     func tallTileReducesTheTilt() {
         let square = fanPileGeometry(
-            in: CGSize(width: 200, height: 200), maxDegrees: 5, maxInset: 12, minInset: 5)
+            in: CGSize(width: 200, height: 200), maxDegrees: 5, maxInset: 12,
+            minInset: 5, cornerRadius: Theme.Radius.tile)
         let tall = fanPileGeometry(
-            in: CGSize(width: 200, height: 900), maxDegrees: 5, maxInset: 12, minInset: 5)
+            in: CGSize(width: 200, height: 900), maxDegrees: 5, maxInset: 12,
+            minInset: 5, cornerRadius: Theme.Radius.tile)
         // The square tile can afford the full tilt; the tall one cannot.
         #expect(square.degrees == 5)
         #expect(tall.degrees < square.degrees)
         // And the inset stays bounded instead of eating the image.
-        #expect(tall.inset <= 12.5)
+        #expect(tall.inset <= 16)
     }
 
     // MARK: - The fanned pile (307)
