@@ -312,10 +312,11 @@ final class MasonryGridItem: NSCollectionViewItem {
         if let layer = container.layer {
             layer.masksToBounds = true
             layer.cornerRadius = cornerRadius
-            // The token, not `quaternaryLabelColor`: a translucent, appearance-derived
-            // system grey was the one thing `Theme`'s header names as drift — and it
-            // shifted tone with whatever showed through it.
-            layer.backgroundColor = Theme.NS.mediaBackdrop.cgColor
+            // NO backdrop on the container (307). The artwork carries its own — see
+            // `imageLayer` — so a fill here would only ever be seen in the margin a
+            // fanned post insets, where it read as a black slab boxing in the pile
+            // instead of letting the cards sit on the grid.
+            layer.backgroundColor = NSColor.clear.cgColor
         }
 
         // The fan cards first, then the image on top of them — both BELOW the scrim,
