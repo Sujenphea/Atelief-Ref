@@ -24,7 +24,7 @@ struct MasonryGridItemBadgeTests {
 
     private static let side: CGFloat = 200
 
-    private func laidOutCell(postMemberCount: Int) -> MasonryGridItem {
+    private func laidOutCell(postMemberCount: Int, postExpanded: Bool = false) -> MasonryGridItem {
         let cell = MasonryGridItem()
         cell.view.frame = NSRect(x: 0, y: 0, width: Self.side, height: Self.side)
         let sourceID = UUID(), assetID = UUID()
@@ -40,7 +40,7 @@ struct MasonryGridItemBadgeTests {
                 originalURL: "https://www.instagram.com/p/AbCd/", capturedAt: Date()))
         cell.configure(
             detail: detail, url: nil, bucket: 256, gifURL: nil,
-            postMemberCount: postMemberCount)
+            postMemberCount: postMemberCount, postExpanded: postExpanded)
         cell.view.layoutSubtreeIfNeeded()
         return cell
     }
@@ -78,6 +78,59 @@ struct MasonryGridItemBadgeTests {
             $0.contents != nil && !$0.isHidden
         }
         #expect(painted != true)
+    }
+
+    // MARK: - The fanned pile (307)
+
+    /// The cards behind the artwork: the only visible sublayers carrying a 1pt
+    /// border (the rings are 0 until selected, the contrast hairline starts hidden).
+    private func fanCards(_ cell: MasonryGridItem) -> [CALayer] {
+        (cell.view.layer?.sublayers ?? []).filter { $0.borderWidth == 1 && !$0.isHidden }
+    }
+
+    /// The artwork layer, told apart from the chip by its gravity (`resizeAspectFill`
+    /// vs the chip's `resizeAspect`).
+    private func artwork(_ cell: MasonryGridItem) -> CALayer? {
+        (cell.view.layer?.sublayers ?? []).first { $0.contentsGravity == .resizeAspectFill }
+    }
+
+    @Test("a collapsed post draws two cards behind pulled-in artwork")
+    func collapsedPostFans() {
+        let cell = laidOutCell(postMemberCount: 3)
+        #expect(fanCards(cell).count == 2)
+        let art = try? #require(artwork(cell))
+        // Inset on every side, so the tilted cards have room inside the clip.
+        #expect((art?.frame.width ?? Self.side) < Self.side)
+        #expect((art?.frame.minX ?? 0) > 0)
+    }
+
+    @Test("a lone item fills its cell and draws no pile")
+    func loneItemHasNoFan() {
+        let cell = laidOutCell(postMemberCount: 0)
+        #expect(fanCards(cell).isEmpty)
+        #expect(artwork(cell)?.frame.width == Self.side)
+    }
+
+    @Test("an OPENED post keeps its chip but loses the pile")
+    func openedPostDropsTheFan() {
+        let cell = laidOutCell(postMemberCount: 3, postExpanded: true)
+        // Nothing is hidden behind it any more, so it stands for nothing...
+        #expect(fanCards(cell).isEmpty)
+        #expect(artwork(cell)?.frame.width == Self.side)
+        // ...but the chip stays, because it is what closes the post again.
+        let chip = cell.view.layer?.sublayers?.contains {
+            $0.contents != nil && !$0.isHidden
+        }
+        #expect(chip == true)
+    }
+
+    @Test("reuse clears the pile as well as the chip")
+    func reuseClearsTheFan() {
+        let cell = laidOutCell(postMemberCount: 4)
+        #expect(fanCards(cell).count == 2)
+        cell.prepareForReuse()
+        cell.view.layoutSubtreeIfNeeded()
+        #expect(fanCards(cell).isEmpty)
     }
 
     @Test("reuse clears the chip so a recycled cell can't inherit one")

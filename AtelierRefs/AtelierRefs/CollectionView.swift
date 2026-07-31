@@ -689,6 +689,7 @@ struct CollectionView: View {
             onRemoveFromCollection: { model.removeFromFolder(assetIDs: $0) },
             onDelete: { model.requestDelete(assetIDs: $0) },
             onToggleExpand: { model.toggleExpansion(forItem: $0) },
+            expandedPosts: model.expandedPosts,
             // 222 — the title row scrolls away inside the grid's own scroll region,
             // its band sized to the row's measured natural height.
             header: AnyView(headerContent),

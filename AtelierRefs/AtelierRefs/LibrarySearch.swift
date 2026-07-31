@@ -856,6 +856,7 @@ private struct LibrarySearchResults: View {
             onRemoveFromCollection: { _ in },
             onDelete: { ids in model.requestDelete(assetIDs: ids) },
             onToggleExpand: { toggleExpansion(forItem: $0) },
+            expandedPosts: expandedPosts,
             menuStyle: .looseAssets,
             onReveal: { id in
                 if let hit = search.results.first(where: { $0.asset.id == id }) {

@@ -135,8 +135,8 @@ enum PostBadge {
     /// the opposite corner, so the two never collide).
     static let inset: CGFloat = 6
 
-    /// The chip for `count` members — a translucent-dark capsule holding the
-    /// stacked-squares glyph and the count.
+    /// The chip for `count` members — a white capsule holding the stacked-squares
+    /// glyph and the count in the backdrop tone.
     static func image(count: Int) -> NSImage? {
         guard count > 1 else { return nil }
         if let hit = cache[count] { return hit }
@@ -154,7 +154,7 @@ enum PostBadge {
         let text = "\(count)" as NSString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: Theme.NS.selectionMark,
+            .foregroundColor: Theme.NS.mediaBackdrop,
         ]
         let textSize = text.size(withAttributes: attributes)
         let hPad: CGFloat = 6, gap: CGFloat = 3
@@ -163,15 +163,15 @@ enum PostBadge {
 
         let image = NSImage(size: size)
         image.lockFocusFlipped(false)
-        // The same dark backing the selection ring's contrast hairline uses: this
-        // chip sits permanently over artwork, so it needs the luminance floor that
-        // token exists to provide, and reusing it keeps the cell's chrome on one
-        // palette instead of introducing a second black.
-        Theme.NS.selectionMarkContrast.setFill()
+        // A WHITE capsule with dark contents, the same inversion the selection
+        // checkmark uses (a black tick on a white-filled circle): a solid light chip
+        // carries its own contrast on any artwork, where a translucent dark one
+        // disappeared into a dark photo.
+        Theme.NS.selectionMark.setFill()
         NSBezierPath(roundedRect: NSRect(origin: .zero, size: size),
                      xRadius: height / 2, yRadius: height / 2).fill()
         glyph.isTemplate = true
-        Theme.NS.selectionMark.set()
+        Theme.NS.mediaBackdrop.set()
         let glyphRect = NSRect(
             x: hPad, y: ((height - glyph.size.height) / 2).rounded(),
             width: glyph.size.width, height: glyph.size.height)
@@ -218,6 +218,16 @@ final class MasonryGridItem: NSCollectionViewItem {
     private let selectionContrastLayer = CALayer()
     /// Inert-until-A2 keyboard-cursor ring (drawn when lead && !selected).
     private let cursorRingLayer = CALayer()
+    /// The thumbnail itself. Its OWN layer rather than the container's `contents`
+    /// (307): a collapsed carousel insets the artwork to make room for the fanned
+    /// cards behind it, and a layer's own contents always draws BELOW its sublayers,
+    /// so the cards could never have sat behind the image otherwise.
+    private let imageLayer = CALayer()
+    /// The two cards peeking out behind a collapsed post's thumbnail — the same
+    /// Procreate-style pile the Home overview cards use, so a stack reads as a stack
+    /// everywhere in the app. Empty-looking (a tone + hairline, no artwork): they
+    /// stand for "more behind this", not for any particular image.
+    private let fanLayers: [CALayer] = [CALayer(), CALayer()]
     /// The carousel count chip (307), painted top-leading whenever this cell's post
     /// has more than one item in the feed. Purely informational — hit-transparent
     /// (it's a layer, not a view) so it can't intercept a click or a drag.
@@ -285,6 +295,12 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// How many feed items share this cell's post (307) — 0 when it stands alone.
     /// Drives the carousel chip and the VoiceOver suffix.
     private var postMemberCount = 0
+    /// Whether this cell's post is currently OPENED in place (307) — chip still shown
+    /// so it can be closed again, but no pile, because nothing is hidden behind it.
+    private var postExpanded = false
+    /// The seed for this cell's fan tilt. The item id, so a post's pile is stable
+    /// across scrolls and relayouts rather than re-rolling per render.
+    private var fanSeed = UUID()
 
     // MARK: View
 
@@ -294,7 +310,6 @@ final class MasonryGridItem: NSCollectionViewItem {
         container.wantsLayer = true
         container.layerContentsRedrawPolicy = .never
         if let layer = container.layer {
-            layer.contentsGravity = .resizeAspectFill
             layer.masksToBounds = true
             layer.cornerRadius = cornerRadius
             // The token, not `quaternaryLabelColor`: a translucent, appearance-derived
@@ -302,6 +317,22 @@ final class MasonryGridItem: NSCollectionViewItem {
             // shifted tone with whatever showed through it.
             layer.backgroundColor = Theme.NS.mediaBackdrop.cgColor
         }
+
+        // The fan cards first, then the image on top of them — both BELOW the scrim,
+        // rings, chip and circle, which are added after and so stay on top.
+        for card in fanLayers {
+            card.cornerRadius = cornerRadius
+            card.backgroundColor = Theme.NS.selection.cgColor
+            card.borderColor = Theme.NS.hairlineStrong.cgColor
+            card.borderWidth = 1
+            card.isHidden = true
+            container.layer?.addSublayer(card)
+        }
+        imageLayer.contentsGravity = .resizeAspectFill
+        imageLayer.masksToBounds = true
+        imageLayer.cornerRadius = cornerRadius
+        imageLayer.backgroundColor = Theme.NS.mediaBackdrop.cgColor
+        container.layer?.addSublayer(imageLayer)
 
         // Selected-cell dim scrim (below the rings so they stay crisp). Sized in
         // `viewDidLayout`; opacity toggled in `applySelectionState`.
@@ -369,7 +400,9 @@ final class MasonryGridItem: NSCollectionViewItem {
         // animations are suppressed so a recycle/relayout never cross-fades.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let bounds = view.bounds
+        let bounds = contentRect
+        imageLayer.frame = bounds
+        layOutFan(in: bounds)
         scrimLayer.frame = bounds
         selectionRingLayer.frame = bounds
         layOutContrastHairline(in: bounds)
@@ -386,6 +419,47 @@ final class MasonryGridItem: NSCollectionViewItem {
         let side: CGFloat = 32
         circleButton.frame = NSRect(
             x: bounds.maxX - side, y: bounds.minY, width: side, height: side)
+    }
+
+    /// How far the artwork pulls in when a collapsed post is drawn as a pile, so the
+    /// tilted cards behind it stay inside the cell (the container clips). A plain
+    /// tile uses the full bounds and is visually unchanged.
+    private static let fanInset: CGFloat = 7
+    /// The tilt of the deepest card. Small on purpose — at grid scale a big angle
+    /// reads as a broken layout rather than a stack.
+    private static let fanMaxDegrees: Double = 5
+
+    /// Whether this cell draws the fanned pile: it stands for a multi-item post that
+    /// is currently COLLAPSED. An opened post shows its members as ordinary tiles, so
+    /// none of them is standing for anything and none of them fans.
+    private var showsFan: Bool { postMemberCount > 1 && !postExpanded }
+
+    /// The rect the artwork and all its chrome occupy — inset while fanning so the
+    /// cards behind can show. Everything (rings, scrim, chip, circle) tracks THIS,
+    /// not `view.bounds`, or the selection ring would float away from the card it is
+    /// supposed to be hugging.
+    private var contentRect: CGRect {
+        showsFan ? view.bounds.insetBy(dx: Self.fanInset, dy: Self.fanInset) : view.bounds
+    }
+
+    /// Place the two cards behind the artwork, tilted by the SAME seeded rotation the
+    /// Home overview cards use (``fanRotations``) so a given post's pile looks the
+    /// same on every render instead of jittering per scroll.
+    private func layOutFan(in rect: CGRect) {
+        guard showsFan else {
+            for card in fanLayers { card.isHidden = true }
+            return
+        }
+        // count: 3 — index 0 is the upright front card (the artwork itself), so the
+        // two behind take indices 1 and 2, matching `FanCard`'s convention.
+        let angles = fanRotations(
+            seed: fanSeed, count: 3, maxDegrees: Self.fanMaxDegrees)
+        for (offset, card) in fanLayers.enumerated() {
+            card.isHidden = false
+            card.frame = rect
+            card.transform = CATransform3DMakeRotation(
+                CGFloat(angles[offset + 1] * .pi / 180), 0, 0, 1)
+        }
     }
 
     /// Paint the dim for the cell's current state — selected wins over hovered, and
@@ -427,8 +501,10 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// item's post (0 when it isn't part of a multi-item post) — the carousel chip.
     func configure(
         detail: CollectionItemDetail, url: URL?, bucket: Int, gifURL: URL?,
-        postMemberCount: Int
+        postMemberCount: Int, postExpanded: Bool
     ) {
+        fanSeed = detail.item.id
+        self.postExpanded = postExpanded
         setPostMemberCount(postMemberCount)
         loadToken &+= 1
         let token = loadToken
@@ -515,6 +591,8 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// through a feed of carousels re-uses one image per distinct length.
     private func setPostMemberCount(_ count: Int) {
         postMemberCount = count
+        // The pile changes the content rect, so the whole cell has to re-place.
+        view.needsLayout = true
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if let badge = PostBadge.image(count: count) {
@@ -627,6 +705,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         cancelGifDwell()
         gifURL = nil
         gifFileSize = nil
+        postExpanded = false
         setPostMemberCount(0)
         setImage(nil)
         hideCard()
@@ -638,8 +717,8 @@ final class MasonryGridItem: NSCollectionViewItem {
     private func setImage(_ image: CGImage?) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        view.layer?.contents = image
-        view.layer?.backgroundColor =
+        imageLayer.contents = image
+        imageLayer.backgroundColor =
             image == nil ? Theme.NS.mediaBackdrop.cgColor : NSColor.clear.cgColor
         CATransaction.commit()
     }

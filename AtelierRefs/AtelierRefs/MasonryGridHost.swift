@@ -129,6 +129,9 @@ struct GridHostConfiguration {
     /// The carousel chip was clicked on this tile (307) — open or close its post in
     /// place. Defaults to a no-op so a surface without grouping needn't supply it.
     var onToggleExpand: (UUID) -> Void = { _ in }
+    /// Representative ids of posts opened in place (307), so a cell knows whether it
+    /// still stands for hidden members and should draw the pile.
+    var expandedPosts: Set<UUID> = []
 
     // MARK: 048 — membership-less (search) reuse
 
@@ -744,7 +747,9 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
             url: configuration.thumbnailURL(detail),
             bucket: bucket(at: index),
             gifURL: gifURL,
-            postMemberCount: postGroups.memberCount(forItem: detail.item.id))
+            postMemberCount: postGroups.memberCount(forItem: detail.item.id),
+            postExpanded: configuration.expandedPosts.contains(
+                postGroups.members(forItem: detail.item.id).first ?? detail.item.id))
         // Paint the cell's CURRENT selection + hover, so a freshly materialized or
         // reconfigured cell (scroll-in, snapshot, density step) shows the right
         // rings/circle without waiting for a reconcile tick — this is also how a
