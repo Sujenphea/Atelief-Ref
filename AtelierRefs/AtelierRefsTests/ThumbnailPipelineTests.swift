@@ -189,7 +189,8 @@ struct ThumbnailFallbackTests {
 /// A square RGBA bitmap of `side` px. `side` doubles as an identity marker: the
 /// injected decoder builds the image at the bucket it was asked for, so a test
 /// can read `image.width` and see WHICH bucket a cache hit came from.
-private func makeImage(side: Int) -> CGImage {
+/// `nonisolated` — a pure CGImage factory, called from the probe's off-main decode.
+private nonisolated func makeImage(side: Int) -> CGImage {
     let context = CGContext(
         data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
         space: CGColorSpaceCreateDeviceRGB(),
@@ -202,7 +203,9 @@ private func makeImage(side: Int) -> CGImage {
 /// Stands in for ImageIO: records every decode by hash, and can BLOCK chosen
 /// hashes on a semaphore so a test can hold the concurrency gate open and observe
 /// queueing, promotion and cancellation deterministically instead of by timing.
-private final class DecodeProbe: @unchecked Sendable {
+// `nonisolated` to match its `@unchecked Sendable`: `decode` is handed to the
+// pipeline as a `@Sendable` closure and runs off the main actor.
+nonisolated private final class DecodeProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var calls: [String] = []
     private var blocked: Set<String> = []

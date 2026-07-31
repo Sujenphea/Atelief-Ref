@@ -24,7 +24,17 @@ import UniformTypeIdentifiers
 
 /// An `NSFilePromiseProvider` carrying one asset's export, and — on the primary
 /// dragged item only — the internal `.assetIDs` payload (2A).
-final class AssetFilePromiseProvider: NSFilePromiseProvider {
+///
+/// `nonisolated` because every method here OVERRIDES a nonisolated
+/// `NSPasteboardWriting` requirement, and AppKit calls them from wherever it is
+/// servicing the pasteboard. Under this target's MainActor-by-default the class
+/// would otherwise infer main-actor isolation and the overrides would not match
+/// what they override.
+///
+/// That makes the two stored properties nonisolated mutable state, which is sound
+/// here and not a `Sendable` claim: the class is not `Sendable`, and both are written
+/// ONCE on the main actor while the drag is assembled, then only read.
+nonisolated final class AssetFilePromiseProvider: NSFilePromiseProvider {
     /// The blob + filename this promise writes. Read by the delegate at drop time.
     var exportItem: AssetExportItem?
     /// The app-private `AssetDragPayload` JSON, set on the PRIMARY provider only.

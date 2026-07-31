@@ -247,7 +247,11 @@ enum SnapshotError: Error, Equatable {
 
 /// Pure set math for the post-restore blob reconcile (008 review, 3A) — the two
 /// directions restoring an older snapshot can silently diverge from the disk.
-struct PostRestoreBlobReport: Equatable {
+///
+/// `nonisolated` because it is built and read inside the reconcile's
+/// `Task.detached`: under this target's MainActor-by-default, a pure value type
+/// infers main-actor isolation and cannot be constructed off-main (see 285).
+nonisolated struct PostRestoreBlobReport: Equatable {
     /// Blobs the restored DB references that are no longer on disk (orphaned and
     /// trashed sometime AFTER the snapshot was taken) — those items render
     /// without media, and recovery is the user's Trash, not ours (sandbox).

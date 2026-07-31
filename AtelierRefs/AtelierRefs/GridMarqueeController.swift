@@ -237,7 +237,7 @@ final class GridMarqueeController {
 /// The translucent marquee rectangle (036 §4 A3) — a flipped, hit-transparent
 /// overlay so it never steals the drag's mouse events and its frame reads as
 /// content-space top-left (matching the item views). Draws entirely via its layer;
-/// the accent stroke + fill mirror the SwiftUI `MarqueeRectangleLayer`.
+/// the stroke + fill mirror the SwiftUI `MarqueeRectangleLayer`.
 private final class MarqueeRectView: NSView {
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -246,8 +246,8 @@ private final class MarqueeRectView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.7).cgColor
-        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
+        layer?.borderColor = Theme.NS.selectionMark.withAlphaComponent(0.7).cgColor
+        layer?.backgroundColor = Theme.NS.selectionMark.withAlphaComponent(0.12).cgColor
     }
 
     @available(*, unavailable)

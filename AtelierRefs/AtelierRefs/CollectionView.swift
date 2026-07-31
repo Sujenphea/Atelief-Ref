@@ -278,7 +278,7 @@ struct CollectionView: View {
             if isTargeted {
                 RoundedRectangle(cornerRadius: Theme.Radius.card)
                     .strokeBorder(
-                        Color.accentColor,
+                        Theme.Colors.selectionMark,
                         style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
                     .padding(Theme.Spacing.xs)
                     .allowsHitTesting(false)
@@ -753,7 +753,10 @@ struct CollectionView: View {
                         .font(Theme.Typography.caption).bold().monospacedDigit()
                         .foregroundStyle(.white)
                         .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(Capsule().fill(Color.accentColor))
+                        // NOT `selectionMark`: this is a count BADGE, and white-on-
+                        // white would erase its own label. A raised dark chip is the
+                        // monochrome equivalent of "stands off the artwork".
+                        .background(Capsule().fill(Theme.Colors.surface))
                         .padding(4)
                 }
             }
@@ -821,9 +824,14 @@ struct CollectionView: View {
               }) else { return false }
         guard model.isReady else { return false }
         let target = importTargetID
+        // The array crosses to a background decode. `NSItemProvider`'s load APIs are
+        // documented thread-safe, and SwiftUI hands this list over and never touches
+        // it again — but neither fact is visible to the compiler through a closure
+        // parameter it does not own, so the transfer is asserted here.
+        nonisolated(unsafe) let toDecode = providers
         Task {
             let decoded = await DirectInputReader.inputs(
-                from: providers, into: target, now: Date())
+                from: toDecode, into: target, now: Date())
             dispatch(
                 inputs: decoded.inputs,
                 webURL: decoded.webURL,

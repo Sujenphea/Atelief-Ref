@@ -148,8 +148,21 @@ final class MasonryGridItem: NSCollectionViewItem {
     private var animatingGifID: UUID?
 
     private let cornerRadius: CGFloat = Theme.Radius.tile
-    /// The selected-cell accent border width. The contrast hairline nests inside it.
+    /// The selected-cell ring width. The contrast hairline nests inside it.
     private let selectionRingWidth: CGFloat = 3
+    /// The keyboard-cursor ring width — thinner AND half-transparent, so a cursor
+    /// can never be mistaken for a selection now that both are white.
+    private let cursorRingWidth: CGFloat = 2
+    /// The contrast hairline's own width. Half-opaque black at 2pt, not the 1pt
+    /// whisper it was: under the blue accent it only had to survive pale images,
+    /// where the blue still read; under a white ring it IS the edge there.
+    private let contrastHairlineWidth: CGFloat = 2
+
+    /// The ring the contrast hairline currently nests inside — the hairline hugs
+    /// whichever ring is drawn, so there is never a gap of bare image between them.
+    private var activeRingWidth: CGFloat {
+        currentSelection.isSelected ? selectionRingWidth : cursorRingWidth
+    }
 
     /// The membership id this cell is currently bound to — the coordinator reads it
     /// back when the cell reports a mouse-down / circle click (A2). Set in
@@ -198,15 +211,15 @@ final class MasonryGridItem: NSCollectionViewItem {
             ring.isHidden = true
             container.layer?.addSublayer(ring)
         }
-        selectionRingLayer.borderColor = NSColor.controlAccentColor.cgColor
-        cursorRingLayer.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.6).cgColor
+        selectionRingLayer.borderColor = Theme.NS.selectionMark.cgColor
+        cursorRingLayer.borderColor = Theme.NS.selectionMark.withAlphaComponent(0.6).cgColor
 
-        // Contrast hairline nested just inside the accent ring (sized in
-        // `viewDidLayout`). Added last of the rings so it paints ABOVE the accent
-        // stroke's inner edge; a dark line reads on pale images and is invisible
-        // on dark ones.
-        selectionContrastLayer.cornerRadius = max(0, cornerRadius - selectionRingWidth)
-        selectionContrastLayer.borderColor = NSColor.black.withAlphaComponent(0.25).cgColor
+        // Contrast hairline nested just inside the white ring (sized in
+        // `viewDidLayout`). Added last of the rings so it paints ABOVE the ring's
+        // inner edge: the white reads against dark artwork and this reads against
+        // light, so the pair keeps an edge at both ends of the range. Shown for the
+        // CURSOR ring too — a white ring needs it more than the blue accent did.
+        selectionContrastLayer.borderColor = Theme.NS.selectionMarkContrast.cgColor
         selectionContrastLayer.borderWidth = 0
         selectionContrastLayer.isHidden = true
         container.layer?.addSublayer(selectionContrastLayer)
@@ -246,7 +259,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         let bounds = view.bounds
         selectionScrimLayer.frame = bounds
         selectionRingLayer.frame = bounds
-        selectionContrastLayer.frame = bounds.insetBy(dx: selectionRingWidth, dy: selectionRingWidth)
+        layOutContrastHairline(in: bounds)
         cursorRingLayer.frame = bounds
         cardHost?.frame = bounds
         gifSlot?.frame = bounds
@@ -255,6 +268,15 @@ final class MasonryGridItem: NSCollectionViewItem {
         let side: CGFloat = 32
         circleButton.frame = NSRect(
             x: bounds.maxX - side, y: bounds.minY, width: side, height: side)
+    }
+
+    /// Nest the contrast hairline immediately inside whichever ring is showing.
+    /// Called from both `viewDidLayout` (bounds changed) and `applySelectionState`
+    /// (the ring changed) — the two inputs are independent, so neither can own it.
+    private func layOutContrastHairline(in bounds: CGRect) {
+        let inset = activeRingWidth
+        selectionContrastLayer.frame = bounds.insetBy(dx: inset, dy: inset)
+        selectionContrastLayer.cornerRadius = max(0, cornerRadius - inset)
     }
 
     // MARK: Configure
@@ -316,19 +338,23 @@ final class MasonryGridItem: NSCollectionViewItem {
         selectionScrimLayer.opacity = state.isSelected ? 0.18 : 0
         selectionRingLayer.isHidden = !state.isSelected
         selectionRingLayer.borderWidth = state.isSelected ? selectionRingWidth : 0
-        selectionContrastLayer.isHidden = !state.isSelected
-        selectionContrastLayer.borderWidth = state.isSelected ? 1 : 0
         let showCursor = state.isCursor && !state.isSelected
         cursorRingLayer.isHidden = !showCursor
-        cursorRingLayer.borderWidth = showCursor ? 2 : 0
+        cursorRingLayer.borderWidth = showCursor ? cursorRingWidth : 0
+        // The hairline backs EITHER ring, so its inset has to be re-derived here —
+        // `activeRingWidth` reads `currentSelection`, which this method just set.
+        let showHairline = state.isSelected || showCursor
+        selectionContrastLayer.isHidden = !showHairline
+        selectionContrastLayer.borderWidth = showHairline ? contrastHairlineWidth : 0
+        layOutContrastHairline(in: view.bounds)
         CATransaction.commit()
-        // Selected: a palette checkmark (BLACK tick on an accent-filled circle) so
-        // the tick has intrinsic contrast on any image, unlike a monochrome accent
-        // tint whose knocked-out check reads the backing photo. Unselected: the
-        // empty ring stays white (its halo carries it against pale images).
+        // Selected: a palette checkmark (BLACK tick on a WHITE-filled circle) so the
+        // tick has intrinsic contrast on any image, unlike a monochrome tint whose
+        // knocked-out check reads the backing photo. Unselected: the empty ring stays
+        // white (its halo carries it against pale images).
         if state.isSelected {
             let config = NSImage.SymbolConfiguration(
-                paletteColors: [.black, .controlAccentColor])
+                paletteColors: [.black, Theme.NS.selectionMark])
             circleButton.image = NSImage(
                 systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)?
                 .withSymbolConfiguration(config)

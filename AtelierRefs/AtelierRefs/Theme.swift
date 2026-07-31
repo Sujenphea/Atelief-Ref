@@ -35,6 +35,18 @@ enum Theme {
         /// The ACTIVE sidebar row — a brighter fill than `field` so the current
         /// destination pops off the translucent sidebar (paired with `hairlineStrong`).
         static let selection = Color(hex: 0x3A3A40)
+        /// The selection MARKER drawn over ARTWORK: the grid tile's ring, the gallery
+        /// card's ring, the marquee, the canvas item's outline. Distinct from
+        /// ``selection``, which is the grey FILL marking the active sidebar row — a
+        /// fill can't be read on top of a photograph, and a ring can't be read on top
+        /// of a list row.
+        static let selectionMark = Color.white
+        /// The dark hairline nested just INSIDE ``selectionMark`` wherever the ring is
+        /// drawn OVER the image (the grid tile). White alone vanishes on a pale photo,
+        /// so the two make a two-sided edge: the white reads against dark artwork, this
+        /// reads against light. Neither carries selection alone — that is why it is
+        /// half-opaque and 2pt rather than the whisper it was under the blue accent.
+        static let selectionMarkContrast = Color.black.opacity(0.5)
         /// Grid tiles + the detail media area — the art's stable dark ground.
         static let mediaBackdrop = Color(hex: 0x141416)
         /// Detail filmstrip thumbs + the Back-button fill.
@@ -71,6 +83,8 @@ enum Theme {
     enum NS {
         static let mediaBackdrop = NSColor(hex: 0x141416)
         static let selection = NSColor(hex: 0x3A3A40)
+        static let selectionMark = NSColor.white
+        static let selectionMarkContrast = NSColor.black.withAlphaComponent(0.5)
         static let inkPrimary = NSColor(hex: 0xF2F1EE)
         static let inkSecondary = NSColor(hex: 0x9A9A9E)
         static let hairlineStrong = NSColor.white.withAlphaComponent(0.14)

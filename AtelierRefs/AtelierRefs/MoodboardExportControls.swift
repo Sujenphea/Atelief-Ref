@@ -186,7 +186,7 @@ struct ExportProgressRing: View {
             Circle().stroke(.quaternary, lineWidth: 2)
             Circle()
                 .trim(from: 0, to: max(0.03, controller.progress))
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .stroke(Theme.Colors.inkPrimary, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 .rotationEffect(.degrees(-90))
         }
         .frame(width: 16, height: 16)
