@@ -66,7 +66,20 @@ nonisolated final class AssetFilePromiseProvider: NSFilePromiseProvider {
 /// Copies a promised blob to its drop destination. Stateless — everything is read
 /// from the provider — so the single ``shared`` instance safely serves every drag
 /// and satisfies the weak `delegate` reference for a drag that outlives its source.
-final class AssetFilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate {
+///
+/// `nonisolated` is LOAD-BEARING, not tidiness. `NSFilePromiseProviderDelegate` is
+/// an `@objc` protocol whose requirements are nonisolated; under this target's
+/// MainActor-by-default this class would infer main-actor isolation, and Swift lets
+/// that mismatch COMPILE by inserting a runtime isolation check rather than
+/// rejecting it. AppKit then calls ``filePromiseProvider(_:writePromiseTo:completionHandler:)``
+/// on ``writeQueue`` — a background thread, by design — and the check traps:
+/// `EXC_BREAKPOINT` mid-drag, only ever on a real drop to Finder, which no unit test
+/// exercises. Marking the class states what was already true and removes the check.
+///
+/// `@unchecked Sendable` for the same reason the doc above gives: the only stored
+/// property is an `OperationQueue`, which is thread-safe, and nothing else is held.
+nonisolated final class AssetFilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate,
+    @unchecked Sendable {
     static let shared = AssetFilePromiseDelegate()
 
     /// The promise writes run here, off the main thread (13A). On APFS a
