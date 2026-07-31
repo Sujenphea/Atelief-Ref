@@ -408,6 +408,17 @@ struct CollectionView: View {
             // shows progress + Cancel while a sheet renders.
             ContactSheetExportButton(model: model, collectionID: collectionID)
             ExportProgressRing()
+            // Same-post pickup (300) sits BESIDE the overflow rather than inside it:
+            // it changes WHAT every other action would act on, so burying it behind
+            // `…` puts a click between the selection and the thing you meant to
+            // select. Shown only while the selection has carousel members left to
+            // add. Mirrors search's bar, down to the glyph and the count living in
+            // the help text rather than a row title.
+            if let title = model.selectSamePostRowTitle {
+                SelectionBarButton("square.on.square", help: title) {
+                    model.selectSamePost()
+                }
+            }
             // Overflow as a popover so it opens ABOVE the bar (`arrowEdge: .top`),
             // not clipped below the floating capsule the way a `Menu` would.
             Button {
@@ -436,19 +447,6 @@ struct CollectionView: View {
     /// action still calls the SAME `IngestionModel` method as the context menu.
     private func moreActionsMenu(count: Int) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            // "Select the rest of the carousel" (300), pinned above the destination
-            // sections because it changes WHAT the destinations would act on. Hidden
-            // (not disabled) when the selection has no same-post members left to add
-            // — an always-present row that is usually dead would read as broken.
-            if let title = model.selectSamePostRowTitle {
-                SelectionMenuRow(title, systemImage: "square.on.square") {
-                    model.selectSamePost()
-                    showMoreActions = false
-                }
-                Rectangle().fill(Theme.Colors.hairline)
-                    .frame(height: 1).padding(.vertical, 3)
-            }
-
             SelectionMenuSectionHeader(
                 "Move to", isExpanded: expandedMoreSection == .move) { toggleSection(.move) }
             if expandedMoreSection == .move { destinationList(copy: false) }

@@ -11,10 +11,12 @@ let you act on them as a unit. This adds three connected affordances:
 2. **Sibling ring** — selecting one member draws a dashed accent ring on the
    post's remaining, unselected members, so you can see exactly which tiles they
    are without hunting for the badge count.
-3. **"Select N More from This Post"** — a row in the collection selection bar's
-   `…` overflow popover, a glyph button in the search selection bar, and an item
-   at the top of the grid's right-click menu on both surfaces. Additive: it
-   unions the siblings into the selection, so a triage in progress survives.
+3. **"Select N More from This Post"** — a glyph button in both selection bars
+   (in the collection's, sitting beside the `…` overflow rather than inside it:
+   the action changes *what* every other action would operate on, so it belongs
+   in reach of the selection, not a click behind it), and an item at the top of
+   the grid's right-click menu on both surfaces. Additive: it unions the siblings
+   into the selection, so a triage in progress survives.
 
 ## The grouping key (the load-bearing decision)
 
@@ -69,11 +71,12 @@ badge promises and what "select the others" can actually select.
   isn't O(cells × selected). Adds the context-menu item to both menu styles.
 - `IngestionModel.swift` — `postGroups` rebuilt in `rebuildItemDerivations`, plus
   `samePostSiblings`, `selectSamePostRowTitle`, and `selectSamePost()`.
-- `CollectionView.swift` — the popover row, pinned above the Move to / Add to
-  sections and hidden (not disabled) when there is nothing to add.
+- `CollectionView.swift` — a `SelectionBarButton` in the selection bar, placed
+  immediately before the `…` overflow, and hidden (not disabled) when there is
+  nothing to add — an always-present button that is usually dead reads as broken.
 - `LibrarySearch.swift` — its own `PostGroups` (search owns its own feed),
-  rebuilt on `resultsVersion`, and a glyph button in the selection bar. Search's
-  bar has no `…` overflow, so the count lives in the button's help text.
+  rebuilt on `resultsVersion`, and a glyph button in the selection bar. Both bars
+  now carry the same glyph and keep the count in the button's help text.
 
 ## Notes
 
