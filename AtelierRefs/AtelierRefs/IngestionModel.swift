@@ -246,6 +246,11 @@ final class IngestionModel: ObservableObject {
     @Published private(set) var backupFolderURL: URL?
     /// Why the target isn't usable, in words — `nil` when all is well.
     @Published private(set) var backupFolderMessage: String?
+    /// Runs, progress, and the last-run record (008 H5). Its own observable
+    /// object rather than more `@Published` here: `SettingsView` observes it
+    /// directly, so a progress tick during a copy re-renders one section
+    /// instead of every view bound to the model.
+    let backup = BackupController()
 
     /// Monotonic id for ``loadContents(of:)`` so a slow read can never clobber a
     /// newer one (fast folder switch, or a mutation-triggered reload).
@@ -735,6 +740,30 @@ final class IngestionModel: ObservableObject {
     func clearBackupFolder() {
         backupFolder.clearFolder()
         refreshBackupFolder()
+        // A "last backed up 2 days ago" line about a folder the app no longer
+        // has would be true and useless — and read as though the backup is
+        // still current.
+        backup.forgetLastRun()
+    }
+
+    // MARK: - Off-device backup runs (008 H5)
+
+    /// Whether a run can start: an open library and a reachable target.
+    var canRunBackup: Bool {
+        services != nil && store != nil && libraryRoot != nil
+            && backupFolder.hasFolder && !backup.isRunning
+    }
+
+    /// Copy everything the target is missing, then the database, then the
+    /// manifest. The controller owns the progress and the outcome; this is the
+    /// glue that hands it an open library.
+    func runBackupNow() {
+        guard let services, let store, let libraryRoot, canRunBackup else { return }
+        let version = Bundle.main
+            .infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+        backup.start(
+            services: services, source: store, libraryRoot: libraryRoot,
+            folder: backupFolder, appVersion: version)
     }
 
     // MARK: - Diagnostics (010 · Phase 3)

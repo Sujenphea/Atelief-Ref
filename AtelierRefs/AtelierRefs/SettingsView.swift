@@ -12,6 +12,10 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var model: IngestionModel
+    /// Observed separately from `model` (008 · H5): a nested `ObservableObject`
+    /// doesn't propagate its changes through its owner, so progress ticks would
+    /// never reach this view otherwise.
+    @ObservedObject var backup: BackupController
 
     /// The first-run flag ``ContentView`` gates onboarding on — flipping it false
     /// here re-shows the setup guide on the next main-window appearance.
@@ -101,8 +105,10 @@ struct SettingsView: View {
                         if let url { model.setBackupFolder(url) }
                     }
                 }
+                .disabled(backup.isRunning)
                 if model.backupFolder.hasFolder {
                     Button("Clear", role: .destructive) { model.clearBackupFolder() }
+                        .disabled(backup.isRunning)
                 }
             }
             // Shown only when something is actually wrong — an unreachable drive,
@@ -113,9 +119,42 @@ struct SettingsView: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            backupRunRow
             Text(BackupTarget.explainer)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// "Back Up Now" / "Stop", the progress bar while a run is in flight, and
+    /// the last-run line (008 · H5).
+    @ViewBuilder
+    private var backupRunRow: some View {
+        HStack {
+            Button("Back Up Now") { model.runBackupNow() }
+                .disabled(!model.canRunBackup)
+            if backup.isRunning {
+                Button("Stop") { backup.cancel() }
+                // Deliberately not `.destructive`: stopping keeps everything
+                // already copied, so it destroys nothing.
+                ProgressView(value: backup.progress)
+                    .progressViewStyle(.linear)
+                    .frame(maxWidth: 140)
+            }
+        }
+        // Only once there is a target — "Never backed up" beside a "Choose
+        // Folder…" button states the obvious twice.
+        if model.backupFolder.hasFolder, !backup.isRunning {
+            Text(BackupTarget.statusLine(for: backup.lastRun))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        // A run that couldn't start says why, and what to do about it.
+        if let message = backup.lastRun?.message, !backup.isRunning {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

@@ -257,8 +257,21 @@ public `AppServices.schemaVersion`. 58 tests. Departures worth carrying forward:
   stays in the backup; pruning would make an accidental delete propagate
   off-device, which is the case people restore *from*. Pinned by a test.
 
-Still to come: H5b (app wiring — "Back Up Now", progress, cancel, last-run
-status) and H5c (restore through the snapshot seam, as specified above).
+**As built (changelog 301) — H5b, the app wiring.** `BackupController` (the
+`ExportController` shape), `BackupRunSummary` + `BackupSummaryStore`, run-failure
+and status words on `BackupTarget`, and the Settings run row. 33 tests. Two
+things worth carrying into H6/H7:
+
+- **`FolderAccess` now has an async `withAccess`.** A security scope held only
+  for a synchronous call is torn down at the first `await`; any long export or
+  import into a user-chosen folder needs the async bracket, not the sync one.
+  The protocol declares `resolve`/`beginAccess`/`endAccess` and an extension
+  supplies both brackets, so the release `defer` exists once.
+- **A cancelled run must not be classified as a failure.** Cancelling tears down
+  in-flight work, which throws; the controller checks the cancel flag *before*
+  it classifies any error. Any future long-running job needs the same order.
+
+Still to come: H5c — restore through the snapshot seam, as specified above.
 
 ## H6 — Archive export (M)
 

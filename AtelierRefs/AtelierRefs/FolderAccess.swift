@@ -38,14 +38,51 @@ nonisolated enum FolderAccessError: Error, Equatable {
 
 /// Somewhere on disk the app may read and write, made reachable for the
 /// duration of a call.
+///
+/// Conformers supply the three primitives; the `withAccess` brackets come from
+/// the protocol extension below, so the `defer` that releases the scope is
+/// written once rather than once per conformance.
 protocol FolderAccess: Sendable {
     /// The folder's current URL, or a typed failure. Resolving does NOT grant
     /// access — use ``withAccess(_:)`` to actually touch the contents.
     func resolve() throws -> URL
 
+    /// Grant access to a URL that ``resolve()`` returned.
+    /// Throws ``FolderAccessError/accessDenied`` if the sandbox refuses.
+    func beginAccess(to url: URL) throws
+
+    /// Release a grant taken by ``beginAccess(to:)``. Must be safe to call
+    /// exactly once per successful begin.
+    func endAccess(to url: URL)
+}
+
+extension FolderAccess {
     /// Run `body` with the folder access-granted, releasing the scope
     /// afterwards even if `body` throws. The URL passed in is freshly resolved.
-    func withAccess<T>(_ body: (URL) throws -> T) throws -> T
+    func withAccess<T>(_ body: (URL) throws -> T) throws -> T {
+        let url = try resolve()
+        try beginAccess(to: url)
+        defer { endAccess(to: url) }
+        return try body(url)
+    }
+
+    /// The async form, for work that spans suspension points — an off-device
+    /// backup copying thousands of files (008 · H5).
+    ///
+    /// A security scope is a property of the URL, not of the calling thread, so
+    /// holding it across `await` is legitimate; what matters is that it is
+    /// released exactly once, which the shared `defer` guarantees. The
+    /// synchronous overload cannot serve here: a `body` that suspends would have
+    /// its scope torn down at the first `await`, and every copy after that would
+    /// fail with a permission error the user could do nothing about.
+    func withAccess<T: Sendable>(
+        _ body: @Sendable (URL) async throws -> T
+    ) async throws -> T {
+        let url = try resolve()
+        try beginAccess(to: url)
+        defer { endAccess(to: url) }
+        return try await body(url)
+    }
 }
 
 /// Creates and resolves security-scoped bookmarks. Injectable because the real
@@ -148,22 +185,21 @@ final class StoredFolderAccess: FolderAccess, @unchecked Sendable {
         return resolved.url
     }
 
-    func withAccess<T>(_ body: (URL) throws -> T) throws -> T {
-        let url = try resolve()
+    func beginAccess(to url: URL) throws {
         guard url.startAccessingSecurityScopedResource() else {
             throw FolderAccessError.accessDenied
         }
-        defer { url.stopAccessingSecurityScopedResource() }
-        return try body(url)
+    }
+
+    func endAccess(to url: URL) {
+        url.stopAccessingSecurityScopedResource()
     }
 
     /// Re-bookmark a moved folder. Needs the security scope held, since making a
     /// bookmark is itself an access of the resource.
     private func refreshBookmark(for url: URL) throws {
-        guard url.startAccessingSecurityScopedResource() else {
-            throw FolderAccessError.accessDenied
-        }
-        defer { url.stopAccessingSecurityScopedResource() }
+        try beginAccess(to: url)
+        defer { endAccess(to: url) }
         let data = try vault.makeBookmark(for: url)
         defaults.set(data, forKey: Self.bookmarkKey)
     }
@@ -179,5 +215,7 @@ struct DirectFolderAccess: FolderAccess {
 
     func resolve() throws -> URL { url }
 
-    func withAccess<T>(_ body: (URL) throws -> T) throws -> T { try body(url) }
+    /// No sandbox scope to take — a plain directory is already reachable.
+    func beginAccess(to url: URL) throws {}
+    func endAccess(to url: URL) {}
 }

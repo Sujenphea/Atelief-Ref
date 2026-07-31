@@ -8,6 +8,7 @@
 //  the same reason: prose and rules duplicated across surfaces drift.)
 //
 
+import AtelierIngestion
 import Foundation
 
 /// Why a folder the user picked can't serve as the backup target.
@@ -91,6 +92,80 @@ nonisolated enum BackupTarget {
     /// persists nothing on failure), so the honest instruction is to retry.
     static let couldNotRemember =
         "Couldn't remember that folder. Try choosing it again."
+
+    /// What to tell the user about a run that couldn't finish (008 · H5).
+    /// Each case names the thing to DO about it — a run failing is only useful
+    /// information if it says whether to free space, reconnect a drive, or
+    /// report a bug.
+    static func message(for error: BackupRunner.RunError) -> String {
+        switch error {
+        case .destinationUnwritable:
+            return "Couldn't write to the backup folder. Check the drive is "
+                + "connected and not read-only."
+        case .databaseCopyFailed:
+            return "Couldn't copy the library database — the backup drive is "
+                + "most likely full. Your previous backup is untouched."
+        case .databaseCopyCorrupt:
+            return "The copied database didn't pass its integrity check, so it "
+                + "wasn't installed. Your previous backup is untouched."
+        case .databaseInstallFailed:
+            return "Couldn't replace the previous database copy. Your previous "
+                + "backup is untouched."
+        case .manifestWriteFailed:
+            return "The backup copied, but couldn't be marked complete. Run it "
+                + "again."
+        }
+    }
+
+    /// What to tell the user when the library's own identity file is unusable.
+    /// Rare, and deliberately not self-healing — see ``LibraryIdentity``.
+    static let unidentifiableLibrary =
+        "Couldn't identify this library, so there's nowhere safe to put the "
+        + "backup. The `library-id` file in your library folder is damaged."
+
+    /// The catch-all, for an error with no specific remedy to offer.
+    static let unknownRunFailure =
+        "The backup didn't finish. Try again — if it keeps failing, export "
+        + "diagnostics from Settings."
+
+    // MARK: - Last run
+
+    /// The one-line status under the Backup section: when the last run was, and
+    /// whether it can be relied on.
+    ///
+    /// `nil` summary means no run has ever been recorded, which is a real state
+    /// worth naming — a target chosen but never used is the most likely reason
+    /// someone's backup isn't where they expect it.
+    static func statusLine(for summary: BackupRunSummary?, now: Date = Date()) -> String {
+        guard let summary else { return "Never backed up." }
+        let when = relativeTime(from: summary.finishedAt, to: now)
+        switch summary.outcome {
+        case .succeeded:
+            return "Last backed up \(when)."
+        case .incomplete:
+            // Say the number. "Some files" leaves the user unable to judge
+            // whether this is a rounding error or half their library.
+            let count = summary.unresolvedFiles
+            return "Last backed up \(when) — \(count) "
+                + (count == 1 ? "file" : "files") + " couldn't be copied."
+        case .cancelled:
+            return "Last backup stopped \(when). What copied was kept."
+        case .failed:
+            return "Last backup failed \(when)."
+        }
+    }
+
+    /// A coarse, human "when" — the precision a backup status actually wants.
+    /// Nobody needs seconds; they need to know whether it was today.
+    static func relativeTime(from date: Date, to now: Date) -> String {
+        let seconds = now.timeIntervalSince(date)
+        // A clock adjustment (or a file copied from another Mac) can put the
+        // stamp in the future. "in 3 hours" would read as a bug, so clamp.
+        guard seconds > 60 else { return "just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: now)
+    }
 
     /// The standing explanation under the folder row.
     static let explainer =
