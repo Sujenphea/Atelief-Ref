@@ -108,6 +108,44 @@ private func gridCellBaseAccessibilityLabel(for detail: CollectionItemDetail) ->
     return kind
 }
 
+// MARK: - Fanned pile geometry (307 · carousel grouping)
+
+/// How far a collapsed post's artwork pulls in, and the tilt its backing cards use,
+/// for a cell of `size`.
+///
+/// Rotating a rect about its centre swings its corners OUT: a `w × h` card turned by
+/// θ needs `w·cosθ + h·sinθ` of horizontal room and `w·sinθ + h·cosθ` of vertical.
+/// The overflow therefore scales with the OTHER dimension, which is why one fixed
+/// inset cannot work in a masonry grid — a tall tile needs far more horizontal room
+/// than a square one at the same angle, and the cell clips (`masksToBounds`) so the
+/// excess is simply cut off.
+///
+/// Solving `(w − 2d)·cosθ + (h − 2d)·sinθ ≤ w` for `d` gives the inset below. The
+/// tilt is capped first: corner swing is roughly `longest side × θ`, so θ is limited
+/// to `2·maxInset / longest side` to stop a very tall tile demanding an inset that
+/// would shrink the artwork to nothing.
+///
+/// Pure so the "no card is ever clipped" invariant is testable across aspect ratios
+/// instead of being eyeballed at one cell size.
+func fanPileGeometry(
+    in size: CGSize, maxDegrees: Double, maxInset: CGFloat, minInset: CGFloat
+) -> (inset: CGFloat, degrees: Double) {
+    let w = max(size.width, 1), h = max(size.height, 1)
+    let longest = max(w, h)
+    // Small-angle: d ≈ longest · θ / 2, so θ ≈ 2d / longest.
+    let capRadians = Double(2 * maxInset / longest)
+    let degrees = min(maxDegrees, capRadians * 180 / .pi)
+    let t = CGFloat(degrees * .pi / 180)
+    let c = cos(t), s = sin(t)
+    // Both axes, since a wide tile overflows vertically for the same reason.
+    let horizontal = (w * (c - 1) + h * s) / (2 * (c + s))
+    let vertical = (h * (c - 1) + w * s) / (2 * (c + s))
+    let needed = max(horizontal, vertical)
+    // Never eat more than half the cell, however extreme the aspect ratio.
+    let ceiling = min(w, h) / 2 - 1
+    return (min(max(minInset, needed), max(1, ceiling)), degrees)
+}
+
 // MARK: - Carousel badge (307 · carousel grouping)
 
 /// The "N items from this post" chip painted into a cell's top-leading corner.
@@ -422,13 +460,15 @@ final class MasonryGridItem: NSCollectionViewItem {
             x: bounds.maxX - side, y: bounds.minY, width: side, height: side)
     }
 
-    /// How far the artwork pulls in when a collapsed post is drawn as a pile, so the
-    /// tilted cards behind it stay inside the cell (the container clips). A plain
-    /// tile uses the full bounds and is visually unchanged.
-    private static let fanInset: CGFloat = 7
-    /// The tilt of the deepest card. Small on purpose — at grid scale a big angle
-    /// reads as a broken layout rather than a stack.
+    /// The tilt the deepest card would like. Small on purpose — at grid scale a big
+    /// angle reads as a broken layout rather than a stack. ``fanPileGeometry`` may
+    /// reduce it further on an extreme aspect ratio.
     private static let fanMaxDegrees: Double = 5
+    /// The most artwork a pile may give up per side. Past this the tilt is reduced
+    /// instead, so a very tall tile doesn't shrink its image to make room.
+    private static let fanMaxInset: CGFloat = 12
+    /// A visible minimum, so the cards still read as cards on a small cell.
+    private static let fanMinInset: CGFloat = 5
 
     /// Whether this cell draws the fanned pile: it stands for a multi-item post that
     /// is currently COLLAPSED. An opened post shows its members as ordinary tiles, so
@@ -440,7 +480,18 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// not `view.bounds`, or the selection ring would float away from the card it is
     /// supposed to be hugging.
     private var contentRect: CGRect {
-        showsFan ? view.bounds.insetBy(dx: Self.fanInset, dy: Self.fanInset) : view.bounds
+        guard showsFan else { return view.bounds }
+        let inset = fanGeometry.inset
+        return view.bounds.insetBy(dx: inset, dy: inset)
+    }
+
+    /// The pile's inset and tilt for this cell's CURRENT size — recomputed rather
+    /// than stored, because a masonry cell's aspect ratio varies per item and the
+    /// safe inset depends on it.
+    private var fanGeometry: (inset: CGFloat, degrees: Double) {
+        fanPileGeometry(
+            in: view.bounds.size, maxDegrees: Self.fanMaxDegrees,
+            maxInset: Self.fanMaxInset, minInset: Self.fanMinInset)
     }
 
     /// Place the two cards behind the artwork, tilted by the SAME seeded rotation the
@@ -452,9 +503,10 @@ final class MasonryGridItem: NSCollectionViewItem {
             return
         }
         // count: 3 — index 0 is the upright front card (the artwork itself), so the
-        // two behind take indices 1 and 2, matching `FanCard`'s convention.
+        // two behind take indices 1 and 2, matching `FanCard`'s convention. The angle
+        // is the one the geometry ACTUALLY allows at this size, not the ideal.
         let angles = fanRotations(
-            seed: fanSeed, count: 3, maxDegrees: Self.fanMaxDegrees)
+            seed: fanSeed, count: 3, maxDegrees: fanGeometry.degrees)
         for (offset, card) in fanLayers.enumerated() {
             card.isHidden = false
             card.frame = rect

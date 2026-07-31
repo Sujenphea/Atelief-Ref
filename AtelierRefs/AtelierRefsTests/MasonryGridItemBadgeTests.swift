@@ -80,6 +80,45 @@ struct MasonryGridItemBadgeTests {
         #expect(painted != true)
     }
 
+    // MARK: - Pile geometry (307)
+
+    /// The invariant that was WRONG with a fixed inset: a tilted card must still fit
+    /// inside the cell, because the cell clips and the overflow scales with the
+    /// OTHER dimension — so a tall tile at the same angle needs far more room than a
+    /// square one. Checked across the aspect ratios a masonry grid really produces.
+    @Test("no card is clipped, at any aspect ratio", arguments: [
+        CGSize(width: 200, height: 200),    // square
+        CGSize(width: 200, height: 400),    // tall portrait
+        CGSize(width: 200, height: 900),    // the extreme a screenshot produces
+        CGSize(width: 400, height: 120),    // wide banner
+        CGSize(width: 90, height: 90),      // a dense zoom notch
+    ])
+    func pileNeverClips(size: CGSize) {
+        let (inset, degrees) = fanPileGeometry(
+            in: size, maxDegrees: 5, maxInset: 12, minInset: 5)
+        let w = size.width - 2 * inset, h = size.height - 2 * inset
+        let t = CGFloat(degrees * .pi / 180)
+        // The rotated card's axis-aligned bounding box.
+        let spanX = w * cos(t) + h * sin(t)
+        let spanY = w * sin(t) + h * cos(t)
+        #expect(spanX <= size.width + 0.01)
+        #expect(spanY <= size.height + 0.01)
+        #expect(inset > 0)
+    }
+
+    @Test("a tall tile trades tilt for inset rather than shrinking to nothing")
+    func tallTileReducesTheTilt() {
+        let square = fanPileGeometry(
+            in: CGSize(width: 200, height: 200), maxDegrees: 5, maxInset: 12, minInset: 5)
+        let tall = fanPileGeometry(
+            in: CGSize(width: 200, height: 900), maxDegrees: 5, maxInset: 12, minInset: 5)
+        // The square tile can afford the full tilt; the tall one cannot.
+        #expect(square.degrees == 5)
+        #expect(tall.degrees < square.degrees)
+        // And the inset stays bounded instead of eating the image.
+        #expect(tall.inset <= 12.5)
+    }
+
     // MARK: - The fanned pile (307)
 
     /// The cards behind the artwork: the only visible sublayers carrying a 1pt
