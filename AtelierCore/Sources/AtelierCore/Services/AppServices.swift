@@ -78,6 +78,19 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// The newest schema migration this build knows about ("v15") — what any
+    /// library it has opened is migrated to.
+    ///
+    /// Public so backup and archive manifests (008 · H5/H6) can record the
+    /// schema their copy was written from, which is what lets a reader refuse a
+    /// file from a FUTURE build instead of misreading it. A build-time constant
+    /// rather than a query, because `LibraryDatabase.init` migrates to the
+    /// latest on open: an `AppServices` that exists is an `AppServices` whose
+    /// database is at this version.
+    public static var schemaVersion: String {
+        Migrator.registeredIdentifiers.last ?? ""
+    }
+
     /// `PRAGMA integrity_check` on the live database: `true` when SQLite reports
     /// the single `ok` row (healthy), `false` otherwise.
     public func integrityCheck() async throws -> Bool {

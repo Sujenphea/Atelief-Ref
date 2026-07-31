@@ -154,6 +154,29 @@ public struct MediaStore: Sendable {
         try Data(contentsOf: blobURL(hash: hash, fileExtension: fileExtension))
     }
 
+    /// Atomically and idempotently store the FILE at `source` as the blob for
+    /// `(hash, ext)`, returning the final content-addressed URL (008 · H5).
+    ///
+    /// Identical semantics to ``storeBlob(_:hash:fileExtension:)`` — same
+    /// idempotent no-op, same stage-then-rename, same A2 guarantee — but the
+    /// bytes are copied file-to-file and never pass through memory. Off-device
+    /// backup uses this: a library can hold multi-hundred-megabyte videos, and
+    /// reading one into `Data` to write it straight back out would put the whole
+    /// blob in RAM for no reason.
+    ///
+    /// The caller is responsible for `source` actually holding the bytes that
+    /// hash to `hash`; this layer does no hashing (it never has).
+    @discardableResult
+    public func storeBlobFile(
+        copyingFrom source: URL, hash: String, fileExtension: String
+    ) throws -> URL {
+        let destination = blobURL(hash: hash, fileExtension: fileExtension)
+        let directory = try shardDirectory(under: layout.blobs, hash: hash)
+        return try atomicInstall(to: destination, shardDirectory: directory) { staged in
+            try FileManager.default.copyItem(at: source, to: staged)
+        }
+    }
+
     /// Every stored blob as `(hash, fileExtension)`, by walking
     /// `blobs/ab/cd/<hash>.<ext>` (010 · delete-undo launch GC). The hash is the
     /// filename stem (everything before the extension); directories and any file
@@ -249,18 +272,27 @@ public struct MediaStore: Sendable {
 
     // MARK: - Atomic + idempotent write
 
-    /// Write `data` to `destination` atomically and idempotently.
+    /// Write `data` to `destination` atomically and idempotently — the byte
+    /// form of ``atomicInstall(to:shardDirectory:staging:)``.
+    private func atomicWrite(_ data: Data, to destination: URL, shardDirectory directory: URL) throws -> URL {
+        try atomicInstall(to: destination, shardDirectory: directory) { staged in
+            try data.write(to: staged, options: .atomic)
+        }
+    }
+
+    /// Put bytes at `destination` atomically and idempotently, where `staging`
+    /// produces them at a temp URL this method supplies.
     ///
     /// The sequence, and why each step matters for the A2 invariant:
     /// 1. **Idempotent no-op.** If `destination` already exists, return it
-    ///    immediately without rewriting — content-addressing guarantees the
+    ///    immediately without re-staging — content-addressing guarantees the
     ///    bytes on disk are the bytes we would write.
-    /// 2. **Stage on the same volume.** Ensure `shardDirectory` exists, then
-    ///    write `data` to a UNIQUE temp file (a `UUID` name) inside `cache/`.
-    ///    `cache/` lives under the same Library root as the destination, so the
-    ///    following move is a metadata-only rename, not a copy — the rename is
-    ///    what makes the appearance of `destination` atomic (readers never see a
-    ///    half-written file).
+    /// 2. **Stage on the same volume.** Ensure `shardDirectory` exists, then let
+    ///    `staging` produce the bytes at a UNIQUE temp file (a `UUID` name)
+    ///    inside `cache/`. `cache/` lives under the same Library root as the
+    ///    destination, so the following move is a metadata-only rename, not a
+    ///    copy — the rename is what makes the appearance of `destination` atomic
+    ///    (readers never see a half-written file).
     /// 3. **Atomic rename into place** via `FileManager.moveItem(at:to:)`.
     /// 4. **Concurrent-race catch.** If the move fails only because
     ///    `destination` now exists — a concurrent writer of the same bytes won
@@ -269,8 +301,14 @@ public struct MediaStore: Sendable {
     ///    Any OTHER error: delete the temp file (never leak it), then rethrow.
     ///
     /// Net guarantee: the content-addressed path only ever holds COMPLETE bytes;
-    /// a crash mid-write leaves at most a harmless stray temp file in `cache/`.
-    private func atomicWrite(_ data: Data, to destination: URL, shardDirectory directory: URL) throws -> URL {
+    /// a crash mid-stage leaves at most a harmless stray temp file in `cache/`.
+    /// The write and copy entry points share this body precisely so that
+    /// guarantee is stated — and got right — once.
+    private func atomicInstall(
+        to destination: URL,
+        shardDirectory directory: URL,
+        staging: (URL) throws -> Void
+    ) throws -> URL {
         let fm = FileManager.default
 
         // 1. Idempotent no-op: an existing content-addressed file is complete.
@@ -278,12 +316,19 @@ public struct MediaStore: Sendable {
             return destination
         }
 
-        // 2. Ensure the shard dir and the cache staging dir exist, then write to
-        //    a unique temp file on the same volume as `destination`.
+        // 2. Ensure the shard dir and the cache staging dir exist, then produce
+        //    the bytes in a unique temp file on the same volume as `destination`.
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         try fm.createDirectory(at: layout.cache, withIntermediateDirectories: true)
         let tempURL = layout.cache.appendingPathComponent(UUID().uuidString)
-        try data.write(to: tempURL, options: .atomic)
+        do {
+            try staging(tempURL)
+        } catch {
+            // Staging may have left a partial file behind (a copy that ran out
+            // of space mid-stream); never leak it into `cache/`.
+            try? fm.removeItem(at: tempURL)
+            throw error
+        }
 
         // 3. Atomic rename into place, with the 4. concurrent-race catch.
         do {

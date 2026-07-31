@@ -237,6 +237,29 @@ corrupted destination blob → verify fails; destination-full → fails loudly
 without pruning what's already there; stale bookmark → typed error; all
 sandbox/panel glue behind `FolderAccess`.
 
+**As built (changelog 300) — H5a, the engine.** `LibraryIdentity`,
+`BackupLayout`, `BackupManifest`, `MediaBackupper`, `BackupRunner` in
+`AtelierIngestion/Backup/`, plus `MediaStore.storeBlobFile(copyingFrom:…)` and a
+public `AppServices.schemaVersion`. 58 tests. Departures worth carrying forward:
+
+- **Library identity is a FILE at the Library root, not a DB column.** Restoring
+  a snapshot replaces `library.sqlite` wholesale, so an id inside it would come
+  back as the snapshot's id — the same library would start writing to a
+  different backup folder, orphaning everything already copied. 16 lowercase hex
+  chars, strictly validated because it is interpolated into a path.
+- **The sampled re-hash verification is NOT in H5a.** The database copy is
+  integrity-checked before it replaces the previous one, which is the check that
+  protects against the realistic failure (a destination filling up mid-copy).
+  Re-hashing blobs is a separate, explicitly-priced action — on a synced
+  destination it forces a download — and it belongs with the UI that can show
+  its cost. Deferred to H5b or later, not dropped.
+- **Deletes deliberately do not propagate.** A blob removed from the library
+  stays in the backup; pruning would make an accidental delete propagate
+  off-device, which is the case people restore *from*. Pinned by a test.
+
+Still to come: H5b (app wiring — "Back Up Now", progress, cancel, last-run
+status) and H5c (restore through the snapshot seam, as specified above).
+
 ## H6 — Archive export (M)
 
 A human-browsable folder tree plus one machine-readable manifest:
