@@ -11,7 +11,7 @@
 import CoreGraphics
 
 /// A grid-navigation arrow direction (SwiftUI-free so the helpers are testable).
-enum GridArrowKey {
+nonisolated enum GridArrowKey {
     case left, right, up, down
 }
 

@@ -34,7 +34,7 @@ import SwiftUI
 /// A fixed palette rather than a colour well is the point of the feature: recolouring
 /// is one click on a board, not a trip through the system picker. The full-fidelity
 /// `ColorPicker` stays in ``ElementInspector`` for anything off-palette.
-enum TextPalette {
+nonisolated enum TextPalette {
     /// A named swatch. The hex is stored verbatim in ``ElementStyle/textColor``.
     struct Swatch: Identifiable, Equatable {
         let name: String
@@ -442,6 +442,8 @@ struct SpaceFormatChrome: View {
 
             Button { toggle(.font) } label: {
                 Text("Aa")
+                    // A SPECIMEN, not body text: "Aa" stands in for the chosen font,
+                    // so its size is the affordance and does not follow a text role.
                     .font(.system(size: 15, weight: .medium))
                     .frame(width: SpaceTextChromeLayout.aaWidth,
                            height: SpaceTextChromeLayout.segmentHeight)
@@ -452,7 +454,7 @@ struct SpaceFormatChrome: View {
 
             Button { toggle(.size) } label: {
                 Text(SpaceTextChromeLayout.sizeLabel(for: style))
-                    .font(.system(size: 13))
+                    .font(Theme.Typography.row)
                     .monospacedDigit()
                     .frame(
                         width: SpaceTextChromeLayout.sizeSegmentWidth(
@@ -501,7 +503,7 @@ private struct SwatchDot: View {
         .buttonStyle(.plain)
         .help(swatch.name)
         .onHover { hovering = $0 }
-        .animation(.easeInOut(duration: 0.12), value: hovering)
+        .animation(Theme.Motion.gentle, value: hovering)
     }
 }
 
@@ -621,7 +623,7 @@ struct SpaceTextSizePanel: View {
                 ForEach(SpaceTextChromeLayout.sizePresets, id: \.self) { size in
                     Button { onSelect(size) } label: {
                         HStack(spacing: Theme.Spacing.sm) {
-                            Text("\(Int(size))").font(.system(size: 13)).monospacedDigit()
+                            Text("\(Int(size))").font(Theme.Typography.row).monospacedDigit()
                             Spacer(minLength: 0)
                             if Int(size.rounded()) == Int(current.rounded()) {
                                 Image(systemName: "checkmark")
@@ -657,6 +659,6 @@ private extension View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return background(Theme.Colors.field, in: shape)
             .overlay(shape.strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.35), radius: 14, y: 5)
+            .elevation(.floating)
     }
 }

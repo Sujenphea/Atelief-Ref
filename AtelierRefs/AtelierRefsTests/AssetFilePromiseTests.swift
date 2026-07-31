@@ -16,6 +16,7 @@ import UniformTypeIdentifiers
 
 // MARK: - Delegate copy + failure (9A)
 
+@MainActor
 @Suite("AssetFilePromise: delegate copy")
 struct AssetFilePromiseDelegateTests {
 
@@ -87,6 +88,7 @@ struct AssetFilePromiseDelegateTests {
 
 // MARK: - Provider payload vending (11A — internal-drop interop)
 
+@MainActor
 @Suite("AssetFilePromise: provider payload interop")
 struct AssetFilePromiseProviderTests {
 
@@ -127,6 +129,7 @@ struct AssetFilePromiseProviderTests {
 
 /// These mutate the SHARED system drag pasteboard, so they are serialized in one
 /// suite and every test clears it on the way out.
+@MainActor
 @Suite("AssetDragPayload: drag-pasteboard read", .serialized)
 struct AssetDragPayloadDragPasteboardTests {
 

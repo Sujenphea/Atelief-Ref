@@ -25,14 +25,25 @@ enum ElementRendering {
     /// The same colour as stored — ONE source, so a new box and a legacy row with no
     /// colour can't disagree.
     static var defaultTextColorHex: String { hex(from: defaultTextColor) }
-    static let defaultLabelColorHex = "#3A3A3C"
+    /// A frame's LABEL. The same white as body text, and defined in terms of it so
+    /// the two cannot drift apart again.
+    ///
+    /// A frame defaults to no fill (see ``defaultFrameStyle()``), so its label sits
+    /// directly on the dark board — the near-black this used to be was invisible
+    /// there, exactly as ``defaultTextColor`` was before it was flipped.
+    static var defaultLabelColorHex: String { defaultTextColorHex }
     static let defaultFrameStrokeHex = "#8E8E93"
     static let defaultFrameStrokeWidth: Double = 2
     static let frameCornerRadius: Double = 4
 
     // Media-less kind tiles (003 · O1) — a color swatch / a bare link·tweet card,
-    // drawn as vector frames (no blob to decode). Dark label on a light card,
-    // matching the freeform frame/text defaults (a light canvas).
+    // drawn as vector frames (no blob to decode).
+    //
+    // These stay a DARK label on a LIGHT card, and that is not a leftover from the
+    // light-canvas era: the card draws its own opaque `mediaLessCardFill`, so it
+    // reads as a physical card lying on the dark board, and its label has to
+    // contrast with the CARD rather than with the board. A frame element is the
+    // opposite case — no fill, so its label contrasts with the board.
     static let mediaLessCardFill = RGBAColor(red: 0.93, green: 0.93, blue: 0.95)
     static let mediaLessCardStroke = RGBAColor(red: 0.56, green: 0.56, blue: 0.58) // #8E8E93
     static let mediaLessLabelColor = RGBAColor(red: 0.23, green: 0.23, blue: 0.25) // #3A3A3C
@@ -59,7 +70,9 @@ enum ElementRendering {
                 guard let text = style.text, !text.isEmpty else { return nil }
                 return TextStyle(
                     string: text, fontSize: style.fontSize ?? 16,
-                    color: rgba(fromHex: style.textColor) ?? RGBAColor(red: 0.23, green: 0.23, blue: 0.25))
+                    // A frame draws on the bare board, so a label with no stored
+                    // colour takes the board's text default, not a dark literal.
+                    color: rgba(fromHex: style.textColor) ?? defaultTextColor)
             }()
             return .frame(FrameStyle(
                 fill: rgba(fromHex: style.fillColor),
@@ -141,12 +154,31 @@ enum ElementRendering {
 
     // MARK: Hex ↔ RGBAColor
 
-    /// Parse `#rrggbb` / `#rrggbbaa` (leading `#` optional) into an `RGBAColor`,
-    /// or `nil` for a nil / malformed string (so an unset colour stays unset).
-    static func rgba(fromHex hex: String?) -> RGBAColor? {
-        guard var s = hex else { return nil }
+    /// Parse a CSS-style hex string into an `RGBAColor`, or `nil` for a nil /
+    /// malformed string (so an unset colour stays unset).
+    ///
+    /// Accepts an optional leading `#`, surrounding whitespace, case-insensitive
+    /// digits, and four lengths: `rgb` (3), `rgba` (4), `rrggbb` (6), `rrggbbaa` (8),
+    /// with the short forms expanding each nibble exactly like CSS.
+    ///
+    /// This grammar is deliberately identical to `AtelierExport`'s `RGBA.init(hex:)`
+    /// and to `Color.init?(hexString:)`. The three cannot share an implementation —
+    /// they live in three modules, and `AtelierExport` has zero product dependencies
+    /// by design — but they read the SAME stored strings, and they used to disagree:
+    /// this one took 6/8, the export package took 3/4/6/8, and `Color` took 6 only,
+    /// so a `#f3a` rendered in an export and vanished on the board.
+    /// `HexGrammarTests` pins them together.
+    nonisolated static func rgba(fromHex hex: String?) -> RGBAColor? {
+        guard let raw = hex else { return nil }
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if s.hasPrefix("#") { s.removeFirst() }
-        guard s.count == 6 || s.count == 8, let v = UInt64(s, radix: 16) else { return nil }
+        guard s.allSatisfy(\.isHexDigit) else { return nil }
+        switch s.count {
+        case 3, 4: s = s.map { "\($0)\($0)" }.joined()
+        case 6, 8: break
+        default: return nil
+        }
+        guard let v = UInt64(s, radix: 16) else { return nil }
         if s.count == 8 {
             return RGBAColor(
                 red: Double((v >> 24) & 0xff) / 255, green: Double((v >> 16) & 0xff) / 255,
@@ -158,8 +190,13 @@ enum ElementRendering {
     }
 
     /// Encode an `RGBAColor` as `#rrggbb` (or `#rrggbbaa` when translucent).
+    ///
+    /// LOWERCASE, matching `Color.toHexString()` and `ColorPayload.canonicalHex` —
+    /// this was the app's only uppercase hex emitter, so the same colour was written
+    /// two ways depending on which path stored it. Nothing compares these as strings
+    /// (the swatch chrome compares components), so the case was pure inconsistency.
     static func hex(from c: RGBAColor) -> String {
-        func h(_ x: Double) -> String { String(format: "%02X", Int((max(0, min(1, x)) * 255).rounded())) }
+        func h(_ x: Double) -> String { String(format: "%02x", Int((max(0, min(1, x)) * 255).rounded())) }
         if c.alpha < 1 { return "#\(h(c.red))\(h(c.green))\(h(c.blue))\(h(c.alpha))" }
         return "#\(h(c.red))\(h(c.green))\(h(c.blue))"
     }
@@ -191,7 +228,7 @@ extension TweetContent {
 
 extension Color {
     /// Build a SwiftUI colour from a renderer `RGBAColor` (sRGB).
-    init(rgba c: RGBAColor) {
+    nonisolated init(rgba c: RGBAColor) {
         self.init(.sRGB, red: c.red, green: c.green, blue: c.blue, opacity: c.alpha)
     }
 

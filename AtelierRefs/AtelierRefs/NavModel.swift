@@ -17,7 +17,7 @@ import Foundation
 /// A screen pushed onto the detail panel's WITHIN-collection drill-down stack
 /// (006 shell). Top-level destinations now live in ``SidebarItem``; `path` carries
 /// only subfolder drill-down (so ⌘[ back still works) and nothing else.
-enum AppRoute: Hashable {
+nonisolated enum AppRoute: Hashable {
     /// A deeper collection drilled into from a subfolder chip.
     case collection(UUID)
     /// The list of spaces (legacy route; retained for compatibility).
@@ -28,7 +28,7 @@ enum AppRoute: Hashable {
 
 /// A top-level sidebar destination (006 split-view shell). The sidebar owns this
 /// selection; `NavModel.path` is kept only for within-collection drill-down.
-enum SidebarItem: Hashable {
+nonisolated enum SidebarItem: Hashable {
     case home
     case search
     case capture
@@ -78,6 +78,16 @@ final class NavModel: ObservableObject {
     /// ⌘N command; the sidebar starts the inline row and clears this back to `nil`.
     @Published var sidebarDraft: SidebarDraft?
 
+    /// Bumped by every sidebar navigation INTENT — including re-selecting the row that
+    /// is already selected. The panel's `LibrarySearchable` resets its query on a bump,
+    /// so "click a destination" always lands on that destination's CONTENT.
+    ///
+    /// `sidebarSelection` alone can't express this. Its search model is a `@StateObject`
+    /// that survives a same-branch selection change (space→space, collection→collection
+    /// are one `switch` arm each), and re-selecting the open row changes no state at all
+    /// — so an active search stayed up in both cases with no way back but the field's `×`.
+    @Published private(set) var navigationPulse = 0
+
     /// - Parameters:
     ///   - initialPath: the within-collection drill-down stack; tests pass `[]`.
     ///   - initialSelection: the starting sidebar destination. Defaults to the
@@ -105,6 +115,7 @@ final class NavModel: ObservableObject {
     /// drill-down `path` so the destination renders as the panel root.
     func selectSidebar(_ item: SidebarItem) {
         sidebarSelection = item
+        navigationPulse &+= 1
         if !path.isEmpty { path = [] }
         if case .collection(let id) = item {
             UserDefaults.standard.set(id.uuidString, forKey: Self.lastCollectionKey)

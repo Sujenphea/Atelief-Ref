@@ -71,7 +71,8 @@ final class ExportController: ObservableObject {
             self?.start(
                 elements: mapping.elements,
                 provider: MoodboardURLImageProvider(urls: mapping.imageURLs),
-                config: config, mappingSkips: mapping.skipped, to: url)
+                config: config, background: mapping.background,
+                mappingSkips: mapping.skipped, to: url)
         }
 
         if let window = NSApp.keyWindow {
@@ -94,6 +95,7 @@ final class ExportController: ObservableObject {
         elements: [MoodboardElement],
         provider: MoodboardURLImageProvider,
         config: ExportConfig,
+        background: RGBA,
         mappingSkips: Int,
         to url: URL
     ) {
@@ -119,6 +121,7 @@ final class ExportController: ObservableObject {
                 do {
                     let result = try MoodboardExport.render(
                         pages: pages, provider: provider, config: config,
+                        background: background,
                         isCancelled: { flag.isCancelled }, onProgress: onProgress)
                     try result.data.write(to: url, options: .atomic)
                     return .done(skipped: result.skipped.count)

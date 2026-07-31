@@ -61,7 +61,7 @@ struct SnapshotsSheet: View {
 
     private var header: some View {
         HStack {
-            Text("Snapshots").font(.headline)
+            Text("Snapshots").font(Theme.Typography.bodyEmphasis)
             Spacer()
             Button {
                 model.snapshotNow()
@@ -90,10 +90,12 @@ struct SnapshotsSheet: View {
         if snapshots.isEmpty {
             VStack(spacing: 6) {
                 Image(systemName: "clock.arrow.circlepath")
-                    .font(.largeTitle).foregroundStyle(.tertiary)
+                    // An empty-state glyph, sized like the app's others
+                    // (`SharedThumbnail` 34, `FanCard` 30) rather than by a text role.
+                    .font(.system(size: 34)).foregroundStyle(.tertiary)
                 Text("No snapshots yet")
                 Text("A snapshot is taken automatically before risky changes, and daily.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(Theme.Typography.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -117,7 +119,7 @@ struct SnapshotsSheet: View {
                     Text("·")
                     Text(Self.sizeText(model.snapshotByteSize(snapshot)))
                 }
-                .font(.caption).foregroundStyle(.secondary)
+                .font(Theme.Typography.caption).foregroundStyle(.secondary)
             }
             Spacer()
             Button("Restore…") { confirming = snapshot }
@@ -141,7 +143,7 @@ struct SnapshotsSheet: View {
             Spacer()
             Text(Self.sizeText(total))
         }
-        .font(.caption).foregroundStyle(.secondary)
+        .font(Theme.Typography.caption).foregroundStyle(.secondary)
         .padding(.horizontal, 12).padding(.vertical, 8)
     }
 

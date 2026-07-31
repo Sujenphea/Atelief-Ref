@@ -72,7 +72,7 @@ extension CollectionDragPayload {
 /// pure `CollectionTargets.routeOutlineDrop(...)` and consumed by the coordinator.
 /// Both a reparent and a same-parent reorder collapse to `.move` — they are the
 /// same `moveCollection(id:toParent:index:)` op — so there is one path, not two.
-enum CollectionDrop: Equatable {
+nonisolated enum CollectionDrop: Equatable {
     /// Not a legal drop (self / descendant / protected / Unsorted target).
     case reject
     /// Apply `moveCollection(id: dragged, toParent:, index:)`. `index == nil`

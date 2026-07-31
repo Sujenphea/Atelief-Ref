@@ -18,7 +18,7 @@ import AppKit
 import AtelierCore
 import AtelierIngestion
 import Combine
-import os
+import OSLog
 import SwiftUI
 
 // MARK: - Token + scope
@@ -111,7 +111,6 @@ final class LibrarySearchModel: ObservableObject {
     private var queryTask: Task<Void, Never>?
     private var suggestTask: Task<Void, Never>?
 
-    private static let logger = Logger(subsystem: "so.atelier.refs", category: "search")
 
     /// The query executor — the injectable seam (12A). Defaults to the live
     /// service call; tests replace it to drive success / failure / cancellation
@@ -286,7 +285,7 @@ final class LibrarySearchModel: ObservableObject {
                 // relevance), so trap it in debug; other errors are runtime DB
                 // failures — log and surface distinctly (an empty `results` alone
                 // reads as "no matches" and hides that the search errored).
-                Self.logger.error("search query failed: \(String(describing: error))")
+                AppLog.search.error("search query failed: \(String(describing: error))")
                 if case AtelierError.relevanceSortUnpageable = error {
                     assertionFailure("relevance sort must never be paged from the search UI")
                 }
@@ -319,7 +318,7 @@ final class LibrarySearchModel: ObservableObject {
                 return
             } catch {
                 guard !Task.isCancelled else { return }
-                Self.logger.error("suggestion fetch failed: \(String(describing: error))")
+                AppLog.search.error("suggestion fetch failed: \(String(describing: error))")
                 suggestions = []
             }
         }
@@ -426,6 +425,9 @@ struct LibrarySearchable<Content: View>: View {
     /// The global grid density notch — search results honour the SAME persisted
     /// density (and zoom controls) as the collection grid, instead of a fixed 4-up.
     @ObservedObject var gridPrefs: GridViewPreferences
+    /// Observed for `navigationPulse` only — a sidebar click means "show me this
+    /// destination", which has to drop whatever query is currently covering it.
+    @ObservedObject var nav: NavModel
     /// The screen's collection, or `nil` for the global gallery.
     let collectionID: UUID?
     @ViewBuilder let content: () -> Content
@@ -489,6 +491,16 @@ struct LibrarySearchable<Content: View>: View {
         .task(id: model.isReady) {
             search.configure(services: model.services, collectionID: collectionID)
         }
+        // The user navigated — drop the previous pane's query so the destination's
+        // CONTENT is what appears. Without this the results grid stayed up across a
+        // sidebar click (this wrapper's `@StateObject` survives a same-branch change),
+        // leaving the field's `×` as the only way back. The re-`configure` also re-points
+        // the model at the NEW `collectionID`, which nothing else refreshed — a
+        // This-collection scope kept querying the collection the panel had left.
+        .onChange(of: nav.navigationPulse) { _, _ in
+            search.reset()
+            search.configure(services: model.services, collectionID: collectionID)
+        }
         .onChange(of: search.text) { _, _ in search.textChanged() }
         .onChange(of: search.tokens) { _, _ in search.tokensChanged() }
         .onChange(of: search.mode) { _, _ in search.modeChanged() }
@@ -522,7 +534,7 @@ private struct SearchToolbarField: View {
 
             TextField(Self.prompt, text: $search.text)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(Theme.Typography.body)
                 .foregroundStyle(Theme.Colors.inkPrimary)
                 .focused($focused)
                 .onKeyPress(.escape) {
@@ -540,6 +552,9 @@ private struct SearchToolbarField: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.Colors.inkSecondary)
                 }
+                // Tighter than `Radius.control`, deliberately: the hover fill hugs a
+                // 12pt glyph at 3pt padding, and the token's 7 would round it to a
+                // near-circle. Scales with the control, so it is not a token.
                 .buttonStyle(HoverButtonStyle(cornerRadius: 5, padding: 3))
                 .help("Clear search")
             }
@@ -613,7 +628,9 @@ private struct SearchTokenChip: View {
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(Theme.Colors.inkSecondary)
             }
-            .buttonStyle(HoverButtonStyle(cornerRadius: 4, opacity: 0.15, padding: 2))
+            // Tighter again — an 8pt glyph at 2pt padding, the smallest control the
+            // app draws. See the note on the search field's clear button.
+            .buttonStyle(HoverButtonStyle(cornerRadius: 4, padding: 2))
             .help("Remove filter")
         }
         .foregroundStyle(Theme.Colors.inkPrimary)
@@ -719,7 +736,7 @@ private struct LibrarySearchResults: View {
             // so search reads as another counted surface.
             if !search.results.isEmpty {
                 Text("\(search.results.count) results")
-                    .font(.callout)
+                    .font(Theme.Typography.body)
                     .foregroundStyle(Theme.Colors.inkSecondary)
             }
             Spacer(minLength: 0)
@@ -865,7 +882,7 @@ private struct LibrarySearchResults: View {
             .overlay(alignment: .topTrailing) {
                 if count > 1 {
                     Text("\(count)")
-                        .font(.caption2).bold().monospacedDigit()
+                        .font(Theme.Typography.caption).bold().monospacedDigit()
                         .foregroundStyle(.white)
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(Capsule().fill(Color.accentColor))
@@ -934,10 +951,10 @@ private struct SearchModeToggle: View {
             let isSelected = mode == value
             let fill: Color = isSelected
                 ? Theme.Colors.selection
-                : (isHovering ? Color.primary.opacity(0.06) : .clear)
+                : (isHovering ? Theme.Colors.hoverRow : .clear)
             return Button { mode = value } label: {
                 Text(title)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(Theme.Typography.body).fontWeight(.medium)
                     .foregroundStyle(isSelected ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
                     .padding(.horizontal, Theme.Spacing.md)
                     .padding(.vertical, 5)

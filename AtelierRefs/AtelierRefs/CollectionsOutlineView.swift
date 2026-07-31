@@ -622,7 +622,8 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
             model.moveToCollection(assetIDs: assetIDs, to: to)
             return true
         case let .copy(assetIDs, to):
-            model.copyToCollection(assetIDs: assetIDs, to: to)
+            model.copyToCollection(
+                assetIDs: assetIDs, to: to, from: payload.sourceCollectionID)
             return true
         case .reject, .reorder:
             return false

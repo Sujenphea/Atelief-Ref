@@ -96,7 +96,8 @@ enum ContactSheetExport {
             kept.append((content, caption(for: detail), aspect(for: detail)))
         }
         guard !kept.isEmpty else {
-            return MoodboardExport.Mapping(elements: [], imageURLs: urls, skipped: skipped)
+            return MoodboardExport.Mapping(
+                elements: [], imageURLs: urls, skipped: skipped, background: .white)
         }
 
         // Reserve caption space by inflating each cell's height before masonry
@@ -129,7 +130,10 @@ enum ContactSheetExport {
                         color: Defaults.captionColor))))
             }
         }
-        return MoodboardExport.Mapping(elements: elements, imageURLs: urls, skipped: skipped)
+        // Paper, not the board's dark ground: a contact sheet is a printable index,
+        // and `Defaults.captionColor` is a mid grey chosen to read on white.
+        return MoodboardExport.Mapping(
+            elements: elements, imageURLs: urls, skipped: skipped, background: .white)
     }
 
     // MARK: - Row content

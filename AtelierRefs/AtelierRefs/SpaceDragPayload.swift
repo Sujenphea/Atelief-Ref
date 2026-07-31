@@ -21,12 +21,12 @@ import UniformTypeIdentifiers
 
 extension UTType {
     /// The app-private drag identifier for a single space being reordered.
-    static let spaceID = UTType(exportedAs: "com.ref-atelier.space-id")
+    nonisolated static let spaceID = UTType(exportedAs: "com.ref-atelier.space-id")
 }
 
 /// A dragged space (the board to reposition). `Codable` for the pasteboard wire
 /// form; `Equatable` for tests.
-struct SpaceDragPayload: Codable, Equatable {
+nonisolated struct SpaceDragPayload: Codable, Equatable {
     /// The space being dragged / reordered.
     var spaceID: UUID
 
@@ -55,7 +55,7 @@ struct SpaceDragPayload: Codable, Equatable {
 /// produced by the pure ``SpaceTargets/routeOutlineDrop(dragged:childIndex:spaces:)``
 /// and consumed by the coordinator. Spaces are flat, so a drop is only ever a
 /// same-list reorder — there is no nest / reparent case.
-enum SpaceDrop: Equatable {
+nonisolated enum SpaceDrop: Equatable {
     /// Not a legal drop (e.g. an unknown dragged id).
     case reject
     /// Apply `moveSpace(id: dragged, index:)`. `index == nil` appends (a drop past

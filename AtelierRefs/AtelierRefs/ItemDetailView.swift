@@ -139,6 +139,12 @@ struct ItemDetailView: View {
             HStack(spacing: 0) {
                 mediaArea
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // The art's stable dark ground, a shade below the panel: a light
+                    // image and a dark one then sit on the same tone instead of the
+                    // image's own edges reading as part of the chrome. `mediaBackdrop`
+                    // has claimed this surface in its doc since it was written; it
+                    // just was not applied, so the media sat on `panel`.
+                    .background(Theme.Colors.mediaBackdrop)
                     // B3: measure the media area and report its FIT size + zoom up to
                     // the `DetailSession`, which picks the decode tier. `zoom` (the
                     // @State, not the transient pinch) only changes at a settle point
@@ -259,7 +265,10 @@ struct ItemDetailView: View {
             }
         } label: {
             Image(systemName: "ellipsis")
-                .font(Theme.Typography.row)
+                // A GLYPH size, not a text role. It read `Typography.row`, which is
+                // a sidebar-row text token — so the overflow icon tracked a
+                // typography decision it has nothing to do with.
+                .font(.system(size: 14))
                 .padding(.horizontal, Theme.Spacing.md)
                 .padding(.vertical, Theme.Spacing.xs + 2)
         }
@@ -315,14 +324,14 @@ struct ItemDetailView: View {
     /// Multiply the zoom by `factor`, clamped to `[1, maxZoom]`; snap the pan back
     /// to centre once we're at fit (nothing to pan there).
     private func zoomBy(_ factor: CGFloat) {
-        withAnimation(.easeOut(duration: 0.15)) {
+        withAnimation(Theme.Motion.gentle) {
             zoom = min(max(zoom * factor, 1), maxZoom)
             if zoom == 1 { pan = .zero }
         }
     }
 
     private func resetZoom() {
-        withAnimation(.easeOut(duration: 0.15)) {
+        withAnimation(Theme.Motion.gentle) {
             zoom = 1
             pan = .zero
         }
@@ -468,7 +477,7 @@ private struct LinkDetailView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(maxHeight: 320)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
             } else {
                 Image(systemName: "link")
                     .font(.system(size: 48))
@@ -477,15 +486,15 @@ private struct LinkDetailView: View {
 
             if let title = link.title, !title.isEmpty {
                 Text(title)
-                    .font(.title2).bold()
+                    .font(Theme.Typography.pageTitle)
                     .multilineTextAlignment(.center)
             }
             if let host {
-                Text(host).font(.callout).foregroundStyle(.secondary)
+                Text(host).font(Theme.Typography.body).foregroundStyle(.secondary)
             }
             if let description = link.description, !description.isEmpty {
                 Text(description)
-                    .font(.callout)
+                    .font(Theme.Typography.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .lineLimit(4)
@@ -536,7 +545,7 @@ private struct TweetDetailView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(maxHeight: 320)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
             } else {
                 Image(systemName: "bubble.left.and.text.bubble.right")
                     .font(.system(size: 48))
@@ -544,13 +553,13 @@ private struct TweetDetailView: View {
             }
 
             if let name = tweet.authorName, !name.isEmpty {
-                Text(name).font(.title3).bold()
+                Text(name).font(Theme.Typography.sectionTitle)
             }
-            Text(byline).font(.callout).foregroundStyle(.secondary)
+            Text(byline).font(Theme.Typography.body).foregroundStyle(.secondary)
 
             if let text = tweet.text, !text.isEmpty {
                 Text(text)
-                    .font(.callout)
+                    .font(Theme.Typography.body)
                     .multilineTextAlignment(.center)
                     .textSelection(.enabled)
             }
@@ -558,12 +567,12 @@ private struct TweetDetailView: View {
             if !tweet.media.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("^[\(tweet.media.count) media](inflect: true)")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(Theme.Typography.caption).foregroundStyle(.secondary)
                     ForEach(tweet.media, id: \.url) { media in
                         if let mediaURL = URL(string: media.url) {
                             Link(destination: mediaURL) {
                                 Label(media.url, systemImage: "photo")
-                                    .font(.caption)
+                                    .font(Theme.Typography.caption)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                             }
@@ -593,10 +602,10 @@ private struct ColorDetailView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            RoundedRectangle(cornerRadius: 20)
+            RoundedRectangle(cornerRadius: Theme.Radius.panel)
                 .fill(Color(hexString: hex) ?? Color(.quaternaryLabelColor))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 20)
+                    RoundedRectangle(cornerRadius: Theme.Radius.panel)
                         .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
                 }
                 .aspectRatio(1, contentMode: .fit)

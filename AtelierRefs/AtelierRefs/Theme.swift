@@ -22,8 +22,9 @@ enum Theme {
 
     enum Colors {
         /// Outermost window ground + the collapsed sidebar rail. Under the native
-        /// translucent window (D1b) the material supplies this tone; the token is
-        /// the opaque fallback / reference value.
+        /// translucent window (D1b) the material supplies this tone; this is painted
+        /// BENEATH it as the opaque fallback, for Reduce Transparency and anywhere
+        /// else the material has nothing to sample.
         static let canvasOuter = Color(hex: 0x131313)
         /// The inset content panel the grid + detail live inside (opaque, radius 16).
         static let panel = Color(hex: 0x212121)
@@ -46,16 +47,34 @@ enum Theme {
         static let hairline = Color.white.opacity(0.08)
         /// A stronger hairline for interactive borders (e.g. the detail Back pill).
         static let hairlineStrong = Color.white.opacity(0.14)
+        /// Pointer-over feedback on a full-width ROW — sidebar nav + collection rows,
+        /// the overflow popover's rows and section headers, the search mode segments.
+        /// Deliberately a whisper: `selection` marks where you ARE, and hover must not
+        /// be mistakable for it. (White rather than `Color.primary` so the SwiftUI rows
+        /// and their AppKit siblings in `SidebarOutlineKit` render the same grey.)
+        static let hoverRow = Color.white.opacity(0.06)
+        /// Pointer-over feedback on a GLYPH BUTTON — toolbar / action-bar icons, where
+        /// the fill is the whole affordance and has to read over a busy backdrop.
+        static let hoverControl = Color.white.opacity(0.10)
     }
 
     /// AppKit (`NSColor`) mirrors of the tokens the layer-backed grid cell
-    /// (`MasonryGridItem`) and other `NSView` seams need.
+    /// (`MasonryGridItem`), the sidebar outline view and the floating add button need.
+    /// Every `NSView` / `CALayer` seam draws from HERE — an `NSColor(hex:)` literal in a
+    /// view file is a token that has drifted, not a colour choice.
+    ///
+    /// Only the mirrors an AppKit seam actually reads live here. `field`, `panel` and
+    /// `hairline` were mirrored speculatively and read by nothing; a mirror with no
+    /// reader is a second copy of a value that can silently fall out of step with the
+    /// `Colors` original — which is how three of these had already drifted before.
+    /// Add one back when a seam needs it, not before.
     enum NS {
         static let mediaBackdrop = NSColor(hex: 0x141416)
-        static let field = NSColor(hex: 0x2C2C30)
-        static let panel = NSColor(hex: 0x212121)
+        static let selection = NSColor(hex: 0x3A3A40)
         static let inkPrimary = NSColor(hex: 0xF2F1EE)
-        static let hairline = NSColor.white.withAlphaComponent(0.08)
+        static let inkSecondary = NSColor(hex: 0x9A9A9E)
+        static let hairlineStrong = NSColor.white.withAlphaComponent(0.14)
+        static let hoverRow = NSColor.white.withAlphaComponent(0.06)
     }
 
     // MARK: - Spacing (4-pt scale)
@@ -72,13 +91,24 @@ enum Theme {
     // MARK: - Radius
 
     enum Radius {
+        /// Small rounded backgrounds: chips, sidebar + menu rows, filter pills.
+        /// Deliberately the same value as ``field`` — everything small rounds the
+        /// same; the two names record what a call site IS, not two measurements.
         static let chip: CGFloat = 6
         static let field: CGFloat = 6
+        /// A glyph button's hover fill — the ``HoverHighlight`` default and the
+        /// selection bar's icons. Its own step because it sits between a chip and a
+        /// tile, hugging a 15pt icon in a 30×28 hit area.
+        static let control: CGFloat = 7
         static let tile: CGFloat = 8
         static let card: CGFloat = 12
         static let cover: CGFloat = 14
+        /// The largest rounded surface: the content panel, and the detail page's hero
+        /// colour swatch.
         static let panel: CGFloat = 16
-        static let sheet: CGFloat = 16
+        // No `sheet`: the app's three sheets are system `.sheet` presentations and
+        // AppKit draws their corners. The token named a radius the app never got to
+        // choose.
     }
 
     // MARK: - Motion (one canonical set — replaces the per-site springs)
@@ -92,28 +122,72 @@ enum Theme {
     // MARK: - Elevation (hover / rest shadow tokens)
 
     struct Elevation {
-        let color: Color
+        /// Black at this alpha. Stored as the ALPHA rather than a ready-made `Color` so
+        /// the AppKit seams can mirror the same token — `CALayer.shadowOpacity` wants a
+        /// `Float`, and a `Color` can't be taken apart again.
+        let opacity: Double
         let radius: CGFloat
         let y: CGFloat
 
-        static let rest = Elevation(color: .black.opacity(0.40), radius: 2, y: 1)
-        static let hover = Elevation(color: .black.opacity(0.55), radius: 14, y: 8)
+        var color: Color { .black.opacity(opacity) }
+
+        // No `rest`: nothing rested at 0.40 / 2 / 1. The two small resting shadows the
+        // app does draw — `ToastCard` (0.15 / 8 / 3) and `FanCard` (0.2 / 3 / 2) — are
+        // genuinely different weights rather than drifted copies of it, so collapsing
+        // them onto one token would be inventing a rule, not recording one.
+        static let hover = Elevation(opacity: 0.55, radius: 14, y: 8)
+        /// A floating BAR or pill riding directly over content it did not lay out — the
+        /// selection action bar, the import pill, the Space format bubble. Softer and
+        /// lower than `hover`: these track a thing on screen, so a heavy shadow would
+        /// read as a second object rather than as the bar's own lift.
+        static let floating = Elevation(opacity: 0.35, radius: 14, y: 5)
     }
 
-    // MARK: - Typography (the Figma's fixed roles)
+    // MARK: - Typography
 
+    /// The app's nine text roles — every piece of TEXT it draws. Four are the Figma's
+    /// original tokens; five replace the raw SwiftUI text styles that had been
+    /// standing in for them at 70 sites.
+    ///
+    /// Each is a text style plus a weight, NOT a point size. That is a deliberate
+    /// reversal of how the first four were written, and the reason is Dynamic Type:
+    /// `Font.system(size:)` does not scale with the Accessibility text-size setting,
+    /// and `Font.system(size:weight:relativeTo:)` — which would give exact sizes AND
+    /// scaling — does not exist. `relativeTo:` belongs to `Font.custom`, which needs a
+    /// font NAME; the only name matching the system font's metrics is the private
+    /// `.AppleSystemUIFont`, and CoreText warns against it. A name that stops
+    /// resolving falls back silently (`.SFNS-Regular` yields Times New Roman), which
+    /// is not a failure mode worth accepting for every string in the app.
+    ///
+    /// So the sizes are Apple's, and the app inherits Dynamic Type for free. On macOS
+    /// today those land at: largeTitle 26 · title2 17 · title3 15 · headline 13 ·
+    /// body 13 · callout 12 · subheadline 11 · caption2 10. Seven of the nine roles
+    /// therefore render exactly what they rendered before this change.
     enum Typography {
-        /// The ONE page / section title role — 15pt semibold. Home section headers
-        /// ("Collections", "Spaces"), the Collection + Space page titles, and the
-        /// detail inspector section headers ("Data", "Source", "Details") all share
-        /// this so no page title drifts to its own `.title2`/`.title3`/`.headline`.
-        static let sectionTitle = Font.system(size: 15, weight: .semibold)
-        /// Sidebar top-nav rows ("Home", "Search", …) — 17pt medium.
-        static let navItem = Font.system(size: 16, weight: .medium)
-        /// Sidebar collection rows, chip / field text — 14pt.
-        static let row = Font.system(size: 14, weight: .regular)
-        /// Metadata labels + values, captions — 12pt.
-        static let label = Font.system(size: 12, weight: .regular)
+        // No `display`: the app's only `.largeTitle` was an empty-state GLYPH, not
+        // text, and it now takes an explicit glyph size like its siblings. Adding the
+        // role anyway would have put a token with no reader straight back into a file
+        // that just had five removed for exactly that.
+
+        /// A sheet / overlay title ("Snapshots", "Capture", "Export moodboard").
+        static let pageTitle = Font.system(.title2, design: .default, weight: .semibold)
+        /// The ONE page / section title role. Home section headers ("Collections",
+        /// "Spaces"), the Collection + Space page titles, and the detail inspector
+        /// section headers ("Data", "Source", "Details") all share this so no page
+        /// title drifts to its own `.title2`/`.title3`/`.headline`.
+        static let sectionTitle = Font.system(.title3, design: .default, weight: .semibold)
+        /// Sidebar top-nav rows ("Home", "Search", …).
+        static let navItem = Font.system(.title2, design: .default, weight: .medium)
+        /// Sidebar collection rows, chip / field text.
+        static let row = Font.system(.body, design: .default, weight: .regular)
+        /// Emphasised body — a card title, a list row's heading.
+        static let bodyEmphasis = Font.system(.headline, design: .default, weight: .semibold)
+        /// Running text: descriptions, toast messages, secondary rows.
+        static let body = Font.system(.callout, design: .default, weight: .regular)
+        /// Metadata labels + values.
+        static let label = Font.system(.subheadline, design: .default, weight: .regular)
+        /// The smallest text the app draws — captions, counters, badge numerals.
+        static let caption = Font.system(.caption2, design: .default, weight: .regular)
     }
 }
 
@@ -123,6 +197,19 @@ extension View {
     /// Apply an `Elevation` token as a drop shadow.
     func elevation(_ e: Theme.Elevation) -> some View {
         shadow(color: e.color, radius: e.radius, y: e.y)
+    }
+}
+
+extension CALayer {
+    /// Apply an `Elevation` token to a layer-backed seam, so an AppKit surface lifts by
+    /// the same amount as its SwiftUI siblings. AppKit's y axis is not flipped, so the
+    /// token's downward offset becomes a NEGATIVE `shadowOffset.height`.
+    func applyElevation(_ e: Theme.Elevation) {
+        masksToBounds = false
+        shadowColor = NSColor.black.cgColor
+        shadowOpacity = Float(e.opacity)
+        shadowRadius = e.radius
+        shadowOffset = CGSize(width: 0, height: -e.y)
     }
 }
 
@@ -155,9 +242,17 @@ extension View {
     /// sizes to the view it decorates, so chrome applied before the frame draws
     /// around the content and lets the frame pad it with nothing.
     ///
-    /// Note this trades away the native popover's ARROW: a transparent host has
-    /// nothing to draw one from. The overflow menu made that trade first, and the
-    /// card's own shadow does the pointing well enough at this size.
+    /// The ARROW SURVIVES this. `presentationBackground` clears the SwiftUI hosting
+    /// view; the arrow belongs to `NSPopover`'s own frame, which AppKit draws either
+    /// way. So the eight system `.popover` sites show this card WITH a native arrow,
+    /// while the in-window surfaces that call ``popoverChrome()`` directly (the Space
+    /// format panels, the search suggestions) show the card alone — the app's two
+    /// popover families do not currently match.
+    ///
+    /// Losing the arrow means giving up `.popover` for an anchored in-window overlay,
+    /// and with it `NSPopover`'s transient dismissal and focus hand-back — which
+    /// ``SpaceGapPopover`` deliberately depends on (see its file comment). That trade
+    /// has not been made.
     func popoverContent(
         padding: CGFloat = Theme.Spacing.lg, width: CGFloat? = nil
     ) -> some View {

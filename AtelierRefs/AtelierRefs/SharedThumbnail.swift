@@ -139,7 +139,7 @@ struct LinkCardTile: View {
                         .font(.system(size: 26))
                         .foregroundStyle(.secondary)
                     Text(link.displayHeading)
-                        .font(.caption)
+                        .font(Theme.Typography.caption)
                         .foregroundStyle(.primary)
                         .lineLimit(3)
                         .multilineTextAlignment(.center)
@@ -176,12 +176,12 @@ struct TweetCardTile: View {
                         .font(.system(size: 24))
                         .foregroundStyle(.secondary)
                     Text(tweet.displayByline)
-                        .font(.caption).fontWeight(.medium)
+                        .font(Theme.Typography.caption).fontWeight(.medium)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     if let text = tweet.text, !text.isEmpty {
                         Text(text)
-                            .font(.caption2)
+                            .font(Theme.Typography.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(3)
                             .multilineTextAlignment(.center)
@@ -192,7 +192,7 @@ struct TweetCardTile: View {
             .overlay(alignment: .bottomTrailing) {
                 if !tweet.media.isEmpty {
                     Label("\(tweet.media.count)", systemImage: "photo.on.rectangle")
-                        .font(.caption2)
+                        .font(Theme.Typography.caption)
                         .padding(.horizontal, 6).padding(.vertical, 3)
                         .background(.ultraThinMaterial, in: Capsule())
                         .padding(6)
@@ -321,45 +321,65 @@ struct CoverCard: View {
             ZStack {
                 if let coverHash {
                     AsyncThumbnail(
-                        hash: coverHash, url: coverURL, cornerRadius: 12,
+                        hash: coverHash, url: coverURL, cornerRadius: Theme.Radius.card,
                         bucket: thumbnailPixelBucket(
                             pointLongSide: coverPointSide, scale: displayScale))
                 } else {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(accent ? Color.accentColor.opacity(0.12) : Color(.quaternaryLabelColor).opacity(0.4))
+                    RoundedRectangle(cornerRadius: Theme.Radius.card)
+                        .fill(accent ? Theme.Colors.field : Theme.Colors.mediaBackdrop)
                         .aspectRatio(1, contentMode: .fit)
                         .overlay {
                             Image(systemName: placeholderSymbol)
                                 .font(.system(size: 34))
-                                .foregroundStyle(accent ? Color.accentColor : .secondary)
+                                .foregroundStyle(accent ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
                         }
                 }
             }
             Text(title)
-                .font(.callout).fontWeight(.medium)
+                .font(Theme.Typography.body).fontWeight(.medium)
                 .lineLimit(1)
                 .foregroundStyle(.primary)
             if let subtitle {
                 Text(subtitle)
-                    .font(.caption)
+                    .font(Theme.Typography.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
         }
         .padding(8)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color(.controlBackgroundColor).opacity(0.5)))
-        .contentShape(RoundedRectangle(cornerRadius: 14))
+        .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.cover))
+        .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.cover))
     }
 }
 
 extension Color {
-    /// A SwiftUI `Color` from a canonical `#rrggbb` hex (as produced by
-    /// `ColorPayload.canonicalHex`); `nil` for anything unparseable. Kept in the
-    /// view layer — the domain stores the hex string, the UI renders it.
+    /// A SwiftUI `Color` from a hex string; `nil` for anything unparseable. Kept in
+    /// the view layer — the domain stores the hex string, the UI renders it.
+    ///
+    /// Accepts the same grammar as `ElementRendering.rgba(fromHex:)` and
+    /// `AtelierExport`'s `RGBA.init(hex:)` — `#`-optional, whitespace-tolerant,
+    /// case-insensitive, 3/4/6/8 digits (see `HexGrammarTests`). It used to take 6
+    /// digits only, which was safe for a `ColorPayload` (canonicalised to `#rrggbb`
+    /// on write) but wrong for anything else that reached it.
     init?(hexString: String) {
-        var s = hexString
+        var s = hexString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if s.hasPrefix("#") { s.removeFirst() }
-        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        guard s.allSatisfy(\.isHexDigit) else { return nil }
+        switch s.count {
+        case 3, 4: s = s.map { "\($0)\($0)" }.joined()
+        case 6, 8: break
+        default: return nil
+        }
+        guard let v = UInt32(s, radix: 16) else { return nil }
+        if s.count == 8 {
+            self.init(
+                .sRGB,
+                red: Double((v >> 24) & 0xff) / 255,
+                green: Double((v >> 16) & 0xff) / 255,
+                blue: Double((v >> 8) & 0xff) / 255,
+                opacity: Double(v & 0xff) / 255)
+            return
+        }
         self.init(
             .sRGB,
             red: Double((v >> 16) & 0xff) / 255,

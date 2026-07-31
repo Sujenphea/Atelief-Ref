@@ -13,7 +13,7 @@ import AtelierCore
 import Foundation
 
 /// One computed world-space placement for a space item.
-struct PlacedRect: Equatable {
+nonisolated struct PlacedRect: Equatable {
     var x: Double
     var y: Double
     var w: Double

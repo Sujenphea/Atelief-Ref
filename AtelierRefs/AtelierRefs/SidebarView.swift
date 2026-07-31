@@ -139,7 +139,7 @@ struct SidebarView: View {
                 Image(systemName: symbol)
                     .font(.system(size: 13))
                     .frame(width: 16)
-                Text(title).font(.system(size: 14))
+                Text(title).font(Theme.Typography.row)
                 Spacer()
             }
             .foregroundStyle(Theme.Colors.inkPrimary)
@@ -151,7 +151,7 @@ struct SidebarView: View {
         .buttonStyle(.plain)
         // Hover sits BEHIND the row's own selection fill (padding 0 → same rect), so it
         // only reads on non-selected rows; the opaque `selection` fill covers it when active.
-        .hoverHighlight(cornerRadius: 6, opacity: 0.06, padding: 0)
+        .hoverHighlight(cornerRadius: Theme.Radius.chip, fill: Theme.Colors.hoverRow, padding: 0)
     }
 
     // MARK: - Spaces
@@ -259,23 +259,23 @@ struct SidebarView: View {
                 }
                 .foregroundStyle(Theme.Colors.inkPrimary)
             }
-            .buttonStyle(HoverButtonStyle(cornerRadius: 6, padding: 6))
+            .buttonStyle(HoverButtonStyle(cornerRadius: Theme.Radius.chip, padding: 6))
             Spacer()
             Button(action: add) {
                 Image(systemName: "plus").font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Theme.Colors.inkSecondary)
             }
-            .buttonStyle(HoverButtonStyle(cornerRadius: 6, padding: 6))
+            .buttonStyle(HoverButtonStyle(cornerRadius: Theme.Radius.chip, padding: 6))
         }
     }
 
     /// The nav rows' active-row fill (Home / Capture / Settings). Space and
     /// collection rows draw their own selection inside their AppKit outline views.
     private func rowHighlight(selected: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 6)
+        RoundedRectangle(cornerRadius: Theme.Radius.chip)
             .fill(selected ? Theme.Colors.selection : .clear)
             .overlay(
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: Theme.Radius.chip)
                     .strokeBorder(selected ? Theme.Colors.hairlineStrong : .clear, lineWidth: 1))
     }
 

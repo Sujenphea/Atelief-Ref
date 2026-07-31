@@ -89,19 +89,19 @@ final class SidebarRowView: NSTableRowView {
 
     private func drawHighlight() {
         let path = NSBezierPath(roundedRect: highlightRect, xRadius: 6, yRadius: 6)
-        NSColor(hex: 0x3A3A40).setFill()                        // Theme.Colors.selection
+        Theme.NS.selection.setFill()
         path.fill()
-        NSColor.white.withAlphaComponent(0.14).setStroke()      // Theme.Colors.hairlineStrong
+        Theme.NS.hairlineStrong.setStroke()
         path.lineWidth = 1
         path.stroke()
     }
 
-    /// The subtle hover fill — white at 6% is `Color.primary.opacity(0.06)` on the dark
-    /// sidebar, matching the SwiftUI nav rows. Fill only (no border), so it reads as a
-    /// lighter step below the bordered `selection` state.
+    /// The subtle hover fill — the same `hoverRow` token the SwiftUI nav rows use, so
+    /// hovering a space reads identically to hovering Home. Fill only (no border), so it
+    /// stays a lighter step below the bordered `selection` state.
     private func drawHoverHighlight() {
         let path = NSBezierPath(roundedRect: highlightRect, xRadius: 6, yRadius: 6)
-        NSColor.white.withAlphaComponent(0.06).setFill()
+        Theme.NS.hoverRow.setFill()
         path.fill()
     }
 
@@ -148,10 +148,10 @@ final class SidebarCell: NSTableCellView {
         super.init(frame: .zero)
         self.identifier = identifier
         label.font = .systemFont(ofSize: 13)              // Theme.Typography.row, snug
-        label.textColor = NSColor(hex: 0xF2F1EE)          // inkPrimary
+        label.textColor = Theme.NS.inkPrimary
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
-        chevron.contentTintColor = NSColor(hex: 0x9A9A9E) // inkSecondary
+        chevron.contentTintColor = Theme.NS.inkSecondary
         chevron.imageScaling = .scaleProportionallyDown
         chevron.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
@@ -213,7 +213,7 @@ final class SidebarDraftCell: NSTableCellView, NSTextFieldDelegate {
         super.init(frame: .zero)
         self.identifier = identifier
         field.font = .systemFont(ofSize: 13)              // matches SidebarCell label
-        field.textColor = NSColor(hex: 0xF2F1EE)          // inkPrimary
+        field.textColor = Theme.NS.inkPrimary
         // A label is non-editable by default — flip it on. It stays visually plain
         // (no bezel, no border, transparent), so the row highlight shows through and
         // `drawsBackground = false` keeps the field editor transparent while editing.

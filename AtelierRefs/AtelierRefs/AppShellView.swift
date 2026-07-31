@@ -107,7 +107,6 @@ struct AppShellView: View {
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.panel))
         .padding(.trailing, Theme.Spacing.md)
         .padding(.bottom, Theme.Spacing.md)
-        .overlay(alignment: .bottomTrailing) { floatingAdd }
     }
 
     /// The panel root for the current sidebar selection. Browsing surfaces (Home +
@@ -123,64 +122,35 @@ struct AppShellView: View {
         // which scopes it.
         switch nav.sidebarSelection {
         case .home, .search:
-            LibrarySearchable(model: model, gridPrefs: gridPrefs, collectionID: nil) {
+            LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: nil) {
                 CollectionsGalleryView(model: model, nav: nav)
             }
         case .capture:
-            LibrarySearchable(model: model, gridPrefs: gridPrefs, collectionID: nil) {
+            LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: nil) {
                 CapturePane(model: model, onOpenSweeps: { showSweeps = true })
             }
         case .settings:
-            LibrarySearchable(model: model, gridPrefs: gridPrefs, collectionID: nil) {
+            LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: nil) {
                 SettingsView(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case let .collection(id):
-            LibrarySearchable(model: model, gridPrefs: gridPrefs, collectionID: id) {
+            LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: id) {
                 CollectionView(model: model, nav: nav, gridPrefs: gridPrefs, collectionID: id)
             }
         case let .space(id):
-            LibrarySearchable(model: model, gridPrefs: gridPrefs, collectionID: nil) {
+            LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: nil) {
                 spaceDestination(id)
             }
         }
     }
 
-    /// The floating circular add affordance (Figma) — white glyph on ink. Native
-    /// AppKit (`FloatingAddButton`): the SwiftUI `Menu` refused to render its label's
-    /// fill / glyph under `.borderlessButton` and swallowed the click, so this is an
-    /// `NSButton` + `NSMenu` instead.
-    private var floatingAdd: some View {
-        // Pin the SwiftUI frame to a hard 40×40 square. Relying on `.fixedSize()` let
-        // SwiftUI adopt the `NSButton` cell's own (non-square) fitting size, which
-        // rendered the layer's rounded corners as a rounded RECTANGLE. An explicit
-        // square frame forces square bounds so `cornerRadius` reads as a full circle.
-        FloatingAddButton(diameter: 40, items: addMenuItems)
-            .frame(width: 40, height: 40)
-            .padding(.trailing, Theme.Spacing.xl)
-            // Match the floating action bar's baseline (`selectionBarChrome`'s bottom
-            // inset) so the two share a bottom edge when both are on screen.
-            .padding(.bottom, 26)
-    }
-
-    /// The add menu's items, rebuilt for the current selection.
-    private var addMenuItems: [FloatingAddItem] {
-        var items: [FloatingAddItem] = []
-        if case .collection(let id) = nav.sidebarSelection {
-            items.append(FloatingAddItem(title: "New Space from Collection") {
-                Task {
-                    if let sid = await model.newSpaceFromCollection(id) { nav.openSpace(sid) }
-                }
-            })
-        }
-        // Adds a neutral placeholder swatch to the active collection; the
-        // detail/inspector edits the hex. (Add-Color/Link pickers relocate here from
-        // the old toolbar — a follow-up wires the pickers.)
-        items.append(FloatingAddItem(title: "Add Color…") {
-            model.addColor(hex: "#2C2C30")
-        })
-        return items
-    }
+    // The floating "+" is no longer here. A single shell-level button had to guess ONE
+    // menu for whatever pane was showing: it offered "Add Color…" on Settings and
+    // Capture, floated over the full-window item detail, and could never reach a Space
+    // at all — `SpaceModel`, the only writer that reloads an open board, lives inside
+    // `SpaceView`, below this. Each pane now floats its own via `.floatingAdd(...)`;
+    // see `FloatingAddControl`.
 
     // MARK: - Routing
 
@@ -230,7 +200,7 @@ struct AppShellView: View {
     private var sweepsSheet: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Sweeps").font(.headline)
+                Text("Sweeps").font(Theme.Typography.bodyEmphasis)
                 Spacer()
                 Button("Done") { showSweeps = false }
             }
@@ -254,7 +224,7 @@ private struct CapturePane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             Label("Browser Capture", systemImage: "puzzlepiece.extension")
-                .font(.title2).bold()
+                .font(Theme.Typography.pageTitle)
 
             HStack(spacing: 6) {
                 Circle()
@@ -268,7 +238,7 @@ private struct CapturePane: View {
 
             Divider()
 
-            Text("Extension token").font(.caption).foregroundStyle(.secondary)
+            Text("Extension token").font(Theme.Typography.caption).foregroundStyle(.secondary)
             HStack {
                 Text(model.captureToken.isEmpty ? "—" : model.captureToken)
                     .font(.system(.callout, design: .monospaced))
@@ -283,7 +253,7 @@ private struct CapturePane: View {
 
             Text("Paste this token into the AtelierRefs Chrome extension's options to "
                  + "authorize captures. It never leaves your Mac.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(Theme.Typography.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Divider()

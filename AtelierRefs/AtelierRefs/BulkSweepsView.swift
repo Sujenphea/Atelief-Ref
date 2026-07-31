@@ -84,7 +84,7 @@ private struct ConsentPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Label("Bulk import", systemImage: "square.and.arrow.down.on.square")
-                .font(.title2).bold()
+                .font(Theme.Typography.pageTitle)
 
             Text("Bulk import sweeps **your own** saved items — a Pinterest board "
                  + "you own, or your X bookmarks — from a session you're already "
@@ -102,7 +102,7 @@ private struct ConsentPanel: View {
                 bullet("Re-sweeps skip what you already have. Deleting a saved item "
                        + "forgets it, so a later sweep can import it again.")
             }
-            .font(.callout)
+            .font(Theme.Typography.body)
             .foregroundStyle(.secondary)
 
             Button {
@@ -140,7 +140,7 @@ private struct SweepRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(title).font(.headline)
+                Text(title).font(Theme.Typography.bodyEmphasis)
                 Spacer()
                 StatusBadge(status: sweep.job.status)
             }
@@ -159,12 +159,12 @@ private struct SweepRow: View {
                 Spacer()
                 controls
             }
-            .font(.callout)
+            .font(Theme.Typography.body)
 
             if sweep.failed > 0 { failuresSection }
         }
         .padding(14)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: Theme.Radius.card))
         .confirmationDialog(
             "Cancel this sweep?",
             isPresented: $confirmingCancel,
@@ -219,7 +219,7 @@ private struct SweepRow: View {
                     ProgressView().controlSize(.small)
                 } else if failures.isEmpty {
                     Text("No item details recorded for these failures.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(Theme.Typography.caption).foregroundStyle(.secondary)
                 } else {
                     ForEach(failures, id: \.sourceID) { item in
                         failureRow(item)
@@ -230,7 +230,7 @@ private struct SweepRow: View {
             .padding(.top, 4)
         } label: {
             HStack(spacing: 8) {
-                Text(failureSummary).font(.caption).foregroundStyle(.secondary)
+                Text(failureSummary).font(Theme.Typography.caption).foregroundStyle(.secondary)
             }
         }
         .task(id: showFailures) {
@@ -267,7 +267,7 @@ private struct SweepRow: View {
             }
             Spacer(minLength: 0)
         }
-        .font(.caption)
+        .font(Theme.Typography.caption)
     }
 }
 
@@ -275,7 +275,7 @@ private struct StatusBadge: View {
     let status: JobStatus
 
     var body: some View {
-        Text(label).font(.caption).bold()
+        Text(label).font(Theme.Typography.caption).bold()
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(color.opacity(0.18), in: Capsule())
             .foregroundStyle(color)

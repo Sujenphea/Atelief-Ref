@@ -45,7 +45,7 @@ import SwiftUI
 /// `Codable` so a bake-off session exports as JSON and runs from different
 /// machines or branches can be diffed. Declared here rather than in an extension
 /// because Swift only synthesizes the conformance in the declaring file.
-struct FrameTimeStats: Equatable, Codable {
+nonisolated struct FrameTimeStats: Equatable, Codable {
     /// How many frame intervals were sampled. Note this is intervals, so a run
     /// that saw N display-link fires yields N−1 frames.
     var frameCount: Int
@@ -101,7 +101,7 @@ struct FrameTimeStats: Equatable, Codable {
 }
 
 /// The 60Hz frame budget in ms — one frame at 60Hz is 16.67ms.
-let frameBudget60Ms: Double = 16.7
+nonisolated let frameBudget60Ms: Double = 16.7
 /// Two 60Hz budgets. A frame past this dropped at least two frames and reads as
 /// a visible stutter rather than a soft one.
 let frameBudget30Ms: Double = 33.4

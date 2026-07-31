@@ -108,12 +108,29 @@ final class IngestionModel: ObservableObject {
     // re-ran the whole screen, grid included). Only `recordView` remains on this
     // model for the detail page.
 
-    // MARK: - Import / status
+    // MARK: - Import / feedback
 
     /// The in-flight batch's `(completed, total)`, or `nil` when idle.
     @Published private(set) var progress: Progress?
-    /// A human-readable status line for the view, or `nil`.
-    @Published private(set) var status: String?
+    /// The last one-off notice for the shell to raise as a toast, or `nil`.
+    ///
+    /// Replaces the old `status` line. That property was read by the toolbar; 006
+    /// removed the toolbar and left 18 write sites publishing into nothing, so a
+    /// failed drop, a deleted space and a restored backup all reported themselves
+    /// to no one. Notices go through the same ``ToastCenter`` as every other
+    /// feedback channel now (034 theme 2).
+    ///
+    /// Carries a monotonic `seq` because `onChange` compares values: two identical
+    /// messages in a row (two failed drops) would otherwise register as one event.
+    @Published private(set) var lastNotice: Notice?
+    private var noticeSeq = 0
+
+    /// A user-facing notice worth exactly one toast.
+    struct Notice: Equatable {
+        let message: String
+        let seq: Int
+    }
+
     /// The last surfaced error message (drives an `.alert`), or `nil`.
     @Published var lastError: String?
     /// `false` until the Library has opened — import affordances stay disabled.
@@ -259,7 +276,6 @@ final class IngestionModel: ObservableObject {
 
     /// Ingest-timing log (16A). A stall means generating the eager thumbnail tiers
     /// dominated the ingest — the signal to make the largest tier lazy (P16).
-    nonisolated private static let ingestLog = Logger(subsystem: "so.atelier.refs", category: "ingest-timing")
     /// Above this thumbnail-phase time (ms) we log a stall. Tuned to catch the
     /// decode-heavy large tier without noise on ordinary small images.
     nonisolated private static let thumbnailStallMs = 250.0
@@ -272,7 +288,7 @@ final class IngestionModel: ObservableObject {
         let thumbMs = Int(timing.thumbnailMillis)
         let totalMs = Int(timing.totalMillis)
         let tiers = timing.tiersGenerated
-        ingestLog.notice("thumbnail stall: \(thumbMs)ms for \(tiers) tiers (total \(totalMs)ms)")
+        AppLog.ingestTiming.notice("thumbnail stall: \(thumbMs)ms for \(tiers) tiers (total \(totalMs)ms)")
     }
 
     /// The protected default import target (available before the Library opens).
@@ -459,7 +475,6 @@ final class IngestionModel: ObservableObject {
             self.coordinator = coordinator
             self.selectedFolderID = services.unsortedFolderID
             self.isReady = true
-            self.status = "Library ready — paste an image or drop a file."
 
             // Backup hygiene (008 H2): keep regenerable thumbnails/cache out of
             // Time Machine / iCloud. Idempotent, cheap; safe to run every launch.
@@ -471,6 +486,16 @@ final class IngestionModel: ObservableObject {
                 services: services, directory: layout.snapshots)
             self.snapshotManager = snapshots
 
+            // The safety nets must not fail silently (008 review, 8A): if the
+            // last open migrated the library WITHOUT its pre-migration snapshot,
+            // say so — once — and point at the manual remedy.
+            if snapshots.consumePreMigrationSnapshotFailure() {
+                AppLog.model.error(
+                    "pre-migration snapshot failed; library migrated without a safety copy")
+                notify("Couldn't take the pre-update safety snapshot — "
+                    + "consider Snapshot Now in Settings.")
+            }
+
             // Any sweep still "open" at launch is abandoned (nothing is running yet),
             // so reconcile it to paused — otherwise a tab closed mid-sweep last session
             // would show as a phantom "running" job forever.
@@ -480,10 +505,6 @@ final class IngestionModel: ObservableObject {
             // removed outside deleteAssets, so a future sweep re-imports that source
             // instead of dedup-skipping bytes that are gone.
             _ = try? await services.reconcileOrphanedKnownItems()
-
-            // Daily-on-launch snapshot if the newest daily is >1 day stale (008
-            // H3, confirmed on-by-default). Best-effort; never blocks launch.
-            await snapshots.snapshotIfStale()
 
             await refreshFolders()
             // Spaces load here too — the sidebar's `.task` can run BEFORE this
@@ -497,7 +518,25 @@ final class IngestionModel: ObservableObject {
             // Reclaim blobs orphaned by deletes that were never undone (010 ·
             // delete-undo). Off-main, after the UI is up; the undo history is empty
             // at launch, so any unreferenced blob is unreachable.
-            runOrphanBlobGC(services: services, store: store)
+            //
+            // EXCEPT on the first launch after a restore (008 review, 3A): the
+            // restored DB is older than the disk, so "unreferenced" includes media
+            // captured AFTER the snapshot — reaping now would silently trash it.
+            // That launch reconciles and REPORTS both divergence directions
+            // instead; the next launch's GC reclaims whatever isn't rescued.
+            if snapshots.consumeJustRestored() {
+                runPostRestoreBlobReconcile(services: services, store: store)
+            } else {
+                runOrphanBlobGC(services: services, store: store)
+            }
+
+            // Daily-on-launch snapshot if the newest daily is >1 day stale (008
+            // H3, confirmed on-by-default). Fired AFTER content loads (008
+            // review, 13A): the `VACUUM INTO` cost grows with the DB (analysis
+            // tables), and it has no ordering dependency on anything above — a
+            // concurrent capture write just queues behind the writer briefly.
+            // Best-effort; never blocks or disrupts launch.
+            Task { await snapshots.snapshotIfStale() }
 
             // Wire the (previously dormant) on-device analysis pipeline: an idle
             // .background loop that drains OCR/colors/phash then the semantic
@@ -508,7 +547,6 @@ final class IngestionModel: ObservableObject {
             }
         } catch {
             self.lastError = "Failed to open library: \(error)"
-            self.status = "Failed to open library."
         }
     }
 
@@ -558,10 +596,11 @@ final class IngestionModel: ObservableObject {
         do {
             try await server.start()
             captureEndpointRunning = true
-            status = "Library ready — capture endpoint on 127.0.0.1:\(capturePort)."
         } catch {
             captureEndpointRunning = false
-            status = "Library ready. Capture endpoint unavailable (port \(capturePort) in use)."
+            // Only the FAILURE is worth saying out loud: the extension silently stops
+            // working, and `captureEndpointRunning` alone is buried in the Capture pane.
+            notify("Capture endpoint unavailable — port \(capturePort) is in use.")
         }
     }
 
@@ -577,9 +616,9 @@ final class IngestionModel: ObservableObject {
         if collectionID == selectedFolderID {
             loadContents(of: selectedFolderID)
         }
-        status = imported > 0
-            ? "Captured \(imported) from the browser."
-            : "A browser capture failed."
+        // A successful capture already raises its own "Saved N — Jump" toast below;
+        // only the failure needs saying, since nothing else reports it.
+        if imported == 0 { notify("A browser capture failed.") }
         // Publish a batch event (011-B4) so the shell can raise ONE "Saved — Jump"
         // toast per batch. The monotonic token makes `onChange` fire even for a
         // second batch into the same folder with the same count.
@@ -624,7 +663,7 @@ final class IngestionModel: ObservableObject {
             // `startCaptureEndpoint` reloads the persisted token, republishes
             // `captureToken`, and rebinds the server auth.
             await startCaptureEndpoint(coordinator: coordinator, services: services)
-            status = "Capture token regenerated — re-pair the extension."
+            notify("Capture token regenerated — re-pair the extension.")
         }
     }
 
@@ -672,7 +711,7 @@ final class IngestionModel: ObservableObject {
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             NSWorkspace.shared.activateFileViewerSelecting([url])
-            status = "Diagnostics exported."
+            notify("Diagnostics exported.")
             AppLog.diagnostics.info(
                 "exported diagnostics: \(name, privacy: .public)")
         } catch {
@@ -875,8 +914,24 @@ final class IngestionModel: ObservableObject {
     /// Publish a just-performed reversible verb so the shell shows a "…— Undo" toast
     /// (034 P1). Call AFTER `registerReversible` so `undoToken` already reflects this
     /// action as the top of the stack.
+    ///
+    /// EVERY `registerReversible` is followed by one of these. The five verbs that
+    /// used to skip it (rename, move folder, reorder, move space, delete space) had
+    /// a working undo the user was never told about — worst of all space delete,
+    /// which 034 batch 1 made recoverable specifically so it could be reversed.
     private func announceUndoable(_ message: String) {
         lastUndoableAction = UndoableActionEvent(message: message, undoToken: undoToken)
+    }
+
+    /// Publish a one-off notice for the shell to raise as a plain toast.
+    ///
+    /// NOT for a verb that also calls ``announceUndoable(_:)`` — that raises the same
+    /// sentence WITH an Undo button, and posting both would say it twice. Where the
+    /// two used to overlap (the old `status = message` beside an announce) the notice
+    /// is the one that goes.
+    private func notify(_ message: String) {
+        noticeSeq &+= 1
+        lastNotice = Notice(message: message, seq: noticeSeq)
     }
 
     /// Fire an Undo toast's button: reverse the action ONLY if it's still the top of
@@ -940,15 +995,18 @@ final class IngestionModel: ObservableObject {
         loadContents(of: folder)
     }
 
-    /// Drop memberships from `folder`, refresh, optionally publish `message`.
-    private func applyRemove(assetIDs: [UUID], from folder: UUID, message: String?) async {
+    /// Drop memberships from `folder` and refresh.
+    ///
+    /// It used to take a `message` to publish on the primary run only. The verb's
+    /// ``announceUndoable(_:)`` says the same sentence with an Undo button, so the
+    /// parameter only existed to say it twice.
+    private func applyRemove(assetIDs: [UUID], from folder: UUID) async {
         guard let services else { return }
         do {
             try await services.removeAssets(assetIDs, from: folder)
             await refreshFolders()
             selectedFolderID = folder
             loadContents(of: folder)
-            if let message { status = message }
         } catch { lastError = Self.message(for: error) }
     }
 
@@ -967,14 +1025,13 @@ final class IngestionModel: ObservableObject {
 
     /// Move memberships `source → target`, then focus + reload the source (move
     /// verb + redo).
-    private func applyMoveAssets(_ assetIDs: [UUID], from source: UUID, to target: UUID, message: String?) async {
+    private func applyMoveAssets(_ assetIDs: [UUID], from source: UUID, to target: UUID) async {
         guard let services else { return }
         do {
             try await services.moveAssets(assetIDs, from: source, to: target)
             await refreshFolders()
             selectedFolderID = source
             loadContents(of: source)
-            if let message { status = message }
         } catch { lastError = Self.message(for: error) }
     }
 
@@ -1031,6 +1088,7 @@ final class IngestionModel: ObservableObject {
             registerReversible("Rename",
                 primary: { self.enqueueUndoable { await self.applyRename(id: id, to: name) } },
                 inverse: { self.enqueueUndoable { await self.applyRename(id: id, to: oldName) } })
+            announceUndoable("Renamed “\(oldName)” to “\(name)”.")
         }
     }
 
@@ -1064,6 +1122,7 @@ final class IngestionModel: ObservableObject {
                         await self.applyMoveFolder(id: id, toParent: oldParent, index: oldIndex)
                     }
                 })
+            announceUndoable("Moved “\(old?.name ?? "collection")”.")
         }
     }
 
@@ -1090,6 +1149,25 @@ final class IngestionModel: ObservableObject {
                     selectedFolderID = unsortedFolderID
                 }
                 loadContents(of: selectedFolderID)
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
+    /// ``perform(after:_:)`` for a write whose target is KNOWN — reload that folder
+    /// rather than `selectedFolderID`. The two differ whenever the add was triggered
+    /// from a pane that isn't the last-loaded collection, which is precisely when
+    /// reloading the selection shows the user nothing.
+    private func perform(
+        reloading folder: UUID, _ body: @escaping (AppServices) async throws -> Void
+    ) {
+        guard let services else { return }
+        Task {
+            do {
+                try await body(services)
+                await refreshFolders()
+                loadContents(of: folder)
             } catch {
                 lastError = Self.message(for: error)
             }
@@ -1294,6 +1372,7 @@ final class IngestionModel: ObservableObject {
         registerReversible("Reorder",
             primary: { self.enqueueUndoable { await self.applyReorder(folder: folder, order: newOrder) } },
             inverse: { self.enqueueUndoable { await self.applyReorder(folder: folder, order: currentIDs) } })
+        announceUndoable("Reordered \(Self.itemCount(movingAssetIDs.count)).")
     }
 
     // MARK: - Selection + inspector
@@ -1450,9 +1529,9 @@ final class IngestionModel: ObservableObject {
         // Capture the folder's order so undo restores the removed items' positions.
         let priorOrder = items.map { $0.asset.id }
         let message = "Removed \(Self.itemCount(assetIDs.count)) from “\(name(for: folder))”."
-        enqueueUndoable { await self.applyRemove(assetIDs: assetIDs, from: folder, message: message) }
+        enqueueUndoable { await self.applyRemove(assetIDs: assetIDs, from: folder) }
         registerReversible("Remove",
-            primary: { self.enqueueUndoable { await self.applyRemove(assetIDs: assetIDs, from: folder, message: nil) } },
+            primary: { self.enqueueUndoable { await self.applyRemove(assetIDs: assetIDs, from: folder) } },
             inverse: { self.enqueueUndoable { await self.applyRestoreMemberships(assetIDs: assetIDs, to: folder, order: priorOrder) } })
         announceUndoable(message)
     }
@@ -1480,9 +1559,9 @@ final class IngestionModel: ObservableObject {
         // Capture the source order so undo restores the moved items' positions.
         let priorOrder = items.map { $0.asset.id }
         let message = "Moved \(Self.itemCount(assetIDs.count)) to “\(name(for: targetID))”."
-        enqueueUndoable { await self.applyMoveAssets(assetIDs, from: source, to: targetID, message: message) }
+        enqueueUndoable { await self.applyMoveAssets(assetIDs, from: source, to: targetID) }
         registerReversible("Move",
-            primary: { self.enqueueUndoable { await self.applyMoveAssets(assetIDs, from: source, to: targetID, message: nil) } },
+            primary: { self.enqueueUndoable { await self.applyMoveAssets(assetIDs, from: source, to: targetID) } },
             inverse: { self.enqueueUndoable { await self.applyMoveBack(assetIDs, from: targetID, to: source, order: priorOrder) } })
         announceUndoable(message)
     }
@@ -1490,11 +1569,18 @@ final class IngestionModel: ObservableObject {
     /// COPY assets into `targetID` WITHOUT removing them here (009 · ⌥-drag / Add
     /// to ▸) — multi-membership, so it is exactly `addAssets`. The current folder
     /// is unchanged, so the selection survives.
-    func copyToCollection(assetIDs: [UUID], to targetID: UUID) {
+    ///
+    /// `source` is where the copy was dragged FROM, purely for the notice's verb:
+    /// under the Unsorted invariant (F3) a copy out of Unsorted DOES empty the
+    /// source — the asset is filed now, so it stops being unsorted — and calling
+    /// that "Added" would describe a row the user just watched disappear. Callers
+    /// with no folder source (search results) pass `nil` and keep "Added".
+    func copyToCollection(assetIDs: [UUID], to targetID: UUID, from source: UUID? = nil) {
         guard !assetIDs.isEmpty else { return }
+        let verb = source == Collection.unsortedID ? "Moved" : "Added"
         mutateContents { services in
             try await services.addAssets(assetIDs, to: targetID)
-            return "Added \(Self.itemCount(assetIDs.count)) to “\(self.name(for: targetID))”."
+            return "\(verb) \(Self.itemCount(assetIDs.count)) to “\(self.name(for: targetID))”."
         }
     }
 
@@ -1540,13 +1626,22 @@ final class IngestionModel: ObservableObject {
         let count = assetIDs.count
         let snapshots = snapshotManager
         enqueueUndoable {
-            _ = try? await snapshots?.snapshot(reason: .preDestructive)
+            // The coarse net, freshness-gated (008 review, 14A): skipped when any
+            // snapshot is <10 min old. Its failure is surfaced but never blocks
+            // the delete — the in-DB recoverable backup below still protects it
+            // (008 review, 8A).
+            do {
+                _ = try await snapshots?.snapshotBeforeDestruction()
+            } catch {
+                AppLog.model.error(
+                    "pre-destructive snapshot failed: \(String(describing: error))")
+                self.notify("Safety snapshot failed — the delete is still undoable.")
+            }
             do {
                 let backup = try await services.deleteAssetsRecoverable(assetIDs)
                 await self.refreshFolders()
                 self.loadContents(of: self.selectedFolderID)
                 let message = "Deleted \(Self.itemCount(count))."
-                self.status = message
                 // Register the undo now that the backup is in hand (id-based).
                 self.registerReversible("Delete",
                     primary: { self.enqueueUndoable { await self.applyDeleteAgain(assetIDs, count: count) } },
@@ -1566,7 +1661,7 @@ final class IngestionModel: ObservableObject {
             try await services.restoreDeletedAssets(backup)
             await refreshFolders()
             loadContents(of: selectedFolderID)
-            status = "Restored \(Self.itemCount(backup.assets.count))."
+            notify("Restored \(Self.itemCount(backup.assets.count)).")
         } catch { lastError = Self.message(for: error) }
     }
 
@@ -1578,7 +1673,7 @@ final class IngestionModel: ObservableObject {
             _ = try await services.deleteAssets(assetIDs)
             await refreshFolders()
             loadContents(of: selectedFolderID)
-            status = "Deleted \(Self.itemCount(count))."
+            notify("Deleted \(Self.itemCount(count)).")
         } catch { lastError = Self.message(for: error) }
     }
 
@@ -1593,6 +1688,36 @@ final class IngestionModel: ObservableObject {
             if !reaped.isEmpty {
                 AppLog.model.info(
                     "launch orphan-GC reclaimed \(reaped.count, privacy: .public) file(s)")
+            }
+        }
+    }
+
+    /// The first launch after a restore (008 review, 3A): diff the restored DB's
+    /// referenced blobs against the disk and REPORT both divergence directions —
+    /// items whose media vanished after the snapshot (check the Trash), and media
+    /// captured after the snapshot that the restored DB doesn't know (kept this
+    /// launch, reclaimed by the next launch's GC). Reaps nothing.
+    private func runPostRestoreBlobReconcile(services: AppServices, store: MediaStore) {
+        Task.detached(priority: .utility) {
+            guard let referenced = try? await services.referencedBlobHashes() else { return }
+            let onDisk = Set(store.enumerateBlobFiles().map(\.hash))
+            let report = PostRestoreBlobReport(referenced: referenced, onDisk: onDisk)
+            AppLog.model.info(
+                """
+                post-restore reconcile: \
+                \(report.missingReferenced, privacy: .public) referenced-but-missing, \
+                \(report.keptUnreferenced, privacy: .public) unreferenced-but-kept
+                """)
+            guard !report.isClean else { return }
+            await MainActor.run {
+                if report.missingReferenced > 0 {
+                    self.notify("Restore: \(report.missingReferenced) item(s) reference "
+                        + "media no longer on disk — it may still be in the Trash.")
+                }
+                if report.keptUnreferenced > 0 {
+                    self.notify("Restore: kept \(report.keptUnreferenced) media file(s) "
+                        + "newer than the snapshot; they're cleaned up next launch.")
+                }
             }
         }
     }
@@ -1619,7 +1744,7 @@ final class IngestionModel: ObservableObject {
         Task {
             do {
                 _ = try await manager.snapshot(reason: .manual)
-                status = "Snapshot saved."
+                notify("Snapshot saved.")
             } catch {
                 lastError = Self.message(for: error)
             }
@@ -1655,7 +1780,7 @@ final class IngestionModel: ObservableObject {
     }
 
     /// Run an asset mutation that changes the current folder's contents, then
-    /// refresh the tree + reload the folder and publish `body`'s status line.
+    /// refresh the tree + reload the folder and publish `body`'s message as a notice.
     /// Thrown `AtelierError`s land in ``lastError``. (The folder-scoped `perform`
     /// also resets the selected folder; asset mutations never need that.)
     private func mutateContents(_ body: @escaping (AppServices) async throws -> String) {
@@ -1665,14 +1790,14 @@ final class IngestionModel: ObservableObject {
                 let message = try await body(services)
                 await refreshFolders()
                 loadContents(of: selectedFolderID)
-                status = message
+                notify(message)
             } catch {
                 lastError = Self.message(for: error)
             }
         }
     }
 
-    /// "1 item" / "N items" for status + confirmation copy.
+    /// "1 item" / "N items" for notice + confirmation copy.
     private static func itemCount(_ n: Int) -> String {
         "\(n) item\(n == 1 ? "" : "s")"
     }
@@ -1813,6 +1938,7 @@ final class IngestionModel: ObservableObject {
         registerReversible("Move Space",
             primary: { self.enqueueUndoable { await self.applyMoveSpace(id: id, index: index) } },
             inverse: { self.enqueueUndoable { await self.applyMoveSpace(id: id, index: oldIndex) } })
+        announceUndoable("Moved “\(spaces.first { $0.id == id }?.name ?? "space")”.")
     }
 
     /// Reposition a space, then refresh the list + Home stack previews (both share
@@ -1877,10 +2003,10 @@ final class IngestionModel: ObservableObject {
                 let backup = try await services.deleteSpaceRecoverable(id: id)
                 await self.refreshSpaces()
                 await self.refreshSpaceStackPreviews()
-                self.status = "Deleted space “\(name).”"
                 self.registerReversible("Delete Space",
                     primary: { self.enqueueUndoable { await self.applyDeleteSpaceAgain(id) } },
                     inverse: { self.enqueueUndoable { await self.applyRestoreSpace(backup) } })
+                self.announceUndoable("Deleted space “\(name).”")
             } catch {
                 self.lastError = Self.message(for: error)
             }
@@ -1906,7 +2032,7 @@ final class IngestionModel: ObservableObject {
         do {
             try await services.restoreDeletedSpace(backup)
             await refreshSpaces()
-            status = "Restored space “\(backup.space?.name ?? "").”"
+            notify("Restored space “\(backup.space?.name ?? "").”")
         } catch { lastError = Self.message(for: error) }
     }
 
@@ -1929,7 +2055,7 @@ final class IngestionModel: ObservableObject {
         do {
             let sourceItems = try await services.collectionItems(in: collectionID)
             guard !sourceItems.isEmpty else {
-                status = "That collection has no items to seed a space."
+                notify("That collection has no items to seed a space.")
                 return nil
             }
             let name = name(for: collectionID)
@@ -1987,7 +2113,7 @@ final class IngestionModel: ObservableObject {
                 }
                 await refreshSpaces()
                 let name = spaces.first(where: { $0.id == spaceID })?.name ?? ""
-                status = "Added \(Self.itemCount(assets.count)) to “\(name).”"
+                notify("Added \(Self.itemCount(assets.count)) to “\(name).”")
             } catch {
                 lastError = Self.message(for: error)
             }
@@ -2007,7 +2133,7 @@ final class IngestionModel: ObservableObject {
     /// selected folder's contents + the tree. A no-op if not ready / empty.
     ///
     /// `undecoded` (drag path) is the count of dropped items that couldn't be read
-    /// at all — folded into the completion status so a partial drop reports "N
+    /// at all — folded into the completion notice so a partial drop reports "N
     /// imported, M couldn't be read" rather than dropping them silently (7A).
     func run(inputs: [IngestInput], undecoded: Int = 0) {
         guard isReady, coordinator != nil, !inputs.isEmpty else { return }
@@ -2026,20 +2152,36 @@ final class IngestionModel: ObservableObject {
         }
     }
 
+    /// Ingest inputs for files the user CHOSE (the "Import Images…" panel), targeting
+    /// `folder`. Routes through the same ``DirectInputReader/fileInput(fileURL:into:at:)``
+    /// factory a Finder DROP builds, so a chosen file and a dropped file are the same
+    /// import — one decode order, one dedup, one provenance shape.
+    ///
+    /// Static + input-returning rather than a whole import method, so each caller keeps
+    /// the completion it needs: the grid hands these to ``run(inputs:undecoded:)``
+    /// (which reloads the folder), the board to ``importInputs(_:undecoded:)`` (which
+    /// returns the assets to place).
+    nonisolated static func fileInputs(_ urls: [URL], into folder: UUID) -> [IngestInput] {
+        let now = Date()
+        return urls.map { DirectInputReader.fileInput(fileURL: $0, into: folder, at: now) }
+    }
+
     /// The awaitable ingest CORE shared by the grid path (``run``, fire-and-forget)
     /// and the canvas drop path (059 · SP3 / 1A·2A — `await` → place). Runs the
-    /// batch through the coordinator, drives `progress` / `status`, and RETURNS the
+    /// batch through the coordinator, drives `progress` + the completion notice, and RETURNS the
     /// dedup-resolved assets in input order. Assets are collapsed by id so a
     /// same-file-twice drop yields ONE asset (059 · Q2). Each input already carries
     /// its target folder (baked in at decode), so this takes no folder. Empty batch
-    /// → `[]` with no status churn. Does NOT reload the grid — that stays with the
+    /// → `[]` with no notice churn. Does NOT reload the grid — that stays with the
     /// caller, so the canvas can place instead of refreshing a folder it isn't on.
     @discardableResult
     func importInputs(_ inputs: [IngestInput], undecoded: Int = 0) async -> [Asset] {
         guard let coordinator, !inputs.isEmpty else { return [] }
         let total = inputs.count
+        // No "Importing N…" notice: `progress` drives ``ImportProgressPill``, which
+        // shows the same thing live on both the grid and a board. Only the OUTCOME
+        // needs a toast, because it can report failures the pill never sees.
         progress = Progress(completed: 0, total: total)
-        status = "Importing \(total)…"
 
         let outcomes = await coordinator.ingest(inputs) { completed, total in
             Task { @MainActor [weak self] in
@@ -2062,12 +2204,12 @@ final class IngestionModel: ObservableObject {
         }
 
         progress = nil
-        status = Self.importStatus(
-            imported: imported, failures: failures, undecoded: undecoded)
+        notify(Self.importStatus(
+            imported: imported, failures: failures, undecoded: undecoded))
         return assets
     }
 
-    /// Compose the completion status for an import batch: always the imported
+    /// Compose the completion notice for an import batch: always the imported
     /// count, plus a failed clause (bytes that errored in the pipeline) and/or an
     /// unreadable clause (dropped items that couldn't be decoded at all — 7A).
     nonisolated static func importStatus(imported: Int, failures: Int, undecoded: Int) -> String {
@@ -2083,7 +2225,7 @@ final class IngestionModel: ObservableObject {
     /// e.g. a Pinterest image), then ingest it as `.web` provenance through the
     /// same batch path as everything else. The network fetch runs OFF-MAIN (the
     /// fetcher's `await`s hop off this actor); progress + failure surface through
-    /// the existing `status` / `lastError` infra. A no-op if not ready.
+    /// the existing notice / `lastError` infra. A no-op if not ready.
     ///
     /// `folder` is the target the CALLER is showing — the pasting view's own
     /// `collectionID`, exactly like the byte path bakes into its `IngestInput`s.
@@ -2095,7 +2237,7 @@ final class IngestionModel: ObservableObject {
         guard isReady else { return }
         let target = folder
         let fetcher = remoteFetcher
-        status = "Downloading image…"
+        notify("Downloading image…")
         Task {
             do {
                 let input = try await fetcher.ingestInput(for: url, into: target, at: Date())
@@ -2103,11 +2245,11 @@ final class IngestionModel: ObservableObject {
             } catch {
                 // A page URL sniffs as HTML, not an image → resolve it into a LINK
                 // (001 · C2b) rather than failing. Any OTHER error (blocked host, too
-                // large, transport) surfaces its friendly status.
+                // large, transport) surfaces its friendly notice.
                 if case RemoteImageFetchError.notAnImage = error {
                     await resolveLinkAndIngest(from: url, into: target)
                 } else {
-                    status = Self.remoteFetchStatus(for: error)
+                    notify(Self.remoteFetchStatus(for: error))
                 }
             }
         }
@@ -2135,7 +2277,7 @@ final class IngestionModel: ObservableObject {
             // clickable item. The extension remains the way to get the rich tweet card.
             return Self.linkInput(for: url, page: nil, imageData: nil, into: folder)
         }
-        status = "Resolving link…"
+        notify("Resolving link…")
         let page = try? await pageResolver.resolve(url)
         // Fetch the og:image as the link's card image (guarded), best-effort.
         var imageData: Data?
@@ -2149,9 +2291,9 @@ final class IngestionModel: ObservableObject {
     /// when the URL is a page, not an image — resolve it into a link, then ingest
     /// and RETURN the resolved assets so the canvas can place them. Mirrors
     /// ``ingestRemoteImage`` (the grid path) but awaits + returns instead of
-    /// fire-and-forget. Network runs off-actor; failures surface via `status`.
+    /// fire-and-forget. Network runs off-actor; failures surface as a notice.
     func importRemoteURL(_ url: URL, into folder: UUID) async -> [Asset] {
-        status = "Downloading image…"
+        notify("Downloading image…")
         do {
             let input = try await remoteFetcher.ingestInput(for: url, into: folder, at: Date())
             return await importInputs([input])
@@ -2159,7 +2301,7 @@ final class IngestionModel: ObservableObject {
             if case RemoteImageFetchError.notAnImage = error {
                 return await importInputs([await resolveLinkInput(from: url, into: folder)])
             }
-            status = Self.remoteFetchStatus(for: error)
+            notify(Self.remoteFetchStatus(for: error))
             return []
         }
     }
@@ -2208,14 +2350,19 @@ final class IngestionModel: ObservableObject {
         return url
     }
 
-    /// Add a color item (003 · C1) to the current folder from a user-typed hex or
-    /// color-picker selection. Media-less, so it skips the blob pipeline entirely
-    /// and goes straight through `ingestContent` with local-paste provenance;
-    /// canonicalization + dedup happen in the funnel. A malformed hex surfaces via
-    /// ``lastError``. Reloads the folder on success (`perform`).
-    func addColor(hex: String) {
-        let folder = selectedFolderID
-        perform { services in
+    /// Add a color item (003 · C1) to `folder` from a user-typed hex or color-picker
+    /// selection. Media-less, so it skips the blob pipeline entirely and goes straight
+    /// through `ingestContent` with local-paste provenance; canonicalization + dedup
+    /// happen in the funnel. A malformed hex surfaces via ``lastError``. Reloads the
+    /// target folder on success.
+    ///
+    /// The target is a PARAMETER, not `selectedFolderID`. That field is the last
+    /// collection whose contents were loaded, which is not the collection the user is
+    /// looking at when the add is triggered from Home or a Space — a swatch added
+    /// there landed in an off-screen folder and read as "nothing happened". Callers
+    /// pass the same resolved target their drop / ⌘V paths use.
+    func addColor(hex: String, into folder: UUID) {
+        perform(reloading: folder) { services in
             _ = try await services.ingestContent(
                 .color(hex: hex),
                 from: SourceDraft(platform: .localPaste, capturedAt: Date()),
@@ -2223,16 +2370,17 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Add a link item (003 · C2) to the current folder from a user-typed URL. When
-    /// the input is a usable http(s) URL it is RESOLVED (001 · C2b) — og:title /
-    /// description / og:image fill the card (SSRF-walled). A resolution failure still
-    /// saves a bare link keyed by the URL. A non-URL string falls through to the funnel,
-    /// which surfaces `.invalidLinkURL` into ``lastError``.
-    func addLink(url raw: String) {
+    /// Add a link item (003 · C2) to `folder` from a user-typed URL. When the input is
+    /// a usable http(s) URL it is RESOLVED (001 · C2b) — og:title / description /
+    /// og:image fill the card (SSRF-walled). A resolution failure still saves a bare
+    /// link keyed by the URL. A non-URL string falls through to the funnel, which
+    /// surfaces `.invalidLinkURL` into ``lastError``.
+    ///
+    /// Takes its target explicitly, for the reason ``addColor(hex:into:)`` explains.
+    func addLink(url raw: String, into folder: UUID) {
         guard isReady else { return }
-        let folder = selectedFolderID
         guard let url = Self.webURL(fromUserInput: raw) else {
-            perform { services in
+            perform(reloading: folder) { services in
                 _ = try await services.ingestContent(
                     .link(url: raw),
                     from: SourceDraft(platform: .web, originalURL: raw, capturedAt: Date()),
@@ -2246,10 +2394,10 @@ final class IngestionModel: ObservableObject {
     /// Report a drop the app couldn't read at all (no image bytes, no file, no
     /// downloadable image URL) — no more silent no-op (backlog B1).
     func reportUnreadableDrop() {
-        status = "Couldn't read that drop — no image, file, or image URL."
+        notify("Couldn't read that drop — no image, file, or image URL.")
     }
 
-    /// A friendly status line for a failed remote-image download.
+    /// A friendly notice for a failed remote-image download.
     private static func remoteFetchStatus(for error: Error) -> String {
         guard let error = error as? RemoteImageFetchError else {
             return "Couldn't download that image."

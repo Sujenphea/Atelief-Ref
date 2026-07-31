@@ -229,8 +229,8 @@ struct AssetPasteboardWriterTests {
 
     @Test("a single image writes both a file URL and a decodable NSImage")
     func singleImageWritesURLAndImage() throws {
-        try Fixture.withTempPNG { url in
-            try Fixture.withScratchPasteboard { pb in
+        Fixture.withTempPNG { url in
+            Fixture.withScratchPasteboard { pb in
                 let selection = ExportSelection(entries: [.file(item(url))], skipped: 0)
                 let written = AssetPasteboardWriter.write(selection, to: pb)
                 #expect(written == 1)
@@ -243,9 +243,9 @@ struct AssetPasteboardWriterTests {
 
     @Test("multiple images write every file URL but no eager NSImage")
     func multipleImagesWriteURLsOnly() throws {
-        try Fixture.withTempPNG { a in
-            try Fixture.withTempPNG { b in
-                try Fixture.withScratchPasteboard { pb in
+        Fixture.withTempPNG { a in
+            Fixture.withTempPNG { b in
+                Fixture.withScratchPasteboard { pb in
                     let selection = ExportSelection(
                         entries: [.file(item(a)), .file(item(b))], skipped: 0)
                     let written = AssetPasteboardWriter.write(selection, to: pb)
@@ -261,7 +261,7 @@ struct AssetPasteboardWriterTests {
 
     @Test("a color entry writes its hex string")
     func textWritesString() throws {
-        try Fixture.withScratchPasteboard { pb in
+        Fixture.withScratchPasteboard { pb in
             let selection = ExportSelection(entries: [.text("#ff0000")], skipped: 0)
             AssetPasteboardWriter.write(selection, to: pb)
             #expect(pb.string(forType: .string) == "#ff0000")
@@ -270,8 +270,8 @@ struct AssetPasteboardWriterTests {
 
     @Test("a mixed file + text selection exposes both a URL and the string")
     func mixedWritesBoth() throws {
-        try Fixture.withTempPNG { url in
-            try Fixture.withScratchPasteboard { pb in
+        Fixture.withTempPNG { url in
+            Fixture.withScratchPasteboard { pb in
                 let selection = ExportSelection(
                     entries: [.file(item(url)), .text("https://x.example")], skipped: 0)
                 AssetPasteboardWriter.write(selection, to: pb)
@@ -285,7 +285,7 @@ struct AssetPasteboardWriterTests {
 
     @Test("an empty selection clears the board and writes nothing")
     func emptyClears() throws {
-        try Fixture.withScratchPasteboard { pb in
+        Fixture.withScratchPasteboard { pb in
             pb.clearContents()
             pb.setString("stale", forType: .string)
             let written = AssetPasteboardWriter.write(

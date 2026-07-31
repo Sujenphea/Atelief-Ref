@@ -46,7 +46,7 @@ enum CanvasDropContents: Equatable {
 }
 
 /// The resolved effect of a board drop. The executor applies the drop point.
-enum CanvasDropRoute: Equatable {
+nonisolated enum CanvasDropRoute: Equatable {
     /// Refuse the drop — no state change, never a crash.
     case reject
     /// Place already-imported assets (these ids) at the drop point.

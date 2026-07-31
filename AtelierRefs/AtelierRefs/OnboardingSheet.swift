@@ -63,7 +63,7 @@ struct OnboardingSheet: View {
             Text("Welcome to AtelierRefs")
                 .font(.title2.bold())
             Text("Your reference library — set up capture in three quick steps.")
-                .font(.subheadline)
+                .font(Theme.Typography.label)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
@@ -94,7 +94,7 @@ struct OnboardingSheet: View {
                 endpointStatus
             }
             .padding(10)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: Theme.Radius.tile))
         )
     }
 
@@ -109,7 +109,7 @@ struct OnboardingSheet: View {
             Text(model.captureEndpointRunning
                  ? "Listening for captures"
                  : "Endpoint unavailable — port \(model.capturePort) is in use")
-                .font(.caption2)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
@@ -130,16 +130,16 @@ struct OnboardingSheet: View {
     private var outro: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("You're set")
-                .font(.headline)
+                .font(Theme.Typography.bodyEmphasis)
             Text("Organize into collections, arrange spaces, and snapshot from "
                  + "File ▸ Snapshot Now. Re-open this guide any time from Settings (⌘,).")
-                .font(.subheadline)
+                .font(Theme.Typography.label)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
         .accessibilityElement(children: .combine)
     }
 
@@ -160,15 +160,15 @@ struct OnboardingSheet: View {
                       accessory: AnyView? = nil) -> some View {
         HStack(alignment: .top, spacing: 14) {
             Text("\(number)")
-                .font(.headline)
+                .font(Theme.Typography.bodyEmphasis)
                 .foregroundStyle(.white)
                 .frame(width: 28, height: 28)
                 .background(.tint, in: Circle())
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.headline)
+                Text(title).font(Theme.Typography.bodyEmphasis)
                 Text(detail)
-                    .font(.subheadline)
+                    .font(Theme.Typography.label)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let accessory { accessory.padding(.top, 4) }

@@ -1507,7 +1507,7 @@ func gridIDToIndex(for items: [CollectionItemDetail]) -> [UUID: Int] {
 }
 
 /// How to push a new item set to the diffable data source.
-enum GridApplyStrategy: Equatable {
+nonisolated enum GridApplyStrategy: Equatable {
     /// Same membership + order, same collection → reconfigure in place (a content
     /// edit such as a resolved thumbnail or a rename). Avoids the snapshot churn
     /// and the `reloadItems` flash.
@@ -1583,7 +1583,7 @@ func gridIsDeleteKey(characters: String) -> Bool {
 /// A resolved grid keyboard command (036 §4 A2). The NSEvent → command mapping is
 /// pure and testable; the coordinator executes each through the SAME reducer /
 /// nav seams the SwiftUI `.onKeyPress` chain used.
-enum GridKeyCommand: Equatable {
+nonisolated enum GridKeyCommand: Equatable {
     /// An arrow key; `extend` is ⇧ held (grow the range vs move the cursor).
     case arrow(GridArrowKey, extend: Bool)
     /// Return — open the cursor item's detail.

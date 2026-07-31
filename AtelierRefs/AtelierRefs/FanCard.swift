@@ -54,17 +54,17 @@ struct FanCard: View {
                 .aspectRatio(1, contentMode: .fit)
                 .frame(maxWidth: .infinity)
             Text(title)
-                .font(.callout).fontWeight(.medium)
+                .font(Theme.Typography.body).fontWeight(.medium)
                 .lineLimit(1)
                 .foregroundStyle(.primary)
             Text("\(itemCount) items")
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
         .padding(8)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color(.controlBackgroundColor).opacity(0.5)))
-        .contentShape(RoundedRectangle(cornerRadius: 14))
+        .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.cover))
+        .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.cover))
     }
 
     /// The fanned pile: up to three thumbnails, back-to-front, each tilted by its
@@ -99,21 +99,21 @@ struct FanCard: View {
 
     private func tile(hash: String, side: CGFloat) -> some View {
         AsyncThumbnail(
-            hash: hash, url: thumbnailURL(hash), cornerRadius: 12,
+            hash: hash, url: thumbnailURL(hash), cornerRadius: Theme.Radius.card,
             bucket: thumbnailPixelBucket(pointLongSide: side, scale: displayScale))
             .frame(width: side, height: side)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color(.windowBackgroundColor)))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .background(Theme.Colors.mediaBackdrop, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
             .shadow(color: .black.opacity(0.2), radius: 3, x: 0, y: 2)
     }
 
     private func placeholder(side: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 12)
-            .fill(accent ? Color.accentColor.opacity(0.12) : Color(.quaternaryLabelColor).opacity(0.4))
+        RoundedRectangle(cornerRadius: Theme.Radius.card)
+            .fill(accent ? Theme.Colors.field : Theme.Colors.mediaBackdrop)
             .overlay {
                 Image(systemName: placeholderSymbol)
                     .font(.system(size: 30))
-                    .foregroundStyle(accent ? Color.accentColor : .secondary)
+                    .foregroundStyle(accent ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
             }
             .frame(width: side, height: side)
     }

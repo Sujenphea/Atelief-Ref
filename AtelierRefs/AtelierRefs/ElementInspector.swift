@@ -69,7 +69,7 @@ struct ElementInspector: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(kind == .text ? "Text" : "Frame").font(.headline)
+            Text(kind == .text ? "Text" : "Frame").font(Theme.Typography.bodyEmphasis)
 
             if kind == .text {
                 textEditor

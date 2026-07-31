@@ -153,7 +153,7 @@ struct LibrarySearchModelTests {
         m.textChanged()
         await poll { !recorder.queries.isEmpty }
 
-        let q = try? #require(recorder.queries.last)
+        let q = recorder.queries.last
         #expect(q?.text == "brass")
         #expect(q?.sort == .relevance)
         #expect(q?.tagIDs == [wood.id])
@@ -169,7 +169,7 @@ struct LibrarySearchModelTests {
         m.textChanged()
         await poll { !recorder.queries.isEmpty }
 
-        let q = try? #require(recorder.queries.last)
+        let q = recorder.queries.last
         #expect(q?.text.isEmpty == true)
         #expect(q?.tagNameContains == "brut")
         #expect(q?.sort == .newest)  // nothing to rank
@@ -186,7 +186,7 @@ struct LibrarySearchModelTests {
         m.textChanged()
         await poll { !recorder.queries.isEmpty }
 
-        let q = try? #require(recorder.queries.last)
+        let q = recorder.queries.last
         #expect(q?.collectionIDs == [screen])
     }
 
@@ -249,7 +249,7 @@ struct LibrarySearchModelTests {
         await poll { !recorder.semanticQueries.isEmpty }
 
         // Semantic seam ran; keyword seam did not.
-        let q = try? #require(recorder.semanticQueries.last)
+        let q = recorder.semanticQueries.last
         #expect(q?.text == "cozy reading nook")   // raw text, no tag: parsing
         #expect(q?.tagIDs == [wood.id])            // structured scope still applies
         #expect(recorder.queries.isEmpty)

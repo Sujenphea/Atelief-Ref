@@ -22,7 +22,7 @@ import SwiftUI
 /// (051 · 2A). Extracted + pure so the thresholds are unit-tested (051 · 12A) and
 /// the rendering stays compile-only. Selection drives it, never the active tool
 /// (051 · E-4).
-enum SpaceBarMode: Equatable {
+nonisolated enum SpaceBarMode: Equatable {
     case idle   // nothing selected → create tools
     case single // one row → Edit + z-order
     case multi  // 2+ rows → align + distribute + z-order
@@ -99,7 +99,6 @@ struct SpaceView: View {
         ZStack {
             VStack(alignment: .leading, spacing: 0) {
                 header
-                Divider()
                 canvas
             }
             // Full-window detail page for a double-clicked asset tile. Guarding on
@@ -138,24 +137,34 @@ struct SpaceView: View {
         })
     }
 
-    /// The header shrank to name + count once the tools moved into the context-aware
-    /// floating bar (051 · 8A); the create tools, Edit, and align/distribute all live
-    /// in `actionBar` now.
+    /// The title row — name + count, matching the Collection screen's header (222)
+    /// line for line: the same `sectionTitle`, the same secondary `.callout` count,
+    /// the same 10pt gap, at the same 24pt content margin, with no rule beneath it.
+    /// Moving between a collection and a board doesn't shift the title.
+    ///
+    /// The tools left first (051 · 8A, into the context-aware `actionBar`); this drops
+    /// the rest. The "drag to place" hint is gone — permanent chrome teaching a gesture
+    /// you learn once — and the moodboard export moved down into `actionBar`, the way
+    /// the Collection's contact-sheet export lives in its floating bar rather than its
+    /// header. What's left is purely display, so the row is non-interactive on both
+    /// screens.
     private var header: some View {
-        HStack(spacing: Theme.Spacing.md) {
-            Text(space.name).font(Theme.Typography.sectionTitle)
+        HStack(spacing: 10) {
+            Text(space.name)
+                .font(Theme.Typography.sectionTitle)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            // Redacted until the board's first read resolves, so it can't flash
+            // "0 items" at a board that has some (the Collection header's reason,
+            // reached differently: `space` is nil rather than another board's).
             Text("\(space.items.count) items")
-                .font(.callout).foregroundStyle(.secondary)
-            Spacer()
-            Text("Drag to place · pinch to zoom")
-                .font(.caption).foregroundStyle(.tertiary)
-            // Moodboard export: the progress ring appears only while rendering
-            // (052 · B3); the Export button opens the format popover.
-            ExportProgressRing()
-            MoodboardExportButton(space: space, model: model)
+                .font(Theme.Typography.body).foregroundStyle(.secondary)
+                .redacted(reason: space.space == nil ? .placeholder : [])
         }
-        .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Theme.Spacing.xl)
+        .padding(.top, Theme.Spacing.xl)
+        .padding(.bottom, Theme.Spacing.md)
     }
 
     /// Select / Frame / Text, in the `.idle` sub-bar. A create tool rubber-bands a
@@ -451,6 +460,32 @@ struct SpaceView: View {
             ImportProgressPill(progress: model.progress)
                 .padding(.top, Theme.Spacing.md)
         }
+        // The floating "+". A board has exactly ONE thing to add from outside the app,
+        // so this is a direct action rather than a menu of one — the tooltip carries
+        // the label a bare disc can't. (Frames and text come from the tool picker; the
+        // library comes in by drag.)
+        .floatingAdd(help: "Import images onto this board", action: importFilesOntoBoard)
+    }
+
+    /// "+" on a board: choose files, ingest them, and flow them in below the content.
+    ///
+    /// Into UNSORTED, matching the canvas's drop and ⌘V paths (`importExternal`) — a
+    /// board is not a collection, so an import here has no collection context to
+    /// inherit, and inventing one would file the user's images somewhere they never
+    /// chose. Placement goes through `SpaceModel`, the only writer that reloads an
+    /// OPEN board; `IngestionModel.addAssetsToSpace` writes the rows but refreshes the
+    /// spaces LIST, so an import routed that way would not appear until reopen.
+    private func importFilesOntoBoard() {
+        let folder = model.unsortedFolderID
+        ImportFilesPanel.present { urls in
+            guard !urls.isEmpty else { return }
+            Task {
+                let assets = await model.importInputs(
+                    IngestionModel.fileInputs(urls, into: folder))
+                await model.refreshFolders()
+                space.addAssets(assets)
+            }
+        }
     }
 
     /// Apply the outcome of an inline edit the canvas host just finished (054 §5.3).
@@ -522,9 +557,45 @@ struct SpaceView: View {
             case .single: singleBar
             case .multi: multiBar
             }
+            barSeparator
+            exportBar // mode-invariant
         }
         .padding(.trailing, 10)
         .selectionBarChrome()
+    }
+
+    /// The rule between the mode-switched half and the export.
+    ///
+    /// It earns its place twice. Semantically, an export LEAVES the app, so it isn't
+    /// another edit in the same row — the same reason the collection's "+" menu puts
+    /// a rule above "New Space from Collection".
+    ///
+    /// Geometrically, it fixes a real defect. The bar's `spacing: 2` is not the gap
+    /// you see: every glyph is a 30×28 `SelectionBarIcon` whose 15pt symbol carries
+    /// ~7.5pt of its own air, so neighbouring glyphs read as ~17pt apart. The
+    /// segmented `toolPicker` is the ONE child with no such margin — its bezel is a
+    /// hard edge — so in `.idle` the export glyph sat 11pt from the picker while the
+    /// capsule's own trailing margin is 24pt, and the button looked jammed against
+    /// the tools. That never showed before because the picker used to be last.
+    private var barSeparator: some View {
+        Rectangle()
+            .fill(Theme.Colors.hairlineStrong)
+            .frame(width: 1, height: 16)
+            .padding(.horizontal, 5)
+    }
+
+    /// The moodboard export, folded down out of the header — the Collection screen's
+    /// contact-sheet export lives in its floating bar too, so the two now agree on
+    /// where an export is raised from.
+    ///
+    /// Mode-invariant, like undo/redo: an export is selection-or-whole-board (052 ·
+    /// B3), so it means the same thing at every selection size. The ring renders
+    /// nothing unless a board is actually being written — measured, not assumed: a
+    /// `Group` whose branches all fail contributes no subview, so the stack adds no
+    /// spacing for it either.
+    @ViewBuilder private var exportBar: some View {
+        MoodboardExportButton(space: space, model: model)
+        ExportProgressRing()
     }
 
     /// Undo / redo — always on screen so their shortcuts never die (051 · E-2).

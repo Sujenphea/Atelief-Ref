@@ -207,6 +207,7 @@ struct AssetExportItemTests {
 
 // MARK: - dragProvider (the detail view's drag, 192)
 
+@MainActor
 @Suite("AssetExport: dragProvider")
 struct AssetExportDragProviderTests {
 

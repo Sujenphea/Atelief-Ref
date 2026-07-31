@@ -18,7 +18,7 @@ import Foundation
 /// One selected asset's copy payload. A byte-backed kind copies as its on-disk
 /// original (``AssetExportItem`` — file URL + filename + type); a media-less kind
 /// copies as text (a color's hex, a link's / tweet's URL).
-enum AssetPasteboardEntry: Equatable {
+nonisolated enum AssetPasteboardEntry: Equatable {
     case file(AssetExportItem)
     case text(String)
 }
