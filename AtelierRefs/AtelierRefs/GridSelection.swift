@@ -72,6 +72,10 @@ nonisolated enum GridSelectionAction: Equatable {
     case selectOnly(UUID)
     /// ⌘A: select every item.
     case selectAll
+    /// Add these ids to the selection without disturbing what is already picked —
+    /// the "Select all from this post" seam (carousel grouping). Additive like a
+    /// ⌘-click rather than a replacement, so a triage in progress survives it.
+    case union(Set<UUID>)
     /// A live marquee (rubber-band) update: the ids the box currently touches,
     /// unioned with `base` — the selection captured when the drag began (empty
     /// for a plain marquee, the prior selection for a ⇧-additive one). 009 · N6.
@@ -136,6 +140,22 @@ extension GridSelection {
             next.anchor = order.first
             next.lead = order.last
             next.shiftRange = []
+            return (next, .none)
+
+        case let .union(added):
+            let fresh = added.subtracting(ids)
+            guard !fresh.isEmpty else { return (self, .none) }
+            next.ids.formUnion(fresh)
+            // A membership edit outside a ⇧ action, so the live range collapses
+            // (same rule as `toggle`). The cursor moves to the LAST added item in
+            // feed order and becomes the pivot, so a following ⇧-click ranges from
+            // the group we just pulled in rather than a stale anchor.
+            next.shiftRange = []
+            if let last = order.last(where: fresh.contains) {
+                next.anchor = last
+                next.lead = last
+                return (next, .scrollTo(last))
+            }
             return (next, .none)
 
         case let .marquee(hits, base):

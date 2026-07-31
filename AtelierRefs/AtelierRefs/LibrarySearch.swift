@@ -665,6 +665,12 @@ private struct LibrarySearchResults: View {
     @StateObject private var selectionStore = GridSelectionStore()
     @Environment(\.displayScale) private var displayScale
 
+    /// The result set bucketed by originating post (300 · carousel grouping), so a
+    /// carousel scattered across a result page can be picked up in one action. Held
+    /// as state and rebuilt only when the results change — the collection grid gets
+    /// this from `IngestionModel`; search owns its own feed, so it owns its own index.
+    @State private var postGroups = PostGroups()
+
     /// A stable, membership-less sentinel "collection" id for the host. Search hits
     /// belong to no collection; a constant keeps the host from resetting scroll
     /// between queries and marks every drag-out payload as a copy (009 · N3).
@@ -766,10 +772,14 @@ private struct LibrarySearchResults: View {
             // Keep the reducer's feed order in step with the results (the host does
             // not push this itself — the collection grid's model does). Prune a stale
             // multi-selection to the surviving ids whenever the query changes.
-            .onAppear { selectionStore.setOrder(orderIDs) }
+            .onAppear {
+                selectionStore.setOrder(orderIDs)
+                postGroups = PostGroups(items: items)
+            }
             .onChange(of: search.resultsVersion) { _, _ in
                 selectionStore.setOrder(orderIDs)
                 selectionStore.prune(to: orderIDs)
+                postGroups = PostGroups(items: items)
             }
             // A triage delete removes a hit from the library — re-run the query so the
             // stale card leaves the grid (contentsVersion bumps when the delete reloads).
@@ -896,6 +906,15 @@ private struct LibrarySearchResults: View {
 
     // MARK: - Selection bar
 
+    /// The same-post action's title for the current selection, or `nil` when there
+    /// is nothing left to add (which hides the button).
+    private var selectSamePostRowTitle: String? {
+        let ids = selectionStore.selection.ids
+        return selectSamePostTitle(
+            siblingCount: postGroups.siblings(ofSelected: ids).count,
+            postCount: postGroups.groupCount(ofSelected: ids))
+    }
+
     /// The floating "N selected · Clear · Delete" bar, shown while a selection is
     /// active. Delete routes through the same staged/undoable asset delete as the
     /// keyboard and context menu.
@@ -907,6 +926,17 @@ private struct LibrarySearchResults: View {
                 .padding(.trailing, 10)
             SelectionBarButton("xmark", help: "Clear selection") {
                 selectionStore.apply(.clear)
+            }
+            // Same-post pickup (300). Search's bar has no `…` overflow (unlike the
+            // collection bar's), so this is a direct glyph, shown only while the
+            // selection has carousel members left to pull in — the help text carries
+            // the count the collection popover puts in its row title.
+            if let title = selectSamePostRowTitle {
+                SelectionBarButton("square.on.square", help: title) {
+                    let siblings = postGroups.siblings(ofSelected: selectionStore.selection.ids)
+                    guard !siblings.isEmpty else { return }
+                    selectionStore.apply(.union(siblings))
+                }
             }
             // `requestDelete` runs its own confirmation, so no extra dialog here.
             SelectionBarButton("trash", help: "Delete \(count)", role: .destructive) {

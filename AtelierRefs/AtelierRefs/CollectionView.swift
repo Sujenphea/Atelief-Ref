@@ -436,6 +436,19 @@ struct CollectionView: View {
     /// action still calls the SAME `IngestionModel` method as the context menu.
     private func moreActionsMenu(count: Int) -> some View {
         VStack(alignment: .leading, spacing: 2) {
+            // "Select the rest of the carousel" (300), pinned above the destination
+            // sections because it changes WHAT the destinations would act on. Hidden
+            // (not disabled) when the selection has no same-post members left to add
+            // — an always-present row that is usually dead would read as broken.
+            if let title = model.selectSamePostRowTitle {
+                SelectionMenuRow(title, systemImage: "square.on.square") {
+                    model.selectSamePost()
+                    showMoreActions = false
+                }
+                Rectangle().fill(Theme.Colors.hairline)
+                    .frame(height: 1).padding(.vertical, 3)
+            }
+
             SelectionMenuSectionHeader(
                 "Move to", isExpanded: expandedMoreSection == .move) { toggleSection(.move) }
             if expandedMoreSection == .move { destinationList(copy: false) }

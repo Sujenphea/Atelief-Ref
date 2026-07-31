@@ -360,6 +360,12 @@ final class IngestionModel: ObservableObject {
     /// The current selection's asset ids in feed order (see `selectedAssetIDs`).
     private var cachedSelectedAssetIDs: [UUID] = []
 
+    /// The loaded feed bucketed by originating post (300 · carousel grouping) —
+    /// what makes "these four tiles are one Instagram carousel" answerable. Built
+    /// here rather than in the view because a `CollectionView` body re-runs on
+    /// every selection change and the bucketing is O(N) over the whole feed.
+    private(set) var postGroups = PostGroups()
+
     /// Monotonic token bumped whenever `items` changes (a load / move / reorder),
     /// so the grid's masonry layout cache (011-B1 · 14A) can key off cheap
     /// integer equality instead of hashing the item ids or re-deriving aspects on
@@ -377,6 +383,7 @@ final class IngestionModel: ObservableObject {
         selectionStore.setOrder(items.map { $0.item.id })
         assetIDByItemID = Dictionary(
             items.map { ($0.item.id, $0.asset.id) }, uniquingKeysWith: { first, _ in first })
+        postGroups = PostGroups(items: items)
         // Items changed, selection didn't — rebuild the cache against the store's
         // CURRENT (settled) selection. Safe to read here: no `willSet` is in
         // flight, unlike inside the `$selection` sink below.
@@ -409,6 +416,29 @@ final class IngestionModel: ObservableObject {
             isSelected: selection.ids.contains(itemID),
             selectedAssetIDs: selectedAssetIDs,
             cellAssetID: assetIDByItemID[itemID])
+    }
+
+    // MARK: - Same-post selection (300 · carousel grouping)
+
+    /// The unselected items sharing a post with the current selection — the count
+    /// the "Select N More from This Post" row offers, and `nil`/empty when the
+    /// selection has no carousel members left to pull in.
+    var samePostSiblings: Set<UUID> { postGroups.siblings(ofSelected: selection.ids) }
+
+    /// The row title for the selection bar's same-post action, or `nil` to hide it.
+    var selectSamePostRowTitle: String? {
+        selectSamePostTitle(
+            siblingCount: samePostSiblings.count,
+            postCount: postGroups.groupCount(ofSelected: selection.ids))
+    }
+
+    /// Add every remaining item from the selected items' posts to the selection
+    /// (300). Additive — a scattered triage in progress is preserved — and routed
+    /// through the same pure reducer as every other selection edit.
+    func selectSamePost() {
+        let siblings = samePostSiblings
+        guard !siblings.isEmpty else { return }
+        selectionStore.apply(.union(siblings))
     }
 
     /// Build the drag payload for a drag that starts on the cell `itemID`

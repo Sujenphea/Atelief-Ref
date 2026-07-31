@@ -51,6 +51,10 @@ struct CellSelectionState: Equatable {
     /// Selection mode is active somewhere in the grid — circles show on ALL cells
     /// so any can be toggled (A2 wiring).
     var isSelecting = false
+    /// Something ELSE from this cell's post is selected while this cell is not —
+    /// draws the dashed "same post" ring so a carousel's remaining members are
+    /// visible the moment one of them is picked (300 · carousel grouping).
+    var isPostSibling = false
 
     static let inert = CellSelectionState()
 }
@@ -77,7 +81,15 @@ protocol MasonryGridInteraction: AnyObject {
 /// human name (title → author handle → bare kind). Pure and free-standing so it
 /// is unit-tested without a view and shared between the SwiftUI cell and this
 /// AppKit one (036 §2 A1). Mirrors `CollectionCell.accessibilityLabel` exactly.
-func gridCellAccessibilityLabel(for detail: CollectionItemDetail) -> String {
+/// `postMemberCount` (300) is the size of the multi-item post this cell belongs to
+/// — 0 or 1 when it stands alone. When it is a carousel member the label says so,
+/// because the visual badge that carries it sighted is a pixmap VoiceOver can't read.
+func gridCellAccessibilityLabel(for detail: CollectionItemDetail, postMemberCount: Int = 0) -> String {
+    let suffix = postMemberCount > 1 ? ", one of \(postMemberCount) from the same post" : ""
+    return gridCellBaseAccessibilityLabel(for: detail) + suffix
+}
+
+private func gridCellBaseAccessibilityLabel(for detail: CollectionItemDetail) -> String {
     let kind: String
     switch detail.asset.kind {
     case .image: kind = "Image"
@@ -94,6 +106,75 @@ func gridCellAccessibilityLabel(for detail: CollectionItemDetail) -> String {
         return "\(kind) by \(handle)"
     }
     return kind
+}
+
+// MARK: - Carousel badge (300 · carousel grouping)
+
+/// The "N items from this post" chip painted into a cell's top-leading corner.
+///
+/// Pre-rendered to an `NSImage` and cached by count, then handed to a plain
+/// `CALayer.contents` — the cell's whole reason for existing is that it does NOT
+/// host SwiftUI or lay out subviews per cell (036 §2 A1), and a badge is a fixed
+/// pixmap per distinct count, so there is at most a handful of them in the cache
+/// for any real feed.
+@MainActor
+enum PostBadge {
+    /// Rendered chips by member count. Small and bounded (one per distinct
+    /// carousel length seen), never invalidated — the artwork is appearance-
+    /// independent (white on translucent black reads on every backdrop).
+    private static var cache: [Int: NSImage] = [:]
+
+    static let height: CGFloat = 18
+    /// The inset from the cell's top-leading corner (the selection circle owns
+    /// the opposite corner, so the two never collide).
+    static let inset: CGFloat = 6
+
+    /// The chip for `count` members — a translucent-dark capsule holding the
+    /// stacked-squares glyph and the count.
+    static func image(count: Int) -> NSImage? {
+        guard count > 1 else { return nil }
+        if let hit = cache[count] { return hit }
+        guard let made = render(count: count) else { return nil }
+        cache[count] = made
+        return made
+    }
+
+    private static func render(count: Int) -> NSImage? {
+        let symbolConfig = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+        guard let glyph = NSImage(
+            systemSymbolName: "square.on.square", accessibilityDescription: nil)?
+            .withSymbolConfiguration(symbolConfig) else { return nil }
+
+        let text = "\(count)" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.white,
+        ]
+        let textSize = text.size(withAttributes: attributes)
+        let hPad: CGFloat = 6, gap: CGFloat = 3
+        let width = (hPad * 2 + glyph.size.width + gap + textSize.width).rounded(.up)
+        let size = NSSize(width: width, height: height)
+
+        let image = NSImage(size: size)
+        image.lockFocusFlipped(false)
+        // A soft dark capsule rather than the accent: the badge is a permanent
+        // fixture on every carousel tile, and accent-coloured chrome that is
+        // always on would compete with the accent SELECTION ring right next to it.
+        NSColor.black.withAlphaComponent(0.55).setFill()
+        NSBezierPath(roundedRect: NSRect(origin: .zero, size: size),
+                     xRadius: height / 2, yRadius: height / 2).fill()
+        glyph.isTemplate = true
+        NSColor.white.set()
+        let glyphRect = NSRect(
+            x: hPad, y: ((height - glyph.size.height) / 2).rounded(),
+            width: glyph.size.width, height: glyph.size.height)
+        glyph.draw(in: glyphRect, from: .zero, operation: .sourceOver, fraction: 1)
+        text.draw(
+            at: NSPoint(x: glyphRect.maxX + gap, y: ((height - textSize.height) / 2).rounded()),
+            withAttributes: attributes)
+        image.unlockFocus()
+        return image
+    }
 }
 
 // MARK: - The cell
@@ -130,6 +211,15 @@ final class MasonryGridItem: NSCollectionViewItem {
     private let selectionContrastLayer = CALayer()
     /// Inert-until-A2 keyboard-cursor ring (drawn when lead && !selected).
     private let cursorRingLayer = CALayer()
+    /// The dashed "same post" ring (300): drawn on an UNSELECTED cell while a
+    /// sibling from its carousel IS selected. A `CAShapeLayer` because a dash
+    /// pattern needs a stroked path — `CALayer.borderWidth` can only draw solid,
+    /// and a solid accent ring here would be indistinguishable from selection.
+    private let siblingRingLayer = CAShapeLayer()
+    /// The carousel count chip (300), painted top-leading whenever this cell's post
+    /// has more than one item in the feed. Purely informational — hit-transparent
+    /// (it's a layer, not a view) so it can't intercept a click or a drag.
+    private let postBadgeLayer = CALayer()
     /// Inert-until-A2 enter-selection circle affordance.
     private let circleButton = NSButton()
     /// The hover-dwell animated-GIF overlay slot (A3). Populated only after the
@@ -175,6 +265,9 @@ final class MasonryGridItem: NSCollectionViewItem {
     private var activeRingWidth: CGFloat {
         currentSelection.isSelected ? selectionRingWidth : cursorRingWidth
     }
+    /// The dashed same-post ring's stroke — thinner than the selection ring so the
+    /// two are never confused at a glance (300).
+    private let siblingRingWidth: CGFloat = 2
 
     /// The membership id this cell is currently bound to — the coordinator reads it
     /// back when the cell reports a mouse-down / circle click (A2). Set in
@@ -190,6 +283,9 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// Whether the pointer is over this cell (driven by the coordinator's one
     /// tracking area — 036 §4 A2). Idle-hover is the other reason the circle shows.
     private var isHovered = false
+    /// How many feed items share this cell's post (300) — 0 when it stands alone.
+    /// Drives the carousel chip and the VoiceOver suffix.
+    private var postMemberCount = 0
 
     // MARK: View
 
@@ -236,6 +332,21 @@ final class MasonryGridItem: NSCollectionViewItem {
         selectionContrastLayer.isHidden = true
         container.layer?.addSublayer(selectionContrastLayer)
 
+        // Dashed same-post ring (300). Inset by half the stroke so the dash sits
+        // fully inside the tile instead of being clipped by `masksToBounds`.
+        siblingRingLayer.fillColor = nil
+        siblingRingLayer.strokeColor = NSColor.controlAccentColor.cgColor
+        siblingRingLayer.lineWidth = siblingRingWidth
+        siblingRingLayer.lineDashPattern = [5, 4]
+        siblingRingLayer.isHidden = true
+        container.layer?.addSublayer(siblingRingLayer)
+
+        // Carousel count chip (300), top-leading. Contents are set per-configure
+        // from the cached artwork; the frame is sized to that image.
+        postBadgeLayer.contentsGravity = .resizeAspect
+        postBadgeLayer.isHidden = true
+        container.layer?.addSublayer(postBadgeLayer)
+
         // Circle affordance: the enter-selection toggle (A2). Hidden until the cell
         // is selecting or hovered (``updateCircleVisibility``); its click routes to
         // `.tapCircle` via the coordinator. Kept hidden from VoiceOver exactly as the
@@ -273,6 +384,18 @@ final class MasonryGridItem: NSCollectionViewItem {
         selectionRingLayer.frame = bounds
         layOutContrastHairline(in: bounds)
         cursorRingLayer.frame = bounds
+        siblingRingLayer.frame = bounds
+        let ringRect = bounds.insetBy(dx: siblingRingWidth / 2, dy: siblingRingWidth / 2)
+        siblingRingLayer.path = CGPath(
+            roundedRect: ringRect,
+            cornerWidth: max(0, cornerRadius - siblingRingWidth / 2),
+            cornerHeight: max(0, cornerRadius - siblingRingWidth / 2),
+            transform: nil)
+        if let badge = postBadgeLayer.contents as? NSImage {
+            postBadgeLayer.frame = NSRect(
+                x: bounds.minX + PostBadge.inset, y: bounds.minY + PostBadge.inset,
+                width: badge.size.width, height: badge.size.height)
+        }
         cardHost?.frame = bounds
         gifSlot?.frame = bounds
         CATransaction.commit()
@@ -317,7 +440,13 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// kind hosts ``AssetContentThumbnail``. `url` is the on-disk 512-tier
     /// thumbnail (nil for media-less), `bucket` the analytic-frame pixel bucket
     /// the host computed (the cell never guesses its own size — 036 §4 C3).
-    func configure(detail: CollectionItemDetail, url: URL?, bucket: Int, gifURL: URL?) {
+    /// `postMemberCount` is how many items of the CURRENT feed came from this
+    /// item's post (0 when it isn't part of a multi-item post) — the carousel chip.
+    func configure(
+        detail: CollectionItemDetail, url: URL?, bucket: Int, gifURL: URL?,
+        postMemberCount: Int = 0
+    ) {
+        setPostMemberCount(postMemberCount)
         loadToken &+= 1
         let token = loadToken
         loadTask?.cancel()
@@ -330,7 +459,8 @@ final class MasonryGridItem: NSCollectionViewItem {
         cancelGifDwell()
         self.gifURL = gifURL
         gifFileSize = detail.asset.fileSize
-        view.setAccessibilityLabel(gridCellAccessibilityLabel(for: detail))
+        view.setAccessibilityLabel(
+            gridCellAccessibilityLabel(for: detail, postMemberCount: postMemberCount))
 
         // Media-less card kinds (bare link / tweet / colour / unknown) have no
         // thumbnail — host the existing SwiftUI render seam instead of the layer.
@@ -377,6 +507,10 @@ final class MasonryGridItem: NSCollectionViewItem {
         selectionContrastLayer.isHidden = !showHairline
         selectionContrastLayer.borderWidth = showHairline ? contrastHairlineWidth : 0
         layOutContrastHairline(in: view.bounds)
+        // The dashed same-post ring never competes with the selection ring: a
+        // SELECTED cell already draws the solid border, so the sibling cue is only
+        // for the members still to be picked up.
+        siblingRingLayer.isHidden = !(state.isPostSibling && !state.isSelected)
         CATransaction.commit()
         // Selected: a palette checkmark (BLACK tick on a WHITE-filled circle) so the
         // tick has intrinsic contrast on any image, unlike a monochrome tint whose
@@ -395,6 +529,26 @@ final class MasonryGridItem: NSCollectionViewItem {
             circleButton.contentTintColor = .white
         }
         updateCircleVisibility()
+    }
+
+    /// Paint (or clear) the carousel chip. Layer-only, like every other cell
+    /// state: the artwork is a cached pixmap keyed on the count, so a scroll
+    /// through a feed of carousels re-uses one image per distinct length.
+    private func setPostMemberCount(_ count: Int) {
+        postMemberCount = count
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let badge = PostBadge.image(count: count) {
+            postBadgeLayer.contents = badge
+            postBadgeLayer.frame = NSRect(
+                x: view.bounds.minX + PostBadge.inset, y: view.bounds.minY + PostBadge.inset,
+                width: badge.size.width, height: badge.size.height)
+            postBadgeLayer.isHidden = false
+        } else {
+            postBadgeLayer.contents = nil
+            postBadgeLayer.isHidden = true
+        }
+        CATransaction.commit()
     }
 
     /// Show/hide the enter-selection circle (idle-hover half — 036 §4 A2). Layer-
@@ -478,6 +632,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         cancelGifDwell()
         gifURL = nil
         gifFileSize = nil
+        setPostMemberCount(0)
         setImage(nil)
         hideCard()
         applySelectionState(.inert)
