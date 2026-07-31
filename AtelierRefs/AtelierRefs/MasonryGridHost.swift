@@ -413,7 +413,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// (and unit-tested via ``gridIDToIndex(for:)``).
     private(set) var idToIndex: [UUID: Int] = [:]
 
-    /// The feed bucketed by post (300 · carousel grouping) — rebuilt with `items`.
+    /// The feed bucketed by post (307 · carousel grouping) — rebuilt with `items`.
     /// Feeds the per-cell carousel chip and the dashed sibling ring.
     private(set) var postGroups = PostGroups()
     /// Memoized `postGroups.siblings(ofSelected:)` for one selection set. Both
@@ -678,7 +678,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
 
         items = newItems
         idToIndex = gridIDToIndex(for: newItems)
-        // Re-bucket by post (300) BEFORE any cell configures: the chip count and
+        // Re-bucket by post (307) BEFORE any cell configures: the chip count and
         // the sibling ring both read this index. Cheap — one pass over the feed,
         // paid only when the item set actually changes.
         postGroups = PostGroups(items: newItems)
@@ -764,7 +764,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
             isPostSibling: siblings(of: selection).contains(id))
     }
 
-    /// The unselected same-post members for `selection` (300), memoized so a scroll
+    /// The unselected same-post members for `selection` (307), memoized so a scroll
     /// or a reconcile doesn't recompute the set once per cell.
     private func siblings(of selection: GridSelection) -> Set<UUID> {
         if let cached = siblingCache, cached.ids == selection.ids { return cached.siblings }
@@ -865,7 +865,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         // WITHOUT its own membership changing — picking one carousel image rings
         // three untouched cells. Diff the sibling sets too and fold them into the
         // repaint set, or those three would keep a stale (or missing) ring until
-        // they scrolled out and back (300).
+        // they scrolled out and back (307).
         let oldSiblings = siblings(of: old)
         reflectedSelection = newValue
         let newSiblings = siblings(of: newValue)
@@ -1114,7 +1114,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         let dests = configuration.moveTargets
         let menu = NSMenu()
 
-        // "Select the rest of this carousel" (300), first because it changes the
+        // "Select the rest of this carousel" (307), first because it changes the
         // SCOPE the verbs below would act on — offered only when the right-clicked
         // cell actually has same-post members that aren't selected yet, so it is
         // never a no-op row. Menu style is irrelevant: grouping is a property of
@@ -1176,7 +1176,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         return menu
     }
 
-    /// The "Select N More from This Post" row for a right-click on `itemID` (300),
+    /// The "Select N More from This Post" row for a right-click on `itemID` (307),
     /// or `nil` when that cell has no unselected same-post members. Adds the whole
     /// carousel to the selection through the SAME reducer seam the bar's row uses
     /// (`.union`), so the two paths can't diverge.

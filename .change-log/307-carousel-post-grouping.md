@@ -1,4 +1,4 @@
-# 300 — Carousel grouping: badge, sibling ring, "select the rest of this post"
+# 307 — Carousel grouping: badge, sibling ring, "select the rest of this post"
 
 ## Summary
 

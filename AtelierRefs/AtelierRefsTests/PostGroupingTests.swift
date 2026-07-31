@@ -2,7 +2,7 @@
 //  PostGroupingTests.swift
 //  AtelierRefsTests
 //
-//  300 · carousel grouping — the pure grouping the grid's carousel badge, the
+//  307 · carousel grouping — the pure grouping the grid's carousel badge, the
 //  dashed sibling ring, and the "Select N More from This Post" action all read.
 //
 //  The load-bearing fact these pin is the one that is easy to get wrong: a

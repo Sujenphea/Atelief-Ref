@@ -408,7 +408,7 @@ struct CollectionView: View {
             // shows progress + Cancel while a sheet renders.
             ContactSheetExportButton(model: model, collectionID: collectionID)
             ExportProgressRing()
-            // Same-post pickup (300) sits BESIDE the overflow rather than inside it:
+            // Same-post pickup (307) sits BESIDE the overflow rather than inside it:
             // it changes WHAT every other action would act on, so burying it behind
             // `…` puts a click between the selection and the thing you meant to
             // select. Shown only while the selection has carousel members left to

@@ -360,7 +360,7 @@ final class IngestionModel: ObservableObject {
     /// The current selection's asset ids in feed order (see `selectedAssetIDs`).
     private var cachedSelectedAssetIDs: [UUID] = []
 
-    /// The loaded feed bucketed by originating post (300 · carousel grouping) —
+    /// The loaded feed bucketed by originating post (307 · carousel grouping) —
     /// what makes "these four tiles are one Instagram carousel" answerable. Built
     /// here rather than in the view because a `CollectionView` body re-runs on
     /// every selection change and the bucketing is O(N) over the whole feed.
@@ -418,7 +418,7 @@ final class IngestionModel: ObservableObject {
             cellAssetID: assetIDByItemID[itemID])
     }
 
-    // MARK: - Same-post selection (300 · carousel grouping)
+    // MARK: - Same-post selection (307 · carousel grouping)
 
     /// The unselected items sharing a post with the current selection — the count
     /// the "Select N More from This Post" row offers, and `nil`/empty when the
@@ -433,7 +433,7 @@ final class IngestionModel: ObservableObject {
     }
 
     /// Add every remaining item from the selected items' posts to the selection
-    /// (300). Additive — a scattered triage in progress is preserved — and routed
+    /// (307). Additive — a scattered triage in progress is preserved — and routed
     /// through the same pure reducer as every other selection edit.
     func selectSamePost() {
         let siblings = samePostSiblings

@@ -53,7 +53,7 @@ struct CellSelectionState: Equatable {
     var isSelecting = false
     /// Something ELSE from this cell's post is selected while this cell is not —
     /// draws the dashed "same post" ring so a carousel's remaining members are
-    /// visible the moment one of them is picked (300 · carousel grouping).
+    /// visible the moment one of them is picked (307 · carousel grouping).
     var isPostSibling = false
 
     static let inert = CellSelectionState()
@@ -81,7 +81,7 @@ protocol MasonryGridInteraction: AnyObject {
 /// human name (title → author handle → bare kind). Pure and free-standing so it
 /// is unit-tested without a view and shared between the SwiftUI cell and this
 /// AppKit one (036 §2 A1). Mirrors `CollectionCell.accessibilityLabel` exactly.
-/// `postMemberCount` (300) is the size of the multi-item post this cell belongs to
+/// `postMemberCount` (307) is the size of the multi-item post this cell belongs to
 /// — 0 or 1 when it stands alone. When it is a carousel member the label says so,
 /// because the visual badge that carries it sighted is a pixmap VoiceOver can't read.
 func gridCellAccessibilityLabel(for detail: CollectionItemDetail, postMemberCount: Int = 0) -> String {
@@ -108,7 +108,7 @@ private func gridCellBaseAccessibilityLabel(for detail: CollectionItemDetail) ->
     return kind
 }
 
-// MARK: - Carousel badge (300 · carousel grouping)
+// MARK: - Carousel badge (307 · carousel grouping)
 
 /// The "N items from this post" chip painted into a cell's top-leading corner.
 ///
@@ -211,12 +211,12 @@ final class MasonryGridItem: NSCollectionViewItem {
     private let selectionContrastLayer = CALayer()
     /// Inert-until-A2 keyboard-cursor ring (drawn when lead && !selected).
     private let cursorRingLayer = CALayer()
-    /// The dashed "same post" ring (300): drawn on an UNSELECTED cell while a
+    /// The dashed "same post" ring (307): drawn on an UNSELECTED cell while a
     /// sibling from its carousel IS selected. A `CAShapeLayer` because a dash
     /// pattern needs a stroked path — `CALayer.borderWidth` can only draw solid,
     /// and a solid accent ring here would be indistinguishable from selection.
     private let siblingRingLayer = CAShapeLayer()
-    /// The carousel count chip (300), painted top-leading whenever this cell's post
+    /// The carousel count chip (307), painted top-leading whenever this cell's post
     /// has more than one item in the feed. Purely informational — hit-transparent
     /// (it's a layer, not a view) so it can't intercept a click or a drag.
     private let postBadgeLayer = CALayer()
@@ -266,7 +266,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         currentSelection.isSelected ? selectionRingWidth : cursorRingWidth
     }
     /// The dashed same-post ring's stroke — thinner than the selection ring so the
-    /// two are never confused at a glance (300).
+    /// two are never confused at a glance (307).
     private let siblingRingWidth: CGFloat = 2
 
     /// The membership id this cell is currently bound to — the coordinator reads it
@@ -283,7 +283,7 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// Whether the pointer is over this cell (driven by the coordinator's one
     /// tracking area — 036 §4 A2). Idle-hover is the other reason the circle shows.
     private var isHovered = false
-    /// How many feed items share this cell's post (300) — 0 when it stands alone.
+    /// How many feed items share this cell's post (307) — 0 when it stands alone.
     /// Drives the carousel chip and the VoiceOver suffix.
     private var postMemberCount = 0
 
@@ -332,7 +332,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         selectionContrastLayer.isHidden = true
         container.layer?.addSublayer(selectionContrastLayer)
 
-        // Dashed same-post ring (300). Inset by half the stroke so the dash sits
+        // Dashed same-post ring (307). Inset by half the stroke so the dash sits
         // fully inside the tile instead of being clipped by `masksToBounds`.
         siblingRingLayer.fillColor = nil
         siblingRingLayer.strokeColor = NSColor.controlAccentColor.cgColor
@@ -341,7 +341,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         siblingRingLayer.isHidden = true
         container.layer?.addSublayer(siblingRingLayer)
 
-        // Carousel count chip (300), top-leading. Contents are set per-configure
+        // Carousel count chip (307), top-leading. Contents are set per-configure
         // from the cached artwork; the frame is sized to that image.
         postBadgeLayer.contentsGravity = .resizeAspect
         postBadgeLayer.isHidden = true

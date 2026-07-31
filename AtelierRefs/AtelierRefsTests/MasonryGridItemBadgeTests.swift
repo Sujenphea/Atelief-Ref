@@ -2,7 +2,7 @@
 //  MasonryGridItemBadgeTests.swift
 //  AtelierRefsTests
 //
-//  300 · carousel grouping — where the carousel chip actually lands.
+//  307 · carousel grouping — where the carousel chip actually lands.
 //
 //  The cell's container is FLIPPED (`FlippedContentView.isFlipped`), and the chip
 //  is a `CALayer` rather than a subview, so "top-leading" depends on whether the

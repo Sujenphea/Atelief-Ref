@@ -665,7 +665,7 @@ private struct LibrarySearchResults: View {
     @StateObject private var selectionStore = GridSelectionStore()
     @Environment(\.displayScale) private var displayScale
 
-    /// The result set bucketed by originating post (300 · carousel grouping), so a
+    /// The result set bucketed by originating post (307 · carousel grouping), so a
     /// carousel scattered across a result page can be picked up in one action. Held
     /// as state and rebuilt only when the results change — the collection grid gets
     /// this from `IngestionModel`; search owns its own feed, so it owns its own index.
@@ -927,7 +927,7 @@ private struct LibrarySearchResults: View {
             SelectionBarButton("xmark", help: "Clear selection") {
                 selectionStore.apply(.clear)
             }
-            // Same-post pickup (300). Search's bar has no `…` overflow (unlike the
+            // Same-post pickup (307). Search's bar has no `…` overflow (unlike the
             // collection bar's), so this is a direct glyph, shown only while the
             // selection has carousel members left to pull in — the help text carries
             // the count the collection popover puts in its row title.
