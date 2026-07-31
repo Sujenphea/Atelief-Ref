@@ -20,7 +20,7 @@ struct ContentView: View {
     @StateObject private var nav = NavModel()
     // Global grid-view preferences (011-B2 density) — persisted, one muscle memory
     // across every collection.
-    @StateObject private var gridPrefs = GridViewPreferences()
+    @ObservedObject var gridPrefs: GridViewPreferences
     // Shell-level capture-feedback toasts (011-B4), overlaid over every screen.
     @StateObject private var toasts = ToastCenter()
     // Window-level moodboard export state (052 · B3): the save panel + off-main
@@ -246,5 +246,5 @@ private struct ExportReportToast: ViewModifier {
 }
 
 #Preview {
-    ContentView(model: IngestionModel())
+    ContentView(model: IngestionModel(), gridPrefs: GridViewPreferences())
 }

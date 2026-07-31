@@ -42,8 +42,14 @@ post would reach another's images. The guard tests pin both directions.
 Collapsing does **not** mean a cell holding several ids. `IngestionModel.items` is a
 derived array, so the display list is simply a **shorter array of the same type**:
 one item, one cell, one selectable id. Every index-based subsystem — the layout's
-`aspects`, `nextGridIndex`, the marquee, reorder, `items[indexPath.item]` — is
-untouched.
+`aspects`, `nextGridIndex`, the marquee, `items[indexPath.item]` — is untouched.
+
+The one exception is **reordering**, and it is worth naming because it was a real
+bug: a drop slot is an index among the TILES the grid drew, so solving it against
+`items` treats "after the 3rd tile" as "after the 3rd IMAGE". With carousels
+collapsed that lands a drag near the start of the feed instead of where it was
+dropped. `reorderItems` now solves in display space and widens back afterwards,
+which also keeps a post's images contiguous after a move.
 
 Fan-out happens at the **action boundary** instead. The selection holds only
 representatives; `PostGroups.expand(_:)` widens to real members immediately before a
@@ -60,7 +66,37 @@ still removes four things.
 - **Half-filed post** — collapses to what is present; the chip shows that count.
 - **Scope** — feed-scoped, never library-scoped. No new queries: this is a pass over
   data the grid had already loaded.
-- **Toggle** — "Group carousels", persisted on `GridViewPreferences`, on by default.
+- **Opening a post** — clicking the `⧉ N` chip splices that post's members into the
+  grid at their feed positions; clicking again re-collapses. It deliberately does not
+  touch the selection: opening and picking are different intents, so a triage in
+  progress survives a look inside. An OPEN post's members act **individually** —
+  otherwise opening a carousel to delete one bad frame would delete all four, which
+  is the thing you opened it to avoid.
+- **Toggle** — "Group carousels" in Settings ▸ Grid, persisted on
+  `GridViewPreferences`, on by default.
+
+## Appearance
+
+A collapsed post draws as a **pile**: two tilted cards behind artwork pulled in to
+make room, reusing `fanRotations` — the same seeded tilt the Home overview cards use
+— so a stack reads as a stack everywhere, and a given post's tilt is stable across
+scrolls rather than re-rolled per render. An opened post keeps its chip (that is what
+closes it) but loses the pile, since nothing is hidden behind it.
+
+The chip is a **white capsule with dark contents**, the same inversion the selection
+checkmark uses. The earlier translucent-dark chip vanished into dark artwork.
+
+Two geometry facts the pile cost a bug each to learn:
+
+- A rect rotated about its centre needs `w·cosθ + h·sinθ` of horizontal room, so the
+  overflow scales with the OTHER dimension — one fixed inset cannot serve a masonry
+  grid, and the cell clips. `fanPileGeometry` derives the inset from the angle and
+  the cell size, capping the tilt first so a very tall tile trades angle for inset
+  rather than shrinking its artwork. It also allows for the cell's CORNER RADIUS: a
+  card fitted to the straight edges still gets its corners shaved by the arc.
+- Assigning `frame` to a layer that already carries a rotation makes Core Animation
+  back-solve `bounds` so the ROTATED box matches — the card shrinks a little more on
+  every relayout. The cards set `bounds` and `position` instead.
 
 ## Files changed
 
@@ -93,6 +129,10 @@ still removes four things.
 - `GridContextMenu.swift` — `gridActionTargets` takes `cellAssetIDs: [UUID]`: the
   scope rule is unchanged, but one cell can now stand for several assets.
 - `GridDensity.swift` — the persisted `groupCarousels` preference.
+- `SettingsView.swift` — a Grid section carrying the toggle. `AtelierRefsApp.swift`
+  hoists `GridViewPreferences` to app scope and `ContentView.swift` receives it:
+  Settings (⌘,) is a separate scene, so a `@StateObject` owned by `ContentView` would
+  have given the toggle its own instance and the grid would never have seen it change.
 - `LibrarySearch.swift` — its own feed, but the same `collapsed`/`expand`, plus a
   `displayVersion` of its own (see below).
 - `CollectionView.swift` — passes `displayItems` and mirrors the preference.
@@ -118,8 +158,17 @@ members" and is still tested.
 
 ## Verification
 
-`AtelierRefsTests` passes in full under Swift 6 language mode: **1012 cases, 0
-failures**, including 45 covering this feature.
+`AtelierRefsTests` passes in full under Swift 6 language mode: **1030 cases, 0
+failures**, including 60-odd covering this feature.
+
+The geometry invariants are pinned rather than eyeballed: `pileNeverClips` rotates all
+four card corners and checks them against the cell's ROUNDED rect across five aspect
+ratios (square, tall portrait, the 200×900 a screenshot produces, a wide banner, a
+dense-zoom notch). A bounding-box check passed while the pile was still visibly
+clipped, which is why it checks corners now.
+
+`PostReorderTests` pins the display-space drop: dragging the first of three collapsed
+posts past the last tile lands it LAST, with its images contiguous and in order.
 
 Not yet eyeballed in the running app: chip legibility over dark artwork, and the
 toggle's scroll/hit-testing behaviour after a flip (the layout-cache path is
@@ -127,7 +176,12 @@ test-pinned at the version level, but the visual result has not been watched).
 
 ## Still to do
 
-There is no UI control for the toggle yet — the preference exists and is persisted,
-but nothing surfaces it. It belongs beside the density controls. Expanding a
-collapsed tile to see its members is also a follow-up; `DetailSession` already steps
-through neighbours, which is the cheapest first version.
+Nothing about the collapse itself is outstanding, but two things remain unverified by
+anything other than tests: how the pile and the white chip actually LOOK over real
+artwork, and scroll/hit-testing immediately after a toggle flip. Both need a library
+with real carousels in it.
+
+`FanCard` (the Home overview card) is still SwiftUI while the grid's pile is layers.
+They share `fanRotations`, so the tilt cannot drift, but the card tone, border and
+geometry are specified twice. Worth unifying for consistency — not for speed, since
+Home draws a few dozen cards and is nowhere near the measured hot path.

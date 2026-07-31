@@ -407,6 +407,18 @@ final class IngestionModel: ObservableObject {
     /// Membership ids of ``displayItems``, for O(1) "is this tile on screen?".
     private var displayItemIDs: Set<UUID> = []
 
+    /// The item ids a TILE stands for, in feed order (307): a collapsed post's whole
+    /// membership, or just the item itself when it is ungrouped, opened, or grouping
+    /// is off. The ordered counterpart of ``widenedForAction(_:)``, used where the
+    /// sequence matters — reordering, which must keep a post's images together.
+    private func itemsRepresented(by displayItemID: UUID) -> [UUID] {
+        guard groupCarousels else { return [displayItemID] }
+        let members = postGroups.members(forItem: displayItemID)
+        guard let lead = members.first, lead == displayItemID,
+              !expandedPosts.contains(lead) else { return [displayItemID] }
+        return members
+    }
+
     /// The tile that STANDS FOR `id` in the current display list (307).
     ///
     /// `id` itself when it is on screen; otherwise its post's representative. The
@@ -1547,9 +1559,32 @@ final class IngestionModel: ObservableObject {
     func reorderItems(movingAssetIDs: [UUID], insertAt slot: Int) {
         guard sortMode(for: selectedFolderID) == .manual, services != nil else { return }
         let currentIDs = items.map { $0.asset.id }
-        guard let newOrder = reorderedIDs(
-            ids: currentIDs, movingIDs: movingAssetIDs, insertAt: slot)
+        // `slot` is an index among the TILES the grid drew, i.e. into `displayItems`
+        // — so the reorder has to be solved in display space and only then widened
+        // back to every item (307). Solving it directly against `items` treats "after
+        // the 3rd tile" as "after the 3rd IMAGE", which with carousels collapsed
+        // lands a drop near the start of the feed instead of where it was dropped.
+        let displayIDs = displayItems.map { $0.item.id }
+        let movingAssetSet = Set(movingAssetIDs)
+        // The dragged payload is asset ids covering whole posts; map them back to the
+        // tiles that stand for them, de-duplicated but kept in display order.
+        var seen = Set<UUID>()
+        let movingTiles = displayIDs.filter { tileID in
+            let representsDragged = itemsRepresented(by: tileID).contains { memberID in
+                guard let assetID = assetIDByItemID[memberID] else { return false }
+                return movingAssetSet.contains(assetID)
+            }
+            return representsDragged && seen.insert(tileID).inserted
+        }
+        guard let newTileOrder = reorderedIDs(
+            ids: displayIDs, movingIDs: movingTiles, insertAt: slot)
         else { return }
+        // Widen back: each tile contributes the items it stands for, in feed order,
+        // which also keeps a post's images contiguous after a move.
+        let newOrder = newTileOrder
+            .flatMap { itemsRepresented(by: $0) }
+            .compactMap { assetIDByItemID[$0] }
+        guard !newOrder.isEmpty else { return }
 
         // Optimistic local reorder — rebuild `items` in the new order.
         // uniquingKeysWith (not uniqueKeysWithValues) so a duplicate asset id in

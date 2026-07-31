@@ -19,11 +19,16 @@ struct AtelierRefsApp: App {
     @NSApplicationDelegateAdaptor(GridBakeoffAppDelegate.self) private var bakeoffDelegate
     // 052 · A3 — the app-global Sparkle updater. `startingUpdater: true` boots the
     // updater at launch; the App menu's "Check for Updates…" command reads it.
+    /// Grid view preferences (density, carousel grouping), lifted here for the same
+    /// reason as `model`: Settings (⌘,) is a SEPARATE scene, so a `@StateObject` owned
+    /// by `ContentView` would give the settings toggle its own instance and the grid
+    /// would never see the change.
+    @StateObject private var gridPrefs = GridViewPreferences()
     @StateObject private var updater = UpdaterController()
 
     var body: some Scene {
         WindowGroup {
-            ContentView(model: model)
+            ContentView(model: model, gridPrefs: gridPrefs)
         }
         // 006 — content runs full-height with the traffic lights overlaying the
         // sidebar rail (Figma); the standard title bar is hidden.
@@ -72,7 +77,7 @@ struct AtelierRefsApp: App {
         // The standard macOS Settings window (010 · Phase 2 · group 4): capture
         // token, library location, setup-guide replay.
         Settings {
-            SettingsView(model: model, backup: model.backup)
+            SettingsView(model: model, backup: model.backup, gridPrefs: gridPrefs)
         }
     }
 }

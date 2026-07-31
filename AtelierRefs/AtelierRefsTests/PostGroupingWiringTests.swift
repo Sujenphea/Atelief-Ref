@@ -328,3 +328,104 @@ struct PostExpansionTests {
         #expect(model.displayTile(for: hidden) == hidden)
     }
 }
+
+@MainActor
+@Suite("Carousel grouping: reordering collapsed posts")
+struct PostReorderTests {
+
+    private func rig() async throws -> (model: IngestionModel, services: AppServices) {
+        let dbPath = NSTemporaryDirectory() + "post-reorder-\(UUID().uuidString).sqlite"
+        let services = try AppServices(databasePath: dbPath)
+        let store = MediaStore(root: FileManager.default.temporaryDirectory)
+        let model = IngestionModel(services: services, store: store)
+        await model.refreshFolders()
+        return (model, services)
+    }
+
+    private func seed(
+        _ services: AppServices, url: String?, count: Int, into collectionID: UUID, hexSeed: Int
+    ) async throws {
+        let source = SourceDraft(
+            platform: url == nil ? .localPaste : .instagram,
+            originalURL: url, capturedAt: Date())
+        for offset in 0..<count {
+            let i = hexSeed + offset
+            let hex = String(
+                format: "#%02x%02x%02x",
+                (i * 40 + 10) % 256, (i * 17 + 5) % 256, (i * 91 + 3) % 256)
+            _ = try await services.ingestContent(
+                .color(hex: hex), from: source, into: collectionID)
+        }
+    }
+
+    /// Three posts of three images each: 9 items, 3 tiles. The gap between those two
+    /// numbers is what the bug lived in.
+    private func loadedFeed() async throws -> (IngestionModel, UUID) {
+        let (model, services) = try await rig()
+        let target = Collection.unsortedID
+        for (index, code) in ["Aaa", "Bbb", "Ccc"].enumerated() {
+            try await seed(
+                services, url: "https://www.instagram.com/p/\(code)/", count: 3,
+                into: target, hexSeed: index * 20)
+        }
+        model.setSortMode(.manual, for: target)
+        model.loadContents(of: target)
+        for _ in 0..<200 where model.loadedCollectionID != target {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return (model, target)
+    }
+
+    @Test("dragging the first post past the last tile puts it LAST, not third-of-nine")
+    func collapsedPostReordersToTheEnd() async throws {
+        let (model, _) = try await loadedFeed()
+        #expect(model.items.count == 9)
+        #expect(model.displayItems.count == 3)
+
+        let firstTile = try #require(model.displayItems.first).item.id
+        let lastTile = try #require(model.displayItems.last).item.id
+        let moving = model.actionTargets(forCellItemID: firstTile)
+        #expect(moving.count == 3)
+
+        // Slot 3 = "after every tile", the index the GRID hands over. Applied to the
+        // 9-item array it used to mean "after the 3rd image" — barely a move.
+        model.reorderItems(movingAssetIDs: moving, insertAt: 3)
+
+        #expect(model.displayItems.count == 3)
+        #expect(model.displayItems.last?.item.id == firstTile)
+        #expect(model.displayItems.first?.item.id != firstTile)
+        // The post that was last is now first, so nothing was dropped or duplicated.
+        #expect(model.displayItems.map { $0.item.id }.contains(lastTile))
+        #expect(model.items.count == 9)
+    }
+
+    @Test("a moved post keeps its images together and in order")
+    func membersStayContiguous() async throws {
+        let (model, _) = try await loadedFeed()
+        let firstTile = try #require(model.displayItems.first).item.id
+        let movedMembers = model.postGroups.members(forItem: firstTile)
+        model.reorderItems(
+            movingAssetIDs: model.actionTargets(forCellItemID: firstTile), insertAt: 3)
+
+        let order = model.items.map { $0.item.id }
+        let positions = movedMembers.compactMap { order.firstIndex(of: $0) }
+        #expect(positions.count == 3)
+        // Contiguous...
+        #expect(positions.max()! - positions.min()! == 2)
+        // ...at the very end, and still in their original relative order.
+        #expect(positions.max() == order.count - 1)
+        #expect(positions == positions.sorted())
+    }
+
+    @Test("with grouping off, reordering is unchanged")
+    func ungroupedReorderStillWorks() async throws {
+        let (model, _) = try await loadedFeed()
+        model.groupCarousels = false
+        #expect(model.displayItems.count == 9)
+
+        let first = try #require(model.items.first)
+        model.reorderItems(movingAssetIDs: [first.asset.id], insertAt: 9)
+        #expect(model.items.last?.item.id == first.item.id)
+        #expect(model.items.count == 9)
+    }
+}

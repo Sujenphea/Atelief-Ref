@@ -16,6 +16,9 @@ struct SettingsView: View {
     /// doesn't propagate its changes through its owner, so progress ticks would
     /// never reach this view otherwise.
     @ObservedObject var backup: BackupController
+    /// Owned by the app (not this scene), so flipping a toggle here reaches the grid
+    /// that is already on screen.
+    @ObservedObject var gridPrefs: GridViewPreferences
 
     /// The first-run flag ``ContentView`` gates onboarding on — flipping it false
     /// here re-shows the setup guide on the next main-window appearance.
@@ -26,6 +29,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             captureSection
+            gridSection
             librarySection
             backupSection
             setupSection
@@ -83,6 +87,19 @@ struct SettingsView: View {
                 .disabled(model.libraryRoot == nil)
             Text("Your images, database, and thumbnails live here. Snapshots (File ▸ "
                  + "Snapshot Now) are your in-app recovery points.")
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Grid (307)
+
+    private var gridSection: some View {
+        Section("Grid") {
+            Toggle("Group carousels", isOn: $gridPrefs.groupCarousels)
+            Text("Show a multi-image post — an Instagram carousel, a multi-photo "
+                 + "tweet — as one tile with a count, instead of one tile per image. "
+                 + "Click the ⧉ badge on a tile to look through the post in place.")
                 .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
         }
