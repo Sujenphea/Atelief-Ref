@@ -65,16 +65,16 @@ final class SpaceModel: ObservableObject {
 
     /// Undo/redo scoped to THIS open space (history resets on close — v1). Every
     /// write funnels through ``enqueue(_:)`` so an undo can't reorder ahead of an
-    /// in-flight write, and registrations are synchronous so `groupsByEvent`
-    /// coalesces a frame's per-tile group-move into a SINGLE undo step.
-    let undoManager = UndoManager()
+    /// in-flight write. Each action is its own closed group (`groupsByEvent` is
+    /// off), so a frame's per-tile group-move is coalesced by ``flushMoves()``
+    /// draining the burst buffer — NOT by the run loop.
+    ///
+    /// `lazy` only because the callback needs `self`; it is created on the first
+    /// undoable write and never replaced.
+    private lazy var undoStack = UndoStack { [weak self] in self?.undoToken &+= 1 }
     /// Bumped on every register / undo / redo so the toolbar's enabled state +
     /// action names refresh (UndoManager isn't `ObservableObject`).
     @Published private(set) var undoToken = 0
-
-    /// Serial write queue: each op awaits the previous, so DB writes + reloads
-    /// stay strictly ordered even as undo/redo interleave with live edits.
-    private var writeChain: Task<Void, Never> = Task {}
 
     private struct Placement: Equatable {
         var x: Double, y: Double, w: Double, h: Double
@@ -89,10 +89,6 @@ final class SpaceModel: ObservableObject {
         self.spaceID = spaceID
         self.services = services
         self.store = store
-        // Explicit grouping (not per-run-loop-event): each action registers its
-        // own closed group, so `canUndo` is correct immediately and undo is
-        // deterministic without a running event loop.
-        undoManager.groupsByEvent = false
         Task { await load() }
     }
 
@@ -100,16 +96,10 @@ final class SpaceModel: ObservableObject {
 
     /// Await the current tail of the serial write chain — for tests to observe a
     /// settled state after an edit / undo / redo.
-    func waitForWrites() async { await writeChain.value }
+    func waitForWrites() async { await undoStack.waitForWrites() }
 
     /// Append `work` to the serial write chain (FIFO, strictly ordered).
-    private func enqueue(_ work: @escaping () async -> Void) {
-        let previous = writeChain
-        writeChain = Task { @MainActor in
-            await previous.value
-            await work()
-        }
-    }
+    private func enqueue(_ work: @escaping () async -> Void) { undoStack.enqueue(work) }
 
     /// Register a reversible action the caller has ALREADY performed, as its own
     /// closed undo group: `inverse` runs on undo, `primary` re-runs on redo,
@@ -117,33 +107,16 @@ final class SpaceModel: ObservableObject {
     private func registerReversible(_ name: String,
                                     primary: @escaping () -> Void,
                                     inverse: @escaping () -> Void) {
-        undoManager.beginUndoGrouping()
-        undoManager.setActionName(name)
-        installUndo(name, primary: primary, inverse: inverse)
-        undoManager.endUndoGrouping()
-        undoToken &+= 1
+        undoStack.registerReversible(name, primary: primary, inverse: inverse)
     }
 
-    /// The recursive ping-pong: install an undo that runs `inverse` then
-    /// re-installs the mirror for redo. During undo/redo `UndoManager` supplies
-    /// the enclosing group, so this must NOT open its own.
-    private func installUndo(_ name: String,
-                             primary: @escaping () -> Void,
-                             inverse: @escaping () -> Void) {
-        undoManager.registerUndo(withTarget: self) { model in
-            inverse()
-            model.installUndo(name, primary: inverse, inverse: primary)
-            model.undoManager.setActionName(name)
-        }
-    }
+    var canUndo: Bool { undoStack.canUndo }
+    var canRedo: Bool { undoStack.canRedo }
+    var undoActionName: String { undoStack.undoActionName }
+    var redoActionName: String { undoStack.redoActionName }
 
-    var canUndo: Bool { undoManager.canUndo }
-    var canRedo: Bool { undoManager.canRedo }
-    var undoActionName: String { undoManager.undoActionName }
-    var redoActionName: String { undoManager.redoActionName }
-
-    func undo() { undoManager.undo(); undoToken &+= 1 }
-    func redo() { undoManager.redo(); undoToken &+= 1 }
+    func undo() { undoStack.undo() }
+    func redo() { undoStack.redo() }
 
     // MARK: - Write primitives (used by ops + their inverses)
 

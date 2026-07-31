@@ -413,7 +413,6 @@ final class IngestionModel: ObservableObject {
     }
 
     init() {
-        undoManager.groupsByEvent = false
         observeSelection()
         Task { await bootstrap() }
     }
@@ -423,7 +422,6 @@ final class IngestionModel: ObservableObject {
     /// deterministically — mirrors ``SpaceModel``'s injectable init. Callers load
     /// the tree with ``refreshFolders()``.
     init(services: AppServices, store: MediaStore) {
-        undoManager.groupsByEvent = false
         self.services = services
         self.store = store
         self.selectedFolderID = services.unsortedFolderID
@@ -854,27 +852,22 @@ final class IngestionModel: ObservableObject {
     /// `deleteAssets` (sources, memberships, tag links, covers, job ledger, +
     /// trashed blobs) needs a core "undelete" primitive; until then the
     /// pre-destructive snapshot (008 H3) is its safety net (033-plan open-Q1).
-    let undoManager = UndoManager()
+    ///
+    /// `lazy` only because the callback needs `self`; it is created on the first
+    /// undoable write and never replaced.
+    private lazy var undoStack = UndoStack { [weak self] in self?.undoToken &+= 1 }
 
     /// Bumped on every register / undo / redo so the Edit menu's enabled state +
     /// action names refresh (UndoManager isn't `ObservableObject`).
     @Published private(set) var undoToken = 0
 
-    /// Serial write chain: each undoable op awaits the previous, so DB writes stay
-    /// strictly ordered even as undo/redo interleave with live edits.
-    private var undoWriteChain: Task<Void, Never> = Task {}
-
     /// Await the tail of the undoable write chain — for tests to observe a settled
     /// (committed) state after an edit / undo / redo.
-    func waitForWrites() async { await undoWriteChain.value }
+    func waitForWrites() async { await undoStack.waitForWrites() }
 
     /// Append `work` to the serial undoable write chain (FIFO, strictly ordered).
     private func enqueueUndoable(_ work: @escaping () async -> Void) {
-        let previous = undoWriteChain
-        undoWriteChain = Task { @MainActor in
-            await previous.value
-            await work()
-        }
+        undoStack.enqueue(work)
     }
 
     /// Register an already-performed action as its own closed undo group:
@@ -883,33 +876,16 @@ final class IngestionModel: ObservableObject {
     private func registerReversible(_ name: String,
                                     primary: @escaping () -> Void,
                                     inverse: @escaping () -> Void) {
-        undoManager.beginUndoGrouping()
-        undoManager.setActionName(name)
-        installUndo(name, primary: primary, inverse: inverse)
-        undoManager.endUndoGrouping()
-        undoToken &+= 1
+        undoStack.registerReversible(name, primary: primary, inverse: inverse)
     }
 
-    /// The recursive ping-pong (see ``SpaceModel``): run `inverse`, then re-install
-    /// the mirror so redo re-runs `primary`. During undo/redo `UndoManager`
-    /// supplies the enclosing group, so this must NOT open its own.
-    private func installUndo(_ name: String,
-                             primary: @escaping () -> Void,
-                             inverse: @escaping () -> Void) {
-        undoManager.registerUndo(withTarget: self) { model in
-            inverse()
-            model.installUndo(name, primary: inverse, inverse: primary)
-            model.undoManager.setActionName(name)
-        }
-    }
+    var canUndo: Bool { undoStack.canUndo }
+    var canRedo: Bool { undoStack.canRedo }
+    var undoActionName: String { undoStack.undoActionName }
+    var redoActionName: String { undoStack.redoActionName }
 
-    var canUndo: Bool { undoManager.canUndo }
-    var canRedo: Bool { undoManager.canRedo }
-    var undoActionName: String { undoManager.undoActionName }
-    var redoActionName: String { undoManager.redoActionName }
-
-    func undo() { undoManager.undo(); undoToken &+= 1 }
-    func redo() { undoManager.redo(); undoToken &+= 1 }
+    func undo() { undoStack.undo() }
+    func redo() { undoStack.redo() }
 
     /// Publish a just-performed reversible verb so the shell shows a "…— Undo" toast
     /// (034 P1). Call AFTER `registerReversible` so `undoToken` already reflects this
@@ -939,7 +915,7 @@ final class IngestionModel: ObservableObject {
     /// action / undo / redo bumped `undoToken`, this toast is stale — no-op, so it
     /// can't silently undo something the user didn't mean.
     func undoLastAction(expecting token: Int) {
-        guard undoToken == token, undoManager.canUndo else { return }
+        guard undoToken == token, canUndo else { return }
         undo()
     }
 
