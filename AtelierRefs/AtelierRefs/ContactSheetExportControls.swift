@@ -57,7 +57,7 @@ struct ContactSheetExportButton: View {
         // the non-text ones for the intuitive "how many images".
         let refCount = map.elements.filter { if case .text = $0.content { return false }; return true }.count
         return VStack(alignment: .leading, spacing: 12) {
-            Text("Export contact sheet").font(.headline)
+            Text("Export contact sheet").font(Theme.Typography.bodyEmphasis)
 
             LabeledContent("Format") {
                 Picker("Format", selection: $config.format) {
@@ -100,7 +100,7 @@ struct ContactSheetExportButton: View {
             Toggle("Captions", isOn: $sheet.captions)
 
             Text(summary(refs: refCount, pages: pageCount, skipped: map.skipped))
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
 
             HStack {

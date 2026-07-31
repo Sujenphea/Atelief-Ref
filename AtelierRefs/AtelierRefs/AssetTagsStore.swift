@@ -115,17 +115,14 @@ final class AssetTagsStore: ObservableObject {
     }
 
     /// Remove the bound asset from `collection`, then reload the chips. Never
-    /// orphans: if that was the asset's LAST membership, it falls back to the
-    /// Unsorted home (mirroring move/ingest semantics), so a removed real
-    /// collection re-homes to Unsorted rather than vanishing from every folder.
+    /// orphans: losing the last membership re-homes the asset to Unsorted — the
+    /// funnel now owns that fallback (F3), in the same transaction as the removal,
+    /// so this used to be a second round-trip that could fail on its own.
     func removeFromCollection(_ collection: Collection) {
         guard let assetID else { return }
         Task {
             do {
                 try await services.removeAssets([assetID], from: collection.id)
-                if try await services.collections(for: assetID).isEmpty {
-                    try await services.addAssets([assetID], to: Collection.unsortedID)
-                }
                 reloadIfCurrent(assetID)
                 onMembershipChanged?()
             } catch {

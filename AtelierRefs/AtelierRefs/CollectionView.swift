@@ -511,7 +511,7 @@ struct CollectionView: View {
     /// Run the chosen destination action on the current selection and dismiss.
     private func moveOrCopy(copy: Bool, to id: UUID) {
         if copy {
-            model.copyToCollection(assetIDs: selectedAssetIDs, to: id)
+            model.copyToCollection(assetIDs: selectedAssetIDs, to: id, from: collectionID)
         } else {
             model.moveToCollection(assetIDs: selectedAssetIDs, to: id)
         }
@@ -540,7 +540,7 @@ struct CollectionView: View {
             // reads the shared `items` — redact it until this collection's load
             // resolves so it can't show the previous collection's count on switch.
             Text("\(isLoaded ? model.items.count : 0) items")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Theme.Typography.body).foregroundStyle(.secondary)
                 .redacted(reason: isLoaded ? [] : .placeholder)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -681,7 +681,7 @@ struct CollectionView: View {
             actionTargets: { model.actionTargets(forCellItemID: $0) },
             moveTargets: moveTargets,
             onMoveToCollection: { model.moveToCollection(assetIDs: $0, to: $1) },
-            onCopyToCollection: { model.copyToCollection(assetIDs: $0, to: $1) },
+            onCopyToCollection: { model.copyToCollection(assetIDs: $0, to: $1, from: collectionID) },
             onSetCover: { model.setCollectionCover(collectionID: collectionID, assetID: $0) },
             onRemoveFromCollection: { model.removeFromFolder(assetIDs: $0) },
             onDelete: { model.requestDelete(assetIDs: $0) },
@@ -750,7 +750,7 @@ struct CollectionView: View {
             .overlay(alignment: .topTrailing) {
                 if count > 1 {
                     Text("\(count)")
-                        .font(.caption2).bold().monospacedDigit()
+                        .font(Theme.Typography.caption).bold().monospacedDigit()
                         .foregroundStyle(.white)
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(Capsule().fill(Color.accentColor))

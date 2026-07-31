@@ -26,7 +26,7 @@ public struct BackupManifest: Codable, Equatable, Sendable {
     /// The shape of this file (see the type's note on the two version axes).
     public var manifestVersion: Int
 
-    /// The database migration identifier the copy was written from ("v15").
+    /// The database migration identifier the copy was written from ("v16").
     public var schemaVersion: String
 
     /// The app build that wrote it — diagnostic only; nothing branches on it.

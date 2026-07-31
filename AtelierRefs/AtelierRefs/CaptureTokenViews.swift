@@ -92,7 +92,7 @@ struct CaptureTokenCopyButton: View {
 struct CaptureTokenExplainer: View {
     var body: some View {
         Text(CaptureCopy.explainer)
-            .font(.caption)
+            .font(Theme.Typography.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }

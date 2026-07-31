@@ -139,7 +139,7 @@ struct LinkCardTile: View {
                         .font(.system(size: 26))
                         .foregroundStyle(.secondary)
                     Text(link.displayHeading)
-                        .font(.caption)
+                        .font(Theme.Typography.caption)
                         .foregroundStyle(.primary)
                         .lineLimit(3)
                         .multilineTextAlignment(.center)
@@ -176,12 +176,12 @@ struct TweetCardTile: View {
                         .font(.system(size: 24))
                         .foregroundStyle(.secondary)
                     Text(tweet.displayByline)
-                        .font(.caption).fontWeight(.medium)
+                        .font(Theme.Typography.caption).fontWeight(.medium)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     if let text = tweet.text, !text.isEmpty {
                         Text(text)
-                            .font(.caption2)
+                            .font(Theme.Typography.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(3)
                             .multilineTextAlignment(.center)
@@ -192,7 +192,7 @@ struct TweetCardTile: View {
             .overlay(alignment: .bottomTrailing) {
                 if !tweet.media.isEmpty {
                     Label("\(tweet.media.count)", systemImage: "photo.on.rectangle")
-                        .font(.caption2)
+                        .font(Theme.Typography.caption)
                         .padding(.horizontal, 6).padding(.vertical, 3)
                         .background(.ultraThinMaterial, in: Capsule())
                         .padding(6)
@@ -336,12 +336,12 @@ struct CoverCard: View {
                 }
             }
             Text(title)
-                .font(.callout).fontWeight(.medium)
+                .font(Theme.Typography.body).fontWeight(.medium)
                 .lineLimit(1)
                 .foregroundStyle(.primary)
             if let subtitle {
                 Text(subtitle)
-                    .font(.caption)
+                    .font(Theme.Typography.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }

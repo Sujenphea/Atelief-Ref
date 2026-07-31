@@ -175,8 +175,9 @@ struct ServicesMoveTests {
         try await services.moveAssets([a], from: src.id, to: dst.id)
 
         #expect(try await memberAssetIDs(services, of: dst.id) == [a])
-        // The unrelated Unsorted membership is untouched.
-        #expect(try await memberAssetIDs(services, of: Collection.unsortedID).contains(a))
+        // The Unsorted membership goes with it: the asset is filed in `dst` now,
+        // and "filed ⇒ not unsorted" (F3) holds however the membership was gained.
+        #expect(!(try await memberAssetIDs(services, of: Collection.unsortedID).contains(a)))
     }
 
     @Test("duplicate ids in one batch land a single target membership")

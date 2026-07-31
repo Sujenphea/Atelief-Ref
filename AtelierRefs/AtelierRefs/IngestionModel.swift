@@ -1662,11 +1662,18 @@ final class IngestionModel: ObservableObject {
     /// COPY assets into `targetID` WITHOUT removing them here (009 · ⌥-drag / Add
     /// to ▸) — multi-membership, so it is exactly `addAssets`. The current folder
     /// is unchanged, so the selection survives.
-    func copyToCollection(assetIDs: [UUID], to targetID: UUID) {
+    ///
+    /// `source` is where the copy was dragged FROM, purely for the notice's verb:
+    /// under the Unsorted invariant (F3) a copy out of Unsorted DOES empty the
+    /// source — the asset is filed now, so it stops being unsorted — and calling
+    /// that "Added" would describe a row the user just watched disappear. Callers
+    /// with no folder source (search results) pass `nil` and keep "Added".
+    func copyToCollection(assetIDs: [UUID], to targetID: UUID, from source: UUID? = nil) {
         guard !assetIDs.isEmpty else { return }
+        let verb = source == Collection.unsortedID ? "Moved" : "Added"
         mutateContents { services in
             try await services.addAssets(assetIDs, to: targetID)
-            return "Added \(Self.itemCount(assetIDs.count)) to “\(self.name(for: targetID))”."
+            return "\(verb) \(Self.itemCount(assetIDs.count)) to “\(self.name(for: targetID))”."
         }
     }
 

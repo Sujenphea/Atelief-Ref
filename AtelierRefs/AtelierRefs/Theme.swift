@@ -143,20 +143,51 @@ enum Theme {
         static let floating = Elevation(opacity: 0.35, radius: 14, y: 5)
     }
 
-    // MARK: - Typography (the Figma's fixed roles)
+    // MARK: - Typography
 
+    /// The app's nine text roles — every piece of TEXT it draws. Four are the Figma's
+    /// original tokens; five replace the raw SwiftUI text styles that had been
+    /// standing in for them at 70 sites.
+    ///
+    /// Each is a text style plus a weight, NOT a point size. That is a deliberate
+    /// reversal of how the first four were written, and the reason is Dynamic Type:
+    /// `Font.system(size:)` does not scale with the Accessibility text-size setting,
+    /// and `Font.system(size:weight:relativeTo:)` — which would give exact sizes AND
+    /// scaling — does not exist. `relativeTo:` belongs to `Font.custom`, which needs a
+    /// font NAME; the only name matching the system font's metrics is the private
+    /// `.AppleSystemUIFont`, and CoreText warns against it. A name that stops
+    /// resolving falls back silently (`.SFNS-Regular` yields Times New Roman), which
+    /// is not a failure mode worth accepting for every string in the app.
+    ///
+    /// So the sizes are Apple's, and the app inherits Dynamic Type for free. On macOS
+    /// today those land at: largeTitle 26 · title2 17 · title3 15 · headline 13 ·
+    /// body 13 · callout 12 · subheadline 11 · caption2 10. Seven of the nine roles
+    /// therefore render exactly what they rendered before this change.
     enum Typography {
-        /// The ONE page / section title role — 15pt semibold. Home section headers
-        /// ("Collections", "Spaces"), the Collection + Space page titles, and the
-        /// detail inspector section headers ("Data", "Source", "Details") all share
-        /// this so no page title drifts to its own `.title2`/`.title3`/`.headline`.
-        static let sectionTitle = Font.system(size: 15, weight: .semibold)
-        /// Sidebar top-nav rows ("Home", "Search", …) — 17pt medium.
-        static let navItem = Font.system(size: 16, weight: .medium)
-        /// Sidebar collection rows, chip / field text — 14pt.
-        static let row = Font.system(size: 14, weight: .regular)
-        /// Metadata labels + values, captions — 12pt.
-        static let label = Font.system(size: 12, weight: .regular)
+        // No `display`: the app's only `.largeTitle` was an empty-state GLYPH, not
+        // text, and it now takes an explicit glyph size like its siblings. Adding the
+        // role anyway would have put a token with no reader straight back into a file
+        // that just had five removed for exactly that.
+
+        /// A sheet / overlay title ("Snapshots", "Capture", "Export moodboard").
+        static let pageTitle = Font.system(.title2, design: .default, weight: .semibold)
+        /// The ONE page / section title role. Home section headers ("Collections",
+        /// "Spaces"), the Collection + Space page titles, and the detail inspector
+        /// section headers ("Data", "Source", "Details") all share this so no page
+        /// title drifts to its own `.title2`/`.title3`/`.headline`.
+        static let sectionTitle = Font.system(.title3, design: .default, weight: .semibold)
+        /// Sidebar top-nav rows ("Home", "Search", …).
+        static let navItem = Font.system(.title2, design: .default, weight: .medium)
+        /// Sidebar collection rows, chip / field text.
+        static let row = Font.system(.body, design: .default, weight: .regular)
+        /// Emphasised body — a card title, a list row's heading.
+        static let bodyEmphasis = Font.system(.headline, design: .default, weight: .semibold)
+        /// Running text: descriptions, toast messages, secondary rows.
+        static let body = Font.system(.callout, design: .default, weight: .regular)
+        /// Metadata labels + values.
+        static let label = Font.system(.subheadline, design: .default, weight: .regular)
+        /// The smallest text the app draws — captions, counters, badge numerals.
+        static let caption = Font.system(.caption2, design: .default, weight: .regular)
     }
 }
 

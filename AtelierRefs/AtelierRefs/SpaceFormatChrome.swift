@@ -442,6 +442,8 @@ struct SpaceFormatChrome: View {
 
             Button { toggle(.font) } label: {
                 Text("Aa")
+                    // A SPECIMEN, not body text: "Aa" stands in for the chosen font,
+                    // so its size is the affordance and does not follow a text role.
                     .font(.system(size: 15, weight: .medium))
                     .frame(width: SpaceTextChromeLayout.aaWidth,
                            height: SpaceTextChromeLayout.segmentHeight)
@@ -452,7 +454,7 @@ struct SpaceFormatChrome: View {
 
             Button { toggle(.size) } label: {
                 Text(SpaceTextChromeLayout.sizeLabel(for: style))
-                    .font(.system(size: 13))
+                    .font(Theme.Typography.row)
                     .monospacedDigit()
                     .frame(
                         width: SpaceTextChromeLayout.sizeSegmentWidth(
@@ -621,7 +623,7 @@ struct SpaceTextSizePanel: View {
                 ForEach(SpaceTextChromeLayout.sizePresets, id: \.self) { size in
                     Button { onSelect(size) } label: {
                         HStack(spacing: Theme.Spacing.sm) {
-                            Text("\(Int(size))").font(.system(size: 13)).monospacedDigit()
+                            Text("\(Int(size))").font(Theme.Typography.row).monospacedDigit()
                             Spacer(minLength: 0)
                             if Int(size.rounded()) == Int(current.rounded()) {
                                 Image(systemName: "checkmark")

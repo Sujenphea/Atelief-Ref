@@ -91,7 +91,7 @@ struct ToastCard: View {
             Image(systemName: iconName)
                 .foregroundStyle(iconColor)
             Text(toast.message)
-                .font(.callout)
+                .font(Theme.Typography.body)
                 .lineLimit(2)
             if let label = actionLabel {
                 Button(label, action: onAction)

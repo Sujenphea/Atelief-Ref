@@ -195,7 +195,7 @@ struct AppShellView: View {
     private var sweepsSheet: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Sweeps").font(.headline)
+                Text("Sweeps").font(Theme.Typography.bodyEmphasis)
                 Spacer()
                 Button("Done") { showSweeps = false }
             }
@@ -219,7 +219,7 @@ private struct CapturePane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             Label("Browser Capture", systemImage: "puzzlepiece.extension")
-                .font(.title2).bold()
+                .font(Theme.Typography.pageTitle)
 
             HStack(spacing: 6) {
                 Circle()
@@ -232,7 +232,7 @@ private struct CapturePane: View {
 
             Divider()
 
-            Text("Extension token").font(.caption).foregroundStyle(.secondary)
+            Text("Extension token").font(Theme.Typography.caption).foregroundStyle(.secondary)
             HStack {
                 CaptureTokenText(token: model.captureToken, style: .callout)
                 Spacer()

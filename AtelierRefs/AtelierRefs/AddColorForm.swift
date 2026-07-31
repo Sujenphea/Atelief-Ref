@@ -32,7 +32,7 @@ struct AddColorForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            Text("Add Color").font(.headline)
+            Text("Add Color").font(Theme.Typography.bodyEmphasis)
 
             // Picking writes its hex into the field (single source of truth).
             ColorPicker("Pick a color", selection: $picked, supportsOpacity: false)

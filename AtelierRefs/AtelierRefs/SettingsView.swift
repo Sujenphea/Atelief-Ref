@@ -83,7 +83,7 @@ struct SettingsView: View {
                 .disabled(model.libraryRoot == nil)
             Text("Your images, database, and thumbnails live here. Snapshots (File ▸ "
                  + "Snapshot Now) are your in-app recovery points.")
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
         }
     }
@@ -115,13 +115,13 @@ struct SettingsView: View {
             // a revoked grant, a folder inside the library.
             if let message = model.backupFolderMessage {
                 Label(message, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
+                    .font(Theme.Typography.caption)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
             backupRunRow
             Text(BackupTarget.explainer)
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -147,13 +147,13 @@ struct SettingsView: View {
         // Folder…" button states the obvious twice.
         if model.backupFolder.hasFolder, !backup.isRunning {
             Text(BackupTarget.statusLine(for: backup.lastRun))
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
         }
         // A run that couldn't start says why, and what to do about it.
         if let message = backup.lastRun?.message, !backup.isRunning {
             Label(message, systemImage: "exclamationmark.triangle")
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -177,7 +177,7 @@ struct SettingsView: View {
             Button("Show Setup Guide Again") { didCompleteOnboarding = false }
             Text("Re-opens the first-run walkthrough (install the extension, pair the "
                  + "token, capture something) on the main window.")
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
         }
     }
@@ -187,7 +187,7 @@ struct SettingsView: View {
             Button("Export Diagnostics…") { model.exportDiagnostics() }
             Text("Saves a plain-text report (versions, sizes, counts) and reveals it in "
                  + "Finder — for attaching to a bug report. It contains no library content.")
-                .font(.caption)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
         }
     }

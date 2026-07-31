@@ -23,6 +23,7 @@
 // stored as TEXT, so every `id`, `*_id`, `*_at`, and enum column below is TEXT.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import Foundation
 import GRDB
 
 /// Namespace owning the package's `DatabaseMigrator`.
@@ -36,7 +37,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -142,6 +143,13 @@ enum Migrator {
         // `created_at DESC` order so existing libraries keep their arrangement.
         migrator.registerMigration("v15") { db in
             try createV15Schema(db)
+        }
+
+        // v16 — reconcile the Unsorted home (F3) to its invariant: an asset is in
+        // Unsorted if and ONLY if it is in no other collection. Data-only, no
+        // schema change (like v9's tag normalization).
+        migrator.registerMigration("v16") { db in
+            try reconcileV16Unsorted(db)
         }
 
         return migrator
@@ -873,5 +881,73 @@ enum Migrator {
             SET name = trim(substr(name, 2))
             WHERE name LIKE '#%';
             """)
+    }
+
+    // MARK: - v16
+
+    /// Data-only: back-fill the Unsorted invariant (F3) that `AppServices` now
+    /// enforces on every membership write — an asset sits in Unsorted if and ONLY
+    /// if it sits in no other collection. Two halves, matching the two rules:
+    ///
+    /// 1. **Filed ⇒ not unsorted.** Drop the Unsorted membership of every asset
+    ///    that also belongs to a real collection. Before the invariant, "Add to ▸"
+    ///    and the item-detail chips left the asset showing in BOTH places.
+    /// 2. **Unfiled ⇒ unsorted.** Give an Unsorted membership to every asset that
+    ///    belongs to no collection at all. The grid's Remove had no fallback, so it
+    ///    could strand an asset outside every folder — reachable only from search.
+    ///
+    /// New memberships are APPENDED to Unsorted's manual order (oldest asset
+    /// first), so the re-homed items land at the end of the feed rather than
+    /// jumping ahead of what is already there. `added_at` is the asset's own
+    /// `created_at` — the membership is a repair of history, not a fresh filing,
+    /// and a migration has no clock (see v2). Idempotent: after it runs both
+    /// halves match nothing, so a re-run is a no-op.
+    ///
+    /// The Unsorted id is the same literal v2 seeds (`Collection.unsortedID`),
+    /// inlined rather than referenced so this shipped body can never drift with
+    /// the Domain type.
+    static func reconcileV16Unsorted(_ db: Database) throws {
+        let unsorted = "00000000-0000-0000-0000-000000000001"
+
+        // 1. Filed ⇒ not unsorted.
+        try db.execute(sql: """
+            DELETE FROM collection_item
+            WHERE collection_id = ?
+              AND EXISTS (
+                SELECT 1 FROM collection_item other
+                WHERE other.asset_id = collection_item.asset_id
+                  AND other.collection_id <> ?
+              );
+            """, arguments: [unsorted, unsorted])
+
+        // 2. Unfiled ⇒ unsorted. Resolved into Swift first: an `INSERT … SELECT`
+        // whose correlated subquery reads the table being written to would race
+        // its own rows.
+        let orphans = try Row.fetchAll(db, sql: """
+            SELECT a.id AS id, a.created_at AS created_at
+            FROM asset a
+            WHERE NOT EXISTS (
+                SELECT 1 FROM collection_item ci WHERE ci.asset_id = a.id
+            )
+            ORDER BY a.created_at, a.id;
+            """)
+        guard !orphans.isEmpty else { return }
+
+        var order = try Int.fetchOne(db, sql: """
+            SELECT COALESCE(MAX(manual_order), -1) + 1 FROM collection_item
+            WHERE collection_id = ?
+            """, arguments: [unsorted]) ?? 0
+        for orphan in orphans {
+            let assetID: String = orphan["id"]
+            let createdAt: String = orphan["created_at"]
+            try db.execute(sql: """
+                INSERT INTO collection_item
+                    (id, collection_id, asset_id, added_at, manual_order)
+                VALUES (?, ?, ?, ?, ?);
+                """, arguments: [
+                    UUID().uuidString.lowercased(), unsorted, assetID, createdAt, order,
+                ])
+            order += 1
+        }
     }
 }

@@ -78,7 +78,7 @@ public final class AppServices: Sendable {
         }
     }
 
-    /// The newest schema migration this build knows about ("v15") — what any
+    /// The newest schema migration this build knows about — what any
     /// library it has opened is migrated to.
     ///
     /// Public so backup and archive manifests (008 · H5/H6) can record the
@@ -869,18 +869,11 @@ public final class AppServices: Sendable {
 
             // 4. ensure ONE membership (ingest is idempotent on membership; a
             //    second placement of the same asset is a deliberate caller act
-            //    via addAssets, not a side effect of re-ingest).
-            let alreadyMember = try Self.membership(
-                db, collectionID: collectionID, assetID: resolvedAsset.id) != nil
-            if !alreadyMember {
-                let item = CollectionItem(
-                    id: UUID(), collectionID: collectionID, assetID: resolvedAsset.id,
-                    addedAt: Date(),
-                    manualOrder: try Self.nextManualOrder(db, collectionID: collectionID),
-                    canvasX: placement?.x, canvasY: placement?.y,
-                    canvasW: placement?.w, canvasH: placement?.h, canvasZ: placement?.z)
-                try item.insert(db)
-            }
+            //    via addAssets, not a side effect of re-ingest), honoring the
+            //    Unsorted invariant on the 18A dedup path — a re-capture of bytes
+            //    already in the library must not land the asset in two homes.
+            try Self.placeIngested(
+                db, assetID: resolvedAsset.id, in: collectionID, placement: placement)
 
             return IngestResult(asset: resolvedAsset, wasDeduplicated: wasDeduplicated)
         }
@@ -993,18 +986,10 @@ public final class AppServices: Sendable {
                 wasDeduplicated = false
             }
 
-            // 4. ensure ONE membership (idempotent on membership — matches ingest).
-            let alreadyMember = try Self.membership(
-                db, collectionID: collectionID, assetID: resolvedAsset.id) != nil
-            if !alreadyMember {
-                let item = CollectionItem(
-                    id: UUID(), collectionID: collectionID, assetID: resolvedAsset.id,
-                    addedAt: Date(),
-                    manualOrder: try Self.nextManualOrder(db, collectionID: collectionID),
-                    canvasX: placement?.x, canvasY: placement?.y,
-                    canvasW: placement?.w, canvasH: placement?.h, canvasZ: placement?.z)
-                try item.insert(db)
-            }
+            // 4. ensure ONE membership (idempotent on membership — matches ingest,
+            //    Unsorted invariant included).
+            try Self.placeIngested(
+                db, assetID: resolvedAsset.id, in: collectionID, placement: placement)
 
             return IngestResult(asset: resolvedAsset, wasDeduplicated: wasDeduplicated)
         }
@@ -1104,11 +1089,21 @@ public final class AppServices: Sendable {
     /// Bulk-add memberships, IN ONE transaction (P15). Idempotent per asset
     /// (skips ones already members). `.notFound` (rolling back) for a missing
     /// collection or asset.
+    ///
+    /// Enforces the Unsorted invariant (F3 · "Unsorted means NOT filed"):
+    /// - Into a REAL collection, the batch's Unsorted memberships are dropped in
+    ///   the same transaction — a filed asset is no longer unsorted, so it stops
+    ///   surfacing in both places at once.
+    /// - Into Unsorted itself, an asset that already belongs to a real collection
+    ///   is SKIPPED. Un-triage is only meaningful for an asset with nowhere else
+    ///   to live; filing something into Unsorted alongside its real folders is
+    ///   exactly the state this invariant exists to prevent.
     public func addAssets(_ assetIDs: [UUID], to collectionID: UUID) async throws {
         try await write { db in
             guard try Collection.exists(db, key: Self.key(collectionID)) else {
                 throw AtelierError.notFound(entity: "collection", id: collectionID)
             }
+            let intoUnsorted = collectionID == Collection.unsortedID
             let now = Date()
             // Append the batch after any existing items, in the given order — each
             // newly-inserted membership takes the next manual slot (skipped assets
@@ -1118,6 +1113,7 @@ public final class AppServices: Sendable {
                 guard try Asset.exists(db, key: Self.key(assetID)) else {
                     throw AtelierError.notFound(entity: "asset", id: assetID)
                 }
+                if intoUnsorted, try Self.isFiled(db, assetID: assetID) { continue }
                 let isMember = try Self.membership(
                     db, collectionID: collectionID, assetID: assetID) != nil
                 if !isMember {
@@ -1128,11 +1124,20 @@ public final class AppServices: Sendable {
                     order += 1
                 }
             }
+            if !intoUnsorted {
+                try Self.evictFromUnsorted(db, assetIDs: assetIDs)
+            }
         }
     }
 
     /// Bulk-remove memberships, IN ONE transaction (P15). Idempotent — removing
     /// a non-member is a no-op.
+    ///
+    /// Never orphans (F3): an asset left with NO memberships falls back to the
+    /// Unsorted home, so "remove from this folder" always leaves it reachable
+    /// somewhere. Removing from Unsorted ITSELF is exempt — otherwise the verb
+    /// would re-add what it just removed and the Unsorted grid could never be
+    /// cleared (Delete is the verb for leaving the library).
     public func removeAssets(_ assetIDs: [UUID], from collectionID: UUID) async throws {
         try await write { db in
             for assetID in assetIDs {
@@ -1140,6 +1145,9 @@ public final class AppServices: Sendable {
                     .filter(Column("collection_id") == Self.key(collectionID))
                     .filter(Column("asset_id") == Self.key(assetID))
                     .deleteAll(db)
+            }
+            if collectionID != Collection.unsortedID {
+                try Self.rehomeUnfiled(db, assetIDs: assetIDs)
             }
         }
     }
@@ -1163,6 +1171,13 @@ public final class AppServices: Sendable {
     /// sorts FIRST — so without the append a move into an arranged collection
     /// would surface at the front, breaking the "it went to the end" promise
     /// move makes (copy/import keep their existing placement semantics).
+    ///
+    /// The Unsorted invariant rides along, exactly as in ``addAssets(_:to:)``: a
+    /// move into a real collection also drops the batch's Unsorted memberships,
+    /// and a move into Unsorted skips the insert for an asset that still belongs
+    /// to a real collection OTHER than the source — it leaves the source, but it
+    /// is not unsorted, so it never lands in both. Such an asset therefore keeps
+    /// at least one membership, which is why no orphan fallback is needed here.
     public func moveAssets(_ assetIDs: [UUID], from sourceID: UUID, to targetID: UUID) async throws {
         guard sourceID != targetID, !assetIDs.isEmpty else { return }
         try await write { db in
@@ -1172,6 +1187,7 @@ public final class AppServices: Sendable {
             guard try Collection.exists(db, key: Self.key(targetID)) else {
                 throw AtelierError.notFound(entity: "collection", id: targetID)
             }
+            let intoUnsorted = targetID == Collection.unsortedID
             let now = Date()
             var nextOrder = try Int.fetchOne(db, sql: """
                 SELECT COALESCE(MAX(manual_order), -1) + 1 FROM collection_item
@@ -1181,9 +1197,14 @@ public final class AppServices: Sendable {
                 guard try Asset.exists(db, key: Self.key(assetID)) else {
                     throw AtelierError.notFound(entity: "asset", id: assetID)
                 }
+                // Filed elsewhere → un-triaging into Unsorted is meaningless; the
+                // asset just leaves the source. `excluding: sourceID` because that
+                // membership is about to go.
+                let staysFiled = try intoUnsorted
+                    && Self.isFiled(db, assetID: assetID, excluding: sourceID)
                 let isMember = try Self.membership(
                     db, collectionID: targetID, assetID: assetID) != nil
-                if !isMember {
+                if !isMember, !staysFiled {
                     let item = CollectionItem(
                         id: UUID(), collectionID: targetID,
                         assetID: assetID, addedAt: now, manualOrder: nextOrder)
@@ -1194,6 +1215,9 @@ public final class AppServices: Sendable {
                     .filter(Column("collection_id") == Self.key(sourceID))
                     .filter(Column("asset_id") == Self.key(assetID))
                     .deleteAll(db)
+            }
+            if !intoUnsorted {
+                try Self.evictFromUnsorted(db, assetIDs: assetIDs)
             }
         }
     }
@@ -2966,6 +2990,96 @@ public final class AppServices: Sendable {
             .filter(Column("collection_id") == key(collectionID))
             .filter(Column("asset_id") == key(assetID))
             .fetchOne(db)
+    }
+
+    // MARK: - Unsorted invariant (F3)
+    //
+    // "Unsorted" is the home for assets that live in NO real folder — not a
+    // folder in its own right. Two rules keep that literally true, enforced here
+    // rather than at the call sites so every funnel (app, capture server, item
+    // detail chips, undo) inherits them inside the same transaction:
+    //
+    //   1. Filed ⇒ not unsorted. Gaining a real membership drops the Unsorted one.
+    //   2. Unfiled ⇒ unsorted. Losing the last membership re-homes to Unsorted.
+    //
+    // Deliberately NOT applied by ``restoreDeletedAssets(_:)`` / snapshot restore,
+    // which re-insert membership rows verbatim: undo must be an exact inverse, and
+    // legacy both-places rows are the migration's job, not restore's.
+    //
+    // Migration v16 back-fills both rules over existing libraries, so the rules
+    // describe the whole store, not just writes made since the upgrade.
+
+    /// True when the asset belongs to at least one collection that is not
+    /// Unsorted (and not `excluding`, a membership the caller is about to drop).
+    private static func isFiled(
+        _ db: Database, assetID: UUID, excluding: UUID? = nil
+    ) throws -> Bool {
+        var blocked = [key(Collection.unsortedID)]
+        if let excluding { blocked.append(key(excluding)) }
+        return try CollectionItem
+            .filter(Column("asset_id") == key(assetID))
+            .filter(!blocked.contains(Column("collection_id")))
+            .fetchCount(db) > 0
+    }
+
+    /// Give the freshly ingested / deduped asset its ONE membership in
+    /// `collectionID`, honoring the invariant. Shared by both ingest funnels,
+    /// where it only ever bites on the 18A dedup path: a brand-new asset has no
+    /// other membership to reconcile, but a re-capture of bytes already in the
+    /// library resolves to an asset that may already be filed (→ skip the Unsorted
+    /// row) or still unsorted (→ evict it as the folder membership lands).
+    private static func placeIngested(
+        _ db: Database, assetID: UUID, in collectionID: UUID, placement: CanvasPlacement?
+    ) throws {
+        let intoUnsorted = collectionID == Collection.unsortedID
+        if intoUnsorted, try isFiled(db, assetID: assetID) { return }
+        let alreadyMember = try membership(
+            db, collectionID: collectionID, assetID: assetID) != nil
+        if !alreadyMember {
+            let item = CollectionItem(
+                id: UUID(), collectionID: collectionID, assetID: assetID,
+                addedAt: Date(),
+                manualOrder: try nextManualOrder(db, collectionID: collectionID),
+                canvasX: placement?.x, canvasY: placement?.y,
+                canvasW: placement?.w, canvasH: placement?.h, canvasZ: placement?.z)
+            try item.insert(db)
+        }
+        if !intoUnsorted {
+            try evictFromUnsorted(db, assetIDs: [assetID])
+        }
+    }
+
+    /// Drop each listed asset's Unsorted membership — rule 1. Idempotent; a
+    /// non-member is a no-op.
+    private static func evictFromUnsorted(_ db: Database, assetIDs: [UUID]) throws {
+        guard !assetIDs.isEmpty else { return }
+        let keys = assetIDs.map(key)
+        try CollectionItem
+            .filter(Column("collection_id") == key(Collection.unsortedID))
+            .filter(keys.contains(Column("asset_id")))
+            .deleteAll(db)
+    }
+
+    /// Give each listed asset that now has NO membership at all an Unsorted one —
+    /// rule 2. Appended to Unsorted's manual order in batch order, matching
+    /// ``addAssets(_:to:)``. Unknown / since-deleted ids are skipped.
+    private static func rehomeUnfiled(_ db: Database, assetIDs: [UUID]) throws {
+        guard !assetIDs.isEmpty else { return }
+        let now = Date()
+        var order = try nextManualOrder(db, collectionID: Collection.unsortedID)
+        var seen: Set<UUID> = []
+        for assetID in assetIDs where seen.insert(assetID).inserted {
+            guard try Asset.exists(db, key: key(assetID)) else { continue }
+            let stillFiled = try CollectionItem
+                .filter(Column("asset_id") == key(assetID))
+                .fetchCount(db) > 0
+            if stillFiled { continue }
+            let item = CollectionItem(
+                id: UUID(), collectionID: Collection.unsortedID,
+                assetID: assetID, addedAt: now, manualOrder: order)
+            try item.insert(db)
+            order += 1
+        }
     }
 
     /// 18A dedup lookup: an existing asset sharing `blobHash` whose source

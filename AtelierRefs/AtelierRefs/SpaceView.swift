@@ -158,7 +158,7 @@ struct SpaceView: View {
             // "0 items" at a board that has some (the Collection header's reason,
             // reached differently: `space` is nil rather than another board's).
             Text("\(space.items.count) items")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Theme.Typography.body).foregroundStyle(.secondary)
                 .redacted(reason: space.space == nil ? .placeholder : [])
         }
         .frame(maxWidth: .infinity, alignment: .leading)
