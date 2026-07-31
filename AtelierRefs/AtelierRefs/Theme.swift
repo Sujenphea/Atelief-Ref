@@ -30,7 +30,12 @@ enum Theme {
         static let panel = Color(hex: 0x212121)
         /// Raised cards, sheets, toasts.
         static let surface = Color(hex: 0x232326)
-        /// Sidebar selection, chips, input fields, buttons (on a `hairline` border).
+        /// Sidebar selection, chips, and the floating bars (on a `hairline` border).
+        ///
+        /// NOT a popover's own fields and buttons, despite the name. Those sit on
+        /// `surface`, where a second raised grey reads as a third layer, so
+        /// ``DialogControls`` draws them unfilled on a `hairlineStrong` border instead
+        /// — see that file for why selection there is an outline rather than a fill.
         static let field = Color(hex: 0x2C2C30)
         /// The ACTIVE sidebar row — a brighter fill than `field` so the current
         /// destination pops off the translucent sidebar (paired with `hairlineStrong`).

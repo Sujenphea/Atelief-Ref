@@ -919,54 +919,25 @@ private struct LibrarySearchResults: View {
 
 // MARK: - Search mode toggle (app-chrome segmented control)
 
-/// The keyword / meaning switch, styled to match the app chrome instead of the stock
-/// macOS `.segmented` picker: a `field` capsule holding two pill segments, the active
-/// one raised to `selection` with `inkPrimary` text — the same monochrome language as
-/// the selection action bar (`.selectionBarChrome()`), so the search surface reads as
-/// one design system. Intrinsically sized so it hugs its two labels.
+/// The keyword / meaning switch. Was its own `field` capsule holding two pills, with
+/// the live one raised to `selection`; it now draws from the shared
+/// ``SegmentedControl``, which marks the current value with a border instead. The app
+/// had two segmented idioms and this was the second one — a switch that reads
+/// differently here than in the export panels is a design system with a hole in it.
 private struct SearchModeToggle: View {
     @Binding var mode: SearchMode
 
     var body: some View {
-        HStack(spacing: 2) {
-            ModeSegment(title: "Keyword", value: .keyword, mode: $mode,
-                        help: "Match keywords (title, name, note, text)")
-            ModeSegment(title: "Meaning", value: .meaning, mode: $mode,
-                        help: "Match meaning (semantic similarity)")
-        }
-        .padding(2)
-        .background(Theme.Colors.field, in: Capsule())
-        .overlay(Capsule().strokeBorder(Theme.Colors.hairline, lineWidth: 0.5))
-        .animation(Theme.Motion.gentle, value: mode)
-    }
-
-    /// One pill of the toggle. The active pill raises to `selection`; an inactive pill
-    /// picks up a subtle hover fill so both segments give feedback, not just the active one.
-    private struct ModeSegment: View {
-        let title: String
-        let value: SearchMode
-        @Binding var mode: SearchMode
-        let help: String
-
-        @State private var isHovering = false
-
-        var body: some View {
-            let isSelected = mode == value
-            let fill: Color = isSelected
-                ? Theme.Colors.selection
-                : (isHovering ? Theme.Colors.hoverRow : .clear)
-            return Button { mode = value } label: {
-                Text(title)
-                    .font(Theme.Typography.body).fontWeight(.medium)
-                    .foregroundStyle(isSelected ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
-                    .padding(.horizontal, Theme.Spacing.md)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(fill))
-                    .contentShape(Capsule())
+        SegmentedControl(
+            selection: $mode,
+            values: [.keyword, .meaning],
+            help: {
+                $0 == .keyword
+                    ? "Match keywords (title, name, note, text)"
+                    : "Match meaning (semantic similarity)"
             }
-            .buttonStyle(.plain)
-            .onHover { isHovering = $0 }
-            .help(help)
+        ) {
+            Text($0 == .keyword ? "Keyword" : "Meaning")
         }
     }
 }

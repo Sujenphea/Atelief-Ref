@@ -56,65 +56,55 @@ struct ContactSheetExportButton: View {
         // Refs = image/colour elements; captions are extra text elements, so count
         // the non-text ones for the intuitive "how many images".
         let refCount = map.elements.filter { if case .text = $0.content { return false }; return true }.count
-        return VStack(alignment: .leading, spacing: 12) {
-            Text("Export contact sheet").font(Theme.Typography.bodyEmphasis)
+        return VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text("Export Contact Sheet").font(Theme.Typography.bodyEmphasis)
 
-            LabeledContent("Format") {
-                Picker("Format", selection: $config.format) {
-                    Text("PDF").tag(ExportFormat.pdf)
-                    Text("PNG").tag(ExportFormat.png)
+            DialogRow("Format") {
+                SegmentedControl(selection: $config.format, values: [.pdf, .png]) {
+                    Text($0 == .pdf ? "PDF" : "PNG")
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
             }
 
             if config.format == .pdf {
-                LabeledContent("Layout") {
-                    Picker("Layout", selection: $config.pdfLayout) {
-                        Text("Single page").tag(PDFLayout.singlePage)
-                        Text("Letter pages").tag(PDFLayout.letterPages)
+                DialogRow("Layout") {
+                    SegmentedControl(
+                        selection: $config.pdfLayout, values: [.singlePage, .letterPages]
+                    ) {
+                        Text($0 == .singlePage ? "Single Page" : "Letter Pages")
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                 }
             } else {
-                LabeledContent("Scale") {
-                    Picker("Scale", selection: $config.pngScale) {
-                        Text("1×").tag(1)
-                        Text("2×").tag(2)
-                        Text("3×").tag(3)
+                DialogRow("Scale") {
+                    SegmentedControl(selection: $config.pngScale, values: [1, 2, 3]) {
+                        Text("\($0)×")
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                 }
             }
 
-            LabeledContent("Columns") {
-                Picker("Columns", selection: $sheet.columns) {
-                    ForEach([3, 4, 5, 6], id: \.self) { Text("\($0)").tag($0) }
+            DialogRow("Columns") {
+                SegmentedControl(selection: $sheet.columns, values: [3, 4, 5, 6]) {
+                    Text("\($0)")
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
             }
 
+            // Left native: a checkbox has no counterpart in the reference frames, and
+            // inventing one is a separate decision from restyling what they do show.
             Toggle("Captions", isOn: $sheet.captions)
 
             Text(summary(refs: refCount, pages: pageCount, skipped: map.skipped))
                 .font(Theme.Typography.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.Colors.inkSecondary)
 
-            HStack {
-                Spacer()
-                Button("Export…") {
-                    showPanel = false
-                    controller.requestExport(
-                        mapping: map, config: config, suggestedName: model.name(for: collectionID))
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(map.isEmpty)
+            Button("Export…") {
+                showPanel = false
+                controller.requestExport(
+                    mapping: map, config: config, suggestedName: model.name(for: collectionID))
             }
+            .buttonStyle(DialogButtonStyle())
+            .keyboardShortcut(.defaultAction)
+            .disabled(map.isEmpty)
         }
-        .popoverContent(width: 300)
+        .popoverContent(width: 320)
     }
 
     /// The count line: refs, page count (letter PDF only), and any skipped rows.

@@ -86,11 +86,15 @@ struct ElementInspector: View {
                 Button("Done") { finished = true; commit(); dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
+            // `role: .destructive` stays cosmetically inert, as it does in the selection
+            // action bar: the app's chrome is monochrome, and the confirmation lives in
+            // the model call rather than in a red tint.
+            .buttonStyle(DialogButtonStyle(width: .hug))
         }
         // A popover supplies no inset of its own, and at 14 the pickers and the
         // Done/Delete row sat against its chrome. `lg` on the design scale, shared
         // with the board's font popover (062) so the two read as one control set.
-        .popoverContent(width: 300)
+        .popoverContent(width: 340)
         // Dismissing the popover by clicking outside used to discard every edit.
         // Commit those pending edits instead (unless Done/Delete already closed it).
         // `onDisappear` runs INSIDE the view-removal update, and `onCommit`
@@ -117,21 +121,28 @@ struct ElementInspector: View {
     @ViewBuilder private var textEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
             FontFamilyPicker(selection: $fontFamily)
-            Picker("Weight", selection: $weight) {
-                ForEach(TextWeight.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            Picker("Align", selection: $align) {
-                ForEach(TextAlign.allCases, id: \.self) { alignment in
-                    Image(systemName: alignment.symbolName).tag(alignment)
+            // Full-width rather than label-left: four weight names do not fit beside a
+            // label in this card, which is why these were `.segmented` pickers spanning
+            // the popover before. The labels move above the row instead.
+            DialogStack("Weight") {
+                SegmentedControl(
+                    selection: $weight, values: TextWeight.allCases, fillsWidth: true
+                ) {
+                    Text($0.rawValue.capitalized)
                 }
             }
-            .pickerStyle(.segmented)
-            Picker("Width", selection: $autoWidth) {
-                Text("Auto").tag(true)
-                Text("Fixed").tag(false)
+            DialogStack("Align") {
+                SegmentedControl(
+                    selection: $align, values: TextAlign.allCases, fillsWidth: true
+                ) {
+                    Image(systemName: $0.symbolName)
+                }
             }
-            .pickerStyle(.segmented)
+            DialogStack("Width") {
+                SegmentedControl(selection: $autoWidth, values: [true, false], fillsWidth: true) {
+                    Text($0 ? "Auto" : "Fixed")
+                }
+            }
             HStack {
                 Text("Size").frame(width: 44, alignment: .leading)
                 Slider(value: $fontSize, in: 8...96)
@@ -144,7 +155,8 @@ struct ElementInspector: View {
     @ViewBuilder private var frameEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
             TextField("Label (optional)", text: $text)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
+                .dialogFieldChrome()
             ColorPicker("Border", selection: $strokeColor, supportsOpacity: false)
             HStack {
                 Text("Width").frame(width: 44, alignment: .leading)

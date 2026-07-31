@@ -42,7 +42,8 @@ struct SpaceGapPopover: View {
             HStack(spacing: Theme.Spacing.sm) {
                 Text("Gap").frame(width: 32, alignment: .leading)
                 TextField("Gap", value: $gap, format: .number)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .dialogFieldChrome()
                     .frame(width: 72)
                     .focused($fieldFocused)
                     .onSubmit { apply(.horizontal) }
@@ -55,16 +56,16 @@ struct SpaceGapPopover: View {
                     apply(.horizontal)
                 } label: {
                     Label("Across", systemImage: "arrow.left.and.right")
-                        .frame(maxWidth: .infinity)
                 }
                 Button {
                     apply(.vertical)
                 } label: {
                     Label("Down", systemImage: "arrow.up.and.down")
-                        .frame(maxWidth: .infinity)
                 }
             }
-            .controlSize(.small)
+            // Two co-equal actions, so both take the full-width treatment and split the
+            // row — neither is the dialog's single primary.
+            .buttonStyle(DialogButtonStyle())
         }
         .popoverContent(width: 240)
         .onAppear { fieldFocused = true }
