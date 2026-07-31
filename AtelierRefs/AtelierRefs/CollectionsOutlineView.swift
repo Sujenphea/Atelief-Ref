@@ -36,8 +36,10 @@ final class CollectionNode: NSObject {
         self.children = children
     }
 
-    override func isEqual(_ object: Any?) -> Bool { (object as? CollectionNode)?.id == id }
-    override var hash: Int { id.hashValue }
+    // `nonisolated` because `NSObject`'s are: identity is asked for from wherever
+    // AppKit is diffing, and both read only the immutable `id`.
+    nonisolated override func isEqual(_ object: Any?) -> Bool { (object as? CollectionNode)?.id == id }
+    nonisolated override var hash: Int { id.hashValue }
 
     /// Build the root→leaf node tree from the flat folder list, Unsorted pinned
     /// first among the roots, each sibling group in manual order.

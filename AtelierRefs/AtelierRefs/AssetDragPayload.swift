@@ -23,7 +23,10 @@ import UniformTypeIdentifiers
 
 extension UTType {
     /// The app-private drag identifier for a set of asset ids + their source.
-    static let assetIDs = UTType(exportedAs: "com.ref-atelier.asset-ids")
+    /// `nonisolated` so the AppKit drag seams can read it off the main actor —
+    /// under MainActor-by-default a bare `static let` in this target infers
+    /// main-actor isolation, which a pasteboard type constant has no use for.
+    nonisolated static let assetIDs = UTType(exportedAs: "com.ref-atelier.asset-ids")
 }
 
 /// A dragged set of assets and where they came from (009 · N3). `Codable` for the
@@ -48,7 +51,8 @@ extension AssetDragPayload {
     /// `.assetIDs` `UTType` (and therefore the SwiftUI `CodableRepresentation`)
     /// uses, so a drag started on the AppKit grid lands on the still-SwiftUI
     /// sidebar rows / Spaces exactly as the SwiftUI `.draggable` did.
-    static let pasteboardType = NSPasteboard.PasteboardType(UTType.assetIDs.identifier)
+    nonisolated static let pasteboardType =
+        NSPasteboard.PasteboardType(UTType.assetIDs.identifier)
 
     /// The wire bytes for this payload — plain `JSONEncoder`, which is precisely
     /// what SwiftUI's `CodableRepresentation(contentType:)` serializes (036 §4 A3).
@@ -119,9 +123,16 @@ extension AssetDragPayload {
     /// carry `.assetIDs`). Returns whether a payload was found — the `.onDrop`
     /// accept result. `completion` runs on the main queue: synchronously for the
     /// pasteboard path, later for the async provider path.
+    ///
+    /// `@MainActor`, with a `@MainActor` completion: both callers are SwiftUI drop
+    /// handlers, and the pasteboard branch below calls `completion` SYNCHRONOUSLY.
+    /// Stating that isolation lets the async branch's hop be checked rather than
+    /// assumed.
     @discardableResult
+    @MainActor
     static func fromDrop(
-        _ providers: [NSItemProvider], completion: @escaping (AssetDragPayload) -> Void
+        _ providers: [NSItemProvider],
+        completion: @escaping @MainActor @Sendable (AssetDragPayload) -> Void
     ) -> Bool {
         if let payload = fromDragPasteboard() {
             completion(payload)
@@ -137,8 +148,14 @@ extension AssetDragPayload {
     /// Item providers load asynchronously, so `completion` runs later on the main
     /// queue; the return value is whether a matching provider was present.
     @discardableResult
+    /// `completion` is typed `@MainActor @Sendable` because that is where it already
+    /// ran: the provider's load callback fires on an arbitrary queue and this hops to
+    /// main before calling it. Writing the isolation into the TYPE lets the compiler
+    /// check the hop instead of trusting the `DispatchQueue.main.async` below it.
+    @MainActor
     static func loadFirst(
-        from providers: [NSItemProvider], completion: @escaping (AssetDragPayload) -> Void
+        from providers: [NSItemProvider],
+        completion: @escaping @MainActor @Sendable (AssetDragPayload) -> Void
     ) -> Bool {
         guard let provider = providers.first(where: {
             $0.hasItemConformingToTypeIdentifier(UTType.assetIDs.identifier)
@@ -147,7 +164,7 @@ extension AssetDragPayload {
             forTypeIdentifier: UTType.assetIDs.identifier
         ) { data, _ in
             guard let data, let payload = decode(from: data) else { return }
-            DispatchQueue.main.async { completion(payload) }
+            Task { @MainActor in completion(payload) }
         }
         return true
     }

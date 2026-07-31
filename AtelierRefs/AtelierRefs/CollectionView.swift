@@ -821,9 +821,14 @@ struct CollectionView: View {
               }) else { return false }
         guard model.isReady else { return false }
         let target = importTargetID
+        // The array crosses to a background decode. `NSItemProvider`'s load APIs are
+        // documented thread-safe, and SwiftUI hands this list over and never touches
+        // it again — but neither fact is visible to the compiler through a closure
+        // parameter it does not own, so the transfer is asserted here.
+        nonisolated(unsafe) let toDecode = providers
         Task {
             let decoded = await DirectInputReader.inputs(
-                from: providers, into: target, now: Date())
+                from: toDecode, into: target, now: Date())
             dispatch(
                 inputs: decoded.inputs,
                 webURL: decoded.webURL,

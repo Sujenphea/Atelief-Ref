@@ -264,8 +264,13 @@ public enum DirectInputReader {
     /// providers) and threaded into every image provider, so a browser image drag —
     /// whose provider carries BOTH the bitmap and its page URL — lands as `.web`
     /// with that page as provenance.
+    /// `sending` because `NSItemProvider` is not `Sendable` and this hop leaves the
+    /// caller's isolation domain to decode off-main. The drop handler is handed the
+    /// array by SwiftUI and never touches it again, so TRANSFERRING ownership states
+    /// what already happens — the alternative is decoding on the main actor, which
+    /// is the one thing this path exists to avoid.
     public static func inputs(
-        from providers: [NSItemProvider], into collectionID: UUID, now: Date
+        from providers: sending [NSItemProvider], into collectionID: UUID, now: Date
     ) async -> DroppedProviders {
         let webURL = await firstWebURL(in: providers)
         var inputs: [IngestInput] = []

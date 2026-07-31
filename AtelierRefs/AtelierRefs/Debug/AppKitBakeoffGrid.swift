@@ -408,7 +408,11 @@ final class MasonryBakeoffItem: NSCollectionViewItem {
 /// Mirrors `ThumbnailCache`'s discipline of returning nothing from the async
 /// call and re-reading through the synchronous `cached`, so no non-`Sendable`
 /// value crosses an isolation boundary.
-final class BakeoffThumbnailStore: @unchecked Sendable {
+// `nonisolated` to match the `@unchecked Sendable` already asserted here: the
+// store's only state is an `NSCache`, which is thread-safe, and its loader hands
+// that cache to a `Task.detached`. Under MainActor-by-default the class would
+// otherwise infer main-actor isolation and contradict its own Sendable claim.
+nonisolated final class BakeoffThumbnailStore: @unchecked Sendable {
     static let shared = BakeoffThumbnailStore()
 
     /// NSCache needs a class value; `Box` also lets us pay a real byte cost

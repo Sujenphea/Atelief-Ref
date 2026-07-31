@@ -52,10 +52,13 @@ import UniformTypeIdentifiers
 @testable import AtelierRefs
 
 /// Set to the desired item count to enable the seeder, e.g. `ATELIER_SEED_BAKEOFF=2000`.
-private let seedCountKey = "ATELIER_SEED_BAKEOFF"
+nonisolated private let seedCountKey = "ATELIER_SEED_BAKEOFF"
 
 /// The requested item count, or `nil` when the seeder is not enabled.
-private var requestedSeedCount: Int? {
+/// `nonisolated`: Swift Testing expands `.enabled(if:)` into a nonisolated context,
+/// and this reads only `ProcessInfo` — the same reason 285 marked the pure value
+/// types the `#expect` macro touches.
+nonisolated private var requestedSeedCount: Int? {
     ProcessInfo.processInfo.environment[seedCountKey].flatMap(Int.init).map { max(0, $0) }
 }
 

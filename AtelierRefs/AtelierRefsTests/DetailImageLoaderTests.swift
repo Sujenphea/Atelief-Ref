@@ -42,7 +42,8 @@ private func detail(id: UUID = UUID()) -> CollectionItemDetail {
     return CollectionItemDetail(item: item, asset: asset, source: source)
 }
 
-private func makeImage(side: Int) -> CGImage {
+/// `nonisolated` — a pure CGImage factory, called from the probe's off-main decode.
+private nonisolated func makeImage(side: Int) -> CGImage {
     let context = CGContext(
         data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
         space: CGColorSpaceCreateDeviceRGB(),
@@ -57,7 +58,11 @@ private func url(_ hash: String) -> URL { URL(fileURLWithPath: "/tmp/atelier-det
 /// Stands in for ImageIO. Records decodes by hash and can BLOCK chosen hashes on a
 /// semaphore; a blocked decode re-checks `Task.isCancelled` after release, so a
 /// cancelled in-flight decode deterministically yields `nil` (nothing cached).
-private final class DecodeProbe: @unchecked Sendable {
+// `nonisolated` to match the `@unchecked Sendable` it already claims: the probe's
+// `decode` is handed to `DetailImageLoader` as a `@Sendable` closure and runs off
+// the main actor. MainActor-by-default would otherwise infer isolation the
+// loader's function type cannot carry.
+nonisolated private final class DecodeProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var calls: [String] = []
     private let blocked: Set<String>
