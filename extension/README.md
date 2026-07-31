@@ -2,7 +2,12 @@
 
 "Save as you browse" — captures the current post/pin (image + provenance) from
 inside your authenticated browser session and POSTs it to the ref-atelier app's
-localhost endpoint (`http://127.0.0.1:47321/ingest`).
+localhost endpoint (`/ingest`).
+
+The port is discovered, not assumed: the stable app listens on **47321** and a
+dev build on **47322** (299), so the extension probes `/health` on each and uses
+whichever answers, preferring stable when both are up. Pin one explicitly in the
+extension's options if you run both at once.
 
 ## How it works
 
