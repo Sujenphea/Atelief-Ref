@@ -1449,16 +1449,24 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
 /// An `NSMenuItem` that fires a closure — the native menu's leaf actions carry
 /// captured `[UUID]` target sets, so a per-item closure is cleaner than one shared
 /// `@objc` selector demuxing on `representedObject`.
-private final class BlockMenuItem: NSMenuItem {
-    private let handler: () -> Void
-    init(title: String, handler: @escaping () -> Void) {
+/// `nonisolated` because `NSMenuItem`'s designated initializers are: under this
+/// target's MainActor-by-default the subclass would infer main-actor isolation and
+/// fail to match what it overrides. The handler is typed `@MainActor` instead —
+/// AppKit delivers menu actions on the main thread, and every closure passed here
+/// touches main-actor state, so the isolation belongs on the CLOSURE rather than
+/// on the menu item that merely carries it.
+nonisolated private final class BlockMenuItem: NSMenuItem {
+    private let handler: @MainActor () -> Void
+    init(title: String, handler: @escaping @MainActor () -> Void) {
         self.handler = handler
         super.init(title: title, action: #selector(fire), keyEquivalent: "")
         target = self
     }
     @available(*, unavailable)
-    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    @objc private func fire() { handler() }
+    nonisolated required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    @MainActor @objc private func fire() { handler() }
 }
 
 // MARK: - Pure coordinator helpers (unit-tested)

@@ -268,8 +268,8 @@ struct CollectionsGalleryView: View {
         if let start = marqueeStart, let current = marqueeCurrent {
             let rect = marqueeRect(from: start, to: current)
             Rectangle()
-                .fill(Color.accentColor.opacity(0.12))
-                .overlay(Rectangle().stroke(Color.accentColor, lineWidth: 1))
+                .fill(Theme.Colors.selectionMark.opacity(0.12))
+                .overlay(Rectangle().stroke(Theme.Colors.selectionMark.opacity(0.7), lineWidth: 1))
                 .frame(width: rect.width, height: rect.height)
                 .offset(x: rect.minX, y: rect.minY)
                 .allowsHitTesting(false)
@@ -282,7 +282,7 @@ struct CollectionsGalleryView: View {
             // Ring radius = the card's own `cover` radius, so the selection outline
             // hugs the card shape (the app-wide rule: rings match their surface).
             RoundedRectangle(cornerRadius: Theme.Radius.cover)
-                .stroke(Color.accentColor, lineWidth: 3)
+                .stroke(Theme.Colors.selectionMark, lineWidth: 3)
         }
     }
 
@@ -294,7 +294,7 @@ struct CollectionsGalleryView: View {
         if reparentTargetID == id {
             RoundedRectangle(cornerRadius: Theme.Radius.cover)
                 .strokeBorder(
-                    Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    Theme.Colors.selectionMark, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
         }
     }
 

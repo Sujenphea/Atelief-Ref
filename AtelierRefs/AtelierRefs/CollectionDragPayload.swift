@@ -24,7 +24,10 @@ import UniformTypeIdentifiers
 
 extension UTType {
     /// The app-private drag identifier for a single collection being reparented.
-    static let collectionID = UTType(exportedAs: "com.ref-atelier.collection-id")
+    /// `nonisolated` so the AppKit drag seams can read it off the main actor —
+    /// under MainActor-by-default a bare `static let` in this target infers
+    /// main-actor isolation, which a pasteboard type constant has no use for.
+    nonisolated static let collectionID = UTType(exportedAs: "com.ref-atelier.collection-id")
 }
 
 /// A dragged collection (the folder to reparent). `Codable` for the transfer
@@ -46,7 +49,8 @@ struct CollectionDragPayload: Codable, Equatable, Transferable {
 /// `JSONEncoder`), so a drag started in the outline view is still readable by any
 /// SwiftUI `.dropDestination(for:)` and vice-versa.
 extension CollectionDragPayload {
-    static let pasteboardType = NSPasteboard.PasteboardType(UTType.collectionID.identifier)
+    nonisolated static let pasteboardType =
+        NSPasteboard.PasteboardType(UTType.collectionID.identifier)
 
     /// The wire bytes — exactly what `CodableRepresentation(contentType:)`
     /// serializes, so the two drag channels interoperate.

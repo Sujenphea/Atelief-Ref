@@ -1,6 +1,6 @@
 # 301 — Back Up Now (008 · H5b)
 
-The two slots changelog 299 deliberately left empty in Settings ▸ Backup are
+The two slots `299-backup-folder-target` deliberately left empty in Settings ▸ Backup are
 filled: a **Back Up Now** button with progress and a Stop, and a **last-run
 status line** that survives quitting the app. Restore is still H5c.
 
@@ -96,4 +96,4 @@ though the backup is still current.
 No schema or on-disk change. The last-run record lives under
 `AtelierBackupLastRun` in `UserDefaults`; absent until the first run, and
 removed when the target is cleared. The first run of an existing library mints
-`library-id` at the Library root (changelog 300).
+`library-id` at the Library root (`300-backup-copy-engine`).

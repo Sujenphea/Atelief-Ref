@@ -32,8 +32,10 @@ final class SpaceNode: NSObject {
         self.name = name
     }
 
-    override func isEqual(_ object: Any?) -> Bool { (object as? SpaceNode)?.id == id }
-    override var hash: Int { id.hashValue }
+    // `nonisolated` because `NSObject`'s are: identity is asked for from wherever
+    // AppKit is diffing, and both read only the immutable `id`.
+    nonisolated override func isEqual(_ object: Any?) -> Bool { (object as? SpaceNode)?.id == id }
+    nonisolated override var hash: Int { id.hashValue }
 
     /// The flat node list from the space inventory, in manual order.
     static func list(from spaces: [Space]) -> [SpaceNode] {

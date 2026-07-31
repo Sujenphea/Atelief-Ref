@@ -171,7 +171,11 @@ struct DetailSessionTests {
 /// live pinch that FEED the target can't run in a test — the pure sizing decision
 /// they drive is covered by `DetailDisplayDecodeTests`; here we assert the session
 /// forwards it to the loader at the right bucket, and preloads neighbours FIT-only).
-private final class SizingProbe: @unchecked Sendable {
+// `nonisolated` to match the `@unchecked Sendable` it already claims: the probe's
+// `decode` is handed to `DetailImageLoader` as a `@Sendable` closure and runs off
+// the main actor. MainActor-by-default would otherwise infer isolation the
+// loader's function type cannot carry.
+nonisolated private final class SizingProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var byHash: [String: Set<Int>] = [:]
 
@@ -186,7 +190,8 @@ private final class SizingProbe: @unchecked Sendable {
     }
 }
 
-private func sizingProbeImage() -> CGImage {
+/// `nonisolated` — a pure CGImage factory, called from the probe's off-main decode.
+private nonisolated func sizingProbeImage() -> CGImage {
     let ctx = CGContext(
         data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
         space: CGColorSpaceCreateDeviceRGB(),

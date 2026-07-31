@@ -255,11 +255,16 @@ final class FrameTimeRecorder {
     var rawIntervalsMs: [Double] { intervalsMs }
 
     @objc nonisolated private func step(_ link: CADisplayLink) {
+        // Read the timestamps OUT of the link first. `CADisplayLink` is not
+        // `Sendable`, and `assumeIsolated`'s closure is `sending` — capturing the
+        // link itself would carry a non-Sendable reference across the boundary,
+        // where two `Double`s carry everything actually needed.
+        let now = link.timestamp
+        let targetTimestamp = link.targetTimestamp
         // The link fires on the main runloop, so isolation is satisfied in fact;
         // assume it to call back into `@MainActor` state without a hop that would
         // itself add latency to the thing being measured.
         MainActor.assumeIsolated {
-            let now = link.timestamp
             if let last = lastTimestamp {
                 // The ACTUAL elapsed time between vsyncs — NOT
                 // `targetTimestamp − timestamp`, which is the display's NOMINAL
@@ -269,7 +274,7 @@ final class FrameTimeRecorder {
                 intervalsMs.append((now - last) * 1000)
             }
             lastTimestamp = now
-            let dt = link.targetTimestamp - link.timestamp
+            let dt = targetTimestamp - now
             onFrame?(dt)
         }
     }

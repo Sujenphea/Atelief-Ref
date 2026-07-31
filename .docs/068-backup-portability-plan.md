@@ -142,7 +142,7 @@ testable enum, layout left to each surface.
 **Tests:** bookmark round-trip and staleness against an injected defaults +
 fake resolver; picker glue is compile-only + manual (repo convention).
 
-**As built (changelog 299):** steps 1 and 2 shipped with F2. Step 3 shipped as
+**As built (`299-backup-folder-target`):** steps 1 and 2 shipped with F2. Step 3 shipped as
 `BackupFolderPanel` (the picker) + `BackupTarget` (rules and words, AppKit-free
 and fully tested) + a **Backup** section in `SettingsView`, with the target state
 on `IngestionModel` per the placement rule above.
@@ -237,7 +237,7 @@ corrupted destination blob → verify fails; destination-full → fails loudly
 without pruning what's already there; stale bookmark → typed error; all
 sandbox/panel glue behind `FolderAccess`.
 
-**As built (changelog 300) — H5a, the engine.** `LibraryIdentity`,
+**As built (`300-backup-copy-engine`) — H5a, the engine.** `LibraryIdentity`,
 `BackupLayout`, `BackupManifest`, `MediaBackupper`, `BackupRunner` in
 `AtelierIngestion/Backup/`, plus `MediaStore.storeBlobFile(copyingFrom:…)` and a
 public `AppServices.schemaVersion`. 58 tests. Departures worth carrying forward:
@@ -257,7 +257,7 @@ public `AppServices.schemaVersion`. 58 tests. Departures worth carrying forward:
   stays in the backup; pruning would make an accidental delete propagate
   off-device, which is the case people restore *from*. Pinned by a test.
 
-**As built (changelog 301) — H5b, the app wiring.** `BackupController` (the
+**As built (`301-backup-run-now`) — H5b, the app wiring.** `BackupController` (the
 `ExportController` shape), `BackupRunSummary` + `BackupSummaryStore`, run-failure
 and status words on `BackupTarget`, and the Settings run row. 33 tests. Two
 things worth carrying into H6/H7:

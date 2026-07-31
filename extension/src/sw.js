@@ -34,6 +34,7 @@ import { MAX_VIDEO_BYTES } from "./config.js";
 import { isBulkMessage } from "./bulk-messages.js";
 import { handleBulkMessage } from "./bulk-sw.js";
 import { openJob, fetchKnownSources, completeJob } from "./bulk-endpoint.js";
+import { withBase } from "./base-url.js";
 
 const TOKEN_KEY = "atelierToken";
 const B64_CHUNK = 0x8000; // 32 KB per String.fromCharCode.apply — see bytesToBase64
@@ -130,10 +131,12 @@ export async function downloadAndIngestVideo(
     throw new Error(`video too large (${declaredBytes} > ${limit} bytes)`);
   }
   const blob = await response.blob();
-  const { status, body } = await postVideoCapture(blob, {
+  // Resolved host, not the hard-coded 47321 (301) — the dev build listens on 47322.
+  const { status, body } = await withBase((base) => postVideoCapture(blob, {
+    endpoint: `${base}/ingest-video`,
     token,
     provenanceHeader: buildProvenanceHeader(provenance, { jobId, sourceId }),
-  });
+  }), { token });
   if (status !== 200) throw new Error(body.error || `ingest HTTP ${status}`);
   return { deduplicated: !!body.deduplicated };
 }
@@ -150,7 +153,11 @@ const defaultDeps = {
   buildCaptureRequest,
   buildContentCaptureRequest,
   tweetContent,
-  postCapture,
+  // Wrapped so the ingest host is RESOLVED per call (301): the core passes only
+  // `{ token }`, and this supplies the `endpoint` for whichever build is up.
+  postCapture: (request, opts = {}) => withBase(
+    (base) => postCapture(request, { ...opts, endpoint: `${base}/ingest` }),
+    { token: opts.token }),
   log: (...args) => console.log("[Atelier]", ...args),
   logError: (...args) => console.error("[Atelier]", ...args),
 };

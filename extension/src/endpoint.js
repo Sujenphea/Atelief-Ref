@@ -5,6 +5,11 @@
 // (platform/originalURL/authorHandle/authorName/title/rawMetadata); collectionId
 // is omitted so the app routes to its default (Unsorted) folder.
 
+// The shipping app's port. These remain the DEFAULTS for the helpers below, but
+// production callers no longer rely on them: `base-url.js` resolves the live host
+// per request, because the dev build listens on 47322 (299) and assuming 47321
+// made every request to a dev-only setup fail as `TypeError: Failed to fetch` (301).
+// Pass `endpoint:` from a resolved base rather than reaching for these.
 export const DEFAULT_BASE = "http://127.0.0.1:47321";
 export const DEFAULT_ENDPOINT = `${DEFAULT_BASE}/ingest`;
 export const DEFAULT_VIDEO_ENDPOINT = `${DEFAULT_BASE}/ingest-video`;

@@ -24,6 +24,9 @@ struct AddColorForm: View {
     let onAdd: (String) -> Void
     let onDismiss: () -> Void
 
+    /// The one `.accentColor` left in the app, and deliberately: this is the colour
+    /// the USER is picking — content on its way into the library, not chrome. The
+    /// monochrome rule governs what the app draws around the work, not the work.
     @State private var picked: Color = .accentColor
     @State private var hexText = ""
 
