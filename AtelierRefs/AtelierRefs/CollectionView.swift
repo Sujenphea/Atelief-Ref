@@ -688,6 +688,7 @@ struct CollectionView: View {
             onSetCover: { model.setCollectionCover(collectionID: collectionID, assetID: $0) },
             onRemoveFromCollection: { model.removeFromFolder(assetIDs: $0) },
             onDelete: { model.requestDelete(assetIDs: $0) },
+            onToggleExpand: { model.toggleExpansion(forItem: $0) },
             // 222 — the title row scrolls away inside the grid's own scroll region,
             // its band sized to the row's measured natural height.
             header: AnyView(headerContent),
@@ -1021,7 +1022,10 @@ private struct CollectionDetailHost: View {
     private func close() {
         model.flushViewBumps()
         if let id = session.currentID {
-            model.applySelection(.setLead(id))
+            // The overlay steps through EVERY item, including members the grid is
+            // collapsing, so the id it closes on may not be a tile (307). Land the
+            // cursor on the tile that stands for it instead of on nothing.
+            model.applySelection(.setLead(model.displayTile(for: id)))
         }
         withAnimation { nav.presentedItemID = nil } completion: {
             model.applyDeferredMostViewedReorder()

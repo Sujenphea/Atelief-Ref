@@ -376,6 +376,25 @@ final class IngestionModel: ObservableObject {
         didSet { if groupCarousels != oldValue { rebuildItemDerivations() } }
     }
 
+    /// Representative ids of the posts currently OPENED in place (307) — their
+    /// members show as their own tiles until the chip is clicked again. Pruned on
+    /// every derivation so a representative that left the feed can't keep a post
+    /// wedged open.
+    private(set) var expandedPosts: Set<UUID> = []
+
+    /// Open or close the post behind the tile `itemID` — what the carousel chip does.
+    /// A no-op for an ungrouped tile, so callers don't have to check first.
+    func toggleExpansion(forItem itemID: UUID) {
+        guard groupCarousels, postGroups.memberCount(forItem: itemID) > 1 else { return }
+        let lead = postGroups.members(forItem: itemID).first ?? itemID
+        if expandedPosts.contains(lead) {
+            expandedPosts.remove(lead)
+        } else {
+            expandedPosts.insert(lead)
+        }
+        rebuildItemDerivations()
+    }
+
     /// The feed AS THE GRID SHOWS IT: `items` with every multi-image post collapsed
     /// to its first member when grouping is on, otherwise `items` verbatim.
     ///
@@ -385,6 +404,20 @@ final class IngestionModel: ObservableObject {
     /// untouched. Actions widen back to real members at the boundary via
     /// ``PostGroups/expand(_:)``.
     private(set) var displayItems: [CollectionItemDetail] = []
+    /// Membership ids of ``displayItems``, for O(1) "is this tile on screen?".
+    private var displayItemIDs: Set<UUID> = []
+
+    /// The tile that STANDS FOR `id` in the current display list (307).
+    ///
+    /// `id` itself when it is on screen; otherwise its post's representative. The
+    /// detail overlay steps through ALL items — including carousel members the grid
+    /// is hiding — and syncs the cursor back on close, so without this the grid's
+    /// lead could land on an id that isn't in the reducer's `order` at all, leaving
+    /// arrow-key navigation with nothing to resolve against.
+    func displayTile(for id: UUID) -> UUID {
+        if displayItemIDs.contains(id) { return id }
+        return postGroups.members(forItem: id).first ?? id
+    }
 
     /// Monotonic token bumped whenever `items` changes (a load / move / reorder),
     /// so the grid's masonry layout cache (011-B1 · 14A) can key off cheap
@@ -399,7 +432,14 @@ final class IngestionModel: ObservableObject {
     private func rebuildItemDerivations() {
         itemsVersion &+= 1
         postGroups = PostGroups(items: items)
-        displayItems = groupCarousels ? postGroups.collapsed(items) : items
+        // Drop expansions whose representative has left the feed (a delete, a move,
+        // a collection switch) — otherwise a stale id would keep re-opening nothing,
+        // and the set would grow for the life of the process.
+        expandedPosts = expandedPosts.filter { postGroups.memberCount(forItem: $0) > 1 }
+        displayItems = groupCarousels
+            ? postGroups.collapsed(items, expanding: expandedPosts)
+            : items
+        displayItemIDs = Set(displayItems.map { $0.item.id })
         // Push the DISPLAYED order to the selection store (the reducer's `order`
         // argument) — replaces the old hoisted `itemOrder`. It has to be the display
         // list, not `items`: ⇧-range, arrow nav and the marquee all resolve hits
@@ -424,7 +464,29 @@ final class IngestionModel: ObservableObject {
     /// store's stored `selection` still holds the OLD value at that instant — the
     /// computed `self.selection` would read stale. The sink passes the NEW value.
     private func rebuildSelectedAssetIDs(for selection: GridSelection) {
-        cachedSelectedAssetIDs = assetIDs(for: postGroups.expand(selection.ids))
+        cachedSelectedAssetIDs = assetIDs(for: widenedForAction(selection.ids))
+    }
+
+    /// Widen ids to whole posts for an action — but only where the grid is actually
+    /// HIDING members (307).
+    ///
+    /// A collapsed tile stands for its post, so it must widen. An OPENED post shows
+    /// every member as its own tile, and those tiles have to act individually —
+    /// otherwise opening a carousel to delete one bad frame would delete all four,
+    /// which is precisely the thing someone opens a post to avoid.
+    private func widenedForAction(_ ids: Set<UUID>) -> Set<UUID> {
+        guard groupCarousels else { return ids }
+        var result = Set<UUID>()
+        result.reserveCapacity(ids.count)
+        for id in ids {
+            let members = postGroups.members(forItem: id)
+            guard let lead = members.first, !expandedPosts.contains(lead) else {
+                result.insert(id)
+                continue
+            }
+            result.formUnion(members)
+        }
+        return result
     }
 
     /// The asset ids for `itemIDs`, in feed order — THE action boundary (307).
@@ -454,7 +516,7 @@ final class IngestionModel: ObservableObject {
             // A collapsed carousel tile stands for its whole post (307), so an
             // UNSELECTED right-click widens too — otherwise "Delete" on a tile
             // reading ⧉4 would remove one image and leave the tile behind.
-            cellAssetIDs: assetIDs(for: postGroups.expand([itemID])))
+            cellAssetIDs: assetIDs(for: widenedForAction([itemID])))
     }
 
     /// Build the drag payload for a drag that starts on the cell `itemID`

@@ -156,9 +156,21 @@ struct PostGroups {
     /// — not a cell holding several ids — so the grid keeps its one-item-one-cell-one-
     /// selectable-id invariant and every index-based subsystem (the layout's `aspects`,
     /// `nextGridIndex`, the marquee, reorder) is untouched.
-    func collapsed(_ items: [CollectionItemDetail]) -> [CollectionItemDetail] {
+    /// `expanding` holds the REPRESENTATIVE ids of posts the user has opened in
+    /// place: those posts contribute all their members (at their own feed positions)
+    /// instead of one tile, so a carousel can be looked through without leaving the
+    /// grid. Representative ids rather than post keys, because that is the identity
+    /// a click on a tile already has.
+    func collapsed(
+        _ items: [CollectionItemDetail], expanding: Set<UUID> = []
+    ) -> [CollectionItemDetail] {
         guard !keyByItem.isEmpty else { return items }
-        return items.filter { isRepresentative($0.item.id) }
+        return items.filter { detail in
+            let id = detail.item.id
+            if isRepresentative(id) { return true }
+            guard let lead = members(forItem: id).first else { return true }
+            return expanding.contains(lead)
+        }
     }
 
     /// Every member of the posts `selected` touches — the ACTION boundary.

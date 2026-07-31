@@ -126,6 +126,9 @@ struct GridHostConfiguration {
     var onRemoveFromCollection: (_ assetIDs: [UUID]) -> Void
     /// Delete the given assets from the library entirely (menu "Delete", confirmed).
     var onDelete: (_ assetIDs: [UUID]) -> Void
+    /// The carousel chip was clicked on this tile (307) — open or close its post in
+    /// place. Defaults to a no-op so a surface without grouping needn't supply it.
+    var onToggleExpand: (UUID) -> Void = { _ in }
 
     // MARK: 048 — membership-less (search) reuse
 
@@ -1037,6 +1040,14 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     func gridCellCircleClicked(id: UUID) {
         collectionView?.window?.makeFirstResponder(collectionView)
         execute(configuration.selectionStore.apply(.tapCircle(id), columns: currentColumns()))
+    }
+
+    func gridCellBadgeClicked(id: UUID) {
+        collectionView?.window?.makeFirstResponder(collectionView)
+        // Deliberately does NOT touch the selection: opening a post is a different
+        // intent from picking it, and a triage in progress must survive a look
+        // inside a carousel.
+        configuration.onToggleExpand(id)
     }
 
     // MARK: Coordinate conversion (036 §A-risks — the ONE helper)

@@ -200,3 +200,131 @@ struct PostGroupingWiringTests {
         #expect(model.pendingDeletion?.count == 3)
     }
 }
+
+@MainActor
+@Suite("Carousel grouping: opening a post in place")
+struct PostExpansionTests {
+
+    private func rig() async throws -> (model: IngestionModel, services: AppServices) {
+        let dbPath = NSTemporaryDirectory() + "post-expand-\(UUID().uuidString).sqlite"
+        let services = try AppServices(databasePath: dbPath)
+        let store = MediaStore(root: FileManager.default.temporaryDirectory)
+        let model = IngestionModel(services: services, store: store)
+        await model.refreshFolders()
+        return (model, services)
+    }
+
+    private func seed(
+        _ services: AppServices, url: String?, count: Int, into collectionID: UUID, hexSeed: Int
+    ) async throws {
+        let source = SourceDraft(
+            platform: url == nil ? .localPaste : .instagram,
+            originalURL: url, capturedAt: Date())
+        for offset in 0..<count {
+            let i = hexSeed + offset
+            let hex = String(
+                format: "#%02x%02x%02x",
+                (i * 40 + 10) % 256, (i * 17 + 5) % 256, (i * 91 + 3) % 256)
+            _ = try await services.ingestContent(
+                .color(hex: hex), from: source, into: collectionID)
+        }
+    }
+
+    private func load(_ model: IngestionModel, _ id: UUID) async throws {
+        model.loadContents(of: id)
+        for _ in 0..<200 where model.loadedCollectionID != id {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    @Test("the chip opens the post in place and closes it again")
+    func toggleOpensAndCloses() async throws {
+        let (model, services) = try await rig()
+        let target = Collection.unsortedID
+        try await seed(services, url: "https://www.instagram.com/p/AbCd/", count: 3,
+                       into: target, hexSeed: 0)
+        try await load(model, target)
+        #expect(model.displayItems.count == 1)
+
+        let tile = try #require(model.displayItems.first).item.id
+        model.toggleExpansion(forItem: tile)
+        #expect(model.displayItems.count == 3)
+        // The reducer's order has to follow, or ⇧-range would not reach the members
+        // that just appeared.
+        #expect(model.selectionStore.order.count == 3)
+
+        model.toggleExpansion(forItem: tile)
+        #expect(model.displayItems.count == 1)
+    }
+
+    @Test("an OPEN post's members act individually, not as a post")
+    func openMembersActAlone() async throws {
+        let (model, services) = try await rig()
+        let target = Collection.unsortedID
+        try await seed(services, url: "https://www.instagram.com/p/AbCd/", count: 3,
+                       into: target, hexSeed: 0)
+        try await load(model, target)
+        let tile = try #require(model.displayItems.first).item.id
+
+        // Closed: the tile stands for the whole post.
+        #expect(model.actionTargets(forCellItemID: tile).count == 3)
+
+        model.toggleExpansion(forItem: tile)
+        // Open: each visible member is its own thing. Otherwise opening a carousel
+        // to delete ONE bad frame would delete all three — the exact thing you
+        // opened it to avoid.
+        for member in model.displayItems.map({ $0.item.id }) {
+            #expect(model.actionTargets(forCellItemID: member).count == 1)
+        }
+    }
+
+    @Test("the chip is a no-op on a tile that isn't a post")
+    func loneTileIgnoresTheToggle() async throws {
+        let (model, services) = try await rig()
+        let target = Collection.unsortedID
+        try await seed(services, url: nil, count: 2, into: target, hexSeed: 0)
+        try await load(model, target)
+
+        let before = model.itemsVersion
+        model.toggleExpansion(forItem: try #require(model.displayItems.first).item.id)
+        #expect(model.itemsVersion == before)
+        #expect(model.displayItems.count == 2)
+    }
+
+    @Test("an expansion whose post leaves the feed is dropped, not left wedged open")
+    func staleExpansionPruned() async throws {
+        let (model, services) = try await rig()
+        let target = Collection.unsortedID
+        try await seed(services, url: "https://www.instagram.com/p/AbCd/", count: 3,
+                       into: target, hexSeed: 0)
+        try await load(model, target)
+        model.toggleExpansion(forItem: try #require(model.displayItems.first).item.id)
+        #expect(model.expandedPosts.count == 1)
+
+        // A different collection has none of those items.
+        let other = try await services.createCollection(name: "Other", parent: nil)
+        try await load(model, other.id)
+        #expect(model.expandedPosts.isEmpty)
+    }
+
+    @Test("the detail cursor lands on a TILE, never on a hidden member")
+    func displayTileMapsHiddenMembers() async throws {
+        let (model, services) = try await rig()
+        let target = Collection.unsortedID
+        try await seed(services, url: "https://www.instagram.com/p/AbCd/", count: 3,
+                       into: target, hexSeed: 0)
+        try await load(model, target)
+
+        let tile = try #require(model.displayItems.first).item.id
+        let hidden = try #require(
+            model.items.map { $0.item.id }.first { $0 != tile })
+        // The overlay steps through every item, so closing on a hidden member used
+        // to leave the grid's lead pointing at an id not in the reducer's order.
+        #expect(model.displayTile(for: hidden) == tile)
+        #expect(model.displayTile(for: tile) == tile)
+
+        // Once the post is OPEN the member is a real tile, so it maps to itself.
+        model.toggleExpansion(forItem: tile)
+        #expect(model.displayTile(for: hidden) == hidden)
+    }
+}

@@ -68,6 +68,11 @@ protocol MasonryGridInteraction: AnyObject {
     func gridCellMouseDown(id: UUID, event: NSEvent)
     /// The enter-selection circle was clicked → `.tapCircle`.
     func gridCellCircleClicked(id: UUID)
+    /// The carousel chip was clicked (307) — open or close this post in place. A
+    /// separate signal from a plain cell click: the chip is the ONLY part of a
+    /// collapsed tile that doesn't select, because selecting and opening are
+    /// different intents on the same tile.
+    func gridCellBadgeClicked(id: UUID)
 }
 
 // MARK: - Accessibility (shared pure function)
@@ -585,7 +590,23 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// hit-tests to the button instead and never reaches here.
     func handleViewMouseDown(_ event: NSEvent) {
         guard let itemID else { return }
+        // The chip is a plain layer (it can't hit-test itself), so the cell tests the
+        // point against the badge's frame BEFORE the normal routing. Padded to a
+        // comfortable target: the drawn capsule is only 18pt tall, which is fine for
+        // a mouse and mean at a dense zoom.
+        if badgeHit(event) {
+            interaction?.gridCellBadgeClicked(id: itemID)
+            return
+        }
         interaction?.gridCellMouseDown(id: itemID, event: event)
+    }
+
+    /// Whether `event` landed on the carousel chip. False when no chip is drawn, so
+    /// an ordinary tile is unaffected.
+    private func badgeHit(_ event: NSEvent) -> Bool {
+        guard !postBadgeLayer.isHidden else { return false }
+        let point = view.convert(event.locationInWindow, from: nil)
+        return postBadgeLayer.frame.insetBy(dx: -6, dy: -6).contains(point)
     }
 
     @objc private func circleClicked() {

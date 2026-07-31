@@ -693,13 +693,19 @@ private struct LibrarySearchResults: View {
     /// masonry layout cache keys off this integer alone — without a bump it would
     /// serve the previous solve and lay out the wrong number of cells.
     @State private var displayVersion = 0
+    /// Representative ids of posts opened in place (307), same as the collection
+    /// surface. Search owns its own feed, so it owns its own expansion state.
+    @State private var expandedPosts: Set<UUID> = []
 
     /// Rebuild the post index and the display list from the current results. One
     /// function, called from every trigger, so the two can never drift apart.
     private func rebuildGrouping() {
         let source = items
         postGroups = PostGroups(items: source)
-        displayItems = gridPrefs.groupCarousels ? postGroups.collapsed(source) : source
+        expandedPosts = expandedPosts.filter { postGroups.memberCount(forItem: $0) > 1 }
+        displayItems = gridPrefs.groupCarousels
+            ? postGroups.collapsed(source, expanding: expandedPosts)
+            : source
         displayVersion &+= 1
     }
 
@@ -849,6 +855,7 @@ private struct LibrarySearchResults: View {
             onSetCover: { _ in },
             onRemoveFromCollection: { _ in },
             onDelete: { ids in model.requestDelete(assetIDs: ids) },
+            onToggleExpand: { toggleExpansion(forItem: $0) },
             menuStyle: .looseAssets,
             onReveal: { id in
                 if let hit = search.results.first(where: { $0.asset.id == id }) {
@@ -875,10 +882,7 @@ private struct LibrarySearchResults: View {
         let selection = selectionStore.selection
         let scope: Set<UUID> = (selection.isSelecting && selection.ids.contains(id))
             ? selection.ids : [id]
-        // Widen a collapsed carousel tile to its whole post (307). Search synthesizes
-        // `item.id == asset.id`, so the widened membership ids ARE asset ids — no
-        // mapping needed, unlike the collection grid's `assetIDs(for:)`.
-        return Array(postGroups.expand(scope))
+        return Array(widenedForAction(scope))
     }
 
     /// The ids a keyboard/bar Delete acts on: the selection while selecting, else the
@@ -887,9 +891,41 @@ private struct LibrarySearchResults: View {
         let selection = selectionStore.selection
         let scope: Set<UUID> = selection.isSelecting
             ? selection.ids : Set(selection.lead.map { [$0] } ?? [])
-        let targets = Array(postGroups.expand(scope))
+        let targets = Array(widenedForAction(scope))
         guard !targets.isEmpty else { return }
         model.requestDelete(assetIDs: targets)
+    }
+
+    /// Widen ids to whole posts for an action, but only where the grid is HIDING
+    /// members (307) — an opened post shows each member as its own tile, and those
+    /// act individually. Search synthesizes `item.id == asset.id`, so the widened
+    /// membership ids ARE asset ids; the collection surface needs a mapping step.
+    private func widenedForAction(_ ids: Set<UUID>) -> Set<UUID> {
+        guard gridPrefs.groupCarousels else { return ids }
+        var result = Set<UUID>()
+        for id in ids {
+            let members = postGroups.members(forItem: id)
+            guard let lead = members.first, !expandedPosts.contains(lead) else {
+                result.insert(id)
+                continue
+            }
+            result.formUnion(members)
+        }
+        return result
+    }
+
+    /// Open or close the post behind `itemID` — the carousel chip's click.
+    private func toggleExpansion(forItem itemID: UUID) {
+        guard gridPrefs.groupCarousels,
+              postGroups.memberCount(forItem: itemID) > 1 else { return }
+        let lead = postGroups.members(forItem: itemID).first ?? itemID
+        if expandedPosts.contains(lead) {
+            expandedPosts.remove(lead)
+        } else {
+            expandedPosts.insert(lead)
+        }
+        rebuildGrouping()
+        selectionStore.setOrder(orderIDs)
     }
 
     /// Every collection as a copy target, Unsorted pinned first (search has no source
