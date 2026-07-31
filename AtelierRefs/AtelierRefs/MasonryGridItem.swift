@@ -114,10 +114,14 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// measured cost). `nil` until the first card kind lands in this cell.
     private var cardHost: NSHostingView<AnyView>?
 
-    /// A dim scrim painted over the thumbnail when selected — the Photos-style
-    /// "pull the image back" cue that makes the ring and checkmark pop AND signals
-    /// selection on its own. Sits below the rings/circle so those stay crisp.
-    private let selectionScrimLayer = CALayer()
+    /// A dim scrim painted over the thumbnail — the Photos-style "pull the image
+    /// back" cue that makes the ring and checkmark pop AND signals the state on its
+    /// own. Sits below the rings/circle so those stay crisp.
+    ///
+    /// ONE layer carries both states, selected and hovered, so they can never drift
+    /// into different blacks nor stack into a double dim on a cell that is both.
+    /// ``updateScrim()`` is the only thing that sets it.
+    private let scrimLayer = CALayer()
     /// Inert-until-A2 selection ring (drawn when selected).
     private let selectionRingLayer = CALayer()
     /// A translucent-dark hairline nested just INSIDE the accent selection ring so
@@ -153,6 +157,14 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// The keyboard-cursor ring width — thinner AND half-transparent, so a cursor
     /// can never be mistaken for a selection now that both are white.
     private let cursorRingWidth: CGFloat = 2
+    /// The selected cell's dim. Strong enough to read as a state on its own.
+    private let selectedScrimOpacity: Float = 0.18
+    /// The hovered cell's dim — the same gesture at roughly half strength. Hover
+    /// says "this is the one under the pointer"; selection says "this is chosen",
+    /// and the app's own rule (see `Theme.Colors.hoverRow`) is that hover must not
+    /// be mistakable for it. A hovered cell also has no ring and no checkmark, so
+    /// the two never read alike even at a glance.
+    private let hoverScrimOpacity: Float = 0.10
     /// The contrast hairline's own width. Half-opaque black at 2pt, not the 1pt
     /// whisper it was: under the blue accent it only had to survive pale images,
     /// where the blue still read; under a white ring it IS the edge there.
@@ -198,11 +210,11 @@ final class MasonryGridItem: NSCollectionViewItem {
 
         // Selected-cell dim scrim (below the rings so they stay crisp). Sized in
         // `viewDidLayout`; opacity toggled in `applySelectionState`.
-        selectionScrimLayer.cornerRadius = cornerRadius
-        selectionScrimLayer.backgroundColor = NSColor.black.cgColor
-        selectionScrimLayer.opacity = 0
-        selectionScrimLayer.isHidden = true
-        container.layer?.addSublayer(selectionScrimLayer)
+        scrimLayer.cornerRadius = cornerRadius
+        scrimLayer.backgroundColor = NSColor.black.cgColor
+        scrimLayer.opacity = 0
+        scrimLayer.isHidden = true
+        container.layer?.addSublayer(scrimLayer)
 
         // Rings: built now, hidden in A1. Sized in `viewDidLayout`.
         for ring in [selectionRingLayer, cursorRingLayer] {
@@ -257,7 +269,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let bounds = view.bounds
-        selectionScrimLayer.frame = bounds
+        scrimLayer.frame = bounds
         selectionRingLayer.frame = bounds
         layOutContrastHairline(in: bounds)
         cursorRingLayer.frame = bounds
@@ -268,6 +280,25 @@ final class MasonryGridItem: NSCollectionViewItem {
         let side: CGFloat = 32
         circleButton.frame = NSRect(
             x: bounds.maxX - side, y: bounds.minY, width: side, height: side)
+    }
+
+    /// Paint the dim for the cell's current state — selected wins over hovered, and
+    /// a cell that is both gets ONE dim, not two stacked. Called from
+    /// ``applySelectionState(_:)`` and ``setHovered(_:)``, the two things that can
+    /// change either input.
+    ///
+    /// Instant, like everything else in this cell and like the app's SwiftUI
+    /// `HoverHighlight`: implicit CALayer animation is suppressed throughout so a
+    /// recycled cell never cross-fades a previous item's state into this one's.
+    private func updateScrim() {
+        let opacity: Float =
+            currentSelection.isSelected ? selectedScrimOpacity
+            : isHovered ? hoverScrimOpacity : 0
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        scrimLayer.isHidden = opacity == 0
+        scrimLayer.opacity = opacity
+        CATransaction.commit()
     }
 
     /// Nest the contrast hairline immediately inside whichever ring is showing.
@@ -334,8 +365,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         currentSelection = state
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        selectionScrimLayer.isHidden = !state.isSelected
-        selectionScrimLayer.opacity = state.isSelected ? 0.18 : 0
+        updateScrim()
         selectionRingLayer.isHidden = !state.isSelected
         selectionRingLayer.borderWidth = state.isSelected ? selectionRingWidth : 0
         let showCursor = state.isCursor && !state.isSelected
@@ -374,6 +404,7 @@ final class MasonryGridItem: NSCollectionViewItem {
     func setHovered(_ hovered: Bool) {
         guard hovered != isHovered else { return }
         isHovered = hovered
+        updateScrim()
         updateCircleVisibility()
         updateGifAnimation()
     }
