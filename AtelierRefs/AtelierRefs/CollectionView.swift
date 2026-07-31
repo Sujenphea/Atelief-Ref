@@ -278,7 +278,7 @@ struct CollectionView: View {
             if isTargeted {
                 RoundedRectangle(cornerRadius: Theme.Radius.card)
                     .strokeBorder(
-                        Color.accentColor,
+                        Theme.Colors.selectionMark,
                         style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
                     .padding(Theme.Spacing.xs)
                     .allowsHitTesting(false)
@@ -753,7 +753,10 @@ struct CollectionView: View {
                         .font(Theme.Typography.caption).bold().monospacedDigit()
                         .foregroundStyle(.white)
                         .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(Capsule().fill(Color.accentColor))
+                        // NOT `selectionMark`: this is a count BADGE, and white-on-
+                        // white would erase its own label. A raised dark chip is the
+                        // monochrome equivalent of "stands off the artwork".
+                        .background(Capsule().fill(Theme.Colors.surface))
                         .padding(4)
                 }
             }

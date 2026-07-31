@@ -912,7 +912,7 @@ public final class CanvasEngine {
 
     private func makeMembershipLayer() -> CALayer {
         let layer = CALayer()
-        layer.backgroundColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.22)
+        layer.backgroundColor = CanvasChrome.membershipWash
         layer.cornerRadius = 3
         rootLayer.addSublayer(layer)
         return layer
@@ -920,15 +920,15 @@ public final class CanvasEngine {
 
     private func makeGuideLayer() -> CALayer {
         let layer = CALayer()
-        layer.backgroundColor = CGColor(red: 1.0, green: 0.2, blue: 0.55, alpha: 0.9) // magenta
+        layer.backgroundColor = CanvasChrome.snapGuide
         rootLayer.addSublayer(layer)
         return layer
     }
 
     private func makeHandleLayer() -> CALayer {
         let layer = CALayer()
-        layer.backgroundColor = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
-        layer.borderColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 1.0) // accent blue
+        layer.backgroundColor = CanvasChrome.handleFill
+        layer.borderColor = CanvasChrome.handleBorder
         layer.borderWidth = 1.5
         rootLayer.addSublayer(layer)
         return layer
@@ -1209,7 +1209,7 @@ public final class CanvasEngine {
     private func makeSelectionLayer() -> CALayer {
         let layer = CALayer()
         layer.borderWidth = 1.5
-        layer.borderColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 1.0) // accent blue
+        layer.borderColor = CanvasChrome.selection
         layer.cornerRadius = 3
         layer.backgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0) // border only
         rootLayer.addSublayer(layer)

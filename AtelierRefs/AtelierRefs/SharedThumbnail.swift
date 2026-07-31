@@ -151,7 +151,7 @@ struct LinkCardTile: View {
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .strokeBorder(
-                        isSelected ? Color.accentColor : Color.primary.opacity(0.1),
+                        isSelected ? Theme.Colors.selectionMark : Color.primary.opacity(0.1),
                         lineWidth: isSelected ? 3 : 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
@@ -203,7 +203,7 @@ struct TweetCardTile: View {
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .strokeBorder(
-                        isSelected ? Color.accentColor : Color.primary.opacity(0.1),
+                        isSelected ? Theme.Colors.selectionMark : Color.primary.opacity(0.1),
                         lineWidth: isSelected ? 3 : 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
@@ -226,7 +226,7 @@ struct ColorSwatchTile: View {
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .strokeBorder(
-                        isSelected ? Color.accentColor : Color.primary.opacity(0.1),
+                        isSelected ? Theme.Colors.selectionMark : Color.primary.opacity(0.1),
                         lineWidth: isSelected ? 3 : 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
@@ -256,7 +256,7 @@ struct ThumbnailTile: View {
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius)
-                    .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 3)
+                    .strokeBorder(isSelected ? Theme.Colors.selectionMark : .clear, lineWidth: 3)
             }
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
     }

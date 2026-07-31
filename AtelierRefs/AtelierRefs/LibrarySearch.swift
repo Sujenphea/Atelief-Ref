@@ -885,7 +885,10 @@ private struct LibrarySearchResults: View {
                         .font(Theme.Typography.caption).bold().monospacedDigit()
                         .foregroundStyle(.white)
                         .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(Capsule().fill(Color.accentColor))
+                        // NOT `selectionMark`: this is a count BADGE, and white-on-
+                        // white would erase its own label. A raised dark chip is the
+                        // monochrome equivalent of "stands off the artwork".
+                        .background(Capsule().fill(Theme.Colors.surface))
                         .padding(4)
                 }
             }

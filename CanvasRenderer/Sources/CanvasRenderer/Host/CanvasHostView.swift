@@ -978,8 +978,8 @@ public final class CanvasHostView: NSView {
     private func makeCreatePreviewLayer() -> CALayer {
         let layer = CALayer()
         layer.borderWidth = 1.5
-        layer.borderColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.9)
-        layer.backgroundColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.08)
+        layer.borderColor = CanvasChrome.createStroke
+        layer.backgroundColor = CanvasChrome.createFill
         layer.cornerRadius = 2
         engine.rootLayer.addSublayer(layer)
         return layer
@@ -1030,8 +1030,8 @@ public final class CanvasHostView: NSView {
     private func makeMarqueeLayer() -> CALayer {
         let layer = CALayer()
         layer.borderWidth = 1
-        layer.borderColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.7)
-        layer.backgroundColor = CGColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.12)
+        layer.borderColor = CanvasChrome.marqueeStroke
+        layer.backgroundColor = CanvasChrome.marqueeFill
         engine.rootLayer.addSublayer(layer)
         return layer
     }
