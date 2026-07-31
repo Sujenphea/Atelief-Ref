@@ -1,4 +1,4 @@
-# 299 — the app target catches up to Swift 6
+# 302 — the app target catches up to Swift 6
 
 ## Summary
 
