@@ -82,12 +82,15 @@ func masonryContextTargetIndex(at point: CGPoint?, frames: [CGRect], columns: In
 ///
 /// Lifted out of `IngestionModel.actionTargets(forCellItemID:)` (which now calls
 /// it) so the rule the container menu depends on is pure and directly tested.
-/// `cellAssetID` is `nil` when the cell has vanished from the feed, which yields
-/// no targets and therefore no menu.
+///
+/// `cellAssetIDs` is what the CELL stands for — normally its one asset, but a
+/// collapsed carousel tile (307) stands for every member of its post, so this is a
+/// list rather than a single id. Empty when the cell has vanished from the feed,
+/// which yields no targets and therefore no menu. The scope RULE is unchanged; only
+/// what "one cell" can mean has widened.
 func gridActionTargets(
-    isSelected: Bool, selectedAssetIDs: [UUID], cellAssetID: UUID?
+    isSelected: Bool, selectedAssetIDs: [UUID], cellAssetIDs: [UUID]
 ) -> [UUID] {
     if isSelected { return selectedAssetIDs }
-    guard let cellAssetID else { return [] }
-    return [cellAssetID]
+    return cellAssetIDs
 }

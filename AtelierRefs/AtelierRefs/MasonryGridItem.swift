@@ -51,11 +51,6 @@ struct CellSelectionState: Equatable {
     /// Selection mode is active somewhere in the grid — circles show on ALL cells
     /// so any can be toggled (A2 wiring).
     var isSelecting = false
-    /// Something ELSE from this cell's post is selected while this cell is not —
-    /// draws the dashed "same post" ring so a carousel's remaining members are
-    /// visible the moment one of them is picked (307 · carousel grouping).
-    var isPostSibling = false
-
     static let inert = CellSelectionState()
 }
 
@@ -84,7 +79,7 @@ protocol MasonryGridInteraction: AnyObject {
 /// `postMemberCount` (307) is the size of the multi-item post this cell belongs to
 /// — 0 or 1 when it stands alone. When it is a carousel member the label says so,
 /// because the visual badge that carries it sighted is a pixmap VoiceOver can't read.
-func gridCellAccessibilityLabel(for detail: CollectionItemDetail, postMemberCount: Int = 0) -> String {
+func gridCellAccessibilityLabel(for detail: CollectionItemDetail, postMemberCount: Int) -> String {
     let suffix = postMemberCount > 1 ? ", one of \(postMemberCount) from the same post" : ""
     return gridCellBaseAccessibilityLabel(for: detail) + suffix
 }
@@ -119,9 +114,15 @@ private func gridCellBaseAccessibilityLabel(for detail: CollectionItemDetail) ->
 /// for any real feed.
 @MainActor
 enum PostBadge {
-    /// Rendered chips by member count. Small and bounded (one per distinct
-    /// carousel length seen), never invalidated — the artwork is appearance-
-    /// independent (white on translucent black reads on every backdrop).
+    /// Rendered chips by member count. Small and bounded — one per distinct carousel
+    /// length a feed actually contains.
+    ///
+    /// Never invalidated, and that is safe for a specific reason worth writing down:
+    /// the chip is drawn from `Theme.NS` tokens which are FIXED (the app declares one
+    /// dark palette, `Theme`'s header), not resolved per `NSAppearance`. So there is
+    /// no runtime event that can change the artwork — editing a token is a rebuild.
+    /// If the palette ever becomes appearance-reactive, this cache has to be dropped
+    /// on an appearance change or it will serve stale pixmaps.
     private static var cache: [Int: NSImage] = [:]
 
     static let height: CGFloat = 18
@@ -148,7 +149,7 @@ enum PostBadge {
         let text = "\(count)" as NSString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor.white,
+            .foregroundColor: Theme.NS.selectionMark,
         ]
         let textSize = text.size(withAttributes: attributes)
         let hPad: CGFloat = 6, gap: CGFloat = 3
@@ -157,14 +158,15 @@ enum PostBadge {
 
         let image = NSImage(size: size)
         image.lockFocusFlipped(false)
-        // A soft dark capsule rather than the accent: the badge is a permanent
-        // fixture on every carousel tile, and accent-coloured chrome that is
-        // always on would compete with the accent SELECTION ring right next to it.
-        NSColor.black.withAlphaComponent(0.55).setFill()
+        // The same dark backing the selection ring's contrast hairline uses: this
+        // chip sits permanently over artwork, so it needs the luminance floor that
+        // token exists to provide, and reusing it keeps the cell's chrome on one
+        // palette instead of introducing a second black.
+        Theme.NS.selectionMarkContrast.setFill()
         NSBezierPath(roundedRect: NSRect(origin: .zero, size: size),
                      xRadius: height / 2, yRadius: height / 2).fill()
         glyph.isTemplate = true
-        NSColor.white.set()
+        Theme.NS.selectionMark.set()
         let glyphRect = NSRect(
             x: hPad, y: ((height - glyph.size.height) / 2).rounded(),
             width: glyph.size.width, height: glyph.size.height)
@@ -211,11 +213,6 @@ final class MasonryGridItem: NSCollectionViewItem {
     private let selectionContrastLayer = CALayer()
     /// Inert-until-A2 keyboard-cursor ring (drawn when lead && !selected).
     private let cursorRingLayer = CALayer()
-    /// The dashed "same post" ring (307): drawn on an UNSELECTED cell while a
-    /// sibling from its carousel IS selected. A `CAShapeLayer` because a dash
-    /// pattern needs a stroked path — `CALayer.borderWidth` can only draw solid,
-    /// and a solid accent ring here would be indistinguishable from selection.
-    private let siblingRingLayer = CAShapeLayer()
     /// The carousel count chip (307), painted top-leading whenever this cell's post
     /// has more than one item in the feed. Purely informational — hit-transparent
     /// (it's a layer, not a view) so it can't intercept a click or a drag.
@@ -265,9 +262,6 @@ final class MasonryGridItem: NSCollectionViewItem {
     private var activeRingWidth: CGFloat {
         currentSelection.isSelected ? selectionRingWidth : cursorRingWidth
     }
-    /// The dashed same-post ring's stroke — thinner than the selection ring so the
-    /// two are never confused at a glance (307).
-    private let siblingRingWidth: CGFloat = 2
 
     /// The membership id this cell is currently bound to — the coordinator reads it
     /// back when the cell reports a mouse-down / circle click (A2). Set in
@@ -332,15 +326,6 @@ final class MasonryGridItem: NSCollectionViewItem {
         selectionContrastLayer.isHidden = true
         container.layer?.addSublayer(selectionContrastLayer)
 
-        // Dashed same-post ring (307). Inset by half the stroke so the dash sits
-        // fully inside the tile instead of being clipped by `masksToBounds`.
-        siblingRingLayer.fillColor = nil
-        siblingRingLayer.strokeColor = NSColor.controlAccentColor.cgColor
-        siblingRingLayer.lineWidth = siblingRingWidth
-        siblingRingLayer.lineDashPattern = [5, 4]
-        siblingRingLayer.isHidden = true
-        container.layer?.addSublayer(siblingRingLayer)
-
         // Carousel count chip (307), top-leading. Contents are set per-configure
         // from the cached artwork; the frame is sized to that image.
         postBadgeLayer.contentsGravity = .resizeAspect
@@ -384,13 +369,6 @@ final class MasonryGridItem: NSCollectionViewItem {
         selectionRingLayer.frame = bounds
         layOutContrastHairline(in: bounds)
         cursorRingLayer.frame = bounds
-        siblingRingLayer.frame = bounds
-        let ringRect = bounds.insetBy(dx: siblingRingWidth / 2, dy: siblingRingWidth / 2)
-        siblingRingLayer.path = CGPath(
-            roundedRect: ringRect,
-            cornerWidth: max(0, cornerRadius - siblingRingWidth / 2),
-            cornerHeight: max(0, cornerRadius - siblingRingWidth / 2),
-            transform: nil)
         if let badge = postBadgeLayer.contents as? NSImage {
             postBadgeLayer.frame = NSRect(
                 x: bounds.minX + PostBadge.inset, y: bounds.minY + PostBadge.inset,
@@ -444,7 +422,7 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// item's post (0 when it isn't part of a multi-item post) — the carousel chip.
     func configure(
         detail: CollectionItemDetail, url: URL?, bucket: Int, gifURL: URL?,
-        postMemberCount: Int = 0
+        postMemberCount: Int
     ) {
         setPostMemberCount(postMemberCount)
         loadToken &+= 1
@@ -507,10 +485,6 @@ final class MasonryGridItem: NSCollectionViewItem {
         selectionContrastLayer.isHidden = !showHairline
         selectionContrastLayer.borderWidth = showHairline ? contrastHairlineWidth : 0
         layOutContrastHairline(in: view.bounds)
-        // The dashed same-post ring never competes with the selection ring: a
-        // SELECTED cell already draws the solid border, so the sibling cue is only
-        // for the members still to be picked up.
-        siblingRingLayer.isHidden = !(state.isPostSibling && !state.isSelected)
         CATransaction.commit()
         // Selected: a palette checkmark (BLACK tick on a WHITE-filled circle) so the
         // tick has intrinsic contrast on any image, unlike a monochrome tint whose

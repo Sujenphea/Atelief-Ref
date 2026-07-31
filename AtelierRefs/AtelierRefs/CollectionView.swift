@@ -408,17 +408,6 @@ struct CollectionView: View {
             // shows progress + Cancel while a sheet renders.
             ContactSheetExportButton(model: model, collectionID: collectionID)
             ExportProgressRing()
-            // Same-post pickup (307) sits BESIDE the overflow rather than inside it:
-            // it changes WHAT every other action would act on, so burying it behind
-            // `…` puts a click between the selection and the thing you meant to
-            // select. Shown only while the selection has carousel members left to
-            // add. Mirrors search's bar, down to the glyph and the count living in
-            // the help text rather than a row title.
-            if let title = model.selectSamePostRowTitle {
-                SelectionBarButton("square.on.square", help: title) {
-                    model.selectSamePost()
-                }
-            }
             // Overflow as a popover so it opens ABOVE the bar (`arrowEdge: .top`),
             // not clipped below the floating capsule the way a `Menu` would.
             Button {
@@ -658,8 +647,11 @@ struct CollectionView: View {
     @ViewBuilder
     private func appKitGrid(geo: GeometryProxy) -> some View {
         MasonryGridHost(configuration: GridHostConfiguration(
-            items: model.items,
+            // The DISPLAY list, not the raw feed: with carousel grouping on, each
+            // multi-image post contributes one tile (307).
+            items: model.displayItems,
             itemsVersion: model.itemsVersion,
+            postGroups: model.postGroups,
             density: gridPrefs.density,
             spacing: Self.gridSpacing,
             topInset: Self.gridTopInset,
@@ -706,6 +698,14 @@ struct CollectionView: View {
             contentInsets: NSEdgeInsets(
                 top: Self.contentMargin, left: Self.contentMargin,
                 bottom: Self.contentMargin, right: Self.contentMargin)))
+        // The preference is persisted on `gridPrefs`, but the derivation lives where
+        // `items` does, so mirror it onto the model (307). Setting it re-derives the
+        // display list AND bumps `itemsVersion`, which is what invalidates the
+        // masonry cache — the tile count changed even though the items did not.
+        .onAppear { model.groupCarousels = gridPrefs.groupCarousels }
+        .onChange(of: gridPrefs.groupCarousels) { _, grouped in
+            model.groupCarousels = grouped
+        }
     }
 
     /// Open the full-window detail page for `detail`: make it the grid lead cursor

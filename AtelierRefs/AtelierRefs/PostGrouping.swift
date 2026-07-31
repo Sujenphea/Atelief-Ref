@@ -27,11 +27,25 @@ import Foundation
 
 /// The "same post" key for a source, or `nil` when the source can't be grouped.
 ///
-/// The permalink, lightly normalized: trailing slashes and a `#fragment` are
-/// noise (Instagram appends `/`, a shared link may carry an anchor), so two
-/// captures of one post agree. Case is preserved deliberately — an IG shortcode
-/// is case-sensitive (`/p/AbCd/` and `/p/abcd/` are different posts), so
-/// lowercasing would merge unrelated items.
+/// THREE producers feed this and they do not agree, so the normalization has to
+/// reconcile them or one post silently becomes two groups:
+///
+///  • `extractors/base.js` (`cleanURL` = `origin + pathname`) — the live-page path.
+///  • `bulk-instagram.js` — synthesises `https://<host>/<p|reel>/<code>/`, and its
+///    own comment notes a reel resolves under BOTH `/reel/` and `/p/`.
+///  • `AddLinkForm` → `LinkPayload.canonicalURL` — a hand-pasted share link, which
+///    is where `?igsh=…` tracking params actually arrive.
+///
+/// So: drop the query and `#fragment`, lowercase the SCHEME and HOST only, drop a
+/// leading `www.` / `m.`, canonicalise `/reel/<code>` to `/p/<code>`, and trim
+/// trailing slashes.
+///
+/// The path keeps its case deliberately — an IG shortcode is case-sensitive
+/// (`/p/AbCd` and `/p/abcd` are different posts), so lowercasing the whole URL
+/// would fuse unrelated items. Over-normalizing is the dangerous direction here:
+/// under-normalizing splits one carousel (visible, harmless), while
+/// over-normalizing merges strangers into one post (invisible, and "select the
+/// rest of this post" would then reach someone else's images).
 ///
 /// `nil` for a source with no `originalURL` — a pasted image, a dragged file, an
 /// imported folder. Those must NOT collapse into one giant "group of everything
@@ -39,8 +53,30 @@ import Foundation
 func postGroupKey(for source: Source) -> String? {
     guard let raw = source.originalURL?.trimmingCharacters(in: .whitespacesAndNewlines),
           !raw.isEmpty else { return nil }
+
+    // Strip the fragment and query by hand rather than via `URLComponents`, so an
+    // unparseable string still gets the same treatment instead of falling through
+    // raw (a malformed URL is a legitimate key — it just can't be host-normalized).
     var key = raw
     if let hash = key.firstIndex(of: "#") { key = String(key[key.startIndex..<hash]) }
+    if let query = key.firstIndex(of: "?") { key = String(key[key.startIndex..<query]) }
+
+    if var parts = URLComponents(string: key), let host = parts.host {
+        parts.scheme = parts.scheme?.lowercased()
+        var lowered = host.lowercased()
+        for prefix in ["www.", "m."] where lowered.hasPrefix(prefix) {
+            lowered.removeFirst(prefix.count)
+            break
+        }
+        parts.host = lowered
+        // Both paths resolve to the same post (`bulk-instagram.js`), and bulk
+        // capture picks `/reel/` for clips while a live page may sit on `/p/`.
+        if parts.path.hasPrefix("/reel/") {
+            parts.path = "/p/" + parts.path.dropFirst("/reel/".count)
+        }
+        key = parts.string ?? key
+    }
+
     while key.hasSuffix("/") { key.removeLast() }
     return key.isEmpty ? nil : key
 }
@@ -52,9 +88,16 @@ func postGroupKey(for source: Source) -> String? {
 /// mapping is needed at any call site. (Search synthesizes `item.id == asset.id`,
 /// so this works there unchanged.)
 ///
-/// Scope is the LOADED FEED, not the library: a carousel half-filed into another
-/// collection reports the two members that are actually on screen, because that is
-/// what the badge count promises and what "select the others" can actually select.
+/// Scope is the LOADED FEED, not the library — a deliberate contract, not an
+/// accident of where this happens to be built. A carousel half-filed into another
+/// collection collapses to ONE tile reporting the two members actually on screen,
+/// and an action on that tile touches exactly those two. Everything the grid shows,
+/// counts, and acts on therefore agrees, and none of it costs a query: this is a
+/// pass over `CollectionItemDetail`s the feed had already loaded.
+///
+/// The alternative — a library-wide count — would need a per-post lookup (an N+1 in
+/// waiting) and would promise a number the tile cannot act on. If that becomes
+/// desirable, it belongs in ONE aggregate query, not here.
 struct PostGroups {
     /// Item id → its post key. Only items in a group of 2+ appear — a lone item
     /// from a post is not "grouped", and leaving it out keeps every lookup a
@@ -99,42 +142,42 @@ struct PostGroups {
         return ids
     }
 
-    /// How many DISTINCT multi-item posts the selection touches — the singular /
-    /// plural switch in ``selectSamePostTitle(siblingCount:postCount:)``.
-    func groupCount(ofSelected selected: Set<UUID>) -> Int {
-        var keys = Set<String>()
-        for id in selected { if let key = keyByItem[id] { keys.insert(key) } }
-        return keys.count
+    /// Whether `id` is the member that STANDS FOR its post in a collapsed feed —
+    /// the first in feed order. Ungrouped items are always their own representative.
+    func isRepresentative(_ id: UUID) -> Bool {
+        guard let key = keyByItem[id] else { return true }
+        return membersByKey[key]?.first == id
     }
 
-    /// The UNSELECTED items sharing a post with something in `selected` — what the
-    /// sibling ring draws and what "Select all from this post" would add. Empty
-    /// when the selection has no grouped item, or when every sibling is already in.
-    func siblings(ofSelected selected: Set<UUID>) -> Set<UUID> {
-        guard !keyByItem.isEmpty, !selected.isEmpty else { return [] }
-        var keys = Set<String>()
-        for id in selected { if let key = keyByItem[id] { keys.insert(key) } }
-        guard !keys.isEmpty else { return [] }
+    /// The display list for a collapsed grid: one tile per post, standing at its
+    /// FIRST member's position, with every ungrouped item kept exactly as it is.
+    ///
+    /// This is what makes collapsing cheap. It returns a SHORTER `[CollectionItemDetail]`
+    /// — not a cell holding several ids — so the grid keeps its one-item-one-cell-one-
+    /// selectable-id invariant and every index-based subsystem (the layout's `aspects`,
+    /// `nextGridIndex`, the marquee, reorder) is untouched.
+    func collapsed(_ items: [CollectionItemDetail]) -> [CollectionItemDetail] {
+        guard !keyByItem.isEmpty else { return items }
+        return items.filter { isRepresentative($0.item.id) }
+    }
+
+    /// Every member of the posts `selected` touches — the ACTION boundary.
+    ///
+    /// A collapsed tile is one thing to click and N things to act on: the selection
+    /// holds only representatives (so the grid's index math stays 1:1), and an action
+    /// widens to the real members right before it runs. An ungrouped id widens to
+    /// itself, so callers can route EVERY action through this without special-casing.
+    func expand(_ selected: Set<UUID>) -> Set<UUID> {
+        guard !keyByItem.isEmpty else { return selected }
         var result = Set<UUID>()
-        for key in keys {
-            for id in membersByKey[key] ?? [] where !selected.contains(id) {
+        result.reserveCapacity(selected.count)
+        for id in selected {
+            if let key = keyByItem[id], let members = membersByKey[key] {
+                result.formUnion(members)
+            } else {
                 result.insert(id)
             }
         }
         return result
     }
-}
-
-// MARK: - Action wording
-
-/// The "select the rest of this post" row / button title for a selection whose
-/// unselected siblings number `siblingCount`, spanning `postCount` distinct posts.
-/// `nil` when there is nothing to add, which is the signal to hide the affordance
-/// rather than offer a no-op.
-func selectSamePostTitle(siblingCount: Int, postCount: Int) -> String? {
-    guard siblingCount > 0 else { return nil }
-    // Title Case, matching the app's other menu verbs ("Set as Cover", "Remove
-    // from Collection") — this row sits among them in the same popover / NSMenu.
-    let noun = postCount > 1 ? "These Posts" : "This Post"
-    return "Select \(siblingCount) More from \(noun)"
 }

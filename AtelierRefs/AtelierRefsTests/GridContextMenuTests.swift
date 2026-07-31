@@ -176,7 +176,7 @@ struct GridContextMenuTests {
         let targets = gridActionTargets(
             isSelected: true,
             selectedAssetIDs: [Self.assetA, Self.assetB, Self.assetC],
-            cellAssetID: Self.assetB)
+            cellAssetIDs: [Self.assetB])
         #expect(targets == [Self.assetA, Self.assetB, Self.assetC])
     }
 
@@ -185,7 +185,7 @@ struct GridContextMenuTests {
         let targets = gridActionTargets(
             isSelected: false,
             selectedAssetIDs: [Self.assetA, Self.assetB],
-            cellAssetID: Self.assetC)
+            cellAssetIDs: [Self.assetC])
         #expect(targets == [Self.assetC])
     }
 
@@ -196,7 +196,7 @@ struct GridContextMenuTests {
     @Test("an idle grid with no selection targets just the clicked cell")
     func idleGridTargetsTheCell() {
         let targets = gridActionTargets(
-            isSelected: false, selectedAssetIDs: [], cellAssetID: Self.assetA)
+            isSelected: false, selectedAssetIDs: [], cellAssetIDs: [Self.assetA])
         #expect(targets == [Self.assetA])
     }
 
@@ -204,7 +204,7 @@ struct GridContextMenuTests {
     func missingCellYieldsNoTargets() {
         #expect(
             gridActionTargets(
-                isSelected: false, selectedAssetIDs: [Self.assetA], cellAssetID: nil).isEmpty)
+                isSelected: false, selectedAssetIDs: [Self.assetA], cellAssetIDs: []).isEmpty)
     }
 
     /// Order matters: the destructive verbs are labelled with the target COUNT,
@@ -214,6 +214,6 @@ struct GridContextMenuTests {
         let ordered = [Self.assetC, Self.assetA, Self.assetB]
         #expect(
             gridActionTargets(
-                isSelected: true, selectedAssetIDs: ordered, cellAssetID: Self.assetA) == ordered)
+                isSelected: true, selectedAssetIDs: ordered, cellAssetIDs: [Self.assetA]) == ordered)
     }
 }

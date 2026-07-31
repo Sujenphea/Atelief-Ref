@@ -38,7 +38,15 @@ struct GridHostConfiguration {
     var items: [CollectionItemDetail]
     /// The model's monotonic items version — bumped on every republish, so it is
     /// the single "the item set changed" signal, including in-place content edits.
+    /// It ALSO bumps when the group-carousels toggle flips (307): collapsing changes
+    /// the display list without changing the underlying items, and this version is
+    /// the only key `MasonryLayoutCache` has — without the bump it would serve the
+    /// previous solve and lay cells out against stale analytic frames.
     var itemsVersion: Int
+    /// The feed bucketed by originating post (307 · carousel grouping), built ONCE
+    /// by the owning model and passed down. The host used to rebuild an identical
+    /// index from the same items; one owner means the two can no longer disagree.
+    var postGroups: PostGroups = PostGroups()
     /// The density notch (columns are derived at the live width by the layout).
     var density: GridDensity
     var spacing: CGFloat
@@ -413,14 +421,10 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// (and unit-tested via ``gridIDToIndex(for:)``).
     private(set) var idToIndex: [UUID: Int] = [:]
 
-    /// The feed bucketed by post (307 · carousel grouping) — rebuilt with `items`.
-    /// Feeds the per-cell carousel chip and the dashed sibling ring.
+    /// The feed bucketed by post (307 · carousel grouping), mirrored from the
+    /// configuration on every `applyItems`. Feeds the per-cell carousel chip. The
+    /// model builds it; the host never does.
     private(set) var postGroups = PostGroups()
-    /// Memoized `postGroups.siblings(ofSelected:)` for one selection set. Both
-    /// `configure` (per cell, on scroll-in) and `reconcileSelection` need the
-    /// sibling set; recomputing it per cell would make a scroll O(cells × selected).
-    /// Invalidated by an item change (`applyItems`) and re-keyed on the selection.
-    private var siblingCache: (ids: Set<UUID>, siblings: Set<UUID>)?
 
     /// The `$selection` subscription driving layer-only reconciliation (A2).
     private var selectionCancellable: AnyCancellable?
@@ -678,11 +682,10 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
 
         items = newItems
         idToIndex = gridIDToIndex(for: newItems)
-        // Re-bucket by post (307) BEFORE any cell configures: the chip count and
-        // the sibling ring both read this index. Cheap — one pass over the feed,
-        // paid only when the item set actually changes.
-        postGroups = PostGroups(items: newItems)
-        siblingCache = nil
+        // Mirror the model's index BEFORE any cell configures — the chip count reads
+        // it. Built by the owning model, not here: an identical rebuild in both
+        // places was two sources of truth for one derivation.
+        postGroups = configuration.postGroups
         layout.itemsVersion = configuration.itemsVersion
         layout.aspects = newItems.map { aspect(for: $0) }
         layout.invalidateLayout()
@@ -760,17 +763,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         CellSelectionState(
             isSelected: selection.ids.contains(id),
             isCursor: selection.lead == id,
-            isSelecting: selection.isSelecting,
-            isPostSibling: siblings(of: selection).contains(id))
-    }
-
-    /// The unselected same-post members for `selection` (307), memoized so a scroll
-    /// or a reconcile doesn't recompute the set once per cell.
-    private func siblings(of selection: GridSelection) -> Set<UUID> {
-        if let cached = siblingCache, cached.ids == selection.ids { return cached.siblings }
-        let computed = postGroups.siblings(ofSelected: selection.ids)
-        siblingCache = (selection.ids, computed)
-        return computed
+            isSelecting: selection.isSelecting)
     }
 
     /// The pixel bucket for a cell, from its ANALYTIC frame (the cell never
@@ -861,19 +854,11 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// OFF screen are not touched here; they repaint from ``configure`` on scroll-in.
     private func reconcileSelection(to newValue: GridSelection) {
         let old = reflectedSelection
-        // The sibling set is derived from the selection, so a cell can change ring
-        // WITHOUT its own membership changing — picking one carousel image rings
-        // three untouched cells. Diff the sibling sets too and fold them into the
-        // repaint set, or those three would keep a stale (or missing) ring until
-        // they scrolled out and back (307).
-        let oldSiblings = siblings(of: old)
         reflectedSelection = newValue
-        let newSiblings = siblings(of: newValue)
         guard collectionView != nil else { return }
         let visible = visibleItemIDs()
         let delta = selectionCellDelta(from: old, to: newValue)
         var targets = selectionReconcileTargets(delta: delta, visibleIDs: visible)
-        targets.formUnion(oldSiblings.symmetricDifference(newSiblings).intersection(visible))
         for id in targets {
             guard let index = idToIndex[id], let cell = cellIfVisible(at: index) else { continue }
             cell.applySelectionState(cellSelectionState(for: id, selection: newValue))
@@ -1114,16 +1099,6 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         let dests = configuration.moveTargets
         let menu = NSMenu()
 
-        // "Select the rest of this carousel" (307), first because it changes the
-        // SCOPE the verbs below would act on — offered only when the right-clicked
-        // cell actually has same-post members that aren't selected yet, so it is
-        // never a no-op row. Menu style is irrelevant: grouping is a property of
-        // the source, not of membership, so search gets it too.
-        if let selectItem = selectSamePostMenuItem(forCellItemID: itemID) {
-            menu.addItem(selectItem)
-            menu.addItem(.separator())
-        }
-
         switch configuration.menuStyle {
         case .collection:
             let moveItem = NSMenuItem(title: "Move to", action: nil, keyEquivalent: "")
@@ -1174,25 +1149,6 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
             })
         }
         return menu
-    }
-
-    /// The "Select N More from This Post" row for a right-click on `itemID` (307),
-    /// or `nil` when that cell has no unselected same-post members. Adds the whole
-    /// carousel to the selection through the SAME reducer seam the bar's row uses
-    /// (`.union`), so the two paths can't diverge.
-    private func selectSamePostMenuItem(forCellItemID itemID: UUID) -> NSMenuItem? {
-        let members = postGroups.members(forItem: itemID)
-        guard !members.isEmpty else { return nil }
-        let selected = configuration.selectionStore.selection.ids
-        let missing = members.filter { !selected.contains($0) }.count
-        guard let title = selectSamePostTitle(siblingCount: missing, postCount: 1) else {
-            return nil
-        }
-        return BlockMenuItem(title: title) { [weak self] in
-            guard let self else { return }
-            self.execute(self.configuration.selectionStore.apply(
-                .union(Set(members)), columns: self.currentColumns()))
-        }
     }
 
     /// A Move-to / Add-to submenu: subfolders first, a divider, then roots — the

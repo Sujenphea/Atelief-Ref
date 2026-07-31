@@ -220,27 +220,27 @@ struct GridCellAccessibilityLabelTests {
 
     @Test("kind names map to human words")
     func kinds() {
-        #expect(gridCellAccessibilityLabel(for: detail(kind: .image)) == "Image")
-        #expect(gridCellAccessibilityLabel(for: detail(kind: .video)) == "Video")
-        #expect(gridCellAccessibilityLabel(for: detail(kind: .tweet)) == "Tweet")
-        #expect(gridCellAccessibilityLabel(for: detail(kind: .link)) == "Link")
-        #expect(gridCellAccessibilityLabel(for: detail(kind: .color)) == "Color")
+        #expect(gridCellAccessibilityLabel(for: detail(kind: .image), postMemberCount: 0) == "Image")
+        #expect(gridCellAccessibilityLabel(for: detail(kind: .video), postMemberCount: 0) == "Video")
+        #expect(gridCellAccessibilityLabel(for: detail(kind: .tweet), postMemberCount: 0) == "Tweet")
+        #expect(gridCellAccessibilityLabel(for: detail(kind: .link), postMemberCount: 0) == "Link")
+        #expect(gridCellAccessibilityLabel(for: detail(kind: .color), postMemberCount: 0) == "Color")
     }
 
     @Test("a title wins over the handle and the bare kind")
     func titlePreferred() {
         let d = detail(kind: .link, title: "Hello World", authorHandle: "@someone")
-        #expect(gridCellAccessibilityLabel(for: d) == "Link, Hello World")
+        #expect(gridCellAccessibilityLabel(for: d, postMemberCount: 0) == "Link, Hello World")
     }
 
     @Test("a whitespace-only title is ignored, falling through to the handle")
     func blankTitleFallsThrough() {
         let d = detail(kind: .tweet, title: "   ", authorHandle: "@ndreas")
-        #expect(gridCellAccessibilityLabel(for: d) == "Tweet by @ndreas")
+        #expect(gridCellAccessibilityLabel(for: d, postMemberCount: 0) == "Tweet by @ndreas")
     }
 
     @Test("no title and no handle is the bare kind")
     func bareKind() {
-        #expect(gridCellAccessibilityLabel(for: detail(kind: .image)) == "Image")
+        #expect(gridCellAccessibilityLabel(for: detail(kind: .image), postMemberCount: 0) == "Image")
     }
 }

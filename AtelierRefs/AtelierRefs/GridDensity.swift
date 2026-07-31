@@ -82,11 +82,27 @@ final class GridViewPreferences: ObservableObject {
         didSet { defaults.set(density.columns, forKey: Self.densityKey) }
     }
 
+    /// Collapse each multi-image post (an Instagram carousel, a multi-photo tweet)
+    /// to a single tile (307). On by default: a saved-posts feed is mostly carousels,
+    /// and showing every member turns four near-identical images into four slots that
+    /// could have shown four different posts. Off restores the flat, one-tile-per-image
+    /// grid.
+    @Published var groupCarousels: Bool {
+        didSet { defaults.set(groupCarousels, forKey: Self.groupCarouselsKey) }
+    }
+
     private static let densityKey = "AtelierGridDensityColumns"
+    private static let groupCarouselsKey = "AtelierGridGroupCarousels"
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        // `bool(forKey:)` can't tell "absent" from "stored false", and the default
+        // here is ON — so probe for the key's presence explicitly rather than
+        // relying on the zero value.
+        groupCarousels = defaults.object(forKey: Self.groupCarouselsKey) == nil
+            ? true
+            : defaults.bool(forKey: Self.groupCarouselsKey)
         // An absent key reads as `0`; a corrupt / out-of-absolute-range stored
         // value falls back to the default notch (12A). The width-derived floor is
         // applied later at render time by `GridDensity.columns(forWidth:)`.

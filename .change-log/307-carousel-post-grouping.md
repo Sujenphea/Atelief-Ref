@@ -1,98 +1,133 @@
-# 307 — Carousel grouping: badge, sibling ring, "select the rest of this post"
+# 307 — One tile per post: carousels collapse
 
 ## Summary
 
-A multi-image post (an Instagram carousel, a multi-photo tweet) lands in the grid
-as N unrelated-looking tiles. Nothing said they belonged together, and nothing
-let you act on them as a unit. This adds three connected affordances:
+A multi-image post (an Instagram carousel, a multi-photo tweet) used to land in the
+grid as N unrelated-looking tiles. Four near-identical images occupied four slots
+that could have shown four different posts, and in a saved-posts feed — which is
+mostly carousels — that is most of the grid.
 
-1. **Carousel chip** — a tile whose post contributes more than one item to the
-   current feed draws a small `⧉ N` capsule in its top-leading corner.
-2. **Sibling ring** — selecting one member draws a dashed accent ring on the
-   post's remaining, unselected members, so you can see exactly which tiles they
-   are without hunting for the badge count.
-3. **"Select N More from This Post"** — a glyph button in both selection bars
-   (in the collection's, sitting beside the `…` overflow rather than inside it:
-   the action changes *what* every other action would operate on, so it belongs
-   in reach of the selection, not a click behind it), and an item at the top of
-   the grid's right-click menu on both surfaces. Additive: it unions the siblings
-   into the selection, so a triage in progress survives.
+Now a post is **one tile**. The `⧉ N` chip says how many images stand behind it, and
+every action on that tile acts on all of them.
 
 ## The grouping key (the load-bearing decision)
 
-Carousel members do **not** share a `source_id`. `AppServices.ingest` inserts a
-fresh `Source` row on every non-dedup capture, so a four-image carousel is four
-assets with four distinct source ids. What they share is the post permalink — the
-extension's saved-feed parser hands every carousel child the post's own
-`originalURL` (`bulk-instagram.js`: "Carousel children share the POST's
-permalink"), and the same holds for Twitter and Pinterest.
+Carousel members do **not** share a `source_id`. `AppServices.ingest` inserts a fresh
+`Source` row on every non-dedup capture, so a four-image carousel is four assets with
+four distinct source ids. What they share is the post permalink — the extension's
+saved-feed parser hands every carousel child the post's own `originalURL`
+(`bulk-instagram.js`: "Carousel children share the POST's permalink").
 
-So the group key is the **normalized `Source.originalURL`**: trailing slashes and
-a `#fragment` stripped, case **preserved** (IG shortcodes are case-sensitive, so
-lowercasing would merge unrelated posts). A source with no URL — a paste, a
-dragged file — has no key at all, so local captures never collapse into one giant
-group.
+So the key is the normalized `Source.originalURL`. Three producers write that field
+and they disagree, so the normalization has to reconcile them:
 
-Grouping is scoped to the **loaded feed**, not the library: a carousel half-filed
-elsewhere reports the two members actually on screen, because that is what the
-badge promises and what "select the others" can actually select.
+| Producer | Shape |
+| --- | --- |
+| `extractors/base.js` (`cleanURL`) | `origin + pathname` from the live page |
+| `bulk-instagram.js` | synthesised `https://<host>/<p\|reel>/<code>/` |
+| `AddLinkForm` → `LinkPayload.canonicalURL` | a hand-pasted share link |
+
+`postGroupKey` therefore drops the query and `#fragment`, lowercases **scheme and
+host only**, drops a leading `www.`/`m.`, and canonicalises `/reel/<code>` to
+`/p/<code>` (both resolve to the same post — `bulk-instagram.js:176`). The **path
+keeps its case**: an IG shortcode is case-sensitive, so lowercasing it would fuse
+unrelated posts.
+
+Direction matters here. Under-normalizing splits one carousel — visible and harmless.
+Over-normalizing merges strangers into one post — invisible, and an action on one
+post would reach another's images. The guard tests pin both directions.
+
+## Why collapsing stayed cheap
+
+Collapsing does **not** mean a cell holding several ids. `IngestionModel.items` is a
+derived array, so the display list is simply a **shorter array of the same type**:
+one item, one cell, one selectable id. Every index-based subsystem — the layout's
+`aspects`, `nextGridIndex`, the marquee, reorder, `items[indexPath.item]` — is
+untouched.
+
+Fan-out happens at the **action boundary** instead. The selection holds only
+representatives; `PostGroups.expand(_:)` widens to real members immediately before a
+verb runs. That split is what keeps ⇧-range and marquee math working while "Delete"
+still removes four things.
+
+## Behaviour
+
+- **Representative** — the post's first member in feed order; the tile stands at that
+  position.
+- **Actions** — delete, move, remove-from-collection and drag all widen to every
+  member *in this feed*. The confirmation names items ("Delete 4 items") while the
+  selection bar counts posts ("1 selected").
+- **Half-filed post** — collapses to what is present; the chip shows that count.
+- **Scope** — feed-scoped, never library-scoped. No new queries: this is a pass over
+  data the grid had already loaded.
+- **Toggle** — "Group carousels", persisted on `GridViewPreferences`, on by default.
 
 ## Files changed
 
 **New**
 
-- `AtelierRefs/AtelierRefs/PostGrouping.swift` — `postGroupKey(for:)`, the
-  `PostGroups` index (`memberCount` / `members` / `siblings` / `groupCount`), and
-  `selectSamePostTitle(siblingCount:postCount:)`. Pure, view-free.
-- `AtelierRefs/AtelierRefsTests/PostGroupingTests.swift` — key normalization, the
-  index, the `.union` reducer action, the VoiceOver suffix. Includes
-  `carouselSharesURLNotSourceID`, which fails loudly if anyone "fixes" the
-  grouping onto `sourceId` and makes the whole feature silently inert.
-- `AtelierRefs/AtelierRefsTests/MasonryGridItemBadgeTests.swift` — pins that the
-  cell's backing layer shares the view's flipped geometry and that the chip
-  therefore lands top-leading (clear of the top-trailing selection circle), plus
-  the no-chip and reuse-clears-chip cases.
+- `AtelierRefs/AtelierRefs/PostGrouping.swift` — `postGroupKey(for:)`, the `PostGroups`
+  index (`memberCount` / `members` / `isRepresentative` / `collapsed` / `expand`).
+  Pure and view-free.
+- `AtelierRefs/AtelierRefsTests/PostGroupingTests.swift` — key normalization (merges
+  *and* non-merges), the index, collapse, expand, the badge pixmap, the `.union`
+  reducer, the VoiceOver suffix. Includes `carouselSharesURLNotSourceID`, which fails
+  loudly if anyone "fixes" the grouping onto `sourceId` and makes the feature inert.
+- `AtelierRefs/AtelierRefsTests/PostGroupingWiringTests.swift` — the glue the pure
+  tests can't see: the display list and reducer order stay in step, the toggle
+  re-derives *and* bumps `itemsVersion`, and every action widens to the whole post.
+- `AtelierRefs/AtelierRefsTests/MasonryGridItemBadgeTests.swift` — chip placement,
+  the no-chip case, and reuse clearing it.
 
 **Changed**
 
-- `GridSelection.swift` — new `.union(Set<UUID>)` action: additive, collapses the
-  live ⇧-range like any non-⇧ membership edit, moves the cursor/anchor to the
-  last added item in feed order and returns `.scrollTo` so the grid follows.
-- `MasonryGridItem.swift` — `PostBadge` (chip artwork, rendered once per distinct
-  count and cached as an `NSImage`), a `CAShapeLayer` dashed sibling ring, an
-  `isPostSibling` field on `CellSelectionState`, a `postMemberCount:` parameter on
-  `configure`, and a carousel suffix on `gridCellAccessibilityLabel` (the chip is
-  a pixmap VoiceOver can't read). Both are layer-only, matching the cell's
-  no-SwiftUI-per-cell rule.
-- `MasonryGridHost.swift` — builds `PostGroups` in `applyItems`, feeds the chip
-  count in `configure`, and folds the sibling-set symmetric difference into
-  `reconcileSelection`'s repaint targets (a cell can change ring without its own
-  membership changing). The sibling set is memoized per selection so a scroll
-  isn't O(cells × selected). Adds the context-menu item to both menu styles.
-- `IngestionModel.swift` — `postGroups` rebuilt in `rebuildItemDerivations`, plus
-  `samePostSiblings`, `selectSamePostRowTitle`, and `selectSamePost()`.
-- `CollectionView.swift` — a `SelectionBarButton` in the selection bar, placed
-  immediately before the `…` overflow, and hidden (not disabled) when there is
-  nothing to add — an always-present button that is usually dead reads as broken.
-- `LibrarySearch.swift` — its own `PostGroups` (search owns its own feed),
-  rebuilt on `resultsVersion`, and a glyph button in the selection bar. Both bars
-  now carry the same glyph and keep the count in the button's help text.
+- `IngestionModel.swift` — sole owner of `PostGroups`; derives `displayItems` in the
+  same pass; `groupCarousels` re-derives on change. `rebuildSelectedAssetIDs` and
+  `actionTargets` widen through `expand(_:)`, which is what makes every verb fan out
+  without each remembering to.
+- `MasonryGridHost.swift` — reads `postGroups` from the configuration instead of
+  rebuilding an identical index.
+- `MasonryGridItem.swift` — `PostBadge` now draws from `Theme.NS` tokens rather than
+  hardcoded white/black; `postMemberCount` is required (a defaulted `0` could silently
+  drop the VoiceOver suffix).
+- `GridContextMenu.swift` — `gridActionTargets` takes `cellAssetIDs: [UUID]`: the
+  scope rule is unchanged, but one cell can now stand for several assets.
+- `GridDensity.swift` — the persisted `groupCarousels` preference.
+- `LibrarySearch.swift` — its own feed, but the same `collapsed`/`expand`, plus a
+  `displayVersion` of its own (see below).
+- `CollectionView.swift` — passes `displayItems` and mirrors the preference.
 
-## Notes
+## The trap worth knowing about
 
-- No schema change, no migration, no new reads: `CollectionItemDetail` already
-  carries `source`, so grouping is a pass over data the grid had loaded anyway.
-- The chip is a translucent-dark capsule rather than accent-coloured on purpose —
-  it is permanently on every carousel tile and would otherwise compete with the
-  accent selection ring right beside it. The sibling ring is dashed and thinner
-  (2pt vs 3pt) than the selection ring for the same reason.
+`MasonryLayoutCache` is keyed on `(itemsVersion, width, columns, spacing, topInset)`.
+Flipping the grouping toggle changes the display list while `items` is untouched, so
+without a version bump the cache would serve the previous solve and lay the wrong
+number of cells against stale analytic frames — and since hit-testing, marquee and
+selection all ride those frames, clicks would land on the wrong tile. Both surfaces
+bump: the model through `rebuildItemDerivations`, search through its own
+`displayVersion` (it cannot use `resultsVersion`, which does not move when only the
+toggle does).
+
+## Removed
+
+The sibling ring, `isPostSibling`, the host's `siblingCache` and its reconcile
+symmetric-difference, both "Select N More from This Post" buttons, and the matching
+context-menu item. With one tile per post there are no sibling tiles for any of it to
+act on. `GridSelection.union` stays — it is the natural reducer for "select these
+members" and is still tested.
 
 ## Verification
 
-`AtelierRefsTests` passes in full (including the 25 new cases). The rendered
-appearance was **not** eyeballed in the running app — screen recording is not
-permitted for this shell, so no screenshot could be taken. The one placement fact
-that couldn't be established by reading the code (whether the flipped view's
-backing layer flips its sublayer geometry, i.e. whether the chip lands top-left
-or bottom-left) is asserted directly in `MasonryGridItemBadgeTests`; colour,
-weight, and spacing are still worth a human look.
+`AtelierRefsTests` passes in full under Swift 6 language mode: **1012 cases, 0
+failures**, including 45 covering this feature.
+
+Not yet eyeballed in the running app: chip legibility over dark artwork, and the
+toggle's scroll/hit-testing behaviour after a flip (the layout-cache path is
+test-pinned at the version level, but the visual result has not been watched).
+
+## Still to do
+
+There is no UI control for the toggle yet — the preference exists and is persisted,
+but nothing surfaces it. It belongs beside the density controls. Expanding a
+collapsed tile to see its members is also a follow-up; `DetailSession` already steps
+through neighbours, which is the cheapest first version.

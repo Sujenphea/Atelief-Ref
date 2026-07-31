@@ -681,7 +681,27 @@ private struct LibrarySearchResults: View {
     private static let dragPreviewSide: CGFloat = 84
 
     /// The result set's asset ids in display order — the reducer's `order`.
-    private var orderIDs: [UUID] { search.results.map(\.asset.id) }
+    private var orderIDs: [UUID] { displayItems.map { $0.item.id } }
+
+    /// The results as the grid SHOWS them — collapsed to one tile per post when
+    /// grouping is on (307). Held as state, not computed, because this body re-runs
+    /// on every selection change and collapsing is O(results).
+    @State private var displayItems: [CollectionItemDetail] = []
+    /// Bumped whenever ``displayItems`` is rebuilt, and passed to the host as its
+    /// items version. It cannot be `search.resultsVersion`: flipping the grouping
+    /// toggle changes the display list while the results are identical, and the
+    /// masonry layout cache keys off this integer alone — without a bump it would
+    /// serve the previous solve and lay out the wrong number of cells.
+    @State private var displayVersion = 0
+
+    /// Rebuild the post index and the display list from the current results. One
+    /// function, called from every trigger, so the two can never drift apart.
+    private func rebuildGrouping() {
+        let source = items
+        postGroups = PostGroups(items: source)
+        displayItems = gridPrefs.groupCarousels ? postGroups.collapsed(source) : source
+        displayVersion &+= 1
+    }
 
     /// A synthetic membership per hit so the host (keyed on `item.id`) can render
     /// search results. `item.id == asset.id` so every host closure keyed on the cell
@@ -773,13 +793,20 @@ private struct LibrarySearchResults: View {
             // not push this itself — the collection grid's model does). Prune a stale
             // multi-selection to the surviving ids whenever the query changes.
             .onAppear {
+                rebuildGrouping()
                 selectionStore.setOrder(orderIDs)
-                postGroups = PostGroups(items: items)
             }
             .onChange(of: search.resultsVersion) { _, _ in
+                rebuildGrouping()
                 selectionStore.setOrder(orderIDs)
                 selectionStore.prune(to: orderIDs)
-                postGroups = PostGroups(items: items)
+            }
+            // Grouping hides tiles, so the reducer's order must follow it and a
+            // selection holding a now-hidden member has to be pruned.
+            .onChange(of: gridPrefs.groupCarousels) { _, _ in
+                rebuildGrouping()
+                selectionStore.setOrder(orderIDs)
+                selectionStore.prune(to: orderIDs)
             }
             // A triage delete removes a hit from the library — re-run the query so the
             // stale card leaves the grid (contentsVersion bumps when the delete reloads).
@@ -790,8 +817,9 @@ private struct LibrarySearchResults: View {
 
     private var gridConfiguration: GridHostConfiguration {
         GridHostConfiguration(
-            items: items,
-            itemsVersion: search.resultsVersion,
+            items: displayItems,
+            itemsVersion: displayVersion,
+            postGroups: postGroups,
             density: gridPrefs.density,
             spacing: Theme.Spacing.sm,
             topInset: Theme.Spacing.md,
@@ -845,16 +873,21 @@ private struct LibrarySearchResults: View {
     /// the cell is in it, else the one cell (the selection stays untouched).
     private func actionTargets(for id: UUID) -> [UUID] {
         let selection = selectionStore.selection
-        return (selection.isSelecting && selection.ids.contains(id))
-            ? Array(selection.ids) : [id]
+        let scope: Set<UUID> = (selection.isSelecting && selection.ids.contains(id))
+            ? selection.ids : [id]
+        // Widen a collapsed carousel tile to its whole post (307). Search synthesizes
+        // `item.id == asset.id`, so the widened membership ids ARE asset ids — no
+        // mapping needed, unlike the collection grid's `assetIDs(for:)`.
+        return Array(postGroups.expand(scope))
     }
 
     /// The ids a keyboard/bar Delete acts on: the selection while selecting, else the
     /// cursor's lone item.
     private func requestDeleteTargets() {
         let selection = selectionStore.selection
-        let targets = selection.isSelecting
-            ? Array(selection.ids) : (selection.lead.map { [$0] } ?? [])
+        let scope: Set<UUID> = selection.isSelecting
+            ? selection.ids : Set(selection.lead.map { [$0] } ?? [])
+        let targets = Array(postGroups.expand(scope))
         guard !targets.isEmpty else { return }
         model.requestDelete(assetIDs: targets)
     }
@@ -906,15 +939,6 @@ private struct LibrarySearchResults: View {
 
     // MARK: - Selection bar
 
-    /// The same-post action's title for the current selection, or `nil` when there
-    /// is nothing left to add (which hides the button).
-    private var selectSamePostRowTitle: String? {
-        let ids = selectionStore.selection.ids
-        return selectSamePostTitle(
-            siblingCount: postGroups.siblings(ofSelected: ids).count,
-            postCount: postGroups.groupCount(ofSelected: ids))
-    }
-
     /// The floating "N selected · Clear · Delete" bar, shown while a selection is
     /// active. Delete routes through the same staged/undoable asset delete as the
     /// keyboard and context menu.
@@ -926,17 +950,6 @@ private struct LibrarySearchResults: View {
                 .padding(.trailing, 10)
             SelectionBarButton("xmark", help: "Clear selection") {
                 selectionStore.apply(.clear)
-            }
-            // Same-post pickup (307). Search's bar has no `…` overflow (unlike the
-            // collection bar's), so this is a direct glyph, shown only while the
-            // selection has carousel members left to pull in — the help text carries
-            // the count the collection popover puts in its row title.
-            if let title = selectSamePostRowTitle {
-                SelectionBarButton("square.on.square", help: title) {
-                    let siblings = postGroups.siblings(ofSelected: selectionStore.selection.ids)
-                    guard !siblings.isEmpty else { return }
-                    selectionStore.apply(.union(siblings))
-                }
             }
             // `requestDelete` runs its own confirmation, so no extra dialog here.
             SelectionBarButton("trash", help: "Delete \(count)", role: .destructive) {

@@ -363,8 +363,28 @@ final class IngestionModel: ObservableObject {
     /// The loaded feed bucketed by originating post (307 · carousel grouping) —
     /// what makes "these four tiles are one Instagram carousel" answerable. Built
     /// here rather than in the view because a `CollectionView` body re-runs on
-    /// every selection change and the bucketing is O(N) over the whole feed.
+    /// every selection change and the bucketing is O(N) over the whole feed. This
+    /// is the ONLY build site; the grid host mirrors it through the configuration.
     private(set) var postGroups = PostGroups()
+
+    /// Whether the grid collapses each multi-image post to one tile (307). Mirrored
+    /// from `GridViewPreferences` (which persists it) so the derivation can run
+    /// where `items` lives; setting it re-derives, which also bumps `itemsVersion`
+    /// and so invalidates the masonry layout cache — the display list changed even
+    /// though `items` did not.
+    var groupCarousels = true {
+        didSet { if groupCarousels != oldValue { rebuildItemDerivations() } }
+    }
+
+    /// The feed AS THE GRID SHOWS IT: `items` with every multi-image post collapsed
+    /// to its first member when grouping is on, otherwise `items` verbatim.
+    ///
+    /// This — not `items` — is what the grid renders and what the selection store
+    /// orders. It is a strictly shorter array of the SAME element type, so the grid
+    /// keeps one item per cell per selectable id and every index-based subsystem is
+    /// untouched. Actions widen back to real members at the boundary via
+    /// ``PostGroups/expand(_:)``.
+    private(set) var displayItems: [CollectionItemDetail] = []
 
     /// Monotonic token bumped whenever `items` changes (a load / move / reorder),
     /// so the grid's masonry layout cache (011-B1 · 14A) can key off cheap
@@ -378,12 +398,18 @@ final class IngestionModel: ObservableObject {
     /// the selection cache depends on `items` too, so refresh it here as well.
     private func rebuildItemDerivations() {
         itemsVersion &+= 1
-        // Push the feed order to the selection store (the reducer's `order`
-        // argument) — replaces the old hoisted `itemOrder`.
-        selectionStore.setOrder(items.map { $0.item.id })
+        postGroups = PostGroups(items: items)
+        displayItems = groupCarousels ? postGroups.collapsed(items) : items
+        // Push the DISPLAYED order to the selection store (the reducer's `order`
+        // argument) — replaces the old hoisted `itemOrder`. It has to be the display
+        // list, not `items`: ⇧-range, arrow nav and the marquee all resolve hits
+        // through this order, so a hidden carousel member in it would let a range
+        // select a tile that isn't on screen.
+        selectionStore.setOrder(displayItems.map { $0.item.id })
+        // Keyed over ALL items, not just the displayed ones: an action on a collapsed
+        // tile expands to its hidden members and still needs their asset ids.
         assetIDByItemID = Dictionary(
             items.map { ($0.item.id, $0.asset.id) }, uniquingKeysWith: { first, _ in first })
-        postGroups = PostGroups(items: items)
         // Items changed, selection didn't — rebuild the cache against the store's
         // CURRENT (settled) selection. Safe to read here: no `willSet` is in
         // flight, unlike inside the `$selection` sink below.
@@ -398,9 +424,19 @@ final class IngestionModel: ObservableObject {
     /// store's stored `selection` still holds the OLD value at that instant — the
     /// computed `self.selection` would read stale. The sink passes the NEW value.
     private func rebuildSelectedAssetIDs(for selection: GridSelection) {
-        cachedSelectedAssetIDs = items.compactMap {
-            selection.ids.contains($0.item.id) ? $0.asset.id : nil
-        }
+        cachedSelectedAssetIDs = assetIDs(for: postGroups.expand(selection.ids))
+    }
+
+    /// The asset ids for `itemIDs`, in feed order — THE action boundary (307).
+    ///
+    /// Callers pass ids already widened through ``PostGroups/expand(_:)``, so a
+    /// selection holding one collapsed tile yields all four of its assets. Doing the
+    /// widening here (and in ``actionTargets(forCellItemID:)``) rather than in each
+    /// verb is what makes delete / move / remove / drag fan out consistently instead
+    /// of each remembering to. Walks `items`, not `displayItems`: the hidden members
+    /// are exactly what we are widening to.
+    private func assetIDs(for itemIDs: Set<UUID>) -> [UUID] {
+        items.compactMap { itemIDs.contains($0.item.id) ? $0.asset.id : nil }
     }
 
     /// The asset ids a batch action should act on for a right-click on the cell
@@ -415,30 +451,10 @@ final class IngestionModel: ObservableObject {
         gridActionTargets(
             isSelected: selection.ids.contains(itemID),
             selectedAssetIDs: selectedAssetIDs,
-            cellAssetID: assetIDByItemID[itemID])
-    }
-
-    // MARK: - Same-post selection (307 · carousel grouping)
-
-    /// The unselected items sharing a post with the current selection — the count
-    /// the "Select N More from This Post" row offers, and `nil`/empty when the
-    /// selection has no carousel members left to pull in.
-    var samePostSiblings: Set<UUID> { postGroups.siblings(ofSelected: selection.ids) }
-
-    /// The row title for the selection bar's same-post action, or `nil` to hide it.
-    var selectSamePostRowTitle: String? {
-        selectSamePostTitle(
-            siblingCount: samePostSiblings.count,
-            postCount: postGroups.groupCount(ofSelected: selection.ids))
-    }
-
-    /// Add every remaining item from the selected items' posts to the selection
-    /// (307). Additive — a scattered triage in progress is preserved — and routed
-    /// through the same pure reducer as every other selection edit.
-    func selectSamePost() {
-        let siblings = samePostSiblings
-        guard !siblings.isEmpty else { return }
-        selectionStore.apply(.union(siblings))
+            // A collapsed carousel tile stands for its whole post (307), so an
+            // UNSELECTED right-click widens too — otherwise "Delete" on a tile
+            // reading ⧉4 would remove one image and leave the tile behind.
+            cellAssetIDs: assetIDs(for: postGroups.expand([itemID])))
     }
 
     /// Build the drag payload for a drag that starts on the cell `itemID`
