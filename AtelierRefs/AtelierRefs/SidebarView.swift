@@ -335,7 +335,14 @@ struct SidebarView: View {
                 .font(.system(size: 14))
                 .foregroundStyle(Theme.Colors.inkSecondary)
         }
-        .menuStyle(.borderlessButton)
+        // `.button` + `.plain`, NOT `.borderlessButton`: that style carries chrome of
+        // its own, which measured 34pt wide against the trash button's 25.5 for the
+        // same 14pt glyph and 5pt hover pad — so the sort glyph sat off the rail's
+        // axis and its hover fill was wider than every sibling's. `.button` leaves
+        // only the genuine glyph-width difference. (`CollectionsField` and the detail
+        // page's overflow menu hit the identical trap.)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
         .hoverHighlight(padding: 5)

@@ -40,6 +40,12 @@ struct HoverHighlight: ViewModifier {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(isHovering && isEnabled ? fill : .clear))
             .contentShape(Rectangle())
+            // Disabled has to dim EXPLICITLY. This wraps `.plain`-family labels, which
+            // drop the system's own dimming (the reason ``DialogButtonStyle`` states
+            // for doing the same), so until now a disabled chrome button rendered
+            // pixel-identical to a live one — the detail pager's ← on the first item
+            // looked pressable. 0.35 is `DialogButtonStyle`'s existing dim.
+            .opacity(isEnabled ? 1 : 0.35)
             .onHover { isHovering = $0 }
     }
 }

@@ -177,9 +177,12 @@ struct ItemDetailView: View {
                     }
                     .onChange(of: zoom) { _, _ in reportDisplayTarget() }
                     // Zoom controls float over the media (image only) — the top bar
-                    // is Back + pager only now (041), matching the Figma frame.
+                    // is Back + pager only now (041), matching the Figma frame. The
+                    // inset is `lg` to match `mediaArea`'s own padding, so the bar's
+                    // edges line up with the ARTWORK's; at `md` it overhung the
+                    // picture by 4pt.
                     .overlay(alignment: .bottomTrailing) {
-                        if isImage { zoomControls.padding(Theme.Spacing.md) }
+                        if isImage { zoomControls.padding(Theme.Spacing.lg) }
                     }
                 Divider()
                 DetailSidebar(
@@ -226,35 +229,41 @@ struct ItemDetailView: View {
         Button(action: onClose) {
             Label("Back", systemImage: "chevron.left")
                 .font(Theme.Typography.row)
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, Theme.Spacing.xs + 2)
+                .foregroundStyle(Theme.Colors.inkPrimary)
+                .padding(.horizontal, TopBarPill.inset)
         }
-        .buttonStyle(.plain)
-        .background(Theme.Colors.filmstrip, in: Capsule())
-        .overlay(Capsule().stroke(Theme.Colors.hairlineStrong, lineWidth: 1))
+        .buttonStyle(TopBarPillButtonStyle())
         .keyboardShortcut(.cancelAction)
+        .help("Back (esc)")
     }
 
     /// The centered `N / count` pager in a hairline pill, chevrons flanking it.
+    ///
+    /// The chevrons carry their own hover pad, so the pill's outer inset is `sm` where
+    /// the other two take `TopBarPill.inset` — the glyph's padded hit area supplies the
+    /// rest, the same trade ``selectionBarChrome()`` makes on its trailing edge.
     private func pager(_ navigator: ItemDetailNavigator) -> some View {
-        HStack(spacing: Theme.Spacing.sm) {
+        HStack(spacing: Theme.Spacing.xs) {
             Button { navigator.step(-1) } label: { Image(systemName: "chevron.left") }
                 .keyboardShortcut(.leftArrow, modifiers: [])
                 .disabled(navigator.index <= 0)
+                .help("Previous item (←)")
 
             Text("\(navigator.index + 1) / \(navigator.count)")
                 .font(Theme.Typography.row).monospacedDigit()
-                .foregroundStyle(Theme.Colors.inkPrimary)
 
             Button { navigator.step(1) } label: { Image(systemName: "chevron.right") }
                 .keyboardShortcut(.rightArrow, modifiers: [])
                 .disabled(navigator.index >= navigator.count - 1)
+                .help("Next item (→)")
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.xs + 2)
-        .background(Theme.Colors.filmstrip, in: Capsule())
-        .overlay(Capsule().stroke(Theme.Colors.hairlineStrong, lineWidth: 1))
+        .buttonStyle(HoverButtonStyle(
+            cornerRadius: Theme.Radius.chip, padding: Theme.Spacing.xs))
+        // ONE ink for the whole pill. The numerals were tokenized and the chevrons
+        // were not, so a single pill drew its text in two different whites.
+        .foregroundStyle(Theme.Colors.inkPrimary)
+        .padding(.horizontal, Theme.Spacing.sm)
+        .topBarPill()
     }
 
     /// The source / lifecycle actions the Figma panel drops, relocated to a
@@ -289,21 +298,34 @@ struct ItemDetailView: View {
                 // a sidebar-row text token — so the overflow icon tracked a
                 // typography decision it has nothing to do with.
                 .font(.system(size: 14))
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, Theme.Spacing.xs + 2)
+                .foregroundStyle(Theme.Colors.inkPrimary)
+                .padding(.horizontal, TopBarPill.inset)
         }
-        .menuStyle(.borderlessButton)
+        // `.button` + the shared pill style, NOT `.borderlessButton`: that style
+        // swallows the label's padding whole — measured, the pill came out 20×14 next
+        // to its 28pt-tall neighbours. `CollectionsField` below hit the identical trap
+        // and fixed it the same way; this call site was simply missed.
+        .menuStyle(.button)
+        .buttonStyle(TopBarPillButtonStyle())
         .menuIndicator(.hidden)
         .fixedSize()
-        .background(Theme.Colors.filmstrip, in: Capsule())
-        .overlay(Capsule().stroke(Theme.Colors.hairlineStrong, lineWidth: 1))
+        .help("More actions")
     }
 
     /// Zoom out / percentage-reset / zoom in for image assets. The percentage
     /// button doubles as ⌘0 "fit," and a hidden ⌘= mirror makes zoom-in reachable
     /// without Shift (⌘+ on most layouts is Shift-⌘=).
+    ///
+    /// Wears the app's floating-bar chrome — the ``selectionBarChrome()`` recipe: an
+    /// OPAQUE `field` capsule on a `hairlineStrong` border, lifted by
+    /// ``Theme/Elevation/floating``. Opaque is the load-bearing word. These buttons
+    /// carried NO style at all, so they got macOS's default bezel, which is a
+    /// TRANSLUCENT vibrant material: over bright artwork the picture read straight
+    /// through them and the bar looked like it sat UNDER the image. It never did — an
+    /// `.overlay` always composites above its content, and the glyphs drew on top the
+    /// whole time. The bezel was simply see-through.
     private var zoomControls: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: Theme.Spacing.xs) {
             Button {
                 zoomBy(1 / zoomStep)
             } label: {
@@ -331,9 +353,23 @@ struct ItemDetailView: View {
             .keyboardShortcut("+", modifiers: .command)
             .disabled(zoom >= maxZoom)
             .help("Zoom in (⌘+)")
-
-            // ⌘= mirror (no Shift) — same action, no visible control.
+        }
+        .buttonStyle(HoverButtonStyle(
+            cornerRadius: Theme.Radius.control, padding: Theme.Spacing.xs))
+        .font(Theme.Typography.row)
+        .foregroundStyle(Theme.Colors.inkPrimary)
+        .padding(.horizontal, Theme.Spacing.xs)
+        .padding(.vertical, Theme.Spacing.xs)
+        .background(Theme.Colors.field, in: Capsule())
+        .overlay(Capsule().strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
+        .elevation(.floating)
+        // ⌘= mirror (no Shift) — same action, no visible control. Kept OUT of the
+        // HStack: inside it the bar's `HoverButtonStyle` would give this zero-size
+        // button a 4pt hover pad plus a spacing gap, i.e. stray width in a capsule
+        // whose whole job is to hug three controls.
+        .background {
             Button { zoomBy(zoomStep) } label: { EmptyView() }
+                .buttonStyle(.plain)
                 .keyboardShortcut("=", modifiers: .command)
                 .frame(width: 0, height: 0)
                 .opacity(0)
@@ -422,7 +458,7 @@ struct ItemDetailView: View {
                     description: Text("This item has no displayable media."))
             }
         }
-        .padding()
+        .padding(Theme.Spacing.lg)
         // Drag-out (011 · Cluster A): drag the media pane to export the original
         // file to Finder / Figma / …. Gated to fit (`zoom == 1`) so it never fights
         // the zoom-in pan gesture — and because `zoom` commits only at gesture END,
@@ -481,6 +517,72 @@ struct ItemDetailView: View {
     }
 }
 
+// MARK: - Top-bar pill
+
+/// Geometry for the detail top bar's three pills — Back, the pager, the ⋯ menu.
+private enum TopBarPill {
+    /// Every pill is exactly this tall, so the bar reads as ONE row.
+    ///
+    /// A fixed height rather than vertical padding, and that is the whole point.
+    /// Padding sizes a pill from its content's INTRINSIC height, and the three
+    /// contents do not agree: "Back" is a full text line, while `⋯` is three dots on
+    /// the baseline with almost no height at all. The same declared 12/6 inset
+    /// therefore produced a 28pt Back pill beside a 14pt ⋯ pill — measured, not
+    /// guessed — and no amount of padding tuning closes that, because the gap is in
+    /// the glyph, not the inset. 28 is what Back and the pager already measured.
+    static let height: CGFloat = 28
+    /// Edge-to-content inset for a pill whose content carries no pad of its own.
+    static let inset: CGFloat = Theme.Spacing.md
+}
+
+private extension View {
+    /// The shared pill container: a `filmstrip` capsule on a `hairlineStrong` border,
+    /// at ``TopBarPill/height``.
+    ///
+    /// `hovered` lays the `hoverControl` wash OVER the pill's opaque fill, for a pill
+    /// that is itself the button. It has to be composited on this side because the
+    /// shared ``HoverHighlight`` draws into a `.background` — which would land BEHIND
+    /// the opaque `filmstrip` and never show. Same token, other side of the fill. A
+    /// pill that merely CONTAINS buttons (the pager) leaves this false and lets its
+    /// glyphs own the hover.
+    func topBarPill(hovered: Bool = false) -> some View {
+        frame(height: TopBarPill.height)
+            .background {
+                ZStack {
+                    Capsule().fill(Theme.Colors.filmstrip)
+                    if hovered { Capsule().fill(Theme.Colors.hoverControl) }
+                }
+            }
+            .overlay(Capsule().strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 1))
+    }
+}
+
+/// A whole-pill button (Back, the ⋯ menu): the shared container, brightened on
+/// pointer-over and dimmed while pressed or disabled.
+private struct TopBarPillButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Chrome(configuration: configuration)
+    }
+
+    /// A nested view rather than a bare `configuration.label`, for the reason
+    /// ``DialogButtonStyle`` documents: a `ButtonStyle` cannot read
+    /// `@Environment(\.isEnabled)` inside `makeBody`.
+    private struct Chrome: View {
+        let configuration: ButtonStyleConfiguration
+
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var isHovering = false
+
+        var body: some View {
+            configuration.label
+                .topBarPill(hovered: isHovering && isEnabled)
+                .contentShape(Capsule())
+                .opacity(configuration.isPressed ? 0.6 : (isEnabled ? 1 : 0.35))
+                .onHover { isHovering = $0 }
+        }
+    }
+}
+
 /// The detail-page media view for a media-less `link` asset (003 · C2): an
 /// optional og:image (once resolved) over a card of title / host / description,
 /// with a prominent Open Link action (SwiftUI `Link`, no closure plumbing) and
@@ -493,7 +595,7 @@ private struct LinkDetailView: View {
     private var host: String? { URL(string: link.url)?.host }
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: Theme.Spacing.lg) {
             if let image {
                 image
                     .resizable()
@@ -503,21 +605,23 @@ private struct LinkDetailView: View {
             } else {
                 Image(systemName: "link")
                     .font(.system(size: 48))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.Colors.inkSecondary)
             }
 
             if let title = link.title, !title.isEmpty {
                 Text(title)
                     .font(Theme.Typography.pageTitle)
+                    .foregroundStyle(Theme.Colors.inkPrimary)
                     .multilineTextAlignment(.center)
             }
             if let host {
-                Text(host).font(Theme.Typography.body).foregroundStyle(.secondary)
+                Text(host).font(Theme.Typography.body)
+                    .foregroundStyle(Theme.Colors.inkSecondary)
             }
             if let description = link.description, !description.isEmpty {
                 Text(description)
                     .font(Theme.Typography.body)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.Colors.inkSecondary)
                     .multilineTextAlignment(.center)
                     .lineLimit(4)
             }
@@ -525,17 +629,18 @@ private struct LinkDetailView: View {
                 Link(destination: url) {
                     Label("Open Link", systemImage: "safari")
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                // The app's inline action, not `.borderedProminent` — which paints the
+                // system ACCENT, and this palette is monochrome by design (Theme).
+                .buttonStyle(DialogButtonStyle(width: .hug))
             }
             Text(link.url)
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Theme.Colors.inkSecondary)
                 .textSelection(.enabled)
                 .lineLimit(2)
                 .truncationMode(.middle)
         }
-        .padding(40)
+        .padding(Theme.Spacing.xxl)
         .frame(maxWidth: 520)
     }
 }
@@ -561,7 +666,7 @@ private struct TweetDetailView: View {
     }
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: Theme.Spacing.lg) {
             if let image {
                 image
                     .resizable()
@@ -571,25 +676,29 @@ private struct TweetDetailView: View {
             } else {
                 Image(systemName: "bubble.left.and.text.bubble.right")
                     .font(.system(size: 48))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.Colors.inkSecondary)
             }
 
             if let name = tweet.authorName, !name.isEmpty {
                 Text(name).font(Theme.Typography.sectionTitle)
+                    .foregroundStyle(Theme.Colors.inkPrimary)
             }
-            Text(byline).font(Theme.Typography.body).foregroundStyle(.secondary)
+            Text(byline).font(Theme.Typography.body)
+                .foregroundStyle(Theme.Colors.inkSecondary)
 
             if let text = tweet.text, !text.isEmpty {
                 Text(text)
                     .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.Colors.inkPrimary)
                     .multilineTextAlignment(.center)
                     .textSelection(.enabled)
             }
 
             if !tweet.media.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                     Text("^[\(tweet.media.count) media](inflect: true)")
-                        .font(Theme.Typography.caption).foregroundStyle(.secondary)
+                        .font(Theme.Typography.caption)
+                        .foregroundStyle(Theme.Colors.inkSecondary)
                     ForEach(tweet.media, id: \.url) { media in
                         if let mediaURL = URL(string: media.url) {
                             Link(destination: mediaURL) {
@@ -608,11 +717,12 @@ private struct TweetDetailView: View {
                 Link(destination: permalink) {
                     Label("Open on X", systemImage: "safari")
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                // See `LinkDetailView` — the accent-painted system button has no place
+                // in a monochrome palette.
+                .buttonStyle(DialogButtonStyle(width: .hug))
             }
         }
-        .padding(40)
+        .padding(Theme.Spacing.xxl)
         .frame(maxWidth: 520)
     }
 }
@@ -623,19 +733,21 @@ private struct ColorDetailView: View {
     let hex: String
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: Theme.Spacing.lg) {
             RoundedRectangle(cornerRadius: Theme.Radius.panel)
-                .fill(Color(hexString: hex) ?? Color(.quaternaryLabelColor))
+                // An unparseable hex falls back to the app's raised grey, not to a
+                // system label colour.
+                .fill(Color(hexString: hex) ?? Theme.Colors.field)
                 .overlay {
                     RoundedRectangle(cornerRadius: Theme.Radius.panel)
-                        .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
+                        .strokeBorder(Theme.Colors.hairline, lineWidth: 1)
                 }
                 .aspectRatio(1, contentMode: .fit)
                 .frame(maxWidth: 420, maxHeight: 420)
             Text(hex.uppercased())
                 .font(.system(.title2, design: .monospaced))
                 .textSelection(.enabled)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.Colors.inkSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -811,7 +923,13 @@ private struct SourceSection: View {
 private struct VisitButton: View {
     let action: () -> Void
 
+    /// Owned here rather than taken from ``HoverHighlight`` for the reason
+    /// ``topBarPill(hovered:)`` documents — the wash has to composite OVER this
+    /// button's own opaque `field` fill.
+    @State private var isHovering = false
+
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.Radius.field)
         Button(action: action) {
             HStack(spacing: Theme.Spacing.sm) {
                 Text("Visit").font(Theme.Typography.label)
@@ -820,9 +938,20 @@ private struct VisitButton: View {
             .foregroundStyle(Theme.Colors.inkSecondary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, Theme.Spacing.xs + 2)
-            .background(Theme.Colors.field, in: RoundedRectangle(cornerRadius: Theme.Radius.field))
+            .background {
+                ZStack {
+                    shape.fill(Theme.Colors.field)
+                    if isHovering { shape.fill(Theme.Colors.hoverControl) }
+                }
+            }
+            // The hairline every OTHER `field`-filled surface in this panel carries
+            // (`DetailField`, `DetailChip`); this one was drawn fill-only.
+            .overlay(shape.strokeBorder(Theme.Colors.hairline, lineWidth: 1))
+            .contentShape(shape)
         }
         .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .help("Open the original source")
     }
 }
 
@@ -923,12 +1052,13 @@ private struct CollectionsField: View {
                         ForEach(addable) { c in Button(c.name) { onAdd(c) } }
                     }
                 } label: {
-                    DetailChip("Add", trailing: .add)
+                    DetailAddChip()
                 }
                 // `.button` + `.plain` so the Menu adds NO chrome of its own — the
                 // DetailChip defines the pill, aligning it with the membership chips
                 // (borderlessButton added an inset that broke the alignment).
                 .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                .help("Add to a collection")
 
                 ForEach(collections) { c in
                     DetailChip(c.name, trailing: removable(c) ? .remove { onRemove(c) } : .none)
@@ -959,12 +1089,16 @@ private struct TagsField: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.Colors.inkSecondary)
                 }
-                .buttonStyle(.plain)
+                // Same bare-glyph trap as the chip's `×` (229): `.plain` gave this no
+                // hover and no tooltip-tracking area, so `.help` never appeared.
+                .buttonStyle(HoverButtonStyle(
+                    cornerRadius: Theme.Radius.chip, padding: Theme.Spacing.xs))
                 .help("Add a tag")
             }
             TagFlowLayout(spacing: Theme.Spacing.sm) {
-                Button(action: startAdding) { DetailChip("Add", trailing: .add) }
+                Button(action: startAdding) { DetailAddChip() }
                     .buttonStyle(.plain)
+                    .help("Add a tag")
                 ForEach(tags) { tag in
                     DetailChip(tag.name, sparkle: tag.source == .agent,
                                trailing: .remove { onRemoveTag(tag) })
@@ -1018,11 +1152,18 @@ private struct DetailChip: View {
     let text: String
     let sparkle: Bool
     let trailing: Trailing
+    /// Lays the hover wash over the chip's opaque `field` fill — set by the chips that
+    /// are themselves buttons (the Add affordances). See ``topBarPill(hovered:)``.
+    let hovered: Bool
 
-    init(_ text: String, sparkle: Bool = false, trailing: Trailing = .none) {
+    init(
+        _ text: String, sparkle: Bool = false, trailing: Trailing = .none,
+        hovered: Bool = false
+    ) {
         self.text = text
         self.sparkle = sparkle
         self.trailing = trailing
+        self.hovered = hovered
     }
 
     var body: some View {
@@ -1043,20 +1184,42 @@ private struct DetailChip: View {
                     Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(Theme.Colors.inkSecondary)
                 }
-                .buttonStyle(.plain)
+                // Was a bare `.plain` glyph: a 9.5×9.5 click target (measured) with no
+                // hover and — per 229 — no tooltip either, since a template `Image`'s
+                // only hit-testable area is its opaque pixels, so `.help` had nothing
+                // to track. Matches the search token's remove `×`, the same control.
+                .buttonStyle(HoverButtonStyle(cornerRadius: 4, padding: 2))
                 .help("Remove")
             }
         }
         .padding(.horizontal, Theme.Spacing.sm)
         .padding(.vertical, Theme.Spacing.xs + 2)
-        .background(Theme.Colors.field, in: RoundedRectangle(cornerRadius: Theme.Radius.chip))
+        .background {
+            let shape = RoundedRectangle(cornerRadius: Theme.Radius.chip)
+            ZStack {
+                shape.fill(Theme.Colors.field)
+                if hovered { shape.fill(Theme.Colors.hoverControl) }
+            }
+        }
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.chip)
-            .stroke(Theme.Colors.hairline, lineWidth: 1))
+            .strokeBorder(Theme.Colors.hairline, lineWidth: 1))
+    }
+}
+
+/// The "Add" affordance shared by the Collections and Tags fields: a ``DetailChip``
+/// that owns its own pointer-over state, because the wash composites over the chip's
+/// opaque fill rather than behind it (see ``topBarPill(hovered:)``).
+private struct DetailAddChip: View {
+    @State private var isHovering = false
+
+    var body: some View {
+        DetailChip("Add", trailing: .add, hovered: isHovering)
+            .onHover { isHovering = $0 }
     }
 }
 
 /// A minimal left-to-right flow layout that wraps chips onto new rows when they
-/// exceed the available width (the sidebar's fixed 300pt column).
+/// exceed the available width (the sidebar's fixed 298pt column).
 private struct TagFlowLayout: Layout {
     var spacing: CGFloat = 6
 
