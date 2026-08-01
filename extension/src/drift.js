@@ -21,11 +21,11 @@ function verdict(problems, signals) {
   return { ok: problems.length === 0, problems, signals };
 }
 
-/** X `Bookmarks`/`Likes`: the timeline must still yield tweet entries, map each to a
- * tweet-id-keyed item, still extract media references where media exists, and expose a
- * Bottom pagination cursor. (A tweet is now ONE item carrying its whole media[]; a
- * text-only tweet legitimately has no media URL, so drift is measured on the media
- * REFERENCE count, not a per-item URL requirement.) */
+/** X `Bookmarks`/`Likes`: the timeline must still yield tweet entries, fan each out to
+ * media-keyed items with a usable image, and expose a Bottom pagination cursor. (A
+ * text-only tweet legitimately lands media-less, so drift is measured on "some item
+ * has a mediaUrl", not a per-item URL requirement — unlike the IG check, where every
+ * item is a media by construction.) */
 export function checkTimeline(json, { host = "x.com" } = {}) {
   let page;
   try {
@@ -37,17 +37,25 @@ export function checkTimeline(json, { host = "x.com" } = {}) {
   if (page.tweetCount < 1) problems.push("no tweet entries found (shape moved?)");
   if (page.items.length < 1) problems.push("no tweets mapped from any entry");
   if (page.items.some((item) => !item.sourceId)) problems.push("a mapped tweet is missing its id");
-  // Media extraction must still work: a bookmarks timeline is media-heavy, so a total of
-  // ZERO media references across all tweets means the media_url_https shape moved.
-  const mediaRefs = page.items.reduce(
-    (n, item) => n + (item.content?.payload?.tweet?.media?.length || 0), 0);
-  if (page.items.length > 0 && mediaRefs < 1) {
+  // Media extraction must still work: a bookmarks timeline is media-heavy, so ZERO
+  // fetchable media across the whole page means the media_url_https shape moved.
+  // Since 310 a tweet fans out to one ITEM per media, so the signal is items
+  // carrying a `mediaUrl` — "some", not "every", because a text-only tweet
+  // legitimately lands as a media-less card.
+  const mediaItems = page.items.filter((item) => item.mediaUrl).length;
+  if (page.items.length > 0 && mediaItems < 1) {
     problems.push("no media extracted from any tweet (media_url_https shape moved?)");
+  }
+  // The fan-out key must stay per-MEDIA: a collision means the engine's skip set
+  // ([P14]) would drop every sibling of a multi-image tweet as already-seen.
+  const ids = new Set(page.items.map((item) => item.sourceId));
+  if (ids.size !== page.items.length) {
+    problems.push("duplicate per-media sourceIds (media_key/id_str shape moved?)");
   }
   if (!page.bottomCursor) problems.push("no Bottom cursor (pagination would stall)");
   return verdict(problems, {
     tweetCount: page.tweetCount,
-    mediaItems: mediaRefs,
+    mediaItems,
     hasCursor: !!page.bottomCursor,
   });
 }

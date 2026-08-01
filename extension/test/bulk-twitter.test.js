@@ -66,37 +66,48 @@ test("unwrapTweet: unwraps visibility-wrapped tweets, drops tombstones", () => {
 
 // MARK: - mapTweet
 
-test("mapTweet: a video tweet → one tweet item, poster card + best MP4 stashed", () => {
+test("mapTweet: a video tweet → one item keyed by the MEDIA, poster + best MP4", () => {
   const items = mapTweet(videoTweet, { host: "x.com" });
   assert.equal(items.length, 1);
   const item = items[0];
-  assert.equal(item.sourceId, "1000000000000000034");           // the TWEET id (not a media key)
+  // The MEDIA's key, not the tweet's (310): one tweet can now yield several items,
+  // and the engine's skip key ([P14]) has to be per-asset or they'd collide.
+  assert.equal(item.sourceId, "REDACTED");
   assert.equal(item.provenance.rawMetadata.tweetId, "1000000000000000034");
-  assert.equal(item.mediaUrl, "https://pbs.twimg.com/media/SAMPLE24.jpg?name=orig"); // poster is the card
+  assert.equal(item.mediaUrl, "https://pbs.twimg.com/media/SAMPLE24.jpg?name=orig"); // the poster
   assert.equal(item.mediaUrlFallback, "https://pbs.twimg.com/media/SAMPLE24.jpg");
   assert.equal(item.provenance.rawMetadata.kind, "video");
   // highest-bitrate progressive MP4 from the response (no syndication call needed).
   assert.equal(item.provenance.rawMetadata.videoUrl,
     "https://video.twimg.com/amplify_video/1031/vid/720x1280/SAMPLE31.mp4?tag=12");
-  // The content descriptor: a tweet carrying its one media reference.
-  assert.equal(item.content.kind, "tweet");
-  assert.equal(item.content.payload.tweet.tweetID, "1000000000000000034");
-  assert.equal(item.content.payload.tweet.media.length, 1);
+  // A tweet WITH media ingests down the plain image/video path — no tweet card.
+  assert.equal(item.content, undefined);
+  assert.equal(item.provenance.title, "Sample text");            // the text survives on the source
   assert.equal(item.provenance.authorHandle, "@sampleuser");
   assert.equal(item.provenance.originalURL, "https://x.com/sampleuser/status/1000000000000000034");
 });
 
-test("mapTweet: a multi-photo tweet → ONE item carrying all photos in media[]", () => {
+test("mapTweet: a multi-photo tweet → ONE ITEM PER PHOTO, all sharing the permalink", () => {
   const items = mapTweet(photoTweet, { host: "x.com" });
-  assert.equal(items.length, 1);                                 // one tweet = one item
-  const item = items[0];
-  assert.equal(item.sourceId, "1000000000000000171");            // keyed by the tweet id
-  assert.equal(item.provenance.rawMetadata.kind, "photo");
-  assert.equal(item.provenance.rawMetadata.videoUrl, null);
-  const media = item.content.payload.tweet.media;
-  assert.equal(media.length, 3);                                 // all three photos, as references
-  for (const m of media) assert.match(m.url, /\?name=orig$/);    // each at original resolution
-  assert.equal(item.mediaUrl, media[0].url);                     // the first photo is the card image
+  // 310: three photos, three assets — each downloaded, where only the first used to be.
+  assert.equal(items.length, 3);
+  assert.deepEqual(items.map((i) => i.sourceId), [
+    "REDACTED", "REDACTED", "REDACTED",
+  ]);
+  for (const [index, item] of items.entries()) {
+    assert.match(item.mediaUrl, /\?name=orig$/);                 // each at original resolution
+    assert.equal(item.provenance.rawMetadata.kind, "photo");
+    assert.equal(item.provenance.rawMetadata.videoUrl, null);
+    assert.equal(item.provenance.rawMetadata.tweetId, "1000000000000000171");
+    // The post-grouping index — what opens the tweet in ITS order, not the feed's.
+    assert.equal(item.provenance.rawMetadata.carouselIndex, index);
+    assert.equal(item.content, undefined);
+  }
+  // The SHARED permalink is the grouping key: these three collapse to one tile.
+  const permalinks = new Set(items.map((i) => i.provenance.originalURL));
+  assert.equal(permalinks.size, 1);
+  // Distinct media, not the same photo three times.
+  assert.equal(new Set(items.map((i) => i.mediaUrl)).size, 3);
 });
 
 test("mapTweet: a BARE quote of a video captures the QUOTED video (own media empty)", () => {
@@ -105,13 +116,16 @@ test("mapTweet: a BARE quote of a video captures the QUOTED video (own media emp
   const items = mapTweet(textTweet, { host: "x.com" });
   assert.equal(items.length, 1);
   const item = items[0];
-  assert.equal(item.sourceId, "1000000000000000212");           // the QUOTE tweet's OWN id (what you bookmarked)
+  assert.equal(item.sourceId, "REDACTED");        // the QUOTED media's key
+  assert.equal(item.provenance.rawMetadata.tweetId, "1000000000000000212"); // the quote's own id
   assert.equal(item.provenance.rawMetadata.kind, "video");
   assert.match(item.mediaUrl, /SAMPLE203\.jpg\?name=orig$/);     // the quoted video's poster
   assert.equal(item.provenance.rawMetadata.videoUrl,             // the quoted video's MP4 (opt-in downloads it)
     "https://video.twimg.com/amplify_video/1208/vid/720x1280/SAMPLE208.mp4?tag=12");
-  assert.equal(item.content.payload.tweet.media.length, 1);
-  assert.equal(item.content.payload.tweet.text, "Sample text"); // the quoter's OWN text is kept
+  // The permalink is the QUOTER's — what you bookmarked — so the borrowed media
+  // files under the quote rather than under the tweet it came from.
+  assert.equal(item.provenance.originalURL, "https://x.com/sampleuser/status/1000000000000000212");
+  assert.equal(item.provenance.title, "Sample text");            // the quoter's OWN text is kept
 });
 
 test("mapTweet: a quote WITH its own media ignores the quoted media (own wins)", () => {
@@ -130,9 +144,10 @@ test("mapTweet: a quote WITH its own media ignores the quoted media (own wins)",
       } } },
     },
   };
-  const item = mapTweet(quote, { host: "x.com" })[0];
-  assert.equal(item.content.payload.tweet.media.length, 1); // NOT merged with the quoted photo
-  assert.match(item.mediaUrl, /OWN\.jpg/);                  // the quoter's own media
+  const items = mapTweet(quote, { host: "x.com" });
+  assert.equal(items.length, 1);                 // NOT merged with the quoted photo
+  assert.equal(items[0].sourceId, "own");
+  assert.match(items[0].mediaUrl, /OWN\.jpg/);   // the quoter's own media
 });
 
 test("mapTweet: a genuine text-only tweet (no media, no quote) → a media-less text card", () => {
@@ -177,31 +192,70 @@ test("mapTweet: a REPOST unwraps to the original — saves its media/author/id",
   const items = mapTweet(repost, { host: "x.com" });
   assert.equal(items.length, 1);
   const item = items[0];
-  assert.equal(item.sourceId, "1000000000000000034");          // the ORIGINAL's id → dedups w/ a direct save
+  assert.equal(item.sourceId, "3_abc");                         // the ORIGINAL media's key → dedups w/ a direct save
+  assert.equal(item.provenance.rawMetadata.tweetId, "1000000000000000034"); // the original's id, not 9999
   assert.equal(item.provenance.authorHandle, "@origauthor");    // original author, not the reposter
   assert.equal(item.provenance.originalURL, "https://x.com/origauthor/status/1000000000000000034");
-  assert.equal(item.content.payload.tweet.text, "original tweet text");
-  assert.equal(item.content.payload.tweet.media.length, 1);     // the original's media, saved
-  assert.match(item.mediaUrl, /ORIG\.jpg\?name=orig$/);
+  assert.equal(item.provenance.title, "original tweet text");
+  assert.match(item.mediaUrl, /ORIG\.jpg\?name=orig$/);         // the original's media, saved
+});
+
+test("mapTweet: a media entry with NO poster is dropped, not emitted unfetchable", () => {
+  const mixed = {
+    __typename: "Tweet", rest_id: "77",
+    core: { user_results: { result: { core: { screen_name: "u", name: "U" } } } },
+    legacy: { full_text: "two shown, one broken", extended_entities: { media: [
+      { media_key: "a", media_url_https: "https://pbs.twimg.com/media/A.jpg", type: "photo" },
+      { media_key: "broken", type: "photo" },                    // no poster → nothing to fetch
+      { media_key: "c", media_url_https: "https://pbs.twimg.com/media/C.jpg", type: "photo" },
+    ] } },
+  };
+  const items = mapTweet(mixed, { host: "x.com" });
+  assert.deepEqual(items.map((i) => i.sourceId), ["a", "c"]);
+  // The index is over the EMITTED items, so the grouping order has no hole in it.
+  assert.deepEqual(items.map((i) => i.provenance.rawMetadata.carouselIndex), [0, 1]);
+});
+
+test("mapTweet: media with no key at all falls back to a per-tweet index key", () => {
+  // A response shape missing both `media_key` and `id_str` must still dedup WITHIN
+  // the tweet — one shared key would make the engine skip every sibling as seen.
+  const keyless = {
+    __typename: "Tweet", rest_id: "88",
+    core: { user_results: { result: { core: { screen_name: "u", name: "U" } } } },
+    legacy: { extended_entities: { media: [
+      { media_url_https: "https://pbs.twimg.com/media/A.jpg", type: "photo" },
+      { media_url_https: "https://pbs.twimg.com/media/B.jpg", type: "photo" },
+    ] } },
+  };
+  assert.deepEqual(mapTweet(keyless, { host: "x.com" }).map((i) => i.sourceId), ["88-0", "88-1"]);
 });
 
 // MARK: - parseTimelinePage
 
-test("parseTimelinePage: yields ONE item per tweet, keyed by tweet id", () => {
+test("parseTimelinePage: yields one item per MEDIA, keyed by the media key", () => {
   const { items, bottomCursor, tweetCount } = parseTimelinePage(bookmarks, { host: "x.com" });
 
-  assert.equal(tweetCount, 3);                     // three tweet entries
+  assert.equal(tweetCount, 3);                     // three tweet ENTRIES, still
   assert.equal(bottomCursor, "Sample text");       // the Bottom cursor's value
 
-  // One item per tweet (video · 3-photo · text-only), keyed by the TWEET id.
+  // Five items from three tweets (310): the video (1) + the photo tweet's OWN 3
+  // photos + the bare-quote tweet's fallback to its quoted video (1). The photo
+  // tweet HAS its own media, so its quoted tweet is NOT merged (own media wins) —
+  // only a BARE quote borrows. All five are DOWNLOADED now; four of them used to
+  // be URL references inside a tweet payload that nothing ever fetched.
   assert.deepEqual(items.map((i) => i.sourceId), [
-    "1000000000000000034", "1000000000000000171", "1000000000000000212",
+    "REDACTED",
+    "REDACTED", "REDACTED", "REDACTED",
+    "REDACTED",
   ]);
-  // Media references: video (1) + the photo tweet's OWN 3 photos + the bare-quote
-  // tweet's fallback to its quoted video (1) = 5. The photo tweet HAS its own media, so
-  // its quoted 3-photo tweet is NOT merged (own media wins) — only a BARE quote borrows.
-  const totalMedia = items.reduce((n, i) => n + i.content.payload.tweet.media.length, 0);
-  assert.equal(totalMedia, 5);
+  // The three photos share one permalink, so the app collapses them to one tile.
+  const byPermalink = new Map();
+  for (const item of items) {
+    const url = item.provenance.originalURL;
+    byPermalink.set(url, (byPermalink.get(url) || 0) + 1);
+  }
+  assert.equal(byPermalink.size, 3);                              // three posts
+  assert.deepEqual([...byPermalink.values()].sort(), [1, 1, 3]);  // one of them has 3 members
 
   // Every item is stamped with the page's checkpoint cursor.
   for (const item of items) assert.equal(item.cursor, "Sample text");

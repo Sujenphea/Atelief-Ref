@@ -398,6 +398,36 @@ struct PostGroupsCollapseTests {
         #expect(groups.members(forItem: b.item.id) == [a.item.id, b.item.id])
     }
 
+    @Test("a fanned-out TWEET groups and orders exactly like an IG carousel (310)")
+    func fannedTweetGroupsAndOrders() {
+        // The seam between 310 (the driver fans a tweet out per media, sharing the
+        // tweet permalink and stamping `carouselIndex`) and this file's grouping.
+        // Nothing else covers it: the extension tests stop at the BulkItem and the
+        // grouping tests all used Instagram URLs.
+        let tweet = "https://x.com/someone/status/1000000000000000171"
+        let photo2 = item(url: tweet, platform: .twitter, carouselIndex: 1)
+        let photo3 = item(url: tweet, platform: .twitter, carouselIndex: 2)
+        let photo1 = item(url: tweet, platform: .twitter, carouselIndex: 0)
+        let feed = [photo2, photo3, photo1]
+        let groups = PostGroups(items: feed)
+
+        #expect(groups.memberCount(forItem: photo2.item.id) == 3)   // the ⧉ 3 chip
+        #expect(groups.collapsed(feed).map { $0.item.id } == [photo1.item.id])
+        #expect(groups.collapsed(feed, expanding: [photo1.item.id]).map { $0.item.id }
+            == [photo1.item.id, photo2.item.id, photo3.item.id])
+    }
+
+    @Test("GUARD: two DIFFERENT tweets never fuse into one post")
+    func differentTweetsStayApart() {
+        // A status path is `/handle/status/<id>`, so the normalization must keep
+        // enough of it to tell two tweets apart — including two by the same author.
+        let a = item(url: "https://x.com/someone/status/111", platform: .twitter)
+        let b = item(url: "https://x.com/someone/status/222", platform: .twitter)
+        let groups = PostGroups(items: [a, b])
+        #expect(groups.memberCount(forItem: a.item.id) == 0)
+        #expect(groups.collapsed([a, b]).count == 2)
+    }
+
     @Test("a quoted index still orders — raw_metadata is a JS escape hatch")
     func quotedIndexParses() {
         let quoted = Source(

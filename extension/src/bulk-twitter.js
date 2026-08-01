@@ -9,16 +9,21 @@
 // engine lives with the content-script loop (Phase 6); the parsers here are what
 // [T9] pins against the committed fixture.
 //
-// A tweet maps to ONE `BulkItem` (003 · C3 bulk): a tweet is a single first-class
-// content item, keyed by its `tweetId`, carrying its media as REFERENCES — not one
-// asset per photo. `media[]` lists every top-level media (all up-to-4 photos, or the
-// video/gif poster); the FIRST media is fetched as the item's card image. X never
-// mixes photos and video in one tweet, so "first media" is unambiguous. A text-only
-// tweet still maps (an item with no media → a media-less text card). A REPOST (retweet)
-// is unwrapped to the ORIGINAL tweet, whose text + media are the real substance. A QUOTE
-// tweet keeps its OWN text/identity, and normally its own media — but a BARE quote (no
-// own media) falls back to the QUOTED tweet's media, since that quoted video/image is
-// the substance the user bookmarked.
+// A tweet FANS OUT to one `BulkItem` per media (310) — the shape `bulk-instagram.js`
+// has always had. Every photo is downloaded as its own asset, keyed by the MEDIA's
+// `media_key`, and they all share the tweet's permalink, which is the app's
+// post-grouping key: a 4-photo tweet collapses to one tile carrying a `⧉ 4` chip.
+// It used to be ONE item per tweet (003 · C3 bulk) keyed by `tweetId`, with only the
+// FIRST photo fetched and the rest kept as bare URL references in a `tweet` payload
+// — listed in the UI, never downloaded.
+//
+// So a tweet with media is IMAGES, not a card; its text and author survive on the
+// source (`title` / `authorHandle` / `authorName`). A tweet with no usable media is
+// still a single media-less `tweet` card, which is the case that kind exists for.
+// A REPOST (retweet) is unwrapped to the ORIGINAL tweet, whose text + media are the
+// real substance. A QUOTE tweet keeps its OWN text/identity, and normally its own
+// media — but a BARE quote (no own media) falls back to the QUOTED tweet's media,
+// since that quoted video/image is the substance the user bookmarked.
 
 import { makeProvenance, toOrigName } from "./extractors/base.js";
 import { buildTweetPayload } from "./endpoint.js";
@@ -112,18 +117,35 @@ function tweetAuthor(tweet) {
 }
 
 /**
- * Map one timeline tweet result to a single `BulkItem` (`[item]`), or `[]` for a
- * tombstone / no-id / empty tweet (no text AND no media — the app would reject it).
- * `host` sets the `originalURL` origin; `cursor` is threaded in by the caller (the
- * page's bottom cursor).
+ * Map one timeline tweet result to its `BulkItem`s, or `[]` for a tombstone /
+ * no-id / empty tweet (no text AND no media — the app would reject it). `host`
+ * sets the `originalURL` origin; `cursor` is threaded in by the caller (the page's
+ * bottom cursor).
  *
- * The item carries a `content` descriptor (`kind: "tweet"` + payload with the tweet's
- * whole `media[]` reference list) so it ingests as a first-class tweet, and its
- * `mediaUrl` = the FIRST media (the card image the SW fetches). A video/gif tweet maps
- * its POSTER as the card and stashes the best progressive MP4 in `rawMetadata.videoUrl`
- * (already in the response — no syndication call). With the video opt-in ON the relay
- * passes that MP4 and `ingestOne` ingests a video asset (the content descriptor is then
- * ignored — no regression); OFF (default) the tweet lands with its poster card.
+ * FANNED OUT per media (310), the same shape `bulk-instagram.js` has always had:
+ * a tweet with media yields ONE item per media, each with its own `sourceId` (the
+ * media's `media_key` / `id_str`) and its own `mediaUrl`, all sharing the TWEET's
+ * `originalURL`. That shared permalink is the post-grouping key, so a 4-image
+ * tweet lands as 4 assets that collapse to one tile with a `⧉ 4` chip and open in
+ * the tweet's own order via the `carouselIndex` each child carries.
+ *
+ * It used to emit one card item per tweet: `mediaUrl` = the FIRST media, the other
+ * images kept as bare URL references inside the `tweet` content payload — listed
+ * in the UI, never downloaded. Only the first image was ever ingested as bytes.
+ *
+ * So a tweet WITH media no longer carries a `content` descriptor and ingests down
+ * the plain image path — it is images now, not a card. The text and author are not
+ * lost: `makeProvenance` writes them to `title` / `authorHandle` / `authorName` on
+ * every child, which is where the app's provenance UI reads them. A tweet with NO
+ * usable media (a text-only tweet, or one whose media entries carry no poster) is
+ * still a single `tweet`-kind card — that is the case the card kind exists for.
+ * If a one-image tweet should stay a card, the threshold is `medias.length > 1`
+ * on the branch below.
+ *
+ * Video is per-child now rather than first-only: each video/gif child stashes its
+ * OWN best progressive MP4 in `rawMetadata.videoUrl` (already in the response — no
+ * syndication call), so a tweet with two videos resolves both under the opt-in
+ * instead of just the first. With the opt-in OFF (default) each lands as its poster.
  */
 export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
   const outer = unwrapTweet(result);
@@ -152,53 +174,75 @@ export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
     if (quoted) mediaList = tweetMedia(quoted);
   }
 
-  // Walk the media ONCE: collect every reference for payload.media[], pick the first as
-  // the card image to fetch, and capture the first video's progressive MP4.
-  const mediaUrls = [];
-  let card = null;          // { mediaUrl, mediaUrlFallback } — the image the SW fetches
-  let videoUrl = null;      // opt-in progressive MP4 (first video/gif media)
-  let kind = "text";        // rawMetadata hint: the tweet's media kind (text if none)
+  // Walk the media once into the fan-out list. An entry with no poster is unusable
+  // (nothing to fetch, nothing to show) and is dropped rather than emitted as an
+  // item the SW would fail on.
+  const medias = [];
   for (const media of mediaList) {
     const poster = media.media_url_https || null;
     if (!poster) continue;
     const mediaUrl = toOrigName(poster, { addIfAbsent: true });
-    mediaUrls.push(mediaUrl);
-    if (!card) {
-      card = { mediaUrl, mediaUrlFallback: mediaUrl !== poster ? poster : null };
-      kind = media.type || "photo";
-    }
     const isVideo = media.type === "video" || media.type === "animated_gif";
-    if (isVideo && !videoUrl && media.video_info) {
-      videoUrl = selectBestVideo({ video: media.video_info });
-    }
+    medias.push({
+      mediaUrl,
+      mediaUrlFallback: mediaUrl !== poster ? poster : null,
+      kind: media.type || "photo",
+      videoUrl: isVideo && media.video_info ? selectBestVideo({ video: media.video_info }) : null,
+      // The media's own stable id — the engine's dedup + skip key ([P14]), which
+      // must be per-ASSET now that one tweet yields several. `media_key` is the
+      // modern field, `id_str` the legacy one; the index is a last resort so a
+      // response missing both still dedups within the tweet instead of collapsing
+      // every child onto one key.
+      mediaId: media.media_key || media.id_str || null,
+    });
   }
 
+  const shared = {
+    platform: "twitter",
+    originalURL,
+    authorHandle: author.handle,
+    authorName: author.name,
+    title,
+  };
+
+  if (medias.length > 0) {
+    return medias.map((media, index) => ({
+      sourceId: media.mediaId || `${tweetId}-${index}`,
+      mediaUrl: media.mediaUrl,
+      mediaUrlFallback: media.mediaUrlFallback,
+      cursor,
+      provenance: makeProvenance({
+        ...shared,
+        mediaUrl: media.mediaUrl,
+        mediaUrlFallback: media.mediaUrlFallback,
+        // `carouselIndex` is read by the app's post grouping to open the tweet in
+        // ITS order rather than the feed's — the same field the IG driver writes.
+        rawMetadata: {
+          tweetId, kind: media.kind, videoUrl: media.videoUrl, carouselIndex: index,
+        },
+      }),
+    }));
+  }
+
+  // No usable media: a text-only tweet is still a first-class `tweet` card.
   const content = buildTweetPayload({
     tweetID: tweetId,
-    mediaUrls,
+    mediaUrls: [],
     text: title,
     authorHandle: author.handle,
     authorName: author.name,
   });
   if (!content) return []; // no substance (no text AND no media) → skip
 
-  const mediaUrl = card ? card.mediaUrl : null;
-  const mediaUrlFallback = card ? card.mediaUrlFallback : null;
   return [{
     sourceId: tweetId,
-    mediaUrl,
-    mediaUrlFallback,
+    mediaUrl: null,
+    mediaUrlFallback: null,
     cursor,
     content,
     provenance: makeProvenance({
-      platform: "twitter",
-      originalURL,
-      mediaUrl,
-      mediaUrlFallback,
-      authorHandle: author.handle,
-      authorName: author.name,
-      title,
-      rawMetadata: { tweetId, kind, videoUrl },
+      ...shared,
+      rawMetadata: { tweetId, kind: "text", videoUrl: null },
     }),
   }];
 }
