@@ -24,7 +24,9 @@ struct MasonryGridItemBadgeTests {
 
     private static let side: CGFloat = 200
 
-    private func laidOutCell(postMemberCount: Int, postExpanded: Bool = false) -> MasonryGridItem {
+    private func laidOutCell(
+        postMemberCount: Int, postExpanded: Bool = false, isPostLead: Bool = true
+    ) -> MasonryGridItem {
         let cell = MasonryGridItem()
         cell.view.frame = NSRect(x: 0, y: 0, width: Self.side, height: Self.side)
         let sourceID = UUID(), assetID = UUID()
@@ -40,7 +42,8 @@ struct MasonryGridItemBadgeTests {
                 originalURL: "https://www.instagram.com/p/AbCd/", capturedAt: Date()))
         cell.configure(
             detail: detail, url: nil, bucket: 256, gifURL: nil,
-            postMemberCount: postMemberCount, postExpanded: postExpanded)
+            postMemberCount: postMemberCount, postExpanded: postExpanded,
+            isPostLead: isPostLead)
         cell.view.layoutSubtreeIfNeeded()
         return cell
     }
@@ -171,17 +174,39 @@ struct MasonryGridItemBadgeTests {
         #expect(artwork(cell)?.frame.width == Self.side)
     }
 
-    @Test("an OPENED post keeps its chip but loses the pile")
+    @Test("an OPENED post's LEAD keeps its chip but loses the pile")
     func openedPostDropsTheFan() {
         let cell = laidOutCell(postMemberCount: 3, postExpanded: true)
         // Nothing is hidden behind it any more, so it stands for nothing...
         #expect(fanCards(cell).isEmpty)
         #expect(artwork(cell)?.frame.width == Self.side)
         // ...but the chip stays, because it is what closes the post again.
-        let chip = cell.view.layer?.sublayers?.contains {
-            $0.contents != nil && !$0.isHidden
-        }
-        #expect(chip == true)
+        #expect(chipPainted(cell))
+    }
+
+    @Test("an OPENED post's other members draw NO chip (309)")
+    func openedMembersDropTheChip() {
+        // Since 309 an open post's members sit as one contiguous run, so a chip on
+        // each would be N identical badges over what reads as a single block. Only
+        // the lead — where the collapsed tile stood — carries the close affordance.
+        let cell = laidOutCell(postMemberCount: 3, postExpanded: true, isPostLead: false)
+        #expect(!chipPainted(cell))
+        #expect(fanCards(cell).isEmpty)
+    }
+
+    @Test("a COLLAPSED post chips regardless of lead-ness")
+    func collapsedAlwaysChips() {
+        // `isPostLead` gates the chip only while the post is open. A collapsed feed
+        // only ever configures the lead anyway, so a `false` here must not be able
+        // to produce a chipless tile standing for a hidden post.
+        #expect(chipPainted(laidOutCell(postMemberCount: 3, isPostLead: false)))
+    }
+
+    /// Whether any visible layer carries painted contents — the chip, since these
+    /// fixtures have no artwork (`blobHash: nil`) and the fan cards draw with
+    /// borders rather than contents.
+    private func chipPainted(_ cell: MasonryGridItem) -> Bool {
+        cell.view.layer?.sublayers?.contains { $0.contents != nil && !$0.isHidden } == true
     }
 
     @Test("reuse clears the pile as well as the chip")

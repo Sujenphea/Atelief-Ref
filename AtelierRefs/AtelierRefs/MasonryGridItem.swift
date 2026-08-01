@@ -339,9 +339,14 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// How many feed items share this cell's post (307) — 0 when it stands alone.
     /// Drives the carousel chip and the VoiceOver suffix.
     private var postMemberCount = 0
-    /// Whether this cell's post is currently OPENED in place (307) — chip still shown
-    /// so it can be closed again, but no pile, because nothing is hidden behind it.
+    /// Whether this cell's post is currently OPENED in place (307) — no pile,
+    /// because nothing is hidden behind it.
     private var postExpanded = false
+    /// Whether this cell is the post's LEAD tile — its first member, the one the
+    /// collapsed post stood at. Only the lead keeps the chip while the post is
+    /// open, so an opened carousel is one close-affordance and not N of them.
+    /// Always true for a cell that isn't part of a post.
+    private var isPostLead = true
     /// The seed for this cell's fan tilt. The item id, so a post's pile is stable
     /// across scrolls and relayouts rather than re-rolling per render.
     private var fanSeed = UUID()
@@ -481,6 +486,14 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// none of them is standing for anything and none of them fans.
     private var showsFan: Bool { postMemberCount > 1 && !postExpanded }
 
+    /// Whether this cell draws the `⧉ N` chip. A COLLAPSED post's tile always does
+    /// (it says what is behind it, and it is what opens the post). An OPENED post
+    /// draws it on the LEAD only: since 309 its members sit as one contiguous run,
+    /// so a chip per member would be N identical badges over one visual block. The
+    /// lead's chip is what closes the post again, and it sits where the collapsed
+    /// tile stood, so the thing that opened the post is the thing that shuts it.
+    private var showsPostChip: Bool { postMemberCount > 1 && (!postExpanded || isPostLead) }
+
     /// The rect the artwork and all its chrome occupy — inset while fanning so the
     /// cards behind can show. Everything (rings, scrim, chip, circle) tracks THIS,
     /// not `view.bounds`, or the selection ring would float away from the card it is
@@ -564,12 +577,17 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// the host computed (the cell never guesses its own size — 036 §4 C3).
     /// `postMemberCount` is how many items of the CURRENT feed came from this
     /// item's post (0 when it isn't part of a multi-item post) — the carousel chip.
+    /// `isPostLead` marks the post's first member: while the post is OPEN only the
+    /// lead carries the chip (309). The count itself is NOT zeroed for the other
+    /// members — it still feeds the VoiceOver "one of N from the same post" suffix,
+    /// which every member of the run needs whether or not it draws a badge.
     func configure(
         detail: CollectionItemDetail, url: URL?, bucket: Int, gifURL: URL?,
-        postMemberCount: Int, postExpanded: Bool
+        postMemberCount: Int, postExpanded: Bool, isPostLead: Bool = true
     ) {
         fanSeed = detail.item.id
         self.postExpanded = postExpanded
+        self.isPostLead = isPostLead
         setPostMemberCount(postMemberCount)
         loadToken &+= 1
         let token = loadToken
@@ -660,7 +678,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         view.needsLayout = true
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        if let badge = PostBadge.image(count: count) {
+        if showsPostChip, let badge = PostBadge.image(count: count) {
             postBadgeLayer.contents = badge
             postBadgeLayer.frame = NSRect(
                 x: view.bounds.minX + PostBadge.inset, y: view.bounds.minY + PostBadge.inset,
@@ -771,6 +789,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         gifURL = nil
         gifFileSize = nil
         postExpanded = false
+        isPostLead = true
         setPostMemberCount(0)
         setImage(nil)
         hideCard()

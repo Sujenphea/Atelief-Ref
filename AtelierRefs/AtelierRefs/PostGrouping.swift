@@ -81,6 +81,32 @@ func postGroupKey(for source: Source) -> String? {
     return key.isEmpty ? nil : key
 }
 
+/// The item's position within its original carousel, or `nil` when the capture
+/// didn't record one.
+///
+/// `bulk-instagram.js` stamps `rawMetadata.carouselIndex` on every child as it
+/// walks `carousel_media[]`, and `raw_metadata` round-trips losslessly through
+/// persistence — so the post's OWN sequence survives ingest even though nothing
+/// read it until 309. It is the only producer that writes one, which is less of a
+/// gap than it sounds: `bulk-twitter` and `bulk-pinterest` emit ONE item per
+/// tweet/pin (a multi-image tweet becomes a single card asset carrying its media
+/// in the payload), and the live-page extractors capture one image per capture.
+/// A multi-asset post group is therefore a bulk-Instagram carousel in all but the
+/// odd hand-captured case.
+///
+/// Tolerant of a quoted number: `raw_metadata` is a JSON escape hatch written by
+/// JavaScript, and a producer that serialises `"0"` should not silently drop a
+/// post out of ordered-ness.
+func carouselIndex(for source: Source) -> Int? {
+    guard case let .object(fields) = source.rawMetadata,
+          let raw = fields["carouselIndex"] else { return nil }
+    switch raw {
+    case let .number(value): return Int(exactly: value.rounded())
+    case let .string(value): return Int(value)
+    default: return nil
+    }
+}
+
 // MARK: - The index
 
 /// The feed's items bucketed by post, keyed by MEMBERSHIP id (`CollectionItem.id`)
@@ -103,7 +129,8 @@ struct PostGroups {
     /// from a post is not "grouped", and leaving it out keeps every lookup a
     /// membership test rather than a count check.
     private let keyByItem: [UUID: String]
-    /// Post key → its member item ids in FEED order.
+    /// Post key → its member item ids, in the post's OWN order where the capture
+    /// recorded one (see the `init`), otherwise feed order.
     private let membersByKey: [String: [UUID]]
 
     /// The empty index — no grouping (used before the first load).
@@ -112,14 +139,41 @@ struct PostGroups {
         membersByKey = [:]
     }
 
-    /// Bucket `items` by post, dropping every group of one.
+    /// Bucket `items` by post, dropping every group of one, and put each group in
+    /// the POST's own order where the capture recorded one (309).
+    ///
+    /// Feed order is not the carousel's order: a manual reorder, a partial move or
+    /// a re-file shuffles the images, and opening the post then reads 3-1-4-2.
+    /// ``carouselIndex(for:)`` recovers the real sequence.
+    ///
+    /// ALL-OR-NOTHING: a group is only sorted when every member carries an index.
+    /// A half-indexed post (a bulk-captured carousel plus one image of the same
+    /// post grabbed live) would otherwise interleave two provenance stories into
+    /// one sequence with no way to tell which half is trustworthy; leaving it in
+    /// feed order is at least an order the user can see and change.
+    ///
+    /// The sort is keyed on `(index, feed position)` rather than the index alone —
+    /// `sorted(by:)` is not guaranteed stable, and two members sharing an index
+    /// (a duplicate capture) must not be free to swap between derivations, or the
+    /// representative — and with it the tile's identity and slot — would flicker.
     init(items: [CollectionItemDetail]) {
         var members: [String: [UUID]] = [:]
-        for detail in items {
+        var carouselIndexByItem: [UUID: Int] = [:]
+        var feedPositionByItem: [UUID: Int] = [:]
+        for (position, detail) in items.enumerated() {
             guard let key = postGroupKey(for: detail.source) else { continue }
-            members[key, default: []].append(detail.item.id)
+            let id = detail.item.id
+            members[key, default: []].append(id)
+            feedPositionByItem[id] = position
+            if let index = carouselIndex(for: detail.source) { carouselIndexByItem[id] = index }
         }
         members = members.filter { $0.value.count > 1 }
+        for (key, ids) in members where ids.allSatisfy({ carouselIndexByItem[$0] != nil }) {
+            members[key] = ids.sorted {
+                (carouselIndexByItem[$0] ?? 0, feedPositionByItem[$0] ?? 0)
+                    < (carouselIndexByItem[$1] ?? 0, feedPositionByItem[$1] ?? 0)
+            }
+        }
         var byItem: [UUID: String] = [:]
         byItem.reserveCapacity(members.values.reduce(0) { $0 + $1.count })
         for (key, ids) in members {
@@ -136,41 +190,80 @@ struct PostGroups {
         return membersByKey[key]?.count ?? 0
     }
 
-    /// Every item from `id`'s post, in feed order (empty when ungrouped).
+    /// Every item from `id`'s post, in post order (empty when ungrouped).
     func members(forItem id: UUID) -> [UUID] {
         guard let key = keyByItem[id], let ids = membersByKey[key] else { return [] }
         return ids
     }
 
     /// Whether `id` is the member that STANDS FOR its post in a collapsed feed —
-    /// the first in feed order. Ungrouped items are always their own representative.
+    /// the first in POST order, which for an indexed carousel is image #1 (309), so
+    /// the collapsed tile shows the post's own cover rather than whichever image
+    /// happens to sit earliest in the feed. Ungrouped items are always their own
+    /// representative.
     func isRepresentative(_ id: UUID) -> Bool {
         guard let key = keyByItem[id] else { return true }
         return membersByKey[key]?.first == id
     }
 
-    /// The display list for a collapsed grid: one tile per post, standing at its
-    /// FIRST member's position, with every ungrouped item kept exactly as it is.
+    /// The display list for a collapsed grid: one tile per post, standing at the
+    /// feed position of its representative — the post's cover (309) — with every
+    /// ungrouped item kept exactly as it is. For a freshly-captured feed that is
+    /// the same slot it always was, since feed order and carousel order agree
+    /// until something reorders them.
     ///
     /// This is what makes collapsing cheap. It returns a SHORTER `[CollectionItemDetail]`
     /// — not a cell holding several ids — so the grid keeps its one-item-one-cell-one-
     /// selectable-id invariant and every index-based subsystem (the layout's `aspects`,
     /// `nextGridIndex`, the marquee, reorder) is untouched.
     /// `expanding` holds the REPRESENTATIVE ids of posts the user has opened in
-    /// place: those posts contribute all their members (at their own feed positions)
-    /// instead of one tile, so a carousel can be looked through without leaving the
-    /// grid. Representative ids rather than post keys, because that is the identity
-    /// a click on a tile already has.
+    /// place: those posts contribute all their members instead of one tile, so a
+    /// carousel can be looked through without leaving the grid. Representative ids
+    /// rather than post keys, because that is the identity a click on a tile
+    /// already has.
+    ///
+    /// An opened post's members are emitted CONTIGUOUSLY at the representative's
+    /// slot, in feed order — not each at its own feed position. Nothing keeps a
+    /// carousel's images adjacent in `items`: a manual reorder, a partial move, or
+    /// a re-file interleaves them with everything else, so position-faithful
+    /// splicing scattered the images across the grid and opening a post read as
+    /// "N unrelated tiles appeared somewhere". The point of opening is to look
+    /// through ONE post, so the tiles that appear are the ones that were behind the
+    /// chip, together, where the chip was.
+    ///
+    /// This is the one place the display list stops being a subsequence of `items`.
+    /// Everything downstream is index-based over the DISPLAY list — the layout's
+    /// `aspects`, the selection store's `order`, the marquee, the reorder solve —
+    /// so display order is the order they all mean; nothing resolves a tile through
+    /// its index in `items`.
     func collapsed(
         _ items: [CollectionItemDetail], expanding: Set<UUID> = []
     ) -> [CollectionItemDetail] {
         guard !keyByItem.isEmpty else { return items }
-        return items.filter { detail in
+        // Only an OPEN post needs its members looked up by id, and the common case
+        // is none open — so the index is built lazily rather than on every derivation.
+        let detailByID: [UUID: CollectionItemDetail] = expanding.isEmpty
+            ? [:]
+            : Dictionary(items.map { ($0.item.id, $0) }, uniquingKeysWith: { first, _ in first })
+
+        var result: [CollectionItemDetail] = []
+        result.reserveCapacity(items.count)
+        for detail in items {
             let id = detail.item.id
-            if isRepresentative(id) { return true }
-            guard let lead = members(forItem: id).first else { return true }
-            return expanding.contains(lead)
+            guard let key = keyByItem[id], let members = membersByKey[key] else {
+                result.append(detail)  // ungrouped — kept exactly where it is
+                continue
+            }
+            // A non-representative member is never emitted in place: it either stays
+            // hidden behind the tile, or it was already emitted beside its lead below.
+            guard members.first == id else { continue }
+            result.append(detail)
+            guard expanding.contains(id) else { continue }
+            for memberID in members.dropFirst() {
+                if let member = detailByID[memberID] { result.append(member) }
+            }
         }
+        return result
     }
 
     /// Every member of the posts `selected` touches — the ACTION boundary.

@@ -23,10 +23,18 @@ import Testing
 
 /// One feed item from a post at `url` (nil = an ungroupable local capture). Each
 /// gets its OWN `Source` row, exactly as the ingest funnel writes them.
-private func item(url: String?, platform: Platform = .instagram) -> CollectionItemDetail {
+private func item(
+    url: String?, platform: Platform = .instagram, carouselIndex: Int? = nil
+) -> CollectionItemDetail {
     let sourceID = UUID(), assetID = UUID()
+    // `bulk-instagram.js` stamps the child's position into `raw_metadata`; nil
+    // reproduces every other capture path, which records none.
+    let metadata: JSONValue = carouselIndex.map {
+        .object(["carouselIndex": .number(Double($0))])
+    } ?? .object([:])
     let source = Source(
-        id: sourceID, platform: platform, originalURL: url, capturedAt: Date())
+        id: sourceID, platform: platform, originalURL: url, capturedAt: Date(),
+        rawMetadata: metadata)
     let asset = Asset(
         id: assetID, kind: .image, blobHash: UUID().uuidString, mimeType: "image/jpeg",
         width: 100, height: 100, fileSize: 100, downloadState: .downloaded,
@@ -313,6 +321,104 @@ struct PostGroupsCollapseTests {
         let lone = item(url: nil)
         let groups = PostGroups(items: [lone, item(url: nil)])
         #expect(groups.isRepresentative(lone.item.id))
+    }
+
+    @Test("an OPENED post's members appear TOGETHER, at the tile's slot")
+    func expandedPostIsContiguous() {
+        // The images are scattered through the feed — a manual reorder, a partial
+        // move, or a re-file does this routinely, and nothing keeps them adjacent.
+        let post = "https://www.instagram.com/p/AbCd/"
+        let lead = item(url: post), second = item(url: post), third = item(url: post)
+        let a = item(url: "https://www.instagram.com/p/Zzz1/")
+        let b = item(url: "https://www.instagram.com/p/Zzz2/")
+        let feed = [lead, a, second, b, third]
+        let groups = PostGroups(items: feed)
+
+        let shown = groups.collapsed(feed, expanding: [lead.item.id]).map { $0.item.id }
+        // Opening shows the post as a run where the chip was — NOT three tiles
+        // sprinkled between the neighbours, which is what a position-faithful
+        // splice produced.
+        #expect(shown == [lead.item.id, second.item.id, third.item.id, a.item.id, b.item.id])
+    }
+
+    @Test("only the OPENED post opens — its neighbours stay collapsed")
+    func expandingOnePostLeavesOthersCollapsed() {
+        let open = "https://www.instagram.com/p/Open/"
+        let shut = "https://www.instagram.com/p/Shut/"
+        let openLead = item(url: open), shutLead = item(url: shut)
+        let feed = [openLead, shutLead, item(url: open), item(url: shut)]
+        let groups = PostGroups(items: feed)
+
+        let shown = groups.collapsed(feed, expanding: [openLead.item.id])
+        #expect(shown.count == 3)  // two members of the open post + one closed tile
+        #expect(shown.map { $0.item.id }.last == shutLead.item.id)
+    }
+
+    @Test("a shuffled carousel opens in the POST's order, not the feed's (309)")
+    func membersFollowTheCarouselIndex() {
+        let post = "https://www.instagram.com/p/AbCd/"
+        // The feed holds them 3-1-2 — what a manual reorder leaves behind.
+        let third = item(url: post, carouselIndex: 2)
+        let first = item(url: post, carouselIndex: 0)
+        let second = item(url: post, carouselIndex: 1)
+        let feed = [third, first, second]
+        let groups = PostGroups(items: feed)
+
+        #expect(groups.members(forItem: third.item.id)
+            == [first.item.id, second.item.id, third.item.id])
+        // Image #1 is the cover, so the collapsed tile is #1 and stands at ITS
+        // feed slot — not at the slot of whichever image landed earliest.
+        #expect(groups.isRepresentative(first.item.id))
+        #expect(!groups.isRepresentative(third.item.id))
+        #expect(groups.collapsed(feed).map { $0.item.id } == [first.item.id])
+        #expect(groups.collapsed(feed, expanding: [first.item.id]).map { $0.item.id }
+            == [first.item.id, second.item.id, third.item.id])
+    }
+
+    @Test("a HALF-indexed post is left in feed order, not half-sorted")
+    func partiallyIndexedKeepsFeedOrder() {
+        // A bulk-captured carousel plus one image of the same post grabbed live.
+        // Sorting that interleaves two provenance stories with no way to tell
+        // which half is trustworthy.
+        let post = "https://www.instagram.com/p/AbCd/"
+        let live = item(url: post)
+        let bulkSecond = item(url: post, carouselIndex: 1)
+        let bulkFirst = item(url: post, carouselIndex: 0)
+        let feed = [live, bulkSecond, bulkFirst]
+        let groups = PostGroups(items: feed)
+        #expect(groups.members(forItem: live.item.id)
+            == [live.item.id, bulkSecond.item.id, bulkFirst.item.id])
+    }
+
+    @Test("an UNindexed post keeps feed order — every non-bulk capture path")
+    func unindexedKeepsFeedOrder() {
+        let post = "https://www.instagram.com/p/AbCd/"
+        let a = item(url: post), b = item(url: post)
+        let groups = PostGroups(items: [a, b])
+        #expect(groups.members(forItem: b.item.id) == [a.item.id, b.item.id])
+    }
+
+    @Test("a quoted index still orders — raw_metadata is a JS escape hatch")
+    func quotedIndexParses() {
+        let quoted = Source(
+            id: UUID(), platform: .instagram, originalURL: "https://x.com/a/status/1",
+            capturedAt: Date(), rawMetadata: .object(["carouselIndex": .string("2")]))
+        #expect(carouselIndex(for: quoted) == 2)
+        let absent = Source(
+            id: UUID(), platform: .instagram, originalURL: nil, capturedAt: Date())
+        #expect(carouselIndex(for: absent) == nil)
+    }
+
+    @Test("expanding an id that isn't a representative opens nothing")
+    func expandingANonLeadIsInert() {
+        // `expandedPosts` holds LEAD ids by construction; a stale or hand-rolled id
+        // must not half-open a post (the lead's tile plus a stray member).
+        let post = "https://www.instagram.com/p/AbCd/"
+        let lead = item(url: post), second = item(url: post)
+        let feed = [lead, second]
+        let groups = PostGroups(items: feed)
+        #expect(groups.collapsed(feed, expanding: [second.item.id]).map { $0.item.id }
+            == [lead.item.id])
     }
 }
 

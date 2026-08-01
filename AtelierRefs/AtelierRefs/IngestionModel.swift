@@ -410,10 +410,19 @@ final class IngestionModel: ObservableObject {
     /// to its first member when grouping is on, otherwise `items` verbatim.
     ///
     /// This — not `items` — is what the grid renders and what the selection store
-    /// orders. It is a strictly shorter array of the SAME element type, so the grid
-    /// keeps one item per cell per selectable id and every index-based subsystem is
-    /// untouched. Actions widen back to real members at the boundary via
+    /// orders. It is an array of the SAME element type, never longer than `items`,
+    /// so the grid keeps one item per cell per selectable id and every index-based
+    /// subsystem is untouched. Actions widen back to real members at the boundary via
     /// ``PostGroups/expand(_:)``.
+    ///
+    /// Its ORDER is the grid's order, and since 309 it is not merely a subsequence
+    /// of `items`: an opened post's members are gathered into a contiguous run at
+    /// the tile's slot. Nothing downstream resolves a tile through its index in
+    /// `items` — layout, selection order, marquee and the reorder solve are all
+    /// index-based over THIS list — so display order is the order they all mean.
+    /// Only the persisted order (`manual_order`) is still `items`' business, and it
+    /// is written by ``reorderItems(movingAssetIDs:insertAt:)`` alone: opening a
+    /// post rearranges nothing on disk.
     private(set) var displayItems: [CollectionItemDetail] = []
     /// Membership ids of ``displayItems``, for O(1) "is this tile on screen?".
     private var displayItemIDs: Set<UUID> = []

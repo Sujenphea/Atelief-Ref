@@ -742,14 +742,18 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         // GIF mime — mirrors the SwiftUI cell's `gifURL` gate exactly.
         let gifURL = detail.asset.mimeType == GifMotion.gifMimeType
             ? configuration.blobURL(detail) : nil
+        // The post this cell belongs to, resolved once: its lead is both the id the
+        // expansion set is keyed on and (309) the only member that draws a chip
+        // while the post is open.
+        let lead = postGroups.members(forItem: detail.item.id).first ?? detail.item.id
         cell.configure(
             detail: detail,
             url: configuration.thumbnailURL(detail),
             bucket: bucket(at: index),
             gifURL: gifURL,
             postMemberCount: postGroups.memberCount(forItem: detail.item.id),
-            postExpanded: configuration.expandedPosts.contains(
-                postGroups.members(forItem: detail.item.id).first ?? detail.item.id))
+            postExpanded: configuration.expandedPosts.contains(lead),
+            isPostLead: lead == detail.item.id)
         // Paint the cell's CURRENT selection + hover, so a freshly materialized or
         // reconfigured cell (scroll-in, snapshot, density step) shows the right
         // rings/circle without waiting for a reconcile tick — this is also how a
