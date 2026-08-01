@@ -20,16 +20,24 @@
 
 import AtelierCore
 import AtelierIngestion
+import Combine
 import Foundation
 import Testing
 @testable import AtelierRefs
 
+/// The rig every carousel suite in this file needs: a throwaway on-disk library, a
+/// temp media store, and a model with its folders loaded. It lived as three
+/// near-identical private copies — same setup, three places to fix a seeding bug in
+/// only two of them — so it is one place now.
 @MainActor
-@Suite("Carousel grouping: model wiring")
-struct PostGroupingWiringTests {
+enum CarouselRig {
 
-    private func makeModel() async throws -> (model: IngestionModel, services: AppServices) {
-        let dbPath = NSTemporaryDirectory() + "post-grouping-\(UUID().uuidString).sqlite"
+    /// A model over a fresh database. `tag` only names the temp file, to keep a
+    /// failing run's leftovers traceable to the suite that made them.
+    static func makeModel(
+        _ tag: String
+    ) async throws -> (model: IngestionModel, services: AppServices) {
+        let dbPath = NSTemporaryDirectory() + "\(tag)-\(UUID().uuidString).sqlite"
         let services = try AppServices(databasePath: dbPath)
         let store = MediaStore(root: FileManager.default.temporaryDirectory)
         let model = IngestionModel(services: services, store: store)
@@ -41,7 +49,7 @@ struct PostGroupingWiringTests {
     /// a real carousel arrives in, where every member gets its OWN `Source` row and
     /// only the URL ties them together.
     @discardableResult
-    private func seedPost(
+    static func seedPost(
         url: String?, count: Int, into collectionID: UUID, _ services: AppServices,
         hexSeed: Int
     ) async throws -> [UUID] {
@@ -66,11 +74,33 @@ struct PostGroupingWiringTests {
     }
 
     /// Load a collection and wait for the async publish to land.
-    private func load(_ model: IngestionModel, _ collectionID: UUID) async throws {
+    static func load(_ model: IngestionModel, _ collectionID: UUID) async throws {
         model.loadContents(of: collectionID)
         for _ in 0..<200 where model.loadedCollectionID != collectionID {
             try await Task.sleep(for: .milliseconds(10))
         }
+    }
+}
+
+@MainActor
+@Suite("Carousel grouping: model wiring")
+struct PostGroupingWiringTests {
+
+    private func makeModel() async throws -> (model: IngestionModel, services: AppServices) {
+        try await CarouselRig.makeModel("post-grouping")
+    }
+
+    @discardableResult
+    private func seedPost(
+        url: String?, count: Int, into collectionID: UUID, _ services: AppServices,
+        hexSeed: Int
+    ) async throws -> [UUID] {
+        try await CarouselRig.seedPost(
+            url: url, count: count, into: collectionID, services, hexSeed: hexSeed)
+    }
+
+    private func load(_ model: IngestionModel, _ collectionID: UUID) async throws {
+        try await CarouselRig.load(model, collectionID)
     }
 
     @Test("a carousel contributes ONE tile to the display list, not four")
@@ -206,35 +236,18 @@ struct PostGroupingWiringTests {
 struct PostExpansionTests {
 
     private func rig() async throws -> (model: IngestionModel, services: AppServices) {
-        let dbPath = NSTemporaryDirectory() + "post-expand-\(UUID().uuidString).sqlite"
-        let services = try AppServices(databasePath: dbPath)
-        let store = MediaStore(root: FileManager.default.temporaryDirectory)
-        let model = IngestionModel(services: services, store: store)
-        await model.refreshFolders()
-        return (model, services)
+        try await CarouselRig.makeModel("post-expand")
     }
 
     private func seed(
         _ services: AppServices, url: String?, count: Int, into collectionID: UUID, hexSeed: Int
     ) async throws {
-        let source = SourceDraft(
-            platform: url == nil ? .localPaste : .instagram,
-            originalURL: url, capturedAt: Date())
-        for offset in 0..<count {
-            let i = hexSeed + offset
-            let hex = String(
-                format: "#%02x%02x%02x",
-                (i * 40 + 10) % 256, (i * 17 + 5) % 256, (i * 91 + 3) % 256)
-            _ = try await services.ingestContent(
-                .color(hex: hex), from: source, into: collectionID)
-        }
+        try await CarouselRig.seedPost(
+            url: url, count: count, into: collectionID, services, hexSeed: hexSeed)
     }
 
     private func load(_ model: IngestionModel, _ id: UUID) async throws {
-        model.loadContents(of: id)
-        for _ in 0..<200 where model.loadedCollectionID != id {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await CarouselRig.load(model, id)
     }
 
     @Test("the chip opens the post in place and closes it again")
@@ -334,28 +347,14 @@ struct PostExpansionTests {
 struct PostReorderTests {
 
     private func rig() async throws -> (model: IngestionModel, services: AppServices) {
-        let dbPath = NSTemporaryDirectory() + "post-reorder-\(UUID().uuidString).sqlite"
-        let services = try AppServices(databasePath: dbPath)
-        let store = MediaStore(root: FileManager.default.temporaryDirectory)
-        let model = IngestionModel(services: services, store: store)
-        await model.refreshFolders()
-        return (model, services)
+        try await CarouselRig.makeModel("post-reorder")
     }
 
     private func seed(
         _ services: AppServices, url: String?, count: Int, into collectionID: UUID, hexSeed: Int
     ) async throws {
-        let source = SourceDraft(
-            platform: url == nil ? .localPaste : .instagram,
-            originalURL: url, capturedAt: Date())
-        for offset in 0..<count {
-            let i = hexSeed + offset
-            let hex = String(
-                format: "#%02x%02x%02x",
-                (i * 40 + 10) % 256, (i * 17 + 5) % 256, (i * 91 + 3) % 256)
-            _ = try await services.ingestContent(
-                .color(hex: hex), from: source, into: collectionID)
-        }
+        try await CarouselRig.seedPost(
+            url: url, count: count, into: collectionID, services, hexSeed: hexSeed)
     }
 
     /// Three posts of three images each: 9 items, 3 tiles. The gap between those two
@@ -427,5 +426,105 @@ struct PostReorderTests {
         model.reorderItems(movingAssetIDs: [first.asset.id], insertAt: 9)
         #expect(model.items.last?.item.id == first.item.id)
         #expect(model.items.count == 9)
+    }
+}
+
+/// The regression these guard is not visible in any pure test and barely visible on
+/// screen: `IngestionModel.displayItems` / `itemsVersion` / `postGroups` are all
+/// deliberately PLAIN properties, so the only thing that can re-run a SwiftUI body
+/// is the trigger that changed them. Ship the trigger un-`@Published` and the model
+/// re-derives correctly into a display list nobody re-reads — the grid keeps drawing
+/// the previous one until some unrelated publish happens along to flush it, which
+/// reads as "the toggle does nothing" and then, a click later, "the toggle works".
+///
+/// `objectWillChange` fires on `willSet`, so the derivation is still the OLD one
+/// *inside* the sink; what matters — and what SwiftUI's coalesced update actually
+/// sees — is that the value has settled by the time the mutation returns. Both are
+/// asserted.
+@MainActor
+@Suite("Carousel grouping: the grid is told to redraw")
+struct PostGroupingPublishTests {
+
+    /// Counts `objectWillChange` emissions. A class because the sink escapes.
+    @MainActor
+    private final class Recorder {
+        var count = 0
+        var token: AnyCancellable?
+
+        init(_ object: IngestionModel) {
+            token = object.objectWillChange.sink { [self] _ in count += 1 }
+        }
+    }
+
+    private func loadedCarousel() async throws -> IngestionModel {
+        let (model, services) = try await CarouselRig.makeModel("post-publish")
+        let target = Collection.unsortedID
+        try await CarouselRig.seedPost(
+            url: "https://www.instagram.com/p/AbCd/", count: 3, into: target, services,
+            hexSeed: 0)
+        try await CarouselRig.load(model, target)
+        return model
+    }
+
+    @Test("flipping the grouping toggle publishes, so the grid re-reads the feed")
+    func togglePublishes() async throws {
+        let model = try await loadedCarousel()
+        #expect(model.displayItems.count == 1)
+
+        let recorder = Recorder(model)
+        model.groupCarousels = false
+
+        #expect(recorder.count >= 1)
+        #expect(model.displayItems.count == 3)
+    }
+
+    /// The chip click is the ONE interaction that deliberately leaves the selection
+    /// alone (`gridCellBadgeClicked`), so unlike every other grid gesture there is no
+    /// selection publish riding along to redraw for it.
+    @Test("opening a post in place publishes on its own")
+    func expansionPublishes() async throws {
+        let model = try await loadedCarousel()
+        let tile = try #require(model.displayItems.first).item.id
+
+        let recorder = Recorder(model)
+        model.toggleExpansion(forItem: tile)
+
+        #expect(recorder.count >= 1)
+        #expect(model.displayItems.count == 3)
+
+        let before = recorder.count
+        model.toggleExpansion(forItem: tile)
+        #expect(recorder.count > before)
+        #expect(model.displayItems.count == 1)
+    }
+
+    /// The chip on an ungrouped tile does nothing, so it must also say nothing —
+    /// otherwise every stray click on a lone tile invalidates the whole screen.
+    @Test("a no-op chip click publishes nothing")
+    func noOpToggleIsSilent() async throws {
+        let (model, services) = try await CarouselRig.makeModel("post-publish-noop")
+        let target = Collection.unsortedID
+        try await CarouselRig.seedPost(
+            url: "https://www.instagram.com/p/Solo/", count: 1, into: target, services,
+            hexSeed: 5)
+        try await CarouselRig.load(model, target)
+
+        let tile = try #require(model.displayItems.first).item.id
+        let recorder = Recorder(model)
+        model.toggleExpansion(forItem: tile)
+        #expect(recorder.count == 0)
+    }
+
+    /// A plain load must not publish the expansion set: it is pruned on EVERY
+    /// derivation, and the common case (nothing open) has to assign nothing.
+    @Test("loading a feed with nothing open does not churn the expansion state")
+    func pruneIsSilentWhenNothingIsOpen() async throws {
+        let model = try await loadedCarousel()
+        #expect(model.expandedPosts.isEmpty)
+        let tile = try #require(model.displayItems.first).item.id
+        model.toggleExpansion(forItem: tile)
+        #expect(model.expandedPosts.count == 1)
+        model.toggleExpansion(forItem: tile)
+        #expect(model.expandedPosts.isEmpty)
     }
 }

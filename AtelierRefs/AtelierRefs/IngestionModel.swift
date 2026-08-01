@@ -372,7 +372,13 @@ final class IngestionModel: ObservableObject {
     /// where `items` lives; setting it re-derives, which also bumps `itemsVersion`
     /// and so invalidates the masonry layout cache — the display list changed even
     /// though `items` did not.
-    var groupCarousels = true {
+    ///
+    /// `@Published` for the same reason `items` is: the derived values it feeds
+    /// (``displayItems``, ``itemsVersion``) are deliberately plain, so this is the
+    /// TRIGGER that has to re-run `CollectionView`'s body. Without it the toggle
+    /// re-derives the display list into a model nobody re-reads, and the grid keeps
+    /// showing the previous one until some unrelated publish happens to flush it.
+    @Published var groupCarousels = true {
         didSet { if groupCarousels != oldValue { rebuildItemDerivations() } }
     }
 
@@ -380,7 +386,12 @@ final class IngestionModel: ObservableObject {
     /// members show as their own tiles until the chip is clicked again. Pruned on
     /// every derivation so a representative that left the feed can't keep a post
     /// wedged open.
-    private(set) var expandedPosts: Set<UUID> = []
+    ///
+    /// `@Published` because ``CollectionView`` reads it straight into the grid
+    /// configuration, and the chip click is the one interaction that deliberately
+    /// does NOT touch the selection (`gridCellBadgeClicked`) — so there is no other
+    /// publish riding along to invalidate the body.
+    @Published private(set) var expandedPosts: Set<UUID> = []
 
     /// Open or close the post behind the tile `itemID` — what the carousel chip does.
     /// A no-op for an ungrouped tile, so callers don't have to check first.
@@ -446,8 +457,11 @@ final class IngestionModel: ObservableObject {
         postGroups = PostGroups(items: items)
         // Drop expansions whose representative has left the feed (a delete, a move,
         // a collection switch) — otherwise a stale id would keep re-opening nothing,
-        // and the set would grow for the life of the process.
-        expandedPosts = expandedPosts.filter { postGroups.memberCount(forItem: $0) > 1 }
+        // and the set would grow for the life of the process. Assigned only when it
+        // actually changes: `expandedPosts` is `@Published`, and the common case (an
+        // empty set, every load) must not fire a publish from inside a derivation.
+        let live = expandedPosts.filter { postGroups.memberCount(forItem: $0) > 1 }
+        if live != expandedPosts { expandedPosts = live }
         displayItems = groupCarousels
             ? postGroups.collapsed(items, expanding: expandedPosts)
             : items

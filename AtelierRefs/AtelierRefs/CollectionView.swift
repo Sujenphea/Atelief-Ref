@@ -704,9 +704,18 @@ struct CollectionView: View {
         // `items` does, so mirror it onto the model (307). Setting it re-derives the
         // display list AND bumps `itemsVersion`, which is what invalidates the
         // masonry cache — the tile count changed even though the items did not.
-        .onAppear { model.groupCarousels = gridPrefs.groupCarousels }
-        .onChange(of: gridPrefs.groupCarousels) { _, grouped in
-            model.groupCarousels = grouped
+        .onAppear { mirrorGroupCarousels() }
+        .onChange(of: gridPrefs.groupCarousels) { _, _ in mirrorGroupCarousels() }
+    }
+
+    /// Copy the persisted grouping preference onto the model, but only when it
+    /// actually differs. `model.groupCarousels` is `@Published` (that publish is what
+    /// re-runs this body with the new display list), and `@Published` fires on every
+    /// assignment regardless of equality — so an unguarded `onAppear` would invalidate
+    /// the whole screen once per navigation to say nothing changed.
+    private func mirrorGroupCarousels() {
+        if model.groupCarousels != gridPrefs.groupCarousels {
+            model.groupCarousels = gridPrefs.groupCarousels
         }
     }
 

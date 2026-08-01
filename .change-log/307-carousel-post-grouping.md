@@ -111,16 +111,20 @@ Two geometry facts the pile cost a bug each to learn:
   loudly if anyone "fixes" the grouping onto `sourceId` and makes the feature inert.
 - `AtelierRefs/AtelierRefsTests/PostGroupingWiringTests.swift` — the glue the pure
   tests can't see: the display list and reducer order stay in step, the toggle
-  re-derives *and* bumps `itemsVersion`, and every action widens to the whole post.
+  re-derives *and* bumps `itemsVersion`, every action widens to the whole post, a
+  collapsed post reorders as one tile, and (`PostGroupingPublishTests`) both triggers
+  actually publish. Its four suites share one `CarouselRig` rather than the three
+  drifted copies of the same seeding helpers they started with.
 - `AtelierRefs/AtelierRefsTests/MasonryGridItemBadgeTests.swift` — chip placement,
   the no-chip case, and reuse clearing it.
 
 **Changed**
 
 - `IngestionModel.swift` — sole owner of `PostGroups`; derives `displayItems` in the
-  same pass; `groupCarousels` re-derives on change. `rebuildSelectedAssetIDs` and
-  `actionTargets` widen through `expand(_:)`, which is what makes every verb fan out
-  without each remembering to.
+  same pass; `groupCarousels` re-derives on change, and it and `expandedPosts` are
+  `@Published` because they are the only triggers that can redraw the grid.
+  `rebuildSelectedAssetIDs` and `actionTargets` widen through `expand(_:)`, which is
+  what makes every verb fan out without each remembering to.
 - `MasonryGridHost.swift` — reads `postGroups` from the configuration instead of
   rebuilding an identical index.
 - `MasonryGridItem.swift` — `PostBadge` now draws from `Theme.NS` tokens rather than
@@ -135,7 +139,8 @@ Two geometry facts the pile cost a bug each to learn:
   have given the toggle its own instance and the grid would never have seen it change.
 - `LibrarySearch.swift` — its own feed, but the same `collapsed`/`expand`, plus a
   `displayVersion` of its own (see below).
-- `CollectionView.swift` — passes `displayItems` and mirrors the preference.
+- `CollectionView.swift` — passes `displayItems` and mirrors the preference through
+  `mirrorGroupCarousels()`, which assigns only on a real difference.
 
 ## The trap worth knowing about
 
@@ -148,6 +153,36 @@ bump: the model through `rebuildItemDerivations`, search through its own
 `displayVersion` (it cannot use `resultsVersion`, which does not move when only the
 toggle does).
 
+## The second trap: a correct derivation nobody re-reads
+
+The version bump makes the layout cache correct, but it does not make the grid *look*
+at the new list. `displayItems`, `itemsVersion` and `postGroups` are deliberately
+plain (un-`@Published`) properties on `IngestionModel` — the model is a god-object and
+036 §2 A0 went to some trouble to stop every write on it fanning out to every observing
+view. The consequence is that whatever CHANGES them has to be the thing that publishes.
+
+Two triggers were not:
+
+- `groupCarousels`, mirrored from `GridViewPreferences` — flipping the Settings toggle
+  re-derived the display list into a model no view re-read.
+- `expandedPosts`, driven by the carousel chip — and `gridCellBadgeClicked`
+  deliberately leaves the selection alone (opening a post is a different intent from
+  picking it), so unlike every other grid gesture there was no selection publish riding
+  along to redraw for it.
+
+In both cases the grid kept drawing the previous display list until some unrelated
+publish flushed it — which reads as "the toggle does nothing", then, a click or a
+scroll later, "the toggle works". Both are `@Published` now.
+
+`@Published` fires on `willSet`, so the derivation is still the old one *inside* the
+publish; SwiftUI coalesces the invalidation to the next update, by which point the
+synchronous `didSet` rebuild has settled. That is exactly how `items` has always
+worked. It also fires on every assignment regardless of equality, so the two things
+that assign without necessarily changing anything now guard first: `CollectionView`'s
+`onAppear` mirror (else every navigation invalidates the screen to say nothing
+changed), and the stale-expansion prune inside `rebuildItemDerivations` (which runs on
+every load, almost always over an empty set).
+
 ## Removed
 
 The sibling ring, `isPostSibling`, the host's `siblingCache` and its reconcile
@@ -158,8 +193,13 @@ members" and is still tested.
 
 ## Verification
 
-`AtelierRefsTests` passes in full under Swift 6 language mode: **1030 cases, 0
+`AtelierRefsTests` passes in full under Swift 6 language mode: **1033 case results, 0
 failures**, including 60-odd covering this feature.
+
+`PostGroupingPublishTests` pins the publishes, and was written the only way that
+proves anything here — by confirming it FAILS with the `@Published` removed and
+passes with it back. It also pins the two silences: a chip click on a lone tile
+publishes nothing, and a load with no post open does not churn the expansion set.
 
 The geometry invariants are pinned rather than eyeballed: `pileNeverClips` rotates all
 four card corners and checks them against the cell's ROUNDED rect across five aspect
