@@ -270,7 +270,7 @@ extension View {
     ///
     /// Losing the arrow means giving up `.popover` for an anchored in-window overlay,
     /// and with it `NSPopover`'s transient dismissal and focus hand-back — which
-    /// ``SpaceGapPopover`` deliberately depends on (see its file comment). That trade
+    /// ``SpaceSpacingPopover`` deliberately depends on (see its file comment). That trade
     /// has not been made.
     func popoverContent(
         padding: CGFloat = Theme.Spacing.lg, width: CGFloat? = nil

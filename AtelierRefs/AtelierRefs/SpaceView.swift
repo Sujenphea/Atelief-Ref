@@ -79,9 +79,14 @@ struct SpaceView: View {
     @State private var showFontPanel = false
     @State private var showSizePanel = false
     @State private var showColorPanel = false
-    /// The exact-gap control (066) and its last value, kept across opens so setting the
-    /// same gap on several selections doesn't mean retyping it.
-    @State private var showGapPopover = false
+    /// Which of the action bar's three collapsed groups is open (069), and the exact
+    /// gap's last value, kept across opens so setting the same gap on several
+    /// selections doesn't mean retyping it (066).
+    ///
+    /// One optional rather than three booleans: the groups are mutually exclusive by
+    /// construction, and a popover binding that can only hold one value can't leave
+    /// two panels racing over the same corner of the canvas.
+    @State private var openGroup: SpaceBarGroup?
     @State private var gapValue: Double = 24
     /// Whether this board has already been framed to fit. Owned here rather than by the
     /// canvas host so it is a fact about the BOARD, not about a view instance — the
@@ -541,17 +546,25 @@ struct SpaceView: View {
     /// the hoisted V/F/T shortcuts regardless of mode.
     private var barMode: SpaceBarMode { .forSelection(count: space.selectedItemIDs.count) }
 
-    /// The floating action pill over the canvas, now context-aware (051 · 2A/E-2).
-    /// Undo/redo are MODE-INVARIANT — present in every mode, dimmed-not-hidden — so
-    /// ⌘Z / ⌘⇧Z always fire (a `keyboardShortcut` on an unrendered button is dead).
-    /// The mode-switched half is the tools (`.idle`) / Edit + z-order (`.single`) /
-    /// align + distribute + z-order (`.multi`). Reuses the shared `SelectionBarButton`
-    /// glyphs + `selectionBarChrome()` capsule (parity with the Collection/Search
-    /// bar) — a flat `spacing: 2` row. The trailing pad balances the chrome's
-    /// text-tuned leading inset (16) for this icon-only bar.
+    /// The floating action pill over the canvas, context-aware (051 · 2A/E-2).
+    ///
+    /// Undo/redo and the z-order shortcut carriers are MODE-INVARIANT — mounted in
+    /// every mode — so ⌘Z / ⌘⇧Z / ⌘⇧] / ⌘⇧[ always fire (a `keyboardShortcut` on an
+    /// unrendered button is dead). The mode-switched half is the tools (`.idle`) /
+    /// Edit + duplicate + z-order (`.single`) / align + spacing + duplicate + z-order
+    /// (`.multi`).
+    ///
+    /// `.multi` carried sixteen glyphs before 069, twelve of them ops. Align (6),
+    /// spacing (distribute ×2 + tidy + gap) and z-order (2) now sit behind one glyph
+    /// each, so the row is eight wide in every mode and no longer roughly doubles when
+    /// a second tile is selected. Reuses the shared `SelectionBarButton` glyphs +
+    /// `selectionBarChrome()` capsule (parity with the Collection/Search bar) — a flat
+    /// `spacing: 2` row. The trailing pad balances the chrome's text-tuned leading
+    /// inset (16) for this icon-only bar.
     private var actionBar: some View {
         HStack(spacing: 2) {
             undoRedoBar // mode-invariant (051 · E-2)
+            zOrderShortcuts // mode-invariant, zero-size (069)
             switch barMode {
             case .idle: toolPicker
             case .single: singleBar
@@ -627,47 +640,92 @@ struct SpaceView: View {
                 editing ? nil : KeyboardShortcut("z", modifiers: [.command, .shift]))
     }
 
-    /// `.single`: Edit (elements only) + z-order for the lone selection.
+    /// `.single`: Edit (elements only), duplicate, z-order for the lone selection.
+    ///
+    /// Z-order uses the SAME collapsed group `.multi` does, even though this mode has
+    /// room for both buttons. The point is that the control doesn't move or change
+    /// shape when you select a second tile — a bar whose buttons rearrange under the
+    /// cursor as the selection grows is the thing this pass is fixing.
     @ViewBuilder private var singleBar: some View {
         editButton
         duplicateButton
-        zOrderBar
+        groupButton(.zOrder)
     }
 
-    /// `.multi`: the six aligns + two distributes, then z-order. Each op is gated on
-    /// its own `minimumCount` (align ≥2, distribute ≥3 — 051 · 12A/E-3), dimmed-not-
-    /// hidden below it, so at a 2-item selection the distributes read as "not yet".
-    @ViewBuilder private var multiBar: some View {
-        ForEach(CanvasArrange.Operation.allCases, id: \.self) { op in
-            let enabled = op.isEnabled(selectionCount: space.selectedItemIDs.count)
-            SelectionBarButton(Self.symbol(for: op), help: op.actionName) { space.arrange(op) }
-                .disabled(!enabled)
-                .opacity(enabled ? 1 : 0.35)
-        }
-        gapButton
-        duplicateButton
-        zOrderBar
-    }
-
-    /// Set an exact gap between the selected items (066).
+    /// `.multi`: align, spacing and z-order, each collapsed behind one glyph (069).
     ///
-    /// A popover, not a field in this bar. The bar floats over the canvas, and a
-    /// focusable field here would swallow ⌫ and the V/F/T tool keys — the bug 269 and
-    /// 271 both were. Focus is handed back to the canvas on dismiss, deferred off the
-    /// view update because `onDisappear` runs inside one.
-    @ViewBuilder private var gapButton: some View {
-        SelectionBarButton("ruler", help: "Set the gap between the selected items") {
-            showGapPopover = true
+    /// This used to be a flat `ForEach` over all nine `CanvasArrange.Operation` cases
+    /// plus a ruler and two z-order buttons — twelve glyphs, in a bar that already
+    /// carried undo/redo and the export pair. The ops didn't change; only how many of
+    /// them are on screen at rest did.
+    @ViewBuilder private var multiBar: some View {
+        groupButton(.align)
+        groupButton(.spacing)
+        duplicateButton
+        groupButton(.zOrder)
+    }
+
+    /// One collapsed group: a bar glyph that opens its panel, gated on whether ANY op
+    /// inside would run at this selection size (see ``SpaceBarGroup/isEnabled(selectionCount:)``).
+    ///
+    /// `arrowEdge: .top`, so the panel opens UPWARD over the canvas. A bar popover
+    /// that opens downward is clipped by the floating capsule — the reason
+    /// `CollectionView`'s overflow documents the same choice. (066's gap popover used
+    /// `.bottom`; it is folded into `.spacing` here and inherits the fix.)
+    ///
+    /// Focus is handed back to the canvas on dismiss, deferred off the view update
+    /// because `onDisappear` runs inside one. Without it the canvas stays deaf to ⌫
+    /// and the V/F/T tool keys after any panel closes.
+    @ViewBuilder private func groupButton(_ group: SpaceBarGroup) -> some View {
+        let count = space.selectedItemIDs.count
+        let enabled = group.isEnabled(selectionCount: count)
+        SelectionBarButton(group.symbol, help: group.help) {
+            openGroup = (openGroup == group) ? nil : group
         }
-        .popover(isPresented: $showGapPopover, arrowEdge: .bottom) {
-            SpaceGapPopover(gap: $gapValue) { axis in
-                space.pack(axis: axis, gap: CGFloat(gapValue))
-            }
-            .onDisappear {
-                guard let host = chromeAnchor.host else { return }
-                Task { @MainActor in host.window?.makeFirstResponder(host) }
-            }
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.35)
+        .popover(item: popoverBinding(for: group), arrowEdge: .top) { _ in
+            groupPanel(group, selectionCount: count)
+                .onDisappear { restoreCanvasFocus() }
         }
+    }
+
+    /// A per-group binding onto the single ``openGroup`` state: non-nil only while
+    /// THIS group is the open one. Each trigger owns its own `.popover`, so each needs
+    /// a binding that reads as "am I showing", not "is anything showing".
+    private func popoverBinding(for group: SpaceBarGroup) -> Binding<SpaceBarGroup?> {
+        Binding(
+            get: { openGroup == group ? group : nil },
+            set: { if $0 == nil, openGroup == group { openGroup = nil } })
+    }
+
+    /// The panel behind each group. No branch dismisses on apply: align and spacing
+    /// are repeated, adjusted actions, and the canvas updates live behind the panel.
+    /// Z-order closes on pick — front and back are terminal, and there is nothing to
+    /// chain.
+    @ViewBuilder
+    private func groupPanel(_ group: SpaceBarGroup, selectionCount: Int) -> some View {
+        switch group {
+        case .align:
+            SpaceAlignPopover(selectionCount: selectionCount) { space.arrange($0) }
+        case .spacing:
+            SpaceSpacingPopover(
+                selectionCount: selectionCount,
+                gap: $gapValue,
+                onArrange: { space.arrange($0) },
+                onPack: { space.pack(axis: $0, gap: CGFloat(gapValue)) })
+        case .zOrder:
+            SpaceZOrderPopover(
+                onBringToFront: { space.bringSelectionToFront(); openGroup = nil },
+                onSendToBack: { space.sendSelectionToBack(); openGroup = nil })
+        }
+    }
+
+    /// Hand first responder back to the canvas after a panel closes, deferred off the
+    /// view update (`onDisappear` runs inside one).
+    private func restoreCanvasFocus() {
+        guard let host = chromeAnchor.host else { return }
+        Task { @MainActor in host.window?.makeFirstResponder(host) }
     }
 
     /// Duplicate the selection (⌘D, 065) — in both `.single` and `.multi`, because a
@@ -688,36 +746,35 @@ struct SpaceView: View {
                 editingTileID != nil ? nil : KeyboardShortcut("d", modifiers: .command))
     }
 
-    /// Z-order for the whole selection (034 P2 · 049 D7 — relative order preserved),
-    /// shared by `.single` and `.multi`. Undoable via the space's own ⌘Z.
-    @ViewBuilder private var zOrderBar: some View {
-        SelectionBarButton(
-            "square.3.layers.3d.top.filled",
-            help: "Bring the selected items to the front (⌘⇧])"
-        ) { space.bringSelectionToFront() }
-            .keyboardShortcut("]", modifiers: [.command, .shift])
-
-        SelectionBarButton(
-            "square.3.layers.3d.bottom.filled",
-            help: "Send the selected items to the back (⌘⇧[)"
-        ) { space.sendSelectionToBack() }
-            .keyboardShortcut("[", modifiers: [.command, .shift])
-    }
-
-    /// The SF Symbol for each arrange op. Kept in the view layer so `CanvasArrange`
-    /// stays geometry-only (051 · 1A).
-    private static func symbol(for op: CanvasArrange.Operation) -> String {
-        switch op {
-        case .alignLeft: "align.horizontal.left"
-        case .alignHorizontalCenter: "align.horizontal.center"
-        case .alignRight: "align.horizontal.right"
-        case .alignTop: "align.vertical.top"
-        case .alignVerticalCenter: "align.vertical.center"
-        case .alignBottom: "align.vertical.bottom"
-        case .distributeHorizontal: "arrow.left.and.right"
-        case .distributeVertical: "arrow.up.and.down"
-        case .tidyUp: "square.grid.2x2"
+    /// ⌘⇧] / ⌘⇧[ for z-order (034 P2 · 049 D7 — relative order preserved), carried by
+    /// two zero-size buttons rather than by the visible controls.
+    ///
+    /// The bindings USED to live on the two z-order bar buttons. Collapsing those into
+    /// a popover (069) would have killed both shortcuts, because a `keyboardShortcut`
+    /// on a view that isn't rendered never fires — the same trap `undoRedoBar` and
+    /// `duplicateButton` already document from the other direction, where the button
+    /// stays mounted precisely so its binding survives. A closed popover's content is
+    /// not mounted at all, so the binding has to be hoisted out of it.
+    ///
+    /// MODE-INVARIANT, like undo/redo: mounted in `.idle` too, so ⌘⇧] works on a
+    /// selection made by any route. The model no-ops on an empty selection.
+    ///
+    /// The shortcuts, but not the buttons, drop out while a text box is being edited —
+    /// a key equivalent is dispatched before `keyDown` reaches the first responder, so
+    /// a live binding here would restack the board mid-sentence.
+    @ViewBuilder private var zOrderShortcuts: some View {
+        let editing = editingTileID != nil
+        Group {
+            Button("Bring to Front") { space.bringSelectionToFront() }
+                .keyboardShortcut(
+                    editing ? nil : KeyboardShortcut("]", modifiers: [.command, .shift]))
+            Button("Send to Back") { space.sendSelectionToBack() }
+                .keyboardShortcut(
+                    editing ? nil : KeyboardShortcut("[", modifiers: [.command, .shift]))
         }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     // MARK: - External import (drop + paste)
