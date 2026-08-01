@@ -57,55 +57,45 @@ struct MoodboardExportButton: View {
     private var panel: some View {
         let map = mapping
         let pageCount = MoodboardExport.pages(for: map.elements, config: config).count
-        return VStack(alignment: .leading, spacing: 12) {
-            Text("Export moodboard").font(Theme.Typography.bodyEmphasis)
+        return VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text("Export Moodboard").font(Theme.Typography.bodyEmphasis)
 
-            LabeledContent("Format") {
-                Picker("Format", selection: $config.format) {
-                    Text("PDF").tag(ExportFormat.pdf)
-                    Text("PNG").tag(ExportFormat.png)
+            DialogRow("Format") {
+                SegmentedControl(selection: $config.format, values: [.pdf, .png]) {
+                    Text($0 == .pdf ? "PDF" : "PNG")
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
             }
 
             // The one contextual row swaps by format.
             if config.format == .pdf {
-                LabeledContent("Layout") {
-                    Picker("Layout", selection: $config.pdfLayout) {
-                        Text("Single page").tag(PDFLayout.singlePage)
-                        Text("Letter pages").tag(PDFLayout.letterPages)
+                DialogRow("Layout") {
+                    SegmentedControl(
+                        selection: $config.pdfLayout, values: [.singlePage, .letterPages]
+                    ) {
+                        Text($0 == .singlePage ? "Single Page" : "Letter Pages")
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                 }
             } else {
-                LabeledContent("Scale") {
-                    Picker("Scale", selection: $config.pngScale) {
-                        Text("1×").tag(1)
-                        Text("2×").tag(2)
-                        Text("3×").tag(3)
+                DialogRow("Scale") {
+                    SegmentedControl(selection: $config.pngScale, values: [1, 2, 3]) {
+                        Text("\($0)×")
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                 }
             }
 
             Text(summary(refs: map.elements.count, pages: pageCount, skipped: map.skipped))
                 .font(Theme.Typography.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.Colors.inkSecondary)
 
-            HStack {
-                Spacer()
-                Button("Export…") {
-                    showPanel = false
-                    controller.requestExport(mapping: map, config: config, suggestedName: space.name)
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(map.isEmpty)
+            Button("Export…") {
+                showPanel = false
+                controller.requestExport(mapping: map, config: config, suggestedName: space.name)
             }
+            .buttonStyle(DialogButtonStyle())
+            .keyboardShortcut(.defaultAction)
+            .disabled(map.isEmpty)
         }
-        .popoverContent(width: 280)
+        .popoverContent(width: 320)
     }
 
     private func summary(refs: Int, pages: Int, skipped: Int) -> String {
@@ -203,6 +193,7 @@ struct ExportProgressRing: View {
                     controller.cancel()
                     showCancel = false
                 }
+                .buttonStyle(DialogButtonStyle(width: .hug))
             }
         }
         .popoverContent(width: 220)

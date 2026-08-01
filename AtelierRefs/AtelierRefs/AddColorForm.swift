@@ -33,39 +33,49 @@ struct AddColorForm: View {
     /// Enabled only when the field holds a valid hex color.
     private var canonical: String? { ColorPayload.canonicalHex(hexText) }
 
+    /// The swatch wears the field's own radius so the pair reads as one control.
+    private var swatchShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: Theme.Radius.field, style: .continuous)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             Text("Add Color").font(Theme.Typography.bodyEmphasis)
 
-            // Picking writes its hex into the field (single source of truth).
-            ColorPicker("Pick a color", selection: $picked, supportsOpacity: false)
-                .onChange(of: picked) { _, newValue in
-                    if let hex = newValue.toHexString() { hexText = hex }
-                }
-
             HStack(spacing: Theme.Spacing.sm) {
                 TextField("#RRGGBB", text: $hexText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
+                    .textFieldStyle(.plain)
+                    .dialogFieldChrome()
                     .onSubmit(commit)
-                // A live swatch of what will be added.
-                RoundedRectangle(cornerRadius: Theme.Radius.chip)
-                    .fill(Color(hexString: canonical ?? "") ?? Color(.quaternaryLabelColor))
-                    .frame(width: 28, height: 28)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Theme.Radius.chip)
-                            .strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 1)
+                // The swatch IS the picker now: clicking it opens the system colour
+                // panel, whose pick writes its hex into the field (still the single
+                // source of truth). One control in place of the labelled `ColorPicker`
+                // row plus the read-only preview that used to sit beside the field.
+                ColorSwatchWell(color: $picked)
+                    .frame(width: 40, height: 32)
+                    .clipShape(swatchShape)
+                    .overlay(swatchShape.strokeBorder(
+                        Theme.Colors.hairlineStrong, lineWidth: 1))
+                    .onChange(of: picked) { _, newValue in
+                        if let hex = newValue.toHexString() { hexText = hex }
+                    }
+                    // …and the swatch follows a TYPED hex back, which the read-only
+                    // preview it replaced did for free. Both directions settle after one
+                    // hop: writing the same hex back produces no further change.
+                    .onChange(of: hexText) { _, _ in
+                        guard let hex = canonical, let typed = Color(hexString: hex),
+                              typed.toHexString() != picked.toHexString()
+                        else { return }
+                        picked = typed
                     }
             }
 
-            HStack {
-                Spacer()
-                Button("Add", action: commit)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(canonical == nil)
-            }
+            Button("Add", action: commit)
+                .buttonStyle(DialogButtonStyle())
+                .keyboardShortcut(.defaultAction)
+                .disabled(canonical == nil)
         }
-        .popoverContent(width: 260)
+        .popoverContent(width: 280)
         // Seed the field from the picker so the form opens ready to commit.
         .onAppear { if hexText.isEmpty { hexText = picked.toHexString() ?? "#000000" } }
     }

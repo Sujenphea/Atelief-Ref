@@ -87,44 +87,35 @@ struct ToastCard: View {
     let onDismiss: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: iconName)
-                .foregroundStyle(iconColor)
+        HStack(spacing: Theme.Spacing.md) {
             Text(toast.message)
                 .font(Theme.Typography.body)
+                .foregroundStyle(Theme.Colors.inkPrimary)
                 .lineLimit(2)
             if let label = actionLabel {
                 Button(label, action: onAction)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    .buttonStyle(DialogButtonStyle(width: .hug))
             }
             Button {
                 onDismiss()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .font(Theme.Typography.caption.weight(.semibold))
+                    .foregroundStyle(Theme.Colors.inkSecondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(HoverButtonStyle(cornerRadius: Theme.Radius.chip, padding: Theme.Spacing.xs))
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 14)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(.separator, lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
+        .padding(.vertical, Theme.Spacing.sm)
+        .padding(.horizontal, Theme.Spacing.md)
+        // Opaque `surface`, not `.regularMaterial`: a translucent pill tints from
+        // whatever it happens to be floating over, so the same toast rendered a
+        // different grey on the grid than on the canvas. `Elevation.floating` is the
+        // token for exactly this shape — a pill riding over content it did not lay out
+        // — which replaces the one-off 0.15/8/3 shadow this card used to carry.
+        .background(Theme.Colors.surface, in: Capsule())
+        .overlay(Capsule().strokeBorder(Theme.Colors.hairline, lineWidth: 1))
+        .elevation(.floating)
         .frame(maxWidth: 420)
-    }
-
-    /// The leading glyph: a green check for a completed capture (Jump), an arrow for
-    /// a reversible destructive verb (Undo).
-    private var iconName: String {
-        if case .undo = toast.action { return "arrow.uturn.backward.circle.fill" }
-        return "checkmark.circle.fill"
-    }
-
-    private var iconColor: Color {
-        if case .undo = toast.action { return .orange }
-        return .green
     }
 
     /// The action button's label, or `nil` for a bare message. Jump carries its own

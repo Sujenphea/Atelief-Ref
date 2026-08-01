@@ -30,18 +30,18 @@ struct AddLinkForm: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             Text("Add Link").font(Theme.Typography.bodyEmphasis)
             TextField("https://example.com/…", text: $urlText)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 320)
+                .textFieldStyle(.plain)
+                .dialogFieldChrome()
                 .onSubmit(commit)
-            HStack {
-                Spacer()
-                Button("Add", action: commit)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!isValid)
-            }
+            Button("Add", action: commit)
+                .buttonStyle(DialogButtonStyle())
+                .keyboardShortcut(.defaultAction)
+                .disabled(!isValid)
         }
-        // No fixed width: the URL field's own 320 sizes this one.
-        .popoverContent()
+        // The CARD carries the width now. It used to come from the field's own
+        // `.frame(width: 320)`, which a full-width button underneath would have had to
+        // duplicate to line up with it.
+        .popoverContent(width: 320)
     }
 
     private func commit() {
