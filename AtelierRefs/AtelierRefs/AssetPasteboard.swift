@@ -139,4 +139,31 @@ enum AssetPasteboardWriter {
         pasteboard.writeObjects(objects)
         return selection.entries.count
     }
+
+    /// Append the app-private ``AssetDragPayload`` representation of the SAME copy
+    /// to a board ``write(_:to:)`` has just filled (019 · C1) — the second half of
+    /// the dual write the board already does for its elements (065 §2.4).
+    ///
+    /// **Order is load-bearing**: ``write(_:to:)`` calls `clearContents()`, so this
+    /// can only ever run AFTER it, never before. Writing it last also keeps the file
+    /// URL the PREFERRED type for an external receiver — the `.assetIDs` identifier
+    /// conforms to `public.data`, so a promiscuous app could otherwise match it.
+    ///
+    /// The ids are the WHOLE selection, not just ``ExportSelection/entries``: a
+    /// paste by id needs no bytes, so a media-less `.unknown` or a missing-blob
+    /// image — which the byte representation had to skip — still pastes in-app.
+    ///
+    /// "nil, not empty" (065 §2.4): an EMPTY selection writes NOTHING rather than an
+    /// empty payload, so a later ⌘V falls through to the importer instead of
+    /// matching a copy that carried no assets. Returns whether bytes went on.
+    @discardableResult
+    static func appendAssetIDs(
+        _ assetIDs: [UUID], from sourceCollectionID: UUID, to pasteboard: NSPasteboard
+    ) -> Bool {
+        guard !assetIDs.isEmpty else { return false }
+        let payload = AssetDragPayload(
+            assetIDs: assetIDs, sourceCollectionID: sourceCollectionID)
+        guard let data = try? payload.pasteboardData() else { return false }
+        return pasteboard.setData(data, forType: AssetDragPayload.pasteboardType)
+    }
 }

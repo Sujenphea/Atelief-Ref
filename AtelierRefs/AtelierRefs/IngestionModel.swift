@@ -1774,10 +1774,35 @@ final class IngestionModel: ObservableObject {
     /// (``AssetExport/pasteboardEntry(asset:source:blobURL:)``), and the pasteboard
     /// representations (``AssetPasteboardWriter``) all live in one place. Skips are
     /// reported via ``lastCopyReport`` (7A), never silent.
-    func copyToPasteboard(assets: [(asset: Asset, source: Source?)]) {
+    ///
+    /// Writes TWO representations of the one selection (019 · C1, the 065 §2.4
+    /// pattern applied outside Spaces), so the DESTINATION decides what a copy meant:
+    ///
+    /// - the byte one — blob file URLs (plus an `NSImage` for a single item), which
+    ///   is all Figma / Finder / Photoshop ever see, unchanged;
+    /// - the app-private ``AssetDragPayload``, so a ⌘V back into the app pastes the
+    ///   ASSET (a second membership) instead of re-importing its bytes as a fresh
+    ///   `.localDrag` capture — which loses the note, tags, `original_url` and
+    ///   `created_at` of anything not already local (019).
+    ///
+    /// `sourceCollectionID` is the collection the copy was taken from, or
+    /// ``AssetDragPayload/nilSourceID`` for a membership-less surface (library
+    /// search, a Space board). Required rather than defaulted: every caller knows
+    /// its own answer, and guessing one is how a paste picks the wrong target.
+    ///
+    /// The report's counts stay about the BYTE representation — the honest number
+    /// for other apps, and what keeps the "this won't paste into Figma" warning
+    /// truthful — even though the private payload carries the whole selection.
+    func copyToPasteboard(
+        assets: [(asset: Asset, source: Source?)], sourceCollectionID: UUID
+    ) {
         let selection = AssetExport.exportSelection(
             assets: assets, blobURL: { self.blobURL(forAsset: $0) })
         AssetPasteboardWriter.write(selection, to: .general)
+        // AFTER the write, which clears the board first (see `appendAssetIDs`), and
+        // over the WHOLE selection — including entries the byte pass had to skip.
+        AssetPasteboardWriter.appendAssetIDs(
+            assets.map { $0.asset.id }, from: sourceCollectionID, to: .general)
         copyReportSeq += 1
         lastCopyReport = CopyReport(
             copied: selection.entries.count, skipped: selection.skipped, seq: copyReportSeq)
@@ -1785,13 +1810,17 @@ final class IngestionModel: ObservableObject {
 
     /// Copy the `selection` (membership ids) out of `details` to the pasteboard, in
     /// `details` order (052 · B1). The grid-shaped convenience over
-    /// ``copyToPasteboard(assets:)`` shared by the collection grid and the search
-    /// grid — both hold `[CollectionItemDetail]` and select by `item.id`.
-    func copySelectedToPasteboard(from details: [CollectionItemDetail], selection ids: Set<UUID>) {
+    /// ``copyToPasteboard(assets:sourceCollectionID:)`` shared by the collection grid
+    /// and the search grid — both hold `[CollectionItemDetail]` and select by
+    /// `item.id`. Search passes ``AssetDragPayload/nilSourceID``: it has no owning
+    /// collection to have copied out of.
+    func copySelectedToPasteboard(
+        from details: [CollectionItemDetail], selection ids: Set<UUID>, sourceCollectionID: UUID
+    ) {
         let assets = details
             .filter { ids.contains($0.item.id) }
             .map { (asset: $0.asset, source: Optional($0.source)) }
-        copyToPasteboard(assets: assets)
+        copyToPasteboard(assets: assets, sourceCollectionID: sourceCollectionID)
     }
 
     /// The on-disk URL of a folder item's 512-tier thumbnail (pure — no decode).
@@ -2757,6 +2786,15 @@ final class IngestionModel: ObservableObject {
     /// downloadable image URL) — no more silent no-op (backlog B1).
     func reportUnreadableDrop() {
         notify("Couldn't read that drop — no image, file, or image URL.")
+    }
+
+    /// Report a ⌘V of the app's own copy back into the collection it came from
+    /// (019 · C2). `addAssets` guarantees ONE membership, so the paste genuinely
+    /// changes nothing — say so, rather than letting the grid appear to swallow the
+    /// keystroke. Same shape as ``reportUnreadableDrop()``: a plain notice for a
+    /// deliberate no-op.
+    func reportAlreadyInCollection() {
+        notify("Already in this collection.")
     }
 
     /// A friendly notice for a failed remote-image download.

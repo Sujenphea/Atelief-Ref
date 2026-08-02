@@ -364,8 +364,15 @@ struct CollectionView: View {
 
     /// Copy the current selection to the pasteboard (Edit ▸ Copy / ⌘C, 052 · B1) in
     /// GRID order, via the shared grid-copy path.
+    ///
+    /// The source collection rides along for the app-private representation (019 ·
+    /// C1) — `selectedFolderID`, the SAME answer ``IngestionModel/dragPayload(forCellItemID:)``
+    /// gives, since `model.items` is that folder's feed. It lets ⌘V tell a paste
+    /// back into this collection (a no-op) from a paste into another one.
     private func copySelectionToPasteboard() {
-        model.copySelectedToPasteboard(from: model.items, selection: model.selection.ids)
+        model.copySelectedToPasteboard(
+            from: model.items, selection: model.selection.ids,
+            sourceCollectionID: model.selectedFolderID)
     }
 
     /// The File-menu contact-sheet export (052 · B4): selection-or-whole-collection
@@ -827,12 +834,65 @@ struct CollectionView: View {
         }
     }
 
+    /// How a ⌘V into the grid resolves — the PURE half of ``paste()`` (019 · C2), so
+    /// the branch order is unit-tested rather than only observable against a live
+    /// pasteboard and a live database.
+    enum PasteRoute: Equatable {
+        /// Our own copy, pasted into a DIFFERENT collection: add a membership for
+        /// each id, keeping the existing asset row (its note, tags, provenance,
+        /// `created_at`). `source` is the collection copied FROM — `nil` for a
+        /// membership-less surface — and is used only for the notice's verb.
+        case add(assetIDs: [UUID], source: UUID?)
+        /// Our own copy, pasted back into the collection it came from. `addAssets`
+        /// already guarantees one membership, so this is a no-op WITH a notice.
+        case alreadyMembers
+        /// Anything else — including no payload at all: the generic importer.
+        case importExternal
+    }
+
+    /// Resolve a ⌘V from the app-private payload on the board (if any) and the
+    /// collection the paste targets.
+    ///
+    /// "nil, not empty" (065 §2.4): a copy that carried no assets writes NO payload,
+    /// and ``AssetDragPayload/internalMarker`` grants no drop semantics — neither may
+    /// stop the chain, so both fall through to the importer.
+    static func resolvePaste(payload: AssetDragPayload?, target: UUID) -> PasteRoute {
+        guard let payload, !payload.assetIDs.isEmpty else { return .importExternal }
+        guard payload.sourceCollectionID != target else { return .alreadyMembers }
+        let source = payload.sourceCollectionID == AssetDragPayload.nilSourceID
+            ? nil : payload.sourceCollectionID
+        return .add(assetIDs: payload.assetIDs, source: source)
+    }
+
+    /// ⌘V into the grid, in strict priority order (019 · C2 — the 065 §2.5 shape):
+    ///
+    /// 1. **Our own copy** — the `AssetDragPayload` ⌘C writes beside the file URLs.
+    ///    FIRST, and that ordering is the whole fix: it is the most specific
+    ///    representation on the board, and branch 2 would happily consume the weaker
+    ///    blob file URL sitting next to it and RE-IMPORT the asset as a fresh
+    ///    `.localDrag` capture, losing its note, tags and provenance (019).
+    /// 2. **Importable external content** — files, images, URLs — unchanged, so a
+    ///    file copied in Finder still imports exactly as before.
+    ///
+    /// This is the paste-side twin of ``handleDrop(_:)``, which has refused providers
+    /// carrying `.assetIDs` since 192 for the same reason.
     private func paste() {
         guard model.isReady else { return }
         let pasteboard = NSPasteboard.general
-        let inputs = DirectInputReader.inputs(
-            from: pasteboard, into: importTargetID, now: Date())
-        dispatch(inputs: inputs, webURL: ImportPasteboard.firstWebURL(on: pasteboard))
+        let target = importTargetID
+        switch Self.resolvePaste(
+            payload: AssetDragPayload.decode(from: pasteboard), target: target) {
+        case let .add(assetIDs, source):
+            // Stale ids (copy → delete → paste) fail CLOSED: `addAssets` throws
+            // `.notFound` inside its transaction, so nothing is half-added, and
+            // `copyToCollection`'s `mutateContents` surfaces it as an error notice.
+            model.copyToCollection(assetIDs: assetIDs, to: target, from: source)
+        case .alreadyMembers:
+            model.reportAlreadyInCollection()
+        case .importExternal:
+            let inputs = DirectInputReader.inputs(from: pasteboard, into: target, now: Date())
+            dispatch(inputs: inputs, webURL: ImportPasteboard.firstWebURL(on: pasteboard))
+        }
     }
 
     /// Decode a drag drop's providers off-main through the shared
