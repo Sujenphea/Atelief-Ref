@@ -297,7 +297,12 @@ struct SpaceView: View {
                     if assets.isEmpty {
                         NSPasteboard.general.clearContents()
                     } else {
-                        model.copyToPasteboard(assets: assets)
+                        // A board owns PLACEMENTS, not memberships (019 · C1), so the
+                        // asset representation's private payload carries the
+                        // nil-source sentinel: pasting it into a collection is
+                        // always an add, never a same-collection no-op.
+                        model.copyToPasteboard(
+                            assets: assets, sourceCollectionID: AssetDragPayload.nilSourceID)
                     }
                     copyElementsToPasteboard(details.map(\.item))
                 },
@@ -808,19 +813,31 @@ struct SpaceView: View {
         NSPasteboard.general.setData(data, forType: SpaceElementPayload.pasteboardType)
     }
 
-    /// ⌘V onto the board, in strict priority order (065). The ORDER is the design:
+    /// ⌘V onto the board, in strict priority order (065 + 019 · C3). The ORDER is
+    /// the design — each branch is more specific than the one below it, and every
+    /// lower branch would happily consume a weaker representation of the same copy:
     ///
     /// 1. **A copied piece of a board** — rebuilt with its layout intact. First,
     ///    because our own representation is the most specific thing on the pasteboard
     ///    and the other branches would happily consume a weaker one instead (a copied
     ///    text box also puts its string on the pasteboard as plain text).
-    /// 2. **Importable external content** — files, images, URLs — unchanged, so a
+    /// 2. **Assets copied elsewhere in the app** (the grid, search, a detail page) —
+    ///    PLACED by id, not re-imported. Above the importer for the 019 reason: the
+    ///    same copy also carries blob file URLs, and importing those would rebuild
+    ///    the asset from its bytes and lose its note, tags and provenance.
+    /// 3. **Importable external content** — files, images, URLs — unchanged, so a
     ///    pasted link still becomes a reference.
-    /// 3. **Plain text** — a text box. LAST, and that is what keeps it from stealing
+    /// 4. **Plain text** — a text box. LAST, and that is what keeps it from stealing
     ///    every pasted URL, since a URL is also a string.
     private func pasteOntoBoard(from pasteboard: NSPasteboard, at worldPoint: CGPoint) -> Bool {
         if let payload = SpaceElementPayload.decode(from: pasteboard) {
             space.pasteElements(payload, at: worldPoint)
+            return true
+        }
+        // "nil, not empty" (065 §2.4): an empty payload is not a copy — it must not
+        // claim the paste and stop the chain here.
+        if let payload = AssetDragPayload.decode(from: pasteboard), !payload.assetIDs.isEmpty {
+            space.placeDroppedAssets(ids: payload.assetIDs, at: worldPoint)
             return true
         }
         if importExternal(from: pasteboard, at: worldPoint) { return true }

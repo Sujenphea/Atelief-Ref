@@ -78,7 +78,8 @@ struct GridHostConfiguration {
     /// `.onDeleteCommand` → `model.requestDeleteSelected()`).
     var onRequestDelete: () -> Void
     /// Copy the current selection to the pasteboard (Edit ▸ Copy / ⌘C, 052 · B1) —
-    /// wraps `model.copyToPasteboard(assets:)` over the grid-ordered selection.
+    /// wraps `model.copyToPasteboard(assets:sourceCollectionID:)` over the
+    /// grid-ordered selection.
     var onCopy: () -> Void
     /// Spacebar Quick Look over the selection / lead (`presentQuickLook`).
     var onQuickLook: () -> Void
