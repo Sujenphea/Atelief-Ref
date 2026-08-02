@@ -218,3 +218,45 @@ struct GridInputRoutingTests {
         #expect(gridKeyCommand(characters: "-", modifiers: []) == nil)
     }
 }
+
+// MARK: - The detail page's key map (069)
+
+/// The overlay's ← / → , which used to be a `keyboardShortcut` that never fired: the
+/// grid keeps first responder behind the page and swallowed both arrows in its own
+/// `keyDown`. The page handles them itself now, off this pure map.
+@Suite("Detail page: the arrow map")
+struct DetailStepDeltaTests {
+
+    private func k(_ scalar: Int, _ mods: NSEvent.ModifierFlags = []) -> Int? {
+        detailStepDelta(characters: String(UnicodeScalar(scalar)!), modifiers: mods)
+    }
+
+    @Test("← steps back, → steps forward")
+    func arrowsStep() {
+        #expect(k(NSLeftArrowFunctionKey) == -1)
+        #expect(k(NSRightArrowFunctionKey) == 1)
+    }
+
+    @Test("⇧ is tolerated — the page has no range to extend, so ⇧← can only mean ←")
+    func shiftIsTolerated() {
+        #expect(k(NSLeftArrowFunctionKey, [.shift]) == -1)
+        #expect(k(NSRightArrowFunctionKey, [.shift]) == 1)
+    }
+
+    @Test("⌘ / ⌥ / ⌃ disqualify — ⌥← is a word jump, and ⌘← is not ours")
+    func modifiersDisqualify() {
+        #expect(k(NSLeftArrowFunctionKey, [.command]) == nil)
+        #expect(k(NSLeftArrowFunctionKey, [.option]) == nil)
+        #expect(k(NSRightArrowFunctionKey, [.control]) == nil)
+    }
+
+    @Test("every other key falls through, so Escape still closes the page")
+    func otherKeysFallThrough() {
+        #expect(k(NSUpArrowFunctionKey) == nil)
+        #expect(k(NSDownArrowFunctionKey) == nil)
+        #expect(detailStepDelta(characters: "\u{1b}", modifiers: []) == nil)
+        #expect(detailStepDelta(characters: " ", modifiers: []) == nil)
+        #expect(detailStepDelta(characters: "x", modifiers: []) == nil)
+        #expect(detailStepDelta(characters: "", modifiers: []) == nil)
+    }
+}

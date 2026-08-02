@@ -132,6 +132,14 @@ struct GridHostConfiguration {
     /// Representative ids of posts opened in place (307), so a cell knows whether it
     /// still stands for hidden members and should draw the pile.
     var expandedPosts: Set<UUID> = []
+    /// Whether the full-window detail page is up over this grid (069).
+    ///
+    /// The grid is still FIRST RESPONDER behind the overlay — it takes focus on the
+    /// click that opens the page (`gridCellMouseDown`) and nothing resigns for it — so
+    /// without this gate its `keyDown` swallows the arrows the page's own pager needs,
+    /// and each press silently walks + scrolls a grid the user cannot see. Defaulted
+    /// false so a surface with no detail page needn't supply it.
+    var isDetailPresented: Bool = false
 
     // MARK: 048 — membership-less (search) reuse
 
@@ -1477,6 +1485,13 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     // MARK: Keyboard (036 §4 A2 — reuse GridNavigation + the reducer)
 
     func gridKeyDown(_ event: NSEvent) -> Bool {
+        // The detail page owns the keyboard while it is up (069). The grid keeps first
+        // responder behind it, so anything consumed here is a key the page never sees —
+        // which is what killed its ← / →. Falling through leaves Escape working exactly
+        // as it does below, and leaves Delete alone: the delete KEY still reaches
+        // `gridDeleteCommand()` through `deleteBackward:`/`deleteForward:`, which are
+        // responder methods and do not come through here.
+        if configuration.isDetailPresented { return false }
         let mods = event.modifierFlags
         // ⌘-combos travel through `performKeyEquivalent`, earlier in the chain.
         if mods.contains(.command) { return false }
