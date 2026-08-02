@@ -200,6 +200,11 @@ struct ItemDetailView: View {
         // Sit on the same panel tone as every other pane, so opening an item is no
         // longer a jump to the system background.
         .background(Theme.Colors.panel)
+        // ← / → (069). A keyboard-only view that holds first responder while the page is
+        // up — see `DetailKeyCatcher` for why a `.keyboardShortcut` on the chevrons was
+        // never going to arrive. Only when there is something to step: a Space board's
+        // detail has no ordered set behind it, and must not take focus from the canvas.
+        .background { if let navigator { DetailKeyCatcher(onStep: navigator.step) } }
         // Reload media whenever the shown asset changes (open + prev/next).
         .task(id: asset.id) { await loadMedia() }
         .onDisappear {
@@ -244,8 +249,10 @@ struct ItemDetailView: View {
     /// rest, the same trade ``selectionBarChrome()`` makes on its trailing edge.
     private func pager(_ navigator: ItemDetailNavigator) -> some View {
         HStack(spacing: Theme.Spacing.xs) {
+            // No `.keyboardShortcut` on either chevron: the arrows are handled by
+            // `DetailKeyCatcher`, which is the only path that actually receives them,
+            // and a second registration here would risk stepping twice per press.
             Button { navigator.step(-1) } label: { Image(systemName: "chevron.left") }
-                .keyboardShortcut(.leftArrow, modifiers: [])
                 .disabled(navigator.index <= 0)
                 .help("Previous item (←)")
 
@@ -253,7 +260,6 @@ struct ItemDetailView: View {
                 .font(Theme.Typography.row).monospacedDigit()
 
             Button { navigator.step(1) } label: { Image(systemName: "chevron.right") }
-                .keyboardShortcut(.rightArrow, modifiers: [])
                 .disabled(navigator.index >= navigator.count - 1)
                 .help("Next item (→)")
         }
@@ -1314,6 +1320,121 @@ private struct DetailRow: View {
                 .textSelection(.enabled)
         }
         .font(Theme.Typography.label)
+    }
+}
+
+// MARK: - Keyboard (069)
+
+/// ← / → → a pager step, or `nil` for every other key. The detail page's whole key map,
+/// pure so it is tested without a window (the shape ``gridKeyCommand(characters:modifiers:)``
+/// uses for the grid's).
+///
+/// Bare means bare: ⌘ / ⌥ / ⌃ disqualify, so ⌘← stays whatever the system does with it
+/// and ⌥← stays a word jump in a text field. ⇧ is tolerated — the page has no range to
+/// extend, so ⇧← can only have meant ←.
+func detailStepDelta(characters: String, modifiers: NSEvent.ModifierFlags) -> Int? {
+    guard !modifiers.contains(.command), !modifiers.contains(.option),
+          !modifiers.contains(.control),
+          let scalar = characters.unicodeScalars.first.map({ Int($0.value) })
+    else { return nil }
+    switch scalar {
+    case NSLeftArrowFunctionKey: return -1
+    case NSRightArrowFunctionKey: return 1
+    default: return nil
+    }
+}
+
+/// The detail page's arrow keys, delivered where AppKit will actually deliver them.
+///
+/// The page is an OVERLAY over the collection grid, and the grid's `NSCollectionView`
+/// keeps first responder behind it: it takes focus on the very click that opens the page
+/// ("focus follows the click"), and nothing resigns for it. Its `keyDown` consumes arrows
+/// unconditionally — so the pager's `.keyboardShortcut(.leftArrow)` was never what ran,
+/// and every press walked and scrolled a grid the user could not see while the page sat
+/// still. `close()` then overwrote that cursor, which is why it read as a dead key.
+///
+/// 269 already wrote the conclusion this rests on: "`keyDown` only reaches a first
+/// responder … so the canvas's own focus is the gate." A sibling `keyboardShortcut` is
+/// not a gate. So the page gets a focus of its own — a keyboard-only view that borrows
+/// first responder while the page is up and hands it back on the way out.
+private struct DetailKeyCatcher: NSViewRepresentable {
+    /// Step the pager by ±1. The navigator bounds-checks, so both ends are no-ops.
+    let onStep: (Int) -> Void
+
+    func makeNSView(context: Context) -> KeyView {
+        let view = KeyView()
+        view.onStep = onStep
+        return view
+    }
+
+    func updateNSView(_ view: KeyView, context: Context) {
+        view.onStep = onStep
+        // Arm ONCE per presentation. This runs on every step and every zoom tick, and a
+        // view that re-took first responder on each of those would rip focus out of the
+        // sidebar's Name / Note field mid-word.
+        view.armIfNeeded()
+    }
+
+    final class KeyView: NSView {
+        var onStep: ((Int) -> Void)?
+        /// Who the page borrowed focus from (the grid), so it can be given back.
+        private weak var previousResponder: NSResponder?
+        private var armed = false
+
+        override var acceptsFirstResponder: Bool { true }
+
+        /// Keyboard only. Returning `nil` keeps this out of mouse routing entirely, so a
+        /// full-bleed background view can never shadow the media area's drag-out or the
+        /// zoom gestures.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            armIfNeeded()
+        }
+
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            super.viewWillMove(toWindow: newWindow)
+            // Leaving the window IS the page closing — give the grid its focus back, or
+            // its own arrows would stay dead until the next click.
+            if newWindow == nil { restoreResponder() }
+        }
+
+        /// Take first responder for the page, once, remembering who had it.
+        ///
+        /// Never steals from a text view: the sidebar's Name / Note fields are the one
+        /// place on this page where ← / → legitimately mean "move the caret", and their
+        /// field editor takes focus long after this has armed.
+        func armIfNeeded() {
+            guard !armed, let window else { return }
+            guard !(window.firstResponder is NSText) else { return }
+            armed = true
+            previousResponder = window.firstResponder
+            // A hop, like the canvas host's (269): this can fire from
+            // `viewDidMoveToWindow`, mid-installation.
+            Task { @MainActor [weak self] in
+                guard let self, let window = self.window else { return }
+                window.makeFirstResponder(self)
+            }
+        }
+
+        private func restoreResponder() {
+            guard armed, let window, window.firstResponder === self else { return }
+            armed = false
+            window.makeFirstResponder(previousResponder)
+        }
+
+        override func keyDown(with event: NSEvent) {
+            if let delta = detailStepDelta(
+                characters: event.charactersIgnoringModifiers ?? "",
+                modifiers: event.modifierFlags) {
+                onStep?(delta)
+                return
+            }
+            // Everything else — Escape included — carries on down the responder chain,
+            // so the Back button's `.cancelAction` still closes the page.
+            super.keyDown(with: event)
+        }
     }
 }
 

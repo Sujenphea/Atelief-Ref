@@ -428,6 +428,23 @@ final class IngestionModel: ObservableObject {
     /// Membership ids of ``displayItems``, for O(1) "is this tile on screen?".
     private var displayItemIDs: Set<UUID> = []
 
+    /// The feed AS THE DETAIL PAGE WALKS IT (069): every image, in the grid's order,
+    /// with each post's images together and in the post's own order.
+    ///
+    /// The overlay stepped `items` raw until 069 — so its prev/next read the feed order
+    /// 309 had already stopped using for the grid, and a post whose images a reorder had
+    /// scattered was walked in pieces. This is ``displayItems``' sibling: same
+    /// derivation site, same invalidation, differing only in that a post contributes all
+    /// its images rather than one tile. The page is paging through IMAGES, so it is the
+    /// one list that opens every post.
+    private(set) var detailRun: [CollectionItemDetail] = []
+    /// Position in ``detailRun`` by membership id — the overlay resolves the shown item
+    /// to its pager index on every body pass, which was an `items.firstIndex` scan.
+    private var detailRunIndexByItem: [UUID: Int] = [:]
+
+    /// Where `id` sits in ``detailRun``, or `nil` when it isn't in the loaded feed.
+    func detailRunIndex(of id: UUID) -> Int? { detailRunIndexByItem[id] }
+
     /// The item ids a TILE stands for, in feed order (307): a collapsed post's whole
     /// membership, or just the item itself when it is ungrouped, opened, or grouping
     /// is off. The ordered counterpart of ``widenedForAction(_:)``, used where the
@@ -476,6 +493,14 @@ final class IngestionModel: ObservableObject {
             ? postGroups.collapsed(items, expanding: expandedPosts)
             : items
         displayItemIDs = Set(displayItems.map { $0.item.id })
+        // The detail page's run (069) — derived HERE so it shares the display list's
+        // invalidation exactly. A post contributes all its images (the page pages
+        // through images), but at its tile's slot and in the post's order, so the page
+        // and the grid can't tell different stories about where a carousel is.
+        detailRun = groupCarousels ? postGroups.fullRun(items) : items
+        detailRunIndexByItem = Dictionary(
+            detailRun.enumerated().map { ($0.element.item.id, $0.offset) },
+            uniquingKeysWith: { first, _ in first })
         // Push the DISPLAYED order to the selection store (the reducer's `order`
         // argument) — replaces the old hoisted `itemOrder`. It has to be the display
         // list, not `items`: ⇧-range, arrow nav and the marquee all resolve hits

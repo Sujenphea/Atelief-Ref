@@ -266,6 +266,23 @@ struct PostGroups {
         return result
     }
 
+    /// The run the DETAIL page steps through: every item, but with each post's members
+    /// gathered contiguously at the representative's slot, in POST order.
+    ///
+    /// The page's prev/next used to walk `items` raw (309 fixed the grid's order and
+    /// left the overlay behind), so → out of a carousel's cover wandered into whichever
+    /// siblings happened to sit later in the feed, in feed order, and came back to the
+    /// rest of the post further along. This is the grid's own display list with every
+    /// post opened — the same rule, one code path, so what the page walks and what the
+    /// grid draws can no longer disagree.
+    ///
+    /// Deliberately NOT a subsequence of `items`, for the reason ``collapsed(_:expanding:)``
+    /// gives: the point of opening a post is to look through ONE post, so its images are
+    /// adjacent, where its tile was.
+    func fullRun(_ items: [CollectionItemDetail]) -> [CollectionItemDetail] {
+        collapsed(items, expanding: Set(membersByKey.values.compactMap(\.first)))
+    }
+
     /// Every member of the posts `selected` touches — the ACTION boundary.
     ///
     /// A collapsed tile is one thing to click and N things to act on: the selection

@@ -340,6 +340,71 @@ struct PostExpansionTests {
         model.toggleExpansion(forItem: tile)
         #expect(model.displayTile(for: hidden) == hidden)
     }
+
+    @Test("the detail page's run holds every image, with the post's together (069)")
+    func detailRunOpensEveryPost() async throws {
+        let (model, services) = try await rig()
+        let target = Collection.unsortedID
+        try await seed(services, url: "https://www.instagram.com/p/AbCd/", count: 3,
+                       into: target, hexSeed: 0)
+        try await seed(services, url: nil, count: 1, into: target, hexSeed: 40)
+        try await load(model, target)
+
+        // The grid draws two tiles (the post + the local capture); the page pages
+        // through images, so its run holds all four.
+        #expect(model.displayItems.count == 2)
+        #expect(model.detailRun.count == 4)
+
+        // The post's images are a contiguous block, not scattered through the run.
+        let post = Set(model.postGroups.members(forItem: model.detailRun[0].item.id))
+        let positions = model.detailRun.enumerated()
+            .filter { post.contains($0.element.item.id) }.map(\.offset)
+        #expect(positions == Array(0..<post.count))
+    }
+
+    @Test("the run's index agrees with the run, and is rebuilt on every derivation")
+    func detailRunIndexTracksTheRun() async throws {
+        let (model, services) = try await rig()
+        let target = Collection.unsortedID
+        try await seed(services, url: "https://www.instagram.com/p/AbCd/", count: 3,
+                       into: target, hexSeed: 0)
+        try await load(model, target)
+
+        for (offset, detail) in model.detailRun.enumerated() {
+            #expect(model.detailRunIndex(of: detail.item.id) == offset)
+        }
+
+        // Opening a post rearranges the DISPLAY list, not the run — every image was
+        // already in it — but the derivation must still have run.
+        let tile = try #require(model.displayItems.first).item.id
+        model.toggleExpansion(forItem: tile)
+        #expect(model.detailRun.count == 3)
+        #expect(model.detailRunIndex(of: tile) == 0)
+
+        // Grouping off: the run is the feed, untouched.
+        model.groupCarousels = false
+        #expect(model.detailRun.map { $0.item.id } == model.items.map { $0.item.id })
+    }
+
+    @Test("stepping from a post's cover lands on its NEXT image, not another tile")
+    func steppingStaysInsideThePost() async throws {
+        let (model, services) = try await rig()
+        let target = Collection.unsortedID
+        try await seed(services, url: "https://www.instagram.com/p/AbCd/", count: 3,
+                       into: target, hexSeed: 0)
+        try await seed(services, url: "https://www.instagram.com/p/Zzzz/", count: 2,
+                       into: target, hexSeed: 40)
+        try await load(model, target)
+
+        // What the overlay does on →: index of the shown item, +1, into the run.
+        let cover = try #require(model.displayItems.first).item.id
+        let index = try #require(model.detailRunIndex(of: cover))
+        let next = model.detailRun[index + 1].item.id
+        // The post's own second image — the grid is hiding it, and that is exactly
+        // why the page (which pages images) is the thing that shows it.
+        #expect(model.postGroups.members(forItem: cover).dropFirst().first == next)
+        #expect(!model.displayItems.contains { $0.item.id == next })
+    }
 }
 
 @MainActor
