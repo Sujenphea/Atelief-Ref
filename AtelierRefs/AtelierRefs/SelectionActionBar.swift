@@ -19,8 +19,14 @@ import SwiftUI
 /// subtle rounded hover fill, so the row reads as a tidy group of taps rather than
 /// crowded symbols. Reused directly as the `Menu`/popover trigger label too, which
 /// is why it's split out from `SelectionBarButton`.
+///
+/// `isOn` marks a glyph that carries STATE rather than firing an action — the board's
+/// Select / Frame / Text tools. It takes the raised `selection` fill, which is how a
+/// sidebar row and a chip already mark "this is the live one"; the hover fill steps
+/// aside underneath it so a pointer can't wash the marker out.
 struct SelectionBarIcon: View {
     let systemName: String
+    var isOn = false
     @State private var isHovering = false
 
     var body: some View {
@@ -29,9 +35,14 @@ struct SelectionBarIcon: View {
             .frame(width: 30, height: 28)
             .background(
                 RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                    .fill(isHovering ? Theme.Colors.hoverControl : .clear))
+                    .fill(fill))
             .contentShape(Rectangle())
             .onHover { isHovering = $0 }
+    }
+
+    private var fill: Color {
+        if isOn { return Theme.Colors.selection }
+        return isHovering ? Theme.Colors.hoverControl : .clear
     }
 }
 
@@ -61,6 +72,52 @@ struct SelectionBarButton: View {
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
         .help(help)
+    }
+}
+
+// MARK: - Mode button
+
+/// A bar glyph that reports a MODE rather than firing an action — one of a small
+/// mutually exclusive set, of which exactly one is live. The board's Select / Frame /
+/// Text tools are the only such set today.
+///
+/// This exists so a mode row can live in the bar wearing the bar's own vocabulary. It
+/// used to be a `.pickerStyle(.segmented)` `Picker`, whose AppKit bezel and accent-
+/// tinted segment are the two things this app's chrome does not have (`Theme`:
+/// "there is NO coloured accent"), and whose control height and hard edges made it the
+/// one child of the row that didn't line up with its neighbours —
+/// ``DialogControls``'s ``SegmentedControl`` was already the token-built replacement
+/// everywhere else.
+///
+/// It is NOT a third segmented idiom. `SegmentedControl` marks the current value with
+/// an OUTLINE because it sits on a popover's `surface`, where another raised grey
+/// would read as a third layer. A floating bar has the opposite constraint — it marks
+/// active with a raised fill, like the sidebar row and the chip — so the same control
+/// in here would be the drift, not the consistency.
+struct SelectionBarModeButton: View {
+    let systemName: String
+    let help: String
+    let isOn: Bool
+    var action: () -> Void
+
+    init(_ systemName: String, help: String, isOn: Bool, action: @escaping () -> Void) {
+        self.systemName = systemName
+        self.help = help
+        self.isOn = isOn
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            SelectionBarIcon(systemName: systemName, isOn: isOn)
+        }
+        .buttonStyle(.plain)
+        // The off glyphs stay legible rather than dimmed to `0.35` — that opacity is
+        // the bar's DISABLED look (see the undo/redo and group buttons), and an
+        // inactive tool is one click away, not unavailable.
+        .foregroundStyle(isOn ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
+        .help(help)
+        .accessibilityAddTraits(isOn ? [.isButton, .isSelected] : .isButton)
     }
 }
 

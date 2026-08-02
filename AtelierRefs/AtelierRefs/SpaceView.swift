@@ -175,18 +175,30 @@ struct SpaceView: View {
     /// Select / Frame / Text, in the `.idle` sub-bar. A create tool rubber-bands a
     /// new element, then the canvas flips back to Select (see `onCreateElement`).
     /// The V/F/T shortcuts live on the canvas container (see `canvas`), NOT here —
-    /// they must keep firing when a selection swaps this picker out of the bar
-    /// (051 · E-2).
+    /// they must keep firing when a selection swaps these out of the bar (051 · E-2).
+    ///
+    /// Three ``SelectionBarModeButton`` glyphs at the bar's own `spacing: 2`, so the
+    /// tools are the same 30×28 taps as every other button in the row. This was a
+    /// `.pickerStyle(.segmented)` `Picker` — a stock AppKit bezel with an accent-blue
+    /// live segment, sitting in a monochrome capsule of flat glyphs, in an app whose
+    /// palette has no accent at all. The help text moved onto the individual tools with
+    /// it: one tooltip reading "Select (V), Frame (F), or Text (T)" was all a single
+    /// control could say.
     private var toolPicker: some View {
-        Picker("Tool", selection: $tool) {
-            Image(systemName: "cursorarrow").tag(CanvasTool.select)
-            Image(systemName: "rectangle.dashed").tag(CanvasTool.frame)
-            Image(systemName: "textformat").tag(CanvasTool.text)
+        HStack(spacing: 2) {
+            toolButton(.select, symbol: "cursorarrow", help: "Select (V)")
+            toolButton(.frame, symbol: "rectangle.dashed", help: "Frame (F)")
+            toolButton(.text, symbol: "textformat", help: "Text (T)")
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
-        .help("Select (V), Frame (F), or Text (T)")
+        .animation(Theme.Motion.gentle, value: tool)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Tool")
+    }
+
+    private func toolButton(
+        _ value: CanvasTool, symbol: String, help: String
+    ) -> some View {
+        SelectionBarModeButton(symbol, help: help, isOn: tool == value) { tool = value }
     }
 
     // V / F / T switch tools without reaching for the picker (design-tool muscle
@@ -579,17 +591,18 @@ struct SpaceView: View {
 
     /// The rule between the mode-switched half and the export.
     ///
-    /// It earns its place twice. Semantically, an export LEAVES the app, so it isn't
-    /// another edit in the same row — the same reason the collection's "+" menu puts
-    /// a rule above "New Space from Collection".
+    /// Semantically, an export LEAVES the app, so it isn't another edit in the same
+    /// row — the same reason the collection's "+" menu puts a rule above "New Space
+    /// from Collection". That is now the whole of its case, and it is enough.
     ///
-    /// Geometrically, it fixes a real defect. The bar's `spacing: 2` is not the gap
-    /// you see: every glyph is a 30×28 `SelectionBarIcon` whose 15pt symbol carries
-    /// ~7.5pt of its own air, so neighbouring glyphs read as ~17pt apart. The
-    /// segmented `toolPicker` is the ONE child with no such margin — its bezel is a
-    /// hard edge — so in `.idle` the export glyph sat 11pt from the picker while the
-    /// capsule's own trailing margin is 24pt, and the button looked jammed against
-    /// the tools. That never showed before because the picker used to be last.
+    /// It used to earn its place twice. The bar's `spacing: 2` is not the gap you
+    /// see: every glyph is a 30×28 `SelectionBarIcon` whose 15pt symbol carries ~7.5pt
+    /// of its own air, so neighbouring glyphs read as ~17pt apart. The segmented
+    /// `toolPicker` was the ONE child with no such margin — its bezel was a hard edge —
+    /// so in `.idle` the export glyph sat 11pt from the tools while the capsule's own
+    /// trailing margin is 24pt, and the button looked jammed against them. The tools
+    /// are `SelectionBarIcon` glyphs now and carry the same air as everything else, so
+    /// that defect is gone; the rule stays for the reason above, not for this one.
     private var barSeparator: some View {
         Rectangle()
             .fill(Theme.Colors.hairlineStrong)

@@ -17,7 +17,14 @@
 //  with a raised `field` / `selection` fill. Inside a popover the card is already
 //  `surface` and a second raised grey reads as a third layer, so the segments mark the
 //  current value by gaining a border instead. `SegmentedControl` is the app's ONE
-//  segmented idiom (the search keyword/meaning toggle included) so the two cannot drift.
+//  segmented idiom (the search keyword/meaning toggle and the grid bake-off window's
+//  two switches included) so they cannot drift.
+//
+//  The board's Select / Frame / Text tools are NOT one of these, and that is on
+//  purpose: they live in the floating action bar, whose vocabulary is 30×28 glyphs and
+//  whose active marker is a raised fill. ``SelectionBarModeButton`` is where a MODE row
+//  wearing that vocabulary lives. Putting this control in there instead would have been
+//  the drift — an outline marker on a bar that marks everything else with a fill.
 //
 //  Naming follows the existing precedent: `*Chrome()` for a container recipe applied to
 //  a view (``popoverChrome()``, ``selectionBarChrome()``), a `ButtonStyle` for a button.

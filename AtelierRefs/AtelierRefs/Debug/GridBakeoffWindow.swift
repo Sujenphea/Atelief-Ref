@@ -229,24 +229,31 @@ struct GridBakeoffView: View {
 
     private var controls: some View {
         HStack(spacing: 14) {
-            Picker("Mode", selection: $mode) {
-                ForEach(GridBakeoffMode.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 420)
-            // Switching modes tears down the previous grid, so its target is
-            // stale — drop it and wait for the new grid to register.
-            .onChange(of: mode) { _, _ in scrollTarget = nil }
-            .disabled(isRunning)
+            // Both switches use the app's ``SegmentedControl`` rather than
+            // `.pickerStyle(.segmented)`. This window is a debug surface, but it is
+            // not a second design system — and it held the last two stock segmented
+            // pickers in the target. The `Text` label each one now carries is the
+            // Picker title it used to draw for itself, in the same idiom as the
+            // "Duration" field below.
+            Text("Mode")
+            SegmentedControl(
+                selection: $mode, values: GridBakeoffMode.allCases, fillsWidth: true
+            ) { Text($0.title) }
+                .frame(width: 420)
+                // Switching modes tears down the previous grid, so its target is
+                // stale — drop it and wait for the new grid to register.
+                .onChange(of: mode) { _, _ in scrollTarget = nil }
+                .disabled(isRunning)
 
             // 037 §2 — the control that keeps SwiftUI-vs-AppKit honest.
-            Picker("Wrappers", selection: $wrappers) {
-                ForEach(GridBakeoffWrapperConfig.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 150)
-            .onChange(of: wrappers) { _, _ in scrollTarget = nil }
-            .disabled(isRunning)
+            Text("Wrappers")
+            SegmentedControl(
+                selection: $wrappers, values: GridBakeoffWrapperConfig.allCases,
+                fillsWidth: true
+            ) { Text($0.title) }
+                .frame(width: 150)
+                .onChange(of: wrappers) { _, _ in scrollTarget = nil }
+                .disabled(isRunning)
 
             HStack(spacing: 4) {
                 Text("Duration")
