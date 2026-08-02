@@ -701,7 +701,13 @@ final class MasonryGridItem: NSCollectionViewItem {
         let showHairline = state.isSelected || showCursor
         selectionContrastLayer.isHidden = !showHairline
         selectionContrastLayer.borderWidth = showHairline ? contrastHairlineWidth : 0
-        layOutContrastHairline(in: view.bounds)
+        // `contentRect`, NOT `view.bounds`: a collapsed carousel insets its artwork
+        // to make room for the pile, and the white ring already tracks that inset.
+        // Laying the hairline against the outer bounds put a half-black rectangle
+        // around the whole cell — the tile read as outlined in BLACK while every
+        // un-fanned tile read as outlined in white. Nothing corrects it either:
+        // selection is a layer-only path, so no relayout follows to re-place it.
+        layOutContrastHairline(in: contentRect)
         CATransaction.commit()
         // Selected: a palette checkmark (BLACK tick on a WHITE-filled circle) so the
         // tick has intrinsic contrast on any image, unlike a monochrome tint whose
