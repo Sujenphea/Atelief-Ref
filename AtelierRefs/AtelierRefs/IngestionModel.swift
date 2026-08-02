@@ -389,7 +389,8 @@ final class IngestionModel: ObservableObject {
     ///
     /// `@Published` because ``CollectionView`` reads it straight into the grid
     /// configuration, and the chip click is the one interaction that deliberately
-    /// does NOT touch the selection (`gridCellBadgeClicked`) — so there is no other
+    /// does NOT touch the selection (the chip-zone branch of `gridCellMouseDown`,
+    /// which toggles and returns) — so there is no other
     /// publish riding along to invalidate the body.
     @Published private(set) var expandedPosts: Set<UUID> = []
 

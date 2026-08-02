@@ -111,6 +111,12 @@ final class GridMarqueeController {
     }
 
     func mouseUp() {
+        // An orphan release — no `mouseDown(at:)` began a gesture here — must be
+        // inert. It happens: a press a CELL consumed can still surface its up
+        // through the collection view's background handler, and treating that as
+        // a background click would clear a selection the cell's contract says
+        // survives (e.g. the carousel chip toggle).
+        guard start != nil else { return }
         // A bare (un-⇧) click on empty space clears; a ⇧-click never does (parity
         // with the SwiftUI `TapGesture`'s `guard !shift`). A real drag committed its
         // hits on the way and clears nothing.
@@ -126,6 +132,9 @@ final class GridMarqueeController {
         start = nil
         current = nil
         base = []
+        // `shiftAtStart` too — left stale, the NEXT gesture's up would read the
+        // PREVIOUS gesture's modifier.
+        shiftAtStart = false
         dragged = false
         removeRect()
     }

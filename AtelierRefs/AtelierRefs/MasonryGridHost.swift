@@ -679,12 +679,55 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
             at: [IndexPath(item: index, section: 0)], scrollPosition: .top)
     }
 
+    /// The viewport pinned to an item, not an offset: the topmost visible item's
+    /// id, its analytic top, and the scroll offset at capture. Finer than the
+    /// density path's `restoreTopIndex` (which SNAPS its index to the viewport
+    /// top): restoring by delta keeps a partially-scrolled anchor exactly where it
+    /// was on screen, so an expand/collapse moves nothing above the toggled post.
+    private struct GridScrollAnchor {
+        let id: UUID
+        let frameMinY: CGFloat
+        let offsetY: CGFloat
+    }
+
+    /// Read BEFORE the item set / layout mutate — old items, old frames.
+    private func captureScrollAnchor() -> GridScrollAnchor? {
+        guard let scrollView, let index = topmostVisibleIndex(),
+              items.indices.contains(index),
+              let frame = layout.analyticFrame(at: index) else { return nil }
+        return GridScrollAnchor(
+            id: items[index].item.id, frameMinY: frame.minY,
+            offsetY: scrollView.contentView.bounds.minY)
+    }
+
+    /// Re-pin the viewport after the new snapshot laid out: scroll by however far
+    /// the anchor item's frame moved, clamped to the new content. An anchor that
+    /// left the feed (it was an open post's member and the post closed) falls back
+    /// to its post's lead — the tile now standing where the run stood.
+    private func restoreScrollAnchor(_ anchor: GridScrollAnchor?) {
+        guard let anchor, let scrollView, let collectionView else { return }
+        collectionView.layoutSubtreeIfNeeded()
+        let index = idToIndex[anchor.id]
+            ?? postGroups.members(forItem: anchor.id).lazy.compactMap { self.idToIndex[$0] }.first
+        guard let index, let frame = layout.analyticFrame(at: index) else { return }
+        let clipView = scrollView.contentView
+        let maxOffset = max(0, collectionView.frame.height - clipView.bounds.height)
+        let target = min(max(0, anchor.offsetY + frame.minY - anchor.frameMinY), maxOffset)
+        clipView.scroll(to: NSPoint(x: clipView.bounds.minX, y: target))
+        scrollView.reflectScrolledClipView(clipView)
+    }
+
     /// Apply a new item set. Same-id, same-order republishes reconfigure in place
     /// (a content edit); anything else applies a fresh snapshot. `resetScroll`
-    /// returns to the top on a collection switch.
+    /// returns to the top on a collection switch; any other id change (an
+    /// expand/collapse, a delete) keeps the viewport anchored instead — the reflow
+    /// is instant, so an unanchored offset visibly slides the grid under a
+    /// stationary cursor whenever the content height shrinks and clamps.
     private func applyItems(_ newItems: [CollectionItemDetail], resetScroll: Bool) {
         let oldIDs = gridSnapshotIDs(for: items)
         let newIDs = gridSnapshotIDs(for: newItems)
+        // Captured BEFORE any mutation — the anchor reads the OLD items + frames.
+        let anchor = resetScroll ? nil : captureScrollAnchor()
 
         items = newItems
         idToIndex = gridIDToIndex(for: newItems)
@@ -710,7 +753,17 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
             snapshot.appendSections([0])
             snapshot.appendItems(newIDs, toSection: 0)
             dataSource?.apply(snapshot, animatingDifferences: false)
-            if resetScroll { scrollToTop() }
+            if resetScroll {
+                scrollToTop()
+            } else {
+                restoreScrollAnchor(anchor)
+            }
+            // A diffable apply re-vends only the INSERTED index paths; a cell that
+            // survived the change keeps whatever it was last configured with. Across
+            // an expand/collapse that means the lead would keep its old fan/chip
+            // state (and so a stale chip hit rect) — reconfigure the visible cells
+            // so what is drawn, and what hit-tests, is the NEW state.
+            reconfigureVisibleItems()
         }
     }
 
@@ -897,10 +950,37 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
 
     // MARK: Mouse (036 §4 A2 — reuse gridPressRouting / gridClickAction)
 
-    func gridCellMouseDown(id: UUID, event: NSEvent) {
-        guard idToIndex[id] != nil else { return }
+    /// A press on a cell. WHICH cell is the LAYOUT's answer, not AppKit's: the view
+    /// hit-test resolves against a subview tree that the reflow of a previous click
+    /// may have already permuted, and it will hand the press to a recycled cell that
+    /// has since moved elsewhere — measured in 311 as a press over the lead tile
+    /// arriving at a cell 200pt away, which then opened ITS item. `hitTestIndex`
+    /// rides the analytic frames (038 §3.4), which are what actually got drawn, so
+    /// it answers with the tile the user aimed at.
+    func gridCellMouseDown(event: NSEvent) {
+        let point = contentPoint(for: event)
+        guard let index = layout.hitTestIndex(at: point), items.indices.contains(index)
+        else { return }
+        let id = items[index].item.id
         // Focus follows the click, so keyboard nav works afterwards.
         collectionView?.window?.makeFirstResponder(collectionView)
+
+        // The chip's zone is resolved and handled FIRST, and never falls through:
+        // `.tapImage` with an empty selection always returns `.openDetail`, so a
+        // chip-zone press that missed had no neutral outcome — it opened something.
+        // Now a chip-bearing tile either toggles or does nothing.
+        if badgeZoneHit(at: point, index: index, id: id) {
+            // Deliberately does NOT touch the selection: opening a post is a
+            // different intent from picking it, and a triage in progress must
+            // survive a look inside a carousel.
+            configuration.onToggleExpand(id)
+            // Swallow the matching release. Left unconsumed it bubbles to the
+            // collection view's BACKGROUND mouse-up (a cell overrides `mouseDown`
+            // but not `mouseUp`) and reads as a click on empty space — which
+            // clears the selection this path just promised to leave alone.
+            consumeRelease()
+            return
+        }
 
         let selection = configuration.selectionStore.selection
         let (shift, command) = gridMouseModifiers(from: event.modifierFlags)
@@ -1051,12 +1131,29 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         execute(configuration.selectionStore.apply(.tapCircle(id), columns: currentColumns()))
     }
 
-    func gridCellBadgeClicked(id: UUID) {
-        collectionView?.window?.makeFirstResponder(collectionView)
-        // Deliberately does NOT touch the selection: opening a post is a different
-        // intent from picking it, and a triage in progress must survive a look
-        // inside a carousel.
-        configuration.onToggleExpand(id)
+    /// Whether `point` (content space) is in the carousel chip's zone of the tile at
+    /// `index` — resolved from the tile's ANALYTIC frame and the model's grouping
+    /// state, never from the cell's live `CALayer` (which a recycled cell answers
+    /// wrongly, 311).
+    private func badgeZoneHit(at point: CGPoint, index: Int, id: UUID) -> Bool {
+        guard let frame = layout.analyticFrame(at: index) else { return false }
+        let lead = postGroups.members(forItem: id).first ?? id
+        return gridBadgeZoneHit(
+            point: point, tileFrame: frame,
+            memberCount: postGroups.memberCount(forItem: id),
+            isExpanded: configuration.expandedPosts.contains(lead),
+            isLead: lead == id)
+    }
+
+    /// Pump events until this gesture's `.leftMouseUp` arrives and drop it (and any
+    /// sub-threshold drags) on the floor — the chip has no drag behaviour. The same
+    /// `nextEvent` idiom as ``trackDragThreshold(from:)``, which is how the ordinary
+    /// tile path already consumes its release.
+    private func consumeRelease() {
+        guard let window = collectionView?.window else { return }
+        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if event.type == .leftMouseUp { return }
+        }
     }
 
     // MARK: Coordinate conversion (036 §A-risks — the ONE helper)

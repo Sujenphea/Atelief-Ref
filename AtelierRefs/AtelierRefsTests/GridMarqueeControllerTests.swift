@@ -13,6 +13,7 @@
 //  regions the coordinate helper must handle.
 //
 
+import AppKit
 import CoreGraphics
 import Foundation
 import Testing
@@ -101,5 +102,59 @@ struct GridMarqueeControllerTests {
         // Only ids that actually exist come back — no crash, no phantom.
         #expect(hits.isSubset(of: Set(fewerIDs)))
         #expect(hits.count <= fewerIDs.count)
+    }
+}
+
+/// The controller's click-to-clear state machine — the one part of the event side
+/// that IS headless (no `CALayer`, no auto-scroll until a real drag). What these
+/// pin: a `mouseUp` with no matching `mouseDown` must be INERT. Cells consume
+/// their own downs but their ups still bubble to the collection view's background
+/// handler (a cell view doesn't override `mouseUp`), so an orphan up used to read
+/// as a background click and clear a selection the gesture's owner promised to
+/// leave alone — the carousel chip's contract.
+@MainActor
+@Suite("Grid marquee (AppKit) click-to-clear guards")
+struct GridMarqueeClearGuardTests {
+
+    private func makeController(onClear: @escaping () -> Void) -> GridMarqueeController {
+        let controller = GridMarqueeController(
+            collectionView: MasonryNSCollectionView(frame: .zero))
+        controller.onClear = onClear
+        return controller
+    }
+
+    @Test("an orphan mouse-up (no matching down) never clears")
+    func orphanUpIsInert() {
+        var cleared = false
+        let controller = makeController { cleared = true }
+        controller.mouseUp()
+        #expect(!cleared)
+    }
+
+    @Test("a bare background click (down then up, no drag) still clears")
+    func bareClickClears() {
+        var cleared = false
+        let controller = makeController { cleared = true }
+        controller.mouseDown(at: CGPoint(x: 10, y: 10), shiftKey: false)
+        controller.mouseUp()
+        #expect(cleared)
+    }
+
+    @Test("a ⇧-click's modifier does not leak into the NEXT gesture")
+    func shiftDoesNotLeak() {
+        var clears = 0
+        let controller = makeController { clears += 1 }
+        // ⇧-click: never clears…
+        controller.mouseDown(at: CGPoint(x: 10, y: 10), shiftKey: true)
+        controller.mouseUp()
+        #expect(clears == 0)
+        // …and the next BARE click must clear — a stale `shiftAtStart` would
+        // swallow it.
+        controller.mouseDown(at: CGPoint(x: 10, y: 10), shiftKey: false)
+        controller.mouseUp()
+        #expect(clears == 1)
+        // The orphan case stays inert even after real gestures ran.
+        controller.mouseUp()
+        #expect(clears == 1)
     }
 }

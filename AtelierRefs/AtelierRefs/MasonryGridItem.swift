@@ -62,17 +62,14 @@ struct CellSelectionState: Equatable {
 /// the circle click (`.tapCircle`). Weakly held; the coordinator outlives its cells.
 @MainActor
 protocol MasonryGridInteraction: AnyObject {
-    /// A mouse-down landed on the cell's image area (NOT the circle — that hit-tests
-    /// to the button). The coordinator applies the down-edge routing, then runs a
-    /// local drag-threshold loop to classify click vs drag.
-    func gridCellMouseDown(id: UUID, event: NSEvent)
+    /// A mouse-down landed on a cell (NOT the circle — that hit-tests to the
+    /// button). Carries ONLY the event: which item was hit, and whether the
+    /// carousel chip was hit, are the coordinator's to resolve from the analytic
+    /// frames — see ``gridTileShowsChip(memberCount:isExpanded:isLead:)`` for why
+    /// the cell's own identity is not trustworthy here (311).
+    func gridCellMouseDown(event: NSEvent)
     /// The enter-selection circle was clicked → `.tapCircle`.
     func gridCellCircleClicked(id: UUID)
-    /// The carousel chip was clicked (307) — open or close this post in place. A
-    /// separate signal from a plain cell click: the chip is the ONLY part of a
-    /// collapsed tile that doesn't select, because selecting and opening are
-    /// different intents on the same tile.
-    func gridCellBadgeClicked(id: UUID)
 }
 
 // MARK: - Accessibility (shared pure function)
@@ -178,6 +175,9 @@ enum PostBadge {
     /// The inset from the cell's top-leading corner (the selection circle owns
     /// the opposite corner, so the two never collide).
     static let inset: CGFloat = 6
+    /// How far past the drawn capsule a click still counts as the chip. The capsule
+    /// is only 18pt tall — fine for a mouse, mean at a dense zoom.
+    static let hitPadding: CGFloat = 6
 
     /// The chip for `count` members — a white capsule holding the stacked-squares
     /// glyph and the count in the backdrop tone.
@@ -226,6 +226,47 @@ enum PostBadge {
         image.unlockFocus()
         return image
     }
+}
+
+// MARK: - Chip hit-testing from ANALYTIC geometry (311)
+
+/// Whether a tile draws the `⧉ N` chip — the rule ``MasonryGridItem/showsPostChip``
+/// renders, lifted out so the code that HIT-TESTS the chip and the code that DRAWS
+/// it read the same source.
+///
+/// The click path needs this because it may not ask the cell: AppKit can dispatch a
+/// press to a cell view that the reflow of a PREVIOUS click already recycled and
+/// moved (311 — measured: a press over the lead tile arrived at a cell whose own
+/// frame had moved 200pt away, converting the point to `(-179, -259)`, well outside
+/// its bounds). So the coordinator resolves the chip from the layout's analytic
+/// frames + the model, the same source hover / marquee / the context menu already
+/// ride (038 §3.4).
+nonisolated func gridTileShowsChip(memberCount: Int, isExpanded: Bool, isLead: Bool) -> Bool {
+    memberCount > 1 && (!isExpanded || isLead)
+}
+
+/// The chip's rect inside a tile whose ANALYTIC frame is `frame` — the mirror of
+/// ``MasonryGridItem/layOutBadge()``, which pins the pixmap to the tile's
+/// top-leading corner. `nil` when `memberCount` draws no chip.
+@MainActor
+func gridBadgeRect(inTile frame: CGRect, memberCount: Int) -> CGRect? {
+    guard let badge = PostBadge.image(count: memberCount) else { return nil }
+    return CGRect(
+        x: frame.minX + PostBadge.inset, y: frame.minY + PostBadge.inset,
+        width: badge.size.width, height: badge.size.height)
+}
+
+/// Whether `point` (content space) lands in the chip's comfort zone of a tile at
+/// `frame`. False when the tile draws no chip, so an ordinary tile is unaffected.
+@MainActor
+func gridBadgeZoneHit(
+    point: CGPoint, tileFrame: CGRect, memberCount: Int, isExpanded: Bool, isLead: Bool
+) -> Bool {
+    guard gridTileShowsChip(
+            memberCount: memberCount, isExpanded: isExpanded, isLead: isLead),
+          let badge = gridBadgeRect(inTile: tileFrame, memberCount: memberCount)
+    else { return false }
+    return badge.insetBy(dx: -PostBadge.hitPadding, dy: -PostBadge.hitPadding).contains(point)
 }
 
 // MARK: - The cell
@@ -457,18 +498,27 @@ final class MasonryGridItem: NSCollectionViewItem {
         selectionRingLayer.frame = bounds
         layOutContrastHairline(in: bounds)
         cursorRingLayer.frame = bounds
-        if let badge = postBadgeLayer.contents as? NSImage {
-            postBadgeLayer.frame = NSRect(
-                x: bounds.minX + PostBadge.inset, y: bounds.minY + PostBadge.inset,
-                width: badge.size.width, height: badge.size.height)
-        }
+        layOutBadge()
         cardHost?.frame = bounds
         gifSlot?.frame = bounds
         CATransaction.commit()
-        // Top-trailing, matching the SwiftUI circle's corner.
+        // Top-trailing, matching the SwiftUI circle's corner. Anchored to the TILE
+        // corner, like the chip — see `contentRect` for why the controls don't
+        // track the fan inset.
         let side: CGFloat = 32
         circleButton.frame = NSRect(
-            x: bounds.maxX - side, y: bounds.minY, width: side, height: side)
+            x: view.bounds.maxX - side, y: view.bounds.minY, width: side, height: side)
+    }
+
+    /// Place the chip against the TILE's top-leading corner — `view.bounds`, never
+    /// `contentRect`. The ONE placement path (`viewDidLayout` and
+    /// `setPostMemberCount` both come here), so the drawn capsule and `badgeHit`'s
+    /// rect can never disagree.
+    private func layOutBadge() {
+        guard let badge = postBadgeLayer.contents as? NSImage else { return }
+        postBadgeLayer.frame = NSRect(
+            x: view.bounds.minX + PostBadge.inset, y: view.bounds.minY + PostBadge.inset,
+            width: badge.size.width, height: badge.size.height)
     }
 
     /// The tilt the deepest card would like. Small on purpose — at grid scale a big
@@ -494,10 +544,13 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// tile stood, so the thing that opened the post is the thing that shuts it.
     private var showsPostChip: Bool { postMemberCount > 1 && (!postExpanded || isPostLead) }
 
-    /// The rect the artwork and all its chrome occupy — inset while fanning so the
-    /// cards behind can show. Everything (rings, scrim, chip, circle) tracks THIS,
-    /// not `view.bounds`, or the selection ring would float away from the card it is
-    /// supposed to be hugging.
+    /// The rect the artwork and its own chrome occupy — inset while fanning so the
+    /// cards behind can show. The rings and scrim track THIS, not `view.bounds`, or
+    /// the selection ring would float away from the card it is supposed to be
+    /// hugging. The CONTROLS (chip, circle) deliberately do NOT: they pin to the
+    /// tile's corners, so toggling a post open/closed never moves the thing the
+    /// cursor is parked on (the collapsed inset is ~5–15pt — comparable to the
+    /// chip's own height, enough to slide it out from under a second click).
     private var contentRect: CGRect {
         guard showsFan else { return view.bounds }
         let inset = fanGeometry.inset
@@ -680,9 +733,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         CATransaction.setDisableActions(true)
         if showsPostChip, let badge = PostBadge.image(count: count) {
             postBadgeLayer.contents = badge
-            postBadgeLayer.frame = NSRect(
-                x: view.bounds.minX + PostBadge.inset, y: view.bounds.minY + PostBadge.inset,
-                width: badge.size.width, height: badge.size.height)
+            layOutBadge()
             postBadgeLayer.isHidden = false
         } else {
             postBadgeLayer.contents = nil
@@ -747,27 +798,16 @@ final class MasonryGridItem: NSCollectionViewItem {
         circleButton.isHidden = !(currentSelection.isSelecting || isHovered)
     }
 
-    /// The image-area mouse-down, forwarded from the cell view (A2). A circle click
+    /// The mouse-down, forwarded VERBATIM from the cell view (A2). A circle click
     /// hit-tests to the button instead and never reaches here.
+    ///
+    /// The cell deliberately decides nothing — not which item was clicked, not
+    /// whether the chip was hit. AppKit can dispatch a press to a cell view that
+    /// the reflow of a PREVIOUS click already recycled and moved out from under
+    /// the pointer, and such a cell answers both questions confidently and wrongly
+    /// (311). The coordinator resolves them from the analytic frames instead.
     func handleViewMouseDown(_ event: NSEvent) {
-        guard let itemID else { return }
-        // The chip is a plain layer (it can't hit-test itself), so the cell tests the
-        // point against the badge's frame BEFORE the normal routing. Padded to a
-        // comfortable target: the drawn capsule is only 18pt tall, which is fine for
-        // a mouse and mean at a dense zoom.
-        if badgeHit(event) {
-            interaction?.gridCellBadgeClicked(id: itemID)
-            return
-        }
-        interaction?.gridCellMouseDown(id: itemID, event: event)
-    }
-
-    /// Whether `event` landed on the carousel chip. False when no chip is drawn, so
-    /// an ordinary tile is unaffected.
-    private func badgeHit(_ event: NSEvent) -> Bool {
-        guard !postBadgeLayer.isHidden else { return false }
-        let point = view.convert(event.locationInWindow, from: nil)
-        return postBadgeLayer.frame.insetBy(dx: -6, dy: -6).contains(point)
+        interaction?.gridCellMouseDown(event: event)
     }
 
     @objc private func circleClicked() {

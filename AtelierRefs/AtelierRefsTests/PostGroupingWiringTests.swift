@@ -479,7 +479,8 @@ struct PostGroupingPublishTests {
     }
 
     /// The chip click is the ONE interaction that deliberately leaves the selection
-    /// alone (`gridCellBadgeClicked`), so unlike every other grid gesture there is no
+    /// alone (the chip-zone branch of `gridCellMouseDown`), so unlike every other
+    /// grid gesture there is no
     /// selection publish riding along to redraw for it.
     @Test("opening a post in place publishes on its own")
     func expansionPublishes() async throws {

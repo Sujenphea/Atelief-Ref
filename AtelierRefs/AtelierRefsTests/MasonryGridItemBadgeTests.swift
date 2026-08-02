@@ -24,13 +24,9 @@ struct MasonryGridItemBadgeTests {
 
     private static let side: CGFloat = 200
 
-    private func laidOutCell(
-        postMemberCount: Int, postExpanded: Bool = false, isPostLead: Bool = true
-    ) -> MasonryGridItem {
-        let cell = MasonryGridItem()
-        cell.view.frame = NSRect(x: 0, y: 0, width: Self.side, height: Self.side)
+    private func fixtureDetail() -> CollectionItemDetail {
         let sourceID = UUID(), assetID = UUID()
-        let detail = CollectionItemDetail(
+        return CollectionItemDetail(
             item: CollectionItem(
                 id: UUID(), collectionID: UUID(), assetID: assetID, addedAt: Date()),
             asset: Asset(
@@ -40,8 +36,15 @@ struct MasonryGridItemBadgeTests {
             source: Source(
                 id: sourceID, platform: .instagram,
                 originalURL: "https://www.instagram.com/p/AbCd/", capturedAt: Date()))
+    }
+
+    private func laidOutCell(
+        postMemberCount: Int, postExpanded: Bool = false, isPostLead: Bool = true
+    ) -> MasonryGridItem {
+        let cell = MasonryGridItem()
+        cell.view.frame = NSRect(x: 0, y: 0, width: Self.side, height: Self.side)
         cell.configure(
-            detail: detail, url: nil, bucket: 256, gifURL: nil,
+            detail: fixtureDetail(), url: nil, bucket: 256, gifURL: nil,
             postMemberCount: postMemberCount, postExpanded: postExpanded,
             isPostLead: isPostLead)
         cell.view.layoutSubtreeIfNeeded()
@@ -72,6 +75,122 @@ struct MasonryGridItemBadgeTests {
         #expect(badge.frame.minY < Self.side / 2)
         #expect(badge.frame.minY >= PostBadge.inset - 0.5)
         #expect(badge.isHidden == false)
+    }
+
+    /// The chip is what toggles a post open and closed, so it must sit in the SAME
+    /// spot in both states — anchored to the tile's corner, not the fan-inset
+    /// content rect. Anchored to the content rect it moved diagonally by the fan
+    /// inset (~11pt on a square tile, roughly its own height) on every toggle,
+    /// sliding out from under a cursor parked on it.
+    @Test("the chip pins to the tile corner in BOTH states — a toggle never moves it")
+    func chipDoesNotMoveOnToggle() throws {
+        let collapsed = try #require(badgeLayer(laidOutCell(postMemberCount: 3)))
+        let expanded = try #require(
+            badgeLayer(laidOutCell(postMemberCount: 3, postExpanded: true)))
+        #expect(collapsed.frame == expanded.frame)
+        #expect(collapsed.frame.minX == PostBadge.inset)
+        #expect(collapsed.frame.minY == PostBadge.inset)
+    }
+
+    /// `setPostMemberCount` places the chip too (a reconfigure at an unchanged
+    /// size never re-enters `viewDidLayout`), so its placement must agree with the
+    /// layout pass — one shared path, or a collapsed tile's hit rect drifts from
+    /// the drawn capsule until the next relayout.
+    @Test("a reconfigure without a relayout places the chip where layout would")
+    func reconfigureAgreesWithLayout() throws {
+        let cell = laidOutCell(postMemberCount: 3)
+        let placed = try #require(badgeLayer(cell)).frame
+        // Reconfigure only — no `layoutSubtreeIfNeeded`, mirroring a live-cell
+        // reconfigure between layout passes.
+        cell.configure(
+            detail: fixtureDetail(), url: nil, bucket: 256, gifURL: nil,
+            postMemberCount: 3, postExpanded: false, isPostLead: true)
+        #expect(try #require(badgeLayer(cell)).frame == placed)
+    }
+
+    private func badgeLayer(_ cell: MasonryGridItem) -> CALayer? {
+        cell.view.layer?.sublayers?.first { $0.contents != nil && !$0.isHidden }
+    }
+
+    // MARK: - Chip hit-testing from ANALYTIC geometry (311)
+
+    /// The click path resolves the chip from the LAYOUT's frame plus the model,
+    /// never from the cell's layer. Measured cause: AppKit hands a press to
+    /// whichever cell view its own hit-test lands on, and across the reflow of a
+    /// previous click that is a RECYCLED cell which has already moved — a press
+    /// over the open lead's chip arrived at a member cell 200pt away (the point
+    /// converting to `(-179, -259)`, outside its bounds), whose chip is correctly
+    /// hidden, so it fell through and opened THAT member. These pin the pure rules
+    /// the coordinator now uses instead.
+    @Test("the analytic chip rect is exactly where the cell draws the chip")
+    func analyticRectMatchesDrawnChip() throws {
+        let cell = laidOutCell(postMemberCount: 3)
+        let drawn = try #require(badgeLayer(cell)).frame
+        // This fixture's tile sits at the origin, so its analytic frame is its bounds.
+        let analytic = try #require(
+            gridBadgeRect(
+                inTile: CGRect(x: 0, y: 0, width: Self.side, height: Self.side),
+                memberCount: 3))
+        #expect(analytic == drawn)
+    }
+
+    /// The rect must track the TILE's origin, or the chip zone of a tile halfway
+    /// down the grid would be tested against the grid's top-left corner.
+    @Test("the analytic chip rect is relative to the tile, not the grid")
+    func analyticRectFollowsTheTile() throws {
+        let tile = CGRect(x: 440, y: 330, width: 200, height: 267)
+        let rect = try #require(gridBadgeRect(inTile: tile, memberCount: 3))
+        #expect(rect.minX == tile.minX + PostBadge.inset)
+        #expect(rect.minY == tile.minY + PostBadge.inset)
+    }
+
+    @Test("a lone tile has no chip rect, so no press can read as a chip")
+    func loneTileHasNoRect() {
+        let tile = CGRect(x: 0, y: 0, width: 200, height: 200)
+        #expect(gridBadgeRect(inTile: tile, memberCount: 1) == nil)
+        #expect(gridBadgeRect(inTile: tile, memberCount: 0) == nil)
+    }
+
+    /// The coordinator's copy of `showsPostChip`: a COLLAPSED post always chips, an
+    /// OPEN one chips on its lead only (309).
+    @Test("the chip-bearing rule matches what the cell draws", arguments: [
+        (3, false, true, true),     // collapsed lead
+        (3, false, false, true),    // collapsed non-lead (a collapsed feed shows only leads)
+        (3, true, true, true),      // open lead — the close affordance
+        (3, true, false, false),    // open member — no chip
+        (1, false, true, false),    // lone item
+        (0, false, true, false),
+    ])
+    func chipRule(count: Int, expanded: Bool, lead: Bool, expected: Bool) {
+        #expect(
+            gridTileShowsChip(memberCount: count, isExpanded: expanded, isLead: lead) == expected)
+    }
+
+    /// The regression this change exists for: a press on an OPEN lead's chip must
+    /// read as the chip no matter which cell AppKit dispatched it to.
+    @Test("a press on an OPEN lead's chip is a chip hit")
+    func openLeadChipZoneHits() {
+        let tile = CGRect(x: 232, y: 55, width: 200, height: 267)
+        let inChip = CGPoint(x: tile.minX + PostBadge.inset + 4, y: tile.minY + PostBadge.inset + 4)
+        #expect(
+            gridBadgeZoneHit(
+                point: inChip, tileFrame: tile, memberCount: 8,
+                isExpanded: true, isLead: true))
+        // The middle of that same tile is NOT the chip — that press still selects.
+        #expect(
+            !gridBadgeZoneHit(
+                point: CGPoint(x: tile.midX, y: tile.midY), tileFrame: tile,
+                memberCount: 8, isExpanded: true, isLead: true))
+    }
+
+    @Test("an OPEN post's member has no chip zone anywhere in its tile")
+    func openMemberHasNoZone() {
+        let tile = CGRect(x: 440, y: 330, width: 200, height: 267)
+        let corner = CGPoint(x: tile.minX + PostBadge.inset + 4, y: tile.minY + PostBadge.inset + 4)
+        #expect(
+            !gridBadgeZoneHit(
+                point: corner, tileFrame: tile, memberCount: 8,
+                isExpanded: true, isLead: false))
     }
 
     @Test("a lone item paints no chip")
