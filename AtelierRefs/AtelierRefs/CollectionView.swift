@@ -690,6 +690,13 @@ struct CollectionView: View {
             onDelete: { model.requestDelete(assetIDs: $0) },
             onToggleExpand: { model.toggleExpansion(forItem: $0) },
             expandedPosts: model.expandedPosts,
+            // 069 — hand the keyboard to the detail page while it is up, so the grid
+            // behind it stops eating the page's arrows. Off the ROUTE, not off
+            // `model.isDetailPresented`: that flag is deliberately un-`@Published`
+            // (036 §3 B4) and is written from `CollectionDetailHost`'s `onChange`, so a
+            // body reading it could render before it was set. `nav.presentedItemID` is
+            // the published truth this body already observes.
+            isDetailPresented: nav.presentedItemID != nil,
             // 222 — the title row scrolls away inside the grid's own scroll region,
             // its band sized to the row's measured natural height.
             header: AnyView(headerContent),
@@ -937,7 +944,10 @@ private struct CollectionDetailHost: View {
             model.isDetailPresented = newID != nil
             if let newID {
                 if let detail = model.items.first(where: { $0.item.id == newID }) {
-                    withAnimation { session.present(detail, in: model.items) }
+                    // The RUN, not the raw feed (069): this list is both what the pager
+                    // steps and what the session preloads around, so the two must be the
+                    // same list or every step warms the wrong neighbour.
+                    withAnimation { session.present(detail, in: model.detailRun) }
                 }
             } else {
                 withAnimation { session.dismiss() }
@@ -972,7 +982,9 @@ private struct CollectionDetailHost: View {
         // A media-less kind (003 · O1) has no blob on disk — disable the blob
         // actions rather than wiring them to a no-op.
         let hasBlob = model.blobURL(for: detail) != nil
-        let index = model.items.firstIndex { $0.item.id == detail.item.id }
+        // The page's position in the RUN (069) — one dictionary lookup, where this was a
+        // linear scan of `items` on every body pass (and over the wrong list).
+        let index = model.detailRunIndex(of: detail.item.id)
         ItemDetailView(
             asset: detail.asset,
             source: detail.source,
@@ -1011,14 +1023,15 @@ private struct CollectionDetailHost: View {
                 removeFromFolder: { model.removeFromFolder(assetIDs: [detail.asset.id]) },
                 requestDelete: { model.requestDelete(assetIDs: [detail.asset.id]) }),
             navigator: index.map { i in
-                ItemDetailNavigator(index: i, count: model.items.count) { delta in
+                ItemDetailNavigator(index: i, count: model.detailRun.count) { delta in
+                    let run = model.detailRun
                     let target = i + delta
-                    if model.items.indices.contains(target) {
+                    if run.indices.contains(target) {
                         // Stepping mutates ONLY the session — no `IngestionModel`
                         // lead/selection write, so the grid does not re-render per
                         // step. The lead is synced back once on close.
-                        session.step(to: model.items[target], in: model.items)
-                        model.recordView(assetID: model.items[target].asset.id)
+                        session.step(to: run[target], in: run)
+                        model.recordView(assetID: run[target].asset.id)
                     }
                 }
             },

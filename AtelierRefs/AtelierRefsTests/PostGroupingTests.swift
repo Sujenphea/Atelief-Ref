@@ -452,6 +452,79 @@ struct PostGroupsCollapseTests {
     }
 }
 
+// MARK: - The detail page's run (069)
+
+@Suite("Post grouping: the detail run")
+struct PostGroupsFullRunTests {
+
+    @Test("EVERY post is a run, at its tile's slot — the page walks images")
+    func everyPostOpens() {
+        // The grid collapses these to two tiles; the detail page pages through
+        // IMAGES, so it gets all four — but grouped where the tiles were, not
+        // scattered at their feed positions.
+        let one = "https://www.instagram.com/p/One1/"
+        let two = "https://www.instagram.com/p/Two2/"
+        let a1 = item(url: one), b1 = item(url: two)
+        let a2 = item(url: one), b2 = item(url: two)
+        let feed = [a1, b1, a2, b2]
+        let groups = PostGroups(items: feed)
+        #expect(groups.fullRun(feed).map { $0.item.id }
+            == [a1.item.id, a2.item.id, b1.item.id, b2.item.id])
+    }
+
+    @Test("a run is in the POST's order, not the feed's (309's rule, on the page)")
+    func runFollowsCarouselIndex() {
+        // 3-1-2 in the feed — what a manual reorder leaves behind. The page must
+        // read 1-2-3, exactly as the grid does when the post is opened in place.
+        let post = "https://www.instagram.com/p/AbCd/"
+        let third = item(url: post, carouselIndex: 2)
+        let first = item(url: post, carouselIndex: 0)
+        let second = item(url: post, carouselIndex: 1)
+        let feed = [third, first, second]
+        let groups = PostGroups(items: feed)
+        #expect(groups.fullRun(feed).map { $0.item.id }
+            == [first.item.id, second.item.id, third.item.id])
+    }
+
+    @Test("a HALF-indexed post keeps feed order — all-or-nothing, as the grid does")
+    func halfIndexedKeepsFeedOrder() {
+        let post = "https://www.instagram.com/p/Half/"
+        let a = item(url: post, carouselIndex: 1)
+        let b = item(url: post)                      // captured live, no index
+        let feed = [a, b]
+        let groups = PostGroups(items: feed)
+        #expect(groups.fullRun(feed).map { $0.item.id } == [a.item.id, b.item.id])
+    }
+
+    @Test("an ungrouped feed is returned untouched — no post, no reordering")
+    func ungroupedFeedIsIdentity() {
+        let feed = [item(url: "https://x.com/a/status/1"), item(url: nil), item(url: nil)]
+        let groups = PostGroups(items: feed)
+        #expect(groups.fullRun(feed).map { $0.item.id } == feed.map { $0.item.id })
+    }
+
+    @Test("the run holds every item the feed does — nothing is unreachable")
+    func runLosesNothing() {
+        let post = "https://www.instagram.com/p/AbCd/"
+        let feed = [item(url: post), item(url: nil), item(url: post), item(url: post)]
+        let groups = PostGroups(items: feed)
+        #expect(Set(groups.fullRun(feed).map { $0.item.id }) == Set(feed.map { $0.item.id }))
+    }
+
+    @Test("the run is the display list with every post opened — one rule, one path")
+    func runAgreesWithAnOpenedDisplayList() {
+        // The guarantee that matters: what the page walks is what the grid draws
+        // when the user opens that post with the chip. Same order, same slots.
+        let post = "https://www.instagram.com/p/AbCd/"
+        let lead = item(url: post)
+        let other = item(url: "https://www.instagram.com/p/Zzzz/")
+        let feed = [lead, other, item(url: post)]
+        let groups = PostGroups(items: feed)
+        #expect(groups.fullRun(feed).map { $0.item.id }
+            == groups.collapsed(feed, expanding: [lead.item.id]).map { $0.item.id })
+    }
+}
+
 // MARK: - The action boundary
 
 @Suite("Post grouping: expand")

@@ -439,7 +439,10 @@ struct LibrarySearchable<Content: View>: View {
         ZStack(alignment: .topTrailing) {
             Group {
                 if search.isActive {
-                    LibrarySearchResults(model: model, search: search, gridPrefs: gridPrefs) { asset in
+                    LibrarySearchResults(
+                        model: model, search: search, gridPrefs: gridPrefs,
+                        isDetailPresented: detail != nil
+                    ) { asset in
                         model.recordView(assetID: asset.asset.id)
                         detail = asset
                     }
@@ -473,7 +476,13 @@ struct LibrarySearchable<Content: View>: View {
             if let services = model.services, detail != nil {
                 SearchDetailOverlay(
                     services: services, model: model,
-                    results: search.results, current: $detail)
+                    // The RUN, not raw result order (069) — a carousel among the hits is
+                    // walked as one post, in the post's order, exactly as the grid drew
+                    // it. Computed inside this branch, so a query with no page open pays
+                    // nothing.
+                    results: searchDetailRun(
+                        search.results, groupCarousels: gridPrefs.groupCarousels),
+                    current: $detail)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(.opacity)
             }
@@ -643,10 +652,50 @@ private struct SearchTokenChip: View {
 
 // MARK: - Results grid
 
+/// A synthetic membership per search hit, so anything keyed on a `CollectionItemDetail`
+/// — the grid host, ``PostGroups`` — can take search results unchanged.
+///
+/// `item.id == asset.id`, so every closure keyed on a cell id coincides with the asset
+/// id and no mapping is needed anywhere. `collectionID` is the membership-less sentinel
+/// scope; the placement fields are unused (search has no reorder — array order stands).
+///
+/// File-scope rather than a method on the results grid because the DETAIL overlay is
+/// presented by `LibrarySearchable`, one view up, and has to group the identical feed
+/// (069). Two copies of this mapping would be two feeds that could disagree.
+func searchItems(for results: [AssetDetail]) -> [CollectionItemDetail] {
+    results.map { detail in
+        CollectionItemDetail(
+            item: CollectionItem(
+                id: detail.asset.id,
+                collectionID: AssetDragPayload.nilSourceID,
+                assetID: detail.asset.id,
+                addedAt: detail.asset.createdAt),
+            asset: detail.asset,
+            source: detail.source)
+    }
+}
+
+/// The hits in the order the DETAIL page walks them (069): result order, but with each
+/// post's images together and in the post's own order — the same rule the results grid
+/// draws by, so the page's ← / → agree with what is on screen.
+///
+/// Identity when grouping is off or nothing is grouped, so the common query pays only
+/// the grouping pass it was already paying for the grid.
+func searchDetailRun(_ results: [AssetDetail], groupCarousels: Bool) -> [AssetDetail] {
+    guard groupCarousels else { return results }
+    let items = searchItems(for: results)
+    let run = PostGroups(items: items).fullRun(items)
+    let byID = Dictionary(results.map { ($0.asset.id, $0) }, uniquingKeysWith: { first, _ in first })
+    return run.compactMap { byID[$0.item.id] }
+}
+
 private struct LibrarySearchResults: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var search: LibrarySearchModel
     @ObservedObject var gridPrefs: GridViewPreferences
+    /// Whether the detail page is up over these results (069) — the grid keeps first
+    /// responder behind it, so it has to stop consuming keys the page needs.
+    var isDetailPresented: Bool = false
     let onOpen: (AssetDetail) -> Void
 
     /// The live grid width, captured for the ⌘± density clamp (mirrors
@@ -710,21 +759,8 @@ private struct LibrarySearchResults: View {
     }
 
     /// A synthetic membership per hit so the host (keyed on `item.id`) can render
-    /// search results. `item.id == asset.id` so every host closure keyed on the cell
-    /// id coincides with the asset id — no id mapping anywhere. `collectionID` is the
-    /// sentinel scope; placement fields are unused (no reorder, array order stands).
-    private var items: [CollectionItemDetail] {
-        search.results.map { detail in
-            CollectionItemDetail(
-                item: CollectionItem(
-                    id: detail.asset.id,
-                    collectionID: Self.searchScopeID,
-                    assetID: detail.asset.id,
-                    addedAt: detail.asset.createdAt),
-                asset: detail.asset,
-                source: detail.source)
-        }
-    }
+    /// search results — see ``searchItems(for:)``.
+    private var items: [CollectionItemDetail] { searchItems(for: search.results) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -857,6 +893,8 @@ private struct LibrarySearchResults: View {
             onDelete: { ids in model.requestDelete(assetIDs: ids) },
             onToggleExpand: { toggleExpansion(forItem: $0) },
             expandedPosts: expandedPosts,
+            // 069 — the detail page owns the keyboard while it is up.
+            isDetailPresented: isDetailPresented,
             menuStyle: .looseAssets,
             onReveal: { id in
                 if let hit = search.results.first(where: { $0.asset.id == id }) {
