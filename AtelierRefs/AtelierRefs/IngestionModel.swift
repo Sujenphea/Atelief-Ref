@@ -277,6 +277,15 @@ final class IngestionModel: ObservableObject {
     /// open library.
     let clipboard = ClipboardWatcher()
 
+    // MARK: - Library stats + maintenance (016 · A)
+
+    /// The storage measurement and the cleanup jobs (016 · A). Owned here and
+    /// observed separately by `SettingsView`, for both of `backup`'s reasons: a
+    /// progress tick during a scan re-renders one section rather than every view
+    /// bound to this model, and the Settings window can be closed and reopened
+    /// while a scan of a large library is still walking files.
+    let libraryStats = LibraryStatsController()
+
     /// Monotonic id for ``loadContents(of:)`` so a slow read can never clobber a
     /// newer one (fast folder switch, or a mutation-triggered reload).
     private var contentsLoadID = 0
@@ -963,6 +972,79 @@ final class IngestionModel: ObservableObject {
         backup.start(
             services: services, source: store, libraryRoot: libraryRoot,
             folder: backupFolder, appVersion: version)
+    }
+
+    // MARK: - Library stats + maintenance (016 · A)
+
+    /// Whether a stats scan or a cleanup job can start: an open library, and
+    /// nothing already running.
+    var canRunLibraryJob: Bool {
+        services != nil && store != nil && !libraryStats.isRunning
+    }
+
+    /// Start one confirmed maintenance job. The glue only hands the controller
+    /// an open library — every job below is a call into a service that already
+    /// existed, which is the whole design of 016 · A.
+    ///
+    /// ``LibraryStatsController/Job/scan`` aside, the destructive-adjacent work
+    /// is `MediaReaper`'s and `AppServices`'s; nothing new decides what to
+    /// remove. "Snapshot now" is deliberately absent — it is `snapshotNow()`,
+    /// the SAME call File ▸ Snapshot Now makes, and duplicating it here would
+    /// give the app two manual-snapshot paths to keep in step.
+    func runLibraryJob(_ job: LibraryStatsController.Job) {
+        guard let services, let store, canRunLibraryJob else { return }
+        switch job {
+        case .scan: libraryStats.measure(services: services, store: store)
+        case .orphanSweep: libraryStats.runOrphanSweep(services: services, store: store)
+        case .thumbnails: libraryStats.regenerateThumbnails(services: services, store: store)
+        case .integrity: libraryStats.verifyIntegrity(services: services)
+        case .reconcile: libraryStats.reconcileKnownItems(services: services)
+        }
+    }
+
+    /// Reveal a largest-items row's blob in Finder. Same path as the detail
+    /// page's Reveal — the file is named from the hash + mime, not re-derived.
+    func revealInFinder(largestItem item: LargestItem) {
+        guard let url = blobURL(forBlobHash: item.blobHash, mimeType: item.mimeType),
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Open a largest-items row's blob in the default app (Preview, QuickTime).
+    ///
+    /// The row's OTHER natural action — open the in-app detail page — is not
+    /// offered, and the omission is deliberate. The detail overlay is routed by
+    /// `NavModel.presentedItemID` over the main window's currently loaded
+    /// collection; Settings is a separate scene with no `NavModel` in reach, so
+    /// wiring it would mean building cross-window navigation. 016 · A is a read
+    /// layer plus buttons on existing services, and this is the existing way to
+    /// look at a file full-size from anywhere in the app.
+    func openBlob(largestItem item: LargestItem) {
+        guard let url = blobURL(forBlobHash: item.blobHash, mimeType: item.mimeType),
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Delete every asset that references a largest-items row's blob.
+    ///
+    /// Deletes ALL of them because the row is a FILE: removing one of three
+    /// assets that share a blob reclaims nothing, and a "free 240 MB" action
+    /// that frees nothing is worse than no action.
+    ///
+    /// Goes through the SAME two calls the grid, inspector and canvas use —
+    /// stage, then confirm — so the pre-destructive snapshot, the recoverable
+    /// backup and the ⌘Z registration happen exactly as they do everywhere else.
+    /// Both run in one main-actor turn, so `ContentView`'s shared confirmation
+    /// dialog never observes the staged state: the confirmation the user
+    /// answered was the one in Settings, beside the row they were looking at.
+    func deleteLibraryItem(_ item: LargestItem) {
+        requestDelete(assetIDs: item.assetIDs)
+        confirmPendingDeletion()
+        // The bytes are still on disk: reaping is DEFERRED so an in-session ⌘Z
+        // finds them (010 · delete-undo). The measurement above is therefore
+        // stale in items but not yet in size — say so rather than redraw a
+        // number nobody recomputed.
+        libraryStats.markStale()
     }
 
     // MARK: - Diagnostics (010 · Phase 3)
@@ -1708,9 +1790,18 @@ final class IngestionModel: ObservableObject {
     /// assets, not collection items) can open the full-res detail page.
     func blobURL(forAsset asset: Asset) -> URL? {
         // Media-less kinds (003 · O1) have no blob on disk.
-        guard let store, let hash = asset.blobHash else { return nil }
-        let ext = ImageMetadata.fileExtension(forMIMEType: asset.mimeType ?? "")
-        return store.blobURL(hash: hash, fileExtension: ext)
+        guard let hash = asset.blobHash else { return nil }
+        return blobURL(forBlobHash: hash, mimeType: asset.mimeType ?? "")
+    }
+
+    /// The on-disk blob URL for a bare `(hash, mimeType)` pair — the one place
+    /// the store-time extension is recovered, shared by the asset-based callers
+    /// above and the largest-items rows (016 · A), which have a `BlobUsage`
+    /// rather than an `Asset`.
+    func blobURL(forBlobHash hash: String, mimeType: String) -> URL? {
+        guard let store else { return nil }
+        return store.blobURL(
+            hash: hash, fileExtension: ImageMetadata.fileExtension(forMIMEType: mimeType))
     }
 
     // MARK: - Tags (detail page)

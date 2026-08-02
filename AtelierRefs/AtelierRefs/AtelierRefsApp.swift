@@ -78,7 +78,8 @@ struct AtelierRefsApp: App {
         // token, library location, setup-guide replay.
         Settings {
             SettingsView(
-                model: model, backup: model.backup, gridPrefs: gridPrefs,
+                model: model, backup: model.backup,
+                libraryStats: model.libraryStats, gridPrefs: gridPrefs,
                 clipboard: model.clipboard)
         }
     }
