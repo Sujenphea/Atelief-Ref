@@ -92,13 +92,18 @@ public struct PageResolver: Sendable {
     }
 
     /// Known auth-walled / media hosts where an app-side page fetch returns a login
-    /// page or a low-res share card, NOT the real content (001 · O3). The caller
-    /// routes these to "Capture with the extension" instead of resolving a garbage
-    /// link — the extension rides the browser's authenticated session. Match is
-    /// host-exact or a subdomain (`mobile.twitter.com`).
+    /// page or a low-res share card, NOT the real content (001 · O3). rednote /
+    /// xiaohongshu boards are client-rendered entirely — a cookie-less fetch sees
+    /// a generic "Web - rednote" og:title and a 270px card, never the real media.
+    /// The caller routes these to "Capture with the extension" instead of
+    /// resolving a garbage link — the extension rides the browser's authenticated
+    /// session. Match is host-exact or a subdomain (`mobile.twitter.com`).
     public static func isAuthWalledHost(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
-        let walled = ["x.com", "twitter.com", "instagram.com", "pinterest.com", "facebook.com"]
+        let walled = [
+            "x.com", "twitter.com", "instagram.com", "pinterest.com", "facebook.com",
+            "rednote.com", "xiaohongshu.com",
+        ]
         return walled.contains { host == $0 || host.hasSuffix("." + $0) }
     }
 
