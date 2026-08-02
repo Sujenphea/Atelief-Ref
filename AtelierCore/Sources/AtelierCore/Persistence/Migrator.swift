@@ -37,7 +37,10 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16"]
+    /// `v17` is deliberately skipped here: it is reserved by the space-camera
+    /// persistence column landing on its own branch. Identifiers are names, not a
+    /// dense sequence — a gap is harmless, a collision is not.
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v18"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -150,6 +153,16 @@ enum Migrator {
         // schema change (like v9's tag normalization).
         migrator.registerMigration("v16") { db in
             try reconcileV16Unsorted(db)
+        }
+
+        // v17 is NOT registered here — it is reserved by the space-camera
+        // persistence column landing on its own branch. See `registeredIdentifiers`.
+
+        // v18 — re-tag the pre-platform rednote harvest (020 · K2): rows captured
+        // before `Platform.rednote` existed were stored as `web`. Data-only, no
+        // schema change (like v9's tag normalization and v16's reconcile).
+        migrator.registerMigration("v18") { db in
+            try retagV18RednoteSources(db)
         }
 
         return migrator
@@ -949,5 +962,38 @@ enum Migrator {
                 ])
             order += 1
         }
+    }
+
+    // MARK: - v18
+
+    /// Data-only: promote the pre-platform rednote harvest to `Platform.rednote`.
+    ///
+    /// The 2026-07-31 manual run landed its notes before `rednote` existed as a
+    /// platform, so every one of those sources was stored as `platform = 'web'`
+    /// with the origin recorded only in `raw_metadata` as `{"source":"rednote"}`.
+    /// Now that the case exists, those rows must carry it too — otherwise they
+    /// filter, display and dedup as generic web captures forever.
+    ///
+    /// Scope is deliberately narrow: only `web` rows whose `raw_metadata` is valid
+    /// JSON carrying exactly that marker. A `web` row without the marker, a row
+    /// already on another platform, and a row whose `raw_metadata` is garbage (or,
+    /// defensively, NULL — the column is `NOT NULL`, but a migration should not
+    /// depend on that) are all left alone. The `json_valid` guard rides inside a
+    /// `CASE`, not as a preceding `AND`: only `CASE` guarantees the `json_extract`
+    /// is not evaluated on a malformed value, which would abort the migration.
+    ///
+    /// Idempotent: after it runs the flipped rows are no longer `web`, so a second
+    /// pass matches nothing.
+    static func retagV18RednoteSources(_ db: Database) throws {
+        try db.execute(sql: """
+            UPDATE source
+            SET platform = 'rednote'
+            WHERE platform = 'web'
+              AND CASE
+                    WHEN json_valid(raw_metadata)
+                    THEN json_extract(raw_metadata, '$.source') = 'rednote'
+                    ELSE 0
+                  END;
+            """)
     }
 }

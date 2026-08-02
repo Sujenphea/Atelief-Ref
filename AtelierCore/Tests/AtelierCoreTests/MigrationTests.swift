@@ -87,7 +87,9 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16"]
+    // "v17" is absent on purpose — reserved by the space-camera persistence
+    // column on its own branch. A gap in the names is fine; a reused name is not.
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v18"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -398,6 +400,123 @@ struct MigrationV16Tests {
                 """).map { "\($0["collection_id"] as String)/\($0["asset_id"] as String)" }
         }
         #expect(again == after)
+    }
+}
+
+// MARK: - v18 · rednote re-tag of the pre-platform harvest (020 · K2)
+
+@Suite("Migration v18: rednote source re-tag")
+struct MigrationV18Tests {
+
+    /// A migrator applied only THROUGH v16 — the state before `Platform.rednote`
+    /// existed, so a test can seed the historical `web` + `{"source":"rednote"}`
+    /// shape and then migrate v18 over it. (v17 is reserved by another branch.)
+    private func makeQueueThroughV16() throws -> DatabaseQueue {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v16")
+        return dbQueue
+    }
+
+    /// Seed one source via raw SQL, returning its id. `rawMetadata` is written
+    /// verbatim so a test can plant malformed JSON.
+    @discardableResult
+    private func seedSource(
+        _ db: Database, platform: String, rawMetadata: String
+    ) throws -> String {
+        let id = newID()
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, captured_at, raw_metadata)
+            VALUES (?, ?, ?, ?);
+            """, arguments: [id, platform, ts, rawMetadata])
+        return id
+    }
+
+    private func platform(_ db: Database, of sourceID: String) throws -> String? {
+        try String.fetchOne(
+            db, sql: "SELECT platform FROM source WHERE id = ?", arguments: [sourceID])
+    }
+
+    @Test("only the marked web rows flip to rednote; every other row is untouched")
+    func flipsOnlyMarkedWebRows() throws {
+        let dbQueue = try makeQueueThroughV16()
+        let (marked, plainWeb, garbage, empty, alreadyRednote, otherPlatform) =
+            try dbQueue.write { db -> (String, String, String, String, String, String) in
+                (try seedSource(db, platform: "web", rawMetadata: #"{"source":"rednote"}"#),
+                 try seedSource(db, platform: "web", rawMetadata: #"{"source":"tumblr"}"#),
+                 try seedSource(db, platform: "web", rawMetadata: "not json at all"),
+                 try seedSource(db, platform: "web", rawMetadata: "{}"),
+                 try seedSource(db, platform: "rednote", rawMetadata: #"{"source":"rednote"}"#),
+                 try seedSource(db, platform: "pinterest", rawMetadata: #"{"source":"rednote"}"#))
+            }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v18
+
+        let after = try dbQueue.read { db in
+            try [marked, plainWeb, garbage, empty, alreadyRednote, otherPlatform]
+                .map { try platform(db, of: $0) }
+        }
+        #expect(after == [
+            "rednote",   // the historical harvest row — the only one that flips
+            "web",       // a web row marked with some other source
+            "web",       // raw_metadata is not JSON at all
+            "web",       // raw_metadata is JSON without the marker
+            "rednote",   // already on the platform
+            "pinterest", // a non-web row is out of scope even carrying the marker
+        ])
+    }
+
+    @Test("a nested/extra-keyed marker still matches, and other keys don't")
+    func matchesOnTheSourceKeyOnly() throws {
+        let dbQueue = try makeQueueThroughV16()
+        let (withExtras, wrongKey) = try dbQueue.write { db -> (String, String) in
+            (try seedSource(
+                db, platform: "web",
+                rawMetadata: #"{"noteId":"abc","source":"rednote","imageIndex":3}"#),
+             try seedSource(db, platform: "web", rawMetadata: #"{"origin":"rednote"}"#))
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v18
+
+        let after = try dbQueue.read { db in
+            try [withExtras, wrongKey].map { try platform(db, of: $0) }
+        }
+        #expect(after == ["rednote", "web"])
+    }
+
+    @Test("re-running the re-tag changes nothing (idempotent)")
+    func retagIsIdempotent() throws {
+        let dbQueue = try makeQueueThroughV16()
+        try dbQueue.write { db in
+            try seedSource(db, platform: "web", rawMetadata: #"{"source":"rednote"}"#)
+            try seedSource(db, platform: "web", rawMetadata: "not json at all")
+            try seedSource(db, platform: "web", rawMetadata: #"{"source":"tumblr"}"#)
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v18
+        let after = try dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT platform FROM source ORDER BY id")
+        }
+
+        // A second pass over an already-re-tagged db must be a no-op.
+        try dbQueue.write { db in try Migrator.retagV18RednoteSources(db) }
+        let again = try dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT platform FROM source ORDER BY id")
+        }
+        #expect(again == after)
+        #expect(after.sorted() == ["rednote", "web", "web"])
+    }
+
+    @Test("the written value is the Platform.rednote rawValue, not a loose string")
+    func writesTheEnumRawValue() throws {
+        let dbQueue = try makeQueueThroughV16()
+        let marked = try dbQueue.write { db in
+            try seedSource(db, platform: "web", rawMetadata: #"{"source":"rednote"}"#)
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v18
+
+        let stored = try dbQueue.read { db in try platform(db, of: marked) }
+        #expect(stored.flatMap(Platform.init(rawValue:)) == .rednote)
     }
 }
 

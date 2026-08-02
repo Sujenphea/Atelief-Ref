@@ -1332,6 +1332,7 @@ private enum DetailFormat {
         case .pinterest: "Pinterest"
         case .instagram: "Instagram"
         case .cosmos: "Cosmos"
+        case .rednote: "rednote"
         case .web: "Web"
         case .localPaste: "Pasted"
         case .localDrag: "Dragged in"
