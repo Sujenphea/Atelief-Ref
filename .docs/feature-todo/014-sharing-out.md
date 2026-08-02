@@ -64,7 +64,8 @@ provenance stripped is a posture choice the user makes explicitly, not a default
 
 1. **S1 (M)** — offscreen composer (space → PNG), scale options, save panel.
 2. **S2 (M)** — PDF context variant + collection contact-sheet pagination.
-3. **S3 (M)** — static HTML exporter (template + asset copy + captions).
+3. **S3 (M)** — static HTML exporter (template + asset copy + captions). Shipped
+   — `323-a-collection-becomes-a-web-page`.
 
 S1 blocks S2 (same composer); S3 is independent (needs only [011]'s export
 helper). All after [005] E2/E3 for space content to exist.
@@ -84,8 +85,8 @@ helper). All after [005] E2/E3 for space content to exist.
 - Full-res decode of a large board can dwarf canvas memory budgets — the
   tile-by-tile single-context strategy is the guard; test with a 100-image board.
 - Video items in an exported board: poster frame + a small play-glyph badge
-  (honest about what a still export is); HTML export MAY embed the video file
-  (size warning) — open question.
+  (honest about what a still export is). The HTML export does the same and
+  copies no video file (settled — see below).
 - Fonts in [005] text elements must embed in PDF (standard CoreText-to-PDF
   handles it; verify with non-system fonts).
 - Empty space/collection → disable the action, not an empty file.
@@ -94,9 +95,11 @@ helper). All after [005] E2/E3 for space content to exist.
 
 - Local files only; no hosted publish (user, 2026-07-13). Provenance inclusion is
   an explicit toggle. One shared export layer with [008]/[011].
+- HTML export carries **poster frames only** — a still plus a play glyph, and a
+  line in the page's own footer saying so. Videos are not copied (closes OQ1;
+  shipped in `323-a-collection-becomes-a-web-page`).
 
 ## Open questions
 
-1. HTML export: embed videos (with size warning) or posters only (recommended)?
-2. PNG default scale — 2× (recommended) or ask every time?
-3. Contact-sheet captions default: title only (recommended) vs title + source URL?
+1. PNG default scale — 2× (recommended) or ask every time?
+2. Contact-sheet captions default: title only (recommended) vs title + source URL?

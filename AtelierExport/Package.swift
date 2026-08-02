@@ -33,7 +33,12 @@ let package = Package(
         ),
         .testTarget(
             name: "AtelierExportTests",
-            dependencies: ["AtelierExport"]
+            dependencies: ["AtelierExport"],
+            // The static-site template (014 · S3) is pinned by committed golden
+            // files rather than by string literals in the test: a reviewer can
+            // open `Fixtures/*.html` in a browser, and a template change shows
+            // up as a readable diff instead of an escaped one-liner.
+            resources: [.copy("Fixtures")]
         )
     ],
     swiftLanguageModes: [.v6]

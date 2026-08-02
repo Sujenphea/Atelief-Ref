@@ -71,6 +71,10 @@ struct AtelierRefsApp: App {
                 // File ▸ Export Contact Sheet… (052 · B4) — exports the focused
                 // collection; disabled elsewhere.
                 ExportContactSheetCommand()
+                // File ▸ Export Web Page… (014 · S3) — exports the focused
+                // collection as a self-contained index.html + assets folder;
+                // disabled elsewhere, and while the collection is empty.
+                ExportWebPageCommand()
             }
         }
 

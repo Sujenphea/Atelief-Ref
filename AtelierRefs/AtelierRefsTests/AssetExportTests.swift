@@ -147,6 +147,86 @@ struct AssetExportFilenameTests {
     }
 }
 
+// MARK: - Folder uniqueness (014 · S3)
+
+/// `AssetExport.filename` names a file by content; a FOLDER export is the first
+/// caller to write many of those names side by side. These are the cases where a
+/// naive write loses data rather than erroring.
+@Suite("AssetExport: ExportNameAllocator")
+struct ExportNameAllocatorTests {
+
+    @Test("Distinct names pass through untouched")
+    func distinctNames() {
+        var allocator = ExportNameAllocator()
+        #expect(allocator.claim("a-1111.png") == "a-1111.png")
+        #expect(allocator.claim("b-2222.png") == "b-2222.png")
+    }
+
+    @Test("An exact duplicate gets -2, -3, … before the extension")
+    func exactDuplicates() {
+        var allocator = ExportNameAllocator()
+        #expect(allocator.claim("hero-ab12cd34.png") == "hero-ab12cd34.png")
+        #expect(allocator.claim("hero-ab12cd34.png") == "hero-ab12cd34-2.png")
+        #expect(allocator.claim("hero-ab12cd34.png") == "hero-ab12cd34-3.png")
+    }
+
+    /// The one that loses data silently: macOS volumes are case-INSENSITIVE, so
+    /// `copyItem` to the second name overwrites the first instead of failing.
+    @Test("Names differing only by case are treated as the same path")
+    func caseInsensitiveCollision() {
+        var allocator = ExportNameAllocator()
+        #expect(allocator.claim("Hero-ab12cd34.png") == "Hero-ab12cd34.png")
+        #expect(allocator.claim("hero-ab12cd34.png") == "hero-ab12cd34-2.png")
+        #expect(allocator.claim("HERO-AB12CD34.PNG") == "HERO-AB12CD34-3.PNG")
+    }
+
+    @Test("The casing the asset's own title gave it is preserved")
+    func preservesCasing() {
+        var allocator = ExportNameAllocator()
+        _ = allocator.claim("hero-ab12cd34.png")
+        #expect(allocator.claim("HeRo-ab12cd34.png") == "HeRo-ab12cd34-2.png")
+    }
+
+    @Test("A name with no extension just gains the suffix")
+    func noExtension() {
+        var allocator = ExportNameAllocator()
+        #expect(allocator.claim("plain-ab12cd34") == "plain-ab12cd34")
+        #expect(allocator.claim("plain-ab12cd34") == "plain-ab12cd34-2")
+    }
+
+    @Test("A disambiguated name that later arrives for real is itself disambiguated")
+    func suffixCollision() {
+        var allocator = ExportNameAllocator()
+        _ = allocator.claim("x-1.png")           // x-1.png
+        _ = allocator.claim("x-1.png")           // x-1-2.png
+        // A different asset genuinely named `x-1-2.png` must not land on it.
+        #expect(allocator.claim("x-1-2.png") == "x-1-2-2.png")
+    }
+
+    @Test("Unicode names collide on case the same way")
+    func unicodeCasing() {
+        var allocator = ExportNameAllocator()
+        #expect(allocator.claim("Café-ab12cd34.png") == "Café-ab12cd34.png")
+        #expect(allocator.claim("café-ab12cd34.png") == "café-ab12cd34-2.png")
+    }
+
+    @Test("A whole run of names stays unique when compared case-insensitively")
+    func runStaysUnique() {
+        var allocator = ExportNameAllocator()
+        let claimed = ["A-1.png", "a-1.png", "A-1.PNG", "b-2.png", "B-2.png", "A-1.png"]
+            .map { allocator.claim($0) }
+        #expect(Set(claimed.map { $0.lowercased() }).count == claimed.count)
+    }
+
+    @Test("The suffix goes before the extension, so the file still says what it is")
+    func suffixPlacement() {
+        #expect(ExportNameAllocator.disambiguated("hero-ab12cd34.png", suffix: 2)
+            == "hero-ab12cd34-2.png")
+        #expect(ExportNameAllocator.disambiguated("hero-ab12cd34", suffix: 7)
+            == "hero-ab12cd34-7")
+    }
+}
+
 // MARK: - exportItem (temp-file backed)
 
 @Suite("AssetExport: exportItem")

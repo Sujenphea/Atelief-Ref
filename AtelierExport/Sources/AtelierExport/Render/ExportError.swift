@@ -14,7 +14,9 @@ import Foundation
 /// A hard, render-aborting export failure.
 public enum ExportError: Error, Equatable {
     /// The layout produced no pages — an empty selection, or every element
-    /// filtered out before layout. Nothing to render.
+    /// filtered out before layout. Nothing to render. The static-site writer
+    /// (014 · S3) raises the same error for an empty gallery: same meaning,
+    /// nothing to put in the output.
     case noPages
     /// A CoreGraphics bitmap / PDF context could not be created (e.g. a page
     /// size that rounds to zero pixels).

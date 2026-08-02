@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kitchen &amp; &quot;Bath&quot; &lt;2026&gt;</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --ink: #141414; --muted: #6b6b6b; --line: #e8e8e8;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #131313; --ink: #f0f0f0; --muted: #9b9b9b; --line: #262626; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+header { padding: 40px 28px 20px; }
+h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.015em; }
+.count { margin: 6px 0 0; color: var(--muted); }
+.grid { display: flex; align-items: flex-start; gap: 14px; padding: 0 28px 40px; }
+.col { display: flex; flex-direction: column; gap: 14px; flex: 1 1 0; min-width: 0; }
+.grid.empty { color: var(--muted); }
+figure { margin: 0; }
+.frame {
+  position: relative; overflow: hidden; border-radius: 5px;
+  background: var(--line);
+}
+.frame img { display: block; width: 100%; height: auto; }
+.swatch { width: 100%; aspect-ratio: 1 / 1; }
+.play {
+  position: absolute; left: 50%; top: 50%; width: 44px; height: 44px;
+  margin: -22px 0 0 -22px; pointer-events: none;
+}
+figcaption { margin-top: 7px; color: var(--muted); overflow-wrap: anywhere; }
+figcaption .title { display: block; color: var(--ink); }
+figcaption .src { display: block; color: var(--muted); text-decoration: none; }
+figcaption .src:hover { text-decoration: underline; }
+footer { padding: 0 28px 40px; color: var(--muted); font-size: 11px; }
+footer p { margin: 0 0 4px; }
+/* Narrow viewports: the columns are baked into the markup, so stack them
+   rather than squeezing four tracks into a phone. */
+@media (max-width: 700px) {
+  .grid { display: block; padding: 0 16px 32px; }
+  .col + .col { margin-top: 14px; }
+  header { padding: 28px 16px 16px; }
+  footer { padding: 0 16px 32px; }
+}
+</style>
+</head>
+<body>
+<header>
+<h1>Kitchen &amp; &quot;Bath&quot; &lt;2026&gt;</h1>
+<p class="count">5 refs</p>
+</header>
+<main class="grid">
+<div class="col">
+<figure>
+<div class="frame"><img src="assets/Sunset%20study-ab12cd34.jpg" alt="Reference" width="1600" height="1067" loading="lazy"></div>
+</figure>
+<figure>
+<div class="frame"><img src="assets/a&amp;b%20%232%20100%25%20na%C3%AFve-deadbeef.png" alt="Reference" width="800" height="800" loading="lazy"></div>
+</figure>
+</div>
+<div class="col">
+<figure>
+<div class="frame"><img src="assets/Rooftop%20clip-99887766.jpg" alt="Reference" width="1920" height="1080" loading="lazy"><svg class="play" viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="20" fill="rgba(0,0,0,0.45)" stroke="rgba(255,255,255,0.92)" stroke-width="1.5"></circle><path d="M18 14 31 22 18 30 Z" fill="#fff"></path></svg></div>
+</figure>
+<figure>
+<div class="frame"><img src="assets/no-dims-00112233.webp" alt="Reference" loading="lazy"></div>
+</figure>
+</div>
+<div class="col">
+<figure>
+<div class="frame"><div class="swatch" style="background:#C8402F"></div></div>
+</figure>
+</div>
+</main>
+<footer>
+<p>Exported from Atelier — this page and its images are self-contained.</p>
+<p>Video refs are shown as poster frames; the video files are not included.</p>
+</footer>
+</body>
+</html>
