@@ -252,13 +252,13 @@ enum Validation {
 
     /// Enforce the per-platform `originalURL` rule (`.missingOriginalURL`):
     /// required (non-nil, non-empty) for the remote platforms
-    /// (`.twitter/.pinterest/.instagram/.cosmos/.web`); optional for the local
-    /// capture paths (`.localPaste/.localDrag`), which have no canonical URL.
+    /// (`.twitter/.pinterest/.instagram/.cosmos/.rednote/.web`); optional for the
+    /// local capture paths (`.localPaste/.localDrag`), which have no canonical URL.
     static func originalURL(_ url: String?, platform: Platform) throws {
         switch platform {
         case .localPaste, .localDrag:
             return
-        case .twitter, .pinterest, .instagram, .cosmos, .web:
+        case .twitter, .pinterest, .instagram, .cosmos, .rednote, .web:
             let trimmed = url?.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let trimmed, !trimmed.isEmpty else {
                 throw AtelierError.missingOriginalURL(platform: platform)

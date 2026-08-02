@@ -45,6 +45,7 @@ public enum Platform: String, Sendable, Codable, CaseIterable, Hashable {
     case pinterest
     case instagram
     case cosmos
+    case rednote
     case web
     case localPaste = "local_paste"
     case localDrag = "local_drag"

@@ -169,7 +169,7 @@ struct ServicesValidationTests {
     // MARK: originalURL — per-platform provenance rule
 
     @Test("originalURL is required for remote platforms", arguments: [
-        Platform.twitter, .pinterest, .instagram, .cosmos, .web,
+        Platform.twitter, .pinterest, .instagram, .cosmos, .rednote, .web,
     ])
     func urlRequiredRemote(_ platform: Platform) {
         #expect(throws: AtelierError.missingOriginalURL(platform: platform)) {

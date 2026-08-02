@@ -9,6 +9,7 @@ import { twitter } from "./twitter.js";
 import { pinterest } from "./pinterest.js";
 import { instagram } from "./instagram.js";
 import { cosmos } from "./cosmos.js";
+import { rednote } from "./rednote.js";
 
 /** A last-resort extractor for any other page → platform "web". Unlike the SPA
  * sites, a generic article's og:image is a reliable share image, so it is
@@ -33,7 +34,7 @@ export const web = {
 };
 
 /** Site extractors in match priority order; `web` is the catch-all fallback. */
-export const extractors = [twitter, pinterest, instagram, cosmos, web];
+export const extractors = [twitter, pinterest, instagram, cosmos, rednote, web];
 
 /** The first extractor whose `match(url)` is true (never null — `web` matches). */
 export function findExtractor(url) {
