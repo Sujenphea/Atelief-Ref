@@ -137,6 +137,15 @@ struct ItemDetailView: View {
     /// ``onDisplayTarget``. `0` until the first layout measures it.
     @State private var mediaLongSidePt: CGFloat = 0
 
+    /// Bumped by a click on the artwork to hand the keyboard back to the page (316).
+    /// The ``DetailKeyCatcher`` claims focus once, when the page opens, and must not
+    /// re-claim it on every redraw — that would pull the caret out of the sidebar's
+    /// Name / Note field mid-word. So the field keeps the arrows for as long as it is
+    /// being edited, and a click back on the picture is the "done editing" signal that
+    /// returns them. A counter rather than a Bool: every click is a fresh request, and
+    /// two in a row must both arrive.
+    @State private var keyFocusToken = 0
+
     /// The backing-store scale (2 on Retina). Sharpness is set by PHYSICAL pixels, so
     /// the FIT target reported to the loader is points × this — a 700pt media area on
     /// a 2× display needs 1400px, not 700.
@@ -204,7 +213,11 @@ struct ItemDetailView: View {
         // up — see `DetailKeyCatcher` for why a `.keyboardShortcut` on the chevrons was
         // never going to arrive. Only when there is something to step: a Space board's
         // detail has no ordered set behind it, and must not take focus from the canvas.
-        .background { if let navigator { DetailKeyCatcher(onStep: navigator.step) } }
+        .background {
+            if let navigator {
+                DetailKeyCatcher(armToken: keyFocusToken, onStep: navigator.step)
+            }
+        }
         // Reload media whenever the shown asset changes (open + prev/next).
         .task(id: asset.id) { await loadMedia() }
         .onDisappear {
@@ -465,6 +478,15 @@ struct ItemDetailView: View {
             }
         }
         .padding(Theme.Spacing.lg)
+        // A click on the picture takes the keyboard back from the sidebar's Name / Note
+        // field (316) — otherwise ← / → stayed caret keys for the rest of the page's
+        // life, because nothing hands focus back when a field is done with it.
+        // `simultaneousGesture` so it never competes with the zoom/pan gesture or the
+        // drag-out; a TapGesture only fires on a click that did NOT become a drag, so
+        // dragging the image out is untouched. Scoped to the media area on purpose: the
+        // same gesture over the sidebar would steal focus from the very field the user
+        // just clicked into, on mouse-UP, and make it impossible to type in.
+        .simultaneousGesture(TapGesture().onEnded { keyFocusToken &+= 1 })
         // Drag-out (011 · Cluster A): drag the media pane to export the original
         // file to Finder / Figma / …. Gated to fit (`zoom == 1`) so it never fights
         // the zoom-in pan gesture — and because `zoom` commits only at gesture END,
@@ -1358,25 +1380,38 @@ func detailStepDelta(characters: String, modifiers: NSEvent.ModifierFlags) -> In
 /// not a gate. So the page gets a focus of its own — a keyboard-only view that borrows
 /// first responder while the page is up and hands it back on the way out.
 private struct DetailKeyCatcher: NSViewRepresentable {
+    /// Bumped by a click on the artwork — take the keyboard back from a sidebar field
+    /// (316). See ``ItemDetailView/keyFocusToken``.
+    let armToken: Int
     /// Step the pager by ±1. The navigator bounds-checks, so both ends are no-ops.
     let onStep: (Int) -> Void
 
     func makeNSView(context: Context) -> KeyView {
         let view = KeyView()
         view.onStep = onStep
+        view.armToken = armToken
         return view
     }
 
     func updateNSView(_ view: KeyView, context: Context) {
         view.onStep = onStep
-        // Arm ONCE per presentation. This runs on every step and every zoom tick, and a
-        // view that re-took first responder on each of those would rip focus out of the
-        // sidebar's Name / Note field mid-word.
-        view.armIfNeeded()
+        // A click on the picture is an explicit request, so it reclaims focus even from
+        // a text field. Anything else only arms if nothing else wanted the keyboard.
+        if view.armToken != armToken {
+            view.armToken = armToken
+            view.reclaimFocus()
+        } else {
+            // Arm ONCE per presentation. This runs on every step and every zoom tick,
+            // and a view that re-took first responder on each of those would rip focus
+            // out of the sidebar's Name / Note field mid-word.
+            view.armIfNeeded()
+        }
     }
 
     final class KeyView: NSView {
         var onStep: ((Int) -> Void)?
+        /// The last artwork-click token acted on, so one click reclaims focus once.
+        var armToken = 0
         /// Who the page borrowed focus from (the grid), so it can be given back.
         private weak var previousResponder: NSResponder?
         private var armed = false
@@ -1416,6 +1451,18 @@ private struct DetailKeyCatcher: NSViewRepresentable {
                 guard let self, let window = self.window else { return }
                 window.makeFirstResponder(self)
             }
+        }
+
+        /// Take the keyboard back from whatever holds it — including a text field (316).
+        ///
+        /// `endEditing(for:)` first, so the field editor resigns through AppKit's own
+        /// path: that is what makes `DetailField`'s focus-loss commit fire, so clicking
+        /// the picture SAVES the name being typed rather than dropping it.
+        func reclaimFocus() {
+            guard let window, window.firstResponder !== self else { return }
+            window.endEditing(for: nil)
+            armed = true
+            window.makeFirstResponder(self)
         }
 
         private func restoreResponder() {

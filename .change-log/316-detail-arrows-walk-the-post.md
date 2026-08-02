@@ -103,12 +103,28 @@ it was set.
   gate
 - `AtelierRefs/AtelierRefsTests/{PostGroupingTests,PostGroupingWiringTests,SelectionCellDeltaTests}.swift`
 
-## Known edge
+## Giving the keyboard back
 
-Focus is claimed once, when the page opens. Click into the sidebar's Name or Note field
-and the arrows become caret keys — correct — but they stay that way until the page is
-reopened, because nothing hands focus back when the field is done with it. Clicking the
-artwork does not currently re-arm.
+Focus is claimed once, when the page opens, and deliberately not re-claimed on every
+redraw — that would pull the caret out of the Name / Note field mid-word. But nothing
+hands focus BACK when a field is done with it, so once you had typed in the sidebar the
+arrows stayed caret keys for the rest of the page's life.
+
+A click on the picture is the "done editing" signal. It bumps `keyFocusToken`, and the
+catcher reclaims first responder — from a text field too, which is the one case
+`armIfNeeded` refuses. `endEditing(for:)` runs first, so the field editor resigns through
+AppKit's own path and `DetailField`'s focus-loss commit fires: clicking the artwork SAVES
+the name being typed rather than dropping it.
+
+The gesture is `simultaneousGesture(TapGesture())` and scoped to the media area, both
+deliberately. Simultaneous so it never competes with zoom/pan, and a tap only fires on a
+click that did not become a drag, so drag-out is untouched. Scoped, because the same
+gesture over the sidebar would fire on mouse-UP and steal focus from the very field just
+clicked into — making it impossible to type in.
+
+Still open: clicking a top-bar chevron does not reclaim focus (an AppKit button never
+takes first responder), so ← / → after a mid-edit chevron click still need one click on
+the picture.
 
 ## Notes
 
