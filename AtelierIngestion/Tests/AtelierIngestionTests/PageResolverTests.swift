@@ -74,9 +74,12 @@ struct PageResolverParseTests {
         #expect(PageResolver.parse(html: html, baseURL: base).imageURL == nil)
     }
 
-    @Test("auth-walled hosts (x/twitter/instagram/pinterest/facebook + subdomains) are flagged") func authWalled() {
+    @Test("auth-walled hosts (x/twitter/instagram/pinterest/facebook/rednote + subdomains) are flagged")
+    func authWalled() {
         for host in ["https://x.com/a/status/1", "https://twitter.com/a", "https://mobile.twitter.com/a",
-                     "https://www.instagram.com/p/x", "https://pinterest.com/pin/1", "https://www.facebook.com/x"] {
+                     "https://www.instagram.com/p/x", "https://pinterest.com/pin/1", "https://www.facebook.com/x",
+                     "https://rednote.com/board/1", "https://www.rednote.com/explore/abc123",
+                     "https://xiaohongshu.com/board/1", "https://www.xiaohongshu.com/explore/abc123"] {
             #expect(PageResolver.isAuthWalledHost(URL(string: host)!), "\(host) should be walled")
         }
         // A generic public page is NOT walled → the app resolves it.
@@ -84,6 +87,7 @@ struct PageResolverParseTests {
         #expect(!PageResolver.isAuthWalledHost(URL(string: "https://dribbble.com/shots/1")!))
         // Not fooled by the brand appearing elsewhere in the host.
         #expect(!PageResolver.isAuthWalledHost(URL(string: "https://x.com.evil.test/a")!))
+        #expect(!PageResolver.isAuthWalledHost(URL(string: "https://rednote.com.evil.test/a")!))
     }
 }
 
