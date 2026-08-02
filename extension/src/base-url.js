@@ -17,6 +17,8 @@
 // so an unpaired extension still proves the app is listening. Only a thrown fetch
 // (refused / DNS / abort) means "nothing there".
 
+import { browser } from "./browser.js";
+
 /** The shipping build's port — the historical hard-coded value. */
 export const STABLE_BASE = "http://127.0.0.1:47321";
 /** The `.dev` build's port (`CaptureServer.defaultPort + 1`). */
@@ -29,7 +31,7 @@ export const BASE_OVERRIDE_KEY = "atelierBaseOverride";
 /** Where the winning base is remembered between calls. */
 export const BASE_CACHE_KEY = "atelierBaseCache";
 
-// --- Pure helpers (unit-tested without chrome or a network) ----------------
+// --- Pure helpers (unit-tested without a browser API or a network) ----------
 
 /**
  * The bases to try, in order, for a stored `override`. `"auto"`, `null`, or
@@ -61,7 +63,7 @@ export function isNetworkError(error) {
 // --- Storage ---------------------------------------------------------------
 
 /** An in-memory `{ load, save, remove }` — the fallback outside an extension
- * (tests, node) so nothing here needs a `chrome` global to run. */
+ * (tests, node) so nothing here needs a browser global to run. */
 export function makeMemoryStorage(seed = {}) {
   const map = new Map(Object.entries(seed));
   return {
@@ -71,13 +73,13 @@ export function makeMemoryStorage(seed = {}) {
   };
 }
 
-/** The real `chrome.storage.local` store, or an in-memory one when `chrome`
- * isn't present. Same `{ load, save, remove }` shape as
+/** The real extension `storage.local` store, or an in-memory one when neither
+ * browser global is present. Same `{ load, save, remove }` shape as
  * `bulk-controller.makeChromeStorage`, so the two are interchangeable. */
 let fallbackStorage = null;
 export function defaultStorage() {
-  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-    const area = chrome.storage.local;
+  if (browser.storage) {
+    const area = browser.storage.local;
     return {
       async load(key) { return (await area.get(key))[key] ?? null; },
       async save(key, value) { await area.set({ [key]: value }); },

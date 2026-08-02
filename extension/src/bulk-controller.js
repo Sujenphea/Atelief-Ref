@@ -3,13 +3,15 @@
 // Runs in the page (durable while the tab is open, so it survives the SW being torn
 // down mid-sweep — the MV3 [A1] requirement). It owns the sweep: open a job, load the
 // known-source skip set, drive the engine over the platform driver, relay each item
-// to the SW, checkpoint to chrome.storage, close the job. All localhost I/O is
-// proxied to the SW via an injected `transport` (chrome.runtime.sendMessage), so the
+// to the SW, checkpoint to `storage.local`, close the job. All localhost I/O is
+// proxied to the SW via an injected `transport` (`runtime.sendMessage`), so the
 // orchestration CORE (`runBulkSweep`) is pure and unit-tested with a fake transport.
 //
-// The chrome.*/window bootstrap (build the platform driver from the live page, wire
+// The browser-API/window bootstrap (build the platform driver from the live page, wire
 // the X hook's messages, checkpoint store) is thin guarded glue at the tail —
-// exercised by manual E2E (Phase 9), not node --test.
+// exercised by manual E2E (Phase 9), not node --test. `registerBulkController` takes
+// the API as an ARGUMENT, so the bootstrap-tests drive it with a fake and the live
+// call at the foot hands it the `browser.js` shim.
 
 import { runSweep, classifyIngestResult } from "./bulk-engine.js";
 import { PLATFORM_PACING } from "./config.js";
@@ -21,6 +23,7 @@ import {
 } from "./bulk-pinterest.js";
 import { createTwitterSource } from "./twitter-source.js";
 import { makeSavedFeedFetch, instagramSavedDriver } from "./bulk-instagram.js";
+import { browser } from "./browser.js";
 
 /** Platforms the controller can build a driver for. A START for anything else is refused
  * with a typed error rather than silently mis-dispatched. */
@@ -179,10 +182,10 @@ export function sweepCleanMarkerKey({ platform, scope = null, input = null }) {
 }
 
 // ---------------------------------------------------------------------------
-// Content-script bootstrap (chrome.*/window glue — guarded; E2E-verified)
+// Content-script bootstrap (browser-API/window glue — guarded; E2E-verified)
 // ---------------------------------------------------------------------------
 
-/** A `transport` backed by `chrome.runtime.sendMessage`, surfacing an error reply
+/** A `transport` backed by `runtime.sendMessage`, surfacing an error reply
  * (see the SW glue in sw.js) as a thrown error the controller can halt on. */
 export function makeRuntimeTransport(sendMessage) {
   return async (message) => {
@@ -192,7 +195,7 @@ export function makeRuntimeTransport(sendMessage) {
   };
 }
 
-/** A `{ load, save, remove }` checkpoint store over `chrome.storage.local`. */
+/** A `{ load, save, remove }` checkpoint store over an extension `storage.local`. */
 export function makeChromeStorage(area) {
   return {
     async load(key) { return (await area.get(key))[key] ?? null; },
@@ -254,11 +257,11 @@ function buildInstagramDriver({ loc, fetchImpl, log = () => {} }) {
 /** Register the START-message listener on a page. Extracted so the guard + wiring are
  * one place; idempotent via a window flag so a re-injection (the cold-tab recovery in
  * bulk-dispatch.js) can't leave two listeners → two sweeps for one click. */
-export function registerBulkController(win, chromeApi) {
+export function registerBulkController(win, browserApi) {
   if (win.__atelierBulkController) return; // already wired on this page
   win.__atelierBulkController = true;
 
-  chromeApi.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  browserApi.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.type !== START) return false;
 
     // Per-tab guard (1A): one sweep at a time on a page. A second START — a double-click,
@@ -288,8 +291,8 @@ export function registerBulkController(win, chromeApi) {
     const log = (...args) => { try { console.log("[Atelier bulk]", ...args); } catch { /* ignore */ } };
     log("START", spec.platform, spec.scope || "", "resolveVideo=" + !!spec.resolveVideo);
 
-    const transport = makeRuntimeTransport((m) => chromeApi.runtime.sendMessage(m));
-    const storage = makeChromeStorage(chromeApi.storage.local);
+    const transport = makeRuntimeTransport((m) => browserApi.runtime.sendMessage(m));
+    const storage = makeChromeStorage(browserApi.storage.local);
     const host = win.location.host;
     const pacing = PLATFORM_PACING[spec.platform] || {};
     let built;
@@ -314,8 +317,10 @@ export function registerBulkController(win, chromeApi) {
   });
 }
 
-// Guarded so a `node --test` import (no chrome / window) is inert. The real bootstrap
-// is triggered by a START runtime message from the popup (or the injection recovery).
-if (typeof chrome !== "undefined" && chrome.runtime && typeof window !== "undefined") {
-  registerBulkController(window, chrome);
+// Guarded so a `node --test` import (no browser global / no window) is inert. The real
+// bootstrap is triggered by a START runtime message from the popup (or the injection
+// recovery). The shim is passed whole — `registerBulkController` only ever reaches for
+// `runtime` and `storage`, which is exactly what the fake in the bootstrap tests supplies.
+if (browser.runtime && browser.storage && typeof window !== "undefined") {
+  registerBulkController(window, browser);
 }

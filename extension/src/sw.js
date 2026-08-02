@@ -13,9 +13,10 @@
 // the SW, with host_permissions, may reach http://127.0.0.1 without CORS trouble.
 //
 // STRUCTURE: the decision-making core (`captureCore`, `fetchImage`,
-// `presentation`) is pure/injectable and unit-tested (sw.test.js). The `chrome.*`
+// `presentation`) is pure/injectable and unit-tested (sw.test.js). The browser-API
 // event wiring at the bottom is thin glue, registered only in a real extension
-// (guarded so this module imports cleanly under `node --test`).
+// (guarded so this module imports cleanly under `node --test`). That glue goes
+// through `browser.js` rather than naming `chrome` — see its header for why.
 
 import { harvestSignals, buildHarvest } from "./harvest.js";
 import { extractProvenance } from "./extractors/registry.js";
@@ -35,12 +36,13 @@ import { isBulkMessage } from "./bulk-messages.js";
 import { handleBulkMessage } from "./bulk-sw.js";
 import { openJob, fetchKnownSources, completeJob } from "./bulk-endpoint.js";
 import { withBase } from "./base-url.js";
+import { browser } from "./browser.js";
 
 const TOKEN_KEY = "atelierToken";
 const B64_CHUNK = 0x8000; // 32 KB per String.fromCharCode.apply — see bytesToBase64
 
 // ---------------------------------------------------------------------------
-// Core (pure / injectable — no chrome.*), unit-tested.
+// Core (pure / injectable — no browser API), unit-tested.
 // ---------------------------------------------------------------------------
 
 /** Base64 of a byte array, chunked so a large image doesn't do millions of
@@ -209,7 +211,7 @@ export async function captureCore(harvest, context, token, deps = defaultDeps) {
  * use. `jobId`+`sourceId` (bulk, 3A) tag the POST so the app records a job_item;
  * single-item capture omits them. Fail-OPEN on video: a RESOLVED video that then
  * fails to download/ingest is UNEXPECTED → loud log, then falls back to the still
- * image, so a capture is never worse than before. Pure/injectable — no chrome.*.
+ * image, so a capture is never worse than before. Pure/injectable — no browser API.
  */
 export async function ingestOne(
   provenance,
@@ -310,12 +312,13 @@ export function presentation(result) {
 }
 
 // ---------------------------------------------------------------------------
-// Glue (chrome.*) — thin, registered only in a real extension.
+// Glue (the browser API, via ./browser.js) — thin, registered only in a real
+// extension.
 // ---------------------------------------------------------------------------
 
 /** The saved shared-secret token, or "" if unset. */
 async function getToken() {
-  const stored = await chrome.storage.local.get(TOKEN_KEY);
+  const stored = await browser.storage.local.get(TOKEN_KEY);
   return stored[TOKEN_KEY] || "";
 }
 
@@ -326,7 +329,7 @@ async function capture(tab, context) {
 
   let raw;
   try {
-    const [injection] = await chrome.scripting.executeScript({
+    const [injection] = await browser.scripting.executeScript({
       target: { tabId: tab.id },
       func: harvestSignals,
     });
@@ -345,25 +348,25 @@ async function capture(tab, context) {
 
 /** Brief action-badge feedback (title carries the full message). */
 function flash(text, color, title) {
-  chrome.action.setBadgeBackgroundColor({ color });
-  chrome.action.setBadgeText({ text });
-  if (title) chrome.action.setTitle({ title: `Atelier — ${title}` });
+  browser.action.setBadgeBackgroundColor({ color });
+  browser.action.setBadgeText({ text });
+  if (title) browser.action.setTitle({ title: `Atelier — ${title}` });
   // Best-effort auto-clear; an MV3 SW may be torn down before it fires, so the
   // next capture also clears the badge up front (see capture()).
-  setTimeout(() => chrome.action.setBadgeText({ text: "" }), 4000);
+  setTimeout(() => browser.action.setBadgeText({ text: "" }), 4000);
 }
 
 /** Clear the badge immediately (no title change). */
 function clearBadge() {
-  chrome.action.setBadgeText({ text: "" });
+  browser.action.setBadgeText({ text: "" });
 }
 
-if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
+if (browser.runtime && browser.runtime.onMessage) {
   // Thin bulk relay: the content-script controller messages the SW for every
   // localhost op (only the SW reaches 127.0.0.1). Each message resets the SW idle
   // timer, which is what keeps it alive across a long sweep. An error is returned as
   // an `{ __error }` envelope the controller's transport rethrows (→ engine halt).
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!isBulkMessage(message)) return false;
     getToken()
       .then((token) => handleBulkMessage(message, {
@@ -375,14 +378,16 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
   });
 }
 
-if (typeof chrome !== "undefined" && chrome.action) {
+if (browser.action && browser.contextMenus) {
   // NB: the toolbar action now opens the popup (manifest `action.default_popup`), so
-  // `chrome.action.onClicked` no longer fires — single-item capture lives on the
+  // `action.onClicked` no longer fires — single-item capture lives on the
   // right-click context menu below (and the popup launches sweeps).
-  chrome.runtime.onInstalled.addListener(() => {
-    // removeAll first so a re-install/update can't throw "duplicate id".
-    chrome.contextMenus.removeAll(() => {
-      chrome.contextMenus.create({
+  browser.runtime.onInstalled.addListener(() => {
+    // removeAll first so a re-install/update can't throw "duplicate id". The shim
+    // hands back a promise on both engines (Chrome's form here is callback-only in
+    // practice; Safari's rejects a callback outright) — see browser.js.
+    browser.contextMenus.removeAll().then(() => {
+      browser.contextMenus.create({
         id: "atelier-save",
         title: "Save to Atelier",
         contexts: ["page", "image", "link"],
@@ -390,7 +395,7 @@ if (typeof chrome !== "undefined" && chrome.action) {
     });
   });
 
-  chrome.contextMenus.onClicked.addListener((info, tab) => {
+  browser.contextMenus.onClicked.addListener((info, tab) => {
     // The right-clicked element: exact image + its link — far more reliable than
     // guessing from the page (esp. capturing a pin from the feed).
     const context = {
