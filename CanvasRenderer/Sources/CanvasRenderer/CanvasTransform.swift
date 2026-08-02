@@ -116,9 +116,60 @@ public struct CanvasTransform: Equatable, Sendable {
         )
     }
 
+    // MARK: Camera (018 · Cluster C)
+
+    /// The camera this transform expresses for a viewport of `viewportSize` — the
+    /// world point at the viewport's centre, plus the scale.
+    public func camera(viewportSize: CGSize) -> CanvasCamera {
+        CanvasCamera(
+            centre: screenToWorld(
+                CGPoint(x: viewportSize.width / 2, y: viewportSize.height / 2)),
+            zoom: scale
+        )
+    }
+
+    /// A copy that puts `camera`'s world centre at the centre of a `viewportSize`
+    /// viewport, at its zoom — the exact inverse of ``camera(viewportSize:)``.
+    ///
+    /// The translation is recomputed from the CLAMPED scale, so a camera saved by a
+    /// build with a wider zoom range still lands centred rather than skidding off
+    /// the anchor (the same reasoning as ``zoomed(by:aroundScreenPoint:)``).
+    public func settingCamera(_ camera: CanvasCamera, viewportSize: CGSize) -> CanvasTransform {
+        let newScale = Self.clamp(camera.zoom, lower: minScale, upper: maxScale)
+        return CanvasTransform(
+            scale: newScale,
+            translation: CGPoint(
+                x: viewportSize.width / 2 - camera.centre.x * newScale,
+                y: viewportSize.height / 2 - camera.centre.y * newScale
+            ),
+            minScale: minScale,
+            maxScale: maxScale
+        )
+    }
+
     // MARK: -
 
     static func clamp(_ value: CGFloat, lower: CGFloat, upper: CGFloat) -> CGFloat {
         min(max(value, lower), upper)
+    }
+}
+
+/// A **window-independent** camera: the world point sitting at the centre of the
+/// viewport, plus the zoom (018 · Cluster C).
+///
+/// Distinct from ``CanvasTransform`` on purpose. A transform's `translation` is a
+/// screen offset, and a screen offset only means anything against the window size
+/// that produced it — persisting one and restoring it into a different-sized
+/// window slides the content by half the difference. A centre does not care how
+/// big the window is, so it is what crosses a session boundary.
+public struct CanvasCamera: Equatable, Sendable {
+    /// The world point drawn at the middle of the viewport.
+    public var centre: CGPoint
+    /// Screen points per world unit.
+    public var zoom: CGFloat
+
+    public init(centre: CGPoint, zoom: CGFloat) {
+        self.centre = centre
+        self.zoom = zoom
     }
 }

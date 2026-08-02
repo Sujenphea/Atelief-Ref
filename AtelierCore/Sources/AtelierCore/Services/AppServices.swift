@@ -1715,6 +1715,30 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// Remember where a space was last looked at (018 · Cluster C). Stores the
+    /// ``SpaceCamera`` as JSON TEXT in `space.camera`, mirroring
+    /// ``updateSpaceItemStyle(itemID:style:)``'s opaque-TEXT write; `nil` clears the
+    /// column back to "never opened", which restores as fit-to-content.
+    ///
+    /// Two deliberate differences from every other space write, and both are the
+    /// point rather than an oversight:
+    ///
+    /// - **It does NOT bump `updatedAt`.** A camera is view state, not content.
+    ///   Panning a board is not editing it, and letting a pan touch `updatedAt`
+    ///   would make merely *looking* at a board register as a change.
+    /// - **It is idempotent, not `.notFound`.** The flush on close (018 · C3) can
+    ///   land after the board was deleted, and a camera for a space that no longer
+    ///   exists is nothing to raise at the user — the same reasoning as
+    ///   ``removeSpaceItem(itemID:)``.
+    public func setSpaceCamera(spaceID: UUID, camera: SpaceCamera?) async throws {
+        let json = camera?.jsonString()
+        try await write { db in
+            guard var space = try Space.fetchOne(db, key: Self.key(spaceID)) else { return }
+            space.camera = json
+            try space.update(db)
+        }
+    }
+
     /// Delete a space; `.notFound` if absent. Its rows CASCADE at the DB level
     /// (schema O1) — asset rows and element rows alike; the underlying assets
     /// survive (only the placements go).
