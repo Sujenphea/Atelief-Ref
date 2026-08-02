@@ -267,6 +267,16 @@ final class IngestionModel: ObservableObject {
     /// instead of every view bound to the model.
     let backup = BackupController()
 
+    // MARK: - Ambient clipboard capture (013 · K3)
+
+    /// The opt-in clipboard watcher. Owned here for the same reason ``backup`` is:
+    /// it must outlive the Settings window that turns it on, and something has to
+    /// keep polling while that window is closed. Its own observable object so the
+    /// Settings row re-renders on a pause/resume without every model observer
+    /// doing so. Off until ``activateClipboardWatcher(root:)`` binds it to the
+    /// open library.
+    let clipboard = ClipboardWatcher()
+
     /// Monotonic id for ``loadContents(of:)`` so a slow read can never clobber a
     /// newer one (fast folder switch, or a mutation-triggered reload).
     private var contentsLoadID = 0
@@ -705,6 +715,12 @@ final class IngestionModel: ObservableObject {
             // removed outside deleteAssets, so a future sweep re-imports that source
             // instead of dedup-skipping bytes that are gone.
             _ = try? await services.reconcileOrphanedKnownItems()
+
+            // Ambient clipboard capture (013 · K3). Bound here, after the library
+            // is open: its preference is namespaced by library id, and nothing
+            // ambient should be able to run before the app knows where it would
+            // file what it takes. Off unless the user turned it on before.
+            activateClipboardWatcher(root: root)
 
             await refreshFolders()
             // Spaces load here too — the sidebar's `.task` can run BEFORE this
@@ -2402,6 +2418,75 @@ final class IngestionModel: ObservableObject {
     func makeSpaceModel(for spaceID: UUID) -> SpaceModel? {
         guard let services, let store else { return nil }
         return SpaceModel(spaceID: spaceID, services: services, store: store)
+    }
+
+    // MARK: - Ambient clipboard capture (013 · K3)
+
+    /// Wire the clipboard watcher to this library and let it resume the stored
+    /// preference (off unless the user turned it on before).
+    ///
+    /// The id comes from ``LibraryIdentity`` — the same stable name the backup
+    /// destination uses — because the preference key is namespaced `library.<id>.`
+    /// per 016 §C. If it cannot be resolved (a malformed `library-id` file, which
+    /// that type deliberately refuses to self-heal), the watcher simply stays
+    /// unavailable: a per-library preference we can't read is not an invitation to
+    /// guess, and "no ambient capture" is the safe side of that guess.
+    private func activateClipboardWatcher(root: URL) {
+        clipboard.onCapture = { [weak self] capture in
+            self?.ingestClipboardCapture(capture)
+        }
+        clipboard.onOpenSettings = { Self.openSettingsWindow() }
+        guard let libraryID = try? LibraryIdentity.resolve(root: root) else {
+            AppLog.model.error(
+                "library id unresolved — clipboard capture stays unavailable this launch")
+            return
+        }
+        clipboard.activate(libraryID: libraryID)
+    }
+
+    /// File one ambient capture into Unsorted, through the ordinary import path.
+    ///
+    /// Deliberately NOT ``run(inputs:)``: that reloads the folder a batch landed
+    /// in, which is right for a paste (the user is looking at it) and wrong here —
+    /// an image copied in another app must not yank the grid over to Unsorted
+    /// while the user is working in a collection. So the tree refreshes (counts
+    /// move), and the contents reload only if Unsorted is what's on screen.
+    ///
+    /// The completion toast ``importInputs(_:undecoded:)`` posts is kept on
+    /// purpose: an ambient capture the user did not ask for, item by item, is
+    /// exactly the thing that should say so. 18A content-hash dedup makes a
+    /// double-fire (or the same image copied twice) resolve to the one asset.
+    private func ingestClipboardCapture(_ capture: ClipboardCapture) {
+        guard isReady else { return }
+        let target = Collection.unsortedID
+        let input = DirectInputReader.clipboardInput(
+            imageData: capture.imageData,
+            appName: capture.app.name,
+            appBundleID: capture.app.bundleID,
+            into: target, at: Date())
+        Task {
+            _ = await importInputs([input])
+            await refreshFolders()
+            if selectedFolderID == target { loadContents(of: target) }
+        }
+    }
+
+    /// Open the Settings scene from AppKit (the menu-bar item).
+    ///
+    /// SwiftUI's `Settings` scene has no programmatic opener outside a view
+    /// hierarchy (`SettingsLink` is a `View`), so this goes through the action the
+    /// ⌘, menu item sends. The selector was renamed in macOS 13, hence the pair —
+    /// both are tried, and doing nothing is an acceptable failure for a
+    /// convenience item.
+    private static func openSettingsWindow() {
+        let selectors = [
+            Selector(("showSettingsWindow:")),
+            Selector(("showPreferencesWindow:")),
+        ]
+        NSApp.activate(ignoringOtherApps: true)
+        for selector in selectors where NSApp.sendAction(selector, to: nil, from: nil) {
+            return
+        }
     }
 
     // MARK: - Import

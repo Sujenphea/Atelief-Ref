@@ -185,7 +185,7 @@ struct ServicesValidationTests {
     }
 
     @Test("originalURL is optional for local capture paths", arguments: [
-        Platform.localPaste, .localDrag,
+        Platform.localPaste, .localDrag, .clipboard,
     ])
     func urlOptionalLocal(_ platform: Platform) throws {
         try Validation.originalURL(nil, platform: platform)

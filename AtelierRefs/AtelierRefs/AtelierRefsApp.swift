@@ -77,7 +77,9 @@ struct AtelierRefsApp: App {
         // The standard macOS Settings window (010 · Phase 2 · group 4): capture
         // token, library location, setup-guide replay.
         Settings {
-            SettingsView(model: model, backup: model.backup, gridPrefs: gridPrefs)
+            SettingsView(
+                model: model, backup: model.backup, gridPrefs: gridPrefs,
+                clipboard: model.clipboard)
         }
     }
 }
