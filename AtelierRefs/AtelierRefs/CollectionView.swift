@@ -901,8 +901,17 @@ private struct CollectionDetailHost: View {
             previewURL: { model.previewImageURL(forAsset: $0) },
             // 036 §3 B2: full-res source (content hash + on-disk blob URL) for the
             // LRU loader; `nil` for a media-less kind (no blob to decode).
+            //
+            // Video is excluded even though it HAS a blob: the media area draws it
+            // with `VideoPlayer` and never reads `displayImage`, so handing the
+            // .mp4 to ImageIO is a guaranteed failed decode — one file open + probe
+            // per video opened AND per video preloaded as a prev/next neighbour,
+            // logged as `CGImageSourceCreateThumbnailAtIndex … 'n/a ' … [-50]`.
+            // Link / tweet stay in: their blob is a still image (og:image, captured
+            // card) that the media area does draw.
             displaySource: { asset in
-                guard let hash = asset.blobHash,
+                guard asset.kind != .video,
+                      let hash = asset.blobHash,
                       let url = model.blobURL(forAsset: asset) else { return nil }
                 return (hash, url)
             }))
