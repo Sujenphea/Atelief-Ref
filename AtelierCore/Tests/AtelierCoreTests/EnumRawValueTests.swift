@@ -25,6 +25,7 @@ struct EnumRawValueTests {
         (Platform.cosmos, "cosmos"),
         (Platform.rednote, "rednote"),
         (Platform.web, "web"),
+        (Platform.clipboard, "clipboard"),
         (Platform.localPaste, "local_paste"),
         (Platform.localDrag, "local_drag"),
     ])
@@ -56,7 +57,7 @@ struct EnumRawValueTests {
     @Test("enum case counts are as specified")
     func caseCounts() {
         #expect(AssetKind.allCases.count == 5)
-        #expect(Platform.allCases.count == 8)
+        #expect(Platform.allCases.count == 9)
         #expect(DownloadState.allCases.count == 3)
         #expect(TagSource.allCases.count == 2)
     }

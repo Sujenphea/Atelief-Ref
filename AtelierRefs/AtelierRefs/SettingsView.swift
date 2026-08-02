@@ -19,6 +19,10 @@ struct SettingsView: View {
     /// Owned by the app (not this scene), so flipping a toggle here reaches the grid
     /// that is already on screen.
     @ObservedObject var gridPrefs: GridViewPreferences
+    /// The ambient clipboard watcher (013 · K3). Observed separately for the same
+    /// reason `backup` is — it is a nested `ObservableObject` on the model, so its
+    /// pause / library-bound changes wouldn't reach this row otherwise.
+    @ObservedObject var clipboard: ClipboardWatcher
 
     /// The first-run flag ``ContentView`` gates onboarding on — flipping it false
     /// here re-shows the setup guide on the next main-window appearance.
@@ -29,6 +33,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             captureSection
+            clipboardSection
             gridSection
             librarySection
             backupSection
@@ -70,6 +75,40 @@ struct SettingsView: View {
                          + "paste the new token into the Chrome extension to re-pair.")
                 }
             CaptureTokenExplainer()
+        }
+    }
+
+    // MARK: - Clipboard capture (013 · K3)
+
+    /// The one place ambient capture can be turned on. Off by default, and the
+    /// copy under it states the three limits plainly rather than reassuringly —
+    /// somebody deciding whether to let an app watch their clipboard deserves the
+    /// actual rules, not a promise that it is "private".
+    private var clipboardSection: some View {
+        Section("Clipboard Capture") {
+            Toggle("Save copied images automatically", isOn: Binding(
+                get: { clipboard.isEnabled },
+                set: { clipboard.setEnabled($0) }))
+                .disabled(!clipboard.isAvailable)
+            Text("While this is on, any image you copy anywhere on your Mac is added "
+                 + "to Unsorted, and a clipboard icon appears in the menu bar for as "
+                 + "long as it's running — click it to pause or turn it off. Copied "
+                 + "text and files are ignored, and so is anything a password manager "
+                 + "marks as concealed.")
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if !clipboard.isAvailable {
+                Label("Available once the library finishes opening.",
+                      systemImage: "clock")
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.secondary)
+            } else if clipboard.isPaused {
+                Label("Paused from the menu bar — capture resumes from there.",
+                      systemImage: "pause.circle")
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.orange)
+            }
         }
     }
 

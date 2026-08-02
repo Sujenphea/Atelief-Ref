@@ -171,7 +171,7 @@ struct CaptureDecoderTests {
     @Test("every accepted platform string maps to its Platform case", arguments: [
         ("twitter", Platform.twitter), ("pinterest", .pinterest),
         ("instagram", .instagram), ("cosmos", .cosmos), ("rednote", .rednote),
-        ("web", .web),
+        ("web", .web), ("clipboard", .clipboard),
     ])
     func platformMapping(raw: String, expected: Platform) throws {
         let request = CaptureRequest.sample(platform: raw)

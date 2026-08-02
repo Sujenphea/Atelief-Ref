@@ -253,10 +253,18 @@ enum Validation {
     /// Enforce the per-platform `originalURL` rule (`.missingOriginalURL`):
     /// required (non-nil, non-empty) for the remote platforms
     /// (`.twitter/.pinterest/.instagram/.cosmos/.rednote/.web`); optional for the
-    /// local capture paths (`.localPaste/.localDrag`), which have no canonical URL.
+    /// local capture paths (`.localPaste/.localDrag/.clipboard`), which have no
+    /// canonical URL.
+    ///
+    /// The switch is deliberately exhaustive with NO `default`: a platform absent
+    /// from both lists does not fall into a lenient bucket, it fails to compile —
+    /// so adding a case forces a decision about its provenance rule instead of
+    /// inheriting one silently. `.clipboard` (013 · K3) sits with the local paths:
+    /// an image copied from a Preview window has no URL to record, and demanding
+    /// one would mean inventing it.
     static func originalURL(_ url: String?, platform: Platform) throws {
         switch platform {
-        case .localPaste, .localDrag:
+        case .localPaste, .localDrag, .clipboard:
             return
         case .twitter, .pinterest, .instagram, .cosmos, .rednote, .web:
             let trimmed = url?.trimmingCharacters(in: .whitespacesAndNewlines)

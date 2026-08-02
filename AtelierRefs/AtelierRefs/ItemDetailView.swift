@@ -1334,6 +1334,7 @@ private enum DetailFormat {
         case .cosmos: "Cosmos"
         case .rednote: "rednote"
         case .web: "Web"
+        case .clipboard: "Clipboard"
         case .localPaste: "Pasted"
         case .localDrag: "Dragged in"
         }
