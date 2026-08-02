@@ -85,10 +85,17 @@ final class SpaceModel: ObservableObject {
     /// delivers one `moveTile` per carried tile). Flushed to a SINGLE undo step.
     private var pendingMoves: [(id: UUID, old: Placement, new: Placement)] = []
 
-    init(spaceID: UUID, services: AppServices, store: MediaStore) {
+    /// How long a camera change waits before it is written (018 · Cluster C).
+    /// Injectable so a test can drive the debounce without sleeping through it —
+    /// the `SnapshotManager(now:)` pattern applied to a duration rather than a clock.
+    private let cameraFlushDelay: Duration
+
+    init(spaceID: UUID, services: AppServices, store: MediaStore,
+         cameraFlushDelay: Duration = .milliseconds(400)) {
         self.spaceID = spaceID
         self.services = services
         self.store = store
+        self.cameraFlushDelay = cameraFlushDelay
         Task { await load() }
     }
 
@@ -244,6 +251,14 @@ final class SpaceModel: ObservableObject {
             let rows = try await services.spaceItems(in: spaceID)
             guard id == loadID else { return }
             self.space = space
+            // Adopt the stored camera as the write baseline, but ONLY while the
+            // canvas has never reported one of its own (018 · Cluster C). Once it
+            // has, the live camera is the truth: a load that lands after a write —
+            // and `init`'s own load can, since a newer load makes it return early
+            // without ever getting here — re-reads a row that write has not reached,
+            // and adopting THAT would make the next identical report look like a
+            // change and put a redundant write on every open.
+            if !hasReportedCamera { persistedCamera = SpaceCamera(jsonString: space.camera) }
             self.items = refitTextRows(rows)
             // Prune the selection to ids that survived the reload (049 · D7) — the
             // set peer of the old stale-single guard.
@@ -258,6 +273,96 @@ final class SpaceModel: ObservableObject {
             renderRevision &+= 1
         } catch {
             guard id == loadID else { return }
+            lastError = Self.message(for: error)
+        }
+    }
+
+    // MARK: - Camera (018 · Cluster C)
+
+    /// The camera the board should OPEN at, in renderer terms — or `nil` to fit the
+    /// content, which is both the never-opened case and the couldn't-decode case.
+    var openingCamera: CanvasCamera? { Self.openingCamera(from: space?.camera) }
+
+    /// The stored `space.camera` blob as an opening camera, or `nil` to fit.
+    ///
+    /// Pure, so the fallback arms are testable without a database. One rule, one
+    /// fallback: ``SpaceCamera/resolved`` collapses "no column", "malformed JSON"
+    /// and "a blob missing half its fields" into the same `nil`, and the renderer
+    /// adds the third arm — a camera whose viewport would show no content re-fits
+    /// too (``CanvasEngine/restoreCamera(_:padding:)``). Three ways to have no
+    /// usable camera, ONE answer.
+    static func openingCamera(from stored: String?) -> CanvasCamera? {
+        guard let saved = SpaceCamera(jsonString: stored)?.resolved else { return nil }
+        return CanvasCamera(centre: CGPoint(x: saved.x, y: saved.y), zoom: CGFloat(saved.zoom))
+    }
+
+    /// The camera waiting to be written, or `nil` when nothing is pending.
+    private var pendingCamera: SpaceCamera?
+    /// What the `space.camera` column already holds, as far as this model knows —
+    /// seeded from the first load, then advanced by each flush. It exists so the
+    /// opening restore, which arrives back through ``cameraChanged(_:)`` as a
+    /// "change" to the value it was just given, does not write it straight back.
+    private var persistedCamera: SpaceCamera?
+    /// Whether the canvas has reported a camera yet. Until it has, every load may
+    /// refresh ``persistedCamera`` from disk; after it has, none may (see ``load()``).
+    private var hasReportedCamera = false
+    private var cameraFlushTask: Task<Void, Never>?
+
+    /// Camera writes actually issued — introspection for the tests, in the same
+    /// spirit as ``CanvasEngine/syncCount``. The debounce's entire job is that a
+    /// gesture's worth of changes is ONE of these.
+    private(set) var cameraWriteCount = 0
+
+    /// The camera moved: a pan, a zoom, or the opening restore/fit. Coalesced —
+    /// a whole gesture becomes ONE write, ``cameraFlushDelay`` after its last frame.
+    ///
+    /// A change back to the value already on disk cancels the pending write instead
+    /// of scheduling another: a restore sets the transform to exactly what was
+    /// saved, and echoing that back would put a write on every board open.
+    func cameraChanged(_ camera: CanvasCamera) {
+        hasReportedCamera = true
+        let value = SpaceCamera(
+            x: Double(camera.centre.x), y: Double(camera.centre.y), zoom: Double(camera.zoom))
+        guard value != persistedCamera else {
+            pendingCamera = nil
+            cameraFlushTask?.cancel()
+            cameraFlushTask = nil
+            return
+        }
+        pendingCamera = value
+        cameraFlushTask?.cancel()
+        cameraFlushTask = Task { [cameraFlushDelay] in
+            try? await Task.sleep(for: cameraFlushDelay)
+            guard !Task.isCancelled else { return }
+            self.flushCameraPersist()
+        }
+    }
+
+    /// Write the pending camera NOW — on space-switch and on close.
+    ///
+    /// This is the half that actually matters. Without it the debounce eats the
+    /// LAST gesture of every session: you pan, you close the board, and the 0.4s
+    /// timer dies with the view holding the only copy of where you were. No-op when
+    /// nothing is pending, so calling it on every teardown costs nothing.
+    ///
+    /// The write goes on the same serial chain as every other board write, so it
+    /// cannot overtake an in-flight edit — and so ``waitForWrites()`` settles it.
+    func flushCameraPersist() {
+        cameraFlushTask?.cancel()
+        cameraFlushTask = nil
+        guard let camera = pendingCamera else { return }
+        pendingCamera = nil
+        persistedCamera = camera
+        cameraWriteCount &+= 1
+        enqueue { await self.persistCamera(camera) }
+    }
+
+    /// Not undoable, deliberately: a camera is view state, and putting "where you
+    /// were looking" in the undo stack would make ⌘Z sometimes mean "scroll back".
+    private func persistCamera(_ camera: SpaceCamera) async {
+        do {
+            try await services.setSpaceCamera(spaceID: spaceID, camera: camera)
+        } catch {
             lastError = Self.message(for: error)
         }
     }

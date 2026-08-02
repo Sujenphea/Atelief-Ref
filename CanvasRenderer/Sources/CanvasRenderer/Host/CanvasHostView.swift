@@ -36,17 +36,28 @@ public final class CanvasHostView: NSView {
     /// app can record that this board has been framed.
     public var onDidFrameContent: (() -> Void)?
 
+    /// The saved camera to open the board at INSTEAD of fitting it (018 · Cluster C),
+    /// or `nil` to fit. Consumed by the same one shot ``framesContentWhenReady`` arms —
+    /// restoring and fitting are two answers to one question ("where does this board
+    /// open?"), so they share the arming, the content-is-ready wait, and the
+    /// ``onDidFrameContent`` report rather than racing each other.
+    ///
+    /// A camera that would land the viewport on empty world space is refused here and
+    /// falls back to the fit; see ``CanvasEngine/restoreCamera(_:padding:)``.
+    public var restoreCamera: CanvasCamera?
+
     private var didFrameContent = false
 
-    /// Frame the board to fit, if this host is still allowed to and there is now
-    /// something to frame. Returns whether it did.
+    /// Establish the board's opening camera, if this host is still allowed to and
+    /// there is now something to look at: the saved ``restoreCamera`` when it shows
+    /// content, else a fit. Returns whether it did.
     @discardableResult
     private func frameContentIfNeeded() -> Bool {
         guard framesContentWhenReady, !didFrameContent,
               bounds.width > 0, bounds.height > 0,
               engine.hasDrawableContent else { return false }
         didFrameContent = true
-        engine.frameToContent()
+        engine.restoreCamera(restoreCamera)
         onDidFrameContent?()
         return true
     }
@@ -196,6 +207,16 @@ public final class CanvasHostView: NSView {
     /// notifies through this one seam.
     public var onTransformChanged: (() -> Void)?
 
+    /// The camera moved (018 · Cluster C): a pan, a zoom, or the opening
+    /// restore/fit. Rides the SAME engine notification as ``onTransformChanged``,
+    /// but carries the VALUE — so the app persists what it was handed rather than
+    /// reaching back into a (weakly held, possibly detached) host to read it.
+    ///
+    /// Its own callback rather than a second job for `onTransformChanged`, which is
+    /// the inline editor's imperative reposition hook and deliberately carries
+    /// nothing. `nil` disables camera reporting.
+    public var onCameraChanged: ((CanvasCamera) -> Void)?
+
     /// Forwarded from the engine (062): fired when a live resize moves a tile's
     /// displayed frame with the camera standing still. The editor's overlay is
     /// positioned from that frame, so it has to hear about both kinds of movement —
@@ -312,6 +333,10 @@ public final class CanvasHostView: NSView {
     /// The current world↔screen transform (2B · 054 §5.1) — read by the inline
     /// editor to scale its measured overlay size to screen points.
     public var transform: CanvasTransform { engine.transform }
+
+    /// The window-independent camera the board is currently looking through
+    /// (018 · Cluster C) — what the app persists.
+    public var camera: CanvasCamera { engine.camera }
 
     /// The on-screen frame a tile is drawn at (2B · 054 §5.1) — `nil` only when the id
     /// resolves to no tile. The inline editor positions its `NSTextView` from this on
@@ -494,8 +519,13 @@ public final class CanvasHostView: NSView {
         // changes the tile's displayed frame, so an app listener (the format bubble
         // anchors on that frame) reading before the editor would trail by a frame.
         engine.onTransformChanged = { [weak self] in
-            self?.editor?.reposition()
-            self?.onTransformChanged?()
+            guard let self else { return }
+            self.editor?.reposition()
+            self.onTransformChanged?()
+            // Camera persistence (018 · Cluster C) rides the same seam, so the ONE
+            // place a transform can change is also the one place a camera write can
+            // be missed from.
+            self.onCameraChanged?(self.engine.camera)
         }
         // …and its peer for a live resize (062), which moves the box under a still
         // camera and so never reaches the notification above.

@@ -46,6 +46,10 @@ public struct CanvasView: NSViewRepresentable {
     /// repositions its overlay imperatively — a plain closure, NOT a `Binding`, so it
     /// never re-evaluates SwiftUI `body` (R15).
     private let onTransformChanged: (() -> Void)?
+    /// The camera moved (018 · Cluster C) — a pan, a zoom, or the opening
+    /// restore/fit. Carries the value, so the app can persist it without reaching
+    /// back into the host. See ``CanvasHostView/onCameraChanged``.
+    private let onCameraChanged: ((CanvasCamera) -> Void)?
     /// Peer of the above for a LIVE RESIZE (062), which moves a tile's displayed
     /// frame while the camera stands still — so the editor's overlay hears about
     /// both kinds of movement. See ``CanvasEngine/onLiveFrameChanged``.
@@ -68,6 +72,9 @@ public struct CanvasView: NSViewRepresentable {
     private let framesContentWhenReady: Bool
     /// Fired the one time the framing actually happened.
     private let onDidFrameContent: (() -> Void)?
+    /// The saved camera to open at instead of fitting (018 · Cluster C); `nil` fits.
+    /// Consumed by the same one shot `framesContentWhenReady` arms.
+    private let restoreCamera: CanvasCamera?
 
     public init(
         provider: any TileProvider,
@@ -87,6 +94,7 @@ public struct CanvasView: NSViewRepresentable {
         onCreateElement: ((CanvasTool, CGRect) -> Void)? = nil,
         onResizeTile: ((Int, CGRect) -> Void)? = nil,
         onTransformChanged: (() -> Void)? = nil,
+        onCameraChanged: ((CanvasCamera) -> Void)? = nil,
         onLiveFrameChanged: (() -> Void)? = nil,
         onHostReady: ((CanvasHostView) -> Void)? = nil,
         acceptedDropTypes: [NSPasteboard.PasteboardType] = [],
@@ -96,6 +104,7 @@ public struct CanvasView: NSViewRepresentable {
         onBeginTileDragOut: ((Set<Int>) -> NSPasteboardItem?)? = nil,
         framesContentWhenReady: Bool = true,
         onDidFrameContent: (() -> Void)? = nil,
+        restoreCamera: CanvasCamera? = nil,
         onEditingChanged: ((Int?) -> Void)? = nil,
         onFinishEditingText: ((Int, CanvasTextEditOutcome) -> Void)? = nil
     ) {
@@ -115,6 +124,7 @@ public struct CanvasView: NSViewRepresentable {
         self.onCreateElement = onCreateElement
         self.onResizeTile = onResizeTile
         self.onTransformChanged = onTransformChanged
+        self.onCameraChanged = onCameraChanged
         self.onLiveFrameChanged = onLiveFrameChanged
         self.onHostReady = onHostReady
         self.acceptedDropTypes = acceptedDropTypes
@@ -124,6 +134,7 @@ public struct CanvasView: NSViewRepresentable {
         self.onBeginTileDragOut = onBeginTileDragOut
         self.framesContentWhenReady = framesContentWhenReady
         self.onDidFrameContent = onDidFrameContent
+        self.restoreCamera = restoreCamera
         self.onEditingChanged = onEditingChanged
         self.onFinishEditingText = onFinishEditingText
         self.onSelectTool = onSelectTool
@@ -155,6 +166,7 @@ public struct CanvasView: NSViewRepresentable {
         view.onCreateElement = onCreateElement
         view.onResizeTile = onResizeTile
         view.onTransformChanged = onTransformChanged
+        view.onCameraChanged = onCameraChanged
         view.onLiveFrameChanged = onLiveFrameChanged
         view.onDragEntered = onDragEntered
         view.onDrop = onDrop
@@ -163,9 +175,13 @@ public struct CanvasView: NSViewRepresentable {
         // Assign the registered types AFTER the handlers so a drop arriving between
         // the two assignments still finds `onDrop` in place.
         view.acceptedDropTypes = acceptedDropTypes
-        // Both BEFORE `syncToken`: its didSet may frame, and must see the current
-        // arming state and be able to report back through the current closure.
+        // All three BEFORE `syncToken`: its didSet may establish the opening camera,
+        // and must see the current arming state, the camera to restore, and be able
+        // to report back through the current closure. A board's rows and its saved
+        // camera arrive from the SAME load, so they land in the same view update —
+        // the restore can never run before the camera it should have used.
         view.onDidFrameContent = onDidFrameContent
+        view.restoreCamera = restoreCamera
         view.framesContentWhenReady = framesContentWhenReady
         view.tool = tool
         view.onEditingChanged = onEditingChanged

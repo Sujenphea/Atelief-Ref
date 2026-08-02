@@ -113,6 +113,13 @@ struct SpaceView: View {
                     .transition(.opacity)
             }
         }
+        // Write the last camera before this board goes away (018 · Cluster C). The
+        // view's identity is keyed to the space id (`AppShellView.spaceDestination`),
+        // so this fires on a space-switch as well as on navigating away — the two
+        // moments the 0.4s debounce would otherwise swallow the final gesture of the
+        // session. A no-op when nothing is pending, and it publishes nothing, so it
+        // is safe inside the view-removal update `onDisappear` runs in.
+        .onDisappear { space.flushCameraPersist() }
         // Enumerate the system's font families now, on a background thread (064). A
         // board is the only place a font picker is reachable from, and the first picker
         // to open used to pay ~384 ms for this on the main thread — as part of the click
@@ -339,6 +346,9 @@ struct SpaceView: View {
                 // The canvas repositions its own editor before these fire, so the
                 // chrome anchor always reads the frame the editor has settled on.
                 onTransformChanged: { chromeAnchor.refresh() },
+                // Every pan / zoom, plus the opening restore-or-fit. Debounced into
+                // one write per gesture; `onDisappear` flushes the last one.
+                onCameraChanged: { camera in space.cameraChanged(camera) },
                 onLiveFrameChanged: { chromeAnchor.refresh() },
                 // `onHostReady` fires from `makeNSView` — inside a view update, where
                 // publishing is undefined behaviour — so the anchor's read is hopped
@@ -407,14 +417,18 @@ struct SpaceView: View {
                 onBeginTileDragOut: { tileIDs in
                     content.dragOutPayload(forTileIDs: tileIDs)?.makePasteboardItem()
                 },
-                // Frame the board to fit exactly once, on its first open. A board loads
-                // its rows asynchronously, so the canvas is laid out before there is
-                // anything to frame — the host therefore waits for content rather than
-                // burning its one shot on an empty world. `didFrameBoard` lives on this
-                // view, whose identity is stable, so the camera survives even if the
-                // host is ever rebuilt for some other reason.
+                // Establish the board's camera exactly once, on its first open. A board
+                // loads its rows asynchronously, so the canvas is laid out before there
+                // is anything to look at — the host therefore waits for content rather
+                // than burning its one shot on an empty world. `didFrameBoard` lives on
+                // this view, whose identity is stable, so the camera survives even if
+                // the host is ever rebuilt for some other reason.
                 framesContentWhenReady: !didFrameBoard,
                 onDidFrameContent: { Task { @MainActor in didFrameBoard = true } },
+                // Where this board was left (018 · Cluster C). `nil` — never opened,
+                // or a blob that no longer decodes — fits the content instead, and so
+                // does a camera that would open on empty space.
+                restoreCamera: space.openingCamera,
                 // The host owns the edit; these two are how the app hears about it.
                 //
                 // `onEditingChanged` is hopped off the update frame: it publishes, and
