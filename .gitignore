@@ -8,6 +8,14 @@ DerivedData/
 *.xcscmblueprint
 *.xccheckout
 
+# Build output. Both release lanes write here and neither was covered: the
+# existing Xcode rules catch `.build/` (SPM) and `DerivedData/` by name, but this
+# tree is at the repo root and named neither.
+#   build/release/       scripts/release.sh — xcarchive, export, DMG, appcast
+#   build/local-release/ scripts/run-local.command — derived data + the .app
+# Multiple GB of untracked artifacts, one `git add .` away from the history.
+/build/
+
 # Chrome extension packaging output (scripts/package-extension.sh)
 /dist/
 
