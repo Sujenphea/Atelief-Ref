@@ -1,9 +1,17 @@
-// AtelierIngestion — copy blob files to an off-device destination (008 · H5)
+// AtelierIngestion — copy blob files between two stores (008 · H5)
 //
 // The symmetric sibling of `MediaReaper`: a `Sendable` struct over two
 // `MediaStore`s that moves bytes one way, best-effort per file, reporting what
 // it could not do rather than aborting the batch. Where the reaper reclaims,
 // this one preserves.
+//
+// DIRECTION-AGNOSTIC by construction (008 · H5c). Backup runs it live→backup and
+// drives the diff from the DATABASE (`missing(from:)`, over the blobs assets
+// reference); restore runs it backup→live and drives the diff from the
+// FILE TREE (`missingFiles()`, over the blobs the backup holds). One copy loop
+// either way — the two directions differ only in what they are asked to move,
+// which is the property that makes "restore is backup in reverse" true rather
+// than aspirational.
 //
 // The whole design rests on one property, inherited from `MediaStore` and not
 // re-invented here: **a blob file that exists is complete** (A2). That is what
@@ -21,7 +29,30 @@
 import AtelierCore
 import Foundation
 
-/// Copies blob files from a live library into a backup destination.
+/// One blob as the FILESYSTEM names it: the hash, and the extension the bytes
+/// were actually written with.
+///
+/// Deliberately not `BlobRef`. `BlobRef` carries a mime type, from which the
+/// extension is *derived* (`ImageMetadata.fileExtension(forMIMEType:)`, whose
+/// answer for `image/jpeg` is "jpeg", not "jpg") — that derivation belongs to
+/// the database side of the world. When the file tree is what's being read, the
+/// extension is already known and re-deriving it could only introduce a
+/// disagreement with the file that is sitting right there.
+public struct BlobFile: Sendable, Equatable, Hashable {
+    /// The content hash — the filename stem, and the shard key.
+    public let hash: String
+    /// The extension, without a leading dot. Empty for the dotless path
+    /// `MediaStore` writes when a mime type can't be resolved.
+    public let fileExtension: String
+
+    public init(hash: String, fileExtension: String) {
+        self.hash = hash
+        self.fileExtension = fileExtension
+    }
+}
+
+/// Copies blob files from one store into another — live→backup for a backup
+/// run, backup→live for a restore.
 ///
 /// `struct … Sendable` — two `Sendable` stores and no mutable state, so the copy
 /// can run off the main actor.
@@ -55,6 +86,38 @@ public struct MediaBackupper: Sendable {
         return result
     }
 
+    /// The blob FILES the source holds that the destination lacks — the same
+    /// diff driven by the file tree instead of the database (008 · H5c).
+    ///
+    /// Restore needs this direction because the database that names the blobs is
+    /// the very thing being restored: reading it would mean opening the backup's
+    /// `library.sqlite`, and `LibraryDatabase.init` MIGRATES what it opens — a
+    /// restore that quietly rewrote the backup it was reading from would destroy
+    /// the artifact it exists to protect. Enumerating the tree is also honest
+    /// about extensions: the filename carries the one the bytes were actually
+    /// written with, so no mime→extension guess can drift.
+    ///
+    /// The result is a SUPERSET of what the restored database will reference —
+    /// a backup keeps blobs the library later deleted (deletes deliberately do
+    /// not propagate), and those come back too. That is the safe direction: a
+    /// blob too many is reclaimed by a later orphan GC, a blob too few is an
+    /// item that renders empty forever.
+    ///
+    /// Sorted by hash so a run's order — and therefore its progress — is
+    /// reproducible rather than filesystem-dependent.
+    public func missingFiles() -> [BlobFile] {
+        var seen = Set<BlobFile>()
+        var result: [BlobFile] = []
+        for (hash, ext) in source.enumerateBlobFiles() {
+            let file = BlobFile(hash: hash, fileExtension: ext)
+            guard seen.insert(file).inserted else { continue }
+            if !destination.hasBlob(hash: hash, fileExtension: ext) {
+                result.append(file)
+            }
+        }
+        return result.sorted { $0.hash < $1.hash }
+    }
+
     // MARK: - Copy
 
     /// Copy every ref in `refs` to the destination, at most `maxConcurrent` at a
@@ -76,16 +139,38 @@ public struct MediaBackupper: Sendable {
         isCancelled: @escaping @Sendable () -> Bool = { false },
         onProgress: (@Sendable (_ completed: Int, _ total: Int) -> Void)? = nil
     ) async -> BackupCopyResult {
-        guard !refs.isEmpty else { return BackupCopyResult() }
+        // The mime→extension derivation happens exactly here, once: below this
+        // line both directions are the same list of files.
+        await copyFiles(
+            refs.map {
+                BlobFile(
+                    hash: $0.blobHash,
+                    fileExtension: ImageMetadata.fileExtension(forMIMEType: $0.mimeType))
+            },
+            maxConcurrent: maxConcurrent, isCancelled: isCancelled, onProgress: onProgress)
+    }
 
-        let reporter = ProgressReporter(total: refs.count, onProgress: onProgress)
+    /// The copy loop itself, over files named the way the filesystem names them.
+    ///
+    /// Identical semantics to ``copy(_:maxConcurrent:isCancelled:onProgress:)``
+    /// — best-effort per file, resumable, progress delivered monotonically —
+    /// and the single implementation both directions run through.
+    public func copyFiles(
+        _ files: [BlobFile],
+        maxConcurrent: Int = 4,
+        isCancelled: @escaping @Sendable () -> Bool = { false },
+        onProgress: (@Sendable (_ completed: Int, _ total: Int) -> Void)? = nil
+    ) async -> BackupCopyResult {
+        guard !files.isEmpty else { return BackupCopyResult() }
+
+        let reporter = ProgressReporter(total: files.count, onProgress: onProgress)
         let source = source
         let destination = destination
 
-        let outcomes = await runBounded(refs, maxConcurrent: maxConcurrent) { _, ref in
+        let outcomes = await runBounded(files, maxConcurrent: maxConcurrent) { _, file in
             let outcome: BlobCopyOutcome = isCancelled()
                 ? .skipped
-                : Self.copyOne(ref, from: source, to: destination)
+                : Self.copyOne(file, from: source, to: destination)
             await reporter.report()
             return outcome
         }
@@ -94,7 +179,7 @@ public struct MediaBackupper: Sendable {
         // its turn); `.skipped` is one that reached the flag. Both mean "not
         // attempted", which is what makes the run resumable.
         var result = BackupCopyResult()
-        for (ref, outcome) in zip(refs, outcomes) {
+        for (file, outcome) in zip(files, outcomes) {
             switch outcome ?? .skipped {
             case .copied(let bytes):
                 result.copied += 1
@@ -102,9 +187,9 @@ public struct MediaBackupper: Sendable {
             case .alreadyPresent:
                 result.alreadyPresent += 1
             case .missingAtSource:
-                result.missingAtSource.append(ref.blobHash)
+                result.missingAtSource.append(file.hash)
             case .failed:
-                result.failed.append(ref.blobHash)
+                result.failed.append(file.hash)
             case .skipped:
                 result.skipped += 1
             }
@@ -119,24 +204,23 @@ public struct MediaBackupper: Sendable {
     /// Copy one blob. `static` so the concurrent closure captures two `Sendable`
     /// stores rather than `self`.
     private static func copyOne(
-        _ ref: BlobRef, from source: MediaStore, to destination: MediaStore
+        _ file: BlobFile, from source: MediaStore, to destination: MediaStore
     ) -> BlobCopyOutcome {
-        let ext = ImageMetadata.fileExtension(forMIMEType: ref.mimeType)
-        let origin = source.blobURL(hash: ref.blobHash, fileExtension: ext)
+        let origin = source.blobURL(hash: file.hash, fileExtension: file.fileExtension)
 
         // A referenced row whose file is gone is a real state (a blob deleted
         // out from under the library), and it is the DB that is authoritative —
         // so report the miss and move on. Never crash, never abort the batch.
         guard let size = fileSize(of: origin) else { return .missingAtSource }
 
-        if destination.hasBlob(hash: ref.blobHash, fileExtension: ext) {
+        if destination.hasBlob(hash: file.hash, fileExtension: file.fileExtension) {
             // Raced with another run, or the caller passed an unfiltered list.
             return .alreadyPresent
         }
 
         do {
             try destination.storeBlobFile(
-                copyingFrom: origin, hash: ref.blobHash, fileExtension: ext)
+                copyingFrom: origin, hash: file.hash, fileExtension: file.fileExtension)
             return .copied(size)
         } catch {
             return .failed

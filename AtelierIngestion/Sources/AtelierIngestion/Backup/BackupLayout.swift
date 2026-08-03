@@ -26,7 +26,7 @@ import Foundation
 
 /// The on-disk layout of one library's off-device backup, inside a target
 /// folder that may hold several.
-public struct BackupLayout: Sendable {
+public struct BackupLayout: Sendable, Equatable {
     /// The target folder the user chose — the parent of every library's backup.
     public let target: URL
 

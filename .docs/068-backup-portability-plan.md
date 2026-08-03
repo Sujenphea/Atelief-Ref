@@ -271,7 +271,56 @@ things worth carrying into H6/H7:
   in-flight work, which throws; the controller checks the cancel flag *before*
   it classifies any error. Any future long-running job needs the same order.
 
-Still to come: H5c — restore through the snapshot seam, as specified above.
+**As built (`326-a-backup-you-can-come-back-from`) — H5c, restore.**
+`BackupCatalog`/`BackupSource` and `RestoreRunner` in `AtelierIngestion/Backup/`,
+`MediaBackupper` generalized to copy in either direction,
+`LibraryIdentity.adopt`, plus `RestoreController`, `RestoreBackupSheet`, the
+restore prose on `BackupTarget`, and a restore row in Settings ▸ Backup. 62
+tests. No schema change (v18 stands). Four things worth carrying into H6/H7:
+
+- **Restore DISCOVERS the backup; it does not look it up by the local id.** The
+  case restore exists for is "my Mac died", and the replacement Mac's library
+  mints a *fresh* `LibraryIdentity` that has never appeared in the backup folder
+  — a lookup would report an empty folder while the whole library sat one
+  directory away. `BackupCatalog.sources(in:)` is one shallow directory read;
+  a child counts only if its name is a well-formed identity AND it holds both a
+  database and a parseable manifest (the manifest is `BackupRunner`'s commit
+  record, so its absence means that run never finished).
+- **The restored library ADOPTS the backup's id, but only after the restore
+  actually lands.** Keeping its own id would send its next backup to a fresh
+  empty folder beside the one it was restored from — every blob re-copied, the
+  real backup stranded — which is `LibraryIdentity`'s own warning reached from
+  the other direction. Adopting *eagerly* is worse: a user who staged a restore
+  and then pressed "Back Up Now" would overwrite the backup they were about to
+  restore from. So staging writes a `.pending-library-id` request, bootstrap
+  adopts only when `applyPendingRestore` (now returning `Bool`) reports a real
+  swap, and the request is consumed either way so it cannot fire on a later,
+  unrelated restore. "Back Up Now" is additionally disabled while any restore
+  is pending.
+- **The database copy is invisible until it is proven.** It lands in the live
+  `snapshots/` under a dot-prefixed staging name — deliberately unparseable by
+  `SnapshotFile` — is integrity-checked *there*, and only then renames into a
+  `SnapshotFile.makeURL` name. It is named `.manual` at TODAY's date, not the
+  backup's: retention prunes by date, so an old backup named with its own
+  timestamp could be pruned between staging and the relaunch that applies it,
+  turning a restore into a silent no-op.
+- **The reverse diff reads the FILE TREE, never the backup's database.**
+  `LibraryDatabase.init` migrates what it opens, so reading the backup to narrow
+  the copy set would rewrite the artifact restore exists to protect. The tree is
+  a superset of what the restored DB references (deletes don't propagate, so a
+  backup holds blobs the library dropped) and that is the safe direction: a blob
+  too many is reclaimed by a later orphan GC, a blob too few renders empty
+  forever. Restore adds and never removes — pruning here would delete media
+  captured since the backup. Pinned by tests in both directions.
+
+Two version refusals are checked before anything is copied (`manifest_version`
+and `schema_version` newer than this build), and an *unparseable* version on
+either side is deliberately NOT a refusal — the rule is "newer than me", and "I
+can't tell" is not evidence of it. H6/H7's `manifest_version` refusal should
+follow the same shape.
+
+H4–H5 are therefore complete. Still to come: H6 (archive export) and H7 (archive
+import + the shared replay layer [016] waits on).
 
 ## H6 — Archive export (M)
 

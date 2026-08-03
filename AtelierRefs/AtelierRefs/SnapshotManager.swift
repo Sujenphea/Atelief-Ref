@@ -13,7 +13,9 @@
 //
 
 import AtelierCore
+import AtelierIngestion
 import Foundation
+import os
 
 /// Pure retention policy: which snapshots to delete.
 struct SnapshotRetention {
@@ -193,16 +195,21 @@ final class SnapshotManager {
     /// file). A partial copy can therefore never sit at the live path, and the
     /// catch path removes staging litter BEFORE deciding whether to roll back,
     /// so a leftover fragment can't mask a missing live DB.
-    static func applyPendingRestore(snapshotsDir: URL, livePath: URL) {
+    ///
+    /// - Returns: whether a restore actually landed. Callers that must act only
+    ///   on a REAL restore — identity adoption (008 H5c) — need to distinguish
+    ///   that from the several ways this returns having quietly done nothing.
+    @discardableResult
+    static func applyPendingRestore(snapshotsDir: URL, livePath: URL) -> Bool {
         let fm = FileManager.default
         let marker = snapshotsDir.appendingPathComponent(".pending-restore")
-        guard let raw = try? String(contentsOf: marker, encoding: .utf8) else { return }
+        guard let raw = try? String(contentsOf: marker, encoding: .utf8) else { return false }
         defer { try? fm.removeItem(at: marker) }
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let snapshot = snapshotsDir.appendingPathComponent(name)
         guard !name.isEmpty, fm.fileExists(atPath: snapshot.path),
               (try? AppServices.isHealthy(databaseFileAt: snapshot)) == true
-        else { return }
+        else { return false }
 
         let stamp = String(Int(Date().timeIntervalSince1970))
         let dir = livePath.deletingLastPathComponent()
@@ -221,10 +228,65 @@ final class SnapshotManager {
             try? "".write(
                 to: snapshotsDir.appendingPathComponent(".just-restored"),
                 atomically: true, encoding: .utf8)
+            return true
         } catch {
             staging.remove()
             // Roll the live DB back if we moved it aside but couldn't install.
             if !live.exists, aside.exists { try? aside.move(to: live) }
+            return false
+        }
+    }
+
+    // MARK: - Library identity adoption (008 H5c)
+
+    /// The marker naming the library id a pending restore came FROM.
+    private var identityMarker: URL {
+        directory.appendingPathComponent(".pending-library-id")
+    }
+
+    /// Record that the staged restore came from the backup of `libraryID`, so
+    /// the next launch adopts that identity once the restore actually lands.
+    ///
+    /// Why deferred rather than written now: adopting immediately would point
+    /// this library's backups at `<target>/<libraryID>/` while it still holds
+    /// its OWN database. A user who staged a restore and then ran a backup
+    /// instead of relaunching would overwrite the very backup they were about to
+    /// restore from — destroying the recovery point on the way to using it. So
+    /// the id is only a request until a restore has actually happened.
+    func stageIdentityAdoption(_ libraryID: String) throws {
+        try libraryID.write(to: identityMarker, atomically: true, encoding: .utf8)
+    }
+
+    /// At bootstrap, immediately after ``applyPendingRestore(snapshotsDir:livePath:)``:
+    /// adopt the restored backup's library id, so this library keeps backing up
+    /// into the folder it was restored from instead of stranding it.
+    ///
+    /// The marker is consumed either way — a request that didn't apply must not
+    /// sit around waiting to fire after some unrelated future restore.
+    ///
+    /// - Parameter restored: what `applyPendingRestore` returned. `false` means
+    ///   the swap did not happen (a missing or unhealthy file), and the library
+    ///   still holds its own database — so it is still its own library, and
+    ///   changing its identity would be a lie with teeth.
+    /// - Returns: whether an identity was adopted.
+    @discardableResult
+    static func applyPendingIdentityAdoption(
+        snapshotsDir: URL, libraryRoot: URL, restored: Bool
+    ) -> Bool {
+        let marker = snapshotsDir.appendingPathComponent(".pending-library-id")
+        guard let raw = try? String(contentsOf: marker, encoding: .utf8) else { return false }
+        try? FileManager.default.removeItem(at: marker)
+        guard restored else { return false }
+        let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try LibraryIdentity.adopt(id, root: libraryRoot)
+            return true
+        } catch {
+            // A malformed id is refused by `adopt` (it becomes a path
+            // component). The restore itself already succeeded, so this is a
+            // degraded backup target, not a failed recovery — log and carry on.
+            AppLog.model.error("restore identity adoption failed: \(error, privacy: .public)")
+            return false
         }
     }
 

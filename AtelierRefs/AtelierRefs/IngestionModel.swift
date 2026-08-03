@@ -266,6 +266,13 @@ final class IngestionModel: ObservableObject {
     /// directly, so a progress tick during a copy re-renders one section
     /// instead of every view bound to the model.
     let backup = BackupController()
+    /// Restores from the backup folder (008 H5c). Its own controller for the
+    /// same reasons ``backup`` is one, and separate from it because the two are
+    /// different jobs with different progress and different outcomes — sharing
+    /// one would make "is something running?" ambiguous exactly when it matters.
+    let restore = RestoreController()
+    /// Presents the restore-from-backup sheet.
+    @Published var showRestoreBackups = false
 
     // MARK: - Ambient clipboard capture (013 · K3)
 
@@ -679,8 +686,14 @@ final class IngestionModel: ObservableObject {
             let dbURL = layout.root.appendingPathComponent("library.sqlite")
             // A staged restore (008 H3) is applied here — before any connection
             // opens — the only safe time to swap the live database file.
-            SnapshotManager.applyPendingRestore(
+            let didRestore = SnapshotManager.applyPendingRestore(
                 snapshotsDir: layout.snapshots, livePath: dbURL)
+            // If that restore came from an off-device backup (008 H5c), this
+            // library IS now the backed-up library and takes its id, so future
+            // backups keep updating the same folder instead of starting a second
+            // copy beside it. Only ever on a restore that actually landed.
+            SnapshotManager.applyPendingIdentityAdoption(
+                snapshotsDir: layout.snapshots, libraryRoot: root, restored: didRestore)
             let dbPath = dbURL.path
             let services = try AppServices(databasePath: dbPath)
 
@@ -704,6 +717,11 @@ final class IngestionModel: ObservableObject {
             let snapshots = SnapshotManager(
                 services: services, directory: layout.snapshots)
             self.snapshotManager = snapshots
+            // Normally false here — the restore this launch was asked for has
+            // just been applied and its marker consumed — but a restore that
+            // was staged and then refused leaves one behind, and the Backup
+            // section has to say why its buttons are off.
+            refreshPendingRestore()
 
             // The safety nets must not fail silently (008 review, 8A): if the
             // last open migrated the library WITHOUT its pre-migration snapshot,
@@ -957,9 +975,15 @@ final class IngestionModel: ObservableObject {
     // MARK: - Off-device backup runs (008 H5)
 
     /// Whether a run can start: an open library and a reachable target.
+    ///
+    /// Blocked while a restore is staged (008 H5c). The database this library is
+    /// about to discard is not the one to push off-device — and if the staged
+    /// restore came from THIS target, backing up now would overwrite the very
+    /// backup the user is one relaunch away from restoring.
     var canRunBackup: Bool {
         services != nil && store != nil && libraryRoot != nil
             && backupFolder.hasFolder && !backup.isRunning
+            && !restore.isRunning && !hasPendingRestore
     }
 
     /// Copy everything the target is missing, then the database, then the
@@ -972,6 +996,85 @@ final class IngestionModel: ObservableObject {
         backup.start(
             services: services, source: store, libraryRoot: libraryRoot,
             folder: backupFolder, appVersion: version)
+    }
+
+    // MARK: - Restore from the backup folder (008 H5c)
+
+    /// Whether a restore is already staged and waiting for a relaunch.
+    ///
+    /// Cached rather than a `fileExists` per read: it gates two buttons and a
+    /// status line in a form that re-renders on every progress tick, and 016's
+    /// rule stands — nothing in Settings `stat`s a file per render. Refreshed
+    /// where it can actually change: at bootstrap, whenever the Settings window
+    /// appears, and immediately after either staging path.
+    @Published private(set) var hasPendingRestore = false
+
+    /// Re-read whether a restore is staged.
+    func refreshPendingRestore() {
+        hasPendingRestore = snapshotManager?.hasPendingRestore() ?? false
+    }
+
+    /// Whether the restore sheet can be opened: an open library, a chosen
+    /// folder, and nothing else in flight.
+    var canRestoreBackup: Bool {
+        store != nil && libraryRoot != nil && snapshotManager != nil
+            && backupFolder.hasFolder && !backup.isRunning && !restore.isRunning
+            && !hasPendingRestore
+    }
+
+    /// Open the restore sheet and start reading the backup folder.
+    func beginRestoreFromBackup() {
+        guard canRestoreBackup else { return }
+        showRestoreBackups = true
+        restore.scan(folder: backupFolder)
+    }
+
+    /// Copy `source` back into this library and stage its database as the next
+    /// launch's restore.
+    ///
+    /// The pre-destructive snapshot comes FIRST: the restore replaces the live
+    /// database, and `snapshotBeforeDestruction()` is freshness-gated, so this
+    /// is cheap and usually a no-op. It is also the only route back if the user
+    /// restores the wrong backup.
+    func restoreFromBackup(_ source: BackupSource) {
+        guard let store, let snapshots = snapshotManager, canRestoreBackup else { return }
+        showRestoreBackups = false
+        Task { [weak self] in
+            guard let self else { return }
+            _ = try? await snapshots.snapshotBeforeDestruction()
+            self.restore.start(
+                source: source, live: store,
+                snapshotsDirectory: snapshots.directory, folder: self.backupFolder
+            ) { [weak self] snapshot, source in
+                self?.stageRestoredBackup(snapshot, from: source, snapshots: snapshots)
+            }
+        }
+    }
+
+    /// Hand the restored database to the SHIPPED restore seam, and record the
+    /// identity the library adopts once that restore actually lands.
+    ///
+    /// Order matters: the identity request is written only after `stageRestore`
+    /// accepted the snapshot, so a refused (unhealthy) database leaves no
+    /// pending id behind to fire after some unrelated later restore.
+    private func stageRestoredBackup(
+        _ snapshot: URL, from source: BackupSource, snapshots: SnapshotManager
+    ) {
+        guard let file = SnapshotFile(url: snapshot) else {
+            lastError = BackupTarget.unknownRestoreFailure
+            return
+        }
+        do {
+            try snapshots.stageRestore(file)
+            // This library is about to BE the backed-up library, so it must keep
+            // backing up into that library's folder rather than minting a fresh
+            // one and stranding the backup it just restored from.
+            try? snapshots.stageIdentityAdoption(source.libraryID)
+            refreshPendingRestore()
+            restoreStagedMessage = BackupTarget.restoreStaged
+        } catch {
+            lastError = "Couldn’t stage the restore: \(Self.message(for: error))"
+        }
     }
 
     // MARK: - Library stats + maintenance (016 · A)
@@ -2183,6 +2286,7 @@ final class IngestionModel: ObservableObject {
         guard let manager = snapshotManager else { return }
         do {
             try manager.stageRestore(snapshot)
+            refreshPendingRestore()
             showSnapshots = false
             restoreStagedMessage = "The snapshot will be restored the next time you "
                 + "open AtelierRefs. Quit and reopen to complete the restore — your "

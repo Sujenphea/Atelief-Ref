@@ -18,6 +18,9 @@ struct SettingsView: View {
     /// doesn't propagate its changes through its owner, so progress ticks would
     /// never reach this view otherwise.
     @ObservedObject var backup: BackupController
+    /// Observed separately for the same reason as `backup` (008 · H5c) — the
+    /// restore's scan results and progress live on its own controller.
+    @ObservedObject var restore: RestoreController
     /// Observed separately for the same reason as `backup` (016 · A) — a scan's
     /// progress ticks live on the controller, not on `model`.
     @ObservedObject var libraryStats: LibraryStatsController
@@ -54,7 +57,10 @@ struct SettingsView: View {
         .frame(width: 460, height: 460)
         // Re-resolve on every appearance: the window outlives any single visit,
         // and a drive can be unplugged between two of them.
-        .onAppear { model.refreshBackupFolder() }
+        .onAppear {
+            model.refreshBackupFolder()
+            model.refreshPendingRestore()
+        }
     }
 
     // MARK: - Browser capture
@@ -384,6 +390,54 @@ struct SettingsView: View {
             Text(BackupTarget.explainer)
                 .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            restoreRow
+        }
+        .sheet(isPresented: $model.showRestoreBackups) {
+            RestoreBackupSheet(model: model, restore: restore)
+        }
+    }
+
+    /// "Restore from Backup…" / "Stop", the progress while a restore copies, and
+    /// the last attempt's status (008 · H5c).
+    ///
+    /// Below the backup rows and behind a sheet, not beside "Back Up Now": the
+    /// two are not peers. One is routine and safe; the other replaces the
+    /// library and relaunches the app, and it should take a deliberate second
+    /// step to reach.
+    @ViewBuilder
+    private var restoreRow: some View {
+        HStack {
+            Button("Restore from Backup…") { model.beginRestoreFromBackup() }
+                .disabled(!model.canRestoreBackup)
+            if restore.isRunning {
+                Button("Stop") { restore.cancel() }
+                // Not `.destructive`: stopping a restore stages nothing, so the
+                // library is left exactly as it was.
+                ProgressView(value: restore.progress)
+                    .progressViewStyle(.linear)
+                    .frame(maxWidth: 140)
+            }
+        }
+        if let status = BackupTarget.restoreStatusLine(for: restore.lastRun), !restore.isRunning {
+            Text(status)
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let message = restore.lastRun?.message, !restore.isRunning {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        // A staged restore is why both buttons above are disabled — say so,
+        // rather than leaving the section looking broken.
+        if model.hasPendingRestore, !restore.isRunning {
+            Label("A restore is waiting — quit and reopen AtelierRefs to apply it.",
+                  systemImage: "arrow.clockwise")
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

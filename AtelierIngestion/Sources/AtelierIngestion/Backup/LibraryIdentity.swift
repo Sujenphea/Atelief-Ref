@@ -72,6 +72,26 @@ public enum LibraryIdentity {
         }
     }
 
+    /// Overwrite the identifier of the library at `root` with `id` (008 · H5c).
+    ///
+    /// The one legitimate reason to change a library's identity: it has just
+    /// been restored FROM the backup of `id`, so it now holds that library's
+    /// database and IS that library. Without this, the restored library would
+    /// keep its own id, back up to a fresh empty folder beside the one it was
+    /// restored from, re-copy every blob, and leave the real backup stranded and
+    /// never updated again — the exact orphaning this file's header warns about,
+    /// arrived at from the other direction.
+    ///
+    /// Unlike ``resolve(root:)``'s exclusive create, this writes `.atomic` — it
+    /// is *meant* to replace. Callers must therefore only reach it once a
+    /// restore has actually landed, never merely because one was requested.
+    public static func adopt(_ id: String, root: URL) throws {
+        guard isWellFormed(id) else { throw IdentityError.malformed(id) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data(id.utf8).write(
+            to: root.appendingPathComponent(fileName, isDirectory: false), options: .atomic)
+    }
+
     /// Whether `id` is a usable identifier: exactly 16 lowercase hex characters.
     ///
     /// The rule is strict because this string becomes a PATH COMPONENT under a

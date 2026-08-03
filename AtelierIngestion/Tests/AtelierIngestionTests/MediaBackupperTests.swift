@@ -135,6 +135,99 @@ struct MediaBackupperTests {
         #expect(pair.backupper.missing(from: []).isEmpty)
     }
 
+    // MARK: - The reverse diff (008 · H5c)
+
+    /// The restore direction reads the FILE TREE, not the database — same four
+    /// cases as the diff above, driven from the other end.
+    @Test("an empty destination is missing every file the source holds")
+    func fileDiffEmptyDestination() throws {
+        let pair = try makePair()
+        defer { pair.cleanup() }
+        try put("a", hash: "aaaa1111", in: pair.source)
+        try put("b", hash: "bbbb2222", in: pair.source)
+
+        #expect(pair.backupper.missingFiles() == [
+            BlobFile(hash: "aaaa1111", fileExtension: "png"),
+            BlobFile(hash: "bbbb2222", fileExtension: "png"),
+        ])
+    }
+
+    @Test("a partially-filled destination is missing only the rest")
+    func fileDiffPartialDestination() throws {
+        let pair = try makePair()
+        defer { pair.cleanup() }
+        try put("a", hash: "aaaa1111", in: pair.source)
+        try put("b", hash: "bbbb2222", in: pair.source)
+        try put("a", hash: "aaaa1111", in: pair.destination)
+
+        #expect(pair.backupper.missingFiles().map(\.hash) == ["bbbb2222"])
+    }
+
+    @Test("an up-to-date destination has nothing missing")
+    func fileDiffIdenticalDestination() throws {
+        let pair = try makePair()
+        defer { pair.cleanup() }
+        for hash in ["aaaa1111", "bbbb2222"] {
+            try put(hash, hash: hash, in: pair.source)
+            try put(hash, hash: hash, in: pair.destination)
+        }
+
+        #expect(pair.backupper.missingFiles().isEmpty)
+    }
+
+    @Test("extra blobs at the destination are ignored, never reported or removed")
+    func fileDiffIgnoresExtras() throws {
+        let pair = try makePair()
+        defer { pair.cleanup() }
+        try put("a", hash: "aaaa1111", in: pair.source)
+        // A blob the live library has that the backup never saw. Restore must
+        // not touch it — reintroducing pruning in THIS direction would delete
+        // media captured since the backup was taken.
+        try put("newer", hash: "dddd4444", in: pair.destination)
+
+        #expect(pair.backupper.missingFiles().map(\.hash) == ["aaaa1111"])
+        #expect(pair.destination.hasBlob(hash: "dddd4444", fileExtension: "png"))
+    }
+
+    @Test("an empty source tree is an empty diff")
+    func fileDiffEmptySource() throws {
+        let pair = try makePair()
+        defer { pair.cleanup() }
+        #expect(pair.backupper.missingFiles().isEmpty)
+    }
+
+    @Test("the extension comes from the FILENAME, so no mime guess can drift")
+    func fileDiffUsesStoredExtension() throws {
+        let pair = try makePair()
+        defer { pair.cleanup() }
+        // ".jpeg" is what the store wrote; a diff that re-derived "jpg" from a
+        // mime type would report this as missing forever.
+        try pair.source.storeBlob(Data("j".utf8), hash: "eeee5555", fileExtension: "jpeg")
+        try pair.source.storeBlob(Data("x".utf8), hash: "ffff6666", fileExtension: "")
+
+        #expect(pair.backupper.missingFiles() == [
+            BlobFile(hash: "eeee5555", fileExtension: "jpeg"),
+            BlobFile(hash: "ffff6666", fileExtension: ""),
+        ])
+    }
+
+    @Test("copying the reverse diff lands every file, byte for byte")
+    func copyFilesLandsBytes() async throws {
+        let pair = try makePair()
+        defer { pair.cleanup() }
+        try put("hello restore", hash: "aaaa1111", in: pair.source)
+        try pair.source.storeBlob(Data("dotless".utf8), hash: "ffff6666", fileExtension: "")
+
+        let result = await pair.backupper.copyFiles(pair.backupper.missingFiles())
+        #expect(result.copied == 2)
+        #expect(result.isComplete)
+        #expect(String(decoding: try pair.destination.readBlob(
+            hash: "aaaa1111", fileExtension: "png"), as: UTF8.self) == "hello restore")
+        #expect(String(decoding: try pair.destination.readBlob(
+            hash: "ffff6666", fileExtension: ""), as: UTF8.self) == "dotless")
+        #expect(pair.backupper.missingFiles().isEmpty)
+    }
+
     // MARK: - Copying
 
     @Test("copied blobs land at the same sharded path, byte for byte")

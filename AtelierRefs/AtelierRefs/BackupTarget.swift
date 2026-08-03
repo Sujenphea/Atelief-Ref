@@ -167,6 +167,104 @@ nonisolated enum BackupTarget {
         return formatter.localizedString(for: date, relativeTo: now)
     }
 
+    // MARK: - Restore (008 · H5c)
+
+    /// What to tell the user about a restore that couldn't run. Same standard as
+    /// the backup messages: name the thing to DO, and never imply the live
+    /// library was harmed — none of these touch it.
+    static func message(for error: RestoreRunner.RestoreError) -> String {
+        switch error {
+        case .databaseMissing:
+            return "That backup has no library database, so there's nothing to "
+                + "restore from. Back up again from the Mac that made it."
+        case .manifestTooNew:
+            return "That backup was made by a newer version of AtelierRefs. "
+                + "Update the app, then try again."
+        case .schemaTooNew(let version):
+            return "That backup uses a newer library format (\(version)) than "
+                + "this version of AtelierRefs understands. Update the app, then "
+                + "try again."
+        case .snapshotsUnwritable:
+            return "Couldn't write to this library's snapshots folder, so the "
+                + "restore can't be prepared. Check the disk isn't full."
+        case .databaseUnreadable:
+            return "Couldn't copy the library database out of the backup. Check "
+                + "the drive is connected and this Mac has space. Nothing has "
+                + "changed."
+        case .databaseUnhealthy:
+            return "That backup's database didn't pass its integrity check, so "
+                + "nothing was restored. Try an earlier backup."
+        }
+    }
+
+    /// Shown when the chosen folder holds no restorable backup.
+    static let noBackupsFound =
+        "No complete backups in that folder. Choose the folder you backed up "
+        + "INTO — backups live in a folder named after the library."
+
+    /// The catch-all, for a restore error with no specific remedy to offer.
+    static let unknownRestoreFailure =
+        "The restore didn't finish. Your library hasn't changed — try again, and "
+        + "if it keeps failing, export diagnostics from Settings."
+
+    /// The one-line status under the restore row.
+    static func restoreStatusLine(
+        for summary: RestoreRunSummary?, now: Date = Date()
+    ) -> String? {
+        guard let summary else { return nil }
+        let when = relativeTime(from: summary.finishedAt, to: now)
+        switch summary.outcome {
+        case .succeeded:
+            return "Restore prepared \(when) — quit and reopen to apply it."
+        case .incomplete:
+            // Say the number. A restore that silently dropped media is the
+            // worst possible thing to round off to "done".
+            let count = summary.unresolvedFiles
+            return "Restore prepared \(when), but \(count) "
+                + (count == 1 ? "file" : "files")
+                + " couldn't be copied back. Quit and reopen to apply it."
+        case .cancelled:
+            return "Restore stopped \(when). Your library is unchanged."
+        case .failed:
+            return "Restore failed \(when). Your library is unchanged."
+        }
+    }
+
+    /// The confirmation before a restore — destructive-adjacent, so it states
+    /// plainly what is replaced, what is kept, and that the app must relaunch.
+    static func restoreConfirmation(for source: BackupSource, now: Date = Date()) -> String {
+        let when = relativeTime(from: source.completedAt, to: now)
+        let size = ByteCountFormatter.string(
+            fromByteCount: source.manifest.blobBytes, countStyle: .file)
+        return "This copies \(source.manifest.blobCount) "
+            + (source.manifest.blobCount == 1 ? "file" : "files")
+            + " (\(size)) back into your library, then replaces your current "
+            + "library with the backup taken \(when). AtelierRefs must be quit "
+            + "and reopened to finish. Your current library is set aside, not "
+            + "deleted."
+    }
+
+    /// Shown once the restore is prepared and only a relaunch is left.
+    static let restoreStaged =
+        "The backup will be restored the next time you open AtelierRefs. Quit "
+        + "and reopen to complete the restore — your current library is set "
+        + "aside, not deleted."
+
+    /// One line describing a candidate backup in the restore list.
+    static func description(of source: BackupSource, now: Date = Date()) -> String {
+        let size = ByteCountFormatter.string(
+            fromByteCount: source.manifest.blobBytes, countStyle: .file)
+        return "\(source.manifest.blobCount) "
+            + (source.manifest.blobCount == 1 ? "file" : "files")
+            + " · \(size) · backed up \(relativeTime(from: source.completedAt, to: now))"
+    }
+
+    /// The standing explanation under the restore row.
+    static let restoreExplainer =
+        "Restoring copies the backup's images back into this library and replaces "
+        + "its database. Use it on a new Mac, or after losing data. It never "
+        + "deletes anything you've added since."
+
     /// The standing explanation under the folder row.
     static let explainer =
         "Backups copy your images and database here. Snapshots (File ▸ Snapshot "
