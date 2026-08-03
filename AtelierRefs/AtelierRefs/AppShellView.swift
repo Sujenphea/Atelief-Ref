@@ -46,6 +46,10 @@ struct AppShellView: View {
         .focusedSceneObject(nav)
         .sheet(isPresented: $showSweeps) { sweepsSheet }
         .sheet(isPresented: $model.showSnapshots) { SnapshotsSheet(model: model) }
+        // 012 · I5 — near-duplicate review. A sheet on the MAIN window, not a
+        // Settings pane: its only action is a delete, and ⌘Z has to reach the same
+        // undo stack the grid's delete registers on.
+        .sheet(isPresented: $model.showDuplicates) { DuplicateReviewSheet(model: model) }
         .alert(
             "Restore staged",
             isPresented: Binding(

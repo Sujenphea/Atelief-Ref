@@ -246,6 +246,10 @@ final class IngestionModel: ObservableObject {
     private(set) var snapshotManager: SnapshotManager?
     /// Presents the snapshots sheet (manual snapshot + restore).
     @Published var showSnapshots = false
+    /// Presents the near-duplicate review sheet (012 · I5). A sheet on the MAIN
+    /// window rather than a Settings pane, deliberately: its only action is a
+    /// delete, and ⌘Z has to reach the same undo stack the grid's delete uses.
+    @Published var showDuplicates = false
     /// Set after a restore is staged — an alert asks the user to relaunch.
     @Published var restoreStagedMessage: String?
 
@@ -2379,9 +2383,30 @@ final class IngestionModel: ObservableObject {
     /// snapshot (008 H3) stays as the coarse net. Clears the pending state first so
     /// the dialog dismisses immediately.
     func confirmPendingDeletion() {
-        guard let services, let pending = pendingDeletion else { return }
+        guard let pending = pendingDeletion else { return }
         pendingDeletion = nil
-        let assetIDs = pending.assetIDs
+        deleteRecoverably(assetIDs: pending.assetIDs)
+    }
+
+    /// Delete `assetIDs` for a surface that ran its OWN confirmation — the
+    /// near-duplicate review sheet (012 · I5), whose confirmation has to live
+    /// inside the sheet because the shell's shared dialog would open behind it.
+    ///
+    /// Deliberately the same call, not a second delete: it lands on
+    /// ``deleteRecoverably(assetIDs:)`` exactly as the confirmed grid delete does,
+    /// so the snapshot, the recoverable backup, the ⌘Z undo and the deferred blob
+    /// reap are identical. A near-duplicate delete is an ordinary delete that was
+    /// reached from a different screen, and it must stay reversible in the same
+    /// way. Ignores an empty set.
+    func deleteReviewedDuplicates(assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty else { return }
+        deleteRecoverably(assetIDs: assetIDs)
+    }
+
+    /// The one recoverable-delete implementation, shared by every surface that can
+    /// reach it. Callers own the confirmation; this owns the safety net.
+    private func deleteRecoverably(assetIDs: [UUID]) {
+        guard let services, !assetIDs.isEmpty else { return }
         let count = assetIDs.count
         let snapshots = snapshotManager
         enqueueUndoable {

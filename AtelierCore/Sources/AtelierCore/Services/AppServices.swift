@@ -190,6 +190,55 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// Every LIVE analyzed image's perceptual signature — the whole input to the
+    /// near-duplicate review surface (012 · I5).
+    ///
+    /// A read, and only a read: Core groups nothing and proposes nothing. The
+    /// clustering that turns these into review groups is a pure function in
+    /// AtelierIngestion (the 2A boundary — imaging concepts never enter Core), and
+    /// the surface it feeds never merges or deletes on its own.
+    ///
+    /// The whole library in one query, like ``blobUsage()`` and
+    /// ``referencedBlobs()`` — "which images are near-duplicates of each other" is
+    /// not a question a page of the library can answer, and a paged version would
+    /// silently hide clusters that straddle a page boundary. Two columns per row
+    /// keeps that affordable.
+    ///
+    /// The JOIN back to `asset` is what makes the result LIVE. `asset_analysis`
+    /// cascades on delete so a removed asset's row is already gone, but the join
+    /// also drops rows whose asset lost its bytes, is not a downloaded image, or
+    /// was never byte-backed to begin with — so the surface can never propose an
+    /// action on something that isn't there. Rows with a `NULL` phash (analyzed
+    /// for OCR / colour before hashing succeeded) are skipped rather than treated
+    /// as zero, which would collide them all into one false cluster.
+    ///
+    /// Ordered oldest-first (`created_at`, then `id` to break ties), because that
+    /// order is preserved inside every cluster: the copy the user has had longest
+    /// heads the group and reads as the original.
+    public func perceptualHashes() async throws -> [AssetPerceptualHash] {
+        try await read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT an.asset_id AS asset_id, an.phash AS phash
+                FROM asset_analysis an
+                JOIN asset a ON a.id = an.asset_id
+                WHERE an.phash IS NOT NULL
+                  AND a.kind = ?
+                  AND a.blob_hash IS NOT NULL
+                  AND a.download_state = ?
+                ORDER BY a.created_at ASC, a.id ASC
+                """, arguments: [
+                    AssetKind.image.rawValue,
+                    DownloadState.downloaded.rawValue,
+                ]).compactMap { row -> AssetPerceptualHash? in
+                    guard let key = row["asset_id"] as String?,
+                          let id = UUID(uuidString: key),
+                          let phash = row["phash"] as Int64?
+                    else { return nil }
+                    return AssetPerceptualHash(assetID: id, phash: phash)
+                }
+        }
+    }
+
     // MARK: - Semantic embeddings (047 · Phase 3a)
 
     /// Insert or replace an asset's semantic text embedding (047 · 3a). `vector` is

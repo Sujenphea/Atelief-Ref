@@ -71,6 +71,9 @@ struct AtelierRefsApp: App {
             }
             CommandGroup(after: .saveItem) {
                 SnapshotCommands()
+                // File ▸ Review Duplicates… (012 · I5) — opens the review sheet on
+                // the main window. Review-only: it proposes, the user disposes.
+                DuplicatesCommand()
                 // File ▸ Export Moodboard… (052 · B3) — exports the focused Space
                 // board; disabled elsewhere.
                 ExportMoodboardCommand()
@@ -190,6 +193,18 @@ private struct SnapshotCommands: View {
             .disabled(model?.snapshotManager == nil)
         Button("Restore from Snapshot…") { model?.showSnapshots = true }
             .disabled(model?.snapshotManager == nil)
+    }
+}
+
+/// File ▸ Review Duplicates… (012 · I5) — opens the near-duplicate review sheet.
+/// Disabled until the library is open, since there is nothing to compare before
+/// then. It only ever OPENS the surface; no scan and no delete happens from a menu.
+private struct DuplicatesCommand: View {
+    @FocusedValue(\.ingestionModel) private var model
+
+    var body: some View {
+        Button("Review Duplicates…") { model?.showDuplicates = true }
+            .disabled(model?.services == nil)
     }
 }
 
