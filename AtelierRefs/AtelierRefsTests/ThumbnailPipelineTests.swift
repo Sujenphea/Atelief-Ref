@@ -201,16 +201,43 @@ private nonisolated func makeImage(side: Int) -> CGImage {
 }
 
 /// Stands in for ImageIO: records every decode by hash, and can BLOCK chosen
-/// hashes on a semaphore so a test can hold the concurrency gate open and observe
-/// queueing, promotion and cancellation deterministically instead of by timing.
+/// hashes until ``release()`` so a test can hold the concurrency gate open and
+/// observe queueing, promotion and cancellation deterministically instead of by
+/// timing.
+///
+/// Two properties of that block are load-bearing, and both are here because the
+/// original `DispatchSemaphore(value: 0)` version hung the entire test runner
+/// indefinitely instead of failing in seconds (`.change-log/330`):
+///
+///  • **It is a LATCH, not a counting semaphore.** ``release()`` opens the gate
+///    for good, so a decode that starts after it does not block. A counting
+///    semaphore released once leaves any *second* decode of a blocked hash
+///    waiting forever — and `Task.detached` runs on the cooperative pool, which
+///    is only `activeProcessorCount` threads wide, so each such waiter
+///    permanently retires a thread from the pool. `outstandingIsTheLatestWindow`
+///    leaked one on EVERY run that way.
+///  • **The wait is BOUNDED.** On timeout it sets ``timedOutWaitingForRelease``
+///    and proceeds, so the test reaches its assertions and fails rather than
+///    stalling the suite. An unbounded wait in a test body is what turns a
+///    seven-second failure into a silent nineteen-minute hang.
+///
 // `nonisolated` to match its `@unchecked Sendable`: `decode` is handed to the
 // pipeline as a `@Sendable` closure and runs off the main actor.
 nonisolated private final class DecodeProbe: @unchecked Sendable {
-    private let lock = NSLock()
+    /// How long a blocked decode waits for ``release()`` before giving up. Long
+    /// enough that a merely slow machine never trips it, short enough that the
+    /// suite still finishes.
+    static let releaseTimeout: TimeInterval = 10
+
+    /// Doubles as the mutex for everything below — `NSCondition` is an
+    /// `NSLocking`, and it drops the lock while waiting, so a blocked decode
+    /// never keeps another one from recording its call.
+    private let condition = NSCondition()
     private var calls: [String] = []
     private var blocked: Set<String> = []
     private var sawMainThread = false
-    private let gate = DispatchSemaphore(value: 0)
+    private var released = false
+    private var timedOut = false
 
     init(blocking: Set<String> = []) { blocked = blocking }
 
@@ -218,37 +245,57 @@ nonisolated private final class DecodeProbe: @unchecked Sendable {
     func decode(url: URL, bucket: Int) -> DecodedThumbnail? {
         let hash = url.lastPathComponent
         let onMain = Thread.isMainThread
-        lock.lock()
+        condition.lock()
         calls.append(hash)
         if onMain { sawMainThread = true }
-        let shouldBlock = blocked.contains(hash)
-        lock.unlock()
-        if shouldBlock { gate.wait() }
+        if blocked.contains(hash) {
+            let deadline = Date().addingTimeInterval(Self.releaseTimeout)
+            while !released {
+                if !condition.wait(until: deadline) {
+                    timedOut = true
+                    break
+                }
+            }
+        }
+        condition.unlock()
         return DecodedThumbnail(image: makeImage(side: bucket))
     }
 
     /// True if ANY decode ran on the main thread — the property that must never
     /// hold, whatever else changes about scheduling.
     var everRanOnMainThread: Bool {
-        lock.lock()
-        defer { lock.unlock() }
+        condition.lock()
+        defer { condition.unlock() }
         return sawMainThread
     }
 
+    /// True if any blocked decode gave up waiting. Assert on it: it means the
+    /// test's premise did not hold, and without the bound it would have hung.
+    var timedOutWaitingForRelease: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return timedOut
+    }
+
     func callCount(_ hash: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
+        condition.lock()
+        defer { condition.unlock() }
         return calls.filter { $0 == hash }.count
     }
 
     var totalCalls: Int {
-        lock.lock()
-        defer { lock.unlock() }
+        condition.lock()
+        defer { condition.unlock() }
         return calls.count
     }
 
-    /// Release one blocked decode.
-    func release() { gate.signal() }
+    /// Open the latch: every blocked decode proceeds, now and in future.
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
 }
 
 private func url(_ hash: String) -> URL { URL(fileURLWithPath: "/tmp/atelier-test/\(hash)") }
@@ -259,7 +306,14 @@ private func request(_ hash: String, bucket: Int = 256) -> ThumbnailRequest {
 
 // MARK: - Pipeline
 
-@Suite("ThumbnailPipeline: coalescing, fallback, eviction, prefetch")
+/// The time limit is not decoration. Every test below drives real concurrency
+/// through a pipeline that hands work to detached tasks, so a scheduling bug
+/// shows up as *nothing happening* — and an unbounded await inside a test body
+/// stalls the whole runner with `xcodebuild` sitting at 0% CPU and no output. The
+/// probe bounds its own waits; this is the outer bound that holds whatever else
+/// is added here later.
+@Suite("ThumbnailPipeline: coalescing, fallback, eviction, prefetch",
+       .timeLimit(.minutes(1)))
 struct ThumbnailPipelineTests {
 
     @Test("N concurrent requests for one key decode EXACTLY once")
@@ -290,6 +344,46 @@ struct ThumbnailPipelineTests {
         #expect(images.count == 32)
         #expect(images.allSatisfy { $0 })
         #expect(probe.callCount("a") == 1)
+        #expect(!probe.timedOutWaitingForRelease)
+    }
+
+    @Test("N concurrent requests still decode once when the decode is FAST")
+    func concurrentRequestsCoalesceWithAFastDecode() async {
+        // The companion to `concurrentRequestsCoalesce`, and the one that catches
+        // the bug that test could only ever HANG on.
+        //
+        // Blocking the decode holds the task in flight while all 32 callers pile
+        // on, so every one of them takes `join`'s in-flight branch. That is the
+        // easy half. The hard half is a decode that FINISHES while later callers
+        // are still on their way in: `image` reads the cache outside the lock, and
+        // `finish` clears `inFlight` only AFTER `store` has run, so a caller that
+        // missed the cache and was then served the lock after `finish` sees no
+        // in-flight task, no reason not to start one — and re-decodes a key whose
+        // bitmap is already cached. Nothing is lost, but "decode ONCE" is not what
+        // happens, and in the blocking test above that second decode is what waits
+        // forever on a gate that is only ever opened once.
+        //
+        // Measured against the pre-fix pipeline: ~110 extra decodes per 300
+        // iterations at 32 callers, and it reproduces with as few as 2.
+        for i in 0..<40 {
+            let probe = DecodeProbe()
+            let pipeline = ThumbnailPipeline(decode: probe.decode)
+            let hash = "h\(i)"
+
+            let images = await withTaskGroup(of: Bool.self) { group in
+                for _ in 0..<32 {
+                    group.addTask {
+                        await pipeline.image(hash: hash, url: url(hash), bucket: 256) != nil
+                    }
+                }
+                var results: [Bool] = []
+                for await ok in group { results.append(ok) }
+                return results
+            }
+
+            #expect(images.allSatisfy { $0 })
+            #expect(probe.callCount(hash) == 1, "iteration \(i) decoded \(probe.callCount(hash))×")
+        }
     }
 
     @Test("no decode EVER runs on the main thread — visible or prefetch")
@@ -435,9 +529,16 @@ struct ThumbnailPipelineTests {
         let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
 
         pipeline.prefetch([request("a")])
-        // Block until the decode has genuinely STARTED, so the visible request
-        // takes `join`'s in-flight branch and not its queued one.
-        while probe.callCount("a") == 0 { await Task.yield() }
+        // Wait until the decode has genuinely STARTED, so the visible request
+        // takes `join`'s in-flight branch and not its queued one. BOUNDED: if the
+        // prefetch never starts, this test's premise is gone and it must say so,
+        // not spin forever burning a core.
+        var started = false
+        for _ in 0..<500 where !started {
+            if probe.callCount("a") > 0 { started = true; break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(started, "the prefetch decode never started")
         #expect(pipeline.cancellablePrefetchKeys.count == 1)
 
         async let visible = pipeline.image(hash: "a", url: url("a"), bucket: 256)
@@ -455,6 +556,7 @@ struct ThumbnailPipelineTests {
         pipeline.cancelPrefetch(hashes: ["a"])
         probe.release()
         #expect(await visible != nil)
+        #expect(!probe.timedOutWaitingForRelease)
     }
 
     @Test("a cancelled prefetch that is still queued never decodes")
@@ -475,6 +577,7 @@ struct ThumbnailPipelineTests {
         #expect(pipeline.cachedExact(hash: "b", bucket: 256) == nil)
         #expect(pipeline.cachedExact(hash: "c", bucket: 256) == nil)
         #expect(pipeline.cachedExact(hash: "a", bucket: 256) != nil)
+        #expect(!probe.timedOutWaitingForRelease)
     }
 
     @Test("cancelling one hash leaves the rest of the queue intact")
@@ -490,6 +593,7 @@ struct ThumbnailPipelineTests {
         #expect(probe.callCount("b") == 0)
         #expect(probe.callCount("c") == 1)
         #expect(pipeline.cachedExact(hash: "c", bucket: 256) != nil)
+        #expect(!probe.timedOutWaitingForRelease)
     }
 
     @Test("a visible request bypasses the prefetch gate and promotes the queued work")
@@ -515,12 +619,14 @@ struct ThumbnailPipelineTests {
         // time when the gate later freed up.
         #expect(probe.callCount("b") == 1)
         #expect(probe.totalCalls == 2)
+        #expect(!probe.timedOutWaitingForRelease)
     }
 }
 
 // MARK: - Window-driven prefetching (036 §4 C3)
 
-@Suite("ThumbnailWindowPrefetcher: start the new set, cancel what fell out")
+@Suite("ThumbnailWindowPrefetcher: start the new set, cancel what fell out",
+       .timeLimit(.minutes(1)))
 struct ThumbnailWindowPrefetcherTests {
 
     /// Note what is asserted and what deliberately is NOT. `ThumbnailPipeline`
@@ -545,6 +651,7 @@ struct ThumbnailWindowPrefetcherTests {
         #expect(probe.callCount("b") == 0)          // dropped from the queue
         #expect(pipeline.cachedExact(hash: "b", bucket: 256) == nil)
         #expect(pipeline.cachedExact(hash: "c", bucket: 256) != nil)  // the new set ran
+        #expect(!probe.timedOutWaitingForRelease)
     }
 
     /// The load-bearing rule. A hash crossing from the prefetch ring INTO the
@@ -566,6 +673,7 @@ struct ThumbnailWindowPrefetcherTests {
 
         #expect(pipeline.cachedExact(hash: "a", bucket: 256) != nil)
         #expect(pipeline.cachedExact(hash: "b", bucket: 256) != nil)
+        #expect(!probe.timedOutWaitingForRelease)
     }
 
     @Test("a hash still in the new window is not cancelled and is not re-decoded")
@@ -600,10 +708,11 @@ struct ThumbnailWindowPrefetcherTests {
         // `cancelsWhatFellOut` for why "a" is not asserted on.
         #expect(probe.callCount("b") == 0)
         #expect(pipeline.cachedExact(hash: "b", bucket: 256) == nil)
+        #expect(!probe.timedOutWaitingForRelease)
     }
 
     @Test("the outstanding set tracks the latest window, not the union of all of them")
-    func outstandingIsTheLatestWindow() {
+    func outstandingIsTheLatestWindow() async {
         let probe = DecodeProbe(blocking: ["a", "b", "c"])
         let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
         let prefetcher = ThumbnailWindowPrefetcher()
@@ -613,6 +722,12 @@ struct ThumbnailWindowPrefetcherTests {
         prefetcher.update(requests: [request("c")], pipeline: pipeline)
         #expect(prefetcher.outstandingHashes == ["c"])
 
+        // Drain before returning. Leaving blocked decodes running past the end of
+        // a test is not tidy-up pedantry: `Task.detached` bodies occupy the
+        // cooperative pool, which is only `activeProcessorCount` threads wide, and
+        // "a" finishing here is what lets the gate start the still-blocked "c".
         probe.release()
+        await pipeline.waitForPendingWork()
+        #expect(!probe.timedOutWaitingForRelease)
     }
 }

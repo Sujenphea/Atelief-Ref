@@ -246,7 +246,9 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
     func image(hash: String, url: URL, bucket: Int) async -> CGImage? {
         let request = ThumbnailRequest(hash: hash, url: url, bucket: bucket)
         if let hit = cachedExact(hash: hash, bucket: bucket) { return hit }
-        await join(request, visible: true).value
+        // `join` returns nil when the bitmap landed in the cache between that read
+        // and the lock — there is then nothing to await.
+        if let task = join(request, visible: true) { await task.value }
         return cachedExact(hash: hash, bucket: bucket)
     }
 
@@ -289,9 +291,10 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
 
     // MARK: Internals
 
-    /// Join the existing task for `request.key` or start a new one. Returns the
-    /// task to await. Caller must NOT hold `lock`.
-    private func join(_ request: ThumbnailRequest, visible: Bool) -> Task<Void, Never> {
+    /// Join the existing task for `request.key`, or start a new one — or neither,
+    /// if the bitmap is already cached, in which case this returns nil and there
+    /// is nothing to await. Caller must NOT hold `lock`.
+    private func join(_ request: ThumbnailRequest, visible: Bool) -> Task<Void, Never>? {
         lock.lock()
         if let existing = inFlight[request.key] {
             // Promotion, in-flight edition. A visible caller is now awaiting this
@@ -306,6 +309,20 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
             if visible { inFlightPrefetches.remove(request.key) }
             lock.unlock()
             return existing
+        }
+        // Re-check the cache UNDER the lock, exactly as `pump` does before it
+        // starts anything. `image` read the cache on its way in, unlocked, and the
+        // in-flight task clears `inFlight` only AFTER `store` has run — so a caller
+        // served the lock in that gap sees no task, an empty decision, and starts a
+        // SECOND decode of a key whose bitmap is already resident. Nothing is lost
+        // when that happens, but "N concurrent requests decode ONCE" is not what
+        // the pipeline then does: measured at 32 concurrent callers over a fast
+        // decode, roughly one redundant decode every three attempts, and it
+        // reproduces with as few as two callers. In production that is a whole
+        // extra ImageIO decode per racing cell, on the scroll path, for nothing.
+        if cachedExact(hash: request.key.hash, bucket: request.key.bucket) != nil {
+            lock.unlock()
+            return nil
         }
         if visible, queuedKeys.remove(request.key) != nil {
             // Promotion: it was waiting on the utility gate; it is visible now,
