@@ -169,7 +169,7 @@ struct ServicesValidationTests {
     // MARK: originalURL — per-platform provenance rule
 
     @Test("originalURL is required for remote platforms", arguments: [
-        Platform.twitter, .pinterest, .instagram, .cosmos, .web,
+        Platform.twitter, .pinterest, .instagram, .cosmos, .rednote, .web,
     ])
     func urlRequiredRemote(_ platform: Platform) {
         #expect(throws: AtelierError.missingOriginalURL(platform: platform)) {
@@ -185,7 +185,7 @@ struct ServicesValidationTests {
     }
 
     @Test("originalURL is optional for local capture paths", arguments: [
-        Platform.localPaste, .localDrag,
+        Platform.localPaste, .localDrag, .clipboard,
     ])
     func urlOptionalLocal(_ platform: Platform) throws {
         try Validation.originalURL(nil, platform: platform)

@@ -15,7 +15,10 @@
     "*://*.instagram.com/*",
     "*://*.cdninstagram.com/*",
     "*://*.fbcdn.net/*",
-    "*://*.cosmos.so/*"
+    "*://*.cosmos.so/*",
+    "*://*.rednote.com/*",
+    "*://*.xiaohongshu.com/*",
+    "*://*.rednotecdn.com/*"
   ],
   "background": {
     "service_worker": "src/sw.js",

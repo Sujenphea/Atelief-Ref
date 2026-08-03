@@ -874,7 +874,14 @@ private struct LibrarySearchResults: View {
                 if let hit = search.results.first(where: { $0.asset.id == id }) { onOpen(hit) }
             },
             onRequestDelete: { requestDeleteTargets() },
-            onCopy: { model.copySelectedToPasteboard(from: items, selection: selectionStore.selection.ids) },
+            // Search is MEMBERSHIP-LESS (019 · C1): the hits have no owning
+            // collection, so the copy's private payload carries the nil-source
+            // sentinel and a ⌘V anywhere reads as an add, never a same-place no-op.
+            onCopy: {
+                model.copySelectedToPasteboard(
+                    from: items, selection: selectionStore.selection.ids,
+                    sourceCollectionID: Self.searchScopeID)
+            },
             onQuickLook: {},   // search has no Quick Look plumbing yet (parity gap, not lag)
             // ⌘± drives the SAME global density notch as the collection grid, so a
             // zoom in search persists everywhere (011-B2).

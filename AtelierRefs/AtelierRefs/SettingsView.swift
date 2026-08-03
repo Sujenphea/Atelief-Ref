@@ -8,6 +8,8 @@
 //  setup guide. Shares the app's single ``IngestionModel`` (lifted to App level).
 //
 
+import AtelierCore
+import AtelierIngestion
 import SwiftUI
 
 struct SettingsView: View {
@@ -16,19 +18,32 @@ struct SettingsView: View {
     /// doesn't propagate its changes through its owner, so progress ticks would
     /// never reach this view otherwise.
     @ObservedObject var backup: BackupController
+    /// Observed separately for the same reason as `backup` (016 · A) — a scan's
+    /// progress ticks live on the controller, not on `model`.
+    @ObservedObject var libraryStats: LibraryStatsController
     /// Owned by the app (not this scene), so flipping a toggle here reaches the grid
     /// that is already on screen.
     @ObservedObject var gridPrefs: GridViewPreferences
+    /// The ambient clipboard watcher (013 · K3). Observed separately for the same
+    /// reason `backup` is — it is a nested `ObservableObject` on the model, so its
+    /// pause / library-bound changes wouldn't reach this row otherwise.
+    @ObservedObject var clipboard: ClipboardWatcher
 
     /// The first-run flag ``ContentView`` gates onboarding on — flipping it false
     /// here re-shows the setup guide on the next main-window appearance.
     @AppStorage("AtelierDidCompleteOnboarding") private var didCompleteOnboarding = false
 
     @State private var confirmRegenerate = false
+    /// The maintenance job awaiting its own confirmation — every one of them is
+    /// individually confirmable (016 · A), so this is a job, not a Bool.
+    @State private var confirmingJob: LibraryStatsController.Job?
+    /// The largest-items row awaiting delete confirmation.
+    @State private var deletingItem: LargestItem?
 
     var body: some View {
         Form {
             captureSection
+            clipboardSection
             gridSection
             librarySection
             backupSection
@@ -73,6 +88,40 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Clipboard capture (013 · K3)
+
+    /// The one place ambient capture can be turned on. Off by default, and the
+    /// copy under it states the three limits plainly rather than reassuringly —
+    /// somebody deciding whether to let an app watch their clipboard deserves the
+    /// actual rules, not a promise that it is "private".
+    private var clipboardSection: some View {
+        Section("Clipboard Capture") {
+            Toggle("Save copied images automatically", isOn: Binding(
+                get: { clipboard.isEnabled },
+                set: { clipboard.setEnabled($0) }))
+                .disabled(!clipboard.isAvailable)
+            Text("While this is on, any image you copy anywhere on your Mac is added "
+                 + "to Unsorted, and a clipboard icon appears in the menu bar for as "
+                 + "long as it's running — click it to pause or turn it off. Copied "
+                 + "text and files are ignored, and so is anything a password manager "
+                 + "marks as concealed.")
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if !clipboard.isAvailable {
+                Label("Available once the library finishes opening.",
+                      systemImage: "clock")
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.secondary)
+            } else if clipboard.isPaused {
+                Label("Paused from the menu bar — capture resumes from there.",
+                      systemImage: "pause.circle")
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
     // MARK: - Library
 
     private var librarySection: some View {
@@ -89,8 +138,203 @@ struct SettingsView: View {
                  + "Snapshot Now) are your in-app recovery points.")
                 .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
+
+            // 016 · A — storage, the largest files, and the cleanup jobs. Same
+            // section as Location on purpose: the library AS STORAGE is one
+            // subject, and Backup sits directly below it.
+            libraryRunRow
+            storageRows
+            countRows
+            largestItemsRows
+            cleanupRows
+        }
+        .confirmationDialog(
+            confirmingJob?.confirmTitle ?? "",
+            isPresented: Binding(
+                get: { confirmingJob != nil },
+                set: { if !$0 { confirmingJob = nil } }),
+            titleVisibility: .visible,
+            presenting: confirmingJob
+        ) { job in
+            Button(job.confirmVerb, role: job.isDestructive ? .destructive : nil) {
+                model.runLibraryJob(job)
+                confirmingJob = nil
+            }
+            Button("Cancel", role: .cancel) { confirmingJob = nil }
+        } message: { job in
+            Text(job.confirmMessage)
+        }
+        .confirmationDialog(
+            "Delete this item?",
+            isPresented: Binding(
+                get: { deletingItem != nil },
+                set: { if !$0 { deletingItem = nil } }),
+            titleVisibility: .visible,
+            presenting: deletingItem
+        ) { item in
+            Button("Delete", role: .destructive) {
+                model.deleteLibraryItem(item)
+                deletingItem = nil
+            }
+            Button("Cancel", role: .cancel) { deletingItem = nil }
+        } message: { item in
+            Text(LibraryStatsCopy.deleteConfirmation(for: item))
         }
     }
+
+    /// "Measure Library" / "Stop", the progress while a job is in flight, and
+    /// the last job's status line. One row for every job, because only one runs
+    /// at a time — measuring while a sweep trashes files would produce a total
+    /// that was never true.
+    @ViewBuilder
+    private var libraryRunRow: some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            Button(LibraryStatsController.Job.scan.title) {
+                confirmingJob = .scan
+            }
+            .disabled(!model.canRunLibraryJob)
+            if libraryStats.isRunning, let job = libraryStats.runningJob {
+                Button("Stop") { libraryStats.cancel() }
+                // Not `.destructive`: stopping a measurement destroys nothing,
+                // and stopping a sweep keeps every file already reclaimed.
+                Text(job.runningTitle)
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.secondary)
+                if job.reportsProgress {
+                    ProgressView(value: libraryStats.progress)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 120)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+            }
+        }
+        if let report = libraryStats.lastReport, !libraryStats.isRunning {
+            if report.isFailure {
+                Label(report.message, systemImage: "exclamationmark.triangle")
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(report.message)
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// The per-tier size breakdown. Measured apart rather than summed: the
+    /// separation is what surfaces the regenerable figure.
+    @ViewBuilder
+    private var storageRows: some View {
+        if let stats = libraryStats.stats {
+            LabeledContent("Total") {
+                Text(LibraryStatsCopy.size(stats.usage.totalBytes)).monospacedDigit()
+            }
+            LabeledContent("Database") {
+                Text(LibraryStatsCopy.size(stats.usage.databaseBytes)).monospacedDigit()
+            }
+            ForEach(LibraryStorageTier.allCases, id: \.self) { tier in
+                LabeledContent(LibraryStatsCopy.tier(tier)) {
+                    Text(LibraryStatsCopy.size(stats.usage.bytes(for: tier))).monospacedDigit()
+                }
+            }
+            Text(LibraryStatsCopy.storageExplainer(stats.usage))
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(LibraryStatsCopy.measured(at: stats.scannedAt, isStale: libraryStats.isStale))
+                .font(Theme.Typography.caption)
+                .foregroundStyle(libraryStats.isStale ? .orange : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Counts by kind and by platform. Empty categories are omitted rather than
+    /// shown as zero — a library with no videos should not have a Videos row.
+    @ViewBuilder
+    private var countRows: some View {
+        if let stats = libraryStats.stats {
+            LabeledContent("Items") {
+                Text("\(stats.assetCount)").monospacedDigit()
+            }
+            ForEach(LibraryStats.ordered(stats.countsByKind)) { entry in
+                LabeledContent(LibraryStatsCopy.kind(entry.key)) {
+                    Text("\(entry.count)").monospacedDigit()
+                }
+            }
+            ForEach(LibraryStats.ordered(stats.countsByPlatform)) { entry in
+                LabeledContent(LibraryStatsCopy.platform(entry.key)) {
+                    Text("\(entry.count)").monospacedDigit()
+                }
+            }
+        }
+    }
+
+    /// The largest files on disk. Sizes are read from the cached measurement —
+    /// nothing here `stat`s a file per render (016 · A).
+    @ViewBuilder
+    private var largestItemsRows: some View {
+        if let stats = libraryStats.stats, !stats.largest.isEmpty {
+            DisclosureGroup("Largest Items") {
+                ForEach(stats.largest) { item in
+                    largestItemRow(item)
+                }
+            }
+        }
+    }
+
+    private func largestItemRow(_ item: LargestItem) -> some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(LibraryStatsCopy.title(for: item))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(LibraryStatsCopy.subtitle(for: item))
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: Theme.Spacing.sm)
+            // A menu rather than three buttons: the Settings form is 460pt wide
+            // and three labelled controls per row would leave no width for the
+            // name, which is the only thing that identifies the item.
+            Menu {
+                Button("Reveal in Finder") { model.revealInFinder(largestItem: item) }
+                Button("Open") { model.openBlob(largestItem: item) }
+                Divider()
+                Button("Delete…", role: .destructive) { deletingItem = item }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+    }
+
+    /// The cleanup jobs — every one a button on a service that already existed.
+    @ViewBuilder
+    private var cleanupRows: some View {
+        ForEach(Self.cleanupJobs, id: \.self) { job in
+            Button(job.title) { confirmingJob = job }
+                .disabled(!model.canRunLibraryJob)
+        }
+        // Snapshot Now is the SAME call File ▸ Snapshot Now makes — reused, not
+        // duplicated, so there is one manual-snapshot path in the app.
+        Button("Snapshot Now") { model.snapshotNow() }
+            .disabled(model.snapshotManager == nil || model.isSnapshotting)
+        Text("Cleanup acts on files, never on your items: the sweep only trashes "
+             + "media nothing references, and reconciling only forgets import "
+             + "records whose media is gone. Each asks before it runs.")
+            .font(Theme.Typography.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// The cleanup jobs in the order the section lists them — `scan` is excluded
+    /// because it has its own row at the top.
+    private static let cleanupJobs: [LibraryStatsController.Job] =
+        [.orphanSweep, .thumbnails, .integrity, .reconcile]
 
     // MARK: - Grid (307)
 

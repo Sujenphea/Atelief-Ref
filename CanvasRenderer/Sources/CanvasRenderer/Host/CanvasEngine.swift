@@ -710,14 +710,26 @@ public final class CanvasEngine {
         provider.tiles.contains { !$0.isDegenerate }
     }
 
-    public func frameToContent(padding: CGFloat = 0.1) {
-        guard viewportSize.width > 0, viewportSize.height > 0 else { return }
-
+    /// The union of every drawable tile's world frame, or `nil` when the board has
+    /// nothing to draw.
+    ///
+    /// Hoisted out of ``frameToContent(padding:)`` so the restore path's
+    /// "is anything on screen" test (``showsContent(under:)``) measures against
+    /// EXACTLY the bounds the fit would use. Two copies of this union would be two
+    /// definitions of where the content is, and the fallback's whole job is to
+    /// agree with the fit it falls back to.
+    public var contentWorldBounds: CGRect? {
         var content: CGRect?
         for tile in provider.tiles where !tile.isDegenerate {
             content = content.map { $0.union(tile.worldFrame) } ?? tile.worldFrame
         }
-        guard let bounds = content, bounds.width > 0, bounds.height > 0 else { return }
+        return content
+    }
+
+    public func frameToContent(padding: CGFloat = 0.1) {
+        guard viewportSize.width > 0, viewportSize.height > 0 else { return }
+
+        guard let bounds = contentWorldBounds, bounds.width > 0, bounds.height > 0 else { return }
 
         let usableWidth = viewportSize.width * max(0.01, 1 - padding * 2)
         let usableHeight = viewportSize.height * max(0.01, 1 - padding * 2)
@@ -743,6 +755,55 @@ public final class CanvasEngine {
             minScale: transform.minScale,
             maxScale: transform.maxScale
         ))
+    }
+
+    // MARK: - Camera restore (018 · Cluster C)
+
+    /// The camera the current transform expresses — what a caller persists so the
+    /// board can be reopened here. Window-independent; see ``CanvasCamera``.
+    public var camera: CanvasCamera { transform.camera(viewportSize: viewportSize) }
+
+    /// Whether opening at `camera` would put any content on screen: a pure
+    /// intersection of the restored viewport rect against ``contentWorldBounds``.
+    ///
+    /// Deliberately a plain intersects-or-not, NOT a "clamp until some fraction is
+    /// visible" threshold. A threshold has to invent a number, and every number it
+    /// could invent would silently move a camera the user deliberately parked —
+    /// panning to blank space next to your work is a legitimate place to be. The
+    /// only state worth refusing to restore is the one that reads as data loss: an
+    /// empty grey void with the board nowhere in it.
+    public func showsContent(under camera: CanvasCamera) -> Bool {
+        guard viewportSize.width > 0, viewportSize.height > 0,
+              let bounds = contentWorldBounds else { return false }
+        return transform
+            .settingCamera(camera, viewportSize: viewportSize)
+            .visibleWorldRect(viewportSize: viewportSize)
+            .intersects(bounds)
+    }
+
+    /// Open the board at `camera`, or fit its content when there is nothing usable
+    /// to open at. ONE rule with ONE fallback (018 · Cluster C), covering:
+    ///
+    /// - `camera == nil` — never saved, or saved as a blob that no longer decodes
+    ///   (the caller resolves both to `nil` before calling).
+    /// - a camera whose restored viewport intersects NO content — the board would
+    ///   open on empty world space, which reads as the board having been lost.
+    ///
+    /// The fallback is ``frameToContent(padding:)``, which is already the correct
+    /// first-open behaviour and stays correct for a stale camera. Returns whether
+    /// the saved camera was used, so a caller can tell "restored" from "re-fitted"
+    /// without inspecting the transform afterwards.
+    ///
+    /// Routes through ``setTransform(_:)`` like every other camera mutation, so a
+    /// restore notifies ``onTransformChanged`` exactly once.
+    @discardableResult
+    public func restoreCamera(_ camera: CanvasCamera?, padding: CGFloat = 0.1) -> Bool {
+        guard let camera, showsContent(under: camera) else {
+            frameToContent(padding: padding)
+            return false
+        }
+        setTransform(transform.settingCamera(camera, viewportSize: viewportSize))
+        return true
     }
 
     // MARK: The per-frame sync

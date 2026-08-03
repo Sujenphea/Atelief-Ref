@@ -126,3 +126,55 @@ enum AssetExport {
         return provider
     }
 }
+
+/// Keeps ``AssetExport/filename(base:blobHash:ext:)`` results unique WITHIN ONE
+/// DESTINATION FOLDER (014 · S3).
+///
+/// Drag-out never needed this: one drop, one name, and the receiving folder is
+/// the Finder's problem. A folder export is the first caller to write many of
+/// those names side by side, and there the short hash stops being a guarantee.
+/// It is the first 8 characters of a longer digest, so two different blobs can
+/// land on the same one; and the base is a human title, which repeats freely.
+///
+/// The trap this exists for is quieter than a plain duplicate. macOS volumes are
+/// **case-insensitive** by default, so `Hero-ab12cd34.png` and
+/// `hero-ab12cd34.png` are the SAME path. Writing the second name does not
+/// produce a second file — it lands on the first one. In a writer that refreshes
+/// an existing destination (which `SiteExportWriter` must, so a re-export is not
+/// a "file exists" failure) that shows up as a silent overwrite: the export ships
+/// one image twice while reporting two. Uniqueness is therefore decided
+/// case-INSENSITIVELY here, while the name the recipient sees keeps the casing
+/// the asset's own title gave it.
+///
+/// Pure and order-dependent by design: the same input sequence always produces
+/// the same names, so an export is reproducible.
+nonisolated struct ExportNameAllocator {
+    /// Lowercased forms of every name handed out so far.
+    private var taken: Set<String> = []
+
+    init() {}
+
+    /// A name for `filename` that no earlier ``claim(_:)`` has taken, compared
+    /// case-insensitively. The first claim comes back verbatim; a collision gets
+    /// `-2`, `-3`, … inserted BEFORE the extension (`hero-ab12cd34-2.png`),
+    /// where a reader expects a duplicate marker and where the extension still
+    /// says what the file is.
+    mutating func claim(_ filename: String) -> String {
+        var candidate = filename
+        var suffix = 1
+        while !taken.insert(candidate.lowercased()).inserted {
+            suffix += 1
+            candidate = Self.disambiguated(filename, suffix: suffix)
+        }
+        return candidate
+    }
+
+    /// `name.ext` → `name-<suffix>.ext`; an extension-less name just gains the
+    /// suffix.
+    static func disambiguated(_ filename: String, suffix: Int) -> String {
+        let path = filename as NSString
+        let ext = path.pathExtension
+        let base = path.deletingPathExtension
+        return ext.isEmpty ? "\(base)-\(suffix)" : "\(base)-\(suffix).\(ext)"
+    }
+}

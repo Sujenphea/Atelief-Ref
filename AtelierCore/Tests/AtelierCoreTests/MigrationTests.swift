@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -398,6 +398,222 @@ struct MigrationV16Tests {
                 """).map { "\($0["collection_id"] as String)/\($0["asset_id"] as String)" }
         }
         #expect(again == after)
+    }
+}
+
+// MARK: - v17 · space.camera (018 · Cluster C)
+
+@Suite("Migration v17: space.camera column")
+struct MigrationV17Tests {
+
+    /// A migrator applied only THROUGH v16 — the state before the column exists, so
+    /// a test can seed boards and then migrate v17 over them (the upgrade path).
+    private func makeQueueThroughV16() throws -> DatabaseQueue {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v16")
+        return dbQueue
+    }
+
+    private func seedSpace(_ db: Database, id: String, name: String) throws {
+        try db.execute(sql: """
+            INSERT INTO space (id, name, cover_asset_id, created_at, updated_at, sort_index)
+            VALUES (?, ?, NULL, ?, ?, 0);
+            """, arguments: [id, name, ts, ts])
+    }
+
+    /// `PRAGMA table_info` → the `camera` row, or `nil` when the column is absent.
+    private func cameraColumn(_ db: Database) throws -> Row? {
+        try Row.fetchAll(db, sql: "PRAGMA table_info(space)")
+            .first { ($0["name"] as String) == "camera" }
+    }
+
+    @Test("a FRESH install ends with a nullable TEXT camera column")
+    func freshInstallHasColumn() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue)
+        let column = try dbQueue.read { db in try cameraColumn(db) }
+        #expect(column != nil, "space missing the v17 camera column")
+        #expect((column?["type"] as String?) == "TEXT")
+        #expect((column?["notnull"] as Int?) == 0)
+    }
+
+    @Test("upgrading from v16 adds the column and leaves existing rows NULL")
+    func upgradeLeavesExistingRowsNull() throws {
+        let dbQueue = try makeQueueThroughV16()
+        // Before v17 the column does not exist at all — that IS the upgrade path.
+        let before = try dbQueue.read { db in try cameraColumn(db) }
+        #expect(before == nil)
+
+        try dbQueue.write { db in
+            try seedSpace(db, id: "s-a", name: "Alpha")
+            try seedSpace(db, id: "s-b", name: "Beta")
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v17
+
+        let after = try dbQueue.read { db -> (column: Row?, cameras: [String?], count: Int) in
+            (try cameraColumn(db),
+             try Row.fetchAll(db, sql: "SELECT camera FROM space ORDER BY id")
+                .map { $0["camera"] as String? },
+             try Int.fetchOne(db, sql: "SELECT count(*) FROM space") ?? -1)
+        }
+        #expect(after.column != nil)
+        #expect((after.column?["notnull"] as Int?) == 0)
+        // No back-fill: every pre-existing board carries NULL, which the app reads
+        // as "never opened" and answers with fit-to-content.
+        #expect(after.count == 2)
+        #expect(after.cameras == [nil, nil])
+    }
+
+    @Test("v17 is purely additive — the other space columns survive untouched")
+    func upgradePreservesExistingColumns() throws {
+        let dbQueue = try makeQueueThroughV16()
+        try dbQueue.write { db in try seedSpace(db, id: "s-a", name: "Alpha") }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v17
+
+        let row = try dbQueue.read { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM space WHERE id = 's-a'")
+        }
+        #expect((row?["name"] as String?) == "Alpha")
+        #expect((row?["created_at"] as String?) == ts)
+        #expect((row?["sort_index"] as Int?) == 0)
+    }
+
+    @Test("a camera blob written after v17 round-trips through the column")
+    func columnStoresABlob() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue)
+        let json = SpaceCamera(x: 120, y: -40, zoom: 2.5).jsonString()
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO space (id, name, cover_asset_id, created_at, updated_at,
+                    sort_index, camera)
+                VALUES ('s-a', 'Alpha', NULL, ?, ?, 0, ?);
+                """, arguments: [ts, ts, json])
+        }
+        let stored = try dbQueue.read { db in
+            try String.fetchOne(db, sql: "SELECT camera FROM space WHERE id = 's-a'")
+        }
+        #expect(SpaceCamera(jsonString: stored)?.resolved.map { [$0.x, $0.y, $0.zoom] }
+            == [120, -40, 2.5])
+    }
+}
+
+// MARK: - v18 · rednote re-tag of the pre-platform harvest (020 · K2)
+
+@Suite("Migration v18: rednote source re-tag")
+struct MigrationV18Tests {
+
+    /// A migrator applied only THROUGH v16 — the state before `Platform.rednote`
+    /// existed, so a test can seed the historical `web` + `{"source":"rednote"}`
+    /// shape and then migrate v18 over it. (v17 is reserved by another branch.)
+    private func makeQueueThroughV16() throws -> DatabaseQueue {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v16")
+        return dbQueue
+    }
+
+    /// Seed one source via raw SQL, returning its id. `rawMetadata` is written
+    /// verbatim so a test can plant malformed JSON.
+    @discardableResult
+    private func seedSource(
+        _ db: Database, platform: String, rawMetadata: String
+    ) throws -> String {
+        let id = newID()
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, captured_at, raw_metadata)
+            VALUES (?, ?, ?, ?);
+            """, arguments: [id, platform, ts, rawMetadata])
+        return id
+    }
+
+    private func platform(_ db: Database, of sourceID: String) throws -> String? {
+        try String.fetchOne(
+            db, sql: "SELECT platform FROM source WHERE id = ?", arguments: [sourceID])
+    }
+
+    @Test("only the marked web rows flip to rednote; every other row is untouched")
+    func flipsOnlyMarkedWebRows() throws {
+        let dbQueue = try makeQueueThroughV16()
+        let (marked, plainWeb, garbage, empty, alreadyRednote, otherPlatform) =
+            try dbQueue.write { db -> (String, String, String, String, String, String) in
+                (try seedSource(db, platform: "web", rawMetadata: #"{"source":"rednote"}"#),
+                 try seedSource(db, platform: "web", rawMetadata: #"{"source":"tumblr"}"#),
+                 try seedSource(db, platform: "web", rawMetadata: "not json at all"),
+                 try seedSource(db, platform: "web", rawMetadata: "{}"),
+                 try seedSource(db, platform: "rednote", rawMetadata: #"{"source":"rednote"}"#),
+                 try seedSource(db, platform: "pinterest", rawMetadata: #"{"source":"rednote"}"#))
+            }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v18
+
+        let after = try dbQueue.read { db in
+            try [marked, plainWeb, garbage, empty, alreadyRednote, otherPlatform]
+                .map { try platform(db, of: $0) }
+        }
+        #expect(after == [
+            "rednote",   // the historical harvest row — the only one that flips
+            "web",       // a web row marked with some other source
+            "web",       // raw_metadata is not JSON at all
+            "web",       // raw_metadata is JSON without the marker
+            "rednote",   // already on the platform
+            "pinterest", // a non-web row is out of scope even carrying the marker
+        ])
+    }
+
+    @Test("a nested/extra-keyed marker still matches, and other keys don't")
+    func matchesOnTheSourceKeyOnly() throws {
+        let dbQueue = try makeQueueThroughV16()
+        let (withExtras, wrongKey) = try dbQueue.write { db -> (String, String) in
+            (try seedSource(
+                db, platform: "web",
+                rawMetadata: #"{"noteId":"abc","source":"rednote","imageIndex":3}"#),
+             try seedSource(db, platform: "web", rawMetadata: #"{"origin":"rednote"}"#))
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v18
+
+        let after = try dbQueue.read { db in
+            try [withExtras, wrongKey].map { try platform(db, of: $0) }
+        }
+        #expect(after == ["rednote", "web"])
+    }
+
+    @Test("re-running the re-tag changes nothing (idempotent)")
+    func retagIsIdempotent() throws {
+        let dbQueue = try makeQueueThroughV16()
+        try dbQueue.write { db in
+            try seedSource(db, platform: "web", rawMetadata: #"{"source":"rednote"}"#)
+            try seedSource(db, platform: "web", rawMetadata: "not json at all")
+            try seedSource(db, platform: "web", rawMetadata: #"{"source":"tumblr"}"#)
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v18
+        let after = try dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT platform FROM source ORDER BY id")
+        }
+
+        // A second pass over an already-re-tagged db must be a no-op.
+        try dbQueue.write { db in try Migrator.retagV18RednoteSources(db) }
+        let again = try dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT platform FROM source ORDER BY id")
+        }
+        #expect(again == after)
+        #expect(after.sorted() == ["rednote", "web", "web"])
+    }
+
+    @Test("the written value is the Platform.rednote rawValue, not a loose string")
+    func writesTheEnumRawValue() throws {
+        let dbQueue = try makeQueueThroughV16()
+        let marked = try dbQueue.write { db in
+            try seedSource(db, platform: "web", rawMetadata: #"{"source":"rednote"}"#)
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)  // apply v18
+
+        let stored = try dbQueue.read { db in try platform(db, of: marked) }
+        #expect(stored.flatMap(Platform.init(rawValue:)) == .rednote)
     }
 }
 
@@ -1508,17 +1724,18 @@ struct JobRoundTripTests {
 @Suite("Migration v4: space / space_item schema shape")
 struct SpaceSchemaShapeTests {
 
-    @Test("space columns: name & timestamps NOT NULL, cover nullable")
+    @Test("space columns: name & timestamps NOT NULL, cover + camera nullable")
     func spaceColumns() throws {
         let dbQueue = try makeMigratedQueue()
         let nn = try dbQueue.read { try columnNotNull($0, table: "space") }
-        let expected = ["id", "name", "cover_asset_id", "created_at", "updated_at"]
+        let expected = ["id", "name", "cover_asset_id", "created_at", "updated_at", "camera"]
         for c in expected { #expect(nn[c] != nil, "space missing \(c)") }
         #expect(nn["id"] == 1)
         #expect(nn["name"] == 1)
         #expect(nn["created_at"] == 1)
         #expect(nn["updated_at"] == 1)
         #expect(nn["cover_asset_id"] == 0)
+        #expect(nn["camera"] == 0)   // v17 — NULL means "never opened"
     }
 
     @Test("space_item columns: FK + kind + geometry + timestamps NOT NULL, asset_id/style nullable")

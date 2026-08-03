@@ -17,6 +17,7 @@ import { twitter } from "../src/extractors/twitter.js";
 import { pinterest } from "../src/extractors/pinterest.js";
 import { instagram } from "../src/extractors/instagram.js";
 import { cosmos } from "../src/extractors/cosmos.js";
+import { rednote, toRednoteOriginal } from "../src/extractors/rednote.js";
 
 /** Build a harvest fixture. */
 function harvest({ url, title = "Fallback", canonical = null, metas = {}, media = [] }) {
@@ -340,7 +341,106 @@ test("findExtractor routes each host to its extractor", () => {
   assert.equal(findExtractor("https://www.pinterest.com/pin/1/"), pinterest);
   assert.equal(findExtractor("https://www.instagram.com/p/x/"), instagram);
   assert.equal(findExtractor("https://cosmos.so/e/1"), cosmos);
+  assert.equal(findExtractor("https://www.xiaohongshu.com/explore/1"), rednote);
+  assert.equal(findExtractor("https://www.rednote.com/explore/1"), rednote);
   assert.equal(findExtractor("https://other.example/"), web);
+});
+
+// MARK: - rednote (020 · K2)
+// One product on two domains, and a signed-webp → unsigned-original media rule.
+
+test("rednote: noteId from /explore/{id}, media rewritten to the unsigned original", () => {
+  const h = harvest({
+    url: "https://www.xiaohongshu.com/explore/6650a1b2c3d4e5f600000001",
+    metas: { "og:site_name": "小红书", "og:title": "Editorial grid study" },
+    media: [
+      img("https://sns-avatar-qc.rednotecdn.com/avatar/tiny.jpg", 48, 48),
+      img("https://sns-web-i10.rednotecdn.com/1717000000/9f3c1d/1040g2sg31key!nc_n_webp_mw_1", 1200, 1600),
+    ],
+  });
+  const p = extractProvenance(h);
+  assert.equal(p.platform, "rednote");
+  assert.equal(p.originalURL, "https://www.xiaohongshu.com/explore/6650a1b2c3d4e5f600000001");
+  // The signature segments and the `!` transform suffix are gone; the bare key
+  // is served full-resolution by the plain image node.
+  assert.equal(p.mediaUrl, "http://sns-i27.rednotecdn.com/1040g2sg31key");
+  assert.equal(
+    p.mediaUrlFallback,
+    "https://sns-web-i10.rednotecdn.com/1717000000/9f3c1d/1040g2sg31key!nc_n_webp_mw_1");
+  assert.equal(p.authorName, "小红书");
+  assert.equal(p.title, "Editorial grid study");
+  assert.deepEqual(p.rawMetadata, { noteId: "6650a1b2c3d4e5f600000001" });
+});
+
+test("rednote: the rednote.com domain and /discovery/item/{id} both resolve a note", () => {
+  const h = harvest({
+    url: "https://www.rednote.com/discovery/item/6650a1b2c3d4e5f600000002",
+    media: [img("https://sns-web-i5.rednotecdn.com/1/s/keyB!nc_n_webp_mw_1", 900, 1200)],
+  });
+  const p = extractProvenance(h);
+  assert.equal(p.platform, "rednote");
+  assert.equal(p.mediaUrl, "http://sns-i27.rednotecdn.com/keyB");
+  assert.deepEqual(p.rawMetadata, { noteId: "6650a1b2c3d4e5f600000002" });
+});
+
+test("rednote FROM A BOARD: right-clicked note link + image → note URL + that image", () => {
+  const h = harvest({
+    url: "https://www.xiaohongshu.com/board/6650000000000000000000ff", // the board, NOT a note
+    canonical: "https://www.xiaohongshu.com/",
+    media: [img("https://sns-web-i10.rednotecdn.com/1/s/other!nc_n_webp_mw_1", 800, 800)],
+  });
+  const context = {
+    linkUrl: "https://www.xiaohongshu.com/explore/6650a1b2c3d4e5f600000003?xsec_token=ABC",
+    srcUrl: "https://sns-web-i10.rednotecdn.com/1717/9f3c/clickedKey!nc_n_webp_mw_1",
+  };
+  const p = extractProvenance(h, context);
+  // The `xsec_token` query is dropped by cleanURL — a short-lived credential has
+  // no business in stored provenance.
+  assert.equal(p.originalURL, "https://www.xiaohongshu.com/explore/6650a1b2c3d4e5f600000003");
+  assert.equal(p.mediaUrl, "http://sns-i27.rednotecdn.com/clickedKey");
+  assert.deepEqual(p.rawMetadata, { noteId: "6650a1b2c3d4e5f600000003" });
+});
+
+test("rednote: a board page with no note link keeps the board URL and no noteId", () => {
+  const h = harvest({
+    url: "https://www.xiaohongshu.com/board/6650000000000000000000ff",
+    metas: { "og:image": "https://ci.xiaohongshu.com/generic-card.png" },
+  });
+  const p = rednote.extract(h);
+  assert.equal(p.originalURL, "https://www.xiaohongshu.com/board/6650000000000000000000ff");
+  // No CDN media on the page → og:image, unrewritten, and no fallback to keep.
+  assert.equal(p.mediaUrl, "https://ci.xiaohongshu.com/generic-card.png");
+  assert.equal(p.mediaUrlFallback, null);
+  assert.deepEqual(p.rawMetadata, {});
+});
+
+test("rednote: match covers both domains and their subdomains, but not a suffix spoof", () => {
+  assert.equal(rednote.match("https://www.xiaohongshu.com/explore/1"), true);
+  assert.equal(rednote.match("https://xiaohongshu.com/explore/1"), true);
+  assert.equal(rednote.match("https://www.rednote.com/explore/1"), true);
+  assert.equal(rednote.match("https://rednote.com/"), true);
+  assert.equal(rednote.match("https://edith.xiaohongshu.com/api/x"), true);
+  // Suffix spoofs and near-misses must NOT match.
+  assert.equal(rednote.match("https://rednote.com.evil.com/explore/1"), false);
+  assert.equal(rednote.match("https://xiaohongshu.com.evil.com/"), false);
+  assert.equal(rednote.match("https://notrednote.com/"), false);
+  assert.equal(rednote.match("https://myxiaohongshu.com/"), false);
+  assert.equal(rednote.match("not a url"), false);
+});
+
+test("toRednoteOriginal: strips signing segments + `!` suffix, is idempotent, passes others through", () => {
+  assert.equal(
+    toRednoteOriginal("https://sns-web-i10.rednotecdn.com/1717000000/9f3c1d/keyA!nc_n_webp_mw_1"),
+    "http://sns-i27.rednotecdn.com/keyA");
+  // Already bare → itself (idempotent, so a re-run of the rule is harmless).
+  assert.equal(
+    toRednoteOriginal("http://sns-i27.rednotecdn.com/keyA"),
+    "http://sns-i27.rednotecdn.com/keyA");
+  // A non-rednote URL, garbage, and null are passed straight through.
+  assert.equal(
+    toRednoteOriginal("https://i.pinimg.com/474x/a.jpg"), "https://i.pinimg.com/474x/a.jpg");
+  assert.equal(toRednoteOriginal("not a url"), "not a url");
+  assert.equal(toRednoteOriginal(null), null);
 });
 
 // MARK: - shared full-resolution rewrites (base.js, 6A)

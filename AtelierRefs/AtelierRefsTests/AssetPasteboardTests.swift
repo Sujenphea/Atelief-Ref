@@ -299,3 +299,189 @@ struct AssetPasteboardWriterTests {
         AssetExportItem(blobURL: url, filename: url.lastPathComponent, utType: .png)
     }
 }
+
+// MARK: - The app-private second representation (019 · C1)
+//
+// ⌘C now writes TWO representations of one selection: the byte one above, and an
+// `AssetDragPayload` so a ⌘V back into the app pastes the ASSET instead of
+// re-importing its bytes. The invariants that matter are ORDER (the payload goes
+// on AFTER `write`, which clears), PREFERENCE (the file URL stays what an external
+// receiver picks), COVERAGE (the whole selection, including entries the byte pass
+// skipped), and "nil, not empty" (an empty copy writes no payload at all).
+
+@Suite("AssetPasteboardWriter: the .assetIDs representation (019)", .serialized)
+struct AssetPasteboardPayloadTests {
+
+    @Test("a copy carries BOTH the file URL and the app-private payload")
+    func bothRepresentationsPresent() throws {
+        try Fixture.withTempPNG { url in
+            try Fixture.withScratchPasteboard { pb in
+                let ids = [UUID(), UUID()]
+                let source = UUID()
+                let selection = ExportSelection(
+                    entries: [.file(item(url)), .file(item(url))], skipped: 0)
+                AssetPasteboardWriter.write(selection, to: pb)
+                #expect(AssetPasteboardWriter.appendAssetIDs(ids, from: source, to: pb))
+
+                // The byte representation an external app reads — untouched.
+                let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
+                #expect(urls.contains(url))
+                // …and ours, alongside it.
+                let payload = try #require(AssetDragPayload.decode(from: pb))
+                #expect(payload.assetIDs == ids)
+                #expect(payload.sourceCollectionID == source)
+            }
+        }
+    }
+
+    @Test("the file URL stays the PREFERRED type for an external receiver")
+    func fileURLRemainsPreferred() throws {
+        try Fixture.withTempPNG { url in
+            try Fixture.withScratchPasteboard { pb in
+                AssetPasteboardWriter.write(
+                    ExportSelection(entries: [.file(item(url))], skipped: 0), to: pb)
+                AssetPasteboardWriter.appendAssetIDs([UUID()], from: UUID(), to: pb)
+
+                // `.assetIDs` conforms to `public.data`, so a receiver that accepts
+                // anything could match it — writing it LAST keeps the file URL ahead
+                // of it in the board's declared type order.
+                let types = try #require(pb.types)
+                let fileURL = try #require(types.firstIndex(of: .fileURL))
+                let assetIDs = try #require(types.firstIndex(of: AssetDragPayload.pasteboardType))
+                #expect(fileURL < assetIDs)
+            }
+        }
+    }
+
+    @Test("a selection whose entries are ALL skipped still writes the payload")
+    func allSkippedStillWritesPayload() throws {
+        // A media-less `.unknown` plus a missing-blob image: nothing copyable, so the
+        // byte pass writes zero entries — but pasting by id needs no bytes, so ⌘C→⌘V
+        // starts working for items that cannot leave the app at all.
+        try Fixture.withScratchPasteboard { pb in
+            let ids = [UUID(), UUID()]
+            let written = AssetPasteboardWriter.write(
+                ExportSelection(entries: [], skipped: 2), to: pb)
+            #expect(written == 0)
+            #expect(AssetPasteboardWriter.appendAssetIDs(ids, from: UUID(), to: pb))
+            let payload = try #require(AssetDragPayload.decode(from: pb))
+            #expect(payload.assetIDs == ids)
+        }
+    }
+
+    @Test("an EMPTY selection writes no payload at all (nil, not empty)")
+    func emptySelectionWritesNothing() {
+        Fixture.withScratchPasteboard { pb in
+            AssetPasteboardWriter.write(ExportSelection(entries: [], skipped: 0), to: pb)
+            #expect(!AssetPasteboardWriter.appendAssetIDs([], from: UUID(), to: pb))
+            // Nothing on the board means a later ⌘V falls through to the importer
+            // instead of matching a copy that carried no assets (065 §2.4).
+            #expect(AssetDragPayload.decode(from: pb) == nil)
+        }
+    }
+
+    @Test("the payload survives the clear because it is written AFTER the byte pass")
+    func orderIsLoadBearing() throws {
+        try Fixture.withTempPNG { url in
+            try Fixture.withScratchPasteboard { pb in
+                // The WRONG order, proven wrong: `write` clears, so a payload put on
+                // first is gone by the time the URLs land.
+                AssetPasteboardWriter.appendAssetIDs([UUID()], from: UUID(), to: pb)
+                AssetPasteboardWriter.write(
+                    ExportSelection(entries: [.file(item(url))], skipped: 0), to: pb)
+                #expect(AssetDragPayload.decode(from: pb) == nil)
+
+                // The order `copyToPasteboard` uses.
+                let ids = [UUID()]
+                AssetPasteboardWriter.write(
+                    ExportSelection(entries: [.file(item(url))], skipped: 0), to: pb)
+                AssetPasteboardWriter.appendAssetIDs(ids, from: UUID(), to: pb)
+                let payload = try #require(AssetDragPayload.decode(from: pb))
+                #expect(payload.assetIDs == ids)
+            }
+        }
+    }
+
+    private func item(_ url: URL) -> AssetExportItem {
+        AssetExportItem(blobURL: url, filename: url.lastPathComponent, utType: .png)
+    }
+}
+
+// MARK: - Paste routing (pure decode + branch, no DB — 019 · C2)
+
+@Suite("Grid paste routing (019 · C2)")
+struct GridPasteRoutingTests {
+
+    private let target = UUID()
+
+    @Test("our own payload WINS over a board that also carries file URLs")
+    func payloadBeatsFileURLs() throws {
+        try Fixture.withTempPNG { url in
+            try Fixture.withScratchPasteboard { pb in
+                // Exactly what ⌘C leaves behind: blob URLs AND the private payload.
+                let ids = [UUID(), UUID()]
+                let source = UUID()
+                AssetPasteboardWriter.write(
+                    ExportSelection(
+                        entries: [.file(AssetExportItem(
+                            blobURL: url, filename: url.lastPathComponent, utType: .png))],
+                        skipped: 0),
+                    to: pb)
+                AssetPasteboardWriter.appendAssetIDs(ids, from: source, to: pb)
+
+                #expect(CollectionView.resolvePaste(
+                    payload: AssetDragPayload.decode(from: pb), target: target)
+                        == .add(assetIDs: ids, source: source))
+            }
+        }
+    }
+
+    @Test("a Finder-copied file still takes the import branch")
+    func finderFileImports() {
+        Fixture.withTempPNG { url in
+            Fixture.withScratchPasteboard { pb in
+                pb.clearContents()
+                pb.writeObjects([url as NSURL])
+                #expect(CollectionView.resolvePaste(
+                    payload: AssetDragPayload.decode(from: pb), target: target)
+                        == .importExternal)
+            }
+        }
+    }
+
+    @Test("an ABSENT payload cannot stop the chain")
+    func absentPayloadFallsThrough() {
+        #expect(CollectionView.resolvePaste(payload: nil, target: target) == .importExternal)
+    }
+
+    @Test("an EMPTY payload cannot stop the chain either (the internal marker)")
+    func emptyPayloadFallsThrough() {
+        #expect(CollectionView.resolvePaste(payload: .internalMarker, target: target)
+                == .importExternal)
+        #expect(CollectionView.resolvePaste(
+            payload: AssetDragPayload(assetIDs: [], sourceCollectionID: target), target: target)
+                == .importExternal)
+    }
+
+    @Test("pasting back into the collection it was copied from is a no-op with a notice")
+    func sameCollectionIsNoop() {
+        #expect(CollectionView.resolvePaste(
+            payload: AssetDragPayload(assetIDs: [UUID()], sourceCollectionID: target),
+            target: target)
+                == .alreadyMembers)
+    }
+
+    @Test("a membership-less copy (search / a board) always reads as an add")
+    func nilSourceIsAlwaysAnAdd() {
+        let ids = [UUID()]
+        #expect(CollectionView.resolvePaste(
+            payload: AssetDragPayload(
+                assetIDs: ids, sourceCollectionID: AssetDragPayload.nilSourceID),
+            target: target)
+                == .add(assetIDs: ids, source: nil))
+        // The sentinel is the all-zero UUID, which `UUID()` never produces — so a
+        // membership-less copy can never accidentally read as a same-collection
+        // paste into a real target.
+        #expect(AssetDragPayload.nilSourceID != target)
+    }
+}

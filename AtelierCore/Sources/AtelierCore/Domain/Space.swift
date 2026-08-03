@@ -30,6 +30,13 @@ public struct Space: Sendable, Equatable, Hashable, Codable, Identifiable {
     /// existing installs keep their current arrangement. Drives the sidebar order
     /// (tie-broken by `(created_at DESC, id)` so equal indices stay stable).
     public var sortIndex: Int
+    /// ``SpaceCamera`` JSON — where this board was last looked at (018 · Cluster C).
+    /// `nil` for a board that has never been opened, and for one whose blob no
+    /// longer decodes; both cases fall back to fit-to-content on open. Added by
+    /// migration v17, NULL for every existing row (no back-fill — there is no
+    /// historical camera to recover). Stored as the encoded string rather than a
+    /// decoded value, exactly as ``SpaceItem/style`` is.
+    public var camera: String?
 
     /// Explicit snake_case column/coding names (exact acronym mapping, e.g.
     /// `coverAssetID` ⇄ `cover_asset_id`).
@@ -39,6 +46,7 @@ public struct Space: Sendable, Equatable, Hashable, Codable, Identifiable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case sortIndex = "sort_index"
+        case camera
     }
 
     public init(
@@ -47,7 +55,8 @@ public struct Space: Sendable, Equatable, Hashable, Codable, Identifiable {
         coverAssetID: UUID? = nil,
         createdAt: Date,
         updatedAt: Date,
-        sortIndex: Int = 0
+        sortIndex: Int = 0,
+        camera: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -55,5 +64,6 @@ public struct Space: Sendable, Equatable, Hashable, Codable, Identifiable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.sortIndex = sortIndex
+        self.camera = camera
     }
 }

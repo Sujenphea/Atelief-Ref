@@ -42,6 +42,49 @@ public enum DirectInputReader {
             collectionID: collectionID)
     }
 
+    /// The app name recorded when the frontmost application cannot be resolved
+    /// (013 · K3). Provenance for an ambient capture is never null: a row that
+    /// says "Clipboard" is honest about knowing only that much, whereas an empty
+    /// author field reads as a bug.
+    public static let clipboardFallbackAppName = "Clipboard"
+
+    /// An image the AMBIENT CLIPBOARD WATCHER noticed → `.clipboard` (013 · K3).
+    ///
+    /// Same bytes-in shape as ``pasteInput(imageData:sourceURL:into:at:)``, and
+    /// deliberately the same family of pure factories, so ambient capture is the
+    /// existing paste path with a different provenance stamp rather than a second
+    /// ingest pipeline. No `originalURL`: an image copied out of a Preview window
+    /// has no canonical URL, and `Validation.originalURL` exempts `.clipboard` for
+    /// exactly that reason.
+    ///
+    /// `appName` / `appBundleID` are the frontmost application at the moment the
+    /// watcher NOTICED the copy, which is up to one poll interval after the copy
+    /// itself — so this is **best-effort provenance that races a fast app switch**:
+    /// copy in Safari, ⌘-tab to Mail within the same tick, and the capture is
+    /// attributed to Mail. It is recorded as the app the copy most likely came
+    /// from, not as a fact about it. Both are normalized HERE (one place, so a
+    /// blank or whitespace-only name can't reach the database): the localized name
+    /// becomes `authorName`, falling back to ``clipboardFallbackAppName``, and the
+    /// bundle id becomes `authorHandle` — the app world's stable machine
+    /// identifier beside its display name, which is what the handle field is for
+    /// and what the detail sidebar already renders as "Preview (com.apple.Preview)".
+    public static func clipboardInput(
+        imageData: Data, appName: String?, appBundleID: String?,
+        into collectionID: UUID, at: Date
+    ) -> IngestInput {
+        let name = appName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let bundleID = appBundleID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return IngestInput(
+            source: .data(imageData),
+            provenance: SourceDraft(
+                platform: .clipboard,
+                originalURL: nil,
+                authorHandle: bundleID.isEmpty ? nil : bundleID,
+                authorName: name.isEmpty ? clipboardFallbackAppName : name,
+                capturedAt: at),
+            collectionID: collectionID)
+    }
+
     /// A pasted / dragged FILE → `.localDrag`. The file's on-disk path is
     /// preserved verbatim in `raw_metadata.original_path` (provenance), while the
     /// bytes are read from the URL at ingest time (``ByteSource/fileURL(_:)``).

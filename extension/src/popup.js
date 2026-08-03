@@ -1,9 +1,9 @@
 // Atelier Capture — toolbar popup: resolve the active tab, launch a sweep.
 //
-// Thin chrome.* glue around two PURE units: `resolveSweepSpec` (tab → spec | reason,
+// Thin browser-API glue around two PURE units: `resolveSweepSpec` (tab → spec | reason,
 // tested in bulk-context.test.js) and `dispatchStart` (send + cold-tab recovery,
-// tested in bulk-dispatch.test.js). This file only wires the real chrome fns and
-// renders — no sweep logic lives here.
+// tested in bulk-dispatch.test.js). This file only wires the real tabs/scripting fns —
+// through `browser.js`, never `chrome` directly — and renders; no sweep logic here.
 //
 // Flow: on open, executeScript reads {url, collageHref} from the tab's DOM (ISOLATED
 // world — the board id is the "Collage" button's href), resolve, enable/disable Start.
@@ -12,6 +12,7 @@
 import { resolveSweepSpec, REASON_MESSAGE } from "./bulk-context.js";
 import { dispatchStart } from "./bulk-dispatch.js";
 import { sweepLabel, sweepWarning, startEnabled, launchOutcome } from "./popup-view.js";
+import { browser } from "./browser.js";
 
 const els = {
   target: document.getElementById("target"),
@@ -70,7 +71,7 @@ function showTarget(spec) {
 }
 
 async function getActiveTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
   return tab && tab.id != null ? tab : null;
 }
 
@@ -89,8 +90,8 @@ function launch(tabId, spec) {
   els.status.textContent = "Sweeping… watch the app's Sweeps tab. Safe to close this popup.";
   dispatchStart({
     spec: { ...spec, resolveVideo: els.resolveVideo.checked },
-    sendMessage: (message) => chrome.tabs.sendMessage(tabId, message),
-    injectScript: () => chrome.scripting.executeScript({ target: { tabId }, files: ["src/bulk-loader.js"] }),
+    sendMessage: (message) => browser.tabs.sendMessage(tabId, message),
+    injectScript: () => browser.scripting.executeScript({ target: { tabId }, files: ["src/bulk-loader.js"] }),
   })
     // A resolved {ok:false} is as terminal as a rejection — both re-enable Start (7A).
     .then((reply) => applyOutcome(launchOutcome(reply)))
@@ -103,7 +104,7 @@ async function init() {
 
   let context;
   try {
-    const [injection] = await chrome.scripting.executeScript({
+    const [injection] = await browser.scripting.executeScript({
       target: { tabId: tab.id }, func: readPageContext,
     });
     context = injection.result;

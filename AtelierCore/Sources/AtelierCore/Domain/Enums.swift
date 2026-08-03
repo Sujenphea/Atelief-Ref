@@ -45,7 +45,15 @@ public enum Platform: String, Sendable, Codable, CaseIterable, Hashable {
     case pinterest
     case instagram
     case cosmos
+    case rednote
     case web
+    /// The opt-in ambient clipboard watcher (013 · K3) — an image copied
+    /// ANYWHERE on the system, noticed by polling and filed into Unsorted. Its own
+    /// case rather than `localPaste` because the two are different acts: a paste
+    /// is a deliberate ⌘V into the app, this one the user never touched the app
+    /// for. Keeping them apart is what lets a filter, a search, or a future
+    /// "undo everything the watcher took" address exactly the ambient ones.
+    case clipboard
     case localPaste = "local_paste"
     case localDrag = "local_drag"
 }

@@ -267,6 +267,25 @@ final class IngestionModel: ObservableObject {
     /// instead of every view bound to the model.
     let backup = BackupController()
 
+    // MARK: - Ambient clipboard capture (013 · K3)
+
+    /// The opt-in clipboard watcher. Owned here for the same reason ``backup`` is:
+    /// it must outlive the Settings window that turns it on, and something has to
+    /// keep polling while that window is closed. Its own observable object so the
+    /// Settings row re-renders on a pause/resume without every model observer
+    /// doing so. Off until ``activateClipboardWatcher(root:)`` binds it to the
+    /// open library.
+    let clipboard = ClipboardWatcher()
+
+    // MARK: - Library stats + maintenance (016 · A)
+
+    /// The storage measurement and the cleanup jobs (016 · A). Owned here and
+    /// observed separately by `SettingsView`, for both of `backup`'s reasons: a
+    /// progress tick during a scan re-renders one section rather than every view
+    /// bound to this model, and the Settings window can be closed and reopened
+    /// while a scan of a large library is still walking files.
+    let libraryStats = LibraryStatsController()
+
     /// Monotonic id for ``loadContents(of:)`` so a slow read can never clobber a
     /// newer one (fast folder switch, or a mutation-triggered reload).
     private var contentsLoadID = 0
@@ -706,6 +725,12 @@ final class IngestionModel: ObservableObject {
             // instead of dedup-skipping bytes that are gone.
             _ = try? await services.reconcileOrphanedKnownItems()
 
+            // Ambient clipboard capture (013 · K3). Bound here, after the library
+            // is open: its preference is namespaced by library id, and nothing
+            // ambient should be able to run before the app knows where it would
+            // file what it takes. Off unless the user turned it on before.
+            activateClipboardWatcher(root: root)
+
             await refreshFolders()
             // Spaces load here too — the sidebar's `.task` can run BEFORE this
             // bootstrap slice sets `services` (observed in practice), in which case
@@ -947,6 +972,79 @@ final class IngestionModel: ObservableObject {
         backup.start(
             services: services, source: store, libraryRoot: libraryRoot,
             folder: backupFolder, appVersion: version)
+    }
+
+    // MARK: - Library stats + maintenance (016 · A)
+
+    /// Whether a stats scan or a cleanup job can start: an open library, and
+    /// nothing already running.
+    var canRunLibraryJob: Bool {
+        services != nil && store != nil && !libraryStats.isRunning
+    }
+
+    /// Start one confirmed maintenance job. The glue only hands the controller
+    /// an open library — every job below is a call into a service that already
+    /// existed, which is the whole design of 016 · A.
+    ///
+    /// ``LibraryStatsController/Job/scan`` aside, the destructive-adjacent work
+    /// is `MediaReaper`'s and `AppServices`'s; nothing new decides what to
+    /// remove. "Snapshot now" is deliberately absent — it is `snapshotNow()`,
+    /// the SAME call File ▸ Snapshot Now makes, and duplicating it here would
+    /// give the app two manual-snapshot paths to keep in step.
+    func runLibraryJob(_ job: LibraryStatsController.Job) {
+        guard let services, let store, canRunLibraryJob else { return }
+        switch job {
+        case .scan: libraryStats.measure(services: services, store: store)
+        case .orphanSweep: libraryStats.runOrphanSweep(services: services, store: store)
+        case .thumbnails: libraryStats.regenerateThumbnails(services: services, store: store)
+        case .integrity: libraryStats.verifyIntegrity(services: services)
+        case .reconcile: libraryStats.reconcileKnownItems(services: services)
+        }
+    }
+
+    /// Reveal a largest-items row's blob in Finder. Same path as the detail
+    /// page's Reveal — the file is named from the hash + mime, not re-derived.
+    func revealInFinder(largestItem item: LargestItem) {
+        guard let url = blobURL(forBlobHash: item.blobHash, mimeType: item.mimeType),
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Open a largest-items row's blob in the default app (Preview, QuickTime).
+    ///
+    /// The row's OTHER natural action — open the in-app detail page — is not
+    /// offered, and the omission is deliberate. The detail overlay is routed by
+    /// `NavModel.presentedItemID` over the main window's currently loaded
+    /// collection; Settings is a separate scene with no `NavModel` in reach, so
+    /// wiring it would mean building cross-window navigation. 016 · A is a read
+    /// layer plus buttons on existing services, and this is the existing way to
+    /// look at a file full-size from anywhere in the app.
+    func openBlob(largestItem item: LargestItem) {
+        guard let url = blobURL(forBlobHash: item.blobHash, mimeType: item.mimeType),
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Delete every asset that references a largest-items row's blob.
+    ///
+    /// Deletes ALL of them because the row is a FILE: removing one of three
+    /// assets that share a blob reclaims nothing, and a "free 240 MB" action
+    /// that frees nothing is worse than no action.
+    ///
+    /// Goes through the SAME two calls the grid, inspector and canvas use —
+    /// stage, then confirm — so the pre-destructive snapshot, the recoverable
+    /// backup and the ⌘Z registration happen exactly as they do everywhere else.
+    /// Both run in one main-actor turn, so `ContentView`'s shared confirmation
+    /// dialog never observes the staged state: the confirmation the user
+    /// answered was the one in Settings, beside the row they were looking at.
+    func deleteLibraryItem(_ item: LargestItem) {
+        requestDelete(assetIDs: item.assetIDs)
+        confirmPendingDeletion()
+        // The bytes are still on disk: reaping is DEFERRED so an in-session ⌘Z
+        // finds them (010 · delete-undo). The measurement above is therefore
+        // stale in items but not yet in size — say so rather than redraw a
+        // number nobody recomputed.
+        libraryStats.markStale()
     }
 
     // MARK: - Diagnostics (010 · Phase 3)
@@ -1692,9 +1790,18 @@ final class IngestionModel: ObservableObject {
     /// assets, not collection items) can open the full-res detail page.
     func blobURL(forAsset asset: Asset) -> URL? {
         // Media-less kinds (003 · O1) have no blob on disk.
-        guard let store, let hash = asset.blobHash else { return nil }
-        let ext = ImageMetadata.fileExtension(forMIMEType: asset.mimeType ?? "")
-        return store.blobURL(hash: hash, fileExtension: ext)
+        guard let hash = asset.blobHash else { return nil }
+        return blobURL(forBlobHash: hash, mimeType: asset.mimeType ?? "")
+    }
+
+    /// The on-disk blob URL for a bare `(hash, mimeType)` pair — the one place
+    /// the store-time extension is recovered, shared by the asset-based callers
+    /// above and the largest-items rows (016 · A), which have a `BlobUsage`
+    /// rather than an `Asset`.
+    func blobURL(forBlobHash hash: String, mimeType: String) -> URL? {
+        guard let store else { return nil }
+        return store.blobURL(
+            hash: hash, fileExtension: ImageMetadata.fileExtension(forMIMEType: mimeType))
     }
 
     // MARK: - Tags (detail page)
@@ -1758,10 +1865,35 @@ final class IngestionModel: ObservableObject {
     /// (``AssetExport/pasteboardEntry(asset:source:blobURL:)``), and the pasteboard
     /// representations (``AssetPasteboardWriter``) all live in one place. Skips are
     /// reported via ``lastCopyReport`` (7A), never silent.
-    func copyToPasteboard(assets: [(asset: Asset, source: Source?)]) {
+    ///
+    /// Writes TWO representations of the one selection (019 · C1, the 065 §2.4
+    /// pattern applied outside Spaces), so the DESTINATION decides what a copy meant:
+    ///
+    /// - the byte one — blob file URLs (plus an `NSImage` for a single item), which
+    ///   is all Figma / Finder / Photoshop ever see, unchanged;
+    /// - the app-private ``AssetDragPayload``, so a ⌘V back into the app pastes the
+    ///   ASSET (a second membership) instead of re-importing its bytes as a fresh
+    ///   `.localDrag` capture — which loses the note, tags, `original_url` and
+    ///   `created_at` of anything not already local (019).
+    ///
+    /// `sourceCollectionID` is the collection the copy was taken from, or
+    /// ``AssetDragPayload/nilSourceID`` for a membership-less surface (library
+    /// search, a Space board). Required rather than defaulted: every caller knows
+    /// its own answer, and guessing one is how a paste picks the wrong target.
+    ///
+    /// The report's counts stay about the BYTE representation — the honest number
+    /// for other apps, and what keeps the "this won't paste into Figma" warning
+    /// truthful — even though the private payload carries the whole selection.
+    func copyToPasteboard(
+        assets: [(asset: Asset, source: Source?)], sourceCollectionID: UUID
+    ) {
         let selection = AssetExport.exportSelection(
             assets: assets, blobURL: { self.blobURL(forAsset: $0) })
         AssetPasteboardWriter.write(selection, to: .general)
+        // AFTER the write, which clears the board first (see `appendAssetIDs`), and
+        // over the WHOLE selection — including entries the byte pass had to skip.
+        AssetPasteboardWriter.appendAssetIDs(
+            assets.map { $0.asset.id }, from: sourceCollectionID, to: .general)
         copyReportSeq += 1
         lastCopyReport = CopyReport(
             copied: selection.entries.count, skipped: selection.skipped, seq: copyReportSeq)
@@ -1769,13 +1901,17 @@ final class IngestionModel: ObservableObject {
 
     /// Copy the `selection` (membership ids) out of `details` to the pasteboard, in
     /// `details` order (052 · B1). The grid-shaped convenience over
-    /// ``copyToPasteboard(assets:)`` shared by the collection grid and the search
-    /// grid — both hold `[CollectionItemDetail]` and select by `item.id`.
-    func copySelectedToPasteboard(from details: [CollectionItemDetail], selection ids: Set<UUID>) {
+    /// ``copyToPasteboard(assets:sourceCollectionID:)`` shared by the collection grid
+    /// and the search grid — both hold `[CollectionItemDetail]` and select by
+    /// `item.id`. Search passes ``AssetDragPayload/nilSourceID``: it has no owning
+    /// collection to have copied out of.
+    func copySelectedToPasteboard(
+        from details: [CollectionItemDetail], selection ids: Set<UUID>, sourceCollectionID: UUID
+    ) {
         let assets = details
             .filter { ids.contains($0.item.id) }
             .map { (asset: $0.asset, source: Optional($0.source)) }
-        copyToPasteboard(assets: assets)
+        copyToPasteboard(assets: assets, sourceCollectionID: sourceCollectionID)
     }
 
     /// The on-disk URL of a folder item's 512-tier thumbnail (pure — no decode).
@@ -2404,6 +2540,75 @@ final class IngestionModel: ObservableObject {
         return SpaceModel(spaceID: spaceID, services: services, store: store)
     }
 
+    // MARK: - Ambient clipboard capture (013 · K3)
+
+    /// Wire the clipboard watcher to this library and let it resume the stored
+    /// preference (off unless the user turned it on before).
+    ///
+    /// The id comes from ``LibraryIdentity`` — the same stable name the backup
+    /// destination uses — because the preference key is namespaced `library.<id>.`
+    /// per 016 §C. If it cannot be resolved (a malformed `library-id` file, which
+    /// that type deliberately refuses to self-heal), the watcher simply stays
+    /// unavailable: a per-library preference we can't read is not an invitation to
+    /// guess, and "no ambient capture" is the safe side of that guess.
+    private func activateClipboardWatcher(root: URL) {
+        clipboard.onCapture = { [weak self] capture in
+            self?.ingestClipboardCapture(capture)
+        }
+        clipboard.onOpenSettings = { Self.openSettingsWindow() }
+        guard let libraryID = try? LibraryIdentity.resolve(root: root) else {
+            AppLog.model.error(
+                "library id unresolved — clipboard capture stays unavailable this launch")
+            return
+        }
+        clipboard.activate(libraryID: libraryID)
+    }
+
+    /// File one ambient capture into Unsorted, through the ordinary import path.
+    ///
+    /// Deliberately NOT ``run(inputs:)``: that reloads the folder a batch landed
+    /// in, which is right for a paste (the user is looking at it) and wrong here —
+    /// an image copied in another app must not yank the grid over to Unsorted
+    /// while the user is working in a collection. So the tree refreshes (counts
+    /// move), and the contents reload only if Unsorted is what's on screen.
+    ///
+    /// The completion toast ``importInputs(_:undecoded:)`` posts is kept on
+    /// purpose: an ambient capture the user did not ask for, item by item, is
+    /// exactly the thing that should say so. 18A content-hash dedup makes a
+    /// double-fire (or the same image copied twice) resolve to the one asset.
+    private func ingestClipboardCapture(_ capture: ClipboardCapture) {
+        guard isReady else { return }
+        let target = Collection.unsortedID
+        let input = DirectInputReader.clipboardInput(
+            imageData: capture.imageData,
+            appName: capture.app.name,
+            appBundleID: capture.app.bundleID,
+            into: target, at: Date())
+        Task {
+            _ = await importInputs([input])
+            await refreshFolders()
+            if selectedFolderID == target { loadContents(of: target) }
+        }
+    }
+
+    /// Open the Settings scene from AppKit (the menu-bar item).
+    ///
+    /// SwiftUI's `Settings` scene has no programmatic opener outside a view
+    /// hierarchy (`SettingsLink` is a `View`), so this goes through the action the
+    /// ⌘, menu item sends. The selector was renamed in macOS 13, hence the pair —
+    /// both are tried, and doing nothing is an acceptable failure for a
+    /// convenience item.
+    private static func openSettingsWindow() {
+        let selectors = [
+            Selector(("showSettingsWindow:")),
+            Selector(("showPreferencesWindow:")),
+        ]
+        NSApp.activate(ignoringOtherApps: true)
+        for selector in selectors where NSApp.sendAction(selector, to: nil, from: nil) {
+            return
+        }
+    }
+
     // MARK: - Import
 
     /// Run a batch of inputs through the coordinator OFF-MAIN, then reload the
@@ -2672,6 +2877,15 @@ final class IngestionModel: ObservableObject {
     /// downloadable image URL) — no more silent no-op (backlog B1).
     func reportUnreadableDrop() {
         notify("Couldn't read that drop — no image, file, or image URL.")
+    }
+
+    /// Report a ⌘V of the app's own copy back into the collection it came from
+    /// (019 · C2). `addAssets` guarantees ONE membership, so the paste genuinely
+    /// changes nothing — say so, rather than letting the grid appear to swallow the
+    /// keystroke. Same shape as ``reportUnreadableDrop()``: a plain notice for a
+    /// deliberate no-op.
+    func reportAlreadyInCollection() {
+        notify("Already in this collection.")
     }
 
     /// A friendly notice for a failed remote-image download.

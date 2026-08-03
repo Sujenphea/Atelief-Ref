@@ -113,6 +113,13 @@ struct SpaceView: View {
                     .transition(.opacity)
             }
         }
+        // Write the last camera before this board goes away (018 · Cluster C). The
+        // view's identity is keyed to the space id (`AppShellView.spaceDestination`),
+        // so this fires on a space-switch as well as on navigating away — the two
+        // moments the 0.4s debounce would otherwise swallow the final gesture of the
+        // session. A no-op when nothing is pending, and it publishes nothing, so it
+        // is safe inside the view-removal update `onDisappear` runs in.
+        .onDisappear { space.flushCameraPersist() }
         // Enumerate the system's font families now, on a background thread (064). A
         // board is the only place a font picker is reachable from, and the first picker
         // to open used to pay ~384 ms for this on the main thread — as part of the click
@@ -297,7 +304,12 @@ struct SpaceView: View {
                     if assets.isEmpty {
                         NSPasteboard.general.clearContents()
                     } else {
-                        model.copyToPasteboard(assets: assets)
+                        // A board owns PLACEMENTS, not memberships (019 · C1), so the
+                        // asset representation's private payload carries the
+                        // nil-source sentinel: pasting it into a collection is
+                        // always an add, never a same-collection no-op.
+                        model.copyToPasteboard(
+                            assets: assets, sourceCollectionID: AssetDragPayload.nilSourceID)
                     }
                     copyElementsToPasteboard(details.map(\.item))
                 },
@@ -339,6 +351,9 @@ struct SpaceView: View {
                 // The canvas repositions its own editor before these fire, so the
                 // chrome anchor always reads the frame the editor has settled on.
                 onTransformChanged: { chromeAnchor.refresh() },
+                // Every pan / zoom, plus the opening restore-or-fit. Debounced into
+                // one write per gesture; `onDisappear` flushes the last one.
+                onCameraChanged: { camera in space.cameraChanged(camera) },
                 onLiveFrameChanged: { chromeAnchor.refresh() },
                 // `onHostReady` fires from `makeNSView` — inside a view update, where
                 // publishing is undefined behaviour — so the anchor's read is hopped
@@ -407,14 +422,18 @@ struct SpaceView: View {
                 onBeginTileDragOut: { tileIDs in
                     content.dragOutPayload(forTileIDs: tileIDs)?.makePasteboardItem()
                 },
-                // Frame the board to fit exactly once, on its first open. A board loads
-                // its rows asynchronously, so the canvas is laid out before there is
-                // anything to frame — the host therefore waits for content rather than
-                // burning its one shot on an empty world. `didFrameBoard` lives on this
-                // view, whose identity is stable, so the camera survives even if the
-                // host is ever rebuilt for some other reason.
+                // Establish the board's camera exactly once, on its first open. A board
+                // loads its rows asynchronously, so the canvas is laid out before there
+                // is anything to look at — the host therefore waits for content rather
+                // than burning its one shot on an empty world. `didFrameBoard` lives on
+                // this view, whose identity is stable, so the camera survives even if
+                // the host is ever rebuilt for some other reason.
                 framesContentWhenReady: !didFrameBoard,
                 onDidFrameContent: { Task { @MainActor in didFrameBoard = true } },
+                // Where this board was left (018 · Cluster C). `nil` — never opened,
+                // or a blob that no longer decodes — fits the content instead, and so
+                // does a camera that would open on empty space.
+                restoreCamera: space.openingCamera,
                 // The host owns the edit; these two are how the app hears about it.
                 //
                 // `onEditingChanged` is hopped off the update frame: it publishes, and
@@ -808,19 +827,31 @@ struct SpaceView: View {
         NSPasteboard.general.setData(data, forType: SpaceElementPayload.pasteboardType)
     }
 
-    /// ⌘V onto the board, in strict priority order (065). The ORDER is the design:
+    /// ⌘V onto the board, in strict priority order (065 + 019 · C3). The ORDER is
+    /// the design — each branch is more specific than the one below it, and every
+    /// lower branch would happily consume a weaker representation of the same copy:
     ///
     /// 1. **A copied piece of a board** — rebuilt with its layout intact. First,
     ///    because our own representation is the most specific thing on the pasteboard
     ///    and the other branches would happily consume a weaker one instead (a copied
     ///    text box also puts its string on the pasteboard as plain text).
-    /// 2. **Importable external content** — files, images, URLs — unchanged, so a
+    /// 2. **Assets copied elsewhere in the app** (the grid, search, a detail page) —
+    ///    PLACED by id, not re-imported. Above the importer for the 019 reason: the
+    ///    same copy also carries blob file URLs, and importing those would rebuild
+    ///    the asset from its bytes and lose its note, tags and provenance.
+    /// 3. **Importable external content** — files, images, URLs — unchanged, so a
     ///    pasted link still becomes a reference.
-    /// 3. **Plain text** — a text box. LAST, and that is what keeps it from stealing
+    /// 4. **Plain text** — a text box. LAST, and that is what keeps it from stealing
     ///    every pasted URL, since a URL is also a string.
     private func pasteOntoBoard(from pasteboard: NSPasteboard, at worldPoint: CGPoint) -> Bool {
         if let payload = SpaceElementPayload.decode(from: pasteboard) {
             space.pasteElements(payload, at: worldPoint)
+            return true
+        }
+        // "nil, not empty" (065 §2.4): an empty payload is not a copy — it must not
+        // claim the paste and stop the chain here.
+        if let payload = AssetDragPayload.decode(from: pasteboard), !payload.assetIDs.isEmpty {
+            space.placeDroppedAssets(ids: payload.assetIDs, at: worldPoint)
             return true
         }
         if importExternal(from: pasteboard, at: worldPoint) { return true }

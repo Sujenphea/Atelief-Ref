@@ -55,6 +55,67 @@ struct DirectInputReaderTests {
         #expect(input.provenance.originalURL == "https://example.com/pic.png")
     }
 
+    // MARK: clipboardInput — ambient capture provenance (013 · K3)
+
+    @Test("clipboardInput → .clipboard, the app as author, no originalURL")
+    func clipboardInputProvenance() {
+        let input = DirectInputReader.clipboardInput(
+            imageData: Data([0x7]), appName: "Preview", appBundleID: "com.apple.Preview",
+            into: Self.collectionID, at: Self.capturedAt)
+
+        #expect(input.provenance.platform == .clipboard)
+        // An ambient copy has no canonical URL — and `Validation.originalURL`
+        // exempts `.clipboard`, so this must not be faked into something.
+        #expect(input.provenance.originalURL == nil)
+        #expect(input.provenance.authorName == "Preview")
+        #expect(input.provenance.authorHandle == "com.apple.Preview")
+        #expect(input.provenance.capturedAt == Self.capturedAt)
+        #expect(input.collectionID == Self.collectionID)
+        if case .bytes(.data(let d)) = input.source {
+            #expect(d == Data([0x7]))
+        } else {
+            Issue.record("expected .data source")
+        }
+    }
+
+    @Test("an unresolvable frontmost app falls back to \"Clipboard\", never to nothing")
+    func clipboardInputFallsBack() {
+        let input = DirectInputReader.clipboardInput(
+            imageData: Data([0x7]), appName: nil, appBundleID: nil,
+            into: Self.collectionID, at: Self.capturedAt)
+
+        // Provenance is never null (013 §B): resolving the frontmost app races a
+        // fast ⌘-tab and can simply fail, and a blank author would read as a bug
+        // rather than as "we only know this much".
+        #expect(input.provenance.authorName == "Clipboard")
+        #expect(input.provenance.authorName == DirectInputReader.clipboardFallbackAppName)
+        // No bundle id is honest as nil — unlike the name, nothing sensible stands in.
+        #expect(input.provenance.authorHandle == nil)
+        #expect(input.provenance.platform == .clipboard)
+    }
+
+    @Test("blank / whitespace-only app fields normalize like absent ones", arguments: [
+        "", "   ", "\n\t",
+    ])
+    func clipboardInputNormalizesBlanks(_ blank: String) {
+        let input = DirectInputReader.clipboardInput(
+            imageData: Data([0x7]), appName: blank, appBundleID: blank,
+            into: Self.collectionID, at: Self.capturedAt)
+
+        #expect(input.provenance.authorName == "Clipboard")
+        #expect(input.provenance.authorHandle == nil)
+    }
+
+    @Test("the app name is trimmed, not mangled")
+    func clipboardInputTrims() {
+        let input = DirectInputReader.clipboardInput(
+            imageData: Data([0x7]), appName: "  Sketch  ", appBundleID: " com.bohemian.sketch ",
+            into: Self.collectionID, at: Self.capturedAt)
+
+        #expect(input.provenance.authorName == "Sketch")
+        #expect(input.provenance.authorHandle == "com.bohemian.sketch")
+    }
+
     @Test("fileInput → .localDrag with original_path in raw_metadata")
     func fileInputProvenance() {
         let url = URL(fileURLWithPath: "/Users/someone/Pictures/ref.png")
