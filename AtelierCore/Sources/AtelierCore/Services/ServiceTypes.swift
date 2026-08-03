@@ -442,3 +442,28 @@ public struct EmbeddingCandidate: Sendable, Equatable {
         self.existingContentHash = existingContentHash
     }
 }
+
+/// One analyzed asset's perceptual signature, as the near-duplicate inventory
+/// returns it (012 · I5).
+///
+/// Deliberately two fields and nothing else. The near-duplicate surface reads the
+/// WHOLE library's signatures to group them, so this row is paid for once per
+/// analyzed image and must stay small; the handful of assets that actually land in
+/// a cluster are then hydrated individually through ``AppServices/getAsset(id:)``,
+/// which is also what re-checks that they still exist.
+///
+/// `phash` is the SIGNED storage form (SQLite has no unsigned integer) — the same
+/// bit pattern `upsertAnalysis` was handed. Reinterpreting it as `UInt64` is the
+/// caller's job at the imaging seam, exactly as on the way in; Core never treats
+/// it as a number.
+public struct AssetPerceptualHash: Sendable, Equatable, Hashable {
+    /// The analyzed asset.
+    public let assetID: UUID
+    /// Its 64-bit perceptual hash, as stored (signed bit-cast).
+    public let phash: Int64
+
+    public init(assetID: UUID, phash: Int64) {
+        self.assetID = assetID
+        self.phash = phash
+    }
+}
