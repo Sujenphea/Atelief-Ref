@@ -319,6 +319,62 @@ either side is deliberately NOT a refusal — the rule is "newer than me", and "
 can't tell" is not evidence of it. H6/H7's `manifest_version` refusal should
 follow the same shape.
 
+**As built (`327-a-backup-that-runs-itself-and-proves-itself`) — H5d, cadence +
+sampled verification.** `BackupCadence`/`BackupCadenceStore`,
+`BackupController.backUpIfStale` + `isStale`, `BackupVerifier` +
+`BackupVerifyResult` in `AtelierIngestion/Backup/`, `BackupVerifyController`, and
+an "Automatically" picker plus a check row in Settings ▸ Backup. 43 tests. No
+schema change (v18 stands); one new per-library key,
+`library.<id>.backupCadence`. Four things worth carrying into H6/H7:
+
+- **Only a run that LANDED resets the staleness clock.** A failed or cancelled
+  run leaves the destination exactly as stale as it was, so counting either as a
+  backup would buy a whole cadence period of silence for a backup that never
+  happened — one press of Stop, and the copy quietly goes a week out of date. An
+  *incomplete* run does reset it: it finished and installed a verified database,
+  and what it could not copy was a blob missing at the SOURCE, which re-running
+  cannot conjure back. Treating that as stale would attempt a full backup on
+  every launch forever over a fault the status line already reports in words.
+  The clock is injected the way `SnapshotManager`'s is, so the boundary is a
+  decision about a `Date` rather than about wall-clock time.
+- **An unreachable target is a SKIP, not a failure — but only on the automatic
+  path.** An unplugged external drive is the normal state of a backup disk, and
+  "Last backup failed" at every launch would train the user to ignore the one
+  time it means something. So `backUpIfStale` resolves the bookmark first and
+  returns silently if it can't, while "Back Up Now" — which a human just pressed
+  — still reports the reason. Any future unattended job needs the same split
+  between "nobody asked, so stay quiet" and "you asked, so here's why not".
+  The pending-restore guard is the reverse case: it matters MORE unattended,
+  because an automatic run would overwrite the backup the user is one relaunch
+  away from restoring and nobody would have caused it.
+- **The sample is deterministic, and striding is what makes it mean anything.**
+  Sorted by hash, then taken at a fixed stride from a seed-chosen offset. Taking
+  the first N would re-verify one shard directory forever while implying the
+  whole backup — a check that passes because it never looks where the damage is
+  is worse than no check, because it is believed. The seed rotates the offset so
+  successive runs drift across the tree while any single (tree, limit, seed) is
+  exactly reproducible; a random pick would be untestable here and unanswerable
+  in a support conversation. The cap is a COUNT rather than a byte budget, so
+  the sample size can't depend on which files happened to be picked; the bytes
+  read are reported afterwards, which is where the cost belongs.
+- **Verification reports; it never repairs.** `BackupVerifier` contains no
+  delete, move, or rewrite, and that is a refusal rather than an omission: a
+  file whose bytes disagree with its name is still the only copy of something at
+  a destination the user restores FROM, and a transient read error on a network
+  volume looks exactly like corruption. Unreadable is therefore reported apart
+  from mismatched — the bytes were never seen, so calling them wrong would be a
+  guess dressed as a measurement — and every sentence about a finding says
+  outright that nothing was deleted, because that is the first question it
+  provokes. H6/H7 should assume the same: an integrity check on a user's only
+  copy earns the right to complain, never the right to prune.
+
+Cadence defaults to **daily** rather than manual. Choosing a backup folder is
+already the statement of intent, and a second opt-in produces the commonest
+backup failure there is — set up once, ran once, months stale, unnoticed. Same
+reasoning as H3's daily snapshot. An unrecognised stored value degrades to daily
+too, since falling back to "off" would silently stop the backups of anyone who
+ran a newer build once.
+
 H4–H5 are therefore complete. Still to come: H6 (archive export) and H7 (archive
 import + the shared replay layer [016] waits on).
 

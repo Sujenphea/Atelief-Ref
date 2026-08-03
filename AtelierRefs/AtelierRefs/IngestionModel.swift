@@ -271,6 +271,11 @@ final class IngestionModel: ObservableObject {
     /// different jobs with different progress and different outcomes — sharing
     /// one would make "is something running?" ambiguous exactly when it matters.
     let restore = RestoreController()
+    /// Re-hashes what landed at the destination (008 H5d). Its own controller
+    /// for the same reasons ``restore`` is one — it is a separate long job with
+    /// its own progress, and the section has to be able to say which of the
+    /// three is running.
+    let verify = BackupVerifyController()
     /// Presents the restore-from-backup sheet.
     @Published var showRestoreBackups = false
 
@@ -748,6 +753,15 @@ final class IngestionModel: ObservableObject {
             // ambient should be able to run before the app knows where it would
             // file what it takes. Off unless the user turned it on before.
             activateClipboardWatcher(root: root)
+            // The backup cadence is per-library for the same reason (008 H5d):
+            // two libraries pointed at one folder must be able to disagree about
+            // how often they copy themselves into it. A library whose id can't
+            // be resolved keeps the default in memory and simply never persists
+            // a change — it also can't be backed up at all, which the run path
+            // already reports in its own words.
+            if let libraryID = try? LibraryIdentity.resolve(root: root) {
+                backup.activate(libraryID: libraryID)
+            }
 
             await refreshFolders()
             // Spaces load here too — the sidebar's `.task` can run BEFORE this
@@ -780,6 +794,15 @@ final class IngestionModel: ObservableObject {
             // concurrent capture write just queues behind the writer briefly.
             // Best-effort; never blocks or disrupts launch.
             Task { await snapshots.snapshotIfStale() }
+
+            // The off-device backup on the same terms (008 H5d): a background
+            // task, after everything above, gated on the user's cadence. It
+            // deliberately sits BELOW the daily snapshot — a snapshot is local,
+            // bounded and fast; a backup can be tens of gigabytes over USB, and
+            // whichever of the two is going to be slow must not be the one the
+            // other waits behind. Best-effort, cancellable from Settings, and a
+            // no-op unless a folder is chosen and the last good run is stale.
+            Task { [weak self] in await self?.backUpIfStale() }
 
             // Wire the (previously dormant) on-device analysis pipeline: an idle
             // .background loop that drains OCR/colors/phash then the semantic
@@ -970,6 +993,8 @@ final class IngestionModel: ObservableObject {
         // has would be true and useless — and read as though the backup is
         // still current.
         backup.forgetLastRun()
+        // Same for a verdict about that folder's contents (008 H5d).
+        verify.forgetLastRun()
     }
 
     // MARK: - Off-device backup runs (008 H5)
@@ -983,7 +1008,7 @@ final class IngestionModel: ObservableObject {
     var canRunBackup: Bool {
         services != nil && store != nil && libraryRoot != nil
             && backupFolder.hasFolder && !backup.isRunning
-            && !restore.isRunning && !hasPendingRestore
+            && !restore.isRunning && !verify.isRunning && !hasPendingRestore
     }
 
     /// Copy everything the target is missing, then the database, then the
@@ -991,11 +1016,52 @@ final class IngestionModel: ObservableObject {
     /// glue that hands it an open library.
     func runBackupNow() {
         guard let services, let store, let libraryRoot, canRunBackup else { return }
-        let version = Bundle.main
-            .infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
         backup.start(
             services: services, source: store, libraryRoot: libraryRoot,
-            folder: backupFolder, appVersion: version)
+            folder: backupFolder, appVersion: Self.appVersion)
+    }
+
+    /// The launch-time cadence check (008 · H5d), called from a background task
+    /// once the library is up.
+    ///
+    /// Every real decision — cadence, staleness, whether the bookmark resolves —
+    /// lives on the controller, where it is testable without a model. What
+    /// belongs here is only what the model knows: that a library is open, and
+    /// that a restore is pending.
+    func backUpIfStale() async {
+        guard let services, let store, let libraryRoot, canRunBackup else { return }
+        await backup.backUpIfStale(
+            services: services, source: store, libraryRoot: libraryRoot,
+            folder: backupFolder, appVersion: Self.appVersion,
+            restorePending: hasPendingRestore)
+    }
+
+    /// The running app's marketing version, recorded in the backup manifest.
+    private static var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+
+    // MARK: - Verifying the backup (008 H5d)
+
+    /// Whether a check can start. Not blocked by a pending restore: reading the
+    /// destination changes nothing there, and a user about to restore from a
+    /// backup has more reason to want it verified than anyone.
+    var canVerifyBackup: Bool {
+        isReady && libraryRoot != nil && backupFolder.hasFolder
+            && !backup.isRunning && !restore.isRunning && !verify.isRunning
+    }
+
+    /// Re-hash the backup and report what disagrees.
+    ///
+    /// - Parameter exhaustive: `false` checks a capped sample; `true` checks
+    ///   every file, which downloads the whole backup from a synced destination.
+    ///   Two buttons rather than one with a modifier, because the second one
+    ///   costs real money on a metered connection and should never be reachable
+    ///   by accident.
+    func verifyBackupNow(exhaustive: Bool = false) {
+        guard let libraryRoot, canVerifyBackup else { return }
+        verify.start(
+            libraryRoot: libraryRoot, folder: backupFolder, exhaustive: exhaustive)
     }
 
     // MARK: - Restore from the backup folder (008 H5c)
@@ -1019,7 +1085,7 @@ final class IngestionModel: ObservableObject {
     var canRestoreBackup: Bool {
         store != nil && libraryRoot != nil && snapshotManager != nil
             && backupFolder.hasFolder && !backup.isRunning && !restore.isRunning
-            && !hasPendingRestore
+            && !verify.isRunning && !hasPendingRestore
     }
 
     /// Open the restore sheet and start reading the backup folder.
