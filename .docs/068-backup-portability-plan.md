@@ -368,12 +368,15 @@ schema change (v18 stands); one new per-library key,
   provokes. H6/H7 should assume the same: an integrity check on a user's only
   copy earns the right to complain, never the right to prune.
 
-Cadence defaults to **daily** rather than manual. Choosing a backup folder is
-already the statement of intent, and a second opt-in produces the commonest
-backup failure there is — set up once, ran once, months stale, unnoticed. Same
-reasoning as H3's daily snapshot. An unrecognised stored value degrades to daily
-too, since falling back to "off" would silently stop the backups of anyone who
-ran a newer build once.
+Cadence defaults to **manual** (user, 2026-08-03). Daily-by-default was built
+first, on the H3 daily-snapshot precedent, and rejected for the reason that
+precedent doesn't carry: a snapshot stays inside the library, while a backup
+copies it somewhere the user chose, and an install that already has a folder
+chosen must not quietly start doing that because it was updated. The two
+fallbacks are therefore deliberately different — **absent ⇒ manual**, but an
+**unreadable stored value ⇒ daily**. "Never asked" and "asked in words this
+build doesn't know" are opposite facts, and degrading the second to `manual`
+would silently stop the backups of anyone who ran a newer build once.
 
 H4–H5 are therefore complete. Still to come: H6 (archive export) and H7 (archive
 import + the shared replay layer [016] waits on).

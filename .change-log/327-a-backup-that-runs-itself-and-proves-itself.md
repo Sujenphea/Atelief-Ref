@@ -9,7 +9,7 @@ schema change — the library is still at v18.
 
 - **`BackupCadence` + `BackupCadenceStore`** (new, AtelierRefs) — Manually /
   Daily / Weekly, persisted per library under `library.<id>.backupCadence`.
-  Daily by default; see "Why daily rather than manual" below.
+  Manual by default; see "Why manual rather than daily" below.
 - **`BackupController.backUpIfStale(…)` + `BackupController.isStale(…)`** — the
   `SnapshotManager.snapshotIfStale` shape, with the clock injected the same way.
   Called from `bootstrap()` in a background `Task`, after everything else, and
@@ -55,16 +55,20 @@ and what it couldn't copy was a blob missing at the **source**, which re-running
 cannot conjure back — treating that as stale would attempt a full backup on
 every launch forever over a fault the status line already reports in words.
 
-### Why daily rather than manual
+### Why manual rather than daily
 
-Choosing a backup folder is already the statement of intent. Making the copying
-itself a second, separate opt-in produces the most common backup failure there
-is: one that was set up once, ran once, and has been months stale ever since
-without anyone noticing. It is the same reasoning that made H3's daily snapshot
-on-by-default, and it costs nothing until a folder is chosen. An unrecognised
-stored value (a preference written by a future build) also degrades to daily
-rather than to manual — falling back to "off" would silently stop the backups of
-anyone who ran a newer build once.
+Daily-by-default was built first, on the H3 daily-snapshot precedent, and
+rejected for the reason that precedent doesn't carry: a snapshot stays inside
+the library, while a backup copies it somewhere the user chose. An install that
+already has a folder chosen must not quietly start copying itself there because
+it was updated. Automatic is one picker away, beside the folder row, where the
+intent is formed.
+
+The two fallbacks are deliberately different. **Absent ⇒ manual**, but an
+**unreadable stored value ⇒ daily**: a preference written by a future build with
+a fourth case is evidence the user chose automatic, and degrading that to "off"
+would silently stop the backups of anyone who ran a newer build once. "Never
+asked" and "asked in words this build doesn't know" are opposite facts.
 
 ## The verification
 
@@ -134,7 +138,6 @@ to the on-disk backup layout — a destination written by H5a/H5b/H5c verifies a
 it is, and one written by this build restores into an older one unchanged.
 
 One new `UserDefaults` key, namespaced per library:
-`library.<id>.backupCadence`. Absent ⇒ daily, so an existing install begins
-backing up automatically at its next launch **only if** it already has a backup
-folder chosen and its last successful run is over a day old. Anyone who wants
-the previous behaviour sets Settings ▸ Backup ▸ Automatically to "Manually".
+`library.<id>.backupCadence`. Absent ⇒ manual, so **no existing install changes
+behaviour**: backups keep happening only when asked for, until someone sets
+Settings ▸ Backup ▸ Automatically to Daily or Weekly.

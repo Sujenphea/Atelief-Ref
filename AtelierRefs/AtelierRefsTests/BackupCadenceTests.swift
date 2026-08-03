@@ -303,13 +303,13 @@ struct BackupCadenceTests {
 
     // MARK: - The preference
 
-    @Test("the cadence defaults to daily and is remembered per library")
+    @Test("the cadence defaults to manual and is remembered per library")
     func cadenceIsPersistedPerLibrary() throws {
         let rig = try makeRig()
         defer { rig.cleanup() }
-        // Choosing a backup folder is already the statement of intent; a second
-        // opt-in is how backups end up months stale without anyone noticing.
-        #expect(rig.controller.cadence == .daily)
+        // Automatic backup is opt-in: an install that already has a folder
+        // chosen must not start copying itself somewhere because it updated.
+        #expect(rig.controller.cadence == .manual)
 
         rig.controller.setCadence(.weekly)
         let libraryID = try LibraryIdentity.resolve(root: rig.libraryRoot)
@@ -325,20 +325,32 @@ struct BackupCadenceTests {
             summaries: BackupSummaryStore(defaults: rig.defaults),
             cadences: BackupCadenceStore(defaults: rig.defaults))
         other.activate(libraryID: "fedcba9876543210")
-        #expect(other.cadence == .daily)
+        #expect(other.cadence == .manual)
     }
 
-    @Test("a cadence written by a future build degrades to the default, not to off")
-    func unknownCadenceDegradesToDefault() throws {
+    @Test("a cadence written by a future build degrades to daily, not to off")
+    func unknownCadenceDegradesToDaily() throws {
         let name = "BackupCadenceTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         defer { UserDefaults().removePersistentDomain(forName: name) }
         defaults.set("fortnightly", forKey: BackupCadenceStore.key(libraryID: "0123456789abcdef"))
 
-        // Falling back to `manual` would silently stop the backups of anyone who
-        // ran a newer build once.
+        // NOT the `manual` default: a value written at all is evidence the user
+        // chose automatic, and falling back to `manual` would silently stop the
+        // backups of anyone who ran a newer build once.
         #expect(BackupCadenceStore(defaults: defaults)
             .load(libraryID: "0123456789abcdef") == .daily)
+    }
+
+    @Test("no stored cadence reads as manual, not as an unrecognised one")
+    func absentCadenceIsManual() throws {
+        let name = "BackupCadenceTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { UserDefaults().removePersistentDomain(forName: name) }
+        // The pair the two fallbacks exist to keep apart: nothing recorded means
+        // never asked; something unreadable means asked, in words we don't know.
+        #expect(BackupCadenceStore(defaults: defaults)
+            .load(libraryID: "0123456789abcdef") == .manual)
     }
 
     @Test("a cadence set before the library opens isn't written under no id")
@@ -350,13 +362,17 @@ struct BackupCadenceTests {
         let controller = BackupController(
             summaries: BackupSummaryStore(defaults: defaults),
             cadences: BackupCadenceStore(defaults: defaults))
-        controller.setCadence(.manual)
-        #expect(controller.cadence == .manual)
+        // Deliberately NOT the default — the assertion below has to be able to
+        // tell "never persisted" apart from "persisted and read back".
+        controller.setCadence(.weekly)
+        #expect(controller.cadence == .weekly)
 
         // In memory only: a preference filed under no library is one nothing
         // ever reads back, and writing it would leave a key with no owner.
         controller.activate(libraryID: "0123456789abcdef")
-        #expect(controller.cadence == .daily)
+        #expect(controller.cadence == .manual)
+        #expect(defaults.string(
+            forKey: BackupCadenceStore.key(libraryID: "0123456789abcdef")) == nil)
     }
 
     @Test("maxAge is nil for manual and ordered for the rest")

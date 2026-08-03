@@ -58,15 +58,23 @@ nonisolated enum BackupCadence: String, CaseIterable, Codable, Sendable {
 
     /// What the user gets if they never touch the picker.
     ///
-    /// Daily, not manual. Choosing a backup folder is already the statement of
-    /// intent — "keep a copy of my library here" — and making the copying itself
-    /// a second, separate opt-in produces the single most common backup failure
-    /// there is: one that was set up once, ran once, and has been months stale
-    /// ever since without anyone noticing. The same reasoning made H3's daily
-    /// snapshot on-by-default. A run with no folder chosen, or whose folder
-    /// isn't reachable, does nothing at all, so the default costs nothing until
-    /// the user has said where.
-    static let `default` = BackupCadence.daily
+    /// Manual: copying a whole library somewhere is the user's call to make, and
+    /// an install that already has a folder chosen must not quietly start doing
+    /// it because it was updated. The picker sits beside the folder row, so the
+    /// choice is offered exactly where the intent is formed.
+    ///
+    /// Distinct from ``unrecognised`` on purpose — see there.
+    static let `default` = BackupCadence.manual
+
+    /// What an *unreadable* stored cadence degrades to.
+    ///
+    /// Deliberately not ``default``. "No preference recorded" and "a preference
+    /// recorded by a build that knew a case this one doesn't" are opposite
+    /// facts: the first user never asked for automatic backups, the second
+    /// demonstrably did. Degrading a future build's choice to `manual` would
+    /// silently stop the backups of anyone who ran a newer build once, so an
+    /// unrecognised value keeps backing up on the shortest sane cadence.
+    static let unrecognised = BackupCadence.daily
 }
 
 /// Reads and writes the cadence preference, per library.
@@ -92,15 +100,13 @@ nonisolated struct BackupCadenceStore: @unchecked Sendable {
 
     /// The stored cadence, or ``BackupCadence/default`` when there is none.
     ///
-    /// An unrecognised value also reads as the default — a preference written by
-    /// a future build with a fourth case must degrade to a sane cadence, not to
-    /// nothing at all. Falling back to `manual` there would silently stop the
-    /// backups of anyone who ran a newer build once.
+    /// A value that is present but unreadable takes ``BackupCadence/unrecognised``
+    /// instead: a preference written by a future build with a fourth case is
+    /// evidence the user chose automatic, and must not degrade to `manual`.
     func load(libraryID: String) -> BackupCadence {
-        guard let raw = defaults.string(forKey: Self.key(libraryID: libraryID)),
-              let cadence = BackupCadence(rawValue: raw)
+        guard let raw = defaults.string(forKey: Self.key(libraryID: libraryID))
         else { return .default }
-        return cadence
+        return BackupCadence(rawValue: raw) ?? .unrecognised
     }
 
     func save(_ cadence: BackupCadence, libraryID: String) {
