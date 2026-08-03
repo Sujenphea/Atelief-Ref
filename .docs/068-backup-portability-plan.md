@@ -25,8 +25,9 @@ already anticipates exactly this ("one export naming rule, not two").
 
 ## Shared foundations (build once, both halves consume)
 
-> **Status: F1–F3 are BUILT** (changelog 291, branch `feat/backup-offdevice`).
-> The sections below describe them as shipped; H4–H7 remain plans.
+> **Status: F1–F3, H4, H5, H6 and H7 are all BUILT** — 008 is complete. The
+> sections below describe them as planned; each carries an "As built" note
+> recording where the shipped code departed from the plan and why.
 
 ### F1 — `BlobRef`: the `(hash, mimeType)` pair as a Core read
 
@@ -319,9 +320,9 @@ either side is deliberately NOT a refusal — the rule is "newer than me", and "
 can't tell" is not evidence of it. H6/H7's `manifest_version` refusal should
 follow the same shape.
 
-H4–H5 are therefore complete, and H6 shipped after them (see its "As built"
-note below). Still to come: H7 (archive import + the shared replay layer [016]
-waits on).
+H4–H5 are therefore complete, and H6 and H7 shipped after them (see their
+"As built" notes below). The whole 008 line is done; [016]'s importers now have
+the replay layer they were waiting on.
 
 ## H6 — Archive export (M)
 
@@ -462,6 +463,71 @@ all equal); import-twice idempotency; version refusal; malformed/truncated
 manifest; missing blob file referenced by the manifest; unicode/emoji names;
 a large-archive streaming case.
 
+**As built (`329-an-archive-you-can-read-back-in`) — H7, the importer.**
+`ImportPlan` (the replay layer's vocabulary), `ImportReplay` (`LibraryImporter`),
+`LibraryArchiveReader` (`ArchiveParse` / `ArchiveReadError`),
+`ArchiveImportController` + `ImportRunSummary` + `ArchiveImportCopy`,
+`ArchiveFolderPanel.presentImport`, and an import row in Settings ▸ Archive.
+36 tests. No schema change (v18 stands), no new entitlement — an open-panel grant
+lasts the process. Built as the planned two pieces, and the split held: every
+malformed case (a manifest naming an asset it doesn't ship, a truncated file, two
+collections sharing one path) is a fast fixture test, because a round-trip
+harness cannot produce any of them. Seven things worth carrying forward:
+
+- **The replay layer has no private back door, and that is the deliverable.**
+  Every row it creates goes through `createCollection`, `ingest` /
+  `ingestContent`, `addAssets`, `applyTag`, `setName`, `setNote`, `setGridOrder`
+  or `setCanvasPlacement`. So an importer cannot produce a library state the app
+  could not have produced — membership uniqueness, the Unsorted invariant, name
+  validation, canonical payloads and dedup keys are neither re-implemented nor
+  re-breakable here. [016]'s three parsers produce `[ImportPlan]` and inherit all
+  of it. An `ImportItem` is identified by a KEY, not a row, which is what makes a
+  multi-collection asset arrive as one asset with N memberships.
+- **The source library's Unsorted comes in as a plain folder**, deliberately not
+  special-cased. Inside a new destination collection everything is an ordinary
+  folder; the alternatives — dropping those untriaged assets, or merging them
+  into THIS library's Unsorted — are exactly the silent drop and the silent
+  clobber the destination rule exists to prevent.
+- **The blob hash is COMPUTED, never taken from the manifest.** The store is
+  content-addressed, so bytes filed under an unverified hash render as the wrong
+  image for every future asset that hashes there, with no recovery. An archive is
+  a browsable folder whose files a user can rename or replace, so its declared
+  hash is a claim about a file rather than a fact about bytes. The cost is one
+  streaming read of a file that was going to be copied anyway.
+- **Additive on a dedup hit, never destructive.** Tags are applied however an
+  asset resolved (new information, idempotent writer); `name` and `note` only to
+  a NEWLY created asset, because overwriting them on a dedup hit would silently
+  discard an edit the user made in this library.
+- **Parse, THEN snapshot, THEN write.** A refused or unreadable archive costs
+  nothing at all — no snapshot, no rows. The pre-destructive snapshot is INJECTED
+  into the controller rather than reached for, so the ordering is a tested fact.
+  A version refusal is its own outcome (`.refused`), not a failure: nothing
+  broke, this build declined to guess. The refusal itself is H6's
+  `ArchiveManifest.refusal`, called and not re-derived.
+- **Idempotency was measured by COUNT, not by presence.** A source field the
+  archive dropped or the reader normalized would leave every asset present on a
+  second import — as a second copy. Import-twice asserts distinct-asset totals,
+  and a second import of the same archive reports `newAssets == 0`.
+- **Server-authoritative fields are re-minted, not restored**: ids,
+  `created_at`, `view_count`, `last_viewed_at`, `dedup_key`, `search_text`. An
+  import is a new library's version of the same graph; a row-for-row restore is
+  H5c's job, and conflating the two would need the back door this design refuses.
+
+**What the archive carries, now that both halves exist.** Collections with their
+real nesting and descriptions; memberships with manual order and canvas
+placement; assets once each with kind, dimensions, duration, download state,
+name, note and payload; tags as `(name, source)`; provenance verbatim; and the
+blob bytes.
+
+It does **not** carry: `asset_analysis` / `asset_embedding` (recomputable, and
+including them would freeze an `analyzer_version` into a portability contract); a
+tag attached to no asset (no public writer can recreate one); and **Spaces, saved
+searches and jobs** — excluded by user decision (2026-08-03), not by oversight:
+they are not in this plan's graph and not representable in a collection tree.
+**Favourites do not exist in schema v18** at all — this plan lists them, but
+there is no column, tag convention or flag to carry, so there is nothing to
+exclude either.
+
 ## Sequencing
 
 ```
@@ -526,5 +592,10 @@ today; the archive answers data-freedom, which matters but has no deadline. If
    what the archive is for.
 2. Backup cadence: manual + on-launch-if-stale (recommended, mirroring the
    daily snapshot) or manual only?
-3. Import destination: a new root collection named after the archive
-   (recommended) or merge into the existing structure?
+3. ~~Import destination: a new root collection named after the archive
+   (recommended) or merge into the existing structure?~~ **Settled: a new root
+   collection named after the archive folder**, shipped that way in H7. Merging
+   has no safe answer for an incoming folder that shares a name with an existing
+   one, and `createCollection` already disambiguates a duplicate sibling
+   Finder-style — so importing the same archive twice gives two containers rather
+   than one silently clobbered.

@@ -40,4 +40,30 @@ enum ArchiveFolderPanel {
             completion(response == .OK ? panel.url : nil)
         }
     }
+
+    /// Ask which archive to read back in (008 · H7), calling back with the
+    /// chosen folder (`nil` on cancel).
+    ///
+    /// An OPEN panel this time, and a directory one: the archive is a folder the
+    /// user already has, and the thing that makes it an archive — `manifest.json`
+    /// — is inside it. Validating that is `LibraryArchiveReader.parse`, not this
+    /// panel: a folder chosen here and one handed to the reader by a test must
+    /// be judged by exactly the same rules.
+    static func presentImport(completion: @escaping (URL?) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = ArchiveImportCopy.panelPrompt
+        panel.message = ArchiveImportCopy.panelMessage
+
+        guard let window = NSApp.keyWindow else {
+            completion(panel.runModal() == .OK ? panel.url : nil)
+            return
+        }
+        panel.beginSheetModal(for: window) { response in
+            completion(response == .OK ? panel.url : nil)
+        }
+    }
 }

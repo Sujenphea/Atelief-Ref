@@ -24,6 +24,9 @@ struct SettingsView: View {
     /// Observed separately for the same reason as `backup` (008 · H6) — the
     /// archive's progress ticks live on its own controller.
     @ObservedObject var archive: ArchiveExportController
+    /// Observed separately for the same reason as `archive` (008 · H7) — the
+    /// import's progress ticks live on its own controller.
+    @ObservedObject var archiveImport: ArchiveImportController
     /// Observed separately for the same reason as `backup` (016 · A) — a scan's
     /// progress ticks live on the controller, not on `model`.
     @ObservedObject var libraryStats: LibraryStatsController
@@ -524,6 +527,34 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text(ArchiveCopy.explainer)
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Button("Import Archive…") { model.importArchive() }
+                    .disabled(!model.canImportArchive)
+                if archiveImport.isImporting {
+                    Button("Stop") { archiveImport.cancel() }
+                    ProgressView(value: archiveImport.progress)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 140)
+                }
+            }
+            if let status = ArchiveImportCopy.statusLine(for: archiveImport.lastRun),
+               !archiveImport.isImporting {
+                Text(status)
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let message = archiveImport.lastRun?.message, !archiveImport.isImporting {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(ArchiveImportCopy.explainer)
                 .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

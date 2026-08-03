@@ -279,6 +279,10 @@ final class IngestionModel: ObservableObject {
     /// needs no bookmark — an archive's destination is a save-panel grant
     /// consumed in-process.
     let archive = ArchiveExportController()
+    /// Reads a portable archive back in (008 H7). Its own controller for the
+    /// same reason ``archive`` is — and separate from it so a progress bar
+    /// always means exactly one job.
+    let archiveImport = ArchiveImportController()
 
     // MARK: - Ambient clipboard capture (013 · K3)
 
@@ -1117,6 +1121,42 @@ final class IngestionModel: ObservableObject {
     func revealArchive() {
         guard let url = archive.lastRun?.url else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    // MARK: - Archive import (008 H7)
+
+    /// Whether an archive can be read in: an open library, and neither archive
+    /// job already running.
+    ///
+    /// Blocked by an export in flight — not because the two would corrupt each
+    /// other, but because "is something running?" must stay unambiguous per
+    /// feature, and one progress bar cannot mean two things.
+    var canImportArchive: Bool {
+        services != nil && store != nil
+            && !archiveImport.isImporting && !archive.isExporting
+    }
+
+    /// Ask which archive to read, then replay it into a new root collection.
+    ///
+    /// The pre-destructive snapshot is handed to the controller rather than
+    /// taken here, so it runs at the one moment that is correct: after the
+    /// archive has proved readable, before the first row is written. A refused
+    /// archive therefore costs nothing at all.
+    func importArchive() {
+        guard let services, let store, canImportArchive else { return }
+        let snapshots = snapshotManager
+        ArchiveFolderPanel.presentImport { [weak self] url in
+            guard let self, let url else { return }
+            self.archiveImport.start(
+                services: services, store: store,
+                folder: DirectFolderAccess(url: url),
+                snapshot: { _ = try? await snapshots?.snapshotBeforeDestruction() }
+            ) { [weak self] in
+                // Whatever the outcome — a cancelled import keeps what it wrote,
+                // so the sidebar and the grid have to reload either way.
+                self?.reloadAfterMembershipChange()
+            }
+        }
     }
 
     // MARK: - Library stats + maintenance (016 · A)
