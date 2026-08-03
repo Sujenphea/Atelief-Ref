@@ -61,10 +61,29 @@ nonisolated struct ArchiveRunSummary: Equatable, Sendable {
 /// same reason: prose duplicated across surfaces drifts.
 nonisolated enum ArchiveCopy {
 
+    /// What the archive actually carries — and what it doesn't.
+    ///
+    /// The exclusions are named on purpose. Spaces and saved searches are out of
+    /// the archive's graph by decision (008 · H6), and Space TEXT elements exist
+    /// nowhere but `space_item` — nothing can recompute them. A user who archives,
+    /// wipes and re-imports would lose every board with no warning, so the one
+    /// place they decide to trust this feature is the place that has to say so.
+    /// (Backup and restore are unaffected: they copy the whole database.)
     static let explainer =
         "Writes every collection as a folder of images you can open in Finder, "
-        + "beside a manifest.json describing the whole library. Nothing is "
-        + "removed from AtelierRefs."
+        + "beside a manifest.json describing your collections, tags and "
+        + "provenance. Spaces and saved searches aren't included — use Backup "
+        + "for a complete copy. Nothing is removed from AtelierRefs."
+
+    /// Shown when the chosen destination sits inside the library itself.
+    static let insideLibrary =
+        "That folder is inside your library, so the archive can't be written "
+        + "there. Choose a folder somewhere else."
+
+    /// Shown when every copy failed and no manifest was written.
+    static let nothingCopied =
+        "None of the images could be copied, so no archive was written. Check "
+        + "there's room on the destination and try again."
 
     static let panelMessage =
         "Choose where to write the archive — a folder of collections plus a "
@@ -166,6 +185,18 @@ final class ArchiveExportController: ObservableObject {
         }
     }
 
+    /// Publish a refusal the caller reached before any work started — a
+    /// destination the archive must not be written to.
+    ///
+    /// Surfaced as a failed run because from the user's side it is one: they
+    /// asked for an archive and there isn't one. Ignored mid-run, so a stray
+    /// call can't overwrite the outcome of work actually in flight.
+    func reject(_ message: String) {
+        guard !isExporting else { return }
+        progress = 0
+        lastRun = .failure(message)
+    }
+
     /// Stop the run. The manifest is written last, so a stopped archive is a
     /// folder with no manifest — visibly incomplete rather than plausibly whole.
     func cancel() {
@@ -217,6 +248,12 @@ final class ArchiveExportController: ObservableObject {
             }
             if let error = error as? FolderAccessError {
                 return .failure(ArchiveCopy.message(for: error))
+            }
+            // Nothing landed and nothing was committed — the writer refused to
+            // leave a manifest over an empty tree. Named rather than folded into
+            // the catch-all, because it has a remedy: free some space.
+            if error is ArchiveWriteError {
+                return .failure(ArchiveCopy.nothingCopied)
             }
             AppLog.model.error("archive export failed: \(error, privacy: .public)")
             return .failure(ArchiveCopy.unknownFailure)

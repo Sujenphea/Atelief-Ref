@@ -1178,9 +1178,19 @@ final class IngestionModel: ObservableObject {
         guard let services, let store, canArchiveLibrary else { return }
         let version = Bundle.main
             .infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+        let root = libraryRoot
         ArchiveFolderPanel.present(suggestedName: ArchiveCopy.suggestedName()) {
             [weak self] url in
             guard let self, let url else { return }
+            // The rule the backup target already carries (008 · H4), applied to
+            // the other destination the user picks. An archive written inside the
+            // library would sit in the folder every snapshot, size report and
+            // future archive walks — and the NEXT archive would copy it in
+            // wholesale. Unbounded rather than merely untidy.
+            if let root, BackupTarget.isSelfOrDescendant(url, of: root) {
+                self.archive.reject(ArchiveCopy.insideLibrary)
+                return
+            }
             self.archive.start(
                 services: services, store: store,
                 folder: DirectFolderAccess(url: url), appVersion: version)
@@ -1195,15 +1205,23 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Archive import (008 H7)
 
-    /// Whether an archive can be read in: an open library, and neither archive
-    /// job already running.
+    /// Whether an archive can be read in: an open library, neither archive job
+    /// already running, and no restore waiting.
     ///
     /// Blocked by an export in flight — not because the two would corrupt each
     /// other, but because "is something running?" must stay unambiguous per
     /// feature, and one progress bar cannot mean two things.
+    ///
+    /// Blocked by a pending restore for a much harder reason: `applyPendingRestore`
+    /// replaces the live database at the next launch, so every row an import
+    /// writes between staging and relaunch is discarded — the user would watch a
+    /// progress bar fill, read "imported 900 items", quit as instructed, and find
+    /// nothing. Unlike ``canArchiveLibrary``, which only reads, this one writes,
+    /// and the write is the thing that gets thrown away.
     var canImportArchive: Bool {
         services != nil && store != nil
             && !archiveImport.isImporting && !archive.isExporting
+            && !hasPendingRestore
     }
 
     /// Ask which archive to read, then replay it into a new root collection.

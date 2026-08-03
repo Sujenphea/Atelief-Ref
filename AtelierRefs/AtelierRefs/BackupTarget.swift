@@ -244,6 +244,18 @@ nonisolated enum BackupTarget {
             + "deleted."
     }
 
+    /// The standing banner on the MAIN window while a restore waits to apply.
+    ///
+    /// The one-shot alert says what will happen; this says what it costs to keep
+    /// working in the meantime, which is the part nobody infers. `applyPendingRestore`
+    /// replaces the live database at the next launch, so every capture, edit and
+    /// import made between staging and relaunch is discarded — silently, and with
+    /// the window still fully usable. A dialog the user dismissed ten minutes ago
+    /// cannot carry that; only something that stays on screen can.
+    static let restorePending =
+        "A restore is waiting. Anything you add or change now will be discarded "
+        + "when you quit and reopen."
+
     /// Shown once the restore is prepared and only a relaunch is left.
     static let restoreStaged =
         "The backup will be restored the next time you open AtelierRefs. Quit "

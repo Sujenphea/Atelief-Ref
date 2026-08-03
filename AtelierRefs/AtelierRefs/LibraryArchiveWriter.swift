@@ -24,6 +24,14 @@ import AtelierCore
 import AtelierIngestion
 import Foundation
 
+/// Why a run produced nothing worth committing.
+nonisolated enum ArchiveWriteError: Error, Equatable {
+    /// Every byte-backed membership failed to copy — the destination is full or
+    /// unwritable. No manifest is written, so the folder cannot be mistaken for
+    /// a finished archive.
+    case nothingCopied
+}
+
 nonisolated struct LibraryArchiveWriter: Sendable {
 
     /// What one export produced, for the toast / status line. Skips are counted
@@ -37,8 +45,18 @@ nonisolated struct LibraryArchiveWriter: Sendable {
         /// Files copied into the tree.
         var files: Int = 0
         /// Memberships whose bytes could not be written: a blob already gone
-        /// from disk, or a copy the filesystem refused.
+        /// from disk, or a copy the filesystem refused. The user-facing total.
         var skipped: Int = 0
+        /// The subset of ``skipped`` the DESTINATION refused — a copy that threw,
+        /// rather than a source blob that was already gone.
+        ///
+        /// Split out because the two causes look identical in a count and mean
+        /// opposite things. A missing source blob is a fact about the library
+        /// that no destination can fix, and archiving around it is correct. A
+        /// refused copy is a fact about the destination — it is full, or
+        /// read-only — and it is the one that must not be committed to as though
+        /// it were a finished archive.
+        var writeFailures: Int = 0
         /// Where the manifest landed.
         var manifestURL: URL
     }
@@ -131,6 +149,25 @@ nonisolated struct LibraryArchiveWriter: Sendable {
         }
 
         try check(isCancelled)
+
+        // A run the DESTINATION refused outright is a failed run, not an
+        // incomplete one. A folder that is full or read-only makes every
+        // `copyItem` throw in turn, and writing the manifest anyway would leave
+        // something that reads as a finished archive — the manifest is the commit
+        // record — over no media at all, which re-imports as a missing file per
+        // membership.
+        //
+        // The condition is "the destination refused every copy", and each half of
+        // that matters. Judging by `skipped` instead would fail a library whose
+        // one asset had its blob reaped — a fact about the SOURCE, which the
+        // archive is supposed to record and move past. Judging by `files == 0`
+        // alone would fail a library made entirely of media-less kinds
+        // (`link` / `tweet` / `color`), which legitimately copies nothing. A
+        // PARTIAL write failure still commits: `.incomplete` names the count, and
+        // a half-copied archive the user can see is worth more than none.
+        guard result.writeFailures == 0 || result.files > 0 else {
+            throw ArchiveWriteError.nothingCopied
+        }
 
         let manifest = ArchiveManifest(
             schemaVersion: schemaVersion,
@@ -261,6 +298,7 @@ nonisolated struct LibraryArchiveWriter: Sendable {
             try FileManager.default.copyItem(at: item.blobURL, to: destination)
         } catch {
             result.skipped += 1
+            result.writeFailures += 1
             return nil
         }
         byBlob[item.blobURL.path] = name

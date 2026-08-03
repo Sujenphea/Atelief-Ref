@@ -39,6 +39,7 @@ struct OnboardingSheet: View {
                          + "Unsorted.",
                          accessory: receivedFirstCapture ? capturedConfirmation : nil)
                     outro
+                    backupNote
                 }
                 .padding(24)
             }
@@ -133,6 +134,34 @@ struct OnboardingSheet: View {
                 .font(Theme.Typography.bodyEmphasis)
             Text("Organize into collections, arrange spaces, and snapshot from "
                  + "File ▸ Snapshot Now. Re-open this guide any time from Settings (⌘,).")
+                .font(Theme.Typography.label)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Where to set up an off-device backup (008 · H5d).
+    ///
+    /// Deliberately NOT a numbered step, for the same reason ``outro`` isn't:
+    /// choosing a backup folder is not part of getting capture working, and
+    /// putting it in the flow would hold the first capture behind a decision the
+    /// user may not have made yet (which drive? which cloud folder?). But the
+    /// default cadence is `manual` and no folder is chosen out of the box, so
+    /// without this the machine-loss case is unprotected until someone goes
+    /// looking in Settings — and snapshots, the thing they HAVE seen mentioned,
+    /// live inside the library and die with it. Naming it once here is the
+    /// difference between an opt-in and a secret.
+    private var backupNote: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Keep a copy somewhere else", systemImage: "externaldrive.badge.timemachine")
+                .font(Theme.Typography.bodyEmphasis)
+            Text("Snapshots live inside your library, so they won't survive losing "
+                 + "this Mac. In Settings (⌘,) ▸ Backup, pick a folder on another "
+                 + "drive and set it to run daily.")
                 .font(Theme.Typography.label)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

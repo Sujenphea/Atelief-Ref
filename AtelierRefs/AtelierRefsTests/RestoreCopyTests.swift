@@ -168,7 +168,8 @@ struct RestoreCopyTests {
         ]
         let restoreWords = Set(restore.map(BackupTarget.message(for:)))
             .union([BackupTarget.noBackupsFound, BackupTarget.unknownRestoreFailure,
-                    BackupTarget.restoreStaged, BackupTarget.restoreExplainer])
+                    BackupTarget.restoreStaged, BackupTarget.restoreExplainer,
+                    BackupTarget.restorePending])
         let backupWords = Set(backup.map(BackupTarget.message(for:)))
             .union([BackupTarget.unknownRunFailure, BackupTarget.explainer,
                     BackupTarget.unidentifiableLibrary, BackupTarget.couldNotRemember])
@@ -180,6 +181,17 @@ struct RestoreCopyTests {
         #expect(BackupTarget.restoreStaged.localizedCaseInsensitiveContains("quit and reopen"))
         #expect(BackupTarget.restoreStaged
             .localizedCaseInsensitiveContains("set aside, not deleted"))
+    }
+
+    /// The staged alert says what WILL happen; the banner has to say what it
+    /// costs to keep working before it does. That is the part nobody infers, and
+    /// the reason the banner exists at all rather than the alert being enough.
+    @Test("the pending-restore banner names the cost of working anyway")
+    func pendingBannerNamesTheCost() {
+        #expect(BackupTarget.restorePending.localizedCaseInsensitiveContains("discarded"))
+        #expect(BackupTarget.restorePending.localizedCaseInsensitiveContains("quit and reopen"))
+        // Distinct from the one-shot alert — two surfaces, two jobs.
+        #expect(BackupTarget.restorePending != BackupTarget.restoreStaged)
     }
 
     @Test("the empty-folder message points at the mistake people actually make")
