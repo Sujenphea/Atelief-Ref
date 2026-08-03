@@ -83,6 +83,7 @@ struct AtelierRefsApp: App {
         Settings {
             SettingsView(
                 model: model, backup: model.backup, restore: model.restore,
+                verify: model.verify,
                 archive: model.archive, archiveImport: model.archiveImport,
                 libraryStats: model.libraryStats,
                 gridPrefs: gridPrefs, clipboard: model.clipboard)

@@ -21,6 +21,9 @@ struct SettingsView: View {
     /// Observed separately for the same reason as `backup` (008 · H5c) — the
     /// restore's scan results and progress live on its own controller.
     @ObservedObject var restore: RestoreController
+    /// Observed separately for the same reason as `backup` (008 · H5d) — the
+    /// re-hash check's progress and verdict live on its own controller.
+    @ObservedObject var verify: BackupVerifyController
     /// Observed separately for the same reason as `backup` (008 · H6) — the
     /// archive's progress ticks live on its own controller.
     @ObservedObject var archive: ArchiveExportController
@@ -394,6 +397,8 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             backupRunRow
+            backupCadenceRow
+            backupVerifyRow
             Text(BackupTarget.explainer)
                 .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
@@ -477,6 +482,89 @@ struct SettingsView: View {
             Label(message, systemImage: "exclamationmark.triangle")
                 .font(Theme.Typography.caption)
                 .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// How often a backup runs by itself (008 · H5d).
+    ///
+    /// A picker in the same section as the folder, not a hidden default: the
+    /// job it starts copies gigabytes to a drive or a paid-for cloud folder, and
+    /// anything that can do that on its own has to be visible and switchable
+    /// where it was set up.
+    @ViewBuilder
+    private var backupCadenceRow: some View {
+        Picker("Automatically", selection: Binding(
+            get: { backup.cadence },
+            set: { backup.setCadence($0) })
+        ) {
+            ForEach(BackupCadence.allCases, id: \.self) { cadence in
+                Text(cadence.label).tag(cadence)
+            }
+        }
+        .disabled(backup.isRunning)
+        // Only when there is actually a behaviour to explain.
+        if backup.cadence != .manual {
+            Text(BackupTarget.automaticExplainer)
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The sampled re-hash check, the exhaustive one beside it, and the verdict
+    /// (008 · H5d).
+    ///
+    /// Two buttons rather than one with a modifier key. The exhaustive check
+    /// downloads the entire backup from a synced destination, which is a cost
+    /// nobody should be able to start by accident — and while one is running the
+    /// buttons give way to what it is doing, so "a sample" and "every file" are
+    /// never confusable after the fact.
+    @ViewBuilder
+    private var backupVerifyRow: some View {
+        HStack {
+            if verify.isRunning {
+                Text(verify.isExhaustive ? "Checking every file…" : "Checking a sample…")
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.secondary)
+                Button("Stop") { verify.cancel() }
+                // Not `.destructive`: a check writes nothing, so stopping it
+                // costs only the answer.
+                ProgressView(value: verify.progress)
+                    .progressViewStyle(.linear)
+                    .frame(maxWidth: 120)
+            } else {
+                Button("Check Backup") { model.verifyBackupNow() }
+                    .disabled(!model.canVerifyBackup)
+                Button("Check All Files") { model.verifyBackupNow(exhaustive: true) }
+                    .disabled(!model.canVerifyBackup)
+            }
+        }
+        if let status = BackupTarget.verifyStatusLine(for: verify.lastRun), !verify.isRunning {
+            Text(status)
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        // What it found, and that nothing was deleted because of it.
+        if !verify.isRunning, let result = verify.lastRun?.result,
+           let problem = BackupTarget.verifyProblem(for: result) {
+            Label(problem, systemImage: "exclamationmark.triangle")
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        // Why it couldn't look at all — a different message from what it found.
+        if let message = verify.lastRun?.message, !verify.isRunning {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if model.backupFolder.hasFolder {
+            Text(BackupTarget.verifyExplainer)
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

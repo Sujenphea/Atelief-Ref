@@ -265,6 +265,109 @@ nonisolated enum BackupTarget {
         + "its database. Use it on a new Mac, or after losing data. It never "
         + "deletes anything you've added since."
 
+    // MARK: - Cadence (008 · H5d)
+
+    /// The standing explanation under the "Automatically" picker.
+    ///
+    /// It names the three things a user would otherwise have to discover by
+    /// waiting: that automatic means *at launch*, that it is checked rather than
+    /// scheduled, and that a disconnected drive is a skip rather than a failure.
+    static let automaticExplainer =
+        "Automatic backups run in the background shortly after AtelierRefs opens, "
+        + "and only when the last one is older than this. They're skipped while "
+        + "the backup folder isn't reachable, and while a restore is waiting."
+
+    // MARK: - Verification (008 · H5d)
+
+    /// What to tell the user about a check that couldn't run.
+    static func message(for error: BackupVerifier.VerifyError) -> String {
+        switch error {
+        case .noBackupFound:
+            return "There's no backup of this library in that folder yet, so "
+                + "there's nothing to check. Back up first."
+        }
+    }
+
+    /// The catch-all, for a check error with no specific remedy to offer.
+    static let unknownVerifyFailure =
+        "The check didn't finish. Your backup hasn't been changed — try again, "
+        + "and if it keeps failing, export diagnostics from Settings."
+
+    /// The one-line result under the check row.
+    ///
+    /// A clean result always says how much was looked at. "Everything matched"
+    /// on its own would read as a statement about the whole backup when it is a
+    /// statement about thirty-two files, and a verifier that overstates its own
+    /// reach is worse than one nobody runs.
+    static func verifyStatusLine(
+        for summary: BackupVerifySummary?, now: Date = Date()
+    ) -> String? {
+        guard let summary else { return nil }
+        let when = relativeTime(from: summary.finishedAt, to: now)
+        switch summary.outcome {
+        case .succeeded:
+            guard let result = summary.result else { return "Checked \(when)." }
+            if result.wasExhaustive {
+                return "Checked all \(fileCount(result.totalFiles)) \(when) — "
+                    + "everything matched."
+            }
+            return "Checked \(result.checked) of \(fileCount(result.totalFiles)) "
+                + "\(when) — everything matched."
+        case .incomplete:
+            return "Checked \(when) — problems found."
+        case .cancelled:
+            return "Check stopped \(when). Nothing was changed."
+        case .failed:
+            return "Check failed \(when)."
+        }
+    }
+
+    /// The loud part: what a check FOUND, and what to do about it.
+    ///
+    /// Every branch says explicitly that nothing was deleted. A verifier's
+    /// finding arrives as bad news about the copy someone would restore from,
+    /// and the first question that follows is "did it just throw my backup
+    /// away?" — answering it before it is asked is the difference between a
+    /// warning that is acted on and one that is panicked about.
+    ///
+    /// `nil` when there is nothing to report.
+    static func verifyProblem(for result: BackupVerifyResult) -> String? {
+        var parts: [String] = []
+        if !result.databaseHealthy {
+            parts.append(
+                "The backup's database didn't pass its integrity check. Back up "
+                + "again — the next run installs a fresh copy over it.")
+        }
+        if !result.mismatched.isEmpty {
+            let count = result.mismatched.count
+            parts.append(
+                "\(count) backed-up \(count == 1 ? "file no" : "files no longer") "
+                + "\(count == 1 ? "longer matches" : "match") its own checksum, so "
+                + "that backup can't be fully trusted. Nothing was deleted — back "
+                + "up to a fresh folder to make a clean copy.")
+        }
+        if !result.unreadable.isEmpty {
+            let count = result.unreadable.count
+            parts.append(
+                "\(count) \(count == 1 ? "file" : "files") couldn't be read. If the "
+                + "backup is in iCloud Drive or on a network drive, check it's "
+                + "online and try again. Nothing was deleted.")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    /// The standing explanation under the check row — the cost, stated up front.
+    static let verifyExplainer =
+        "Checking re-reads some of the backup's files and confirms each one still "
+        + "matches its checksum. It has to download what it reads, so on iCloud "
+        + "Drive or a network drive it costs time and bandwidth. It never deletes "
+        + "anything."
+
+    /// `n files` / `1 file`.
+    private static func fileCount(_ count: Int) -> String {
+        "\(count) \(count == 1 ? "file" : "files")"
+    }
+
     /// The standing explanation under the folder row.
     static let explainer =
         "Backups copy your images and database here. Snapshots (File ▸ Snapshot "
