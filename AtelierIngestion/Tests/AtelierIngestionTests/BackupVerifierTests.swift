@@ -109,6 +109,24 @@ struct BackupVerifierTests {
         #expect(picked.map(\.hash) == stride(from: 0, to: 1_000, by: 100).map { tree[$0].hash })
     }
 
+    /// The case a stride-relative offset could not rotate at all: with a tree
+    /// only a little larger than the limit the stride collapses to 1, `seed %
+    /// stride` is 0 for every seed, and the check re-read the same files forever
+    /// — on exactly the small destinations where rotating is cheapest.
+    @Test("a nearly-full sample still rotates when the stride collapses to 1")
+    func sampleRotatesWhenStrideIsOne() {
+        let tree = files(15)
+        let first = BackupVerifier.sample(tree, limit: 10, seed: 0)
+        let second = BackupVerifier.sample(tree, limit: 10, seed: 4)
+
+        #expect(first.count == 10)
+        #expect(second.count == 10)
+        #expect(first != second)
+        // Still a SET of distinct files, not one wrapped onto another: the walk
+        // spans less than a lap, so no two picks can land on the same index.
+        #expect(Set(second.map(\.hash)).count == 10)
+    }
+
     @Test("a tree at or under the limit is returned whole")
     func smallTreeIsSampledEntirely() {
         let picked = BackupVerifier.sample(files(5), limit: 10, seed: 4)

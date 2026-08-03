@@ -94,6 +94,21 @@ private struct Rig {
         }.sorted()
     }
 
+    /// Every directory in the archive, deepest first — so permissions can be
+    /// changed without a parent locking its own children out of reach.
+    func directories() -> [URL] {
+        guard let walk = FileManager.default.enumerator(
+            at: destination, includingPropertiesForKeys: [.isDirectoryKey]) else { return [] }
+        let found = walk.compactMap { entry -> URL? in
+            guard let url = entry as? URL,
+                  (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            else { return nil }
+            return url
+        }
+        return (found + [destination])
+            .sorted { $0.pathComponents.count > $1.pathComponents.count }
+    }
+
     func write() async throws -> LibraryArchiveWriter.Result {
         try await writer.write(to: destination, isCancelled: { false }, onProgress: { _ in })
     }
@@ -324,6 +339,67 @@ struct LibraryArchiveWriterTests {
         #expect(manifest.assets[0].id == asset.id)
         let entry = try #require(manifest.collections.first { $0.id == collection.id })
         #expect(entry.items[0].file == nil)
+    }
+
+    /// The disk-full shape: the destination refuses every copy. Distinct from
+    /// ``missingBlob`` — there the SOURCE was gone and archiving around it is
+    /// correct; here the destination is the problem, and a manifest over an
+    /// empty tree would read as a finished archive of nothing.
+    @Test("A destination that refuses every copy gets no manifest")
+    func destinationRefusesEveryCopy() async throws {
+        let rig = try Rig.make()
+        defer { rig.cleanup() }
+        let collection = try await rig.services.createCollection(name: "Refs")
+        try await rig.seedImage(hash: "beef0001aaaa", into: collection.id)
+
+        // One good run builds the folder tree; emptying it and making every
+        // directory read-only then reproduces a full volume exactly where it
+        // bites — `createDirectory` is a no-op on a directory that exists, so the
+        // walk proceeds and every `copyItem` is what throws.
+        _ = try await rig.write()
+        for relative in rig.files() {
+            try FileManager.default.removeItem(
+                at: rig.destination.appendingPathComponent(relative))
+        }
+        let directories = rig.directories()
+        for directory in directories {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        }
+        defer {
+            for directory in directories {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            }
+        }
+
+        await #expect(throws: ArchiveWriteError.nothingCopied) { try await rig.write() }
+        // The commit record is absent, so the folder is visibly unfinished
+        // rather than plausibly whole.
+        #expect(!FileManager.default.fileExists(
+            atPath: rig.destination
+                .appendingPathComponent(ArchiveLayout.manifestFilename).path))
+    }
+
+    /// The other side of that guard: a source blob that is gone is a fact about
+    /// the library, not the destination, so the archive still commits.
+    @Test("A library whose only blob is gone still writes its manifest")
+    func missingBlobStillCommits() async throws {
+        let rig = try Rig.make()
+        defer { rig.cleanup() }
+        let collection = try await rig.services.createCollection(name: "Gappy")
+        try await rig.seedImage(hash: "dead0009cccc", into: collection.id)
+        try FileManager.default.removeItem(
+            at: rig.store.blobURL(hash: "dead0009cccc", fileExtension: "png"))
+
+        let result = try await rig.write()
+
+        #expect(result.files == 0)
+        #expect(result.skipped == 1)
+        // The skip was the SOURCE's, so it is not a write failure and does not
+        // withhold the manifest.
+        #expect(result.writeFailures == 0)
+        #expect(try rig.manifest().assets.count == 1)
     }
 
     /// Two collections whose names sanitize to the same string, and an asset
@@ -557,6 +633,70 @@ struct ArchiveExportControllerTests {
 
         #expect(controller.lastRun?.outcome == .succeeded)
         #expect(rig.files().filter { $0.hasSuffix(".png") }.count == 1)
+    }
+
+    /// A destination refused before any work starts — the model rejects a folder
+    /// inside the library. It has to reach the same row a failed run does, or the
+    /// button would appear to do nothing at all.
+    @Test("A rejection surfaces as a failed run without touching the destination")
+    func rejectionSurfaces() {
+        let controller = ArchiveExportController()
+        controller.reject(ArchiveCopy.insideLibrary)
+
+        #expect(controller.lastRun?.outcome == .failed)
+        #expect(controller.lastRun?.message == ArchiveCopy.insideLibrary)
+        #expect(controller.lastRun?.url == nil)
+        #expect(!controller.isExporting)
+    }
+
+    @Test("A rejection mid-run is ignored rather than overwriting the outcome")
+    func rejectionIgnoredWhileRunning() async throws {
+        let rig = try Rig.make()
+        defer { rig.cleanup() }
+        let collection = try await rig.services.createCollection(name: "Busy")
+        try await rig.seedImage(hash: "3333001200aa", into: collection.id)
+
+        let controller = ArchiveExportController()
+        start(rig, controller)
+        controller.reject(ArchiveCopy.insideLibrary)     // ignored
+        try await settle(controller)
+
+        #expect(controller.lastRun?.outcome == .succeeded)
+    }
+}
+
+// MARK: - Words
+
+@Suite("LibraryArchive: what the archive claims to carry (008 H6)")
+struct ArchiveCopyScopeTests {
+
+    /// The explainer is the only place a user learns what an archive holds, and
+    /// the exclusions are the half that can lose data silently: Space text
+    /// elements live nowhere but `space_item`, so archive → wipe → re-import
+    /// drops every board. If this test fails because the copy was reworded,
+    /// check the new wording still names them before updating it.
+    @Test("the explainer names what it does NOT carry")
+    func explainerNamesExclusions() {
+        #expect(ArchiveCopy.explainer.localizedCaseInsensitiveContains("spaces"))
+        #expect(ArchiveCopy.explainer.localizedCaseInsensitiveContains("saved searches"))
+        // And points at the thing that DOES carry them.
+        #expect(ArchiveCopy.explainer.localizedCaseInsensitiveContains("backup"))
+    }
+
+    /// It must not overclaim in the same breath — the sentence this replaced
+    /// said "describing the whole library".
+    @Test("the explainer no longer claims the whole library")
+    func explainerDoesNotOverclaim() {
+        #expect(!ArchiveCopy.explainer.localizedCaseInsensitiveContains("whole library"))
+    }
+
+    @Test("each refusal names its own remedy, and they don't collide")
+    func refusalsAreDistinctAndActionable() {
+        #expect(ArchiveCopy.insideLibrary
+            .localizedCaseInsensitiveContains("inside your library"))
+        #expect(ArchiveCopy.nothingCopied.localizedCaseInsensitiveContains("room"))
+        // Two different problems must never produce the same sentence.
+        #expect(ArchiveCopy.insideLibrary != ArchiveCopy.nothingCopied)
     }
 }
 

@@ -102,8 +102,8 @@ public struct BackupVerifier: Sendable {
     ///   corner of `blobs/00/` forever and never look at the rest — a check that
     ///   passes while the damage sits somewhere it never reads is worse than no
     ///   check, because it is believed.
-    /// - **Rotation without randomness.** The seed only moves the starting
-    ///   offset within one stride, so successive runs walk different files while
+    /// - **Rotation without randomness.** The seed moves the starting offset
+    ///   across the whole tree, so successive runs walk different files while
     ///   any single (tree, limit, seed) is exactly reproducible.
     ///
     /// A tree at or under `limit` is returned whole (sorted), so a small backup
@@ -114,13 +114,18 @@ public struct BackupVerifier: Sendable {
         guard sorted.count > limit else { return sorted }
 
         let stride = sorted.count / limit           // ≥ 1, since count > limit
-        let offset = Int(seed % UInt64(stride))
+        // The offset ranges over the WHOLE tree, not over one stride. A tree
+        // only a little larger than the limit collapses the stride to 1, and an
+        // offset taken modulo the stride would then be 0 for every seed — the
+        // same files re-checked forever, on exactly the destinations small
+        // enough for rotating to be cheap. Taking it modulo the COUNT rotates in
+        // every case, and the picks stay distinct because `stride * limit <=
+        // count` means the walk spans less than one full lap of the tree.
+        let offset = Int(seed % UInt64(sorted.count))
         var picked: [BlobFile] = []
         picked.reserveCapacity(limit)
-        var index = offset
-        while picked.count < limit, index < sorted.count {
-            picked.append(sorted[index])
-            index += stride
+        for step in 0 ..< limit {
+            picked.append(sorted[(offset + step * stride) % sorted.count])
         }
         return picked
     }

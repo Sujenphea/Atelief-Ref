@@ -30,9 +30,12 @@ struct AppShellView: View {
     @State private var didLoadSeededCollection = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            SidebarView(model: model, nav: nav)
-            detailPanel
+        VStack(spacing: 0) {
+            if model.hasPendingRestore { pendingRestoreBanner }
+            HStack(spacing: 0) {
+                SidebarView(model: model, nav: nav)
+                detailPanel
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .focusedSceneValue(\.navModel, nav)
@@ -99,6 +102,26 @@ struct AppShellView: View {
         .onChange(of: nav.sidebarSelection) { _, _ in
             DispatchQueue.main.async { syncActiveCollection() }
         }
+    }
+
+    // MARK: - Pending restore
+
+    /// The standing warning while a restore waits for a relaunch (008 · H5c).
+    ///
+    /// On the MAIN window rather than in Settings, because the window is where
+    /// the discardable work happens — captures land, items get dragged, notes get
+    /// typed — and the Settings label only reaches someone who already went
+    /// looking. It stays until the app is relaunched: there is no dismiss, since
+    /// the condition it describes doesn't go away by being acknowledged.
+    private var pendingRestoreBanner: some View {
+        Label(BackupTarget.restorePending, systemImage: "exclamationmark.triangle.fill")
+            .font(Theme.Typography.caption)
+            .foregroundStyle(.orange)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, 8)
+            .background(.orange.opacity(0.12))
+            .accessibilityElement(children: .combine)
     }
 
     // MARK: - Detail panel
