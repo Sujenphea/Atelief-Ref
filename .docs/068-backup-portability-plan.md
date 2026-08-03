@@ -451,6 +451,9 @@ must build on:
   this plan's graph and not representable in a collection tree — a named gap, not
   an oversight. And **favourites do not exist in schema v18**; the plan lists
   them, but there is no column, tag convention or flag to carry.
+  *(Superseded 2026-08-03 — see “Amendment: favourites now ride the manifest”
+  at the end of this document. Schema v19 adds `asset.is_favorite`, and the
+  manifest carries it.)*
 - **The tree duplicates, the manifest does not — and the FILENAME ALLOCATOR IS
   KEYED BY DESTINATION FOLDER.** That last detail is what makes the path rule
   below safe: two collections that ever resolve to one folder still cannot
@@ -585,7 +588,8 @@ searches and jobs** — excluded by user decision (2026-08-03), not by oversight
 they are not in this plan's graph and not representable in a collection tree.
 **Favourites do not exist in schema v18** at all — this plan lists them, but
 there is no column, tag convention or flag to carry, so there is nothing to
-exclude either.
+exclude either. *(Superseded 2026-08-03 by 011 · U5 — see the amendment at the
+end of this document: schema v19 adds the column and the manifest carries it.)*
 
 ## Sequencing
 
@@ -658,3 +662,49 @@ today; the archive answers data-freedom, which matters but has no deadline. If
    one, and `createCollection` already disambiguates a duplicate sibling
    Finder-style — so importing the same archive twice gives two containers rather
    than one silently clobbered.
+
+## Amendment: favourites now ride the manifest (2026-08-03, 011 · U5)
+
+Two sentences above say favourites do not exist in schema v18 and so are neither
+carried nor excluded. That was true when H6/H7 shipped and is no longer true.
+**Migration v19 adds `asset.is_favorite`** (additive, `NOT NULL DEFAULT 0`, no
+back-fill), and the archive carries it end to end:
+
+- `ArchiveManifest.AssetEntry.isFavorite` → wire key `is_favorite`, written
+  unconditionally (`false` included).
+- `LibraryArchiveWriter` gets it for free — `AssetEntry.init(_:tags:)` reads the
+  asset.
+- `LibraryArchiveReader` → `ImportItem.isFavorite`.
+- `ImportReplay` applies it through `AppServices.setFavorite`.
+
+It is carried, rather than excluded like `asset_analysis`, because it is **user
+intent, not derived data**: nothing can recompute which items someone starred, so
+an archive that dropped it would lose them silently on the first export after the
+flag shipped — irreversibly, since the archive is often the only copy.
+
+**`manifest_version` stays 1.** The rule this plan set is "a reader that does not
+recognise the number must refuse rather than guess", and the question that
+implies is: *would a reader that ignores unknown keys MISREAD this file?* For a
+strictly additive optional key the answer is no — an older reader skips it and
+every field it does read still means what it meant. Bumping would spend the one
+signal reserved for a genuinely incompatible change (a field removed, renamed or
+re-meaninged) on a change that is not one.
+
+The "older build must not mis-read a newer archive" guarantee is carried by the
+other version axis, and carried more precisely: the export records
+`schema_version = "v19"`, so `ArchiveManifest.refusal` returns
+`.schemaTooNew("v19")` for any build that only migrates to v18. That build
+refuses the archive **whole** — it never reaches the point of silently dropping a
+star it does not understand. In the other direction, a pre-v19 archive decodes
+here with `is_favorite` absent, which `AssetEntry.init(from:)` reads as `false` —
+the truth for a file written before the flag existed. (That hand-written
+initializer is load-bearing: Swift's synthesized `Decodable` calls `decode`, not
+`decodeIfPresent`, for a non-optional property, so without it every pre-v19
+archive would fail to decode entirely.)
+
+**Replay applies it like a TAG, not like `name` / `note`.** Rule 3 of
+`ImportReplay` splits on whether a write can destroy something: tags are applied
+whichever way an asset resolved because applying one only ever adds information.
+The star is the same — and an archive's `is_favorite: false` is never replayed at
+all, so importing an old archive can never unstar something the user starred in
+this library.

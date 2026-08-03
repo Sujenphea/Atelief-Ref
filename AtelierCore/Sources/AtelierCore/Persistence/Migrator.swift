@@ -37,7 +37,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -164,6 +164,14 @@ enum Migrator {
         // schema change (like v9's tag normalization and v16's reconcile).
         migrator.registerMigration("v18") { db in
             try retagV18RednoteSources(db)
+        }
+
+        // v19 — favorites (011 · U5 · C3). ONE additive `asset.is_favorite`
+        // column, NOT NULL DEFAULT 0, so every existing row reads "not a
+        // favorite". No back-fill (there is no prior signal to recover) and no
+        // table rebuild. SHIPPED once released: never edit this body.
+        migrator.registerMigration("v19") { db in
+            try createV19Schema(db)
         }
 
         return migrator
@@ -1018,6 +1026,35 @@ enum Migrator {
                     THEN json_extract(raw_metadata, '$.source') = 'rednote'
                     ELSE 0
                   END;
+            """)
+    }
+
+    // MARK: - v19
+
+    /// Favorites (011 · U5). ONE additive `asset.is_favorite` column — `INTEGER
+    /// NOT NULL DEFAULT 0`, the boolean encoding SQLite actually has, and a
+    /// CONSTANT default, which is what makes the `ALTER` legal (same shape as
+    /// v5's `view_count`). Existing rows therefore read `false`: nothing was a
+    /// favorite before the flag existed, so there is no history to back-fill
+    /// (contrast v11 / v15, which had a prior display order to reproduce).
+    ///
+    /// The flag lives on `asset`, NOT on `collection_item`: an asset in three
+    /// collections is one item the user starred once, and hanging it off the
+    /// membership would make "favorite" mean something different in each folder
+    /// and lose the star the moment the membership moved.
+    ///
+    /// **No index, deliberately.** P13 is "index the paths that scale", and this
+    /// one does not yet: the favorites filter is a conjunct on a query that is
+    /// already bounded (`searchAssets` clamps to ≤500 rows and is normally
+    /// narrowed further by FTS, a tag set or a collection scope), so the planner
+    /// reaches `is_favorite` with a small row set in hand. A partial
+    /// `WHERE is_favorite = 1` index is the right answer if a favorites-only
+    /// sweep of a large library ever measures hot — it can be added by a later
+    /// migration without touching this one, which is exactly why it is not
+    /// speculatively added here.
+    private static func createV19Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            ALTER TABLE asset ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0;
             """)
     }
 }

@@ -81,9 +81,12 @@ protocol MasonryGridInteraction: AnyObject {
 /// `postMemberCount` (307) is the size of the multi-item post this cell belongs to
 /// — 0 or 1 when it stands alone. When it is a carousel member the label says so,
 /// because the visual badge that carries it sighted is a pixmap VoiceOver can't read.
+/// The favorite star (011 · U5) is announced for the same reason — it too is drawn
+/// as a pixmap in a layer, so without this the state is sighted-only.
 func gridCellAccessibilityLabel(for detail: CollectionItemDetail, postMemberCount: Int) -> String {
+    let favorite = detail.asset.isFavorite ? ", favorite" : ""
     let suffix = postMemberCount > 1 ? ", one of \(postMemberCount) from the same post" : ""
-    return gridCellBaseAccessibilityLabel(for: detail) + suffix
+    return gridCellBaseAccessibilityLabel(for: detail) + favorite + suffix
 }
 
 private func gridCellBaseAccessibilityLabel(for detail: CollectionItemDetail) -> String {
@@ -228,6 +231,71 @@ enum PostBadge {
     }
 }
 
+// MARK: - Favorite star (011 · U5)
+
+/// The star painted into a favorited cell's BOTTOM-leading corner.
+///
+/// Same discipline as ``PostBadge``: one pre-rendered `NSImage` handed to a plain
+/// `CALayer.contents`, because the cell's whole reason for existing is that it does
+/// not host SwiftUI per tile (036 §2 A1). There is only one artwork here — the star
+/// is a boolean, not a count — so this is a single cached image rather than a
+/// dictionary.
+///
+/// The corner is chosen by elimination and it matters: top-leading is the carousel
+/// chip, top-trailing is the selection circle, and a favorited item in an opened
+/// carousel would otherwise have two chips fighting for one corner. Bottom-leading
+/// is the only corner nothing else claims.
+///
+/// Purely informational — it is a layer, not a view, so it cannot intercept a click
+/// or start a drag. Starring is ⌘D / the context menu / the detail page; the grid
+/// star REPORTS the state rather than being a second, tiny toggle target next to the
+/// selection circle.
+@MainActor
+enum FavoriteBadge {
+    /// The rendered star. Never invalidated, for exactly the reason `PostBadge`'s
+    /// cache isn't: the artwork is drawn from FIXED `Theme.NS` tokens, so no runtime
+    /// event can change it.
+    private static var cached: NSImage?
+
+    /// Matches ``PostBadge/height`` so a cell carrying both reads as one family.
+    static let side: CGFloat = 18
+    /// The inset from the cell's bottom-leading corner — `PostBadge`'s, mirrored.
+    static let inset: CGFloat = 6
+
+    static func image() -> NSImage? {
+        if let cached { return cached }
+        let made = render()
+        cached = made
+        return made
+    }
+
+    private static func render() -> NSImage? {
+        let symbolConfig = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+        guard let glyph = NSImage(
+            systemSymbolName: "star.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(symbolConfig) else { return nil }
+
+        let size = NSSize(width: side, height: side)
+        let image = NSImage(size: size)
+        image.lockFocusFlipped(false)
+        // A WHITE disc with a dark glyph — the same inversion the selection
+        // checkmark and the carousel chip use, so the mark carries its own contrast
+        // on a dark photo and a pale one alike.
+        Theme.NS.selectionMark.setFill()
+        NSBezierPath(ovalIn: NSRect(origin: .zero, size: size)).fill()
+        glyph.isTemplate = true
+        Theme.NS.mediaBackdrop.set()
+        glyph.draw(
+            in: NSRect(
+                x: ((side - glyph.size.width) / 2).rounded(),
+                y: ((side - glyph.size.height) / 2).rounded(),
+                width: glyph.size.width, height: glyph.size.height),
+            from: .zero, operation: .sourceOver, fraction: 1)
+        image.unlockFocus()
+        return image
+    }
+}
+
 // MARK: - Chip hit-testing from ANALYTIC geometry (311)
 
 /// Whether a tile draws the `⧉ N` chip — the rule ``MasonryGridItem/showsPostChip``
@@ -317,6 +385,9 @@ final class MasonryGridItem: NSCollectionViewItem {
     /// has more than one item in the feed. Purely informational — hit-transparent
     /// (it's a layer, not a view) so it can't intercept a click or a drag.
     private let postBadgeLayer = CALayer()
+    /// The favorite star (011 · U5), painted bottom-leading while this cell's asset
+    /// is starred. Informational and hit-transparent, like the carousel chip.
+    private let favoriteBadgeLayer = CALayer()
     /// Inert-until-A2 enter-selection circle affordance.
     private let circleButton = NSButton()
     /// The hover-dwell animated-GIF overlay slot (A3). Populated only after the
@@ -459,6 +530,12 @@ final class MasonryGridItem: NSCollectionViewItem {
         postBadgeLayer.isHidden = true
         container.layer?.addSublayer(postBadgeLayer)
 
+        // Favorite star (011 · U5), bottom-leading. Contents are the one cached
+        // pixmap; the frame is placed by `layOutFavoriteBadge`.
+        favoriteBadgeLayer.contentsGravity = .resizeAspect
+        favoriteBadgeLayer.isHidden = true
+        container.layer?.addSublayer(favoriteBadgeLayer)
+
         // Circle affordance: the enter-selection toggle (A2). Hidden until the cell
         // is selecting or hovered (``updateCircleVisibility``); its click routes to
         // `.tapCircle` via the coordinator. Kept hidden from VoiceOver exactly as the
@@ -499,6 +576,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         layOutContrastHairline(in: bounds)
         cursorRingLayer.frame = bounds
         layOutBadge()
+        layOutFavoriteBadge()
         cardHost?.frame = bounds
         gifSlot?.frame = bounds
         CATransaction.commit()
@@ -519,6 +597,18 @@ final class MasonryGridItem: NSCollectionViewItem {
         postBadgeLayer.frame = NSRect(
             x: view.bounds.minX + PostBadge.inset, y: view.bounds.minY + PostBadge.inset,
             width: badge.size.width, height: badge.size.height)
+    }
+
+    /// Place the star against the TILE's bottom-leading corner. `view.bounds`, not
+    /// `contentRect`, for the same reason the chip and the circle use it: toggling a
+    /// post open or closed must not slide a control out from under the pointer.
+    /// The container is flipped, so "bottom" is `maxY`.
+    private func layOutFavoriteBadge() {
+        guard let star = favoriteBadgeLayer.contents as? NSImage else { return }
+        favoriteBadgeLayer.frame = NSRect(
+            x: view.bounds.minX + FavoriteBadge.inset,
+            y: view.bounds.maxY - FavoriteBadge.inset - star.size.height,
+            width: star.size.width, height: star.size.height)
     }
 
     /// The tilt the deepest card would like. Small on purpose — at grid scale a big
@@ -642,6 +732,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         self.postExpanded = postExpanded
         self.isPostLead = isPostLead
         setPostMemberCount(postMemberCount)
+        setFavorite(detail.asset.isFavorite)
         loadToken &+= 1
         let token = loadToken
         loadTask?.cancel()
@@ -748,6 +839,23 @@ final class MasonryGridItem: NSCollectionViewItem {
         CATransaction.commit()
     }
 
+    /// Paint (or clear) the favorite star. Layer-only, like every other cell state,
+    /// and no `needsLayout`: unlike the carousel pile the star does not change the
+    /// content rect, so there is nothing to re-place but the star itself.
+    private func setFavorite(_ isFavorite: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if isFavorite, let star = FavoriteBadge.image() {
+            favoriteBadgeLayer.contents = star
+            layOutFavoriteBadge()
+            favoriteBadgeLayer.isHidden = false
+        } else {
+            favoriteBadgeLayer.contents = nil
+            favoriteBadgeLayer.isHidden = true
+        }
+        CATransaction.commit()
+    }
+
     /// Show/hide the enter-selection circle (idle-hover half — 036 §4 A2). Layer-
     /// only, like ``applySelectionState``; the coordinator drives it from its one
     /// tracking area, replacing the SwiftUI per-cell `.onHover` (and its
@@ -837,6 +945,7 @@ final class MasonryGridItem: NSCollectionViewItem {
         postExpanded = false
         isPostLead = true
         setPostMemberCount(0)
+        setFavorite(false)
         setImage(nil)
         hideCard()
         applySelectionState(.inert)

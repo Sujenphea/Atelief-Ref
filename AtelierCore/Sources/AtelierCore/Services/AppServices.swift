@@ -329,6 +329,7 @@ public final class AppServices: Sendable {
         tagIDs: [UUID] = [],
         tagMatch: TagMatch = .all,
         collectionIDs: [UUID] = [],
+        favoritesOnly: Bool = false,
         limit: Int = 50
     ) async throws -> [AssetDetail] {
         guard !queryVector.isEmpty else { return [] }
@@ -374,6 +375,12 @@ public final class AppServices: Sendable {
                     args.append(contentsOf: distinctTagIDs.map(Self.key))
                     args.append(distinctTagIDs.count)
                 }
+            }
+            // The favorites chip narrows BOTH search modes (011 · U5). Without it
+            // here, flipping keyword → meaning would silently drop the filter the
+            // user can still see selected in the field.
+            if favoritesOnly {
+                conditions.append("a.is_favorite = 1")
             }
             sql += "\n                WHERE " + conditions.joined(separator: " AND ")
 
@@ -2303,6 +2310,11 @@ public final class AppServices: Sendable {
     /// - `collectionIDs`: optional scope (044/045 · 16A) — restrict to assets that
     ///   are members of ANY listed collection (OR across the ids). Empty → whole
     ///   library, no scope.
+    /// - `favoritesOnly`: the favorites filter (011 · U5). `true` adds a plain AND
+    ///   conjunct (`asset.is_favorite = 1`), so it composes with FTS text, tags,
+    ///   platform and collection scope rather than replacing any of them; `false`
+    ///   (the default) adds nothing. There is deliberately no "unfavorited only"
+    ///   value — the chip is a two-state narrowing filter, not a tri-state.
     /// - `sort`: `.newest` (default) orders `created_at DESC, id DESC` — the
     ///   stable order the keyset cursor is defined on. `.relevance` orders by
     ///   best-of-arms `bm25()` (044/045 · 3A) and is NOT pageable (see `after`).
@@ -2321,6 +2333,7 @@ public final class AppServices: Sendable {
         tagMatch: TagMatch = .all,
         tagNameContains: String? = nil,
         collectionIDs: [UUID] = [],
+        favoritesOnly: Bool = false,
         sort: SearchSort = .newest,
         limit: Int = 50,
         after cursor: AssetPageCursor? = nil
@@ -2544,6 +2557,15 @@ public final class AppServices: Sendable {
                 }
             }
 
+            // Favorites filter (011 · U5). A plain conjunct, so it AND-combines
+            // with FTS text, the tag filters, the platform join and the
+            // collection scope — the chip narrows whatever query is already
+            // running rather than becoming a mode of its own. Qualified
+            // `asset.is_favorite`: the source join makes a bare column ambiguous.
+            if favoritesOnly {
+                request = request.filter(sql: "asset.is_favorite = 1")
+            }
+
             // Keyset seek: rows strictly after the cursor in the DESC order.
             // GRDB qualifies these `Column`s to the base `asset` table; the Date
             // binds to the same sortable text encoding the column stores (C5).
@@ -2678,6 +2700,62 @@ public final class AppServices: Sendable {
             let trimmed = note?.trimmingCharacters(in: .whitespacesAndNewlines)
             asset.note = (trimmed?.isEmpty ?? true) ? nil : trimmed
             try asset.update(db)
+        }
+    }
+
+    // MARK: - Favorites (011 · U5)
+
+    /// Set (or clear) the favorite flag on `assetIDs`, in ONE transaction.
+    ///
+    /// **Idempotent by construction.** The `UPDATE` is filtered to the rows that
+    /// are not already at `isFavorite`, so favoriting a favorite writes nothing —
+    /// no row version churn, no `updated_at` on the collections that hold it, and
+    /// the returned count is the number of rows that actually CHANGED. Callers
+    /// (the undo registration in the shell) use that count to decide whether the
+    /// action is worth an undo entry at all.
+    ///
+    /// A missing id is silently ignored rather than a `.notFound`: the caller is a
+    /// multi-select over a grid that can be reloaded underneath it, and failing the
+    /// whole batch because one tile was deleted a moment ago would be worse than
+    /// starring the rest. (`setName` / `setNote` are single-asset editors and do
+    /// throw — the distinction is deliberate.) An empty set is a no-op.
+    @discardableResult
+    public func setFavorite(_ isFavorite: Bool, for assetIDs: [UUID]) async throws -> Int {
+        let keys = Array(Set(assetIDs)).map(Self.key)
+        guard !keys.isEmpty else { return 0 }
+        return try await write { db in
+            let placeholders = databaseQuestionMarks(count: keys.count)
+            var args: [(any DatabaseValueConvertible)?] = [isFavorite]
+            args.append(contentsOf: keys.map { $0 as (any DatabaseValueConvertible)? })
+            args.append(isFavorite)
+            try db.execute(sql: """
+                UPDATE asset SET is_favorite = ?
+                WHERE id IN (\(placeholders)) AND is_favorite <> ?
+                """, arguments: StatementArguments(args))
+            return db.changesCount
+        }
+    }
+
+    /// Single-asset convenience over ``setFavorite(_:for:)`` — `true` when the row
+    /// actually changed.
+    @discardableResult
+    public func setFavorite(_ isFavorite: Bool, for assetID: UUID) async throws -> Bool {
+        try await setFavorite(isFavorite, for: [assetID]) > 0
+    }
+
+    /// The ids among `assetIDs` that are currently favorited. The read half of the
+    /// ⌘D rule: the shell asks this to decide which way a MIXED selection flips,
+    /// and to build the exact inverse an undo has to restore.
+    public func favoritedAssetIDs(among assetIDs: [UUID]) async throws -> Set<UUID> {
+        let ids = Array(Set(assetIDs))
+        guard !ids.isEmpty else { return [] }
+        let keys = ids.map(Self.key)
+        return try await read { db in
+            let placeholders = databaseQuestionMarks(count: keys.count)
+            let found = try String.fetchAll(db, sql: """
+                SELECT id FROM asset WHERE id IN (\(placeholders)) AND is_favorite = 1
+                """, arguments: StatementArguments(keys))
+            return Set(found.compactMap(UUID.init(uuidString:)))
         }
     }
 

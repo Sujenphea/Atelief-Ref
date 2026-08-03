@@ -30,11 +30,25 @@ import SwiftUI
 enum SearchToken: Identifiable, Hashable {
     case tag(Tag)
     case collection(Collection)
+    /// The favorites filter (011 · U5) — an AND conjunct, like a tag: it narrows
+    /// whatever query is running rather than becoming a mode of its own. Carried
+    /// as a token rather than as a separate `@Published` flag so it lives, clears
+    /// and renders with every other filter: the field's `×` drops it, the chip row
+    /// shows it, and `isActive` counts it without a second rule.
+    case favorites
+
+    /// The favorites token's synthetic id. Tokens are `Identifiable` by a real
+    /// entity id, and this one has no entity; a FIXED constant (not a fresh UUID)
+    /// keeps `removeToken` / the `selected` set working, and it is drawn from the
+    /// reserved all-zero space Collection.unsortedID already uses so it can never
+    /// collide with a real tag or collection.
+    static let favoritesID = UUID(uuidString: "00000000-0000-0000-0000-0000000000fa")!
 
     var id: UUID {
         switch self {
         case .tag(let tag): return tag.id
         case .collection(let collection): return collection.id
+        case .favorites: return Self.favoritesID
         }
     }
 
@@ -42,6 +56,7 @@ enum SearchToken: Identifiable, Hashable {
         switch self {
         case .tag(let tag): return tag.name
         case .collection(let collection): return collection.name
+        case .favorites: return "Favorites"
         }
     }
 }
@@ -60,6 +75,9 @@ struct LibrarySearchQuery: Equatable {
     /// Collection scope from `.collection` tokens plus the This-collection scope,
     /// ORed (16A). Empty = whole library.
     var collectionIDs: [UUID]
+    /// The `.favorites` token (011 · U5) — an AND conjunct on `asset.is_favorite`,
+    /// conjunct with the text / tag / collection arms above.
+    var favoritesOnly: Bool = false
     /// `.relevance` when there's free text to rank, else `.newest`.
     var sort: SearchSort
 }
@@ -151,6 +169,19 @@ final class LibrarySearchModel: ObservableObject {
     /// The collection ids among the selected tokens (ORed scope).
     private var selectedCollectionIDs: [UUID] {
         tokens.compactMap { if case .collection(let c) = $0 { c.id } else { nil } }
+    }
+    /// Whether the favorites filter is on (011 · U5) — the `.favorites` token's
+    /// presence, so there is exactly one source of truth for it.
+    var favoritesOnly: Bool { tokens.contains(.favorites) }
+
+    /// Turn the favorites filter on or off — the chip's click. Mutating `tokens`
+    /// fires the same `onChange` re-run every other filter change does.
+    func toggleFavoritesFilter() {
+        if favoritesOnly {
+            tokens.removeAll { $0 == .favorites }
+        } else {
+            tokens.append(.favorites)
+        }
     }
 
     /// Whether a query is worth running / results should replace the content.
@@ -254,7 +285,8 @@ final class LibrarySearchModel: ObservableObject {
         if mode == .meaning, hasFTS {
             query = LibrarySearchQuery(
                 text: text, tagIDs: selectedTagIDs, tagNameContains: nil,
-                collectionIDs: scopeIDs, sort: .relevance)
+                collectionIDs: scopeIDs, favoritesOnly: favoritesOnly,
+                sort: .relevance)
             run = runSemanticQuery
         } else {
             query = LibrarySearchQuery(
@@ -262,6 +294,7 @@ final class LibrarySearchModel: ObservableObject {
                 tagIDs: selectedTagIDs,
                 tagNameContains: tagNeedle,
                 collectionIDs: scopeIDs,
+                favoritesOnly: favoritesOnly,
                 // Rank by relevance while there's text to rank; a tokens-only /
                 // `tag:`-only query has nothing to score, so keep the recency order.
                 sort: hasFTS ? .relevance : .newest)
@@ -335,6 +368,7 @@ final class LibrarySearchModel: ObservableObject {
             tagMatch: .all,
             tagNameContains: query.tagNameContains,
             collectionIDs: query.collectionIDs,
+            favoritesOnly: query.favoritesOnly,
             sort: query.sort,
             limit: 500)
     }
@@ -355,6 +389,7 @@ final class LibrarySearchModel: ObservableObject {
             tagIDs: query.tagIDs,
             tagMatch: .all,
             collectionIDs: query.collectionIDs,
+            favoritesOnly: query.favoritesOnly,
             limit: 500)
     }
 
@@ -492,6 +527,18 @@ struct LibrarySearchable<Content: View>: View {
             // a lone `.primaryAction` item otherwise sits at the leading edge, right
             // by the traffic lights.
             ToolbarSpacer(.flexible)
+            // The favorites filter chip (011 · U5), collection screens only. It is
+            // one click onto the SAME `.favorites` token the field renders as a
+            // chip — not a parallel filter — so turning it on shows the chip in
+            // the field, and the field's `×` turns it back off. The global gallery
+            // omits it: there the filter is reached by the token like any other,
+            // and a permanent star in the toolbar of every screen would be a
+            // second, competing home for one piece of state.
+            if collectionID != nil {
+                ToolbarItem(placement: .primaryAction) {
+                    FavoritesFilterChip(search: search)
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 SearchToolbarField(search: search)
                     .frame(width: searchFieldWidth)
@@ -588,7 +635,32 @@ private struct SearchToolbarField: View {
         switch token {
         case .tag(let tag): return tag.source == .agent ? "sparkles" : "tag"
         case .collection: return "folder"
+        case .favorites: return "star.fill"
         }
+    }
+}
+
+// MARK: - Favorites filter chip (011 · U5)
+
+/// The collection screen's one-click favorites filter. A star that reads its state
+/// from — and writes it to — the `.favorites` search token, so the chip, the token
+/// in the field, and the query can never disagree: there is one piece of state and
+/// two views of it.
+private struct FavoritesFilterChip: View {
+    @ObservedObject var search: LibrarySearchModel
+
+    var body: some View {
+        Button { search.toggleFavoritesFilter() } label: {
+            Image(systemName: search.favoritesOnly ? "star.fill" : "star")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(search.favoritesOnly
+                    ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
+        }
+        .buttonStyle(HoverButtonStyle(
+            cornerRadius: Theme.Radius.control, padding: Theme.Spacing.xs))
+        .help(search.favoritesOnly ? "Show all items" : "Show favorites only")
+        .accessibilityLabel("Favorites filter")
+        .accessibilityAddTraits(search.favoritesOnly ? [.isSelected] : [])
     }
 }
 
@@ -1116,7 +1188,12 @@ private struct SearchDetailOverlay: View {
                         revealInFinder: hasBlob ? { model.revealInFinder(asset: asset) } : nil,
                         copySourceLink: hasSource ? { model.copySourceLink(url: sourceURL) } : nil,
                         removeFromFolder: nil,
-                        requestDelete: nil),
+                        requestDelete: nil,
+                        // The model's undoable writer, as on the collection host: it
+                        // bumps `contentsVersion`, which the results grid already
+                        // watches to re-run the query — so the hit's star repaints
+                        // instead of going stale behind the page.
+                        setFavorite: { model.setFavorite($0, assetIDs: [asset.id]) }),
                     navigator: index.map { i in
                         ItemDetailNavigator(index: i, count: results.count) { delta in
                             let target = i + delta

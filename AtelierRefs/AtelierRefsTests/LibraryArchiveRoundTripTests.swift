@@ -65,7 +65,7 @@ private struct RoundTripRig {
     func seedImage(
         bytes: String, into collectionID: UUID, title: String? = "Hero",
         url: String? = nil, platform: Platform = .pinterest,
-        name: String? = nil, note: String? = nil
+        name: String? = nil, note: String? = nil, favorite: Bool = false
     ) async throws -> Asset {
         let data = Data(bytes.utf8)
         let hash = ContentHasher.hash(data)
@@ -84,7 +84,16 @@ private struct RoundTripRig {
         let asset = try await self.source.ingest(draft, from: source, into: collectionID).asset
         if let name { try await self.source.setName(name, for: asset.id) }
         if let note { try await self.source.setNote(note, for: asset.id) }
+        if favorite { try await self.source.setFavorite(true, for: asset.id) }
         return asset
+    }
+
+    /// The favorite flag as the TARGET library holds it, by source title — the
+    /// question a favorites round trip is actually asking.
+    func targetFavorites(_ collection: String) async throws -> [String: Bool] {
+        Dictionary(
+            try await targetItems(collection).map { ($0.source.title ?? "", $0.asset.isFavorite) },
+            uniquingKeysWith: { first, _ in first })
     }
 
     // MARK: Running
@@ -221,6 +230,94 @@ struct LibraryArchiveRoundTripTests {
         #expect(try rig.targetStore.readBlob(hash: hash, fileExtension: "png")
             == Data("alpha".utf8))
         #expect(hash == ContentHasher.hash(Data("alpha".utf8)))
+    }
+
+    /// **The regression the manifest change exists for (011 · U5).** Favorites are
+    /// user intent — nothing can recompute them — so an archive that dropped the
+    /// flag would lose it on the first export after the feature shipped, silently
+    /// and irreversibly. Measured end to end: a real export, a real import, two
+    /// separate libraries.
+    ///
+    /// The NEGATIVE half is load-bearing. Asserting only that the starred item
+    /// arrives starred would also pass if the importer starred everything, which is
+    /// the more likely bug in a replay layer that applies favorites like tags.
+    @Test("Favorites survive a full export and re-import")
+    func favoritesRoundTrip() async throws {
+        let rig = try RoundTripRig.make()
+        defer { rig.cleanup() }
+
+        let refs = try await rig.source.createCollection(name: "Refs")
+        try await rig.seedImage(
+            bytes: "starred", into: refs.id, title: "Starred",
+            url: "https://example.com/starred", favorite: true)
+        try await rig.seedImage(
+            bytes: "plain", into: refs.id, title: "Plain",
+            url: "https://example.com/plain")
+
+        try await rig.export()
+        // The manifest itself carries it — checked before the import, so a failure
+        // here names the WRITER rather than looking like an importer bug.
+        let manifest = try ArchiveManifest.read(
+            from: rig.archive.appendingPathComponent(ArchiveLayout.manifestFilename))
+        #expect(Set(manifest.assets.map(\.isFavorite)) == [true, false])
+
+        let summary = await rig.importIntoTarget()
+        #expect(summary.outcome == .succeeded)
+        #expect(summary.newAssets == 2)
+        #expect(try await rig.targetFavorites("Refs") == ["Starred": true, "Plain": false])
+    }
+
+    /// A multi-collection favorite arrives as ONE starred asset, not as a star that
+    /// only stuck in the first folder the importer happened to visit.
+    @Test("A favorite on a multi-collection asset survives in every collection")
+    func favoriteSurvivesMultiCollection() async throws {
+        let rig = try RoundTripRig.make()
+        defer { rig.cleanup() }
+
+        let alpha = try await rig.source.createCollection(name: "Alpha")
+        let beta = try await rig.source.createCollection(name: "Beta")
+        let asset = try await rig.seedImage(bytes: "shared", into: alpha.id, favorite: true)
+        try await rig.source.addAssets([asset.id], to: beta.id)
+
+        try await rig.export()
+        #expect(await rig.importIntoTarget().outcome == .succeeded)
+
+        for name in ["Alpha", "Beta"] {
+            let items = try await rig.targetItems(name)
+            #expect(items.count == 1)
+            #expect(items.first?.asset.isFavorite == true)
+        }
+    }
+
+    /// Rule 3 of the replay layer, for the star: applying it is ADDITIVE, so a
+    /// second import onto a deduplicated asset must not clear a star the user set
+    /// in this library, and an archive that says "not a favorite" must not unstar
+    /// anything. (Contrast `name` / `note`, which are new-assets-only.)
+    @Test("Re-importing an unstarred archive never unstars what is here")
+    func importNeverUnstars() async throws {
+        let rig = try RoundTripRig.make()
+        defer { rig.cleanup() }
+
+        let refs = try await rig.source.createCollection(name: "Refs")
+        try await rig.seedImage(
+            bytes: "later-starred", into: refs.id, title: "Later",
+            url: "https://example.com/later")
+
+        try await rig.export()
+        #expect(await rig.importIntoTarget().outcome == .succeeded)
+
+        // Star it HERE, in the destination library — an edit the archive knows
+        // nothing about.
+        let landed = try #require(try await rig.targetItems("Refs").first)
+        #expect(landed.asset.isFavorite == false)
+        try await rig.target.setFavorite(true, for: landed.asset.id)
+
+        // Import the same (unstarred) archive again: it dedups onto that asset.
+        let second = await rig.importIntoTarget()
+        #expect(second.newAssets == 0)
+        let after = try #require(try await rig.targetItems("Refs").first)
+        #expect(after.asset.id == landed.asset.id)
+        #expect(after.asset.isFavorite == true)
     }
 
     /// The archive's defining asymmetry, measured from the other end: the tree

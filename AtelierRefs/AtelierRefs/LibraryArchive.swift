@@ -140,6 +140,26 @@ nonisolated enum ArchiveRefusal: Error, Equatable {
 nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
 
     /// The manifest shape this build writes.
+    ///
+    /// **Still 1 after favorites (011 · U5), deliberately.** `manifest_version`
+    /// answers one question — "would a reader that does not know this shape
+    /// MISREAD the file?" — and the answer for `is_favorite` is no: it is a new
+    /// optional key, `JSONDecoder` ignores keys it has no property for, and every
+    /// field a v1 reader does read still means exactly what it meant. Bumping for
+    /// an additive field would spend the one signal we have for a genuinely
+    /// incompatible change (a field removed, renamed, or re-meaninged) on a change
+    /// that isn't one, and would make every future additive field look like a
+    /// break.
+    ///
+    /// The "an older build must not mis-read a newer archive" guarantee is carried
+    /// by the OTHER axis, and carried more precisely: favorites is a schema change,
+    /// so an archive written with it records `schema_version = "v19"`, and
+    /// ``refusal(for:schemaVersion:)`` returns ``ArchiveRefusal/schemaTooNew(_:)``
+    /// for any build that only migrates to v18. That build refuses the archive
+    /// whole — it never gets as far as silently dropping a star. In the other
+    /// direction a v18-era archive decodes here with `is_favorite` absent, which
+    /// ``AssetEntry/init(from:)`` reads as `false` — the truth, since the flag did
+    /// not exist when it was written.
     static let currentVersion = 1
 
     /// The shape of this file. A reader that does not recognise the number must
@@ -273,6 +293,14 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
         var createdAt: Date
         var name: String?
         var note: String?
+        /// The star (011 · U5). Carried because it is user intent, not derived
+        /// data — nothing can recompute which items someone chose to favorite, so
+        /// an archive that dropped it would lose them silently on the first
+        /// export after the flag shipped. Written unconditionally (`false`
+        /// included) rather than as an omit-when-nil optional, so a reader can
+        /// tell "written by a build that knows favorites, and this one isn't one"
+        /// from "written before the flag existed" if it ever needs to.
+        var isFavorite: Bool
         var viewCount: Int
         var lastViewedAt: Date?
         var payload: String?
@@ -295,6 +323,7 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
             self.createdAt = ArchiveManifest.wire(asset.createdAt)
             self.name = asset.name
             self.note = asset.note
+            self.isFavorite = asset.isFavorite
             self.viewCount = asset.viewCount
             self.lastViewedAt = asset.lastViewedAt.map(ArchiveManifest.wire)
             self.payload = asset.payload
@@ -311,10 +340,45 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
             case fileSize = "file_size"
             case downloadState = "download_state"
             case createdAt = "created_at"
+            case isFavorite = "is_favorite"
             case viewCount = "view_count"
             case lastViewedAt = "last_viewed_at"
             case dedupKey = "dedup_key"
             case searchText = "search_text"
+        }
+
+        /// Hand-written ONLY to make `is_favorite` optional on the way in.
+        ///
+        /// Swift's synthesized `Decodable` calls `decode`, not `decodeIfPresent`,
+        /// for a non-optional property — a default value on the declaration does
+        /// nothing for it. So without this, adding the field would make every
+        /// archive written before v19 fail to decode ENTIRELY: the whole
+        /// backward-compatibility argument for not bumping `manifest_version`
+        /// rests on this one `decodeIfPresent`. Everything else is the synthesized
+        /// behaviour spelled out, and `encode(to:)` is left synthesized.
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(UUID.self, forKey: .id)
+            sourceID = try container.decode(UUID.self, forKey: .sourceID)
+            kind = try container.decode(AssetKind.self, forKey: .kind)
+            blobHash = try container.decodeIfPresent(String.self, forKey: .blobHash)
+            mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
+            width = try container.decodeIfPresent(Int.self, forKey: .width)
+            height = try container.decodeIfPresent(Int.self, forKey: .height)
+            duration = try container.decodeIfPresent(Double.self, forKey: .duration)
+            fileSize = try container.decodeIfPresent(Int.self, forKey: .fileSize)
+            downloadState = try container.decode(DownloadState.self, forKey: .downloadState)
+            createdAt = try container.decode(Date.self, forKey: .createdAt)
+            name = try container.decodeIfPresent(String.self, forKey: .name)
+            note = try container.decodeIfPresent(String.self, forKey: .note)
+            // Absent = written before favorites existed = not a favorite.
+            isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+            viewCount = try container.decode(Int.self, forKey: .viewCount)
+            lastViewedAt = try container.decodeIfPresent(Date.self, forKey: .lastViewedAt)
+            payload = try container.decodeIfPresent(String.self, forKey: .payload)
+            dedupKey = try container.decodeIfPresent(String.self, forKey: .dedupKey)
+            searchText = try container.decodeIfPresent(String.self, forKey: .searchText)
+            tags = try container.decode([TagEntry].self, forKey: .tags)
         }
     }
 

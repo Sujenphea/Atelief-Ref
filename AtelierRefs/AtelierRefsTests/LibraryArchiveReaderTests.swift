@@ -79,14 +79,15 @@ private func makeSource(
 
 private func makeImage(
     _ id: UUID, source sourceID: UUID, hash: String? = "ab12cd34",
-    width: Int? = 10, height: Int? = 12, tags: [(String, TagSource)] = []
+    width: Int? = 10, height: Int? = 12, tags: [(String, TagSource)] = [],
+    favorite: Bool = false
 ) -> ArchiveManifest.AssetEntry {
     ArchiveManifest.AssetEntry(
         Asset(
             id: id, kind: .image, blobHash: hash, mimeType: "image/png",
             width: width, height: height, fileSize: 6,
             downloadState: .downloaded, createdAt: Fixture.when,
-            name: "Hero", note: "a note", sourceId: sourceID),
+            name: "Hero", note: "a note", isFavorite: favorite, sourceId: sourceID),
         // Built here rather than taken as a `[Tag]`: `Tag` is ambiguous in a type
         // position inside a Swift Testing file (`Testing.Tag` is the trait type).
         tags: tags.map { Tag(id: UUID(), name: $0.0, source: $0.1) })
@@ -211,6 +212,9 @@ struct LibraryArchiveReaderTests {
         #expect(item.source.rawMetadata == .object(["board": .string("Refs")]))
         #expect(item.name == "Hero")
         #expect(item.note == "a note")
+        // The default fixture is UNstarred, so this pins that the reader carries
+        // the manifest's value rather than defaulting everything to true.
+        #expect(item.isFavorite == false)
         #expect(item.tags == [
             ImportTag(name: "brutalist", source: .user),
             ImportTag(name: "poster", source: .agent),
@@ -227,6 +231,42 @@ struct LibraryArchiveReaderTests {
         #expect(bytes.width == 10)
         #expect(bytes.height == 12)
         #expect(bytes.url.lastPathComponent == "Hero-ab12cd34.png")
+    }
+
+    /// The parse half of the favorites contract (011 · U5): a starred manifest
+    /// entry becomes a starred plan item, so the replay layer has something to
+    /// apply. Reads the flag through the reader, not off the manifest, because
+    /// dropping it in `LibraryArchiveReader` is the failure that would otherwise
+    /// look exactly like a working export.
+    @Test("A favorited manifest entry parses into a favorited plan item")
+    func favoriteParses() throws {
+        let fixture = try Fixture.make()
+        defer { fixture.cleanup() }
+
+        let sourceID = UUID(), starred = UUID(), plain = UUID(), collectionID = UUID()
+        try fixture.writeFile("Collections/Refs/Hero-ab12cd34.png")
+        try fixture.writeFile("Collections/Refs/Hero-ef56ab78.png")
+        try fixture.write(makeManifest(
+            sources: [makeSource(sourceID)],
+            assets: [
+                makeImage(starred, source: sourceID, favorite: true),
+                makeImage(plain, source: sourceID, hash: "ef56ab78"),
+            ],
+            collections: [makeCollection(
+                collectionID, name: "Refs", path: "Collections/Refs",
+                items: [
+                    makeMembership(
+                        starred, in: collectionID, order: 0,
+                        file: "Collections/Refs/Hero-ab12cd34.png"),
+                    makeMembership(
+                        plain, in: collectionID, order: 1,
+                        file: "Collections/Refs/Hero-ef56ab78.png"),
+                ])]))
+
+        let parse = try fixture.parse()
+        let refs = try #require(parse.plans.first)
+        #expect(refs.items.count == 2)
+        #expect(refs.items.map(\.isFavorite) == [true, false])
     }
 
     /// A media-less kind has no file and is not a skip: its substance is the

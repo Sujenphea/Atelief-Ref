@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -2502,5 +2502,109 @@ struct SavedSearchRoundTripTests {
             try SavedSearch.deleteOne(db, key: search.id.uuidString.lowercased())
         }
         #expect(deleted == true)
+    }
+}
+
+// MARK: - v19 · favorites (011 · U5)
+
+@Suite("Migration v19: asset.is_favorite")
+struct MigrationV19Tests {
+
+    /// A migrator applied only THROUGH v18 (pre `is_favorite`), so a test can seed
+    /// rows the way an existing install holds them and then migrate v19 over them
+    /// — the upgrade path, which is the half a fresh-install test cannot cover.
+    private func makeQueueThroughV18() throws -> DatabaseQueue {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v18")
+        return dbQueue
+    }
+
+    /// Seed one source + one asset with RAW SQL naming only the pre-v19 columns —
+    /// the `Asset` record would not compile against a v18 schema, and that is the
+    /// point: this is what a real v18 database contains.
+    private func seedV18Asset(_ db: Database, id: String) throws {
+        let sourceID = newID()
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, original_url, author_handle,
+                author_name, title, captured_at, raw_metadata)
+            VALUES (?, 'pinterest', NULL, NULL, NULL, NULL, ?, '{}');
+            """, arguments: [sourceID, ts])
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, blob_hash, mime_type, width, height,
+                duration, file_size, download_state, created_at, source_id)
+            VALUES (?, 'image', 'abc123', 'image/png', 10, 10, NULL, 4,
+                'downloaded', ?, ?);
+            """, arguments: [id, ts, sourceID])
+    }
+
+    @Test("a fresh install lands at v19 with the column present and NOT NULL")
+    func freshInstallHasColumn() throws {
+        let dbQueue = try makeMigratedQueue()
+        let notNull = try dbQueue.read { try columnNotNull($0, table: "asset") }
+        #expect(notNull["is_favorite"] == 1)
+        let applied = try dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations")
+        }
+        #expect(applied.contains("v19"))
+    }
+
+    @Test("upgrading from v18 lands at v19 and existing rows default to false")
+    func upgradeFromV18DefaultsFalse() throws {
+        let dbQueue = try makeQueueThroughV18()
+        let assetID = newID()
+        try dbQueue.write { try seedV18Asset($0, id: assetID) }
+        // The column genuinely does not exist yet — otherwise the assertion below
+        // would prove nothing about the upgrade.
+        let before = try dbQueue.read { try columnNotNull($0, table: "asset") }
+        #expect(before["is_favorite"] == nil)
+
+        try Migrator.makeMigrator().migrate(dbQueue)   // apply v19
+
+        let after = try dbQueue.read { try columnNotNull($0, table: "asset") }
+        #expect(after["is_favorite"] == 1)
+        let favorite = try dbQueue.read { db in
+            try Bool.fetchOne(
+                db, sql: "SELECT is_favorite FROM asset WHERE id = ?", arguments: [assetID])
+        }
+        #expect(favorite == false)
+        // …and the domain record reads the same value through GRDB.
+        let fetched = try dbQueue.read { try Asset.fetchOne($0, key: assetID) }
+        #expect(fetched?.isFavorite == false)
+    }
+
+    @Test("the flag round-trips through the Asset record")
+    func recordRoundTrip() throws {
+        let dbQueue = try makeQueueThroughV18()
+        let assetID = newID()
+        try dbQueue.write { try seedV18Asset($0, id: assetID) }
+        try Migrator.makeMigrator().migrate(dbQueue)
+
+        try dbQueue.write { db in
+            var asset = try #require(try Asset.fetchOne(db, key: assetID))
+            asset.isFavorite = true
+            try asset.update(db)
+        }
+        let fetched = try dbQueue.read { try Asset.fetchOne($0, key: assetID) }
+        #expect(fetched?.isFavorite == true)
+    }
+
+    /// The flag is a property of the ASSET, not of a membership — so it must not
+    /// have appeared on `collection_item`, where a second, per-folder "favorite"
+    /// could diverge from it.
+    @Test("is_favorite lives on asset only, never on collection_item")
+    func columnIsOnAssetOnly() throws {
+        let dbQueue = try makeMigratedQueue()
+        let membership = try dbQueue.read { try columnNotNull($0, table: "collection_item") }
+        #expect(membership["is_favorite"] == nil)
+    }
+
+    /// P13 is "index the paths that scale". The favorites conjunct rides an already
+    /// bounded query, so no index was added — pinned here so adding one later is a
+    /// deliberate act with a measurement behind it, not an accident.
+    @Test("no is_favorite index is created (deliberate — see createV19Schema)")
+    func noSpeculativeIndex() throws {
+        let dbQueue = try makeMigratedQueue()
+        let indices = try dbQueue.read { try indexNames($0, table: "asset") }
+        #expect(!indices.contains { $0.contains("is_favorite") })
     }
 }

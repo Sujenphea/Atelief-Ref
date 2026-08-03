@@ -42,7 +42,10 @@ private enum Fixture {
             id: assetID, kind: .image, blobHash: "ab12cd34ef567890",
             mimeType: "image/png", width: 800, height: 600, duration: nil,
             fileSize: 4096, downloadState: .downloaded, createdAt: when,
-            name: "Named", note: "A note", sourceId: sourceID,
+            name: "Named", note: "A note",
+            // Deliberately STARRED (011 · U5): a golden pinning `false` would also
+            // be satisfied by a writer that always writes `false`.
+            isFavorite: true, sourceId: sourceID,
             viewCount: 3, lastViewedAt: when, payload: nil,
             dedupKey: nil, searchText: nil)
     }
@@ -91,8 +94,18 @@ private enum Fixture {
 struct ArchiveManifestGoldenTests {
 
     /// The golden file. If this test fails, the manifest's SHAPE changed — which
-    /// is allowed, but only alongside a `manifest_version` bump and a matching
-    /// change in the importer. Never "fix" it by pasting the new output.
+    /// is allowed, but only alongside a matching change in the importer and a
+    /// deliberate decision about `manifest_version`. Never "fix" it by pasting the
+    /// new output.
+    ///
+    /// The version rule, spelled out because "shape changed ⇒ bump" is too coarse
+    /// and 011 · U5 was the first case to hit the difference: bump when a reader
+    /// that IGNORES unknown keys would MISREAD the file — a field removed, renamed,
+    /// or given a new meaning. A strictly ADDITIVE optional field is not that: an
+    /// older reader skips it and every field it does read still means what it did.
+    /// `is_favorite` is such a field, so it landed at `manifest_version` 1, and the
+    /// protection for older builds comes from `schema_version` instead (it moves to
+    /// "v19", which a v18 build refuses outright — see ``ArchiveManifest``).
     private static let golden = """
         {
           "app_version" : "1.2-test",
@@ -104,6 +117,7 @@ struct ArchiveManifestGoldenTests {
               "file_size" : 4096,
               "height" : 600,
               "id" : "22222222-2222-2222-2222-222222222222",
+              "is_favorite" : true,
               "kind" : "image",
               "last_viewed_at" : "2026-01-02T03:04:05Z",
               "mime_type" : "image\\/png",
@@ -212,6 +226,52 @@ struct ArchiveManifestGoldenTests {
         defer { try? FileManager.default.removeItem(at: url) }
         try Fixture.manifest.write(to: url)
         #expect(try ArchiveManifest.read(from: url) == Fixture.manifest)
+    }
+
+    /// The whole reason `is_favorite` could ship WITHOUT a `manifest_version` bump
+    /// (011 · U5): a manifest written before the field existed must still decode,
+    /// with the absent flag reading as `false` — the truth, since nothing could
+    /// have been a favorite then.
+    ///
+    /// Swift's synthesized `Decodable` would have thrown `keyNotFound` here (it
+    /// calls `decode`, not `decodeIfPresent`, for a non-optional property, and a
+    /// declaration default does nothing for it), which is why `AssetEntry` has a
+    /// hand-written `init(from:)`. If someone deletes that initializer, this test
+    /// is the thing that fails.
+    @Test("A pre-v19 manifest with no is_favorite key still decodes, as not-favorite")
+    func decodesManifestWithoutFavoriteKey() throws {
+        let legacy = Self.golden
+            .replacingOccurrences(of: "      \"is_favorite\" : true,\n", with: "")
+        #expect(!legacy.contains("is_favorite"))
+
+        let decoded = try ArchiveManifest.makeDecoder()
+            .decode(ArchiveManifest.self, from: Data(legacy.utf8))
+        #expect(decoded.assets.count == 1)
+        #expect(decoded.assets[0].isFavorite == false)
+        // Nothing else moved — the rest of the entry decoded exactly as before.
+        #expect(decoded.assets[0].name == "Named")
+        #expect(decoded.assets[0].viewCount == 3)
+        #expect(decoded.assets[0].tags.map(\.name) == ["moody"])
+    }
+
+    /// The other half of the same decision: an archive carrying favorites is NOT
+    /// refused for that reason alone (its `manifest_version` is unchanged), while a
+    /// build that predates the v19 schema refuses it on the axis that actually
+    /// tracks the change.
+    @Test("Favorites do not bump manifest_version; schema_version carries the refusal")
+    func favoritesRideTheSchemaAxis() {
+        #expect(Fixture.manifest.manifestVersion == ArchiveManifest.currentVersion)
+        #expect(ArchiveManifest.currentVersion == 1)
+
+        let v19 = ArchiveManifest(
+            schemaVersion: "v19", appVersion: "t", exportedAt: Date(),
+            sources: [], assets: [], collections: [])
+        // A build that knows v19 reads it…
+        #expect(ArchiveManifest.refusal(for: v19, schemaVersion: "v19") == nil)
+        // …a build that only migrates to v18 refuses the whole archive, so it can
+        // never silently drop the stars it doesn't understand.
+        #expect(ArchiveManifest.refusal(for: v19, schemaVersion: "v18")
+            == .schemaTooNew("v19"))
     }
 
     /// Provenance is what `ingest`'s 18A dedup matches on. A normalized or

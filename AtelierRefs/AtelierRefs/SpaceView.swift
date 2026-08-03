@@ -921,7 +921,11 @@ struct SpaceView: View {
                     revealInFinder: hasBlob ? { model.revealInFinder(asset: asset) } : nil,
                     copySourceLink: hasSource ? { model.copySourceLink(url: sourceURL) } : nil,
                     removeFromFolder: nil,
-                    requestDelete: nil),
+                    requestDelete: nil,
+                    // A board has no membership verbs, but the star is a property of
+                    // the ASSET (011 · U5) — favoriting from a Space is the same
+                    // write, visible in every collection that holds the item.
+                    setFavorite: { model.setFavorite($0, assetIDs: [asset.id]) }),
                 navigator: nil,
                 onClose: {
                     model.flushViewBumps()

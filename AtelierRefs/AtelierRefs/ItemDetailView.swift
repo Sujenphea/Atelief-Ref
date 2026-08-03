@@ -61,6 +61,9 @@ struct ItemDetailActions {
     var copySourceLink: (() -> Void)?
     var removeFromFolder: (() -> Void)?
     var requestDelete: (() -> Void)?
+    /// Set the item's favorite flag (011 · U5). `nil` on a host with no writer
+    /// wired, which hides the star entirely rather than drawing a dead control.
+    var setFavorite: ((Bool) -> Void)?
 }
 
 struct ItemDetailView: View {
@@ -146,6 +149,15 @@ struct ItemDetailView: View {
     /// two in a row must both arrive.
     @State private var keyFocusToken = 0
 
+    /// The star's live state (011 · U5). Local, and seeded from `asset.isFavorite`
+    /// whenever the shown asset changes, for the same reason the Name / Note fields
+    /// keep a local draft: the hosts hand this view an `Asset` VALUE captured when
+    /// the page was presented, so a write that lands afterwards does not flow back
+    /// into it. Optimistic — the funnel's `setFavorite` is idempotent and the grid
+    /// behind reloads from the database, so the only thing this state can be wrong
+    /// about is a write that failed, which surfaces on the model's alert.
+    @State private var isFavorite = false
+
     /// The backing-store scale (2 on Retina). Sharpness is set by PHYSICAL pixels, so
     /// the FIT target reported to the loader is points × this — a 700pt media area on
     /// a 2× display needs 1400px, not 700.
@@ -220,6 +232,10 @@ struct ItemDetailView: View {
         }
         // Reload media whenever the shown asset changes (open + prev/next).
         .task(id: asset.id) { await loadMedia() }
+        // Re-seed the star on open AND on every prev/next step — the page is one
+        // view walking a run, so without `initial` + the id key it would show the
+        // first item's state for the whole run.
+        .onChange(of: asset.id, initial: true) { _, _ in isFavorite = asset.isFavorite }
         .onDisappear {
             player?.pause()
             player = nil
@@ -232,14 +248,40 @@ struct ItemDetailView: View {
         // Back pill (leading) · centered pager · overflow menu (trailing). Zoom
         // moved onto the media; the source title is dropped (041 · Figma `6:4`).
         ZStack {
-            HStack {
+            HStack(spacing: Theme.Spacing.sm) {
                 backButton
                 Spacer()
+                if let setFavorite = actions.setFavorite { favoriteButton(setFavorite) }
                 overflowMenu
             }
             if let navigator { pager(navigator) }
         }
         .padding(Theme.Spacing.md)
+    }
+
+    /// The favorite star (011 · U5) — a top-bar pill beside the overflow menu, so
+    /// the state is visible without opening a menu and one click flips it. Filled
+    /// when starred, outlined when not; the two glyphs share a metric, so toggling
+    /// does not resize the pill and shove the menu sideways.
+    ///
+    /// The help text does NOT advertise ⌘D. That shortcut acts on the GRID's
+    /// selection / lead, and prev-next stepping deliberately keeps the model's lead
+    /// where it was (036 §3 B1 — the lead is synced once on close), so after a few
+    /// steps ⌘D and this button would be aimed at different items. Naming the
+    /// shortcut here would promise something the page cannot keep.
+    private func favoriteButton(_ setFavorite: @escaping (Bool) -> Void) -> some View {
+        Button {
+            isFavorite.toggle()
+            setFavorite(isFavorite)
+        } label: {
+            Image(systemName: isFavorite ? "star.fill" : "star")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.Colors.inkPrimary)
+                .padding(.horizontal, Theme.Spacing.xs)
+        }
+        .buttonStyle(TopBarPillButtonStyle())
+        .help(isFavorite ? "Remove from Favorites" : "Favorite")
+        .accessibilityLabel(isFavorite ? "Remove from Favorites" : "Favorite")
     }
 
     /// A rounded, hairline-bordered "Back" pill (⌘/Escape closes).

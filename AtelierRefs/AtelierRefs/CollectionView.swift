@@ -1106,7 +1106,11 @@ private struct CollectionDetailHost: View {
                 revealInFinder: hasBlob ? { model.revealInFinder(detail) } : nil,
                 copySourceLink: hasSource ? { model.copySourceLink(detail) } : nil,
                 removeFromFolder: { model.removeFromFolder(assetIDs: [detail.asset.id]) },
-                requestDelete: { model.requestDelete(assetIDs: [detail.asset.id]) }),
+                requestDelete: { model.requestDelete(assetIDs: [detail.asset.id]) },
+                // Through the model, not the tag store: this is the one host with a
+                // grid behind the overlay, and `setFavorite` reloads it so the cell's
+                // star repaints under the page (and the write is undoable, like ⌘D).
+                setFavorite: { model.setFavorite($0, assetIDs: [detail.asset.id]) }),
             navigator: index.map { i in
                 ItemDetailNavigator(index: i, count: model.detailRun.count) { delta in
                     let run = model.detailRun

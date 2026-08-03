@@ -7,7 +7,8 @@
 //
 //  There is no private back door here on purpose. Every row this type creates is
 //  created by `createCollection`, `ingest`, `ingestContent`, `addAssets`,
-//  `applyTag`, `setName`, `setNote`, `setGridOrder` or `setCanvasPlacement` —
+//  `applyTag`, `setFavorite`, `setName`, `setNote`, `setGridOrder` or
+//  `setCanvasPlacement` —
 //  the same funnel the app itself writes through. The consequence is the point:
 //  an importer cannot produce a library state the app could not have produced,
 //  so validation, the Unsorted invariant, membership uniqueness and 18A's
@@ -23,12 +24,13 @@
 //     `addAssets`, never re-ingested. Even so, two DIFFERENT keys can resolve to
 //     one asset when 18A dedup matches, which is why the grid order is
 //     deduplicated before `setGridOrder` sees it.
-//  3. **Additive on a deduplicated asset, never destructive.** Tags are applied
-//     whichever way an asset resolved — a tag is new information and the writer
-//     is idempotent. `name` and `note` are applied only to a NEWLY created
-//     asset: overwriting them on a dedup hit would silently discard an edit the
-//     user made in THIS library, which is the clobber the destination rule
-//     exists to prevent.
+//  3. **Additive on a deduplicated asset, never destructive.** Tags — and the
+//     favorite star (011 · U5) — are applied whichever way an asset resolved:
+//     both are new information and both writers are idempotent, and neither can
+//     erase anything (an archive's `is_favorite: false` is not replayed at all).
+//     `name` and `note` are applied only to a NEWLY created asset: overwriting
+//     them on a dedup hit would silently discard an edit the user made in THIS
+//     library, which is the clobber the destination rule exists to prevent.
 //  4. **The cancel flag is asked before any error is classified** (008 ·
 //     H5b/H5c/H6, the fourth job to inherit it). Cancelling tears down in-flight
 //     work, and those throws are a consequence of the user pressing Stop.
@@ -210,6 +212,12 @@ nonisolated struct LibraryImporter: Sendable {
     ) async throws {
         for tag in item.tags {
             _ = try await services.applyTag(tag.name, to: asset.id, source: tag.source)
+        }
+        // The star rides with the TAGS, not with name/note (rule 3): favoriting is
+        // additive and idempotent, so applying it to a deduplicated asset can only
+        // add information. `false` is never replayed — see `ImportItem.isFavorite`.
+        if item.isFavorite {
+            try await services.setFavorite(true, for: asset.id)
         }
         if asset.isNew {
             if let name = item.name { try await services.setName(name, for: asset.id) }

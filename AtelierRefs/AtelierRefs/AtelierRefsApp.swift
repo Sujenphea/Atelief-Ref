@@ -49,6 +49,12 @@ struct AtelierRefsApp: App {
             CommandGroup(replacing: .undoRedo) {
                 UndoRedoCommands()
             }
+            // Edit ▸ Favorite (⌘D, 011 · U5) — stars the grid selection through
+            // the focused model. Placed after the pasteboard verbs so it sits with
+            // the other selection-scoped actions rather than beside Undo.
+            CommandGroup(after: .pasteboard) {
+                FavoriteCommand()
+            }
             // View ▸ Sort (010 · Phase 2) — sort modes (007) act on the current
             // collection through the focused model.
             CommandGroup(after: .toolbar) {
@@ -146,6 +152,31 @@ private struct UndoRedoCommands: View {
     private var redoTitle: String {
         let name = model?.redoActionName ?? ""
         return name.isEmpty ? "Redo" : "Redo \(name)"
+    }
+}
+
+/// Edit ▸ Favorite / Remove from Favorites (⌘D, 011 · U5).
+///
+/// A focused OBJECT, not a `@FocusedValue`, for the same reason as
+/// ``UndoRedoCommands``: the title and enabled state track the model's selection
+/// and its loaded rows, and only an observed object re-renders the menu item when
+/// those change.
+///
+/// The title states the ⌘D rule out loud: it says "Favorite" whenever the press
+/// would star something — including over a MIXED selection, which stars the rest
+/// rather than flipping each item — and "Remove from Favorites" only when every
+/// target is already starred.
+private struct FavoriteCommand: View {
+    @FocusedObject private var model: IngestionModel?
+
+    var body: some View {
+        Button(title) { model?.toggleFavoriteSelected() }
+            .keyboardShortcut("d", modifiers: .command)
+            .disabled(!(model?.canToggleFavorite ?? false))
+    }
+
+    private var title: String {
+        (model?.favoriteActionWouldStar ?? true) ? "Favorite" : "Remove from Favorites"
     }
 }
 

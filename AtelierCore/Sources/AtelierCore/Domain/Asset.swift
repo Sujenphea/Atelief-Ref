@@ -46,6 +46,11 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
     /// A free-form user note on the item (041 · Details). `nil` until written.
     /// Added by migration v10.
     public var note: String?
+    /// Whether the user starred this item (011 · U5). A property of the ASSET,
+    /// not of a membership: an asset in three collections is favorited in all
+    /// three. `false` for every row that predates the flag. Added by migration
+    /// v19, `DEFAULT 0`.
+    public var isFavorite: Bool
     /// FK → ``Source``. **Required** — where the asset came from.
     public var sourceId: UUID
     /// How many times this asset's detail page has been opened (007 · sort). A
@@ -77,6 +82,7 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         case downloadState = "download_state"
         case createdAt = "created_at"
         case name, note
+        case isFavorite = "is_favorite"
         case sourceId = "source_id"
         case viewCount = "view_count"
         case lastViewedAt = "last_viewed_at"
@@ -98,6 +104,7 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         createdAt: Date,
         name: String? = nil,
         note: String? = nil,
+        isFavorite: Bool = false,
         sourceId: UUID,
         viewCount: Int = 0,
         lastViewedAt: Date? = nil,
@@ -117,6 +124,7 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         self.createdAt = createdAt
         self.name = name
         self.note = note
+        self.isFavorite = isFavorite
         self.sourceId = sourceId
         self.viewCount = viewCount
         self.lastViewedAt = lastViewedAt

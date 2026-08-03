@@ -143,6 +143,7 @@ nonisolated enum LibraryArchiveReader {
                         tags: asset.tags.map { ImportTag(name: $0.name, source: $0.source) },
                         name: asset.name,
                         note: asset.note,
+                        isFavorite: asset.isFavorite,
                         placement: CanvasPlacement(
                             x: membership.canvasX, y: membership.canvasY,
                             w: membership.canvasW, h: membership.canvasH,

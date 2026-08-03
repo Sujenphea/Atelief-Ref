@@ -2254,6 +2254,101 @@ final class IngestionModel: ObservableObject {
         selection.isSelecting ? selectedAssetIDs : (leadItem.map { [$0.asset.id] } ?? [])
     }
 
+    // MARK: - Favorites (011 · U5)
+
+    /// Whether the current ⌘D target has anything left to star — drives the menu
+    /// item's title, so it says what the press will actually do. `true` (the
+    /// "Favorite" wording) when there is no target at all, where the item is
+    /// disabled anyway.
+    var favoriteActionWouldStar: Bool {
+        let targets = keyboardActionTargets
+        guard !targets.isEmpty else { return true }
+        return Self.wouldFavorite(targets, favorited: favoritedAssetIDs)
+    }
+
+    /// Whether ⌘D has anything to act on (the menu item's enabled state).
+    var canToggleFavorite: Bool { !keyboardActionTargets.isEmpty }
+
+    /// Ids in the current folder's feed that are favorited — read straight off the
+    /// loaded rows, so the menu title and the grid star can never disagree with
+    /// what is on screen.
+    private var favoritedAssetIDs: Set<UUID> {
+        Set(items.filter(\.asset.isFavorite).map(\.asset.id))
+    }
+
+    /// **The ⌘D multi-select rule.** Over a selection, ⌘D FAVORITES unless every
+    /// target is already a favorite, in which case it UNFAVORITES all of them.
+    ///
+    /// Two properties make this the right rule rather than a coin toss:
+    ///
+    ///   • *A mixed selection converges.* "Star them all" is the only outcome that
+    ///     leaves the set in a state the user can see and predict; a per-item flip
+    ///     would leave it just as mixed as before, and the user would have to look
+    ///     at each tile to know what happened.
+    ///   • *One more press is the inverse.* After ⌘D the set is uniformly starred,
+    ///     so a second ⌘D unstars all of it — the shortcut still reads as a toggle
+    ///     even though it isn't a per-item one.
+    ///
+    /// Pure and static so the rule is testable without a model, a grid or a
+    /// database. `targets` empty → `false` (nothing to do).
+    static func wouldFavorite(_ targets: [UUID], favorited: Set<UUID>) -> Bool {
+        guard !targets.isEmpty else { return false }
+        return !targets.allSatisfy(favorited.contains)
+    }
+
+    /// Set the flag on `assetIDs` explicitly — the detail page's star, and the
+    /// primitive that ``toggleFavorite(assetIDs:)`` resolves to.
+    ///
+    /// Undoable, matching the other reversible membership-ish verbs (Remove /
+    /// Move): the inverse sets `!isFavorite` on exactly these ids. It does NOT
+    /// consult prior state, deliberately — a detail page opened from a Space board
+    /// or a search hit shows an asset that is not in this model's loaded feed, so
+    /// there is no prior state to consult, and setting is idempotent in the funnel
+    /// either way. The caller that DOES know the prior state (⌘D) narrows the ids
+    /// before calling in.
+    func setFavorite(_ isFavorite: Bool, assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty, services != nil else { return }
+        let message = isFavorite
+            ? "Favorited \(Self.itemCount(assetIDs.count))."
+            : "Removed \(Self.itemCount(assetIDs.count)) from Favorites."
+        enqueueUndoable { await self.applyFavorite(isFavorite, to: assetIDs) }
+        registerReversible("Favorite",
+            primary: { self.enqueueUndoable { await self.applyFavorite(isFavorite, to: assetIDs) } },
+            inverse: { self.enqueueUndoable { await self.applyFavorite(!isFavorite, to: assetIDs) } })
+        announceUndoable(message)
+    }
+
+    /// Toggle the favorite flag over `assetIDs` under the rule above. Only the ids
+    /// this press actually CHANGES are handed on: the rest are already where they
+    /// are going, so neither the toast's count nor the undo should mention them —
+    /// and undoing a ⌘D over a mixed selection therefore restores the mixture
+    /// rather than clearing the lot.
+    func toggleFavorite(assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty else { return }
+        let previouslyFavorited = favoritedAssetIDs.intersection(assetIDs)
+        let starring = Self.wouldFavorite(assetIDs, favorited: previouslyFavorited)
+        let changed = starring
+            ? assetIDs.filter { !previouslyFavorited.contains($0) }
+            : assetIDs.filter { previouslyFavorited.contains($0) }
+        setFavorite(starring, assetIDs: changed)
+    }
+
+    /// Toggle the favorite flag over the current selection (or the lead item) —
+    /// the ⌘D command's entry point.
+    func toggleFavoriteSelected() {
+        toggleFavorite(assetIDs: keyboardActionTargets)
+    }
+
+    /// Set the flag and reload, so the grid stars repaint. Shared by the verb and
+    /// its inverse (no undo re-registration — the ping-pong installs the mirror).
+    private func applyFavorite(_ isFavorite: Bool, to assetIDs: [UUID]) async {
+        guard let services else { return }
+        do {
+            try await services.setFavorite(isFavorite, for: assetIDs)
+            loadContents(of: selectedFolderID)
+        } catch { lastError = Self.message(for: error) }
+    }
+
     /// Remove the current selection (or the lead item) from the current folder.
     func removeSelectedFromFolder() {
         removeFromFolder(assetIDs: keyboardActionTargets)

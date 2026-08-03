@@ -84,13 +84,20 @@ nonisolated struct ImportItem: Sendable, Equatable {
     var name: String?
     /// The asset's note, applied only when the asset is NEW.
     var note: String?
+    /// Whether the source marked this asset a favorite (011 · U5). Applied like a
+    /// TAG, not like `name` / `note`: setting the star only ever ADDS information,
+    /// so it is safe on a deduplicated asset, whereas overwriting a name would
+    /// discard an edit made in this library. `false` is never replayed — an
+    /// archive saying "not a favorite" is the absence of a claim, not an
+    /// instruction to unstar something the user starred here.
+    var isFavorite: Bool
     /// This membership's canvas placement, when it had one.
     var placement: CanvasPlacement?
 
     init(
         key: String, body: ImportBody, source: SourceDraft,
         tags: [ImportTag] = [], name: String? = nil, note: String? = nil,
-        placement: CanvasPlacement? = nil
+        isFavorite: Bool = false, placement: CanvasPlacement? = nil
     ) {
         self.key = key
         self.body = body
@@ -98,6 +105,7 @@ nonisolated struct ImportItem: Sendable, Equatable {
         self.tags = tags
         self.name = name
         self.note = note
+        self.isFavorite = isFavorite
         self.placement = placement
     }
 }

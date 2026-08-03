@@ -295,4 +295,87 @@ struct LibrarySearchModelTests {
         await poll { !m.suggestions.isEmpty }
         #expect(!m.suggestions.contains(wood))  // the selected one is filtered out
     }
+
+    // MARK: - Favorites filter token (011 · U5)
+
+    @Test("the favorites chip toggles the .favorites token, and reads back from it")
+    func favoritesTokenToggles() {
+        let m = LibrarySearchModel()
+        #expect(!m.favoritesOnly)
+        #expect(!m.isActive)
+
+        m.toggleFavoritesFilter()
+        #expect(m.favoritesOnly)
+        #expect(m.tokens == [.favorites])
+        // The token alone activates the search, like any other filter — so the
+        // results grid replaces the pane instead of the chip doing nothing.
+        #expect(m.isActive)
+
+        m.toggleFavoritesFilter()
+        #expect(!m.favoritesOnly)
+        #expect(m.tokens.isEmpty)
+    }
+
+    @Test("the field's clear (×) drops the favorites filter with everything else")
+    func favoritesTokenClears() {
+        let m = LibrarySearchModel()
+        m.tokens = [token("wood"), .favorites]
+        m.text = "brass"
+        m.clearQuery()
+        #expect(!m.favoritesOnly)
+        #expect(m.tokens.isEmpty)
+    }
+
+    @Test("removing the chip by its × turns the filter off")
+    func favoritesTokenRemovable() {
+        let m = LibrarySearchModel()
+        m.toggleFavoritesFilter()
+        m.removeToken(.favorites)
+        #expect(!m.favoritesOnly)
+    }
+
+    /// The token is a CONJUNCT: it rides alongside the text and tag arms in one
+    /// query rather than replacing them.
+    @Test("favoritesOnly rides the keyword query with text and tag tokens")
+    func favoritesTokenReachesKeywordQuery() async {
+        let recorder = Recorder()
+        let m = LibrarySearchModel()
+        m.runQuery = { q in recorder.queries.append(q); return [] }
+        let wood = token("wood")
+        m.tokens = [wood, .favorites]
+        m.text = "brass"
+        m.textChanged()
+        await poll { !recorder.queries.isEmpty }
+
+        let q = recorder.queries.last
+        #expect(q?.favoritesOnly == true)
+        #expect(q?.text == "brass")
+        // The synthetic favorites token must NOT leak into the tag ids.
+        #expect(q?.tagIDs == [wood.id])
+        #expect(q?.collectionIDs.isEmpty == true)
+    }
+
+    /// …and it survives the mode switch, where a filter the user can still see
+    /// selected would otherwise silently stop applying.
+    @Test("favoritesOnly rides the SEMANTIC query too")
+    func favoritesTokenReachesSemanticQuery() async {
+        let recorder = Recorder()
+        let m = LibrarySearchModel()
+        m.runQuery = { q in recorder.queries.append(q); return [] }
+        m.runSemanticQuery = { q in recorder.semanticQueries.append(q); return [] }
+        m.mode = .meaning
+        m.tokens = [.favorites]
+        m.text = "brass"
+        m.textChanged()
+        await poll { !recorder.semanticQueries.isEmpty }
+        #expect(recorder.semanticQueries.last?.favoritesOnly == true)
+    }
+
+    @Test("the favorites token carries a stable id and its own name / glyph")
+    func favoritesTokenIdentity() {
+        #expect(SearchToken.favorites.id == SearchToken.favoritesID)
+        #expect(SearchToken.favorites.displayName == "Favorites")
+        // Distinct from every real entity id a tag / collection token could carry.
+        #expect(SearchToken.favorites.id != token("wood").id)
+    }
 }
