@@ -273,6 +273,12 @@ final class IngestionModel: ObservableObject {
     let restore = RestoreController()
     /// Presents the restore-from-backup sheet.
     @Published var showRestoreBackups = false
+    /// Writes the portable library archive (008 H6). Its own controller for the
+    /// same reasons ``backup`` and ``restore`` are: the Settings window can close
+    /// mid-run, and "is something running?" must stay unambiguous per job. It
+    /// needs no bookmark — an archive's destination is a save-panel grant
+    /// consumed in-process.
+    let archive = ArchiveExportController()
 
     // MARK: - Ambient clipboard capture (013 · K3)
 
@@ -1075,6 +1081,42 @@ final class IngestionModel: ObservableObject {
         } catch {
             lastError = "Couldn’t stage the restore: \(Self.message(for: error))"
         }
+    }
+
+    // MARK: - Portable archive (008 H6)
+
+    /// Whether an archive can be written: an open library and nothing already
+    /// writing one.
+    ///
+    /// Deliberately NOT blocked by a pending restore, unlike ``canRunBackup``.
+    /// An archive only reads, and a user one relaunch away from replacing their
+    /// library is exactly the user who might want a portable copy of what it
+    /// holds right now.
+    var canArchiveLibrary: Bool {
+        services != nil && store != nil && !archive.isExporting
+    }
+
+    /// Ask where to put the archive, then write it there.
+    ///
+    /// The save-panel grant is wrapped in a ``DirectFolderAccess`` rather than a
+    /// bookmark: it lasts as long as this process, which is longer than the run.
+    func archiveLibrary() {
+        guard let services, let store, canArchiveLibrary else { return }
+        let version = Bundle.main
+            .infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+        ArchiveFolderPanel.present(suggestedName: ArchiveCopy.suggestedName()) {
+            [weak self] url in
+            guard let self, let url else { return }
+            self.archive.start(
+                services: services, store: store,
+                folder: DirectFolderAccess(url: url), appVersion: version)
+        }
+    }
+
+    /// Reveal the archive a run just wrote.
+    func revealArchive() {
+        guard let url = archive.lastRun?.url else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     // MARK: - Library stats + maintenance (016 · A)

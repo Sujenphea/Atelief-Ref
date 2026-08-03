@@ -21,6 +21,9 @@ struct SettingsView: View {
     /// Observed separately for the same reason as `backup` (008 · H5c) — the
     /// restore's scan results and progress live on its own controller.
     @ObservedObject var restore: RestoreController
+    /// Observed separately for the same reason as `backup` (008 · H6) — the
+    /// archive's progress ticks live on its own controller.
+    @ObservedObject var archive: ArchiveExportController
     /// Observed separately for the same reason as `backup` (016 · A) — a scan's
     /// progress ticks live on the controller, not on `model`.
     @ObservedObject var libraryStats: LibraryStatsController
@@ -50,6 +53,7 @@ struct SettingsView: View {
             gridSection
             librarySection
             backupSection
+            archiveSection
             setupSection
             diagnosticsSection
         }
@@ -483,6 +487,47 @@ struct SettingsView: View {
             return url.path(percentEncoded: false)
         }
         return model.backupFolder.hasFolder ? "Unavailable" : "None chosen"
+    }
+
+    // MARK: - Portable archive (008 H6)
+
+    /// Its own section rather than a row inside Backup: the two answer different
+    /// questions. Backup is "can I get this Mac's library back?"; the archive is
+    /// "can I take my library somewhere else?" — a folder of images anyone can
+    /// open, that this app can read back in again.
+    private var archiveSection: some View {
+        Section("Archive") {
+            HStack {
+                Button("Archive Library…") { model.archiveLibrary() }
+                    .disabled(!model.canArchiveLibrary)
+                if archive.isExporting {
+                    Button("Stop") { archive.cancel() }
+                    ProgressView(value: archive.progress)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 140)
+                }
+                if !archive.isExporting, archive.lastRun?.url != nil {
+                    Spacer()
+                    Button("Show in Finder") { model.revealArchive() }
+                }
+            }
+            if let status = ArchiveCopy.statusLine(for: archive.lastRun), !archive.isExporting {
+                Text(status)
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let message = archive.lastRun?.message, !archive.isExporting {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(ArchiveCopy.explainer)
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     // MARK: - Setup

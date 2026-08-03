@@ -319,8 +319,9 @@ either side is deliberately NOT a refusal — the rule is "newer than me", and "
 can't tell" is not evidence of it. H6/H7's `manifest_version` refusal should
 follow the same shape.
 
-H4–H5 are therefore complete. Still to come: H6 (archive export) and H7 (archive
-import + the shared replay layer [016] waits on).
+H4–H5 are therefore complete, and H6 shipped after them (see its "As built"
+note below). Still to come: H7 (archive import + the shared replay layer [016]
+waits on).
 
 ## H6 — Archive export (M)
 
@@ -356,6 +357,69 @@ A human-browsable folder tree plus one machine-readable manifest:
 when the shape changes); the filename matrix stays in `AssetExportTests`;
 collision and case-insensitivity cases; a deep-nesting path-length case; empty
 library and empty collection.
+
+**As built (`328-a-library-you-can-take-with-you`) — H6, the archive writer.**
+`LibraryArchive` (the contract: `ArchiveManifest`, `ArchiveLayout`,
+`ArchiveRefusal`), `LibraryArchiveWriter`, `ArchiveExportController` +
+`ArchiveRunSummary` + `ArchiveCopy`, `ArchiveFolderPanel`, and an **Archive**
+section in Settings. 58 tests. No schema change (v18 stands), no new entitlement
+— a save-panel grant lasts the process, which is longer than the run. Folder tree
+only; no zip wrapper (open question 1, settled as recommended). Six things H7
+must build on:
+
+- **The manifest is `manifest_version` 1 and is fully replayable by design.**
+  Top level: `manifest_version`, `schema_version`, `app_version`, `exported_at`,
+  `sources[]`, `assets[]`, `collections[]`. Each collection carries its own
+  `items[]` (the memberships, in manual order) plus a `path` — where its copies
+  were written — and every asset appears in `assets[]` exactly ONCE with its
+  `blob_hash`, `payload` and `dedup_key`, however many folders hold its bytes.
+  Everything in it maps onto a shipped public writer: sources+assets →
+  `ingest` / `ingestContent`, `collections` → `createCollection`, `items` →
+  `addAssets` + `setGridOrder` (+ `setCanvasPlacement` for the canvas columns),
+  per-asset `tags: [{name, source}]` → `applyTag`.
+- **Provenance is verbatim, and that is the round-trip's correctness.** 18A dedup
+  matches on `original_url` when one exists, else `platform`, so a dropped or
+  normalized source field forks a second asset over the same bytes on re-import.
+  `original_url` / `author_handle` / `author_name` / `title` / `platform` /
+  `captured_at` / the whole `raw_metadata` document are copied unchanged, pinned
+  by a test that names them.
+- **Three deliberate exclusions and one absence.** `asset_analysis` and
+  `asset_embedding` are out (recomputable, and including them would freeze an
+  `analyzer_version` into a portability contract). A tag with no asset is out —
+  no public writer can recreate one, and keeping the contract 100% replayable is
+  worth more than the edge case. Spaces / saved searches / jobs are out: not in
+  this plan's graph and not representable in a collection tree — a named gap, not
+  an oversight. And **favourites do not exist in schema v18**; the plan lists
+  them, but there is no column, tag convention or flag to carry.
+- **The tree duplicates, the manifest does not — and the FILENAME ALLOCATOR IS
+  KEYED BY DESTINATION FOLDER.** That last detail is what makes the path rule
+  below safe: two collections that ever resolve to one folder still cannot
+  collide on a filename.
+- **Path budget, not depth limit.** 768 bytes of archive-relative path, 256 of
+  them reserved for the filename (`PATH_MAX` is 1024, a 60-*character* name is up
+  to 240 *bytes* of emoji, and the archive root is the user's and unbounded). A
+  folder that would overrun is relocated to the top of `Collections/` with its
+  id's first 8 hex appended; relocation cascades gently, so a pathological tree
+  becomes several shallow trees rather than one flat pile. Safe because the tree
+  is a PRESENTATION of the graph — the manifest still carries every real
+  `parent_collection_id`, so H7 must read `parent_collection_id`, never `path`.
+  Paths can legitimately repeat.
+- **`manifest.json` is written LAST and atomically** — the export's commit
+  record, exactly as `BackupRunner`'s manifest is a backup's, which is why
+  `BackupCatalog` can treat its absence as "that run never finished". A cancelled
+  or failed archive is therefore a folder of images with no manifest: visibly
+  incomplete rather than plausibly whole. The cancel flag is read BEFORE any
+  error is classified (H5b/H5c's rule, third job to inherit it).
+
+`ArchiveManifest.refusal(for:schemaVersion:)` already implements H7's version
+rule in H5c's shape — "newer than me" on both axes, an unparseable version on
+either side deliberately NOT a refusal. H7 calls it; it does not re-derive it.
+
+One incidental change outside the feature: `AssetExport`'s `baseName` /
+`sanitize` / `filename` / `exportItem` are now `nonisolated`. They were always
+pure — the app target is `MainActor` by default and the writer names thousands
+of files from a detached task, so the annotation only says to the compiler what
+the header already said to the reader. `dragProvider` stays main-actor.
 
 ## H7 — Archive import + the shared replay layer (M)
 
@@ -456,8 +520,10 @@ today; the archive answers data-freedom, which matters but has no deadline. If
 
 ## Open questions
 
-1. Zip wrapper in v1, or folder-tree only (recommended — zipping a multi-GB
-   library is a second progress/cancel problem for little gain)?
+1. ~~Zip wrapper in v1, or folder-tree only?~~ **Settled: folder-tree only**,
+   shipped that way in H6 — zipping a multi-GB library is a second
+   progress/cancel problem for little gain, and a tree is the browsable half of
+   what the archive is for.
 2. Backup cadence: manual + on-launch-if-stale (recommended, mirroring the
    daily snapshot) or manual only?
 3. Import destination: a new root collection named after the archive

@@ -34,6 +34,12 @@ nonisolated struct AssetExportItem: Equatable {
 /// The naming rule for an exported/copied original, plus the shared
 /// asset → ``AssetExportItem`` assembly. Pure except `exportItem`, which stats the
 /// blob (5A) and is temp-file testable.
+///
+/// The naming members are `nonisolated` (008 · H6): the app target is
+/// `MainActor` by default, and the library archive names thousands of files from
+/// a detached writer. They were always pure — the annotation says so to the
+/// compiler as well as to the reader. `dragProvider` stays main-actor, since its
+/// caller is a view.
 enum AssetExport {
 
     /// The human base name for an asset, in priority order: source title, then the
@@ -41,7 +47,7 @@ enum AssetExport {
     /// dropped), else a bare `"image"`. The short blob hash appended by
     /// ``filename(base:blobHash:ext:)`` guarantees uniqueness, so the base only has
     /// to be *recognisable*, not unique.
-    static func baseName(title: String?, authorHandle: String?, sourceURL: String?) -> String {
+    nonisolated static func baseName(title: String?, authorHandle: String?, sourceURL: String?) -> String {
         if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
             return title
         }
@@ -59,7 +65,7 @@ enum AssetExport {
     /// collapse to one space, leading/trailing spaces / dots / dashes are trimmed
     /// (no hidden-file dot, no dangling separators), the result is capped at 60
     /// characters, and an empty result falls back to `"image"`.
-    static func sanitize(_ raw: String) -> String {
+    nonisolated static func sanitize(_ raw: String) -> String {
         let hostile = CharacterSet(charactersIn: "/\\:\u{0}").union(.controlCharacters)
         let replaced = String(String.UnicodeScalarView(
             raw.unicodeScalars.map { hostile.contains($0) ? Unicode.Scalar(32) : $0 }))
@@ -73,7 +79,7 @@ enum AssetExport {
     /// Assemble `<sanitized-base>-<shorthash>.<ext>`. The short hash is the first 8
     /// of the (already-lowercased) content hash; the extension is reduced to bare
     /// alphanumerics. A missing hash or extension simply drops that segment.
-    static func filename(base: String, blobHash: String, ext: String) -> String {
+    nonisolated static func filename(base: String, blobHash: String, ext: String) -> String {
         let name = sanitize(base)
         let shortHash = String(blobHash.prefix(8))
         let cleanExt = ext.lowercased().filter { $0.isLetter || $0.isNumber }
@@ -91,7 +97,7 @@ enum AssetExport {
     /// `source` is optional (052 · B1): a canvas ``SpaceItemDetail`` carries no
     /// source for an element row and none for some asset rows, so a nil source just
     /// drops the naming hints and falls back to the blob-derived `"image"` base.
-    static func exportItem(asset: Asset, source: Source?, blobURL: URL?) -> AssetExportItem? {
+    nonisolated static func exportItem(asset: Asset, source: Source?, blobURL: URL?) -> AssetExportItem? {
         guard let blobHash = asset.blobHash, !blobHash.isEmpty,
               let blobURL,
               FileManager.default.fileExists(atPath: blobURL.path) else { return nil }

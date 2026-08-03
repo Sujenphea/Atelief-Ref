@@ -225,6 +225,35 @@ struct ExportNameAllocatorTests {
         #expect(ExportNameAllocator.disambiguated("hero-ab12cd34", suffix: 7)
             == "hero-ab12cd34-7")
     }
+
+    /// The reason the allocator exists at archive scale (008 · H6): the suffix is
+    /// the first 8 characters of a longer digest, so two genuinely DIFFERENT
+    /// blobs can produce the same one. Across a whole library that stops being
+    /// hypothetical, and the failure is a silent overwrite rather than an error.
+    @Test("Two different blobs sharing an 8-char hash prefix stay two files")
+    func shortHashIsNotUnique() {
+        var allocator = ExportNameAllocator()
+        let first = AssetExport.filename(
+            base: "Hero", blobHash: "ab12cd34" + "0000", ext: "png")
+        let second = AssetExport.filename(
+            base: "Hero", blobHash: "ab12cd34" + "ffff", ext: "png")
+        #expect(first == second)                       // the naming rule collides…
+        #expect(allocator.claim(first) == "Hero-ab12cd34.png")
+        #expect(allocator.claim(second) == "Hero-ab12cd34-2.png")   // …the folder doesn't
+    }
+
+    /// The archive names files across a whole library, where the same title
+    /// repeats freely — a run of them must never shrink to one file.
+    @Test("A library-scale run of repeated titles yields one name per file")
+    func libraryScaleRun() {
+        var allocator = ExportNameAllocator()
+        let names = (0..<50).map { _ in
+            allocator.claim(AssetExport.filename(base: "Untitled", blobHash: "0f0f0f0f", ext: "jpg"))
+        }
+        #expect(Set(names.map { $0.lowercased() }).count == 50)
+        #expect(names.first == "Untitled-0f0f0f0f.jpg")
+        #expect(names.last == "Untitled-0f0f0f0f-50.jpg")
+    }
 }
 
 // MARK: - exportItem (temp-file backed)
