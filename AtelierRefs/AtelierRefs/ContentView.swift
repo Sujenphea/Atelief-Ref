@@ -103,7 +103,22 @@ struct ContentView: View {
                 isPresented: deletionConfirmation,
                 titleVisibility: .visible
             ) {
+                // `.defaultAction` is what binds Return, and it is REQUIRED here:
+                // SwiftUI deliberately refuses to make a `role: .destructive` button
+                // the default one, so without this the panel comes up with
+                // `defaultButtonCell == nil` and Return is bound to nothing at all.
+                // (Drop the role and the same button picks up Return by itself — the
+                // suppression is the role's, not the dialog's.) Escape is unaffected
+                // either way; the `.cancel` role always owns it.
+                //
+                // Apple's reason for the suppression — a stray Return shouldn't
+                // destroy data — does not apply to THIS delete: it moves files to the
+                // Trash, leaves the blobs on disk for the launch GC, and registers a
+                // ⌘Z undo. A confirmation nobody can dismiss from the keyboard costs
+                // more than the keypress it guards against. Every confirmation dialog
+                // in the app carries this for the same reason.
                 Button("Delete", role: .destructive) { model.confirmPendingDeletion() }
+                    .keyboardShortcut(.defaultAction)
                 Button("Cancel", role: .cancel) { model.cancelPendingDeletion() }
             } message: {
                 Text("The image and its files move to the Trash, and it's removed from "
@@ -117,6 +132,7 @@ struct ContentView: View {
                 titleVisibility: .visible
             ) {
                 Button("Delete", role: .destructive) { model.confirmSpaceDeletion() }
+                    .keyboardShortcut(.defaultAction)
                 Button("Cancel", role: .cancel) { model.cancelSpaceDeletion() }
             } message: {
                 Text("The board and its arrangement are removed. Your images stay in "

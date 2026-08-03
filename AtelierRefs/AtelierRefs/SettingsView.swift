@@ -94,7 +94,11 @@ struct SettingsView: View {
                     "Regenerate the pairing token?",
                     isPresented: $confirmRegenerate, titleVisibility: .visible
                 ) {
+                    // Return commits, as in every confirmation dialog here — a
+                    // `role: .destructive` button is left unbound otherwise (see
+                    // ``ContentView``'s delete dialog for the mechanism).
                     Button("Regenerate", role: .destructive) { model.regenerateCaptureToken() }
+                        .keyboardShortcut(.defaultAction)
                     Button("Cancel", role: .cancel) {}
                 } message: {
                     Text("The current token stops working immediately. You'll need to "
@@ -172,10 +176,14 @@ struct SettingsView: View {
             titleVisibility: .visible,
             presenting: confirmingJob
         ) { job in
+            // Stated rather than left to the role: a NON-destructive job already got
+            // Return for free, a destructive one silently didn't, so the same dialog
+            // answered the keyboard differently depending on which job opened it.
             Button(job.confirmVerb, role: job.isDestructive ? .destructive : nil) {
                 model.runLibraryJob(job)
                 confirmingJob = nil
             }
+            .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { confirmingJob = nil }
         } message: { job in
             Text(job.confirmMessage)
@@ -192,6 +200,7 @@ struct SettingsView: View {
                 model.deleteLibraryItem(item)
                 deletingItem = nil
             }
+            .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { deletingItem = nil }
         } message: { item in
             Text(LibraryStatsCopy.deleteConfirmation(for: item))

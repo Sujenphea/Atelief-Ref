@@ -30,10 +30,14 @@ struct SnapshotsSheet: View {
                 set: { if !$0 { confirming = nil } }),
             presenting: confirming
         ) { snapshot in
+            // Return commits, as in every confirmation dialog here — a
+            // `role: .destructive` button is left unbound otherwise (see
+            // ``ContentView``'s delete dialog for the mechanism).
             Button("Restore", role: .destructive) {
                 model.stageRestore(snapshot)
                 confirming = nil
             }
+            .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { confirming = nil }
         } message: { snapshot in
             Text("Your current library is set aside (not deleted) and replaced with "
@@ -52,6 +56,7 @@ struct SnapshotsSheet: View {
                 model.deleteSnapshot(snapshot)
                 deleting = nil
             }
+            .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { deleting = nil }
         } message: { snapshot in
             Text("This backup file is removed from disk. Your live library is not "

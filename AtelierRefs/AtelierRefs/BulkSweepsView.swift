@@ -66,7 +66,11 @@ struct BulkSweepsView: View {
                 isPresented: $confirmingTurnOff,
                 titleVisibility: .visible
             ) {
+                // Return commits, as in every confirmation dialog here — a
+                // `role: .destructive` button is left unbound otherwise (see
+                // ``ContentView``'s delete dialog for the mechanism).
                 Button("Turn Off", role: .destructive) { model.revokeBulkConsent() }
+                    .keyboardShortcut(.defaultAction)
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("The extension can't start new sweeps until you re-enable it. "
@@ -171,6 +175,7 @@ private struct SweepRow: View {
             titleVisibility: .visible
         ) {
             Button("Cancel Sweep", role: .destructive) { model.cancelSweep(sweep.id) }
+                .keyboardShortcut(.defaultAction)
             Button("Keep Running", role: .cancel) {}
         } message: {
             Text("The import stops where it is and can't be resumed. Items already "
