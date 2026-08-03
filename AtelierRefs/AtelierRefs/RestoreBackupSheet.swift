@@ -41,10 +41,14 @@ struct RestoreBackupSheet: View {
             titleVisibility: .visible,
             presenting: confirming
         ) { source in
+            // Return commits, as in every confirmation dialog here — a
+            // `role: .destructive` button is left unbound otherwise (see
+            // ``ContentView``'s delete dialog for the mechanism).
             Button("Restore", role: .destructive) {
                 model.restoreFromBackup(source)
                 confirming = nil
             }
+            .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { confirming = nil }
         } message: { source in
             Text(BackupTarget.restoreConfirmation(for: source))

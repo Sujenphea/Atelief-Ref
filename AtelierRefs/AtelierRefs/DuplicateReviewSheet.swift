@@ -69,7 +69,14 @@ struct DuplicateReviewSheet: View {
                 set: { if !$0 { confirming = nil } }),
             presenting: confirming
         ) { pending in
+            // Return commits, as in every confirmation dialog here — a
+            // `role: .destructive` button is left unbound otherwise (see
+            // ``ContentView``'s delete dialog for the mechanism). It matters more on
+            // this screen than anywhere else: reviewing duplicates is a long run of
+            // identical confirmations, and reaching for the mouse on each one is the
+            // whole cost of the sweep.
             Button("Delete", role: .destructive) { remove(pending) }
+                .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { confirming = nil }
         } message: { _ in
             Text("This copy moves to the Trash and is removed from every collection. "
