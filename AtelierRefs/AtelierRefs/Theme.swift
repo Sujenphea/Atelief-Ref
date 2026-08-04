@@ -73,6 +73,21 @@ enum Theme {
         /// Pointer-over feedback on a GLYPH BUTTON — toolbar / action-bar icons, where
         /// the fill is the whole affordance and has to read over a busy backdrop.
         static let hoverControl = Color.white.opacity(0.10)
+        /// The app's ONE alarm colour: a warning label, an unreachable backup drive, a
+        /// stopped sweep, a capture endpoint that couldn't take the port.
+        ///
+        /// The single exception to the monochrome rule above, and deliberately the
+        /// ONLY one — every "healthy" state is ink, so colour appearing anywhere in the
+        /// chrome means exactly one thing. It had been spelled `.orange` at eleven
+        /// sites; naming it is what stops a twelfth from picking `.red` or `.yellow`
+        /// and quietly introducing a second severity the app doesn't have.
+        ///
+        /// Left as the SYSTEM orange rather than a hex literal, unlike every token
+        /// above it. The greys are the app's own studio palette and have to be exact;
+        /// this one has to stay legible under Increase Contrast and the accessibility
+        /// colour filters, which AppKit only does for a system colour. A hex here would
+        /// trade the one property that matters for a consistency the eye can't check.
+        static let warning = Color.orange
     }
 
     /// AppKit (`NSColor`) mirrors of the tokens the layer-backed grid cell
@@ -188,12 +203,19 @@ enum Theme {
         // role anyway would have put a token with no reader straight back into a file
         // that just had five removed for exactly that.
 
-        /// A sheet / overlay title ("Snapshots", "Capture", "Export moodboard").
+        /// A SHEET / OVERLAY title ("Snapshots", "Duplicates", "Sweeps", "Export
+        /// moodboard") — chrome that arrived on top of the app and has to name itself
+        /// before it can be dismissed.
+        ///
+        /// Not a PANE title, however page-like the pane feels. Capture was listed here
+        /// while it was the old toolbar popover, and kept the role after 006 turned it
+        /// into a sidebar destination — which left one of the four panes titled a step
+        /// louder than Home, Collection and Space. A pane takes ``sectionTitle``.
         static let pageTitle = Font.system(.title2, design: .default, weight: .semibold)
         /// The ONE page / section title role. Home section headers ("Collections",
-        /// "Spaces"), the Collection + Space page titles, and the detail inspector
-        /// section headers ("Data", "Source", "Details") all share this so no page
-        /// title drifts to its own `.title2`/`.title3`/`.headline`.
+        /// "Spaces"), the Collection + Space + Capture page titles, and the detail
+        /// inspector section headers ("Data", "Source", "Details") all share this so no
+        /// page title drifts to its own `.title2`/`.title3`/`.headline`.
         static let sectionTitle = Font.system(.title3, design: .default, weight: .semibold)
         /// Sidebar top-nav rows ("Home", "Search", …).
         static let navItem = Font.system(.title2, design: .default, weight: .medium)
@@ -207,6 +229,15 @@ enum Theme {
         static let label = Font.system(.subheadline, design: .default, weight: .regular)
         /// The smallest text the app draws — captions, counters, badge numerals.
         static let caption = Font.system(.caption2, design: .default, weight: .regular)
+        /// A value that is a STRING OF CHARACTERS rather than a word — the capture
+        /// pairing token, and anything else where the reader's job is to compare or
+        /// transcribe it glyph by glyph. Monospaced so `0`/`O` and `1`/`l` separate.
+        ///
+        /// Sized off `.body`, so it sits on the same line as the `row` label beside it
+        /// in a ``DialogRow``. The two capture surfaces had been passing their own text
+        /// STYLE into `CaptureTokenText` (`.body` in Settings, `.callout` in the pane) —
+        /// which is how one token ended up rendering at two sizes.
+        static let mono = Font.system(.body, design: .monospaced)
     }
 }
 

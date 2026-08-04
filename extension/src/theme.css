@@ -1,0 +1,254 @@
+/* Atelier Capture — the app's design tokens, ported to CSS.
+ *
+ * The extension's two pages are the surface you actually look at while capturing,
+ * and they looked nothing like the app they capture into: white ground, browser
+ * default buttons, and three hand-picked status colours (#8a5a00, #8a1f00,
+ * #2e8b57) that exist nowhere in the product.
+ *
+ * These are the SAME values as `AtelierRefs/AtelierRefs/Theme.swift` — the app's
+ * single token layer — transcribed as custom properties. That transcription is a
+ * second copy of the palette and the honest risk of this file: nothing checks the
+ * two agree, because Swift and CSS share no build step. Keep the names identical
+ * to their Swift originals so a drift is at least greppable, and change values
+ * HERE only in the same commit as the Swift side.
+ *
+ * DARK ONLY, with no `prefers-color-scheme` variant, because the app is. It never
+ * asks for a dark appearance — it just paints its own studio greys over whatever
+ * the system is doing — so a light mode here would match the OS at the cost of
+ * matching the thing this extension is an accessory to.
+ */
+
+:root {
+  /* Tell the engine these pages are dark. This is what makes the parts of a form
+   * control the page does NOT draw — a `<select>`'s dropdown list, the checkbox
+   * tick, the scrollbar, the text caret — render dark instead of white-on-white.
+   * Without it, restyling the closed control just hides the mismatch until the
+   * dropdown opens. */
+  color-scheme: dark;
+
+  /* Colour — see Theme.Colors. */
+  --canvas-outer: #131313;
+  --panel: #212121;
+  --surface: #232326;
+  --field: #2c2c30;
+  --selection: #3a3a40;
+  --media-backdrop: #141416;
+  --ink-primary: #f2f1ee;
+  --ink-secondary: #9a9a9e;
+  --hairline: rgba(255, 255, 255, 0.08);
+  --hairline-strong: rgba(255, 255, 255, 0.14);
+  --hover-row: rgba(255, 255, 255, 0.06);
+  --hover-control: rgba(255, 255, 255, 0.1);
+  /* The app's one alarm colour. Swift leaves this as the SYSTEM orange so it
+   * tracks Increase Contrast; CSS has no equivalent, so this is Apple's dark-mode
+   * systemOrange resolved to a literal. */
+  --warning: #ff9f0a;
+
+  /* Spacing — Theme.Spacing, the 4pt scale. */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-xxl: 40px;
+
+  /* Radius — Theme.Radius. */
+  --radius-chip: 6px;
+  --radius-field: 6px;
+  --radius-control: 7px;
+  --radius-tile: 8px;
+  --radius-card: 12px;
+  --radius-cover: 14px;
+  --radius-panel: 16px;
+
+  /* Typography — Theme.Typography, resolved to the points macOS renders those
+   * text styles at today (largeTitle 26 · title2 17 · title3 15 · headline 13 ·
+   * body 13 · callout 12 · subheadline 11 · caption2 10). The Swift side stores
+   * STYLES so it inherits Dynamic Type; a browser page has its own zoom, so the
+   * sizes are literal here. */
+  --font-stack: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-page-title: 600 17px/1.3 var(--font-stack);
+  --text-section-title: 600 15px/1.3 var(--font-stack);
+  --text-body-emphasis: 600 13px/1.4 var(--font-stack);
+  --text-row: 400 13px/1.4 var(--font-stack);
+  --text-body: 400 12px/1.45 var(--font-stack);
+  --text-label: 400 11px/1.4 var(--font-stack);
+  --text-caption: 400 10px/1.4 var(--font-stack);
+
+  /* Motion — Theme.Motion.gentle, the only one a page this static needs. */
+  --motion-gentle: 150ms ease-out;
+}
+
+/* --- Page ---------------------------------------------------------------- */
+
+body {
+  margin: 0;
+  padding: var(--space-lg);
+  background: var(--panel);
+  color: var(--ink-primary);
+  font: var(--text-row);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1 {
+  margin: 0 0 var(--space-md);
+  font: var(--text-section-title);
+  color: var(--ink-primary);
+}
+
+p {
+  margin: var(--space-sm) 0;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: var(--radius-chip);
+  background: var(--field);
+  color: var(--ink-primary);
+}
+
+strong {
+  font-weight: 600;
+  color: var(--ink-primary);
+}
+
+/* --- Card ---------------------------------------------------------------- */
+
+/* The app's raised-group idiom: `surface` on a plain `hairline`, at card radius.
+ * No shadow — these sit IN the page's layout rather than floating over it, which
+ * is the same reason the Capture pane's cards don't use `popoverChrome()`. */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  padding: var(--space-lg);
+  margin: var(--space-md) 0;
+}
+
+/* --- Text roles ---------------------------------------------------------- */
+
+.hint {
+  font: var(--text-body);
+  color: var(--ink-secondary);
+}
+
+.label {
+  display: block;
+  margin: var(--space-md) 0 var(--space-xs);
+  font: var(--text-label);
+  color: var(--ink-secondary);
+}
+
+/* The one alarm colour, for the reason a sweep can't start. */
+.reason {
+  font: var(--text-body);
+  color: var(--warning);
+}
+
+/* A warning that has to be READ, not glanced at: a card in the alarm colour
+ * rather than a tinted panel, so it reads as a distinct object on the page. */
+.warn {
+  background: var(--surface);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-card);
+  padding: var(--space-sm) var(--space-md);
+  margin: var(--space-md) 0;
+  font: var(--text-body);
+  color: var(--warning);
+}
+
+/* Success is MONOCHROME. It was #2e8b57 green, which made "it worked" the most
+ * coloured thing on the page — in a system where colour is reserved for
+ * something being wrong. */
+.status {
+  min-height: 1.2em;
+  margin-top: var(--space-md);
+  font: var(--text-body);
+  color: var(--ink-secondary);
+  transition: color var(--motion-gentle);
+}
+
+/* --- Controls ------------------------------------------------------------ */
+
+/* DialogButtonStyle: outlined, unfilled, `hairlineStrong` border, hover fill.
+ * Replaces the browser's default button for the same reason the Swift side
+ * replaced AppKit's — a filled accent button would be the only colour here. */
+button {
+  appearance: none;
+  margin-top: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  font: var(--text-row);
+  color: var(--ink-primary);
+  background: transparent;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-field);
+  cursor: pointer;
+  transition: background var(--motion-gentle), opacity var(--motion-gentle);
+}
+
+button:hover:not(:disabled) {
+  background: var(--hover-control);
+}
+
+button:active:not(:disabled) {
+  opacity: 0.6;
+}
+
+button:disabled {
+  /* The dimmed-not-hidden idiom, at DialogButtonStyle's own 0.35. */
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* dialogFieldChrome(): unfilled, on a `hairlineStrong` border, 32px minimum so
+ * the whole height is clickable rather than padded from outside. */
+input[type="text"],
+select {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 var(--space-md);
+  font: var(--text-row);
+  color: var(--ink-primary);
+  background: transparent;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-field);
+}
+
+input[type="text"] {
+  font-family: var(--font-mono);
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 1px solid var(--ink-secondary);
+  outline-offset: 1px;
+}
+
+/* A checkbox keeps the native control — the app bridges to AppKit for exactly the
+ * controls SwiftUI can't dress (see ColorSwatchWell), and a hand-drawn tick is
+ * more accessibility surface than this page can justify. Only its LABEL is
+ * tokenised. */
+label.opt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: var(--space-md) 0;
+  font: var(--text-body);
+  color: var(--ink-secondary);
+}
+
+label.opt input {
+  width: auto;
+  accent-color: var(--field);
+}
+
+label.opt.ack {
+  align-items: flex-start;
+  font-weight: 600;
+  color: var(--warning);
+}

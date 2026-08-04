@@ -3,14 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <title>Atelier Capture — Options</title>
+    <!-- The app's tokens; only the page measure is local. -->
+    <link rel="stylesheet" href="theme.css" />
     <style>
-      body { font: 13px -apple-system, system-ui, sans-serif; margin: 20px; max-width: 460px; }
-      h1 { font-size: 15px; }
-      label { display: block; margin: 12px 0 4px; color: #444; }
-      input, select { width: 100%; padding: 6px 8px; font-family: ui-monospace, monospace; box-sizing: border-box; }
-      button { margin-top: 12px; padding: 6px 14px; }
-      .hint { color: #666; margin-top: 8px; line-height: 1.4; }
-      .status { margin-top: 10px; color: #2e8b57; height: 1em; }
+      body { max-width: 460px; padding: var(--space-xl); }
     </style>
   </head>
   <body>
@@ -23,10 +19,10 @@
       <code>cd extension && npm run drift-check</code> (and pass a fresh live capture
       under <code>--x</code> / <code>--pinterest-board</code> when fixtures age out).
     </p>
-    <label for="token">Extension token</label>
+    <label class="label" for="token">Extension token</label>
     <input id="token" type="text" autocomplete="off" spellcheck="false" placeholder="paste token…" />
 
-    <label for="target">Which app receives captures</label>
+    <label class="label" for="target">Which app receives captures</label>
     <select id="target">
       <option value="auto">Auto — whichever is running (prefers the stable app)</option>
       <option value="http://127.0.0.1:47321">Stable only — 127.0.0.1:47321</option>

@@ -925,11 +925,17 @@ final class IngestionModel: ObservableObject {
         return token
     }
 
-    /// Copy the capture token to the pasteboard (for pasting into the extension).
+    /// Copy the capture token to the pasteboard (for pasting into the extension),
+    /// and raise a toast confirming it.
+    ///
+    /// The confirmation lives HERE rather than at the button, so all three copy
+    /// surfaces (the Capture pane, the Settings row, the onboarding guide) report
+    /// identically — the alternative was three buttons each remembering to say so.
     func copyCaptureToken() {
         guard !captureToken.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(captureToken, forType: .string)
+        notify(CaptureCopy.tokenCopied)
     }
 
     /// Regenerate the capture token (010 · Phase 2 Settings): stop the endpoint,

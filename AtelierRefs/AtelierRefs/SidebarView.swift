@@ -132,6 +132,13 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 6) {
             navRow(.home, "Home", "house")
             navRow(.capture, "Capture", "puzzlepiece.extension")
+            #if DEBUG
+            // The token specimen pane. A real row rather than a launch argument (the
+            // `Debug/GridBakeoff*` precedent) because the point of the gallery is to
+            // show tokens in the app's OWN panel — a separate `NSWindow` would render
+            // them against chrome that isn't the one they have to match.
+            navRow(.theme, "Theme", "paintpalette")
+            #endif
             settingsRow
         }
     }

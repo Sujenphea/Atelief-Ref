@@ -39,6 +39,16 @@ nonisolated enum SidebarItem: Hashable {
     case collection(UUID)
     /// A space selected in the sidebar's Spaces section.
     case space(UUID)
+    #if DEBUG
+    /// The design-token specimen pane (``ThemeGalleryView``) — a DEBUG-only
+    /// destination, so the sidebar row and the pane both compile out of a release
+    /// build rather than shipping a developer tool.
+    ///
+    /// Safe to add as a case despite the relaunch restore: `restoredSelection()`
+    /// only ever reconstructs `.home` or `.collection(_:)` from `UserDefaults`, so
+    /// nothing persists this and a release build cannot be asked to decode it.
+    case theme
+    #endif
 }
 
 /// A pending inline-creation request the sidebar consumes, then clears (214). One

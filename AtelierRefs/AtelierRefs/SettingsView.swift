@@ -137,7 +137,7 @@ struct SettingsView: View {
                 Label("Paused from the menu bar — capture resumes from there.",
                       systemImage: "pause.circle")
                     .font(Theme.Typography.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.Colors.warning)
             }
         }
     }
@@ -238,7 +238,7 @@ struct SettingsView: View {
             if report.isFailure {
                 Label(report.message, systemImage: "exclamationmark.triangle")
                     .font(Theme.Typography.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.Colors.warning)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text(report.message)
@@ -271,7 +271,10 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Text(LibraryStatsCopy.measured(at: stats.scannedAt, isStale: libraryStats.isStale))
                 .font(Theme.Typography.caption)
-                .foregroundStyle(libraryStats.isStale ? .orange : .secondary)
+                // Spelled out rather than `? .orange : .secondary`: the two branches are
+                // now different STYLE types (a `Color` token and the system hierarchy),
+                // so the ternary needs both sides named to infer.
+                .foregroundStyle(libraryStats.isStale ? Theme.Colors.warning : Color.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -402,7 +405,7 @@ struct SettingsView: View {
             if let message = model.backupFolderMessage {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(Theme.Typography.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.Colors.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
             backupRunRow
@@ -449,7 +452,7 @@ struct SettingsView: View {
         if let message = restore.lastRun?.message, !restore.isRunning {
             Label(message, systemImage: "exclamationmark.triangle")
                 .font(Theme.Typography.caption)
-                .foregroundStyle(.orange)
+                .foregroundStyle(Theme.Colors.warning)
                 .fixedSize(horizontal: false, vertical: true)
         }
         // A staged restore is why both buttons above are disabled — say so,
@@ -458,7 +461,7 @@ struct SettingsView: View {
             Label("A restore is waiting — quit and reopen AtelierRefs to apply it.",
                   systemImage: "arrow.clockwise")
                 .font(Theme.Typography.caption)
-                .foregroundStyle(.orange)
+                .foregroundStyle(Theme.Colors.warning)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -490,7 +493,7 @@ struct SettingsView: View {
         if let message = backup.lastRun?.message, !backup.isRunning {
             Label(message, systemImage: "exclamationmark.triangle")
                 .font(Theme.Typography.caption)
-                .foregroundStyle(.orange)
+                .foregroundStyle(Theme.Colors.warning)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -560,14 +563,14 @@ struct SettingsView: View {
            let problem = BackupTarget.verifyProblem(for: result) {
             Label(problem, systemImage: "exclamationmark.triangle")
                 .font(Theme.Typography.caption)
-                .foregroundStyle(.orange)
+                .foregroundStyle(Theme.Colors.warning)
                 .fixedSize(horizontal: false, vertical: true)
         }
         // Why it couldn't look at all — a different message from what it found.
         if let message = verify.lastRun?.message, !verify.isRunning {
             Label(message, systemImage: "exclamationmark.triangle")
                 .font(Theme.Typography.caption)
-                .foregroundStyle(.orange)
+                .foregroundStyle(Theme.Colors.warning)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if model.backupFolder.hasFolder {
@@ -620,7 +623,7 @@ struct SettingsView: View {
             if let message = archive.lastRun?.message, !archive.isExporting {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(Theme.Typography.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.Colors.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text(ArchiveCopy.explainer)
@@ -648,7 +651,7 @@ struct SettingsView: View {
             if let message = archiveImport.lastRun?.message, !archiveImport.isImporting {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(Theme.Typography.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.Colors.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text(ArchiveImportCopy.explainer)
