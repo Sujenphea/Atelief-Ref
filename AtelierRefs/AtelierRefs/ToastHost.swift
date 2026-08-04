@@ -49,7 +49,27 @@ final class ToastCenter: ObservableObject {
 /// The bottom-trailing toast stack, overlaid on the whole shell. Empty space is
 /// not hittable (a bare `VStack` claims only its cards' footprint), so it never
 /// steals clicks from the screen beneath.
+///
+/// **Placement.** This overlay sits on the SHELL, so its insets are measured from
+/// the WINDOW — while the floating "+" and the selection action bar are overlays on
+/// the PANE, and measure from the content panel (itself inset `Spacing.md` from the
+/// window). The stack used to take a bare `.padding()`, which put its ~16pt-tall
+/// footprint straight through the "+" disc that starts 28pt up: an opaque, hittable
+/// card parked on the button for the full 6s TTL. So the bottom inset is derived
+/// rather than guessed — it clears the disc and the toasts rise ABOVE it. The
+/// trailing inset stays at the corner margin every floating pill uses; lifted this
+/// far up, the card is clear of the panel's 16pt corner arc, so it needs no extra
+/// inset to avoid overhanging it.
 struct ToastHostView: View {
+    /// Window-edge margin. Deliberately NOT the "+"'s 28pt (panel inset + its own
+    /// margin): a toast is a wide card, and pushing it further in than the pill it
+    /// stacks over reads as misalignment, not breathing room.
+    private static let trailingInset = Theme.Spacing.lg
+    /// Clear the floating "+" entirely: panel inset (`md`) + the button's own bottom
+    /// margin (`lg`) + its 40pt diameter + a `sm` gap between the two.
+    private static let bottomInset =
+        Theme.Spacing.md + Theme.Spacing.lg + 40 + Theme.Spacing.sm
+
     @ObservedObject var center: ToastCenter
     /// Perform a Jump (validated + routed by the shell).
     let onJump: (JumpTarget) -> Void
@@ -74,7 +94,8 @@ struct ToastHostView: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .padding()
+        .padding(.trailing, Self.trailingInset)
+        .padding(.bottom, Self.bottomInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         .animation(Theme.Motion.toast, value: center.queue.toasts)
     }
@@ -115,7 +136,16 @@ struct ToastCard: View {
         .background(Theme.Colors.surface, in: Capsule())
         .overlay(Capsule().strokeBorder(Theme.Colors.hairline, lineWidth: 1))
         .elevation(.floating)
-        .frame(maxWidth: 420)
+        // `.trailing`, not the default `.center`: this frame sits OUTSIDE the capsule
+        // background, and the host proposes an infinite width down through the stack,
+        // so it always resolves to the full 420 — a short pill was being centred in it
+        // with up to ~90pt of invisible slack on either side. The stack's own
+        // `alignment: .trailing` couldn't correct that; it aligns these frames, not the
+        // pills inside them, which is why a "Reordered 8 items." toast floated a hundred
+        // points off the edge while the "+" sat flush. The cap still does its real job —
+        // it's the width proposed to the message, so a long one wraps to two lines
+        // instead of stretching into a banner.
+        .frame(maxWidth: 420, alignment: .trailing)
     }
 
     /// The action button's label, or `nil` for a bare message. Jump carries its own
