@@ -125,9 +125,18 @@ struct GridHostConfiguration {
     /// rule (`IngestionModel.actionTargets(forCellItemID:)`): a right-click INSIDE
     /// the selection acts on the whole selection, OUTSIDE it on that one cell.
     var actionTargets: (UUID) -> [UUID]
-    /// The move/copy destinations for this collection (memoized `MoveTargetsCache`),
-    /// carried as a value so the native menu builds its submenus without recompute.
-    var moveTargets: MoveTargets
+    /// The WHOLE collection hierarchy as move/copy destinations (027 · G2), from
+    /// the memoized ``MoveTargetsCache`` — carried as a value so the native menu
+    /// nests its submenus on right-click without re-grouping the folder tree.
+    /// Replaced the old flat `MoveTargets` (direct subfolders + roots), which made
+    /// anything two levels down unreachable by right-click at any depth.
+    var destinationTree: [DestinationTreeNode]
+    /// The protected Unsorted root's id — the destination menu pins it first and
+    /// separates it from the user's own folders.
+    var destinationUnsortedID: UUID
+    /// Destinations listed but GREYED: the collection on screen (filing where the
+    /// items already live is a no-op). Empty on a membership-less surface.
+    var disabledDestinations: Set<UUID> = []
     /// Move the given assets into a collection (menu "Move to ▸").
     var onMoveToCollection: (_ assetIDs: [UUID], _ targetID: UUID) -> Void
     /// Copy (add) the given assets into a collection (menu "Add to ▸").
@@ -1228,27 +1237,27 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         return buildContextMenu(forCellItemID: items[index].item.id)
     }
 
-    /// The unchanged cell menu (009 · N2/N6 · C4 scope) as a native `NSMenu`:
-    /// Move to ▸ / Add to ▸ (from the memoized `MoveTargets`), Set as Cover (single
-    /// only), Remove, Delete — counts in the destructive verbs. Actions run on the
-    /// Finder-scope asset set from `actionTargets` (selection when the cell is in
-    /// the selection, else the one cell), exactly as the SwiftUI `cellMenu` did.
+    /// The cell menu (009 · N2/N6 · C4 scope) as a native `NSMenu`: Move to ▸ /
+    /// Add to ▸ (the whole collection hierarchy as NESTED submenus, 027 · G2), Set
+    /// as Cover (single only), Remove, Delete — counts in the destructive verbs.
+    /// Actions run on the Finder-scope asset set from `actionTargets` (selection
+    /// when the cell is in the selection, else the one cell), exactly as the
+    /// SwiftUI `cellMenu` did.
     private func buildContextMenu(forCellItemID itemID: UUID) -> NSMenu {
         let targets = configuration.actionTargets(itemID)   // asset ids
         let n = targets.count
-        let dests = configuration.moveTargets
         let menu = NSMenu()
 
         switch configuration.menuStyle {
         case .collection:
             let moveItem = NSMenuItem(title: "Move to", action: nil, keyEquivalent: "")
-            moveItem.submenu = targetSubmenu(dests) { [weak self] target in
+            moveItem.submenu = destinationSubmenu(verb: .move) { [weak self] target in
                 self?.configuration.onMoveToCollection(targets, target)
             }
             menu.addItem(moveItem)
 
             let addItem = NSMenuItem(title: "Add to", action: nil, keyEquivalent: "")
-            addItem.submenu = targetSubmenu(dests) { [weak self] target in
+            addItem.submenu = destinationSubmenu(verb: .add) { [weak self] target in
                 self?.configuration.onCopyToCollection(targets, target)
             }
             menu.addItem(addItem)
@@ -1272,7 +1281,9 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
             // Membership-less hits (search): Add (copy), Reveal a lone byte-backed
             // hit, Delete. No Move / Set Cover / Remove — there's no membership.
             let addItem = NSMenuItem(title: "Add to Collection", action: nil, keyEquivalent: "")
-            addItem.submenu = targetSubmenu(dests) { [weak self] target in
+            // 027 · G3 — the same nested tree as the collection grid. Search has no
+            // current collection, so nothing is greyed.
+            addItem.submenu = destinationSubmenu(verb: .add) { [weak self] target in
                 self?.configuration.onCopyToCollection(targets, target)
             }
             menu.addItem(addItem)
@@ -1291,20 +1302,19 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         return menu
     }
 
-    /// A Move-to / Add-to submenu: subfolders first, a divider, then roots — the
-    /// exact order of the SwiftUI `targetButtons`.
-    private func targetSubmenu(
-        _ dests: MoveTargets, action: @escaping (UUID) -> Void
+    /// A Move-to / Add-to submenu: the whole collection hierarchy NESTED (027 · G2),
+    /// in the same order the SwiftUI ``CollectionDestinationList`` indents — both
+    /// come from ``CollectionTargets/destinationTree``. Built here, on the
+    /// right-click, rather than per visible cell.
+    private func destinationSubmenu(
+        verb: CollectionDestinationMenu.Verb, action: @escaping @MainActor (UUID) -> Void
     ) -> NSMenu {
-        let submenu = NSMenu()
-        for c in dests.subfolders {
-            submenu.addItem(BlockMenuItem(title: c.name) { action(c.id) })
-        }
-        if !dests.subfolders.isEmpty && !dests.roots.isEmpty { submenu.addItem(.separator()) }
-        for c in dests.roots {
-            submenu.addItem(BlockMenuItem(title: c.name) { action(c.id) })
-        }
-        return submenu
+        CollectionDestinationMenu.menu(
+            CollectionDestinationMenu.items(
+                tree: configuration.destinationTree,
+                unsortedID: configuration.destinationUnsortedID,
+                disabled: configuration.disabledDestinations, verb: verb),
+            action: action)
     }
 
     /// " (N)" for a multi-item action, empty for a single — mirrors
@@ -1650,7 +1660,9 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
 /// AppKit delivers menu actions on the main thread, and every closure passed here
 /// touches main-actor state, so the isolation belongs on the CLOSURE rather than
 /// on the menu item that merely carries it.
-nonisolated private final class BlockMenuItem: NSMenuItem {
+/// Internal (not `private`) since 027 · G2: ``CollectionDestinationMenu`` builds
+/// the nested destination submenus out of the same closure-backed item.
+nonisolated final class BlockMenuItem: NSMenuItem {
     private let handler: @MainActor () -> Void
     init(title: String, handler: @escaping @MainActor () -> Void) {
         self.handler = handler

@@ -36,43 +36,58 @@ nonisolated enum CollectionTargets {
         (a.sortIndex, a.name, a.id.uuidString) < (b.sortIndex, b.name, b.id.uuidString)
     }
 
-    /// The move/copy targets reachable FROM `currentID` (009 · N5/N6): the
-    /// current collection's DIRECT subfolders first (name,id), then every ROOT
-    /// (Unsorted included — dragging back to Unsorted is legitimate un-triage).
-    /// The current collection itself is excluded from BOTH groups — moving into
-    /// where the items already live is a `from == to` no-op, so it is never
-    /// offered as a target (and the rail's quick-switch has no use for it either).
-    static func moveTargets(
-        from currentID: UUID, folders: [Collection], unsortedID: UUID
-    ) -> MoveTargets {
-        let subfolders = folders
-            .filter { $0.parentCollectionID == currentID }
-            .sorted { byManualOrder($0, $1) }
-        let roots = galleryRoots(folders, unsortedID: unsortedID)
-            .filter { $0.id != currentID }
-        return MoveTargets(subfolders: subfolders, roots: roots)
+    /// The WHOLE collection hierarchy as a RECURSIVE tree — **the one destination
+    /// ordering** (027 · G2 / 026 · I1). Roots in gallery order (Unsorted pinned
+    /// first, then manual `sortIndex`), each parent's children in manual order.
+    /// Every collection is present, nested ones included: the collection currently
+    /// on screen is **not filtered out** — the renderers grey it (filing where the
+    /// items already live is a no-op), so the list reads as the complete tree,
+    /// which is what makes it navigable.
+    ///
+    /// This is the single source both destination renderers derive from — the
+    /// SwiftUI ``CollectionDestinationList`` (via ``moveTargetTree``, a flatten of
+    /// this) and the AppKit nested ``CollectionDestinationMenu``. A parallel
+    /// implementation on either side is the bug 027 §A was filed for: the grid's
+    /// old `moveTargets` computed a *narrower* answer (direct subfolders + roots),
+    /// so anything two levels down was unreachable by right-click at any depth.
+    ///
+    /// Cycle-safe: a corrupt `parentCollectionID` loop can't recurse forever
+    /// because a node already on the current path is dropped (mirroring
+    /// ``descendantIDs``'s `visited` guard).
+    static func destinationTree(
+        folders: [Collection], unsortedID: UUID
+    ) -> [DestinationTreeNode] {
+        let childrenByParent = Dictionary(grouping: folders, by: { $0.parentCollectionID })
+        func build(_ siblings: [Collection], onPath: Set<UUID>) -> [DestinationTreeNode] {
+            siblings.map { c in
+                var path = onPath
+                path.insert(c.id)
+                let children = (childrenByParent[c.id] ?? [])
+                    .filter { !path.contains($0.id) }
+                    .sorted(by: byManualOrder)
+                return DestinationTreeNode(
+                    collection: c, children: build(children, onPath: path))
+            }
+        }
+        return build(galleryRoots(folders, unsortedID: unsortedID), onPath: [])
     }
 
-    /// The WHOLE collection hierarchy flattened for the selection bar's Move to /
-    /// Add to lists — every collection as an indented node (roots in gallery order:
-    /// Unsorted first, then manual; children in manual order), so items can be filed
-    /// into ANY collection, nested included. The collection currently on screen is
-    /// included too (the caller greys it out and disables it — filing where the
-    /// items already live is a no-op), so the list reads as the complete tree.
+    /// ``destinationTree`` FLATTENED with a depth per row, for the SwiftUI
+    /// destination list's indentation (the selection bar's Move to / Add to, and
+    /// the item-detail page's add chip). Pre-order, so a parent is immediately
+    /// followed by its subtree — the same sequence the nested menu walks.
     static func moveTargetTree(
         folders: [Collection], unsortedID: UUID
     ) -> [MoveTargetNode] {
-        let childrenByParent = Dictionary(grouping: folders, by: { $0.parentCollectionID })
-        var out: [MoveTargetNode] = []
-        func walk(_ siblings: [Collection], depth: Int) {
-            for c in siblings {
-                out.append(MoveTargetNode(collection: c, depth: depth))
-                walk((childrenByParent[c.id] ?? []).sorted(by: byManualOrder),
-                     depth: depth + 1)
-            }
+        flatten(destinationTree(folders: folders, unsortedID: unsortedID))
+    }
+
+    /// Pre-order flatten of a destination tree into indented rows.
+    static func flatten(_ tree: [DestinationTreeNode], depth: Int = 0) -> [MoveTargetNode] {
+        tree.flatMap { node in
+            [MoveTargetNode(collection: node.collection, depth: depth)]
+                + flatten(node.children, depth: depth + 1)
         }
-        walk(galleryRoots(folders, unsortedID: unsortedID), depth: 0)
-        return out
     }
 
     /// The collections `folderID` may be REPARENTED under (043). A valid new
@@ -181,55 +196,55 @@ nonisolated enum CollectionTargets {
 
 /// One collection in a flattened, indented move/copy destination tree — the
 /// collection plus its `depth` (0 = root) so the UI can indent nested folders.
-struct MoveTargetNode: Equatable, Identifiable {
+nonisolated struct MoveTargetNode: Equatable, Identifiable {
     var collection: Collection
     var depth: Int
     var id: UUID { collection.id }
 }
 
-/// The two ordered groups of a move/copy target list, kept separate so the UI can
-/// render a divider between subfolders and roots. `Equatable` for cheap view
-/// diffing.
-struct MoveTargets: Equatable {
-    /// The current collection's direct subfolders (name,id order).
-    var subfolders: [Collection]
-    /// The root collections (Unsorted first), current excluded.
-    var roots: [Collection]
-
-    /// Subfolders then roots — the flat menu/rail order.
-    var all: [Collection] { subfolders + roots }
-    /// No reachable target at all (a lone root with no subfolders would still
-    /// list the OTHER roots; this is only true in a degenerate one-collection
-    /// library).
-    var isEmpty: Bool { subfolders.isEmpty && roots.isEmpty }
+/// One collection in the RECURSIVE destination hierarchy — the collection plus its
+/// ordered children (027 · G2). The nested shape an `NSMenu` needs; the flat
+/// ``MoveTargetNode`` list is this tree flattened, so the two renderings can only
+/// ever agree.
+nonisolated struct DestinationTreeNode: Equatable, Identifiable {
+    var collection: Collection
+    var children: [DestinationTreeNode]
+    var id: UUID { collection.id }
 }
 
-/// A tiny memo for a collection screen's move/copy targets (012 · CQ 1A). The
-/// context menu builds EAGERLY for each visible cell, so without this every cell
-/// recomputes the IDENTICAL folder target list on every render (measured
-/// ~326ms/pass). Keyed on `(from, unsortedID, folders)`: each cell menu in a
-/// render shares one computation, and the list also survives across
-/// renders while the folder tree is unchanged. Held in plain `@State` (not
-/// observed), mirroring ``MasonryLayoutCache``'s discipline.
+/// A tiny memo for a screen's destination hierarchy (012 · CQ 1A). Historically
+/// the SwiftUI context menu built EAGERLY for each visible cell, so every cell
+/// recomputed the IDENTICAL folder target list on every render (measured
+/// ~326ms/pass); the native `NSMenu` now builds on right-click only, but the grid
+/// configuration still carries the tree as a value, so one memo per body pass is
+/// still what keeps the grouping + sorts off the render path.
+///
+/// Keyed on `(unsortedID, folders)`. 027 · G2 dropped `from` out of the key: the
+/// tree is the same seen from anywhere, because the current collection is now a
+/// render-time *disable* rather than a filter — which also means a collection
+/// switch no longer invalidates it. Held in plain `@State` (not observed),
+/// mirroring ``MasonryLayoutCache``'s discipline.
 @MainActor
 final class MoveTargetsCache {
     private struct Key: Equatable {
-        var from: UUID
         var unsortedID: UUID
         var folders: [Collection]
     }
 
     private var key: Key?
-    private var value = MoveTargets(subfolders: [], roots: [])
+    private var value: [DestinationTreeNode] = []
+    /// Cache misses since init — read by the perf harness to prove the memo hits
+    /// across renders instead of rebuilding per body pass.
+    private(set) var buildCount = 0
 
-    /// The memoized targets for the given inputs — recomputed only when one of
-    /// `(from, unsortedID, folders)` changes.
-    func targets(from: UUID, folders: [Collection], unsortedID: UUID) -> MoveTargets {
-        let k = Key(from: from, unsortedID: unsortedID, folders: folders)
+    /// The memoized destination tree for the given inputs — recomputed only when
+    /// `(unsortedID, folders)` changes.
+    func destinationTree(folders: [Collection], unsortedID: UUID) -> [DestinationTreeNode] {
+        let k = Key(unsortedID: unsortedID, folders: folders)
         if key == k { return value }
-        value = CollectionTargets.moveTargets(
-            from: from, folders: folders, unsortedID: unsortedID)
+        value = CollectionTargets.destinationTree(folders: folders, unsortedID: unsortedID)
         key = k
+        buildCount += 1
         return value
     }
 }

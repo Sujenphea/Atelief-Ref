@@ -1103,10 +1103,7 @@ private struct CollectionsField: View {
     let onAdd: (Collection) -> Void
     let onRemove: (Collection) -> Void
 
-    private var addable: [Collection] {
-        let current = Set(collections.map(\.id))
-        return allCollections.filter { !current.contains($0.id) }
-    }
+    @State private var showAdd = false
 
     /// A real collection is ALWAYS removable — dropping its last real membership
     /// re-homes the asset to Unsorted (handled in the store), so it never orphans.
@@ -1120,20 +1117,33 @@ private struct CollectionsField: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.xs + 2) {
             Text("Collections").font(Theme.Typography.label).foregroundStyle(Theme.Colors.inkSecondary)
             TagFlowLayout(spacing: Theme.Spacing.sm) {
-                Menu {
-                    if addable.isEmpty {
-                        Text("No other collections")
-                    } else {
-                        ForEach(addable) { c in Button(c.name) { onAdd(c) } }
-                    }
-                } label: {
+                // 026 · I1 — the shared indented destination tree, not the flat
+                // alphabetical dump of `listCollections()` this used to filter.
+                // A POPOVER, not a `Menu`: the shared list scrolls under a 240pt cap,
+                // and a `Menu`'s content becomes `NSMenu` items, which cannot host a
+                // `ScrollView`. The chrome discipline behind the old `.menuStyle(.button)`
+                // survives as `.buttonStyle(.plain)` + `.fixedSize()` — the DetailChip
+                // defines the pill, the trigger adds NO chrome of its own, so it stays
+                // aligned with the membership chips beside it.
+                Button { showAdd.toggle() } label: {
                     DetailAddChip()
                 }
-                // `.button` + `.plain` so the Menu adds NO chrome of its own — the
-                // DetailChip defines the pill, aligning it with the membership chips
-                // (borderlessButton added an inset that broke the alignment).
-                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                .buttonStyle(.plain).fixedSize()
                 .help("Add to a collection")
+                .popover(isPresented: $showAdd, arrowEdge: .bottom) {
+                    CollectionDestinationList(
+                        folders: allCollections, unsortedID: Collection.unsortedID,
+                        // The asset's OWN memberships are excluded rather than greyed:
+                        // they are already chips beside this trigger, so a greyed row
+                        // would say the same thing twice.
+                        excluded: Set(collections.map(\.id)),
+                        emptyTitle: "No other collections"
+                    ) { id in
+                        if let c = allCollections.first(where: { $0.id == id }) { onAdd(c) }
+                        showAdd = false
+                    }
+                    .selectionMenuChrome()
+                }
 
                 ForEach(collections) { c in
                     DetailChip(c.name, trailing: removable(c) ? .remove { onRemove(c) } : .none)

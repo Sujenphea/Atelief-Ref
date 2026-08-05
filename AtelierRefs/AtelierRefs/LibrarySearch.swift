@@ -774,6 +774,10 @@ private struct LibrarySearchResults: View {
     /// `CollectionView.gridWidth`), so zoom respects the 512px cell cap.
     @State private var gridWidth: CGFloat = 1
 
+    // The destination hierarchy for the "Add to Collection ▸" submenu, memoized on
+    // the folder list exactly as `CollectionView` does (027 · G3).
+    @State private var moveTargetsCache = MoveTargetsCache()
+
     // 048 — search now renders through the SAME AppKit `MasonryGridHost` as the
     // collection grid instead of a bespoke SwiftUI `LazyVGrid`. This gives search
     // the native `NSDraggingSession` (no per-frame SwiftUI rebuild → the old drag
@@ -978,7 +982,11 @@ private struct LibrarySearchResults: View {
             canReorder: false,
             onReorderCommit: { _, _ in false },
             actionTargets: { actionTargets(for: $0) },
-            moveTargets: moveTargets,
+            // 027 · G3 — the same nested hierarchy the collection grid offers.
+            // Nothing is disabled: a hit belongs to no collection here, so every
+            // destination is a legitimate add.
+            destinationTree: destinationTree,
+            destinationUnsortedID: model.unsortedFolderID,
             onMoveToCollection: { _, _ in },   // membership-less: never moves
             onCopyToCollection: { ids, target in model.copyToCollection(assetIDs: ids, to: target) },
             onSetCover: { _ in },
@@ -1060,14 +1068,13 @@ private struct LibrarySearchResults: View {
         selectionStore.setOrder(orderIDs)
     }
 
-    /// Every collection as a copy target, Unsorted pinned first (search has no source
-    /// folder to exclude, so all are offered as roots — no subfolder grouping).
-    private var moveTargets: MoveTargets {
-        let unsorted = model.folders.filter { $0.id == model.unsortedFolderID }
-        let rest = model.folders
-            .filter { $0.id != model.unsortedFolderID }
-            .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
-        return MoveTargets(subfolders: [], roots: unsorted + rest)
+    /// Every collection as a copy target, memoized (027 · G3) — the SAME hierarchy
+    /// the collection grid and the selection bar offer. This used to flatten the
+    /// whole library into one alphabetical root list, which put a nested
+    /// `Refs/Type/Serif` beside unrelated roots as a bare `Serif`.
+    private var destinationTree: [DestinationTreeNode] {
+        moveTargetsCache.destinationTree(
+            folders: model.folders, unsortedID: model.unsortedFolderID)
     }
 
     // MARK: - Drag image (the small precomputed preview, 048)

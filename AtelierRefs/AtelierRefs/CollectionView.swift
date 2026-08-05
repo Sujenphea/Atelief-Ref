@@ -51,10 +51,6 @@ struct CollectionView: View {
     /// Which overflow section is expanded (accordion — at most one). `nil` = both
     /// collapsed, the state the popover reopens in.
     @State private var expandedMoreSection: MoreSection?
-    /// The natural height of the currently-expanded destination list, measured so
-    /// the capped `ScrollView` can size to `min(content, 240)` — a bare `ScrollView`
-    /// reports no ideal height in a content-sized popover and collapses to zero.
-    @State private var destListHeight: CGFloat = 0
     /// The live grid viewport width, captured from the grid's `GeometryReader`, so
     /// the toolbar / ⌘+/⌘− density controls can clamp against the current width
     /// (011-B2 · 16A) without their own geometry reader.
@@ -86,9 +82,9 @@ struct CollectionView: View {
     /// measurement settles.
     @State private var headerHeight: CGFloat = 24
 
-    // Move/copy targets, memoized (012 · CQ 1A): the eager per-cell context menus
-    // share ONE computation instead of recomputing the identical folder list per
-    // cell. Plain `@State`; not observed.
+    // The destination hierarchy, memoized (012 · CQ 1A): the grid configuration
+    // carries the tree as a value on every body pass, so this keeps the grouping +
+    // per-parent sorts off the render path. Plain `@State`; not observed.
     @State private var moveTargetsCache = MoveTargetsCache()
 
     /// The backing scale the grid draws at — the other half of the thumbnail
@@ -360,11 +356,12 @@ struct CollectionView: View {
         ]
     }
 
-    /// This screen's move/copy targets, memoized (012 · CQ 1A) so every eager
-    /// per-cell context menu shares ONE computation, not N.
-    private var moveTargets: MoveTargets {
-        moveTargetsCache.targets(
-            from: collectionID, folders: model.folders, unsortedID: model.unsortedFolderID)
+    /// The whole collection hierarchy as move/copy destinations, memoized (012 ·
+    /// CQ 1A) so a body pass never re-groups + re-sorts the folder tree. The
+    /// right-click menu turns this into nested submenus lazily, on the click.
+    private var destinationTree: [DestinationTreeNode] {
+        moveTargetsCache.destinationTree(
+            folders: model.folders, unsortedID: model.unsortedFolderID)
     }
 
     /// The ASSET ids the selection bar's batch actions act on. `selection.ids` are
@@ -507,45 +504,15 @@ struct CollectionView: View {
         }
     }
 
-    /// The whole collection hierarchy, flattened + indented — every collection is a
-    /// Move to / Add to target (roots in gallery order, children in manual order).
-    /// The current collection is included but rendered disabled (greyed) below.
-    private var moveTargetTree: [MoveTargetNode] {
-        CollectionTargets.moveTargetTree(
-            folders: model.folders, unsortedID: model.unsortedFolderID)
-    }
-
-    /// One section's destination list: the full collection tree as indented rows.
-    /// Capped at 240pt and scrolled, since the library's collection count is
-    /// unbounded.
-    @ViewBuilder
+    /// One section's destination list — the shared ``CollectionDestinationList``
+    /// (026 · I1): the full collection tree as indented rows, capped and scrolled,
+    /// with the collection on screen listed but greyed. Lifted out of this file so
+    /// the item-detail page's add chip renders the identical list.
     private func destinationList(copy: Bool) -> some View {
-        let nodes = moveTargetTree
-        if nodes.isEmpty {
-            SelectionMenuRow("No collections", isEnabled: false)
-        } else {
-            // A bare `ScrollView` reports no ideal height in a content-sized popover
-            // and collapses to zero (no rows show). Measure the content's natural
-            // height (it lays out full-size on the unbounded scroll axis regardless
-            // of the ScrollView's own frame) and pin the ScrollView to
-            // `min(content, 240)` — shrink-to-fit for short lists, scroll past 240.
-            ScrollView {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(nodes) { node in
-                        SelectionMenuRow(
-                            node.collection.name, indent: node.depth,
-                            isEnabled: node.collection.id != collectionID) {
-                            moveOrCopy(copy: copy, to: node.collection.id)
-                        }
-                    }
-                }
-                .background(GeometryReader { g in
-                    Color.clear.preference(key: MenuListHeightKey.self, value: g.size.height)
-                })
-            }
-            .frame(height: min(destListHeight, 240))
-            .scrollBounceBehavior(.basedOnSize)
-            .onPreferenceChange(MenuListHeightKey.self) { destListHeight = $0 }
+        CollectionDestinationList(
+            folders: model.folders, unsortedID: model.unsortedFolderID,
+            disabled: [collectionID]) { id in
+            moveOrCopy(copy: copy, to: id)
         }
     }
 
@@ -728,7 +695,12 @@ struct CollectionView: View {
                 handleSlotDrop(payload, insertAt: slot)
             },
             actionTargets: { model.actionTargets(forCellItemID: $0) },
-            moveTargets: moveTargets,
+            // 027 · G2 — the WHOLE hierarchy, not the old one-level `moveTargets`.
+            // The collection on screen is listed and greyed (not filtered out), so
+            // the nested menu reads as the complete tree.
+            destinationTree: destinationTree,
+            destinationUnsortedID: model.unsortedFolderID,
+            disabledDestinations: [collectionID],
             onMoveToCollection: { model.moveToCollection(assetIDs: $0, to: $1) },
             onCopyToCollection: { model.copyToCollection(assetIDs: $0, to: $1, from: collectionID) },
             onSetCover: { model.setCollectionCover(collectionID: collectionID, assetID: $0) },
