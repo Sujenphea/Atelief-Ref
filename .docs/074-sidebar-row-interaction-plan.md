@@ -1,4 +1,10 @@
-# 025 — The Sidebar Row Does Two Things At Once
+# 074 — The Sidebar Row Does Two Things At Once
+
+**Status: shipped** — `2b5560d`. S1–S3. Open question 1 answered: Unsorted is
+not renameable. Open question 2 answered: the chevron stays trailing. One
+correction to the analysis below — Unsorted's context menu already excluded
+"Rename…" via a `guard !node.isUnsorted`; only Enter and double-click needed the
+new no-op.
 
 > Two requests, both about the same row: **the disclosure chevron should be its
 > own button**, separate from opening the collection; and **Enter / double-click
@@ -86,7 +92,7 @@ Spaces are unaffected — `SpacesOutlineView` is flat (`expandable: false`,
 
 Keyboard parity, free with the split: →/← on a selected row expand/collapse
 (`NSOutlineView` gives this once the row isn't fighting the toggle). Worth adding
-to [024]'s map.
+to [024](feature-todo/024-keyboard-map-and-shortcuts-page.md)'s map.
 
 ### B — rename in place
 
@@ -139,7 +145,7 @@ stop mirroring.
    moves to the expand/collapse delegates; →/← keyboard toggle.
 2. **S2 (M)** — `EditSession` generalisation + `.rename` on both outlines.
 3. **S3 (XS)** — Enter + double-click triggers; context menu re-points at the
-   inline session; [024] map rows.
+   inline session; [024](feature-todo/024-keyboard-map-and-shortcuts-page.md) map rows.
 
 ## Test strategy
 
@@ -185,4 +191,4 @@ manual convention. What *can* be pinned:
    it trailing — the visual identity is deliberate and documented.)
 3. Does Enter-to-rename conflict with any future "Enter opens" convention in the
    sidebar? (The grid uses Return-to-open; the sidebar has no such binding, so no
-   conflict today — but [024]'s collision test should carry the scope.)
+   conflict today — but [024](feature-todo/024-keyboard-map-and-shortcuts-page.md)'s collision test should carry the scope.)

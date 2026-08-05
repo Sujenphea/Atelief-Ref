@@ -54,7 +54,7 @@ in the file's own doc comments:
   gallery a bare ⌫ *deletes* the selected collections and spaces outright (behind a
   confirmation) — it is `SwiftUI`'s `.onDeleteCommand`, which never sees a modifier,
   so it cannot route through `deleteIntent` at all. Noted in the table for whoever
-  revisits [022]; not changed here.
+  revisits [073]; not changed here.
 - **⌘Z / ⇧⌘Z are one chord over two undo stacks.** The menu drives the model's;
   a Space overrides both with the board's. Same verb, so one row — but worth knowing.
 

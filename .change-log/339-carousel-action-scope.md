@@ -1,6 +1,6 @@
 # 339 — A Tile Reading ⧉4 Means Four
 
-[027] G1 and [022] D1: the keyboard's action scope is fixed, and the decoder the
+[075] G1 and [073] D1: the keyboard's action scope is fixed, and the decoder the
 two delete verbs will share lands ahead of the surfaces that will read it.
 
 ## The bug
@@ -40,7 +40,7 @@ exception inside `widenedForAction` and the whole reason you open a post.
 must never be either), ⇧ and fn tolerated. fn *must* be tolerated: on a keyboard
 with no Forward-Delete key, ⌦ **is** fn-⌫.
 
-**No surface calls it.** [022]'s D2–D5 wire the grid, the space canvas, the detail
+**No surface calls it.** [073]'s D2–D5 wire the grid, the space canvas, the detail
 page and the Edit menu; landing the decision first means the behaviour change —
 ⌫ flipping from "delete from library" to "remove from this collection" — arrives
 as one visible change instead of four staggered ones. It reuses

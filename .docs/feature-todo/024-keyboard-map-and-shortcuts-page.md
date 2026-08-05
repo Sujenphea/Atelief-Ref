@@ -51,7 +51,7 @@ What the table buys, in order of value:
    (or in `.global` + any scope) share a chord. This is the thing that keeps a
    growing key map honest, and it costs one test.
 2. **The shortcuts page** renders from it.
-3. **Menu items** ([022] adds Edit ▸ Remove/Delete) read their titles from it.
+3. **Menu items** ([073] adds Edit ▸ Remove/Delete) read their titles from it.
 
 Keeping the table beside the decoders means they can drift; the mitigation is a
 second test that walks the table's collection-scope rows through
@@ -102,7 +102,7 @@ Semantics on a board differ from a grid and must be stated:
 
 - **M (Move to…)** — file the selected tiles' assets into a collection **and drop
   the placements** (the board is not a collection; "move" means the assets leave
-  the board's working set). This needs the [022] remove-placement path plus
+  the board's working set). This needs the [073] remove-placement path plus
   `moveAssets`, in one undo group.
 - **A (Add to…)** — file the assets into a collection, **placements untouched**.
   This is the common one on a board, and it is `addAssets` — already reachable
@@ -110,15 +110,15 @@ Semantics on a board differ from a grid and must be stated:
 
 Both open the same destination picker the selection bar uses —
 `CollectionTargets.moveTargetTree` (`CollectionTargets.swift:62`), the full
-indented hierarchy. That is [027]'s point too: **one destination list, one
+indented hierarchy. That is [075]'s point too: **one destination list, one
 ordering, everywhere.**
 
 ## D — the small gaps the audit turned up
 
-- Sidebar rename has no key path at all — that is [025], which owns Enter /
+- Sidebar rename has no key path at all — that is [074], which owns Enter /
   double-click on a sidebar row.
 - The grid decodes ⌫ through `deleteBackward:` but has no `\u{7f}` case in
-  `gridKeyCommand`, so there is no seam to read a modifier — [022] §"Where it is
+  `gridKeyCommand`, so there is no seam to read a modifier — [073] §"Where it is
   decided" fixes this.
 - `⌘/` is unbound; `?` is unbound. Take `⌘/`.
 
@@ -133,7 +133,7 @@ ordering, everywhere.**
 2. **K2 (S–M)** — the shortcuts sheet + Help ▸ Keyboard Shortcuts (⌘/).
 3. **K3 (M)** — M / A on the collection grid (needs [011] C-2's picker) and on
    Spaces (needs the move-and-drop-placement composite).
-4. **K4 (XS)** — amend [011] C-2's `⇧M` to `A`; add the [022] Edit-menu rows to
+4. **K4 (XS)** — amend [011] C-2's `⇧M` to `A`; add the [073] Edit-menu rows to
    the table.
 
 ## Test strategy
@@ -167,6 +167,6 @@ ordering, everywhere.**
 
 1. Confirm **A** over [011]'s **⇧M** for "Add to…" (recommended: A).
 2. Should `M`/`A` also work on the **Collections gallery** (moving whole folders)?
-   Recommended: no — folder reparenting has its own "Move to" menu ([027]).
+   Recommended: no — folder reparenting has its own "Move to" menu ([075]).
 3. Shortcuts page as a sheet (recommended) or a Settings tab?
 4. Does ⌘D keep two meanings, or does the board's Duplicate move to ⌘⇧D?

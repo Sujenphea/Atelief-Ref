@@ -58,7 +58,7 @@ query.
 A sidebar destination beside Home / Spaces — **not** a collection. It is a view
 over `archived_at IS NOT NULL` ordered newest-first, reusing the existing grid
 host wholesale. Actions on it: **Unarchive** (clears the timestamp; the item
-returns to its collections), **Delete** ([022]'s ⌘⌫, unchanged), and open detail.
+returns to its collections), **Delete** ([073]'s ⌘⌫, unchanged), and open detail.
 Nothing else — no move, no add-to, no reorder: an archive you can reorganise is
 just another collection.
 
@@ -76,7 +76,7 @@ the round-trip lossless.
 
 ### Interactions
 
-- **[022] delete**: ⌫ (remove) and archive are different verbs — remove drops one
+- **[073] delete**: ⌫ (remove) and archive are different verbs — remove drops one
   membership, archive hides the asset from all of them. Both stay.
 - **[008] backup**: `archived_at` ships in the manifest and round-trips, or a
   restore silently un-archives the user's whole shelf.

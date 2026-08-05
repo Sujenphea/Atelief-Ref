@@ -1,4 +1,13 @@
-# 022 — Two Deletes, Everywhere: ⌫ Removes, ⌘⌫ Destroys
+# 073 — Two Deletes, Everywhere: ⌫ Removes, ⌘⌫ Destroys
+
+**Status: shipped** — D1 in `c08129d`, D2–D5 in `ef5201d`. ⌫ in Unsorted is a
+no-op with a toast; ⌘⌫ keeps its confirmation; boards gained a real destroy.
+Two things the implementation settled that this doc did not anticipate: Edit ▸
+Remove carries **no ⌫ key equivalent** (an `NSMenu` equivalent is matched before
+the first responder is consulted, so it would swallow Backspace in every text
+field), and the menu commands read a per-pane `DeleteVerbs` focused value rather
+than the scene-wide model. The Home gallery was missed by this doc and is
+handled separately — see `.change-log/345-home-delete-gate.md`.
 
 > Requested: **⌫ = remove from this collection**, **⌘⌫ = delete from the app**,
 > and the pair must mean the same thing on **every** surface — collections,
@@ -84,10 +93,10 @@ Mechanics per surface:
 - **Detail** — the page needs a key catcher for these; `DetailKeyCatcher`
   (`ItemDetailView.swift:1424`) already holds first responder while the page is up,
   so both bindings go in its `keyDown` next to the arrows. Post-delete navigation
-  is [026]'s problem, not this doc's.
+  is [026](feature-todo/026-item-detail-gaps.md)'s problem, not this doc's.
 - **Menus** — Edit ▸ "Remove from Collection" (⌫) and "Delete" (⌘⌫), titles
   tracking the focused surface, so both verbs are discoverable and the shortcuts
-  are visible where macOS users look for them. This is also the surface [024]'s
+  are visible where macOS users look for them. This is also the surface [024](feature-todo/024-keyboard-map-and-shortcuts-page.md)'s
   shortcuts page reads from.
 
 ### Confirmation policy
@@ -101,7 +110,7 @@ Mechanics per surface:
 ### Carousel scope
 
 Both verbs act on the post-widened id set. The lead-only path is currently
-**not** widened — see [027] §B; that bug must be fixed in the same window or
+**not** widened — see [075] §B; that bug must be fixed in the same window or
 ⌫ will remove one frame of a four-image post and leave the tile.
 
 ## Schema / migration impact
@@ -113,9 +122,9 @@ Both verbs act on the post-widened id set. The lead-only path is currently
 
 1. **D1 (S)** — pure `deleteIntent` + tests. No behaviour change.
 2. **D2 (M)** — grid: split remove/delete, wire `removeSelectedFromFolder`,
-   fix the lead-widening ([027] §B).
+   fix the lead-widening ([075] §B).
 3. **D3 (S)** — space: read the modifier, un-alias the two handlers, wire destroy.
-4. **D4 (S)** — detail page bindings (composes with [026]).
+4. **D4 (S)** — detail page bindings (composes with [026](feature-todo/026-item-detail-gaps.md)).
 5. **D5 (S)** — Edit-menu items with focused titles.
 
 ## Test strategy

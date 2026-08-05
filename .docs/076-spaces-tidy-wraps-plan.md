@@ -1,4 +1,11 @@
-# 028 — Tidy Up Degenerates Into One Enormous Row
+# 076 — Tidy Up Degenerates Into One Enormous Row
+
+**Status: shipped** — `216aec2`. T1 (band-bounded row clustering + area-derived
+wrap). Open question 1 answered: the bound is `sqrt(area × 16:9)`, quantised to
+100pt, with 1600 as a **floor** rather than only a degenerate fallback — the
+area formula derives narrower than a correct small row, so flooring confines the
+wrap to the many-item case. Open question 3 (a separate uniform **"Grid"** op,
+T3) is deliberately deferred pending use of the fixed Tidy.
 
 > "Tidy function for large number of items condense into one row instead of a
 > uniform grid." Correct, and it is not a tuning problem — `tidy` has **no width

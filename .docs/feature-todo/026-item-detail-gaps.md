@@ -81,7 +81,7 @@ collections the asset is already in, rendered with `node.depth` indentation and
 the same 240pt scroll cap. Concretely: lift `CollectionView.destinationList` into
 a shared `CollectionDestinationList` view and use it in both places.
 
-That is the same move [027] makes for the grid's right-click submenu, and the
+That is the same move [075] makes for the grid's right-click submenu, and the
 reason both docs exist: **there is one correct destination list in this codebase
 and three renderings of it.** Whichever lands first should build the shared view;
 the other consumes it.
@@ -91,7 +91,7 @@ its `.menuStyle(.button)` / `.plain` chrome fix (`:1127-1129`) — that was hard
 
 ### B — ⌫ / ⌘⌫ on the page
 
-[022] owns the semantics; this is the wiring. `DetailKeyCatcher.keyDown`
+[073] owns the semantics; this is the wiring. `DetailKeyCatcher.keyDown`
 (`:1516`) gains the `deleteIntent` decode beside `detailStepDelta`:
 
 - **⌫** → `actions.removeFromFolder` (the collection the page was opened from —
@@ -138,7 +138,7 @@ Two constraints:
   a real tile. After stepping, the shown id is a different one — that already
   works, since `close()` reads `session.currentID` at close time.
 
-This is what turns the page into a triage surface, and it is why [022]'s
+This is what turns the page into a triage surface, and it is why [073]'s
 bindings and this change want to land together.
 
 ## Carousel awareness (the fourth gap, unbuilt)
@@ -163,7 +163,7 @@ judging.
 ## Phased implementation
 
 1. **I1 (S)** — shared `CollectionDestinationList`; `CollectionsField` consumes it.
-2. **I2 (S)** — ⌫ / ⌘⌫ in `DetailKeyCatcher` (after [022] D1's `deleteIntent`).
+2. **I2 (S)** — ⌫ / ⌘⌫ in `DetailKeyCatcher` (after [073] D1's `deleteIntent`).
 3. **I3 (M)** — step-instead-of-dismiss, with the explicit intent flag.
 4. **I4** — [070]'s carousel chip, if wanted.
 
@@ -171,7 +171,7 @@ judging.
 
 - Destination list: pure over a fixture tree — indentation depth, Unsorted first,
   already-member collections excluded, empty state.
-- `deleteIntent` decode inside the detail scope (shared with [022]'s suite);
+- `deleteIntent` decode inside the detail scope (shared with [073]'s suite);
   a focused `NSText` sees the key and the catcher does not.
 - Step-on-delete as a **pure function**: `(oldRun, oldIndex, newRun) -> next id?`
   — middle item, first item, last item, run of one, run emptied, and the

@@ -1,4 +1,12 @@
-# 027 — Right-Click Can't Reach a Sub-Subfolder; Delete Can't Reach a Whole Post
+# 075 — Right-Click Can't Reach a Sub-Subfolder; Delete Can't Reach a Whole Post
+
+**Status: shipped** — G1 in `c08129d`, G2 and G3 in `16e9fca`. Nested `NSMenu`,
+current collection present-but-disabled, "Move here" / "Add here" rows following
+the verb. The perf worry did not materialise: the recursive build measures
+**0.157 ms** on a 40-folder, 4-deep fixture against the ~326 ms/pass hazard the
+cache was built for. `MoveTargets` and `moveTargets(from:…)` were deleted rather
+than left available, and `moveTargetTree` is now a flatten of the same tree the
+menu walks.
 
 > Two grid bugs with the same shape: a code path that computes a *narrower* answer
 > than the correct one that already exists two functions away. **Move to ▸ shows
@@ -80,11 +88,11 @@ Mechanics:
   that cost.
 
 Do it once: extract `CollectionDestinationMenu` (AppKit) beside the shared SwiftUI
-`CollectionDestinationList` that [026] §A extracts. Same data, two renderers,
+`CollectionDestinationList` that [026](feature-todo/026-item-detail-gaps.md) §A extracts. Same data, two renderers,
 **one ordering**.
 
 Same treatment for the `.looseAssets` menu style's "Add to Collection"
-(`:1260-1265`) and for the Space canvas's context menu if [024] §C's M/A land
+(`:1260-1265`) and for the Space canvas's context menu if [024](feature-todo/024-keyboard-map-and-shortcuts-page.md) §C's M/A land
 there.
 
 ## B — ⌫ on a carousel tile deletes one image
@@ -120,7 +128,7 @@ explicit selection — arrow to a tile, press ⌫ — hits the unwidened path. O
 
 Both consumers are affected: `requestDeleteSelected()` (`:2393`) and
 `removeSelectedFromFolder()` (`:2381`) — the latter is currently dead code that
-[022] is about to wire, so fixing this **before** [022] D2 is the cheap ordering.
+[073] is about to wire, so fixing this **before** [073] D2 is the cheap ordering.
 
 ### The fix
 
@@ -148,7 +156,7 @@ rather than each verb.
 ## Phased implementation
 
 1. **G1 (XS)** — `keyboardActionTargets` widening. One line + tests. Do this
-   first; it is a real data-correctness bug and it unblocks [022] D2.
+   first; it is a real data-correctness bug and it unblocks [073] D2.
 2. **G2 (M)** — `CollectionDestinationMenu` recursive NSMenu + swap the grid's two
    submenus onto it; re-measure the menu build.
 3. **G3 (S)** — same menu for `.looseAssets` (search) and the Space canvas.
@@ -179,12 +187,12 @@ rather than each verb.
 - **Deep or wide trees make deep or wide menus.** A 6-level hierarchy produces a
   6-deep submenu chain, which is unpleasant but honest; the flat list's
   alternative is unreachable folders. If depth becomes a real complaint, the
-  answer is a searchable picker ([011] C-1's ⌘K machinery), not a truncated menu —
+  answer is a searchable picker ([011](feature-todo/011-ux-features.md) C-1's ⌘K machinery), not a truncated menu —
   do **not** cap the depth silently.
 - "(Move here)" doubles the row count on parent rows. Only add it where the row
   has children.
 - G1 changes what ⌫ does on a carousel from "one" to "all four" — which is the
-  intent, but it lands at the same time [022] flips ⌫ from destroy to remove.
+  intent, but it lands at the same time [073] flips ⌫ from destroy to remove.
   Sequence them in one window and describe both in one changelog entry, or the
   behaviour change reads as two unrelated surprises.
 - `MoveTargetsCache`'s key includes the whole `folders` array; a recursive build
@@ -197,5 +205,5 @@ rather than each verb.
    visually. Pick one and use it for both, or accept the divergence explicitly.
 2. Should the current collection appear disabled (recommended, matches the bar)
    or be omitted entirely (matches today's `moveTargets`, which excludes it)?
-3. Does the Space canvas context menu get destinations at all, or does [024] §C's
+3. Does the Space canvas context menu get destinations at all, or does [024](feature-todo/024-keyboard-map-and-shortcuts-page.md) §C's
    M/A cover it?

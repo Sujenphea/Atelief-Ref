@@ -1,6 +1,6 @@
 # 340 — ⌫ Removes, ⌘⌫ Destroys
 
-[022] D2–D5. **The Delete key in the collection grid no longer deletes from the
+[073] D2–D5. **The Delete key in the collection grid no longer deletes from the
 library.** It removes the item from the collection you are looking at — undoably,
 with no dialog. **⌘⌫ is the destructive key now**, and it keeps the confirmation.
 

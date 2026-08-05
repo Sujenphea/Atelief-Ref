@@ -1,6 +1,6 @@
 # 341 — The Sidebar Row Stops Doing Two Things At Once
 
-Implements [025] in full (S1 · S2 · S3). Two verbs that were tangled into one
+Implements [074] in full (S1 · S2 · S3). Two verbs that were tangled into one
 click are now two controls, and rename moved out of a dialog onto the row.
 
 ## The chevron is a button now (S1)

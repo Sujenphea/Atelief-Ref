@@ -1,4 +1,13 @@
-# 021 — The Local Build Never Reaches /Applications
+# 072 — The Local Build Never Reaches /Applications
+
+**Status: shipped** — `c891b50`. R1 (install step, foreign-bundle and
+signing-downgrade guards, atomic swap, launch the installed path) and R3
+(post-install version/mtime echo) as written. §B landed as a variant of the
+recommendation: `MARKETING_VERSION` pinned to `0.0.0`, and the git-derived build
+number applied to `release.sh` only — local builds keep the project's pinned
+number. Open question 1 answered: `release.sh` stays distribution-only.
+Open question 2 answered: refuse the Developer ID → ad-hoc downgrade unless
+`FORCE_INSTALL=1`.
 
 > `run-local.command` builds a Release app and launches it **from the build
 > directory**. Nothing in the repo ever writes to `/Applications`. So the copy the
@@ -36,7 +45,7 @@
 (`ItemDetailView.swift:1424-1522`) — the NSView that borrows first responder so ←/→
 reach the pager instead of the grid behind the overlay. It is present in the
 working tree and absent from a 31 Jul bundle. **Not a detail-page bug; a stale
-binary.** (The genuine carousel gaps in the detail page are [026]; the genuine
+binary.** (The genuine carousel gaps in the detail page are [026](feature-todo/026-item-detail-gaps.md); the genuine
 arrow-key gap in the *grid* is none — the grid's map is `MasonryGridHost.swift:1776`.)
 
 ## The fix

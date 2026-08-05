@@ -12,7 +12,7 @@ indistinguishable, and both reported `1.0 (1)`.
 That is the whole of the reported "the carousel detail page ignores my arrow
 keys". `DetailKeyCatcher` (the NSView that borrows first responder so ←/→ reach
 the pager) landed 3 Aug and is in the working tree; it simply was not in the app
-being launched. Not a detail-page bug — a stale binary. [021]
+being launched. Not a detail-page bug — a stale binary. [072]
 
 Three changes:
 

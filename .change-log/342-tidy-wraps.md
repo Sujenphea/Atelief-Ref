@@ -1,6 +1,6 @@
 # 342 — Tidy Up Wraps
 
-[028] T1. On a space with many tiles, Tidy Up collapsed everything into one
+[076] T1. On a space with many tiles, Tidy Up collapsed everything into one
 enormous row — 60 tiles came out as a single row thousands of points wide,
 off-screen at any usable zoom. Two independent structural causes in
 `CanvasArrange`, both now fixed.
@@ -61,7 +61,7 @@ alone on its row and overhangs.
 
 - **Tile sizes are preserved.** Every output rect's `size` equals its input's —
   this is wrapped rows, not a uniform grid. A true uniform grid forces every tile
-  to one cell size and is a different verb; [028] T3 leaves it optional and out
+  to one cell size and is a different verb; [076] T3 leaves it optional and out
   of scope.
 - The anchor (the selection's top-left), the strict-overlap rule that keeps a
   `gap == 0` tidy stable, and the gap derivation (`tidyGap` — smallest observed,
