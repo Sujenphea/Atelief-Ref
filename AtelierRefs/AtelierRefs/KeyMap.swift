@@ -64,6 +64,10 @@
 //     (which is matched before `keyDown` reaches the first responder) would swallow a
 //     keystroke mid-rename. This is why `AtelierRefsApp`'s Edit ▸ Remove carries NO
 //     key equivalent for bare ⌫ (`AtelierRefsApp.swift:223-238`).
+//   • The Home gallery reads its keys through SwiftUI's `.onKeyPress`, which only
+//     fires while the view holds SwiftUI focus — the sidebar's rename field taking the
+//     keyboard is the same event as the gallery losing it, so the guard is structural
+//     rather than written down ([345]).
 //
 //  Both bare-letter decoders REQUIRE bare modifiers — `gridKeyCommand`'s `x` case
 //  tests `bareModifiers.isEmpty`, `toolShortcut` rejects ⌘ / ⌥ / ⌃ / fn — so ⌘A and
@@ -317,7 +321,8 @@ nonisolated enum KeyMap {
     /// The title the Help menu item and the sheet share, so the two cannot drift.
     static let pageTitle = "Keyboard Shortcuts"
 
-    /// Every binding the app HAS, verified against the source at `ef5201d`.
+    /// Every binding the app HAS, verified against the source at `ef5201d`, and the
+    /// `.gallery` delete rows re-verified at [345].
     ///
     /// Ordered by scope, and within a scope roughly by how early a user meets it.
     static let all: [Shortcut] = globalShortcuts + collectionShortcuts + detailShortcuts
@@ -330,7 +335,12 @@ nonisolated enum KeyMap {
     /// ⌫ is deliberately absent: Edit ▸ Remove carries NO key equivalent, because a
     /// menu key equivalent is matched before the event reaches the first responder and
     /// would swallow Backspace in every text field in the app. Each surface delivers
-    /// its own bare ⌫ instead — see the four `.delete`-decoder rows below.
+    /// its own bare ⌫ instead — see the `.delete`-decoder rows below.
+    ///
+    /// The ⌘⌫ row is the *only* one, and every surface that can delete reaches it by
+    /// publishing a `DeleteVerbs` focused value — including Home as of [345]. That is
+    /// why a surface never gets a ⌘⌫ row of its own: it would collide with this one,
+    /// correctly, since this is matched first.
     private static let globalShortcuts: [Shortcut] = [
         Shortcut([.character("z")], [.command], "Undo",
                  scope: .global, source: "AtelierRefsApp.swift:147"),
@@ -433,17 +443,30 @@ nonisolated enum KeyMap {
 
     // MARK: Home
 
+    /// Home follows the two-tier rule as of [345]. It did not when this table was
+    /// written: a bare ⌫ deleted the selected collections and spaces outright, because
+    /// SwiftUI's `.onDeleteCommand` is handed no modifiers and so could not route
+    /// through `deleteIntent` at all. `.onDeleteCommand` is gone; a `.onKeyPress` over
+    /// the shared decoder replaced it.
+    ///
+    /// **⌘⌫ is not a row here, and that is the point.** Deleting cards from Home is
+    /// Edit ▸ Delete — the `.global` row above — which the gallery now feeds a
+    /// `DeleteVerbs`. A second `.gallery` row on the same chord would be the exact
+    /// `.global`-shadows-a-surface case ``collisions(in:)`` exists to catch: a menu key
+    /// equivalent is matched before the first responder is consulted, so a local
+    /// binding could only ever lose to it.
     private static let galleryShortcuts: [Shortcut] = [
         Shortcut([.character("a")], [.command], "Select all cards",
-                 scope: .gallery, source: "CollectionsGalleryView.swift:78"),
-        // NOTE, for whoever revisits [022]: this one is DESTRUCTIVE. Everywhere else
-        // in the app a bare ⌫ removes from the container in view and ⌘⌫ deletes; on
-        // Home a bare ⌫ deletes the collections and spaces outright (behind a
-        // confirmation). It is the one surface that does not follow the two-tier rule.
-        Shortcut([.delete, .forwardDelete], [], "Delete the selected cards…",
-                 scope: .gallery, source: "CollectionsGalleryView.swift:76"),
+                 scope: .gallery, source: "CollectionsGalleryView.swift:114"),
+        // Bound, and it does nothing on purpose — Home is not a container, so there is
+        // no membership for ⌫ to drop. It is a row rather than an omission because the
+        // app really does claim the key: it posts a notice naming ⌘⌫, which is what
+        // muscle memory trained on the old destructive binding needs to be told.
+        Shortcut([.delete, .forwardDelete], [], "Nothing — ⌘⌫ deletes the cards",
+                 scope: .gallery, decoder: .delete,
+                 source: "galleryDeleteIntent — CollectionsGalleryView.swift:110, :588"),
         Shortcut([.escape], [], "Clear the selection",
-                 scope: .gallery, source: "CollectionsGalleryView.swift:77"),
+                 scope: .gallery, source: "CollectionsGalleryView.swift:113"),
     ]
 
     // MARK: Search

@@ -2876,6 +2876,19 @@ final class IngestionModel: ObservableObject {
         }
     }
 
+    /// Home's answer to a bare ⌫ (073): **nothing is deleted, and it says so.**
+    ///
+    /// Everywhere else ⌫ drops the item from the container in view. Home is not a
+    /// container — a collection card is not "in" anything you could take it out of —
+    /// so the remove half of the rule has no meaning there and the key deletes
+    /// nothing. It used to delete the cards outright, which is exactly why this is a
+    /// notice and not silence: muscle memory trained on the old binding needs to be
+    /// told which key took the verb over. Same shape, same sentence pattern, as
+    /// ``removeFromCurrentFolder(assetIDs:)``'s Unsorted branch.
+    func explainHomeDeleteKey() {
+        notify("Home has nothing to remove from — press ⌘⌫ to delete.")
+    }
+
     /// Restore a captured space delete (undo) — reinstates the board verbatim.
     private func applyRestoreSpace(_ backup: DeletedSpaceBackup) async {
         guard let services else { return }

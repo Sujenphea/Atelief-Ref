@@ -19,6 +19,7 @@
 import AppKit
 import CanvasRenderer
 import Foundation
+import SwiftUI
 import Testing
 @testable import AtelierRefs
 
@@ -270,11 +271,12 @@ struct KeyMapContractTests {
     @Test("every .delete row resolves through deleteIntent, to the tier its scope implies")
     func deleteRowsResolve() {
         let deleteRows = rows(for: .delete)
-        // One per surface that routes a bare ⌫ through this decoder (grid, detail
-        // page, board), plus the single ⌘⌫ menu row. Home's ⌫ is NOT here: it is
-        // SwiftUI's `.onDeleteCommand`, which never sees a modifier — which is also
-        // why it is the one surface that breaks the two-tier rule.
+        // One per surface that routes a bare ⌫ through this decoder — grid, detail
+        // page, board, and (since [345]) Home — plus the single ⌘⌫ menu row. Home
+        // used to be absent: its ⌫ was SwiftUI's `.onDeleteCommand`, which never sees
+        // a modifier, which is why it was the one surface that broke the rule.
         #expect(!deleteRows.isEmpty)
+        #expect(deleteRows.contains { $0.scope == .gallery })
         for shortcut in deleteRows {
             for chord in shortcut.chords {
                 let intent = deleteIntent(
@@ -287,6 +289,51 @@ struct KeyMapContractTests {
                     "\(chord.caption) — “\(shortcut.title)” decodes to the wrong tier")
             }
         }
+    }
+
+    /// Home reads its keys through SwiftUI, not `NSEvent`, so its `.delete` row is
+    /// walked back through the adapter it actually routes to ([345]). The row would
+    /// pass `deleteRowsResolve` above on `deleteIntent` alone while the gallery was
+    /// wired to something else entirely; this is the assertion that ties the table to
+    /// the code Home really runs.
+    @MainActor
+    @Test("the .gallery delete row resolves through galleryDeleteIntent, to the same tier")
+    func galleryRowResolvesThroughItsAdapter() {
+        let equivalents: [ShortcutKey: KeyEquivalent] = [
+            .delete: .delete, .forwardDelete: .deleteForward,
+        ]
+        let galleryRows = KeyMap.shortcuts(in: .gallery).filter { $0.decoder == .delete }
+        #expect(!galleryRows.isEmpty)
+        for shortcut in galleryRows {
+            for chord in shortcut.chords {
+                guard let key = equivalents[chord.key] else {
+                    Issue.record(Comment(
+                        rawValue: "\(chord.caption) — “\(shortcut.title)” names a key "
+                            + "galleryDeleteIntent has no KeyEquivalent for"))
+                    continue
+                }
+                let modifiers = eventModifiers(chord.modifiers)
+                let intent = galleryDeleteIntent(key: key, modifiers: modifiers)
+                // The adapter and the app-wide decoder must never disagree.
+                #expect(
+                    intent == deleteIntent(
+                        characters: chord.key.characters, modifiers: chord.modifiers.eventFlags),
+                    Comment(rawValue: "\(chord.caption) — “\(shortcut.title)” decodes "
+                        + "differently through SwiftUI than through AppKit"))
+                // And Home's row is the bare one: ⌘⌫ is Edit ▸ Delete, a `.global` row.
+                #expect(intent == .remove, "\(chord.caption) — “\(shortcut.title)”")
+            }
+        }
+    }
+
+    /// The table's modifier set in SwiftUI's vocabulary, for the row above.
+    private func eventModifiers(_ modifiers: ShortcutModifiers) -> EventModifiers {
+        var out: EventModifiers = []
+        if modifiers.contains(.control) { out.insert(.control) }
+        if modifiers.contains(.option) { out.insert(.option) }
+        if modifiers.contains(.shift) { out.insert(.shift) }
+        if modifiers.contains(.command) { out.insert(.command) }
+        return out
     }
 
     /// The table must not quietly claim a decoder owns a row it has never heard of —
