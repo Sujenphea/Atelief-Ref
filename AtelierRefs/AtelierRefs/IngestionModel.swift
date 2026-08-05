@@ -2276,10 +2276,23 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// The asset ids a keyboard command (Delete / Remove) acts on: the whole
-    /// selection when selecting, else the lead cursor's single item.
+    /// The asset ids a keyboard command (Delete / Remove / ⌘D) acts on: the whole
+    /// selection when selecting, else the lead cursor's item.
+    ///
+    /// The lead branch goes through the SAME two helpers as the right-click path
+    /// (``widenedForAction(_:)`` then ``assetIDs(for:)``) — a collapsed carousel
+    /// tile stands for its whole post (307), so a cursor sitting on a tile reading
+    /// ⧉4 must act on all four. Taking `leadItem.asset.id` raw was the one action
+    /// path that skipped the widening, and it produced exactly the failure
+    /// ``actionTargets(forCellItemID:)`` documents itself as preventing: ⌫ removed
+    /// one image and left the tile behind reading 3, and ⌘D starred one image of
+    /// four. Note it widens the ITEM id, not the asset id — `widenedForAction`
+    /// speaks membership ids. An OPENED post still acts per frame; that exception
+    /// lives inside `widenedForAction` and is deliberate.
     private var keyboardActionTargets: [UUID] {
-        selection.isSelecting ? selectedAssetIDs : (leadItem.map { [$0.asset.id] } ?? [])
+        selection.isSelecting
+            ? selectedAssetIDs
+            : (leadItem.map { assetIDs(for: widenedForAction([$0.item.id])) } ?? [])
     }
 
     // MARK: - Favorites (011 · U5)

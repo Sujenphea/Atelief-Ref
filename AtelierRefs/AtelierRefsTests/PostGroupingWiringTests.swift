@@ -594,3 +594,159 @@ struct PostGroupingPublishTests {
         #expect(model.expandedPosts.isEmpty)
     }
 }
+
+/// 027 §B / G1 — the KEYBOARD's action scope, the one path that used to skip the
+/// widening every other path applies.
+///
+/// `keyboardActionTargets` took the lead cursor's `asset.id` raw, so arrowing onto a
+/// collapsed tile reading ⧉4 and pressing ⌫ deleted one image and left the tile
+/// behind reading 3 — precisely what `actionTargets(forCellItemID:)` documents itself
+/// as preventing, and precisely what the right-click on the same tile did NOT do.
+/// ⌘D read the same property, so it starred one image of four; that shared reader is
+/// the argument for fixing the property rather than each verb, and it is why both
+/// verbs are asserted here.
+///
+/// The property is private, so it is exercised through the verbs that consume it:
+/// `requestDeleteSelected()` (its staged `pendingDeletion`) and `toggleFavoriteSelected()`
+/// / `canToggleFavorite`.
+@MainActor
+@Suite("Carousel grouping: the keyboard's action scope (027 G1)")
+struct KeyboardActionScopeTests {
+
+    /// A four-image post plus one lone capture, loaded — 5 items, 2 tiles. The gap
+    /// between those numbers is what a raw lead id fell into.
+    private func loadedFeed(
+        _ tag: String
+    ) async throws -> (model: IngestionModel, services: AppServices, target: UUID) {
+        let (model, services) = try await CarouselRig.makeModel(tag)
+        let target = Collection.unsortedID
+        try await CarouselRig.seedPost(
+            url: "https://www.instagram.com/p/AbCd/", count: 4, into: target, services,
+            hexSeed: 0)
+        try await CarouselRig.seedPost(
+            url: nil, count: 1, into: target, services, hexSeed: 60)
+        try await CarouselRig.load(model, target)
+        return (model, services, target)
+    }
+
+    /// The two tiles by HOW MANY IMAGES each stands for, rather than by feed
+    /// position, so the suite does not quietly depend on the collection's sort
+    /// order. An ungrouped item belongs to no post (`members` is empty) and stands
+    /// for exactly itself.
+    private func tileID(_ model: IngestionModel, standsFor images: Int) throws -> UUID {
+        try #require(model.displayItems.first {
+            max(model.postGroups.members(forItem: $0.item.id).count, 1) == images
+        }).item.id
+    }
+
+    /// Move the cursor WITHOUT selecting — an arrow key, which is the whole point:
+    /// `selection.isSelecting` is `!ids.isEmpty`, so this is the un-widened branch.
+    private func moveLead(_ model: IngestionModel, to itemID: UUID) {
+        _ = model.selectionStore.apply(.setLead(itemID))
+    }
+
+    /// The ids ⌫ would stage, read off the pending confirmation.
+    private func deleteTargets(_ model: IngestionModel) -> [UUID] {
+        model.requestDeleteSelected()
+        defer { model.cancelPendingDeletion() }
+        return model.pendingDeletion?.assetIDs ?? []
+    }
+
+    // MARK: ⌫ — the lead cursor
+
+    @Test("⌫ with the cursor on a collapsed ⧉4 tile takes the WHOLE post")
+    func leadOnCollapsedPostWidens() async throws {
+        let (model, _, _) = try await loadedFeed("keyboard-scope-collapsed")
+        #expect(model.items.count == 5)
+        #expect(model.displayItems.count == 2)
+
+        let tile = try tileID(model, standsFor: 4)
+        moveLead(model, to: tile)
+        #expect(model.selection.ids.isEmpty)     // a cursor, not a selection
+        // 4, not 1: one image plus a tile still reading ⧉3 is the bug.
+        #expect(deleteTargets(model).count == 4)
+    }
+
+    @Test("⌫ inside an OPENED post takes one frame — the deliberate exception")
+    func leadInsideOpenedPostStaysNarrow() async throws {
+        let (model, _, _) = try await loadedFeed("keyboard-scope-opened")
+        let tile = try tileID(model, standsFor: 4)
+        model.toggleExpansion(forItem: tile)
+        #expect(model.displayItems.count == 5)
+
+        // Opening a carousel to delete ONE bad frame must not delete all four.
+        for member in model.postGroups.members(forItem: tile) {
+            moveLead(model, to: member)
+            #expect(deleteTargets(model).count == 1)
+        }
+    }
+
+    @Test("⌫ on an ungrouped tile still takes exactly itself")
+    func leadOnLoneItemUnaffected() async throws {
+        let (model, _, _) = try await loadedFeed("keyboard-scope-lone")
+        let lone = try tileID(model, standsFor: 1)
+        moveLead(model, to: lone)
+        #expect(deleteTargets(model).count == 1)
+    }
+
+    @Test("with grouping OFF every tile is its own thing again")
+    func groupingOffNarrows() async throws {
+        let (model, _, _) = try await loadedFeed("keyboard-scope-ungrouped")
+        let tile = try tileID(model, standsFor: 4)
+        model.groupCarousels = false
+        #expect(model.displayItems.count == 5)
+
+        moveLead(model, to: tile)
+        #expect(deleteTargets(model).count == 1)
+    }
+
+    // MARK: the selection branch is untouched
+
+    @Test("a non-empty selection still wins over the cursor")
+    func selectionBranchUnchanged() async throws {
+        let (model, _, _) = try await loadedFeed("keyboard-scope-selection")
+        let post = try tileID(model, standsFor: 4)
+        let lone = try tileID(model, standsFor: 1)
+
+        // Select the lone capture, then park the CURSOR on the post's tile.
+        _ = model.selectionStore.apply(.selectOnly(lone))
+        moveLead(model, to: post)
+        #expect(model.selection.ids == [lone])
+        #expect(model.selection.lead == post)
+        // The selection is what the verb acts on — the lead is ignored while
+        // selecting, exactly as before.
+        #expect(deleteTargets(model) == model.selectedAssetIDs)
+        #expect(deleteTargets(model).count == 1)
+    }
+
+    @Test("no cursor and no selection stages nothing at all")
+    func noLeadNoTargets() async throws {
+        let (model, _, _) = try await loadedFeed("keyboard-scope-empty")
+        #expect(model.selection.lead == nil)
+        #expect(model.selection.ids.isEmpty)
+        #expect(deleteTargets(model).isEmpty)
+        #expect(model.pendingDeletion == nil)
+        #expect(model.canToggleFavorite == false)
+    }
+
+    // MARK: ⌘D reads the same property
+
+    @Test("⌘D with the cursor on a collapsed ⧉4 tile stars all four")
+    func favoriteWidensToo() async throws {
+        let (model, services, _) = try await loadedFeed("keyboard-scope-favorite")
+        let tile = try tileID(model, standsFor: 4)
+        let members = model.postGroups.members(forItem: tile)
+        let postAssets = model.items
+            .filter { members.contains($0.item.id) }.map { $0.asset.id }
+        #expect(postAssets.count == 4)
+
+        moveLead(model, to: tile)
+        #expect(model.canToggleFavorite)
+        model.toggleFavoriteSelected()
+        await model.waitForWrites()
+
+        // One star on a tile reading ⧉4 was the ⌘D half of the same bug.
+        #expect(try await services.favoritedAssetIDs(among: postAssets) == Set(postAssets))
+        #expect(model.lastUndoableAction?.message == "Favorited 4 items.")
+    }
+}
