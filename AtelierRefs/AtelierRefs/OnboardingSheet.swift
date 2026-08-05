@@ -99,19 +99,23 @@ struct OnboardingSheet: View {
         )
     }
 
-    /// A live dot for the local capture endpoint — green while it's listening,
-    /// orange if the port is busy so captures can't land (a real, actionable state,
-    /// not just static instructions).
+    /// A live indicator for the local capture endpoint — listening, or the port is
+    /// busy so captures can't land (a real, actionable state, not just static
+    /// instructions).
+    ///
+    /// The dot is ``CaptureEndpointDot``, shared with the Capture pane: this drew its
+    /// own green/orange circle, so the app stated the same rule in two places. The
+    /// SENTENCE stays local — the address is already printed on the row above, so this
+    /// surface says "Listening for captures" where the pane names the endpoint.
     private var endpointStatus: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(model.captureEndpointRunning ? Color.green : Color.orange)
-                .frame(width: 7, height: 7)
+            CaptureEndpointDot(running: model.captureEndpointRunning, size: 7)
             Text(model.captureEndpointRunning
                  ? "Listening for captures"
                  : "Endpoint unavailable — port \(model.capturePort) is in use")
                 .font(Theme.Typography.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(model.captureEndpointRunning
+                                 ? Color.secondary : Theme.Colors.warning)
         }
         .accessibilityElement(children: .combine)
     }

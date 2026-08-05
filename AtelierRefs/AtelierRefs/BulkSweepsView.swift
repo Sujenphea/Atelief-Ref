@@ -107,18 +107,22 @@ private struct ConsentPanel: View {
                        + "forgets it, so a later sweep can import it again.")
             }
             .font(Theme.Typography.body)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Theme.Colors.inkSecondary)
 
+            // `DialogButtonStyle(width: .fill)` is the app's primary-action idiom — the
+            // full-width outlined button every export popover ends with.
+            // `.borderedProminent` drew this accent-filled, which put the app's loudest
+            // coloured control on the one screen whose job is to be read carefully
+            // before it is agreed to.
             Button {
                 model.grantBulkConsent()
             } label: {
-                Text("I understand — enable bulk import").frame(maxWidth: .infinity)
+                Text("I understand — enable bulk import")
             }
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
-            .padding(.top, 4)
+            .buttonStyle(DialogButtonStyle())
+            .padding(.top, Theme.Spacing.xs)
         }
-        .padding(28)
+        .padding(Theme.Spacing.xl)
         .frame(maxWidth: 520)
     }
 
@@ -149,10 +153,15 @@ private struct SweepRow: View {
                 StatusBadge(status: sweep.job.status)
             }
 
+            // Tinted: a `ProgressView` draws in the system ACCENT by default, which is
+            // the user's chosen highlight colour (blue out of the box) and therefore
+            // the one piece of chrome the app can't predict. `inkSecondary` keeps the
+            // bar readable without introducing a colour the theme doesn't own.
             if let fraction = sweep.fraction {
-                ProgressView(value: fraction)
+                ProgressView(value: fraction).tint(Theme.Colors.inkSecondary)
             } else if sweep.job.status == .open {
-                ProgressView().controlSize(.small) // indeterminate — no estimate yet
+                // Indeterminate — no estimate yet.
+                ProgressView().controlSize(.small).tint(Theme.Colors.inkSecondary)
             }
 
             HStack(spacing: 14) {
@@ -167,8 +176,16 @@ private struct SweepRow: View {
 
             if sweep.failed > 0 { failuresSection }
         }
-        .padding(14)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+        // `surface` on a `hairline`, the app's raised-card recipe — this was
+        // `.quaternary.opacity(0.4)`, a system material that samples what is behind it
+        // rather than sitting on the palette.
+        .padding(Theme.Spacing.lg)
+        .background(
+            Theme.Colors.surface,
+            in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .strokeBorder(Theme.Colors.hairline))
         .confirmationDialog(
             "Cancel this sweep?",
             isPresented: $confirmingCancel,
@@ -255,9 +272,13 @@ private struct SweepRow: View {
 
     private func failureRow(_ item: JobItem) -> some View {
         HStack(spacing: 8) {
+            // The temporary/permanent split keeps its two colours: unlike the status
+            // badge, these two sit on the SAME row at the same time, and the
+            // distinction between "retry fixes this" and "retry won't" is exactly what
+            // the row exists to convey. The orange half moves onto the token.
             Image(systemName: item.status == .retryableFailed
                   ? "clock.arrow.circlepath" : "xmark.octagon")
-                .foregroundStyle(item.status == .retryableFailed ? .orange : .red)
+                .foregroundStyle(item.status == .retryableFailed ? Theme.Colors.warning : .red)
                 .help(item.status == .retryableFailed
                       ? "Temporary — retry can recover this" : "Permanent — retry won't help")
             if let url = item.sourceURL, !url.isEmpty {
@@ -266,7 +287,10 @@ private struct SweepRow: View {
                 } label: {
                     Text(url).lineLimit(1).truncationMode(.middle)
                 }
+                // `.link` renders in the system accent (blue). The underline and the
+                // pointer cursor still say "link" without the colour.
                 .buttonStyle(.link)
+                .tint(Theme.Colors.inkPrimary)
             } else {
                 Text(item.sourceID).foregroundStyle(.secondary)
             }
@@ -276,14 +300,23 @@ private struct SweepRow: View {
     }
 }
 
+/// A sweep's state as a capsule.
+///
+/// MONOCHROME except for Stopped. This was a four-colour scale (green / orange / blue
+/// / grey) — the most colour-coded thing in the app, in a theme whose one rule is that
+/// there is no accent. Running, Paused and Complete are all ordinary states of a job
+/// that is behaving, so they wear the app's `field` capsule and differ by their WORD;
+/// only `.halted` — a sweep that stopped without finishing — earns
+/// ``Theme/Colors/warning``, which is the same signal the endpoint dot and every
+/// warning label in Settings use.
 private struct StatusBadge: View {
     let status: JobStatus
 
     var body: some View {
         Text(label).font(Theme.Typography.caption).bold()
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(color.opacity(0.18), in: Capsule())
-            .foregroundStyle(color)
+            .padding(.horizontal, Theme.Spacing.sm).padding(.vertical, 3)
+            .background(Theme.Colors.field, in: Capsule())
+            .foregroundStyle(isProblem ? Theme.Colors.warning : Theme.Colors.inkSecondary)
     }
 
     private var label: String {
@@ -294,12 +327,9 @@ private struct StatusBadge: View {
         case .halted: return "Stopped"
         }
     }
-    private var color: Color {
-        switch status {
-        case .open: return .green
-        case .paused: return .orange
-        case .complete: return .blue
-        case .halted: return .secondary
-        }
-    }
+
+    /// Only a sweep that stopped short is a problem. A PAUSED one was paused on
+    /// purpose (by the user, or by the platform throttling it) and resumes — colouring
+    /// it would cry wolf on the app's single alarm colour.
+    private var isProblem: Bool { status == .halted }
 }

@@ -116,11 +116,11 @@ struct AppShellView: View {
     private var pendingRestoreBanner: some View {
         Label(BackupTarget.restorePending, systemImage: "exclamationmark.triangle.fill")
             .font(Theme.Typography.caption)
-            .foregroundStyle(.orange)
+            .foregroundStyle(Theme.Colors.warning)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Theme.Spacing.md)
             .padding(.vertical, 8)
-            .background(.orange.opacity(0.12))
+            .background(Theme.Colors.warning.opacity(0.12))
             .accessibilityElement(children: .combine)
     }
 
@@ -166,6 +166,14 @@ struct AppShellView: View {
             LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: nil) {
                 spaceDestination(id)
             }
+        #if DEBUG
+        // The token specimen sheet (see ``ThemeGalleryView``). Deliberately NOT wrapped
+        // in `LibrarySearchable`: a search field over a page of swatches would be dead
+        // chrome, and this pane is the one place where every other pane's chrome is the
+        // subject rather than the frame.
+        case .theme:
+            ThemeGalleryView()
+        #endif
         }
     }
 
@@ -219,14 +227,19 @@ struct AppShellView: View {
 
     // MARK: - Sheets
 
+    /// The Sweeps sheet's own header. `pageTitle` + `Spacing.md` + a
+    /// ``DialogButtonStyle`` Done, matching ``DuplicateReviewSheet`` — the two sheets
+    /// had titled themselves at different sizes (`bodyEmphasis` here, `pageTitle`
+    /// there) and this one padded with a raw `12`.
     private var sweepsSheet: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Sweeps").font(Theme.Typography.bodyEmphasis)
+                Text("Sweeps").font(Theme.Typography.pageTitle)
                 Spacer()
                 Button("Done") { showSweeps = false }
+                    .buttonStyle(DialogButtonStyle(width: .hug))
             }
-            .padding(12)
+            .padding(Theme.Spacing.md)
             Divider()
             BulkSweepsView(model: model)
                 .frame(minWidth: 520, minHeight: 420)
@@ -239,48 +252,108 @@ struct AppShellView: View {
 /// The sidebar's Capture destination — the browser-capture endpoint status + the
 /// pairing token to paste into the Chrome extension (relocated from the old toolbar
 /// popover), plus an entry into the bulk-import Sweeps sheet.
+///
+/// The pane kept the LOOK of that popover long after it stopped being one: a
+/// `pageTitle` heading, system `Divider()`s, `.secondary` greys, stock push buttons
+/// (the default one renders accent-filled, which was the most coloured chrome in an
+/// app whose theme states it has no accent) and a 40pt inset no other pane used. It
+/// now wears the same tokens as its three sibling panes:
+///
+///  · ``Theme/Typography/sectionTitle`` for the title, like Home / Collection / Space.
+///  · Two `surface` cards at `Radius.card` — the app's raised-group idiom (`FanCard`,
+///    `DuplicateReviewSheet`) — instead of rules between flat text.
+///  · ``DialogRow`` labels and ``dialogFieldChrome()`` on the token, so the value you
+///    are meant to copy looks like a value rather than a caption.
+///  · ``DialogButtonStyle`` actions, which bring the `hoverControl` feedback every
+///    other button in the panel gives.
 private struct CapturePane: View {
     @ObservedObject var model: IngestionModel
     let onOpenSweeps: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            Label("Browser Capture", systemImage: "puzzlepiece.extension")
-                .font(Theme.Typography.pageTitle)
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                Text("Capture")
+                    .font(Theme.Typography.sectionTitle)
+                    .foregroundStyle(Theme.Colors.inkPrimary)
 
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(model.captureEndpointRunning ? Color.green : Color.orange)
-                    .frame(width: 8, height: 8)
-                Text(CaptureCopy.endpointStatus(
-                        port: model.capturePort, running: model.captureEndpointRunning))
-                    .foregroundStyle(.secondary)
+                pairingCard
+                sweepsCard
             }
+            // Centred rather than pinned left: the column is narrower than the panel
+            // by design (a token and two sentences do not want 900pt of measure), and
+            // pinned to `topLeading` it read as content that had been cut off.
+            .frame(maxWidth: CaptureLayout.columnWidth, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .padding(Theme.Spacing.xl)
+        }
+    }
 
-            Divider()
+    /// Endpoint + token — the two facts you need to pair a browser, in one card.
+    private var pairingCard: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text("Browser Capture")
+                .font(Theme.Typography.bodyEmphasis)
+                .foregroundStyle(Theme.Colors.inkPrimary)
 
-            Text("Extension token").font(Theme.Typography.caption).foregroundStyle(.secondary)
-            HStack {
-                CaptureTokenText(token: model.captureToken, style: .callout)
-                Spacer()
-                CaptureTokenCopyButton(model: model, icon: true)
+            CaptureEndpointStatus(
+                port: model.capturePort, running: model.captureEndpointRunning)
+
+            DialogRow("Pairing token") {
+                CaptureTokenText(token: model.captureToken)
+                    .dialogFieldChrome()
+                CaptureTokenCopyButton(model: model, icon: true, tokenised: true)
             }
 
             CaptureTokenExplainer()
+        }
+        .captureCardChrome()
+    }
 
-            Divider()
+    /// The entry into the bulk-import sheet.
+    private var sweepsCard: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text("Bulk Import")
+                .font(Theme.Typography.bodyEmphasis)
+                .foregroundStyle(Theme.Colors.inkPrimary)
+
+            Text("Sweep a Pinterest board you own, or your X bookmarks, from a "
+                 + "session you're already logged into.")
+                .font(Theme.Typography.caption)
+                .foregroundStyle(Theme.Colors.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             Button {
                 onOpenSweeps()
             } label: {
                 Label("Bulk Import Sweeps…", systemImage: "square.and.arrow.down.on.square")
             }
-
-            Spacer()
+            .buttonStyle(DialogButtonStyle(width: .hug))
         }
-        .padding(Theme.Spacing.xxl)
-        .frame(maxWidth: 520, alignment: .leading)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .captureCardChrome()
+    }
+}
+
+/// The Capture pane's geometry. A `*Layout` struct rather than a literal at the call
+/// site, per ``Theme``'s header — the pane's width was a bare `520` in a `.frame`.
+private enum CaptureLayout {
+    /// The content column's measure. Wide enough for the explainer to break into two
+    /// lines rather than five, narrow enough that a 78-character token still truncates
+    /// in the middle instead of stretching the card to the window.
+    static let columnWidth: CGFloat = 520
+}
+
+private extension View {
+    /// One of the pane's two `surface` cards. Not ``popoverChrome()``: that recipe
+    /// carries the `hover` ELEVATION, which is how a popover separates itself from
+    /// content it floats over. These cards sit IN the panel's own layout and cast no
+    /// shadow — the `surface` fill over `panel` is already the separation.
+    func captureCardChrome() -> some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+        return frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Theme.Spacing.lg)
+            .background(Theme.Colors.surface, in: shape)
+            .overlay(shape.strokeBorder(Theme.Colors.hairline))
     }
 }
 

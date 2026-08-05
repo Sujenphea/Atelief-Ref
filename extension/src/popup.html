@@ -3,20 +3,17 @@
   <head>
     <meta charset="utf-8" />
     <title>Atelier — Start sweep</title>
+    <!-- The app's tokens. Everything this page needs is in there; only the
+         popup's own width and the one type role for the target line are local. -->
+    <link rel="stylesheet" href="theme.css" />
     <style>
-      body { font: 13px -apple-system, system-ui, sans-serif; margin: 16px; width: 300px; }
-      h1 { font-size: 14px; margin: 0 0 10px; }
-      .target { color: #222; font-weight: 600; margin: 6px 0; min-height: 1.2em; }
-      .reason { color: #8a5a00; line-height: 1.4; margin: 6px 0; }
-      .warn { color: #8a1f00; background: #fff4ef; border: 1px solid #f0c8b8;
-        border-radius: 6px; padding: 8px 10px; line-height: 1.4; margin: 8px 0; }
-      label.opt { display: flex; align-items: center; gap: 6px; color: #444; margin: 10px 0; }
-      label.opt.ack { color: #8a1f00; font-weight: 600; align-items: flex-start; }
-      label.opt input { width: auto; }
-      button { padding: 6px 14px; margin-top: 6px; }
-      button:disabled { opacity: 0.5; cursor: default; }
-      .status { margin-top: 10px; color: #2e8b57; line-height: 1.4; min-height: 1.2em; }
-      .hint { color: #777; margin-top: 12px; line-height: 1.4; font-size: 12px; }
+      body { width: 300px; }
+      .target {
+        margin: var(--space-sm) 0;
+        min-height: 1.2em;
+        font: var(--text-body-emphasis);
+        color: var(--ink-primary);
+      }
     </style>
   </head>
   <body>
