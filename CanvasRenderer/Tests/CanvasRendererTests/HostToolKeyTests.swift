@@ -98,11 +98,16 @@ struct HostToolKeyTests {
         #expect(host.editingTileID == 0)   // …and it did not disturb the edit
     }
 
-    @Test("⌫ still deletes the selection — the tool keys did not displace it")
+    /// The delete key is still claimed before the tool keys — but it now claims the
+    /// REMOVE verb (022 · D3): a bare ⌫ drops the placement, and only ⌘⌫ leaves the
+    /// library. See `HostDeleteKeyTests` for the full pair.
+    @Test("⌫ still acts on the selection — the tool keys did not displace it")
     func deleteStillWins() {
         let host = makeHost()
+        var removed: [Set<Int>] = []
         var deleted: [Set<Int>] = []
         var tools: [CanvasTool] = []
+        host.onRemoveTiles = { removed.append($0) }
         host.onDeleteTiles = { deleted.append($0) }
         host.onSelectTool = { tools.append($0) }
         host.selectedTileIDs = [0]
@@ -112,7 +117,8 @@ struct HostToolKeyTests {
             windowNumber: 0, context: nil, characters: "\u{7F}",
             charactersIgnoringModifiers: "\u{7F}", isARepeat: false, keyCode: 51)!)
 
-        #expect(deleted == [[0]])
+        #expect(removed == [[0]])
+        #expect(deleted.isEmpty)   // the destructive verb needs ⌘ now
         #expect(tools.isEmpty)
     }
 }

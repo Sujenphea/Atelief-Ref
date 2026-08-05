@@ -169,6 +169,15 @@ struct CollectionView: View {
         .focusedSceneValue(
             \.exportWebPage,
             model.items.isEmpty ? nil : ExportWebPageAction(run: runWebPageExport))
+        // Edit ▸ Remove from Collection / Delete (022 · D5). `canRemove` is false in
+        // Unsorted, which disables the item rather than leaving it to explain itself:
+        // a menu item you can click and that then tells you it did nothing is worse
+        // than a greyed one.
+        .focusedSceneValue(\.deleteVerbs, DeleteVerbs(
+            removeTitle: "Remove from Collection",
+            canRemove: collectionID != model.unsortedFolderID,
+            remove: { model.removeSelectedFromFolder() },
+            destroy: { model.requestDeleteSelected() }))
     }
 
     /// The grid density control (011-B2): step the global column-count notch
@@ -695,6 +704,11 @@ struct CollectionView: View {
             onOpenDetail: { id in
                 if let detail = model.items.first(where: { $0.item.id == id }) { open(detail) }
             },
+            // ⌫ removes from THIS collection, ⌘⌫ leaves the library (022 · D2). The
+            // pair used to be one closure landing on `requestDeleteSelected`, so the
+            // unmodified key was the destructive one; the remove verb existed and had
+            // no caller at all.
+            onRequestRemove: { model.removeSelectedFromFolder() },
             onRequestDelete: { model.requestDeleteSelected() },
             onCopy: { copySelectionToPasteboard() },
             onQuickLook: { presentQuickLook() },
@@ -1105,7 +1119,12 @@ private struct CollectionDetailHost: View {
                 openBlob: hasBlob ? { model.openBlob(detail) } : nil,
                 revealInFinder: hasBlob ? { model.revealInFinder(detail) } : nil,
                 copySourceLink: hasSource ? { model.copySourceLink(detail) } : nil,
-                removeFromFolder: { model.removeFromFolder(assetIDs: [detail.asset.id]) },
+                // ⌫ and the overflow's Remove are the same verb through the same rule
+                // (022 · D4), so the page and the grid behind it cannot disagree about
+                // what Unsorted means. `detail.item.collectionID` IS this host's
+                // collection — the page can only be opened from the grid showing it —
+                // which is why the model's "current folder" is the right target.
+                removeFromFolder: { model.removeFromCurrentFolder(assetIDs: [detail.asset.id]) },
                 requestDelete: { model.requestDelete(assetIDs: [detail.asset.id]) },
                 // Through the model, not the tag store: this is the one host with a
                 // grid behind the overlay, and `setFavorite` reloads it so the cell's

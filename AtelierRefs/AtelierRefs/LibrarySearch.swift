@@ -861,6 +861,15 @@ private struct LibrarySearchResults: View {
             // sizing to the text.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        // Edit ▸ Remove / Delete (022 · D5). `canRemove: false` — search results have
+        // no container, so the Remove item is greyed here rather than picking one of
+        // the hit's collections on the user's behalf. ⌘⌫ still works: leaving the
+        // library is the one verb that means the same thing from every surface.
+        .focusedSceneValue(\.deleteVerbs, DeleteVerbs(
+            removeTitle: "Remove from Collection",
+            canRemove: false,
+            remove: {},
+            destroy: { requestDeleteTargets() }))
     }
 
     /// The keyword / meaning mode toggle (047 · 3a · 10A), relocated out of the native
@@ -945,6 +954,11 @@ private struct LibrarySearchResults: View {
             onOpenDetail: { id in
                 if let hit = search.results.first(where: { $0.asset.id == id }) { onOpen(hit) }
             },
+            // ⌫ is a NO-OP here, deliberately (022 · D2): a hit belongs to the query,
+            // not to a container, so there is nothing "where you are looking" to
+            // remove it from. Silently doing nothing beats guessing at one of its
+            // collections. ⌘⌫ still leaves the library, as it does everywhere.
+            onRequestRemove: {},
             onRequestDelete: { requestDeleteTargets() },
             // Search is MEMBERSHIP-LESS (019 · C1): the hits have no owning
             // collection, so the copy's private payload carries the nil-source

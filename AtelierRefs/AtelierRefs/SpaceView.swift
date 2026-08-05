@@ -137,6 +137,32 @@ struct SpaceView: View {
         .onChange(of: tagStore.lastError) { _, message in
             if let message { model.lastError = message; tagStore.lastError = nil }
         }
+        // A ⌘⌫ destroy started HERE (022 · D3) deletes the asset, and `space_item`
+        // CASCADEs on `asset_id` — so the row is gone from the database while this
+        // board is still drawing its tile. Reload on the model's contents bump, which
+        // is the signal every asset write raises (the search grid re-runs its query on
+        // the same one). A delete from elsewhere lands the same way, which is a fix in
+        // its own right: a board left open behind a collection used to keep the tile.
+        .onChange(of: model.contentsVersion) { _, _ in
+            Task { await space.load() }
+        }
+        // Edit ▸ Remove / Delete, as a BOARD means them (022 · D5). Published from
+        // here so the menu titles name the placement rather than a collection, and so
+        // ⌘⌫ from the menu destroys what is selected on the canvas — not whatever the
+        // collection grid was last left holding.
+        .focusedSceneValue(\.deleteVerbs, DeleteVerbs(
+            removeTitle: "Remove from Board",
+            canRemove: true,
+            remove: {
+                let content = space.content()
+                space.removeTiles(tileIDs: space.selectedTileIDs(in: content), in: content)
+            },
+            destroy: {
+                let content = space.content()
+                let assetIDs = space.selectedTileIDs(in: content)
+                    .compactMap { content.detail(forTileID: $0)?.asset?.id }
+                model.requestDelete(assetIDs: assetIDs)
+            }))
         // Expose the board's export to the File-menu command (052 · B3): default
         // config (PDF, single page) for the same selection-or-whole-board rows.
         .focusedSceneValue(\.exportMoodboard, ExportMoodboardAction {
@@ -271,13 +297,26 @@ struct SpaceView: View {
                 // V / F / T, reported by the canvas because only the canvas knows
                 // whether a text box has the keyboard.
                 onSelectTool: { tool = $0 },
+                // ⌫ — drop the PLACEMENT. A board owns placements, not memberships
+                // (019 · C1), so this is "remove from where you are looking" here.
                 onRemoveTiles: { tileIDs in
                     space.removeTiles(tileIDs: tileIDs, in: content)
                 },
+                // ⌘⌫ — leave the LIBRARY (022 · D3). These two were handed the same
+                // closure body, with a comment saying so: a board had no path to
+                // `deleteAssetsRecoverable` at all, and its context menu offered two
+                // labels for one behaviour. It stages the SHARED confirmation, so the
+                // one destructive implementation stays the only one.
+                //
+                // Element tiles (frame / text) carry no asset and are skipped — an
+                // element exists only as a placement, so ⌫ is already the whole verb
+                // for one. A selection of nothing but elements stages nothing.
                 onDeleteTiles: { tileIDs in
-                    // In a space, both "remove" and ⌫ drop the placement — the
-                    // underlying asset (in its collections) is never touched here.
-                    space.removeTiles(tileIDs: tileIDs, in: content)
+                    let assetIDs = tileIDs
+                        .compactMap { content.detail(forTileID: $0) }
+                        .sorted { $0.item.z < $1.item.z }
+                        .compactMap { $0.asset?.id }
+                    model.requestDelete(assetIDs: assetIDs)
                 },
                 onCopyTiles: { tileIDs in
                     // ⌘C writes TWO representations of the same selection (065), so the

@@ -1,5 +1,17 @@
 import AppKit
 
+/// What a Delete key press asked for on a board (022 · D3).
+///
+/// The board's copy of the app's `DeleteIntent` — see
+/// ``CanvasHostView/deleteIntent(characters:modifiers:)`` for why there are two of
+/// them and what keeps them honest.
+public enum CanvasDeleteIntent: Equatable, Sendable {
+    /// ⌫ — drop the selected tiles' PLACEMENTS. The board is what you are looking at.
+    case remove
+    /// ⌘⌫ — delete the selected tiles' assets from the library.
+    case destroy
+}
+
 /// Thin `NSView` host (decision C5: the side-effecting boundary). It owns events
 /// and the layer tree, and delegates all rendering decisions to ``CanvasEngine``.
 /// Scroll pans, pinch zooms, layout/resize re-syncs.
@@ -82,11 +94,18 @@ public final class CanvasHostView: NSView {
     /// never reach us at all.
     public var onSelectTool: ((CanvasTool) -> Void)?
 
-    /// Called with the selected tile ids for the context-menu "Remove from Folder".
+    /// **⌫** — drop the tiles' PLACEMENTS from this board (022 · D3). The context
+    /// menu's "Remove from Board" and the bare Delete key. The underlying assets are
+    /// never touched: a board owns placements, not memberships.
     public var onRemoveTiles: ((Set<Int>) -> Void)?
 
-    /// Called with the selected tile ids for a destructive delete — the context-menu
-    /// "Delete" or the ⌫ / Delete key on the current selection.
+    /// **⌘⌫** — delete the tiles' assets from the LIBRARY (022 · D3). The context
+    /// menu's "Delete from Library…" and the ⌘-modified Delete key.
+    ///
+    /// This used to be an alias: the app handed the same closure to both, so a board
+    /// had no way to delete an asset at all and the menu offered two labels for one
+    /// behaviour. The host still only reports the press — the app owns the
+    /// confirmation, and its copy has to say "the library", not "this board".
     public var onDeleteTiles: ((Set<Int>) -> Void)?
 
     /// Called with the selected tile ids for Edit ▸ Copy (⌘C, 052 · B1). The host
@@ -1118,6 +1137,11 @@ public final class CanvasHostView: NSView {
 
     /// Right-click: select the tile under the cursor and offer Remove / Delete.
     /// Returns `nil` (no menu) over empty space.
+    ///
+    /// The two items were synonyms until 022 · D3 — both fired the app's
+    /// remove-the-placement closure, so "Delete" on a board was a lie. They now name
+    /// the two different things they do, and the titles say WHERE each one acts:
+    /// "Board" is the container you are looking at, "Library" is everything.
     public override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         guard let tile = engine.tile(atScreenPoint: point) else { return nil }
@@ -1127,37 +1151,74 @@ public final class CanvasHostView: NSView {
 
         let menu = NSMenu()
         let remove = NSMenuItem(
-            title: "Remove from Folder", action: #selector(contextRemove), keyEquivalent: "")
+            title: "Remove from Board", action: #selector(contextRemove), keyEquivalent: "")
         remove.target = self
         let delete = NSMenuItem(
-            title: "Delete", action: #selector(contextDelete), keyEquivalent: "")
+            title: "Delete from Library…", action: #selector(contextDelete), keyEquivalent: "")
         delete.target = self
         menu.addItem(remove)
         menu.addItem(delete)
         return menu
     }
 
-    /// The ⌫ / Delete keys delete the current selection (⌦ forward-delete too).
+    /// The ⌫ / Delete keys act on the current selection (⌦ forward-delete too).
     public override var acceptsFirstResponder: Bool { true }
 
     public override func keyDown(with event: NSEvent) {
-        // 51 = Delete (Backspace), 117 = Forward Delete. Both mean "delete", and
-        // both act on the WHOLE selection (049 · D7).
-        if event.keyCode == 51 || event.keyCode == 117 {
+        // `editingTileID` is belt-and-braces — an open editor normally holds first
+        // responder, so this method is unreachable while typing — but an edit begun
+        // before the host had a window is still waiting for focus, and in that window
+        // the host IS the responder. The delete keys are now INSIDE that gate too: a
+        // text box in exactly that state used to lose its tile to a Backspace.
+        guard editingTileID == nil else { super.keyDown(with: event); return }
+
+        // ⌫ drops the placement, ⌘⌫ leaves the library (022 · D3). This read used to
+        // be `keyCode == 51 || keyCode == 117` with the modifiers never inspected, so
+        // a ⌘⌫ was silently treated as a bare ⌫ — the modifier wasn't rejected, it was
+        // simply not read — and ⌥⌫ (a word-delete) removed tiles.
+        if let intent = Self.deleteIntent(
+            characters: event.charactersIgnoringModifiers, modifiers: event.modifierFlags) {
             let ids = engine.selectedTileIDs
-            if !ids.isEmpty { onDeleteTiles?(ids); return }
+            if !ids.isEmpty {
+                switch intent {
+                case .remove: onRemoveTiles?(ids)
+                case .destroy: onDeleteTiles?(ids)
+                }
+                return
+            }
         }
-        // The tool keys. `editingTileID` is belt-and-braces — an open editor normally
-        // holds first responder, so this method is unreachable while typing — but an
-        // edit begun before the host had a window is still waiting for focus, and in
-        // that window the host IS the responder.
-        if editingTileID == nil,
-           let tool = Self.toolShortcut(
+        // The tool keys.
+        if let tool = Self.toolShortcut(
             characters: event.charactersIgnoringModifiers, modifiers: event.modifierFlags) {
             onSelectTool?(tool)
             return
         }
         super.keyDown(with: event)
+    }
+
+    /// What a Delete key press means on a board: ``CanvasDeleteIntent/remove`` for a
+    /// bare ⌫ / ⌦, ``CanvasDeleteIntent/destroy`` under ⌘, `nil` for anything else.
+    ///
+    /// **This is a deliberate second copy** of the app's `deleteIntent(characters:
+    /// modifiers:)`. This package is declared with ZERO dependencies (see
+    /// `Package.swift`) so the compiler enforces the view-agnostic boundary, and the
+    /// alternative — moving a decoder whose vocabulary is "remove from a collection"
+    /// into a rendering package, or giving the package a dependency on the app —
+    /// would cost more than eight lines. The two are held in step by a contract test
+    /// in the app's suite (`SpaceDeleteKeyTests`) that runs the whole matrix through
+    /// both and asserts they agree, so a divergence fails a build rather than shipping
+    /// a board where ⌘⌫ means something else.
+    ///
+    /// ⌥ and ⌃ disqualify (word / line deletes inside a text box), ⇧ and fn are
+    /// tolerated — fn *must* be: on a keyboard with no ⌦ key, ⌦ IS fn-⌫.
+    public static func deleteIntent(
+        characters: String?, modifiers: NSEvent.ModifierFlags
+    ) -> CanvasDeleteIntent? {
+        guard !modifiers.contains(.option), !modifiers.contains(.control),
+              let scalar = characters?.unicodeScalars.first,
+              scalar.value == 0x7F || Int(scalar.value) == NSDeleteFunctionKey
+        else { return nil }
+        return modifiers.contains(.command) ? .destroy : .remove
     }
 
     /// What a tile drag past the threshold means.

@@ -74,8 +74,19 @@ struct GridHostConfiguration {
     /// Open the detail overlay for a membership id — the `GridSelectionEffect`
     /// `.openDetail` sink (SwiftUI's `open(_:)`: lead + record-view + raise nav).
     var onOpenDetail: (UUID) -> Void
-    /// Delete the current selection (`deleteBackward`/`deleteForward`, replacing
-    /// `.onDeleteCommand` → `model.requestDeleteSelected()`).
+    /// **⌫** — remove the current selection from the container in view (022 · D2).
+    /// The collection grid drops the membership (undoable, no dialog); a
+    /// membership-less grid (search) passes a no-op, which is the correct answer
+    /// there rather than a missing feature.
+    ///
+    /// Split from ``onRequestDelete`` because ⌫ and ⌘⌫ now mean different verbs:
+    /// this used to be the same closure, which made the SOFTEST key on the keyboard
+    /// the one that left the library.
+    var onRequestRemove: () -> Void
+    /// **⌘⌫** — delete the current selection from the library (`model.requestDelete`
+    /// → the shared confirmation → `deleteAssetsRecoverable`). The one destructive
+    /// path; it arrives through `performKeyEquivalent`, not the delete responder
+    /// methods.
     var onRequestDelete: () -> Void
     /// Copy the current selection to the pasteboard (Edit ▸ Copy / ⌘C, 052 · B1) —
     /// wraps `model.copyToPasteboard(assets:sourceCollectionID:)` over the
@@ -235,7 +246,10 @@ protocol MasonryGridViewEvents: AnyObject {
     func gridKeyDown(_ event: NSEvent) -> Bool
     /// A `performKeyEquivalent` for the ⌘-combos (⌘A / ⌘± ). Returns handled.
     func gridPerformKeyEquivalent(_ event: NSEvent) -> Bool
-    /// A responder-chain delete (Delete / Backspace / Forward-Delete).
+    /// A responder-chain delete (`deleteBackward:` / `deleteForward:`). AppKit only
+    /// sends these for a BARE Delete key — ⌘⌫ maps to `deleteToBeginningOfLine:` and
+    /// ⌥⌫ to `deleteWordBackward:`, neither of which we implement — so this is the
+    /// REMOVE verb, never the destructive one (022 · D2).
     func gridDeleteCommand()
     /// A responder-chain Copy (⌘C / Edit ▸ Copy, 052 · B1) — copy the selection.
     func gridCopyCommand()
@@ -1497,8 +1511,13 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         // ⌘-combos travel through `performKeyEquivalent`, earlier in the chain.
         if mods.contains(.command) { return false }
         let chars = event.charactersIgnoringModifiers ?? ""
-        if gridIsDeleteKey(characters: chars) {
-            configuration.onRequestDelete()
+        // ⌫ / ⌦ through the shared decoder rather than `gridIsDeleteKey` alone (022 ·
+        // D2): the predicate says only WHICH keys are delete keys, and the grid used
+        // to act on any of them regardless of modifiers — so ⌥⌫, a word-delete, ran
+        // the destructive verb. Only `.remove` can reach here (⌘ returned above);
+        // ⌘⌫ arrives at `gridPerformKeyEquivalent`.
+        if let intent = deleteIntent(characters: chars, modifiers: mods) {
+            execute(deleteIntent: intent)
             return true
         }
         guard let command = gridKeyCommand(characters: chars, modifiers: mods) else { return false }
@@ -1508,12 +1527,36 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     func gridPerformKeyEquivalent(_ event: NSEvent) -> Bool {
         let mods = event.modifierFlags
         guard mods.contains(.command) else { return false }
-        guard let command = gridKeyCommand(
-            characters: event.charactersIgnoringModifiers ?? "", modifiers: mods) else { return false }
+        let chars = event.charactersIgnoringModifiers ?? ""
+        // ⌘⌫ / ⌘⌦ — the destructive verb's ONLY keyboard seam (022 · D2). It has to be
+        // here: ⌘-combos are dispatched through `performKeyEquivalent` before
+        // `keyDown`, and `deleteBackward:` is never sent for a modified Delete.
+        //
+        // `isDetailPresented` gates it for the same reason `gridKeyDown` opens with
+        // that check, and it matters MORE here: `performKeyEquivalent` walks the view
+        // hierarchy rather than the responder chain, so the grid behind the page would
+        // receive this even though the page holds first responder — and would destroy
+        // the grid's selection while the user was looking at one item.
+        if !configuration.isDetailPresented,
+           let intent = deleteIntent(characters: chars, modifiers: mods) {
+            execute(deleteIntent: intent)
+            return true
+        }
+        guard let command = gridKeyCommand(characters: chars, modifiers: mods) else { return false }
         return execute(keyCommand: command)
     }
 
-    func gridDeleteCommand() { configuration.onRequestDelete() }
+    func gridDeleteCommand() { configuration.onRequestRemove() }
+
+    /// Run a decoded ``DeleteIntent`` against this grid's two seams — the ONE place
+    /// the grid turns "which delete key" into "which verb", so the responder-method
+    /// path, `keyDown` and `performKeyEquivalent` can never drift apart.
+    private func execute(deleteIntent intent: DeleteIntent) {
+        switch intent {
+        case .remove: configuration.onRequestRemove()
+        case .destroy: configuration.onRequestDelete()
+        }
+    }
 
     func gridCopyCommand() { configuration.onCopy() }
 

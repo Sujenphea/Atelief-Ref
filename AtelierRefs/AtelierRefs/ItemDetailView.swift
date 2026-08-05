@@ -227,7 +227,12 @@ struct ItemDetailView: View {
         // detail has no ordered set behind it, and must not take focus from the canvas.
         .background {
             if let navigator {
-                DetailKeyCatcher(armToken: keyFocusToken, onStep: navigator.step)
+                // ⌫ / ⌘⌫ ride the same catcher (022 · D4): whichever host wired the
+                // overflow menu's two verbs gets them on the keyboard too, and a host
+                // that wired neither (Space, search) binds neither key.
+                DetailKeyCatcher(
+                    armToken: keyFocusToken, onStep: navigator.step,
+                    onRemove: actions.removeFromFolder, onDestroy: actions.requestDelete)
             }
         }
         // Reload media whenever the shown asset changes (open + prev/next).
@@ -1427,16 +1432,26 @@ private struct DetailKeyCatcher: NSViewRepresentable {
     let armToken: Int
     /// Step the pager by ±1. The navigator bounds-checks, so both ends are no-ops.
     let onStep: (Int) -> Void
+    /// ⌫ — remove this item from the collection the page was opened FROM (022 · D4).
+    /// `nil` on a host with no membership context (a Space board, a search hit), which
+    /// simply leaves the key unbound — the right answer there, not a gap.
+    var onRemove: (() -> Void)?
+    /// ⌘⌫ — delete this item from the library (stages the shared confirmation).
+    var onDestroy: (() -> Void)?
 
     func makeNSView(context: Context) -> KeyView {
         let view = KeyView()
         view.onStep = onStep
+        view.onRemove = onRemove
+        view.onDestroy = onDestroy
         view.armToken = armToken
         return view
     }
 
     func updateNSView(_ view: KeyView, context: Context) {
         view.onStep = onStep
+        view.onRemove = onRemove
+        view.onDestroy = onDestroy
         // A click on the picture is an explicit request, so it reclaims focus even from
         // a text field. Anything else only arms if nothing else wanted the keyboard.
         if view.armToken != armToken {
@@ -1452,6 +1467,8 @@ private struct DetailKeyCatcher: NSViewRepresentable {
 
     final class KeyView: NSView {
         var onStep: ((Int) -> Void)?
+        var onRemove: (() -> Void)?
+        var onDestroy: (() -> Void)?
         /// The last artwork-click token acted on, so one click reclaims focus once.
         var armToken = 0
         /// Who the page borrowed focus from (the grid), so it can be given back.
@@ -1514,11 +1531,25 @@ private struct DetailKeyCatcher: NSViewRepresentable {
         }
 
         override func keyDown(with event: NSEvent) {
+            let characters = event.charactersIgnoringModifiers ?? ""
             if let delta = detailStepDelta(
-                characters: event.charactersIgnoringModifiers ?? "",
-                modifiers: event.modifierFlags) {
+                characters: characters, modifiers: event.modifierFlags) {
                 onStep?(delta)
                 return
+            }
+            // ⌫ removes from the collection this page was opened from, ⌘⌫ leaves the
+            // library (022 · D4). They go HERE and not on a `.keyboardShortcut` for the
+            // reason this whole view exists: a key equivalent fires before `keyDown`
+            // reaches the first responder and cannot see that the responder is the
+            // sidebar's Name or Note field. `armIfNeeded` declining to steal from
+            // `NSText` is what makes this safe, and it is load-bearing for these two in
+            // a way it never was for the arrows — a swallowed ← is an annoyance, a
+            // swallowed ⌫ eats the word you were correcting AND deletes a picture.
+            if let intent = deleteIntent(
+                characters: characters, modifiers: event.modifierFlags) {
+                let handler = intent == .remove ? onRemove : onDestroy
+                if let handler { handler(); return }
+                // Unbound on this host — fall through rather than swallowing the key.
             }
             // Everything else — Escape included — carries on down the responder chain,
             // so the Back button's `.cancelAction` still closes the page.

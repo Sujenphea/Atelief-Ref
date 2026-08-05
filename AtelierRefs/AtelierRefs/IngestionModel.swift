@@ -2390,9 +2390,37 @@ final class IngestionModel: ObservableObject {
         } catch { lastError = Self.message(for: error) }
     }
 
-    /// Remove the current selection (or the lead item) from the current folder.
+    /// Whether ⌫ has a container to remove from here (022 · D2). False in Unsorted,
+    /// which is the fallback every other removal re-homes INTO — there is nowhere
+    /// below it to fall to, so the Edit-menu item disables rather than offering a
+    /// verb that would only explain itself.
+    var canRemoveFromCurrentFolder: Bool { selectedFolderID != Collection.unsortedID }
+
+    /// **⌫ in the collection grid** (022 · D2): remove the current selection (or the
+    /// lead cursor's post) from the collection in view. Undoable, no dialog — the
+    /// "…— Undo" toast `removeFromFolder` raises is what makes the verb legible.
+    ///
+    /// Unsorted is the one collection where this cannot mean anything. `AppServices`
+    /// exempts it from the F3 re-home (`removeAssets(_:from:)`) precisely because a
+    /// removal there would re-add what it just removed — so removing from Unsorted
+    /// either does nothing or quietly orphans, and neither is a verb worth binding to
+    /// the softest key on the keyboard. It says so instead, and names the key that
+    /// DOES leave the library.
     func removeSelectedFromFolder() {
-        removeFromFolder(assetIDs: keyboardActionTargets)
+        removeFromCurrentFolder(assetIDs: keyboardActionTargets)
+    }
+
+    /// The ⌫ verb over an explicit id set — the item detail page's Remove, which acts
+    /// on the one item on screen rather than on the grid's cursor (022 · D4). Same
+    /// Unsorted rule, in the same place, so the page and the grid behind it cannot
+    /// answer that question differently.
+    func removeFromCurrentFolder(assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty else { return }
+        guard canRemoveFromCurrentFolder else {
+            notify("Unsorted is the fallback — press ⌘⌫ to delete.")
+            return
+        }
+        removeFromFolder(assetIDs: assetIDs)
     }
 
     /// Stage a destructive delete for confirmation (see ``confirmPendingDeletion``).
