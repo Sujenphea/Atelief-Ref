@@ -89,6 +89,12 @@ struct AtelierRefsApp: App {
                 // disabled elsewhere, and while the collection is empty.
                 ExportWebPageCommand()
             }
+            // Help ▸ Keyboard Shortcuts (⌘/, 024 · K2) — the app's ~30 bindings had
+            // no listing anywhere in the UI. AFTER the default Help item rather than
+            // replacing it: this phase adds a menu item, it does not remove one.
+            CommandGroup(after: .help) {
+                KeyboardShortcutsCommand()
+            }
         }
 
         // The standard macOS Settings window (010 · Phase 2 · group 4): capture
@@ -313,6 +319,26 @@ private struct NewItemCommand: View {
         default:
             break
         }
+    }
+}
+
+/// Help ▸ Keyboard Shortcuts (⌘/, 024 · K2).
+///
+/// ⌘/ is the chord users arrive with, and [024] · D verified it was bound nowhere
+/// (`?` is free too; ⌘/ is the convention). The title comes from ``KeyMap/pageTitle``
+/// so the menu item and the sheet's own heading cannot drift apart.
+///
+/// Observes ``NavModel`` as a focused OBJECT — the same reason ``NewItemCommand``
+/// does. The sheet is raised by flipping `nav.showShortcuts`, which ``AppShellView``
+/// presents from, because a sheet needs a view to hang on and a `Scene`-level command
+/// has none.
+private struct KeyboardShortcutsCommand: View {
+    @FocusedObject private var nav: NavModel?
+
+    var body: some View {
+        Button(KeyMap.pageTitle) { nav?.showShortcuts = true }
+            .keyboardShortcut("/", modifiers: .command)
+            .disabled(nav == nil)
     }
 }
 

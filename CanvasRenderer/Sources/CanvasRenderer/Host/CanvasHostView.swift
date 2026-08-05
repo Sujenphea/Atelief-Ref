@@ -1269,7 +1269,13 @@ public final class CanvasHostView: NSView {
     /// Bare means bare: any of ⌘ / ⌥ / ⌃ disqualifies it, so ⌘V still pastes. ⇧ is
     /// allowed through `lowercased()` — an accidental capital shouldn't silently do
     /// nothing when the user meant the tool.
-    static func toolShortcut(
+    ///
+    /// `public` for the same reason ``deleteIntent(characters:modifiers:)`` is: the
+    /// app's key map (024 · K1) claims V / F / T on this surface, and the contract test
+    /// that keeps that claim honest lives in the app's suite, which can only see the
+    /// package's public surface. It remains a pure read of a key — nothing dispatches
+    /// from outside this file.
+    public static func toolShortcut(
         characters: String?, modifiers: NSEvent.ModifierFlags
     ) -> CanvasTool? {
         guard !modifiers.contains(.command), !modifiers.contains(.option),

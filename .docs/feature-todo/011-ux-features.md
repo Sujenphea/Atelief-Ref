@@ -70,9 +70,14 @@
    collections, spaces, and verbs ("New Space", "Snapshot now"), recents first.
    Pure fuzzy-match/ranking helper (tested); selection routes through `NavModel`.
 2. **Keyboard triage**: with a non-empty [009] selection, **M** opens "Move to…"
-   (same type-ahead list, Enter moves via `moveAssets`), **⇧M** = "Add to…" (copy
+   (same type-ahead list, Enter moves via `moveAssets`), **A** = "Add to…" (copy
    semantics). Complements drag; no number-key bindings v1 (collections are
    dynamic; muscle-memory slots can come later as pins).
+   > *Amended by [024] K4: `⇧M` → `A`.* [024] settles the same pair for Spaces, and
+   > shipping two spellings of "Add to…" is the exact failure that doc exists to
+   > prevent. `A` is mnemonic, it is one hand, and — since ⌘A is already Select All —
+   > the bare key is not confusingly "nearly" taken. Nothing migrates: this cluster
+   > is unbuilt, and neither key is bound today (see `KeyMap.planned`).
 3. **Favorites** (settled: simple flag): `asset.is_favorite` boolean, **⌘D**
    toggles (works on selection), star chip in grid cells + detail, a favorites
    filter token in [007]'s search field and a filter chip on collection screens.

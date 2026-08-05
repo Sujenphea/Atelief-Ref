@@ -112,6 +112,12 @@ final class NavModel: ObservableObject {
         self.sidebarSelection = initialSelection
     }
 
+    /// Whether the Keyboard Shortcuts sheet is up (024 · K2). Route state rather than
+    /// a `@State` in the shell, for the same reason `sidebarDraft` is: the thing that
+    /// raises it is a menu command, which reaches this object as a focused value and
+    /// has no view of its own to hang a sheet on.
+    @Published var showShortcuts = false
+
     /// The membership id of the item shown in the full-window detail overlay, or
     /// `nil`. Reserved for 006; the collection screen keeps a local flag until
     /// then, but the field exists so the wiring is ready.

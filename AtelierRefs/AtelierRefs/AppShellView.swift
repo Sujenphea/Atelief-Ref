@@ -53,6 +53,16 @@ struct AppShellView: View {
         // Settings pane: its only action is a delete, and ⌘Z has to reach the same
         // undo stack the grid's delete registers on.
         .sheet(isPresented: $model.showDuplicates) { DuplicateReviewSheet(model: model) }
+        // 024 · K2 — Help ▸ Keyboard Shortcuts (⌘/). The scope is resolved HERE, at
+        // presentation, off the two pieces of route state that already say where the
+        // user is; the sheet itself takes a plain value and knows nothing about `nav`.
+        .sheet(isPresented: $nav.showShortcuts) {
+            KeyboardShortcutsSheet(
+                currentScope: KeyMap.scope(
+                    forSidebar: nav.sidebarSelection,
+                    isShowingItemDetail: nav.presentedItemID != nil)
+            ) { nav.showShortcuts = false }
+        }
         .alert(
             "Restore staged",
             isPresented: Binding(
