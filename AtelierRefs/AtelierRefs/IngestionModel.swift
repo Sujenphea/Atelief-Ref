@@ -2436,8 +2436,87 @@ final class IngestionModel: ObservableObject {
     }
 
     /// Dismiss the pending delete without acting.
+    ///
+    /// Every dismissal route lands here — the Cancel button, Escape, and the dialog's
+    /// `isPresented` binding writing `false` — which is what makes it the right place
+    /// to disarm a detail step: a ⌘⌫ that was called off must not leave an intent
+    /// waiting to fire on some later, unrelated reload (026 · I3).
     func cancelPendingDeletion() {
         pendingDeletion = nil
+        detailStepIntent = nil
+    }
+
+    // MARK: - Step, don't dismiss (026 · I3)
+
+    /// The one-shot record that the detail page issued a verb which is about to take
+    /// the shown item out of this feed. Armed by the two `itemID:`-taking verbs below,
+    /// read-and-cleared by ``consumeDetailStepIntent()``.
+    ///
+    /// Deliberately NOT `@Published`: nothing renders from it: it is a handoff between
+    /// a verb and the very next reload, and a publish would re-render the grid under
+    /// the overlay for a value no view reads.
+    private var detailStepIntent: DetailStepIntent?
+
+    /// Capture where `itemID` sits RIGHT NOW, before the verb's reload replaces
+    /// ``detailRun``. This is the whole reason the intent exists as state rather than
+    /// as a boolean: the observer that reacts to the reload can only ever see the new
+    /// run, in which the departed item has no position at all.
+    ///
+    /// An id that is not in the run, or a feed that hasn't finished loading, arms
+    /// nothing — and clears any stale intent rather than leaving one behind.
+    ///
+    /// ``loadedCollectionID`` (not ``selectedFolderID``) is the folder stamped on the
+    /// intent, because it is the one that describes the run being captured: the
+    /// selected folder can already have moved on while the previous feed is still on
+    /// screen, and a step must land in the folder the user was actually judging.
+    private func armDetailStep(for itemID: UUID) {
+        guard let index = detailRunIndex(of: itemID), let collectionID = loadedCollectionID
+        else {
+            detailStepIntent = nil
+            return
+        }
+        detailStepIntent = DetailStepIntent(
+            itemID: itemID, index: index, run: detailRun.map { $0.item.id },
+            collectionID: collectionID)
+    }
+
+    /// Read the armed step intent AND clear it. One-shot by construction: the host
+    /// calls this on every content reload, so an intent that is never followed by the
+    /// departure it expected is spent on the next reload instead of lingering.
+    func consumeDetailStepIntent() -> DetailStepIntent? {
+        defer { detailStepIntent = nil }
+        return detailStepIntent
+    }
+
+    /// **The detail page's ⌫** (022 · D4 + 026 · I3): remove the shown item from the
+    /// collection in view, and arm the page to step to whatever takes its place.
+    ///
+    /// The Unsorted guard is checked BEFORE arming, not after: in Unsorted this verb
+    /// only says why it can't act, so there is no reload coming, and an intent armed
+    /// here would sit until some unrelated later reload consumed it — which is exactly
+    /// the "leaves the page showing a stranger" failure the explicit gate exists to
+    /// prevent. The plain ``removeFromCurrentFolder(assetIDs:)`` still runs, so the
+    /// notice and the rule stay in one place.
+    func removeFromCurrentFolder(itemID: UUID, assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty, canRemoveFromCurrentFolder else {
+            removeFromCurrentFolder(assetIDs: assetIDs)
+            return
+        }
+        armDetailStep(for: itemID)
+        removeFromCurrentFolder(assetIDs: assetIDs)
+    }
+
+    /// **The detail page's ⌘⌫** (022 · D4 + 026 · I3): stage the shared confirmation
+    /// and arm the step for the item it is about to destroy.
+    ///
+    /// Arming here rather than at confirmation time is what keeps the captured index
+    /// pre-reload — and the dialog is modal over the page, so the run cannot move
+    /// underneath the intent while it is up. A cancelled dialog disarms through
+    /// ``cancelPendingDeletion()``.
+    func requestDelete(itemID: UUID, assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty else { return }
+        armDetailStep(for: itemID)
+        requestDelete(assetIDs: assetIDs)
     }
 
     /// Carry out the confirmed delete (010 · delete-undo). Captures a verbatim

@@ -1013,6 +1013,10 @@ private struct CollectionDetailHost: View {
             // open source (all funnel through `presentedItemID`) and both close +
             // auto-dismiss.
             model.isDetailPresented = newID != nil
+            // Opening a different item, or closing, ends whatever the last verb was
+            // waiting for: a step armed against the item we just left must never fire
+            // against the one we just arrived at (026 · I3).
+            _ = model.consumeDetailStepIntent()
             if let newID {
                 if let detail = model.items.first(where: { $0.item.id == newID }) {
                     // The RUN, not the raw feed (069): this list is both what the pager
@@ -1024,12 +1028,36 @@ private struct CollectionDetailHost: View {
                 withAnimation { session.dismiss() }
             }
         }
-        // Auto-dismiss on delete (parity with the old `leadItem == nil` gate): a
-        // content reload that removes the shown item closes the page. `contentsVersion`
-        // is `@Published` and bumps on every load / move / reorder / delete.
+        // **Step, don't dismiss** (026 · I3). `contentsVersion` bumps on every load /
+        // move / reorder / delete; when the bump takes the SHOWN item out of the feed,
+        // ``DetailStep/outcome(shownID:intent:newRun:runCollectionID:)`` decides between
+        // three answers,
+        // and the one it picks turns on the intent — consumed here, unconditionally, so
+        // it is genuinely one-shot even on the reloads that ignore it.
+        //
+        // The page used to close on any departure. That is still what an UNGATED one
+        // does (a move out of this collection, a reorder that dropped the item, a
+        // collection switch while the page is up) — only ⌫ / ⌘⌫ issued FROM the page
+        // arm the step, which is why this is not "the run shrank and the id is gone".
         .onChange(of: model.contentsVersion) { _, _ in
-            if let id = session.currentID,
-               !model.items.contains(where: { $0.item.id == id }) {
+            let intent = model.consumeDetailStepIntent()
+            let run = model.detailRun
+            switch DetailStep.outcome(
+                shownID: session.currentID, intent: intent, newRun: run.map { $0.item.id },
+                runCollectionID: model.loadedCollectionID) {
+            case .stay:
+                break
+            case .step(let nextID):
+                guard let next = run.first(where: { $0.item.id == nextID }) else { break }
+                // The pager's own move, exactly: `session.step` keeps the previous
+                // image up until this one decodes and writes nothing to the model, so
+                // the grid behind the overlay does not re-render for the step. The
+                // route (`nav.presentedItemID`) keeps pointing at the id the page was
+                // OPENED on — as it does for every ← / → — because `close()` reads
+                // `session.currentID`, not the route, when it syncs the grid's lead.
+                session.step(to: next, in: run)
+                model.recordView(assetID: next.asset.id)
+            case .close:
                 nav.presentedItemID = nil
             }
         }
@@ -1096,8 +1124,18 @@ private struct CollectionDetailHost: View {
                 // what Unsorted means. `detail.item.collectionID` IS this host's
                 // collection — the page can only be opened from the grid showing it —
                 // which is why the model's "current folder" is the right target.
-                removeFromFolder: { model.removeFromCurrentFolder(assetIDs: [detail.asset.id]) },
-                requestDelete: { model.requestDelete(assetIDs: [detail.asset.id]) },
+                //
+                // Both go through the `itemID:` overloads, which is the ONLY place a
+                // detail step is armed (026 · I3): the verb the user pressed on the
+                // page is the intent, so the reload it causes steps to the next item
+                // instead of throwing the user back to the grid.
+                removeFromFolder: {
+                    model.removeFromCurrentFolder(
+                        itemID: detail.item.id, assetIDs: [detail.asset.id])
+                },
+                requestDelete: {
+                    model.requestDelete(itemID: detail.item.id, assetIDs: [detail.asset.id])
+                },
                 // Through the model, not the tag store: this is the one host with a
                 // grid behind the overlay, and `setFavorite` reloads it so the cell's
                 // star repaints under the page (and the write is undoable, like ⌘D).
