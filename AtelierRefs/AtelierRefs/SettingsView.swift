@@ -675,11 +675,29 @@ struct SettingsView: View {
 
     private var diagnosticsSection: some View {
         Section("Diagnostics") {
+            // "Which build am I looking at" (021 · R2). Two bundles with the same
+            // name and the same sandbox container — a build-tree one and whatever
+            // sits in /Applications — are indistinguishable once running, and a
+            // stale one reads as a missing feature. This line answers it without
+            // a trip to Finder.
+            LabeledContent("Version") {
+                Text(Self.versionLine).monospacedDigit().textSelection(.enabled)
+            }
             Button("Export Diagnostics…") { model.exportDiagnostics() }
             Text("Saves a plain-text report (versions, sizes, counts) and reveals it in "
                  + "Finder — for attaching to a bug report. It contains no library content.")
                 .font(Theme.Typography.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// `version (build)` from the running bundle's Info.plist — the same two keys
+    /// the diagnostics export reports, so a screenshot of this row and an exported
+    /// report can never disagree.
+    private static var versionLine: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = info?["CFBundleVersion"] as? String ?? "—"
+        return "\(version) (\(build))"
     }
 }
