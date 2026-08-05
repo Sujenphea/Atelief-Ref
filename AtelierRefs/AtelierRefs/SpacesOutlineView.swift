@@ -60,8 +60,9 @@ struct SpacesOutlineView: NSViewRepresentable {
     /// A pending inline "new space" draft (214); the coordinator begins it when the
     /// token changes.
     let draftRequest: SpaceDraftRequest?
-    /// Rename uses a SwiftUI text-entry alert (like collections); the coordinator
-    /// applies move + surfaces delete directly on the model.
+    /// The SwiftUI text-entry alert (`NameEntryAlert`), kept as a FALLBACK only:
+    /// rename is now an inline session on the row itself (025 · S2), exactly as in
+    /// the collections tree, and this fires only when that row can't be resolved.
     let onRename: (UUID) -> Void
 
     func makeCoordinator() -> SpacesOutlineCoordinator {
@@ -93,20 +94,24 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
     private static let columnID = NSUserInterfaceItemIdentifier("name")
     private static let draftColumnID = NSUserInterfaceItemIdentifier("draft")
 
-    /// An in-flight inline-creation session (214), `nil` when idle. Mirrors the
-    /// collection coordinator's `DraftState` minus the parent (spaces are flat).
-    private struct DraftState {
-        var text: String = ""
-        var committedName: String?
-    }
-    private var draft: DraftState?
-    /// The single sentinel row for the active draft, tracked by id-equality across
-    /// reloads. Never lives in `nodes`; appended by `children(of:)` on demand.
+    /// The in-flight inline edit (214 · new space, 025 · S2 · rename), `nil` when
+    /// idle. The same ``SidebarEditState`` the collections tree uses — spaces are
+    /// flat, so its draft session always carries a `nil` parent.
+    private var edit: SidebarEditState?
+    /// The single sentinel row for an active DRAFT, tracked by id-equality across
+    /// reloads. Never lives in `nodes`; appended by `children(of:)` on demand. A
+    /// rename has no phantom row: it edits the space's own row.
     private let draftNode = SpaceNode(id: UUID(), name: "")
     private var lastDraftToken: UUID?
     private var draftCleanupWork: DispatchWorkItem?
 
     private func isDraftNode(_ item: Any?) -> Bool { (item as? SpaceNode) === draftNode }
+
+    /// Is `item` the row an active rename session is editing?
+    private func isRenaming(_ item: Any?) -> Bool {
+        guard let id = (item as? SpaceNode)?.id else { return false }
+        return edit?.isRenaming(id) == true
+    }
 
     /// The current node list + the snapshot it was built from — rebuilt only when
     /// the spaces actually change (memoization, mirroring the collection tree).
@@ -155,6 +160,10 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         outlineView.delegate = self
         outlineView.target = self
         outlineView.action = #selector(rowClicked)
+        // Double-click renames in place; Enter does the same from the keyboard
+        // (025 · S3). Nothing here expands — spaces are flat.
+        outlineView.doubleAction = #selector(rowDoubleClicked)
+        outlineView.onKeyDown = { [weak self] event in self?.handleKeyDown(event) ?? false }
         outlineView.autosaveExpandedItems = false
         outlineView.registerForDraggedTypes(
             [SpaceDragPayload.pasteboardType, AssetDragPayload.pasteboardType])
@@ -173,7 +182,12 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         guard row >= 0, let node = outlineView.item(atRow: row) as? SpaceNode,
               !isDraftNode(node) else { return }
         let id = node.id, name = node.name
-        menu.addItem(SidebarBlockMenuItem(title: "Rename…") { [weak self] in self?.onRename(id) })
+        // One rename affordance, three ways in (menu / Enter / double-click): the
+        // same inline session. The alert is the fallback for a row we can't resolve.
+        menu.addItem(SidebarBlockMenuItem(title: "Rename…") { [weak self] in
+            guard let self else { return }
+            if !self.beginRename(id: id) { self.onRename(id) }
+        })
         menu.addItem(.separator())
         menu.addItem(SidebarBlockMenuItem(title: "Delete…") { [weak self] in
             self?.model.requestDeleteSpace(id: id, name: name)
@@ -187,19 +201,25 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
             .map { SpaceSnapshot(id: $0.id, name: $0.name, sortIndex: $0.sortIndex) }
         if next != snapshot {
             snapshot = next
-            // A committed draft's real space has now arrived — drop the placeholder
-            // so the reload swaps it in place with no visual jump.
-            if draft?.committedName != nil {
-                draft = nil
+            // A committed session's write has now landed (the new space, or the
+            // renamed one carrying its new name) — drop the placeholder so the
+            // reload swaps it in with no visual jump.
+            if edit?.committedName != nil {
+                edit = nil
                 draftCleanupWork?.cancel()
                 draftCleanupWork = nil
             }
             nodes = SpaceNode.list(from: spaces)
-            if draft != nil {
-                let text = draft!.text
-                suspendDraftCell()
+            if let text = edit?.text {
+                suspendEditCell()
                 outlineView.reloadData()
-                focusDraftField(restoring: text)
+                if editRow >= 0 {
+                    focusEditField(restoring: text)
+                } else {
+                    // The renamed row went away under the edit (deleted elsewhere).
+                    edit = nil
+                    outlineView.reloadData()
+                }
             } else {
                 outlineView.reloadData()
             }
@@ -236,7 +256,7 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         reportHeight(CGFloat(outlineView.numberOfRows) * Self.rowHeight)
     }
 
-    // MARK: - Inline draft (214)
+    // MARK: - Inline edit session (214 new space · 025 · S2 rename)
 
     func handleDraftRequest(_ request: SpaceDraftRequest?) {
         guard let request, request.token != lastDraftToken else { return }
@@ -246,54 +266,95 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
 
     /// Open the inline draft row at the end of the list.
     func beginDraft() {
-        if draft != nil { endDraft(commit: nil) }         // one session at a time
-        draft = DraftState()
+        if edit != nil { endEdit(commit: nil) }           // one session at a time
+        edit = SidebarEditState(session: .draft(parent: nil))
         outlineView.reloadData()                          // draft row materializes
         reportMeasuredHeight()
-        focusDraftField(restoring: "")
+        focusEditField(restoring: "")
     }
 
-    /// Finish the active draft. `name != nil` commits (create + keep a static row
-    /// until the refresh lands); `nil` cancels (remove the row immediately).
-    private func endDraft(commit name: String?) {
-        guard draft != nil else { return }
-        if let name {
-            draft?.committedName = name
+    /// Open a rename session on `id`'s own row (025 · S2). Returns `false` when the
+    /// row can't be resolved, so the caller can fall back to the alert.
+    @discardableResult
+    func beginRename(id: UUID) -> Bool {
+        guard let node = nodes.first(where: { $0.id == id }) else { return false }
+        if edit != nil { endEdit(commit: nil) }           // one session at a time
+        edit = SidebarEditState(session: .rename(id: id), originalName: node.name)
+        outlineView.reloadData()                          // static label → editable cell
+        // Finder selects the whole name so the first keystroke replaces it.
+        focusEditField(restoring: node.name, selectAll: true)
+        return true
+    }
+
+    /// Finish the active session. The pure ``SidebarEditState/outcome(committing:)``
+    /// decides create / rename / cancel — an empty name, or a rename that ends on
+    /// the name it started with, writes nothing.
+    private func endEdit(commit name: String?) {
+        guard let edit else { return }
+        switch edit.outcome(committing: name) {
+        case let .create(_, name):
+            self.edit?.committedName = name
             // Create + open, exactly as the SwiftUI draft did (createSpace is async;
             // its `refreshSpaces` drives the snapshot change that swaps the row in).
             Task { [weak self] in
                 if let id = await self?.model.createSpace(name: name) { self?.nav.openSpace(id) }
             }
-            outlineView.reloadData()                      // draft cell → static label
-            let work = DispatchWorkItem { [weak self] in
-                guard let self, self.draft?.committedName != nil else { return }
-                self.draft = nil
-                self.outlineView.reloadData()
-                self.reportMeasuredHeight()
-            }
-            draftCleanupWork?.cancel()
-            draftCleanupWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
-        } else {
-            draft = nil
+            outlineView.reloadData()                      // editable cell → static label
+            scheduleCommitCleanup()
+        case let .rename(id, name):
+            self.edit?.committedName = name
+            model.renameSpace(id: id, to: name)
+            // The row keeps drawing the committed name until `refreshSpaces` lands,
+            // so the old name never flashes back between commit and reload.
+            outlineView.reloadData()
+            scheduleCommitCleanup()
+        case .cancel:
+            self.edit = nil
             outlineView.reloadData()
             reportMeasuredHeight()
         }
         outlineView.window?.makeFirstResponder(outlineView)
     }
 
-    private func suspendDraftCell() {
-        let row = outlineView.row(forItem: draftNode)
+    /// Safety net: if the write fails silently (no refresh, only `lastError`), drop
+    /// the lingering committed row after a beat so it never sticks.
+    private func scheduleCommitCleanup() {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.edit?.committedName != nil else { return }
+            self.edit = nil
+            self.outlineView.reloadData()
+            self.reportMeasuredHeight()
+        }
+        draftCleanupWork?.cancel()
+        draftCleanupWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+    }
+
+    /// The row the active session is editing: the phantom draft row, or the renamed
+    /// space's own row. `-1` when there is no session or the row is gone.
+    private var editRow: Int {
+        guard let edit else { return -1 }
+        switch edit.session {
+        case .draft:
+            return outlineView.row(forItem: draftNode)
+        case let .rename(id):
+            guard let node = nodes.first(where: { $0.id == id }) else { return -1 }
+            return outlineView.row(forItem: node)
+        }
+    }
+
+    private func suspendEditCell() {
+        let row = editRow
         guard row >= 0,
               let cell = outlineView.view(atColumn: 0, row: row, makeIfNecessary: false)
                 as? SidebarDraftCell else { return }
         cell.isSuspended = true
     }
 
-    private func focusDraftField(restoring text: String) {
+    private func focusEditField(restoring text: String, selectAll: Bool = false) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.draft != nil, self.draft?.committedName == nil else { return }
-            let row = self.outlineView.row(forItem: self.draftNode)
+            guard let self, self.edit != nil, self.edit?.committedName == nil else { return }
+            let row = self.editRow
             guard row >= 0,
                   let cell = self.outlineView.view(atColumn: 0, row: row, makeIfNecessary: true)
                     as? SidebarDraftCell else { return }
@@ -304,7 +365,9 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
                 editor.backgroundColor = .clear
                 editor.focusRingType = .none
             }
-            cell.field.currentEditor()?.selectedRange = NSRange(location: text.count, length: 0)
+            cell.field.currentEditor()?.selectedRange = selectAll
+                ? NSRange(location: 0, length: text.count)
+                : NSRange(location: text.count, length: 0)
         }
     }
 
@@ -326,45 +389,55 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
     /// is open. Only the root (`item == nil`) has children — spaces never nest.
     private func children(of item: Any?) -> [SpaceNode] {
         guard item == nil else { return [] }
-        return draft != nil ? nodes + [draftNode] : nodes
+        // Only a DRAFT adds a row; a rename edits an existing one in place.
+        guard case .draft? = edit?.session else { return nodes }
+        return nodes + [draftNode]
     }
 
     // MARK: - Delegate (cells + selection)
 
     func outlineView(_ ov: NSOutlineView, viewFor column: NSTableColumn?, item: Any) -> NSView? {
         guard let node = item as? SpaceNode else { return nil }
-        if isDraftNode(node) {
-            if let committed = draft?.committedName {
+        // A row under an inline session: an editable field while typing, a plain
+        // label once committed (kept until the write lands, so the swap is
+        // jump-free). Both the phantom draft row and a renamed row take this path.
+        if isDraftNode(node) || isRenaming(node) {
+            if let committed = edit?.committedName {
                 let cell = ov.makeView(withIdentifier: Self.columnID, owner: self) as? SidebarCell
                     ?? SidebarCell(identifier: Self.columnID)
+                cell.onToggle = nil                       // flat list — nothing toggles
                 cell.configure(name: committed, expandable: false, expanded: false)
                 return cell
             }
             let cell = ov.makeView(withIdentifier: Self.draftColumnID, owner: self) as? SidebarDraftCell
                 ?? SidebarDraftCell(identifier: Self.draftColumnID)
             cell.prepareForEditing()
-            cell.placeholder = "New Space"
-            cell.field.stringValue = draft?.text ?? ""
-            cell.onTextChange = { [weak self] in self?.draft?.text = $0 }
+            cell.placeholder = isDraftNode(node) ? "New Space" : node.name
+            cell.field.stringValue = edit?.text ?? ""
+            cell.onTextChange = { [weak self] in self?.edit?.text = $0 }
             cell.onCommit = { [weak self] name in
-                DispatchQueue.main.async { self?.endDraft(commit: name) }
+                DispatchQueue.main.async { self?.endEdit(commit: name) }
             }
             cell.onCancel = { [weak self] in
-                DispatchQueue.main.async { self?.endDraft(commit: nil) }
+                DispatchQueue.main.async { self?.endEdit(commit: nil) }
             }
             return cell
         }
         let cell = ov.makeView(withIdentifier: Self.columnID, owner: self) as? SidebarCell
             ?? SidebarCell(identifier: Self.columnID)
+        cell.onToggle = nil                               // flat list — nothing toggles
         cell.configure(name: node.name, expandable: false, expanded: false)
         return cell
     }
 
+    /// The draft row (214) and a renaming row (025 · S2) both force the selected-row
+    /// highlight on, so an edit reads as the row being worked on even when it isn't
+    /// the selected one.
     func outlineView(_ ov: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
         let id = NSUserInterfaceItemIdentifier("row")
         let view = ov.makeView(withIdentifier: id, owner: self) as? SidebarRowView
             ?? { let v = SidebarRowView(); v.identifier = id; return v }()
-        view.forceSelected = isDraftNode(item)
+        view.forceSelected = isDraftNode(item) || isRenaming(item)
         return view
     }
 
@@ -393,10 +466,35 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         nav.openSpace(node.id)
     }
 
+    /// Double-click renames in place (025 · S3). AppKit sends the single-click action
+    /// first, so a double-click opens the space THEN renames it — you renamed the
+    /// thing you opened. Mirrors `CollectionsOutlineCoordinator`.
+    @objc private func rowDoubleClicked() {
+        let row = outlineView.clickedRow
+        guard row >= 0, let node = outlineView.item(atRow: row) as? SpaceNode,
+              !isDraftNode(node), edit == nil else { return }
+        beginRename(id: node.id)
+    }
+
+    /// Enter renames the selected row (025 · S3). Ignored while a session is already
+    /// open — the field owns the key then, and re-entering the commit path from here
+    /// is exactly the double-commit the draft cell guards against.
+    private func handleKeyDown(_ event: NSEvent) -> Bool {
+        let isReturn = event.keyCode == 36 || event.keyCode == 76
+        guard isReturn else { return false }
+        guard edit == nil else { return true }            // swallow, don't re-enter
+        let row = outlineView.selectedRow
+        guard row >= 0, let node = outlineView.item(atRow: row) as? SpaceNode,
+              !isDraftNode(node) else { return true }
+        beginRename(id: node.id)
+        return true
+    }
+
     // MARK: - Drag source
 
     func outlineView(_ ov: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
-        guard draft == nil, let node = item as? SpaceNode, !isDraftNode(node) else { return nil }
+        // No drags at all while an inline session is open — a draft OR a rename.
+        guard edit == nil, let node = item as? SpaceNode, !isDraftNode(node) else { return nil }
         return SpaceDragPayload(spaceID: node.id).makePasteboardItem()
     }
 
@@ -420,7 +518,9 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         _ ov: NSOutlineView, validateDrop info: NSDraggingInfo,
         proposedItem item: Any?, proposedChildIndex index: Int
     ) -> NSDragOperation {
-        guard draft == nil else { return [] }
+        // Refuse every drop while an inline session is open — a draft OR a rename,
+        // else a drop lands mid-edit.
+        guard edit == nil else { return [] }
         let pb = info.draggingPasteboard
         // Space reorder (our own drag): normalize to a root-level between-rows slot
         // so the drop line is drawn where the space will land.
