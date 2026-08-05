@@ -31,25 +31,47 @@ struct CanvasArrangeTests {
         CGRect(x: 500, y: 300, width: 40, height: 200),
     ]
 
+    /// 60 tiles scattered the way a bulk drop leaves a board: overlapping, at slightly
+    /// different y, mixed sizes. Four rects is not enough to see a wrap (028) — and it
+    /// is not enough to see the creep a wrap can introduce, because a single row
+    /// re-clusters into a single row and the idempotence assertion passes trivially.
+    /// Coordinates and sizes are whole numbers so every intermediate is exact in binary
+    /// floating point: what the assertions below measure is the algorithm, not rounding.
+    private static let scatter60: [CGRect] = (0..<60).map { (i: Int) -> CGRect in
+        let x: Int = (i * 137) % 900
+        let y: Int = (i * 71) % 700
+        let w: Int = 100 + (i % 5) * 40
+        let h: Int = 80 + (i % 3) * 30
+        return CGRect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(w), height: CGFloat(h))
+    }
+
+    /// The fixtures every cross-op invariant runs over: the small general case, and the
+    /// many-item case where `tidyUp` wraps (028).
+    private var fixtures: [[CGRect]] { [spread, Self.scatter60] }
+
     // MARK: - Cross-op invariants (over allCases)
 
     @Test("every op preserves count and each rect's size", arguments: Op.allCases)
     func preservesCountAndSize(_ op: Op) {
-        let out = CanvasArrange.apply(op, to: spread)
-        #expect(out.count == spread.count)
-        for (before, after) in zip(spread, out) {
-            #expect(approx(before.width, after.width))
-            #expect(approx(before.height, after.height))
+        for rects in fixtures {
+            let out = CanvasArrange.apply(op, to: rects)
+            #expect(out.count == rects.count)
+            for (before, after) in zip(rects, out) {
+                #expect(approx(before.width, after.width))
+                #expect(approx(before.height, after.height))
+            }
         }
     }
 
     @Test("every op is idempotent — re-applying changes nothing", arguments: Op.allCases)
     func idempotent(_ op: Op) {
-        let once = CanvasArrange.apply(op, to: spread)
-        let twice = CanvasArrange.apply(op, to: once)
-        for (a, b) in zip(once, twice) {
-            #expect(approx(a.minX, b.minX))
-            #expect(approx(a.minY, b.minY))
+        for rects in fixtures {
+            let once = CanvasArrange.apply(op, to: rects)
+            let twice = CanvasArrange.apply(op, to: once)
+            for (a, b) in zip(once, twice) {
+                #expect(approx(a.minX, b.minX))
+                #expect(approx(a.minY, b.minY))
+            }
         }
     }
 

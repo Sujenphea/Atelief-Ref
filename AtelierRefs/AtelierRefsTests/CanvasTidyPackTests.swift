@@ -9,6 +9,10 @@
 //  matters. What's here is the geometry those generic assertions cannot see: that a row
 //  stays a row, a grid stays a grid, and the gap rule is the one documented.
 //
+//  028 added the wrap: rows have a width bound now, and clustering no longer chains
+//  transitively. Those tests sit at N=60 on purpose — at N=4 a row re-clusters into a
+//  row and every assertion here passes whether the bound creeps or not.
+//
 
 import CoreGraphics
 import Testing
@@ -115,6 +119,163 @@ struct CanvasTidyPackTests {
         // They overlap vertically, so this is one row — and after tidying they share a
         // top edge, which is what keeps a second pass finding the same row.
         #expect(out.allSatisfy { approx($0.minY, out[0].minY) })
+    }
+
+    // MARK: - Tidy Up wraps (028)
+
+    /// Distinct row tops in a tidied result, ascending — a tidied row shares one top
+    /// edge, so this is the row count.
+    private func rowTops(_ rects: [CGRect]) -> [CGFloat] {
+        Set(rects.map(\.minY)).sorted()
+    }
+
+    /// The rects sitting on `top`, left to right.
+    private func row(_ rects: [CGRect], at top: CGFloat) -> [CGRect] {
+        rects.filter { approx($0.minY, top) }.sorted { $0.minX < $1.minX }
+    }
+
+    /// 60 tiles of one size, all vertically overlapping, so clustering alone yields ONE
+    /// row — the shape that used to come out ~13,000pt wide. Only the wrap can break it.
+    private static let uniform60: [CGRect] = (0..<60).map { (i: Int) -> CGRect in
+        CGRect(x: CGFloat(i * 10), y: 0, width: 200, height: 150)
+    }
+
+    @Test("60 tiles wrap into rows instead of one enormous row")
+    func manyTilesWrap() {
+        let rects = Self.uniform60
+        let bound = CanvasArrange.tidyMaxRowWidth(rects)
+        let out = CanvasArrange.apply(.tidyUp, to: rects)
+        let tops = rowTops(out)
+
+        #expect(tops.count > 1)                       // the bug, in one assertion
+        #expect(tops.count == 9)                      // 7 per row at the derived bound
+        // No row runs past the bound, measured from the anchor the rows start at.
+        let left = out.map(\.minX).min()!
+        for top in tops {
+            #expect(row(out, at: top).map(\.maxX).max()! - left <= bound + Self.eps)
+        }
+        // Every row starts at the anchor — including the last, which is ragged, not
+        // justified: tidy fills left to right and stops.
+        for top in tops { #expect(approx(row(out, at: top).first!.minX, left)) }
+        #expect(row(out, at: tops.last!).count == 4)  // 8 × 7 + 4 = 60
+        #expect(row(out, at: tops.first!).count == 7)
+    }
+
+    @Test("wrapped rows are spaced by the derived gap, same as clustered ones")
+    func wrappedRowsUseTheDerivedGap() {
+        // Fully overlapping horizontally → no measurable gap → the default (20).
+        let out = CanvasArrange.apply(.tidyUp, to: Self.uniform60)
+        let tops = rowTops(out)
+        for (above, below) in zip(tops, tops.dropFirst()) {
+            // 150 tall + the derived gap; the wrap does not invent its own spacing.
+            #expect(approx(below - above, 150 + CanvasArrange.defaultTidyGap))
+        }
+    }
+
+    @Test("a staircase does not chain into one row")
+    func staircaseDoesNotChain() {
+        // Each rect overlaps ONLY its neighbour: extents are [30i, 30i+40), so i and
+        // i+2 do not touch. Clustering on the running maximum of member bottoms made
+        // this one row of ten; clustering on the row's band makes it five rows of two.
+        let staircase: [CGRect] = (0..<10).map { (i: Int) -> CGRect in
+            CGRect(x: CGFloat(i * 30), y: CGFloat(i * 30), width: 50, height: 40)
+        }
+        let out = CanvasArrange.apply(.tidyUp, to: staircase)
+        #expect(rowTops(out).count > 1)
+        #expect(rowTops(out).count == 5)
+        // Well inside the wrap bound, so this is the clustering doing the work, not
+        // the width bound.
+        #expect(out.map(\.maxX).max()! < CanvasArrange.tidyMaxRowWidth(staircase))
+    }
+
+    @Test("tidying 60 scattered tiles twice changes nothing — no creep")
+    func tidyIsStableAtSixty() {
+        // The case where creep would actually show: a bound re-derived from the
+        // selection's box would shrink on every pass, because a wrap narrows the box.
+        let scattered: [CGRect] = (0..<60).map { (i: Int) -> CGRect in
+            let x: Int = (i * 137) % 900
+            let y: Int = (i * 71) % 700
+            let w: Int = 100 + (i % 5) * 40
+            let h: Int = 80 + (i % 3) * 30
+            return CGRect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(w), height: CGFloat(h))
+        }
+        let once = CanvasArrange.apply(.tidyUp, to: scattered)
+        var previous = once
+        for _ in 0..<4 {   // four more presses; creep compounds, so look past the first
+            let next = CanvasArrange.apply(.tidyUp, to: previous)
+            for (a, b) in zip(previous, next) {
+                #expect(approx(a.minX, b.minX) && approx(a.minY, b.minY))
+            }
+            previous = next
+        }
+        // The bound itself is unchanged, which is why the layout is: it comes from the
+        // rects' total area, not from the box the wrap just narrowed.
+        #expect(approx(CanvasArrange.tidyMaxRowWidth(scattered),
+                       CanvasArrange.tidyMaxRowWidth(once)))
+        #expect(rowTops(once).count > 1)
+    }
+
+    @Test("a wrapped tidy still preserves every tile's size — it is not a uniform grid")
+    func wrappedTidyPreservesSizes() {
+        let mixed: [CGRect] = (0..<60).map { (i: Int) -> CGRect in
+            let w: Int = 60 + (i % 7) * 50
+            let h: Int = 40 + (i % 4) * 60
+            return CGRect(x: CGFloat(i * 13), y: CGFloat(i * 5), width: CGFloat(w), height: CGFloat(h))
+        }
+        let out = CanvasArrange.apply(.tidyUp, to: mixed)
+        #expect(out.count == mixed.count)
+        for (before, after) in zip(mixed, out) {
+            #expect(approx(before.width, after.width) && approx(before.height, after.height))
+        }
+        #expect(Set(out.map(\.width)).count > 1)   // sanity: they really do differ
+    }
+
+    @Test("a pile at one point falls back to the borrowed row width, and still wraps")
+    func degeneratePileFallsBackToMaxRowWidth() {
+        // Zero-width bounding box: a box-derived bound would be 0 here (or a division
+        // by it). 24 tiles at 200 wide would then be one row 5,260pt across.
+        let pile = Array(repeating: rect(100, 100, 200, 150), count: 24)
+        #expect(approx(CanvasArrange.tidyMaxRowWidth(pile), CanvasArrange.fallbackMaxRowWidth))
+        let out = CanvasArrange.apply(.tidyUp, to: pile)
+        #expect(rowTops(out).count > 1)
+        #expect(rowTops(out).count == 4)           // 7 per row at 1600
+        let left = out.map(\.minX).min()!
+        for top in rowTops(out) {
+            #expect(row(out, at: top).map(\.maxX).max()! - left <= CanvasArrange.fallbackMaxRowWidth)
+        }
+    }
+
+    @Test("zero-area rects derive no bound and do not divide by zero")
+    func zeroAreaFallsBack() {
+        let empty = Array(repeating: CGRect(x: 5, y: 5, width: 0, height: 0), count: 3)
+        #expect(approx(CanvasArrange.tidyMaxRowWidth(empty), CanvasArrange.fallbackMaxRowWidth))
+        let out = CanvasArrange.apply(.tidyUp, to: empty)
+        #expect(out.count == 3)
+        #expect(out.allSatisfy { $0.minX.isFinite && $0.minY.isFinite })
+    }
+
+    @Test("the fallback mirrors SpaceLayout.maxRowWidth — the copy must not drift")
+    func fallbackMirrorsSpaceLayout() {
+        // `CanvasArrange` keeps its own copy so the kernel stays free of the space
+        // layer; this is the guard that the copy stays a copy.
+        #expect(CanvasArrange.fallbackMaxRowWidth == CGFloat(SpaceLayout.maxRowWidth))
+    }
+
+    @Test("an item wider than the bound still lands, alone on its row")
+    func oversizeItemStillPlaced() {
+        // A frame far wider than the bound alongside small tiles. A row that could
+        // refuse every item would never terminate, so a row always takes its first.
+        let frame = CGRect(x: 0, y: 0, width: 5000, height: 200)
+        let rects = [frame, rect(0, 0, 100, 100), rect(200, 10, 100, 100), rect(400, 20, 100, 100)]
+        let bound = CanvasArrange.tidyMaxRowWidth(rects)
+        #expect(frame.width > bound)
+
+        let out = CanvasArrange.apply(.tidyUp, to: rects)
+        #expect(out.count == 4)
+        #expect(approx(out[0].width, 5000))                    // unresized
+        #expect(approx(out[0].minX, 0) && approx(out[0].minY, 0))
+        #expect(row(out, at: out[0].minY).count == 1)          // alone on its row
+        #expect(rowTops(out).count == 2)                       // the three tiles follow
     }
 
     // MARK: - Pack at an exact gap
