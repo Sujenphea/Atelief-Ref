@@ -201,8 +201,12 @@ private struct FavoriteCommand: View {
 /// because "where you are looking" is exactly what the model does not know: it holds
 /// the collection grid's selection, so a menu command reading it would remove a board's
 /// tiles from a collection, or destroy the grid's selection while a board had focus.
-/// Every pane that owns a delete verb publishes one of these; the pane that has none
-/// (Home, Capture) publishes nothing and both items disable.
+/// Every pane that owns a delete verb publishes one of these; a pane that has none
+/// (Capture) publishes nothing and both items disable.
+///
+/// Home publishes one too, with `canRemove: false` — a collection has no container to
+/// be removed from, so ⌫ there explains itself and Delete does the work. Home is the
+/// one surface whose ⌫ reaches nothing at all rather than a lesser verb (345).
 struct DeleteVerbs {
     /// What ⌫ removes FROM, in words — "Remove from Collection" on a grid, "Remove
     /// from Board" on a canvas. The menu says where, because that is the only part of
