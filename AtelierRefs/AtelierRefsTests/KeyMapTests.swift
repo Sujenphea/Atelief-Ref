@@ -44,17 +44,34 @@ struct KeyMapTests {
                 + collisions.map(\.description).joined(separator: "\n")))
     }
 
-    /// The planned `M` / `A` rows ([024] K3) checked against everything already bound,
-    /// so K3 learns from a failing build — not by hand — if a later phase takes one of
-    /// them first. `X` on the grid and `V`/`F`/`T` on the canvas are the near misses
-    /// this is watching.
-    @Test("the planned M / A rows are still free")
+    /// The same check with the doc-reserved rows folded in, so a phase about to take a
+    /// reserved chord learns from a failing build rather than by hand.
+    ///
+    /// `planned` is EMPTY as of [024] K3, which promoted the four `M` / `A` rows it
+    /// held (three of them — the board's `M` was dropped). The test stays because the
+    /// seam does: it is what the next reservation gets for free.
+    @Test("the reserved rows are still free")
     func plannedRowsAreFree() {
         let collisions = KeyMap.collisions(in: KeyMap.all + KeyMap.planned)
         #expect(
             collisions.isEmpty,
             Comment(rawValue: "\(collisions.count) colliding chord(s):\n"
                 + collisions.map(\.description).joined(separator: "\n")))
+    }
+
+    /// **The board has `A` and no `M`** ([024] K3, amending §C). A board is not a
+    /// collection, so "move" there would have meant filing the assets AND dropping the
+    /// placements — a different verb from the grid's under the same key. A row for it
+    /// appearing here is the first sign someone re-added it.
+    @Test("the board scope binds A and never M")
+    func spaceScopeHasAddButNotMove() {
+        let bare = KeyMap.shortcuts(in: .space).filter { $0.modifiers == [] }
+        #expect(bare.contains { $0.keys == [.character("a")] })
+        #expect(!bare.contains { $0.keys.contains(.character("m")) })
+        // …and the grid has BOTH, which is the asymmetry being asserted.
+        let grid = KeyMap.shortcuts(in: .collection).filter { $0.modifiers == [] }
+        #expect(grid.contains { $0.keys == [.character("m")] })
+        #expect(grid.contains { $0.keys == [.character("a")] })
     }
 
     /// The collision detector has to actually detect. Two rows in one scope on one
@@ -221,6 +238,8 @@ struct KeyMapContractTests {
         #expect(decoded(.escape, []) == .escape)
         #expect(decoded(.space, []) == .quickLook)
         #expect(decoded(.character("x"), []) == .toggleLead)
+        #expect(decoded(.character("m"), []) == .moveTo)
+        #expect(decoded(.character("a"), []) == .addTo)
         #expect(decoded(.character("a"), .command) == .selectAll)
         #expect(decoded(.character("="), .command) == .zoomIn)
         #expect(decoded(.character("+"), .command) == .zoomIn)
@@ -261,6 +280,30 @@ struct KeyMapContractTests {
                     Comment(rawValue: "\(chord.caption) — “\(shortcut.title)” is in "
                         + "the table but toolShortcut does not decode it"))
                 #expect(tool == expected[chord.key])
+            }
+        }
+    }
+
+    /// `.canvasBoard` rows are the board's bare letters that are NOT tools ([024] K3).
+    /// One row today — `A` — and the count is asserted, because the row that must not
+    /// appear here is `M`: the doc recommended it and the decision was to drop it.
+    @Test("every .canvasBoard row resolves through CanvasHostView.boardShortcut")
+    func canvasBoardRowsResolve() {
+        let boardRows = rows(for: .canvasBoard)
+        #expect(boardRows.count == 1)
+        for shortcut in boardRows {
+            for chord in shortcut.chords {
+                #expect(
+                    CanvasHostView.boardShortcut(
+                        characters: chord.key.characters,
+                        modifiers: chord.modifiers.eventFlags) == .file,
+                    Comment(rawValue: "\(chord.caption) — “\(shortcut.title)” is in "
+                        + "the table but boardShortcut does not decode it"))
+                // …and it is not secretly a tool, which is the whole reason the two
+                // decoders are siblings rather than one enum.
+                #expect(CanvasHostView.toolShortcut(
+                    characters: chord.key.characters,
+                    modifiers: chord.modifiers.eventFlags) == nil)
             }
         }
     }
@@ -359,26 +402,27 @@ struct KeyMapContractTests {
                         CanvasHostView.toolShortcut(characters: chars, modifiers: flags) == nil,
                         Comment(rawValue: "\(chord.caption) — “\(shortcut.title)” is "
                             + "filed .none but toolShortcut decodes it"))
+                    #expect(
+                        CanvasHostView.boardShortcut(characters: chars, modifiers: flags) == nil,
+                        Comment(rawValue: "\(chord.caption) — “\(shortcut.title)” is "
+                            + "filed .none but boardShortcut decodes it"))
                 }
             }
         }
     }
 
-    /// Bare `M` and `A` are free in both decoders — the fact [024] K3 is about to
-    /// build on, pinned so it cannot rot between now and then. And the modifier guard
-    /// that makes them safe to take: both decoders require BARE modifiers, so ⌘A stays
-    /// Select All and ⌘M is nobody's.
-    @Test("M and A are free on the grid and the canvas, and ⌘-combos are unaffected")
-    func plannedKeysAreFreeInTheDecoders() {
-        for key in ["m", "a", "M", "A"] {
-            #expect(CanvasHostView.toolShortcut(characters: key, modifiers: []) == nil)
-        }
-        #expect(gridKeyCommand(characters: "m", modifiers: []) == nil)
-        #expect(gridKeyCommand(characters: "M", modifiers: []) == nil)
-        // `a` bare is already nil in the grid — only ⌘A means anything there.
-        #expect(gridKeyCommand(characters: "a", modifiers: []) == nil)
+    /// The modifier guard that made `M` / `A` safe to take, asserted from both sides
+    /// AFTER taking them ([024] K3). This used to assert they were still free; the
+    /// half that survives promotion is the half that mattered — every bare-letter
+    /// decoder requires bare modifiers, so ⌘A is still Select All and ⌘M is nobody's.
+    ///
+    /// The full `M` / `A` matrix lives in `MoveAddShortcutTests`; this is the piece the
+    /// table itself depends on.
+    @Test("taking M and A left the ⌘-combos alone")
+    func bareLettersDoNotEatModifiedChords() {
         #expect(gridKeyCommand(characters: "a", modifiers: [.command]) == .selectAll)
-        // The bare-modifier guard, from both sides.
+        #expect(gridKeyCommand(characters: "m", modifiers: [.command]) == nil)
+        #expect(CanvasHostView.boardShortcut(characters: "a", modifiers: [.command]) == nil)
         #expect(CanvasHostView.toolShortcut(characters: "v", modifiers: [.command]) == nil)
         #expect(gridKeyCommand(characters: "x", modifiers: [.command]) == nil)
     }

@@ -52,10 +52,11 @@
 //  ## The constraint every bare-letter binding lives under
 //
 //  A bare letter must never fire while a text box has the keyboard. The three
-//  surfaces that own one each solve it differently, and K3's `M` / `A` will have to
-//  pick one of these, not a fourth:
+//  surfaces that own one each solve it differently, and K3's `M` / `A` picked from
+//  these rather than adding a fourth — the grid's pair rides `gridKeyCommand` inside
+//  `keyDown`, the board's `A` rides `boardShortcut` inside the canvas host's:
 //
-//   • The canvas guards on `editingTileID` (`CanvasHostView.swift:1152`) before it
+//   • The canvas guards on `editingTileID` (`CanvasHostView.swift:1183`) before it
 //     reads a key at all.
 //   • The detail page's `DetailKeyCatcher` declines to steal first responder from an
 //     `NSText` (`ItemDetailView.swift:1457`).
@@ -69,9 +70,10 @@
 //     keyboard is the same event as the gallery losing it, so the guard is structural
 //     rather than written down ([345]).
 //
-//  Both bare-letter decoders REQUIRE bare modifiers — `gridKeyCommand`'s `x` case
-//  tests `bareModifiers.isEmpty`, `toolShortcut` rejects ⌘ / ⌥ / ⌃ / fn — so ⌘A and
-//  ⌘M are unaffected by anything K3 adds on `M` / `A`.
+//  Every bare-letter decoder REQUIRES bare modifiers — `gridKeyCommand`'s `x` case
+//  tests `bareModifiers.isEmpty`, its `m` / `a` cases test the same set minus ⇧, and
+//  `toolShortcut` / `boardShortcut` share one guard rejecting ⌘ / ⌥ / ⌃ / fn — so ⌘A
+//  is still Select All and ⌘M is still nobody's after K3.
 //
 //  Pure and SwiftUI-free, in the shape `DeleteIntent.swift` established. AppKit is
 //  imported for `NSEvent.ModifierFlags` and the function-key scalars only, which is
@@ -251,6 +253,9 @@ nonisolated enum ShortcutDecoder: Hashable, Sendable {
     case detailStep
     /// `CanvasHostView.toolShortcut(characters:modifiers:)` — the CanvasRenderer package.
     case canvasTool
+    /// `CanvasHostView.boardShortcut(characters:modifiers:)` — the board's bare
+    /// letters that are NOT tools. `A` only (024 · K3).
+    case canvasBoard
     /// `deleteIntent(characters:modifiers:)` — `DeleteIntent.swift`.
     case delete
     /// Delivered by a `keyboardShortcut` / menu item; no pure decoder to check against.
@@ -362,32 +367,40 @@ nonisolated enum KeyMap {
 
     private static let collectionShortcuts: [Shortcut] = [
         Shortcut([.leftArrow, .rightArrow, .upArrow, .downArrow], [], "Move the cursor",
-                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1831"),
+                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
         Shortcut([.leftArrow, .rightArrow, .upArrow, .downArrow], [.shift],
                  "Extend the selection",
-                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1831"),
+                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
         Shortcut([.returnKey], [], "Open the item",
-                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1831"),
+                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
         Shortcut([.space], [], "Quick Look",
-                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1831"),
+                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
         // The one bare-letter binding the grid has. `bareModifiers.isEmpty`, so even
         // ⇧X falls through — it never eats ⌘X.
         Shortcut([.character("x")], [], "Add or remove the cursor item",
-                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1831"),
+                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
+        // 024 · K3. Bare letters, ⇧ tolerated (unlike `X`): a stray capital still meant
+        // the verb, and the guard that matters is the ⌘ / ⌥ / ⌃ one below it, which is
+        // what leaves ⌘A alone. Both act on the SELECTION, or — with none — on the
+        // keyboard cursor's post, widened, exactly as ⌫ and ⌘D do.
+        Shortcut([.character("m")], [], "Move to…",
+                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
+        Shortcut([.character("a")], [], "Add to…",
+                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
         Shortcut([.character("a")], [.command], "Select all",
-                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1831"),
+                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
         Shortcut([.escape], [], "Clear the selection",
-                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1831"),
+                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
         Shortcut([.character("="), .character("+")], [.command], "Bigger tiles",
-                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1831"),
+                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
         Shortcut([.character("-")], [.command], "Smaller tiles",
-                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1831"),
+                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
         Shortcut([.delete, .forwardDelete], [], "Remove from this collection",
-                 scope: .collection, decoder: .delete, source: "gridKeyDown — MasonryGridHost.swift:1529"),
+                 scope: .collection, decoder: .delete, source: "gridKeyDown — MasonryGridHost.swift:1575"),
         Shortcut([.character("d")], [.command], "Favorite / unfavorite",
                  scope: .collection, source: "AtelierRefsApp.swift:181"),
         Shortcut([.character("c")], [.command], "Copy",
-                 scope: .collection, source: "MasonryGridHost.swift:1571 (Edit ▸ Copy)"),
+                 scope: .collection, source: "MasonryGridHost.swift:1617 (Edit ▸ Copy)"),
         Shortcut([.character("v")], [.command], "Paste into this collection",
                  scope: .collection, source: "CollectionView.swift:257"),
     ]
@@ -418,19 +431,29 @@ nonisolated enum KeyMap {
     private static let spaceShortcuts: [Shortcut] = [
         Shortcut([.character("v")], [], "Select tool",
                  scope: .space, decoder: .canvasTool,
-                 source: "toolShortcut — CanvasHostView.swift:1272"),
+                 source: "toolShortcut — CanvasHostView.swift:1301"),
         Shortcut([.character("f")], [], "Frame tool",
                  scope: .space, decoder: .canvasTool,
-                 source: "toolShortcut — CanvasHostView.swift:1272"),
+                 source: "toolShortcut — CanvasHostView.swift:1301"),
         Shortcut([.character("t")], [], "Text tool",
                  scope: .space, decoder: .canvasTool,
-                 source: "toolShortcut — CanvasHostView.swift:1272"),
+                 source: "toolShortcut — CanvasHostView.swift:1301"),
+        // 024 · K3. **`A` only — there is no board `M`.** [024] §C recommended M on
+        // every surface with a selection; on a board it would have had to mean "file
+        // the assets AND drop the placements", a destructive-adjacent composite wearing
+        // the same key as the grid's plain reparent. A board owns placements, not
+        // memberships (019 · C1), so `A` — file, placements untouched — is the verb it
+        // actually has. Decoded beside the tools rather than as one of them: filing is
+        // not a MODE the canvas can be in. See §C's amendment.
+        Shortcut([.character("a")], [], "Add to… (placements stay)",
+                 scope: .space, decoder: .canvasBoard,
+                 source: "boardShortcut — CanvasHostView.swift:1343"),
         Shortcut([.delete, .forwardDelete], [], "Remove from the board",
-                 scope: .space, decoder: .delete, source: "CanvasHostView.swift:1179"),
+                 scope: .space, decoder: .delete, source: "CanvasHostView.swift:1189"),
         Shortcut([.character("c")], [.command], "Copy the selected tiles",
-                 scope: .space, source: "CanvasHostView.swift:1288"),
+                 scope: .space, source: "CanvasHostView.swift:1365"),
         Shortcut([.character("v")], [.command], "Paste onto the board",
-                 scope: .space, source: "CanvasHostView.swift:1298"),
+                 scope: .space, source: "CanvasHostView.swift:1376"),
         Shortcut([.character("d")], [.command], "Duplicate the selection",
                  scope: .space, source: "SpaceView.swift:816"),
         Shortcut([.character("]")], [.command, .shift], "Bring to front",
@@ -502,32 +525,19 @@ nonisolated enum KeyMap {
     /// Kept OUT of ``all`` on purpose. [024] is explicit that "a table row without a
     /// binding is a lie the collision test cannot catch", so the sheet renders only
     /// `all` and a user is never told about a key that does nothing. They are still
-    /// worth writing down, because the collision test runs over `all + planned` too:
-    /// K3 gets a build failure the moment `M` or `A` stops being free, instead of
-    /// discovering it by hand.
+    /// worth writing down, because the collision test runs over `all + planned` too: a
+    /// phase that is about to take a reserved chord gets a build failure instead of
+    /// discovering the clash by hand.
     ///
-    /// **The conflict facts K3 can rely on**, verified against the source:
-    ///  · `V` / `F` / `T` are taken on the canvas (`toolShortcut`), and it returns
-    ///    `nil` for every other letter.
-    ///  · `X` is taken in the grid (`gridKeyCommand`), and no other bare letter is.
-    ///  · Both decoders require BARE modifiers, so ⌘A and ⌘M are unaffected.
-    ///  · The Home gallery has no bare-letter binding at all — but [024]'s open
-    ///    question 2 recommends M/A stay off it (folder reparenting has its own
-    ///    "Move to" menu), so nothing is reserved there.
-    static let planned: [Shortcut] = [
-        Shortcut([.character("m")], [], "Move to…",
-                 scope: .collection, status: .planned("[011] C-2, amended by [024] K4"),
-                 source: "not yet implemented — [024] K3"),
-        Shortcut([.character("a")], [], "Add to…",
-                 scope: .collection, status: .planned("[011] C-2, amended by [024] K4"),
-                 source: "not yet implemented — [024] K3"),
-        Shortcut([.character("m")], [], "Move to… (drops the placements)",
-                 scope: .space, status: .planned("[024] C"),
-                 source: "not yet implemented — [024] K3"),
-        Shortcut([.character("a")], [], "Add to… (placements stay)",
-                 scope: .space, status: .planned("[024] C"),
-                 source: "not yet implemented — [024] K3"),
-    ]
+    /// **Empty as of [024] K3**, which was the reason it was written: the four `M` /
+    /// `A` rows it held are now bound (three of them — the board's `M` was dropped,
+    /// see the `.space` section above). The array and ``ShortcutStatus`` stay because
+    /// they are the SEAM, not the rows: the next doc-reserved chord is a one-line
+    /// addition here and inherits the collision check for free. Deleting them would
+    /// mean rebuilding the mechanism the first time it is wanted again — and, worse,
+    /// would invite the next reservation into `all`, which is the lie the split exists
+    /// to prevent.
+    static let planned: [Shortcut] = []
 
     // MARK: - Queries
 

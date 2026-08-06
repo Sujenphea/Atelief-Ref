@@ -98,6 +98,24 @@ struct GridHostConfiguration {
     var onZoomIn: () -> Void
     /// ⌘− — smaller cells, more columns (`gridPrefs.zoomOut`).
     var onZoomOut: () -> Void
+    /// **`M` / `A`** — raise the shared destination picker on "Move to…" / "Add to…"
+    /// (024 · K3). The grid reports only WHICH verb was pressed: what it acts on is
+    /// the owning view's business, and it is deliberately the same rule ⌫ and ⌘D
+    /// already use (``IngestionModel/destinationActionTargets``) rather than a second
+    /// one read off the cells here.
+    ///
+    /// `nil` — the default — leaves the two keys UNBOUND on this grid rather than
+    /// bound to nothing: the decoded command falls through to `super.keyDown` exactly
+    /// as it did before K3. That is the right answer on a membership-less surface (the
+    /// search grid has no collection to move out of), and it matters that the key is
+    /// unhandled rather than silently eaten, since a swallowed letter is how a surface
+    /// acquires a key that does nothing and cannot be explained.
+    var onDestinationVerb: ((CollectionDestinationMenu.Verb) -> Void)?
+    /// Filled with the grid's own view so the owning SwiftUI view can hand first
+    /// responder BACK after a keyboard-raised popover closes (024 · K3) — the
+    /// discipline `DetailKeyCatcher.restoreResponder` and `SpaceView`'s
+    /// `restoreCanvasFocus` both follow. `nil` on a surface that raises no popover.
+    var focusHandle: GridFocusHandle?
 
     // MARK: A3 — drag out / drop / context menu seams
 
@@ -193,6 +211,29 @@ struct GridHostConfiguration {
     /// Defaulted to zero so the search grid — which keeps its own SwiftUI padding
     /// for now — and every prior caller are unchanged.
     var contentInsets = NSEdgeInsets()
+}
+
+/// A handle onto the live grid view, so whoever raised a popover over the grid can
+/// give the keyboard back when it closes (024 · K3).
+///
+/// A popover takes key window; when it goes away AppKit does not necessarily return
+/// first responder to the view that was focused before, and a grid that has lost it is
+/// deaf to the arrow keys — the exact symptom `SpaceView.restoreCanvasFocus` was
+/// written for on the board. The owning view holds one of these in `@State` and the
+/// coordinator fills it in; nothing else may write `view`.
+@MainActor
+final class GridFocusHandle {
+    fileprivate weak var view: NSView?
+
+    /// Return first responder to the grid, deferred off the current view update —
+    /// `onDisappear` runs inside one, and `makeFirstResponder` republishes focus state.
+    func restore() {
+        guard let view else { return }
+        Task { @MainActor [weak view] in
+            guard let view, let window = view.window else { return }
+            window.makeFirstResponder(view)
+        }
+    }
 }
 
 /// The one boundary supplementary kind — the scroll-away Collection header (222).
@@ -546,6 +587,10 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         collectionView.registerForDraggedTypes([AssetDragPayload.pasteboardType])
         // A2 — keyboard + hover forwarding (cell mouse-down arrives via the cell).
         collectionView.events = self
+        // K3 — hand the owning view a way back to this responder after it raises a
+        // popover over the grid. Written here, and again on `update`, so a config
+        // rebuilt with a fresh handle still finds the live view.
+        configuration.focusHandle?.view = collectionView
 
         let scrollView = NSScrollView(frame: collectionView.frame)
         scrollView.autoresizingMask = [.width, .height]
@@ -647,6 +692,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     func update(configuration: GridHostConfiguration) {
         let old = self.configuration
         self.configuration = configuration
+        configuration.focusHandle?.view = collectionView
         layout.density = configuration.density
         layout.spacing = configuration.spacing
         layout.topInset = configuration.topInset
@@ -1596,6 +1642,14 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
             configuration.onQuickLook()
         case .toggleLead:
             store.apply(.toggleLead)
+        // Unbound on a surface that supplies no handler — fall through rather than
+        // swallowing the letter (see ``GridHostConfiguration/onDestinationVerb``).
+        case .moveTo:
+            guard let raise = configuration.onDestinationVerb else { return false }
+            raise(.move)
+        case .addTo:
+            guard let raise = configuration.onDestinationVerb else { return false }
+            raise(.add)
         case .selectAll:
             store.apply(.selectAll)
         case .zoomIn:
@@ -1809,6 +1863,10 @@ nonisolated enum GridKeyCommand: Equatable {
     case quickLook
     /// X (no modifiers) — toggle the cursor cell in place.
     case toggleLead
+    /// M (bare) — open the destination picker on "Move to…" (024 · K3).
+    case moveTo
+    /// A (bare) — open the destination picker on "Add to…" (024 · K3).
+    case addTo
     /// ⌘A — select all.
     case selectAll
     /// ⌘+ / ⌘= — bigger cells (fewer columns).
@@ -1827,6 +1885,10 @@ nonisolated enum GridKeyCommand: Equatable {
 /// - Return → `.openLead`; Escape → `.escape`; Space → `.quickLook` — none under ⌘.
 /// - `x` with NO modifiers → `.toggleLead` (SwiftUI guards `modifiers.isEmpty`, so
 ///   even ⇧X is ignored — it never eats ⌘X etc).
+/// - `m` / `a` with no ⌘ / ⌥ / ⌃ → `.moveTo` / `.addTo` (024 · K3). ⇧ IS tolerated
+///   here, unlike `x`: these are verbs a user types, and a stray capital meant the
+///   verb. The guard that matters is the other one — ⌘A stays Select All below,
+///   ⌘M is nobody's, and ⌥A still types `å` in a text field.
 /// - ⌘A → `.selectAll`; ⌘+ / ⌘= → `.zoomIn`; ⌘− → `.zoomOut`.
 func gridKeyCommand(
     characters: String, modifiers: NSEvent.ModifierFlags
@@ -1834,6 +1896,8 @@ func gridKeyCommand(
     let command = modifiers.contains(.command)
     let shift = modifiers.contains(.shift)
     let bareModifiers = modifiers.intersection([.command, .shift, .option, .control])
+    // ⇧ omitted on purpose — see the `m` / `a` cases below.
+    let hardModifiers = modifiers.intersection([.command, .option, .control])
 
     // Function keys (arrows) arrive as their unicode scalars.
     if let scalar = characters.unicodeScalars.first {
@@ -1850,10 +1914,15 @@ func gridKeyCommand(
     case "\r", "\u{3}": return command ? nil : .openLead    // Return / Enter
     case "\u{1b}": return command ? nil : .escape           // Escape
     case " ": return command ? nil : .quickLook             // Space
-    case "a", "A": return command ? .selectAll : nil        // ⌘A
+    // ⌘A stays Select All; bare (or ⇧) A opens "Add to…" (024 · K3). ⌥A / ⌃A are
+    // neither — they belong to whatever a text field would do with them.
+    case "a", "A":
+        if command { return .selectAll }
+        return hardModifiers.isEmpty ? .addTo : nil
     case "=", "+": return command ? .zoomIn : nil           // ⌘= / ⌘+
     case "-": return command ? .zoomOut : nil               // ⌘−
     case "x", "X": return bareModifiers.isEmpty ? .toggleLead : nil  // X, no modifiers
+    case "m", "M": return hardModifiers.isEmpty ? .moveTo : nil      // M — "Move to…"
     default: return nil
     }
 }

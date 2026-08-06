@@ -94,6 +94,16 @@ public final class CanvasHostView: NSView {
     /// never reach us at all.
     public var onSelectTool: ((CanvasTool) -> Void)?
 
+    /// **`A`** — file the selected tiles somewhere, PLACEMENTS UNTOUCHED (024 · K3).
+    /// The host only reports the press and which tiles it carried; what "file" means
+    /// is the app's word (a collection), which this package deliberately does not know.
+    ///
+    /// It rides the same gate ``onSelectTool`` does — a bare letter read inside
+    /// `keyDown`, so an open text editor holding first responder never lets it fire.
+    /// See ``boardShortcut(characters:modifiers:)`` for why it is decoded beside the
+    /// tool keys rather than as one of them.
+    public var onFileTiles: ((Set<Int>) -> Void)?
+
     /// **⌫** — drop the tiles' PLACEMENTS from this board (022 · D3). The context
     /// menu's "Remove from Board" and the bare Delete key. The underlying assets are
     /// never touched: a board owns placements, not memberships.
@@ -1193,6 +1203,19 @@ public final class CanvasHostView: NSView {
             onSelectTool?(tool)
             return
         }
+        // …and the bare letters that are NOT tools (024 · K3). `A` only, and only with
+        // something selected: with an empty board selection there is nothing to file,
+        // so the key falls through rather than being swallowed — the same courtesy the
+        // delete branch above extends.
+        if Self.boardShortcut(
+            characters: event.charactersIgnoringModifiers,
+            modifiers: event.modifierFlags) == .file {
+            let ids = engine.selectedTileIDs
+            if !ids.isEmpty {
+                onFileTiles?(ids)
+                return
+            }
+        }
         super.keyDown(with: event)
     }
 
@@ -1278,14 +1301,60 @@ public final class CanvasHostView: NSView {
     public static func toolShortcut(
         characters: String?, modifiers: NSEvent.ModifierFlags
     ) -> CanvasTool? {
-        guard !modifiers.contains(.command), !modifiers.contains(.option),
-              !modifiers.contains(.control), !modifiers.contains(.function) else { return nil }
+        guard isBareLetter(modifiers) else { return nil }
         switch characters?.lowercased() {
         case "v": return .select
         case "f": return .frame
         case "t": return .text
         default: return nil
         }
+    }
+
+    /// A bare keystroke that asks the board for something which is NOT a tool.
+    ///
+    /// One case today, and the enum exists rather than a `Bool` so the second one is a
+    /// case rather than a second decoder.
+    public enum CanvasBoardCommand: Equatable, Sendable {
+        /// `A` — file the selected tiles' assets somewhere, placements untouched.
+        case file
+    }
+
+    /// The board command a bare keystroke asks for, or `nil` (024 · K3).
+    ///
+    /// **Why this is a sibling of ``toolShortcut(characters:modifiers:)`` rather than
+    /// another case in it.** `toolShortcut` returns a ``CanvasTool``, and `CanvasTool`
+    /// is not "a thing a key can do" — it is the canvas's MODE, the value the tool
+    /// picker binds to, the value `onCreateElement` switches over, and the value the
+    /// host stores in ``tool`` and keeps until something changes it. Filing tiles is a
+    /// one-shot verb with no mode to be in, so an `.addToCollection` case on
+    /// `CanvasTool` would have to be excluded by hand from the picker, from the create
+    /// path and from the host's own state — a value that is a member of the enum
+    /// everywhere except the three places the enum is used. Two small decoders keep
+    /// `CanvasTool` meaning exactly the three modes it has always meant.
+    ///
+    /// They share ``isBareLetter(_:)`` so the modifier rule cannot drift between them:
+    /// ⌘ / ⌥ / ⌃ / fn disqualify (so ⌘A is still Select All wherever that is bound,
+    /// and ⌥A still types `å` in a text box), ⇧ is tolerated via `lowercased()`.
+    ///
+    /// **`M` is deliberately absent.** [024] §C recommended M ("Move to…") on every
+    /// surface with a selection; on a board that would have meant filing the assets
+    /// AND dropping the placements, which is a different verb from the grid's M under
+    /// the same key. See the doc's §C amendment.
+    public static func boardShortcut(
+        characters: String?, modifiers: NSEvent.ModifierFlags
+    ) -> CanvasBoardCommand? {
+        guard isBareLetter(modifiers) else { return nil }
+        switch characters?.lowercased() {
+        case "a": return .file
+        default: return nil
+        }
+    }
+
+    /// The modifier rule every bare-letter binding on this canvas lives under: none of
+    /// ⌘ / ⌥ / ⌃ / fn, and ⇧ tolerated (the callers `lowercased()` the character).
+    private static func isBareLetter(_ modifiers: NSEvent.ModifierFlags) -> Bool {
+        !modifiers.contains(.command) && !modifiers.contains(.option)
+            && !modifiers.contains(.control) && !modifiers.contains(.function)
     }
 
     /// Edit ▸ Copy (⌘C, 052 · B1) — the standard responder action, so the system's

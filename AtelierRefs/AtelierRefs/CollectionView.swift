@@ -51,6 +51,11 @@ struct CollectionView: View {
     /// Which overflow section is expanded (accordion — at most one). `nil` = both
     /// collapsed, the state the popover reopens in.
     @State private var expandedMoreSection: MoreSection?
+    /// The destination picker `M` / `A` raised, or `nil` (024 · K3). Holds the assets
+    /// it will file, captured at the press — see ``DestinationRequest``.
+    @State private var destinationRequest: DestinationRequest?
+    /// The grid's own view, so the picker can hand the keyboard back on dismiss.
+    @State private var gridFocus = GridFocusHandle()
     /// The live grid viewport width, captured from the grid's `GeometryReader`, so
     /// the toolbar / ⌘+/⌘− density controls can clamp against the current width
     /// (011-B2 · 16A) without their own geometry reader.
@@ -308,6 +313,13 @@ struct CollectionView: View {
             // otherwise the lone import pill needs its own.
             .padding(.bottom, model.selection.isSelecting ? 0 : Theme.Spacing.lg)
         }
+        // M / A raise the destination picker HERE — from the same corner of the pane
+        // the selection bar's `…` overflow opens its Move to / Add to accordion from,
+        // opening upward for the same reason (024 · K3). It is anchored to the pane
+        // rather than to the lead tile because the verb can act on a scattered
+        // multi-selection, which has no one tile to point at; the picker's own count
+        // says what it caught.
+        .overlay(alignment: .bottom) { destinationPickerAnchor }
         // The floating "+" (moved down from the shell). Hidden while the full-window
         // item detail is up: this is an overlay on the PANE, and the detail host is a
         // later sibling in `body`'s ZStack, so a visible "+" would float over a page
@@ -516,6 +528,47 @@ struct CollectionView: View {
         }
     }
 
+    /// The zero-size anchor the `M` / `A` picker hangs off (024 · K3), sitting where
+    /// the floating selection bar does so the popover lands in the same place whether
+    /// it was raised by a key or by the bar's `…`.
+    ///
+    /// Non-interactive: it must never shadow a click meant for the grid behind it.
+    @ViewBuilder private var destinationPickerAnchor: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .padding(.bottom, Theme.Spacing.xxl)
+            .allowsHitTesting(false)
+            .popover(item: $destinationRequest, arrowEdge: .top) { request in
+                DestinationPicker(
+                    verb: request.verb,
+                    count: request.assetIDs.count,
+                    folders: model.folders,
+                    unsortedID: model.unsortedFolderID,
+                    // The collection on screen is listed and greyed, exactly as the
+                    // selection bar and the right-click menu list it — filing where
+                    // the items already are is a no-op, not a missing row.
+                    disabled: [collectionID],
+                    onSelect: { target in file(request, into: target) },
+                    onDismiss: { destinationRequest = nil })
+            }
+            // Whichever way it closed — a pick, Escape, or a click outside — the grid
+            // gets the keyboard back, or its arrows stay dead until the next click.
+            .onChange(of: destinationRequest?.id) { _, id in
+                if id == nil { gridFocus.restore() }
+            }
+    }
+
+    /// Run a keyboard-raised destination pick. The SAME two model verbs the selection
+    /// bar's accordion and the right-click menu call — one implementation per verb, so
+    /// the key and the menu can never mean different things.
+    private func file(_ request: DestinationRequest, into target: UUID) {
+        switch request.verb {
+        case .move: model.moveToCollection(assetIDs: request.assetIDs, to: target)
+        case .add: model.copyToCollection(
+            assetIDs: request.assetIDs, to: target, from: collectionID)
+        }
+    }
+
     /// Run the chosen destination action on the current selection and dismiss.
     private func moveOrCopy(copy: Bool, to id: UUID) {
         if copy {
@@ -681,6 +734,16 @@ struct CollectionView: View {
             onQuickLook: { presentQuickLook() },
             onZoomIn: { gridPrefs.zoomIn(forWidth: geo.size.width - 2 * Self.contentMargin) },
             onZoomOut: { gridPrefs.zoomOut(forWidth: geo.size.width - 2 * Self.contentMargin) },
+            // M / A — raise the shared destination list over the grid (024 · K3).
+            // `destinationActionTargets` is the SAME rule ⌫ and ⌘D use: the selection
+            // when there is one, else the keyboard cursor's post (widened, so a
+            // collapsed ⧉4 tile files all four).
+            onDestinationVerb: { verb in
+                let ids = model.destinationActionTargets
+                guard !ids.isEmpty else { return }
+                destinationRequest = DestinationRequest(verb: verb, assetIDs: ids)
+            },
+            focusHandle: gridFocus,
             // A3 — drag out / drop / context menu. Every closure forwards to the
             // SAME model/view seams the SwiftUI grid used, so parity is structural.
             dragPayload: { model.dragPayload(forCellItemID: $0) },

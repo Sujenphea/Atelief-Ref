@@ -108,6 +108,45 @@ Semantics on a board differ from a grid and must be stated:
   This is the common one on a board, and it is `addAssets` — already reachable
   from the Space's own targets (`SpaceTargets.swift`).
 
+> ### Amendment (K3, shipped) — **there is no board `M`**
+>
+> The recommendation above ("M on every surface with a selection") was **rejected
+> for the Space board** when K3 was built. `A` is bound there; `M` is not, and
+> `CanvasHostView.boardShortcut` returns `nil` for it — asserted by `boardHasNoM`
+> (`MoveAddShortcutTests.swift`) and by `KeyMapTests.spaceScopeHasAddButNotMove`.
+>
+> The reason is in the bullet above it. On a grid, `M` is a plain reparent: one
+> membership leaves one collection and joins another, and the tile you were looking
+> at goes away because it is no longer in this collection. On a board, `M` would
+> have had to mean *file the assets **and** delete their placements* — a composite
+> whose second half is destructive-adjacent (a layout the user arranged by hand
+> disappears) and whose relationship to the first half is invented rather than
+> implied. Binding both halves to the key that means "reparent" one screen over is
+> how a shortcut becomes unlearnable: same key, same-looking selection, two
+> different amounts of damage.
+>
+> A board owns **placements**, not memberships (019 · C1), so the verb a board
+> actually has is `A` — file the assets, leave the layout alone. That is
+> `addAssets`, one call, undoable, with nothing to explain. Filing *and* clearing
+> the board remains reachable as two deliberate acts: `A`, then ⌫.
+>
+> This also removes §"Risks & edge cases"'s "Space `M` is destructive-adjacent"
+> item and the composite-undo test in §"Test strategy" — there is no composite left
+> to get wrong. `A` is asserted instead: one undoable membership edit, zero
+> placement edits.
+>
+> Two smaller decisions settled at the same time, both recorded in the code:
+>
+> - **`A` is decoded beside `toolShortcut`, not inside it** (`boardShortcut`).
+>   `CanvasTool` is the canvas's *mode* — the value the picker binds to and the
+>   create path switches over — and filing is a one-shot verb with no mode to be
+>   in. Two small decoders sharing one bare-modifier guard keep `CanvasTool`
+>   meaning exactly the three modes it has always meant.
+> - **Both verbs act on the keyboard cursor when nothing is selected**, through
+>   `IngestionModel.destinationActionTargets` — the same property ⌫ and ⌘D read, so
+>   a cursor on a collapsed ⧉4 tile files all four (027 · G1). Not a second
+>   targeting rule.
+
 Both open the same destination picker the selection bar uses —
 `CollectionTargets.moveTargetTree` (`CollectionTargets.swift:62`), the full
 indented hierarchy. That is [075]'s point too: **one destination list, one

@@ -223,16 +223,23 @@ struct SelectionMenuRow: View {
     let systemImage: String?
     let indent: Int
     let isEnabled: Bool
+    /// The KEYBOARD cursor is on this row (024 · K3) — marked with the raised
+    /// `selection` fill, the same "this is the live one" the sidebar row and the chip
+    /// use, and the fill hover steps aside for so a pointer can't wash it out. Default
+    /// `false`, so every pointer-driven list is unchanged.
+    let isHighlighted: Bool
     var action: () -> Void
 
     @State private var isHovering = false
 
     init(_ title: String, systemImage: String? = nil, indent: Int = 0,
-         isEnabled: Bool = true, action: @escaping () -> Void = {}) {
+         isEnabled: Bool = true, isHighlighted: Bool = false,
+         action: @escaping () -> Void = {}) {
         self.title = title
         self.systemImage = systemImage
         self.indent = indent
         self.isEnabled = isEnabled
+        self.isHighlighted = isHighlighted
         self.action = action
     }
 
@@ -257,11 +264,19 @@ struct SelectionMenuRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous)
-                    .fill(isEnabled && isHovering ? Theme.Colors.hoverRow : .clear))
+                    .fill(rowFill))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .onHover { if isEnabled { isHovering = $0 } }
+    }
+
+    /// The keyboard cursor outranks the pointer: while both are on a row the raised
+    /// `selection` fill wins, so a mouse resting anywhere in the list can never make
+    /// the row Return would file into ambiguous.
+    private var rowFill: Color {
+        if isHighlighted { return Theme.Colors.selection }
+        return isEnabled && isHovering ? Theme.Colors.hoverRow : .clear
     }
 }

@@ -55,6 +55,17 @@ nonisolated enum CollectionDestinationMenu {
     enum Verb: String {
         case move = "Move here"
         case add = "Add here"
+
+        /// The verb as a HEADING over the whole tree — the selection bar's accordion
+        /// sections, the right-click submenu titles, and (024 · K3) the `M` / `A`
+        /// picker all say this. One vocabulary: a keyboard picker that said
+        /// "Move to Collection" while the bar beside it said "Move to" would be two.
+        var title: String {
+            switch self {
+            case .move: "Move to"
+            case .add: "Add to"
+            }
+        }
     }
 
     // MARK: - Pure

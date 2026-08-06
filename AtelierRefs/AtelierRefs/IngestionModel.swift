@@ -2267,13 +2267,71 @@ final class IngestionModel: ObservableObject {
     /// source — the asset is filed now, so it stops being unsorted — and calling
     /// that "Added" would describe a row the user just watched disappear. Callers
     /// with no folder source (search results) pass `nil` and keep "Added".
+    /// **Undoable since 024 · K3.** It was not before, and the asymmetry only became
+    /// dangerous when a single bare `A` could fire it: Move and Remove both register a
+    /// reversible action and raise an "…— Undo" toast, while Add published a plain
+    /// notice and left nothing to press. A key you can hit by accident needs the same
+    /// way back the two verbs beside it have.
+    ///
+    /// The inverse removes only the memberships this call actually CREATED — see
+    /// ``applyAdd(_:to:record:)`` — so undoing an add over a set that was already half
+    /// filed there leaves the half that predated it alone.
     func copyToCollection(assetIDs: [UUID], to targetID: UUID, from source: UUID? = nil) {
-        guard !assetIDs.isEmpty else { return }
+        guard !assetIDs.isEmpty, services != nil else { return }
         let verb = source == Collection.unsortedID ? "Moved" : "Added"
-        mutateContents { services in
-            try await services.addAssets(assetIDs, to: targetID)
-            return "\(verb) \(Self.itemCount(assetIDs.count)) to “\(self.name(for: targetID))”."
-        }
+        let message = "\(verb) \(Self.itemCount(assetIDs.count)) to “\(name(for: targetID))”."
+        // Shared by the forward pass and its inverse, so a redo re-records what the
+        // second run created rather than reusing the first run's answer.
+        let record = AddedMemberships()
+        enqueueUndoable { await self.applyAdd(assetIDs, to: targetID, record: record) }
+        registerReversible("Add",
+            primary: { self.enqueueUndoable { await self.applyAdd(assetIDs, to: targetID, record: record) } },
+            inverse: { self.enqueueUndoable { await self.applyUnadd(record, from: targetID) } })
+        announceUndoable(message)
+    }
+
+    /// The memberships one `Add` created, written by the forward pass and read by its
+    /// inverse. A reference type because both closures are registered ONCE and must
+    /// see the same box across every undo ↔ redo ping-pong.
+    final class AddedMemberships {
+        var assetIDs: [UUID] = []
+    }
+
+    /// Add memberships to `target` and record which ones were new, then refresh.
+    ///
+    /// The delta is measured by reading the target's membership before and after
+    /// rather than by predicting it. `addAssets` skips assets that are already
+    /// members, and — when the target is Unsorted — also skips assets that are filed
+    /// anywhere real (the F3 invariant). Reproducing both rules here to guess the
+    /// delta would be a second copy of them, which is how an inverse silently starts
+    /// removing a membership the user had before.
+    private func applyAdd(
+        _ assetIDs: [UUID], to target: UUID, record: AddedMemberships
+    ) async {
+        guard let services else { return }
+        do {
+            let before = Set(try await services.collectionItems(in: target).map(\.asset.id))
+            try await services.addAssets(assetIDs, to: target)
+            let after = Set(try await services.collectionItems(in: target).map(\.asset.id))
+            // In the given order, so the undo reads deterministically in a test.
+            record.assetIDs = assetIDs.filter { after.contains($0) && !before.contains($0) }
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Drop exactly the memberships ``applyAdd(_:to:record:)`` created — the inverse.
+    ///
+    /// Does NOT touch the source: an add never removed anything, so there is nothing
+    /// to put back. An asset left with no memberships at all is re-homed to Unsorted by
+    /// `removeAssets` (F3), which is precisely where the forward pass evicted it from.
+    private func applyUnadd(_ record: AddedMemberships, from target: UUID) async {
+        guard let services, !record.assetIDs.isEmpty else { return }
+        do {
+            try await services.removeAssets(record.assetIDs, from: target)
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+        } catch { lastError = Self.message(for: error) }
     }
 
     /// The asset ids a keyboard command (Delete / Remove / ⌘D) acts on: the whole
@@ -2294,6 +2352,16 @@ final class IngestionModel: ObservableObject {
             ? selectedAssetIDs
             : (leadItem.map { assetIDs(for: widenedForAction([$0.item.id])) } ?? [])
     }
+
+    /// The assets `M` / `A` file (024 · K3) — **deliberately the same answer ⌫ and ⌘D
+    /// give**, not a second targeting rule read off the grid's cells.
+    ///
+    /// This exists only because ``keyboardActionTargets`` is private and the two new
+    /// verbs are raised from a view rather than from a method on this model (the key
+    /// opens a picker; the picker calls back with a destination later). A separate
+    /// rule would have re-introduced exactly the bug [027] G1 fixed: a cursor on a
+    /// collapsed ⧉4 tile must file all four, because that is what the tile stands for.
+    var destinationActionTargets: [UUID] { keyboardActionTargets }
 
     // MARK: - Favorites (011 · U5)
 

@@ -203,10 +203,25 @@ struct GridInputRoutingTests {
         #expect(gridKeyCommand(characters: "x", modifiers: [.control]) == nil)
     }
 
-    @Test("⌘A selects all; the letter alone does nothing")
+    /// ⌘A is Select All and the bare letter is "Add to…" ([024] K3). It used to be
+    /// nothing, and the assertion here used to say so — the pair is now the clearest
+    /// statement of the modifier rule the two share: ⌘ picks the meaning, and neither
+    /// spelling can reach the other's.
+    @Test("⌘A selects all; the letter alone opens Add to…")
     func selectAll() {
         #expect(gridKeyCommand(characters: "a", modifiers: [.command]) == .selectAll)
-        #expect(gridKeyCommand(characters: "a", modifiers: []) == nil)
+        #expect(gridKeyCommand(characters: "a", modifiers: []) == .addTo)
+        #expect(gridKeyCommand(characters: "a", modifiers: [.option]) == nil)
+    }
+
+    /// `M` is bound to nothing but "Move to…" ([024] K3) — in particular not under ⌘,
+    /// where it must stay free for whatever the system or a later menu wants.
+    @Test("M opens Move to…; ⌘M is nobody's")
+    func moveTo() {
+        #expect(gridKeyCommand(characters: "m", modifiers: []) == .moveTo)
+        #expect(gridKeyCommand(characters: "m", modifiers: [.shift]) == .moveTo)
+        #expect(gridKeyCommand(characters: "m", modifiers: [.command]) == nil)
+        #expect(gridKeyCommand(characters: "m", modifiers: [.control]) == nil)
     }
 
     @Test("⌘+ / ⌘= zoom in; ⌘− zooms out; without ⌘ they do nothing")
