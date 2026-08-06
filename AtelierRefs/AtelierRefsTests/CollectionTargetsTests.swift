@@ -3,9 +3,10 @@
 //  AtelierRefsTests
 //
 //  009 · N2 — the single source of collection ordering, shared by the gallery,
-//  the Move/Add menus, and the drop rail. Guards Unsorted-pinning, the
-//  subfolders-then-roots split, current-collection exclusion, and stable
-//  (name,id) ordering so the three surfaces can never drift apart.
+//  the Move/Add destination renderers, and the drop rail. Guards Unsorted-pinning,
+//  the whole-hierarchy destination tree (027 · G2, which replaced the old
+//  one-level `moveTargets` split), and stable (name,id) ordering so the surfaces
+//  can never drift apart.
 //
 
 import AtelierCore
@@ -19,13 +20,13 @@ struct CollectionTargetsTests {
     private let unsortedID = Collection.unsortedID
 
     private func collection(
-        _ name: String, id: UUID = UUID(), parent: UUID? = nil
+        _ name: String, id: UUID = UUID(), parent: UUID? = nil, sortIndex: Int = 0
     ) -> Collection {
         Collection(
             id: id, name: name, description: nil, coverAssetID: nil,
             createdAt: Date(timeIntervalSince1970: 0),
             updatedAt: Date(timeIntervalSince1970: 0),
-            parentCollectionID: parent)
+            parentCollectionID: parent, sortIndex: sortIndex)
     }
 
     // MARK: - Gallery roots
@@ -55,56 +56,113 @@ struct CollectionTargetsTests {
         #expect(roots.map(\.id) == [idA, idB])
     }
 
-    // MARK: - Move targets
+    // MARK: - The destination tree (027 · G2 — the ONE ordering)
 
-    @Test("move targets list subfolders first, then roots (Unsorted included)")
-    func moveTargetsSplit() {
+    @Test("the destination tree carries the WHOLE hierarchy, not one level")
+    func destinationTreeIsRecursive() {
+        // The exact shape 027 §A names: from `Refs` the old `moveTargets` reached
+        // `Refs/Type` but never `Refs/Type/Serif`, at any depth, forever.
+        let unsorted = collection("Unsorted", id: unsortedID)
+        let refs = collection("Refs")
+        let type = collection("Type", parent: refs.id)
+        let serif = collection("Serif", parent: type.id)
+        let sans = collection("Sans", parent: type.id, sortIndex: 1)
+
+        let tree = CollectionTargets.destinationTree(
+            folders: [unsorted, refs, type, serif, sans], unsortedID: unsortedID)
+
+        #expect(tree.map(\.collection.name) == ["Unsorted", "Refs"])
+        #expect(tree[1].children.map(\.collection.name) == ["Type"])
+        #expect(tree[1].children[0].children.map(\.collection.name) == ["Serif", "Sans"])
+    }
+
+    @Test("the current collection is NOT filtered out (it is greyed by the renderers)")
+    func destinationTreeKeepsTheCurrentCollection() {
         let unsorted = collection("Unsorted", id: unsortedID)
         let current = collection("Current")
         let other = collection("Other")
-        let subB = collection("Sub-B", parent: current.id)
-        let subA = collection("Sub-A", parent: current.id)
 
-        let targets = CollectionTargets.moveTargets(
-            from: current.id,
-            folders: [unsorted, current, other, subB, subA],
-            unsortedID: unsortedID)
+        let tree = CollectionTargets.destinationTree(
+            folders: [unsorted, current, other], unsortedID: unsortedID)
 
-        #expect(targets.subfolders.map(\.name) == ["Sub-A", "Sub-B"])
-        #expect(targets.roots.map(\.name) == ["Unsorted", "Other"])
-        #expect(targets.all.map(\.name) == ["Sub-A", "Sub-B", "Unsorted", "Other"])
+        #expect(tree.map(\.collection.name) == ["Unsorted", "Current", "Other"])
     }
 
-    @Test("the current collection is never offered as its own target")
-    func excludesCurrent() {
+    @Test("children come in MANUAL order (sortIndex), roots in gallery order")
+    func destinationTreeManualOrder() {
         let unsorted = collection("Unsorted", id: unsortedID)
-        let current = collection("Current")
-        let other = collection("Other")
+        // sortIndex wins over the alphabetical tiebreak, at both levels.
+        let zed = collection("Zed", sortIndex: 0)
+        let alpha = collection("Alpha", sortIndex: 1)
+        let bChild = collection("B", parent: zed.id, sortIndex: 0)
+        let aChild = collection("A", parent: zed.id, sortIndex: 1)
 
-        let targets = CollectionTargets.moveTargets(
-            from: current.id,
-            folders: [unsorted, current, other],
-            unsortedID: unsortedID)
+        let tree = CollectionTargets.destinationTree(
+            folders: [unsorted, alpha, zed, aChild, bChild], unsortedID: unsortedID)
 
-        #expect(!targets.roots.contains { $0.id == current.id })
-        #expect(targets.roots.map(\.name) == ["Unsorted", "Other"])
+        #expect(tree.map(\.collection.name) == ["Unsorted", "Zed", "Alpha"])
+        #expect(tree[1].children.map(\.collection.name) == ["B", "A"])
     }
 
-    @Test("moving FROM a subfolder: its parent's other children are NOT auto-included, roots are")
-    func fromSubfolder() {
-        let unsorted = collection("Unsorted", id: unsortedID)
+    @Test("an empty library yields no destinations")
+    func destinationTreeEmpty() {
+        #expect(CollectionTargets.destinationTree(folders: [], unsortedID: unsortedID).isEmpty)
+    }
+
+    @Test("a corrupt parent loop under a real root terminates instead of recursing forever")
+    func destinationTreeCycleSafe() {
+        // root → a → b → a. Without the on-path guard this recurses until the stack
+        // dies; with it, the repeat is dropped and the walk ends.
         let root = collection("Root")
-        let sub = collection("Sub", parent: root.id)
-        let leaf = collection("Leaf", parent: sub.id)
+        let aID = UUID(), bID = UUID()
+        let a = collection("A", id: aID, parent: root.id)
+        let b = collection("B", id: bID, parent: aID)
+        // The corrupt row: `A` again, this time claiming `B` as its parent.
+        let loopBackToA = collection("A", id: aID, parent: bID)
 
-        let targets = CollectionTargets.moveTargets(
-            from: sub.id,
-            folders: [unsorted, root, sub, leaf],
+        let tree = CollectionTargets.destinationTree(
+            folders: [root, a, b, loopBackToA], unsortedID: unsortedID)
+
+        #expect(tree.map(\.collection.name) == ["Root"])
+        #expect(tree[0].children.map(\.collection.name) == ["A"])
+        #expect(tree[0].children[0].children.map(\.collection.name) == ["B"])
+        #expect(tree[0].children[0].children[0].children.isEmpty)
+    }
+
+    // MARK: - The flattened, indented list
+
+    @Test("the flattened tree is pre-order with a depth per row")
+    func moveTargetTreeDepths() {
+        let unsorted = collection("Unsorted", id: unsortedID)
+        let refs = collection("Refs")
+        let type = collection("Type", parent: refs.id)
+        let serif = collection("Serif", parent: type.id)
+        let photography = collection("Photography", sortIndex: 1)
+        let portraits = collection("Portraits", parent: photography.id)
+
+        let rows = CollectionTargets.moveTargetTree(
+            folders: [unsorted, refs, type, serif, photography, portraits],
             unsortedID: unsortedID)
 
-        // Only `sub`'s own direct children (leaf); roots are Unsorted + Root.
-        #expect(targets.subfolders.map(\.name) == ["Leaf"])
-        #expect(targets.roots.map(\.name) == ["Unsorted", "Root"])
+        #expect(rows.map(\.collection.name)
+            == ["Unsorted", "Refs", "Type", "Serif", "Photography", "Portraits"])
+        #expect(rows.map(\.depth) == [0, 0, 1, 2, 0, 1])
+    }
+
+    @Test("a 6-deep chain is flattened to depths 0…5 — no cap, ever")
+    func moveTargetTreeSixDeep() {
+        var folders = [collection("Unsorted", id: unsortedID)]
+        var parent: UUID?
+        for level in 0..<6 {
+            let c = collection("L\(level)", parent: parent)
+            folders.append(c)
+            parent = c.id
+        }
+
+        let rows = CollectionTargets.moveTargetTree(folders: folders, unsortedID: unsortedID)
+
+        #expect(rows.map(\.collection.name) == ["Unsorted", "L0", "L1", "L2", "L3", "L4", "L5"])
+        #expect(rows.map(\.depth) == [0, 0, 1, 2, 3, 4, 5])
     }
 
     // MARK: - Folder reparent targets (043)

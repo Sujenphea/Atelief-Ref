@@ -3,6 +3,11 @@
 
 # Xcode
 *.xcuserstate
+# Per-user scheme order and window state. The rule was here all along but did
+# nothing for `xcschememanagement.plist`, which had been committed before it
+# existed — .gitignore does not apply to tracked files, so Xcode re-dirtied it
+# on every open and it rode along in unrelated commits. Untracked (not deleted)
+# so the rule finally bites.
 xcuserdata/
 DerivedData/
 *.xcscmblueprint

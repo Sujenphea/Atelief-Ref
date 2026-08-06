@@ -84,8 +84,9 @@ struct CollectionsOutlineView: NSViewRepresentable {
     /// begins the draft when the token changes; the section "+" and ⌘N set it, the
     /// row's "New Subfolder…" begins one directly in the coordinator.
     let draftRequest: CollectionDraftRequest?
-    /// Rename still uses a SwiftUI text-entry alert; move + delete are applied
-    /// directly on the model by the coordinator.
+    /// The SwiftUI text-entry alert (`NameEntryAlert`), kept as a FALLBACK only:
+    /// rename is now an inline session on the row itself (025 · S2), and this fires
+    /// solely when the coordinator cannot resolve that row.
     let onRename: (UUID) -> Void
 
     func makeCoordinator() -> CollectionsOutlineCoordinator {
@@ -124,26 +125,27 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
     private static let columnID = NSUserInterfaceItemIdentifier("name")
     private static let draftColumnID = NSUserInterfaceItemIdentifier("draft")
 
-    /// An in-flight inline-creation session (214), `nil` when idle. `text` mirrors
-    /// the field live so a mid-edit reload can restore it; `committedName` is set
-    /// after Enter so the row stays as a static label until the real folder lands.
-    private struct DraftState {
-        let parentID: UUID?
-        var text: String = ""
-        var committedName: String?
-    }
-    private var draft: DraftState?
-    /// The single sentinel row for the active draft — tracked by id-equality across
+    /// The in-flight inline edit (214 · new item, 025 · S2 · rename), `nil` when
+    /// idle. One session at a time, whichever kind.
+    private var edit: SidebarEditState?
+    /// The single sentinel row for an active DRAFT — tracked by id-equality across
     /// reloads. Never lives inside `roots`; appended by `children(of:)` on demand.
+    /// A rename has no phantom row: it edits the node's own row.
     private let draftNode = CollectionNode(
         id: UUID(), name: "", isUnsorted: false, children: [])
     /// The last consumed draft-request token, so `updateNSView` re-entry is idempotent.
     private var lastDraftToken: UUID?
-    /// A fallback work item that clears a committed-but-never-refreshed draft row if
-    /// `createFolder` fails silently (its `perform` only sets `lastError`).
+    /// A fallback work item that clears a committed-but-never-refreshed row if the
+    /// write fails silently (`createFolder`/`renameFolder` only set `lastError`).
     private var draftCleanupWork: DispatchWorkItem?
 
     private func isDraftNode(_ item: Any?) -> Bool { (item as? CollectionNode) === draftNode }
+
+    /// Is `item` the row an active rename session is editing?
+    private func isRenaming(_ item: Any?) -> Bool {
+        guard let id = (item as? CollectionNode)?.id else { return false }
+        return edit?.isRenaming(id) == true
+    }
 
     /// The current node tree + the snapshot it was built from — rebuilt only when
     /// the folders actually change (043 · 13A memoization).
@@ -202,11 +204,12 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         outlineView.style = .plain
         outlineView.dataSource = self
         outlineView.delegate = self
-        // A click anywhere on a parent row toggles its children (the whole row is
-        // the show/hide target, not just the chevron). Selection/nav is handled
-        // separately by `outlineViewSelectionDidChange`.
+        // A row click NAVIGATES, full stop (025 · S1). Expansion belongs to the
+        // cell's chevron button; a double-click opens a rename session (025 · S3).
         outlineView.target = self
         outlineView.action = #selector(rowClicked)
+        outlineView.doubleAction = #selector(rowDoubleClicked)
+        outlineView.onKeyDown = { [weak self] event in self?.handleKeyDown(event) ?? false }
         outlineView.autosaveExpandedItems = false
         outlineView.registerForDraggedTypes(
             [CollectionDragPayload.pasteboardType, AssetDragPayload.pasteboardType])
@@ -228,8 +231,15 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
               !isDraftNode(node) else { return }
         let id = node.id
         menu.addItem(SidebarBlockMenuItem(title: "New Subfolder…") { [weak self] in self?.beginDraft(parentID: id) })
-        guard !node.isUnsorted else { return }   // Unsorted: create-only
-        menu.addItem(SidebarBlockMenuItem(title: "Rename…") { [weak self] in self?.onRename(id) })
+        // Unsorted is create-only: it is protected from rename, move and drag, and
+        // it is the folder every removal re-homes to.
+        guard !node.isUnsorted else { return }
+        // One rename affordance, three ways in (menu / Enter / double-click): the
+        // same inline session. The alert is the fallback for a row we can't resolve.
+        menu.addItem(SidebarBlockMenuItem(title: "Rename…") { [weak self] in
+            guard let self else { return }
+            if !self.beginRename(id: id) { self.onRename(id) }
+        })
         menu.addItem(moveToItem(for: id))
         menu.addItem(.separator())
         let delete = SidebarBlockMenuItem(title: "Delete") { [weak self] in self?.model.deleteFolder(id: id) }
@@ -270,24 +280,35 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
             .sorted { $0.id.uuidString < $1.id.uuidString }
         if next != snapshot {
             snapshot = next
-            // A committed draft's real folder has now arrived (appended at the same
-            // sibling slot via sortIndex) — drop the placeholder so the reload swaps
-            // it in place with no visual jump.
-            if draft?.committedName != nil {
-                draft = nil
+            // A committed session's write has now landed (a new folder appended at
+            // the same sibling slot via sortIndex, or a renamed one carrying its new
+            // name) — drop the placeholder so the reload swaps it in with no jump.
+            if edit?.committedName != nil {
+                edit = nil
                 draftCleanupWork?.cancel()
                 draftCleanupWork = nil
             }
             roots = CollectionNode.tree(from: folders, unsortedID: unsortedID)
-            if draft != nil {
+            if let text = edit?.text {
                 // A reload landed MID-EDIT (rare): rebuild, then re-focus a fresh
-                // draft cell restoring the in-progress text so no keystrokes are lost.
-                // Suspend the live cell first so the teardown's end-editing callback
-                // isn't misread as a commit.
-                let text = draft!.text
-                suspendDraftCell()
+                // editable cell restoring the in-progress text so no keystrokes are
+                // lost. Suspend the live cell first so the teardown's end-editing
+                // callback isn't misread as a commit.
+                suspendEditCell()
                 outlineView.reloadData()
-                focusDraftField(restoring: text)
+                // A rename's row must be on screen to be re-focused; the rebuild may
+                // have re-parented it under a collapsed ancestor.
+                if let id = edit?.renameID, let node = findNode(id, in: roots) {
+                    expandAncestors(of: node)
+                }
+                if editRow >= 0 {
+                    focusEditField(restoring: text)
+                } else {
+                    // The renamed row went away under the edit (deleted elsewhere);
+                    // there is nothing left to rename, so drop the session.
+                    edit = nil
+                    outlineView.reloadData()
+                }
             } else {
                 outlineView.reloadData()
             }
@@ -330,7 +351,7 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         reportHeight(CGFloat(outlineView.numberOfRows) * Self.rowHeight)
     }
 
-    // MARK: - Inline draft (214)
+    // MARK: - Inline edit session (214 new item · 025 · S2 rename)
 
     /// Consume a SwiftUI draft request. Idempotent via the token so `updateNSView`
     /// re-entry never restarts a session; the actual begin is hopped out of the
@@ -343,8 +364,8 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
 
     /// Open an inline draft row under `parentID` (`nil` ⇒ a new root collection).
     func beginDraft(parentID: UUID?) {
-        if draft != nil { endDraft(commit: nil) }        // one session at a time
-        draft = DraftState(parentID: parentID)
+        if edit != nil { endEdit(commit: nil) }           // one session at a time
+        edit = SidebarEditState(session: .draft(parent: parentID))
         if let parentID, let parent = findNode(parentID, in: roots) {
             expandAncestors(of: parent)
         }
@@ -353,21 +374,38 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
             outlineView.expandItem(parent)                // now reports expandable
         }
         reportMeasuredHeight()                            // event context → sync write is safe
-        focusDraftField(restoring: "")
+        focusEditField(restoring: "")
     }
 
-    /// Finish the active draft. `name != nil` commits (create + keep a static row
-    /// until the refresh lands); `nil` cancels (remove the row immediately).
-    private func endDraft(commit name: String?) {
-        guard draft != nil else { return }
-        if let name {
-            draft?.committedName = name
+    /// Open a rename session on `id`'s own row (025 · S2) — the row's cell becomes
+    /// the same editable field the draft uses. Returns `false` when the row can't be
+    /// resolved or must not be renamed (Unsorted), so the caller can fall back.
+    @discardableResult
+    func beginRename(id: UUID) -> Bool {
+        guard let node = findNode(id, in: roots), !node.isUnsorted else { return false }
+        if edit != nil { endEdit(commit: nil) }           // one session at a time
+        edit = SidebarEditState(session: .rename(id: id), originalName: node.name)
+        expandAncestors(of: node)
+        outlineView.reloadData()                          // static label → editable cell
+        // Finder selects the whole name so the first keystroke replaces it.
+        focusEditField(restoring: node.name, selectAll: true)
+        return true
+    }
+
+    /// Finish the active session. The pure ``SidebarEditState/outcome(committing:)``
+    /// decides between create / rename / cancel — an empty name, or a rename that
+    /// ends on the name it started with, is a cancel and writes nothing.
+    private func endEdit(commit name: String?) {
+        guard let edit else { return }
+        switch edit.outcome(committing: name) {
+        case let .create(parent, name):
+            self.edit?.committedName = name
             // Activate the new collection. The committed draft row is drawn with the
             // selected-row highlight (`forceSelected`) but is NOT selectable, so
             // without this the sidebar reads as "the new collection is active" while
             // `nav` — and therefore the detail panel and the ⌘V import target — stay
             // on the previously selected one.
-            model.createFolder(name: name, parent: draft?.parentID ?? nil) { [weak self] created in
+            model.createFolder(name: name, parent: parent) { [weak self] created in
                 // Point the MODEL at it in the same turn, not just `nav`.
                 // `AppShellView.syncActiveCollection` would do this, but only after
                 // an `.onChange` + `DispatchQueue.main.async` hop — and every
@@ -377,41 +415,65 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
                 self?.model.selectedFolderID = created.id
                 self?.nav.selectSidebar(.collection(created.id))
             }
-            outlineView.reloadData()                      // draft cell → static label
-            // Safety net: if creation fails silently (no refresh), drop the lingering
-            // static row after a beat so it never sticks.
-            let work = DispatchWorkItem { [weak self] in
-                guard let self, self.draft?.committedName != nil else { return }
-                self.draft = nil
-                self.outlineView.reloadData()
-                self.reportMeasuredHeight()
-            }
-            draftCleanupWork?.cancel()
-            draftCleanupWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
-        } else {
-            draft = nil
+            outlineView.reloadData()                      // editable cell → static label
+            scheduleCommitCleanup()
+        case let .rename(id, name):
+            self.edit?.committedName = name
+            model.renameFolder(id: id, to: name)
+            // The row keeps drawing the committed name until the refresh lands, so
+            // the old name never flashes back between commit and reload.
             outlineView.reloadData()
+            scheduleCommitCleanup()
+        case .cancel:
+            self.edit = nil
+            outlineView.reloadData()                      // draft row goes / label returns
             reportMeasuredHeight()
         }
         outlineView.window?.makeFirstResponder(outlineView)
     }
 
-    /// Suspend the currently-visible draft cell so a programmatic teardown reload
+    /// Safety net: if the write fails silently (no refresh, only `lastError`), drop
+    /// the lingering committed row after a beat so it never sticks.
+    private func scheduleCommitCleanup() {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.edit?.committedName != nil else { return }
+            self.edit = nil
+            self.outlineView.reloadData()
+            self.reportMeasuredHeight()
+        }
+        draftCleanupWork?.cancel()
+        draftCleanupWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+    }
+
+    /// The row the active session is editing: the phantom draft row, or the renamed
+    /// node's own row. `-1` when there is no session or the row isn't on screen.
+    private var editRow: Int {
+        guard let edit else { return -1 }
+        switch edit.session {
+        case .draft:
+            return outlineView.row(forItem: draftNode)
+        case let .rename(id):
+            guard let node = findNode(id, in: roots) else { return -1 }
+            return outlineView.row(forItem: node)
+        }
+    }
+
+    /// Suspend the currently-visible editable cell so a programmatic teardown reload
     /// doesn't fire a spurious commit from its end-editing callback.
-    private func suspendDraftCell() {
-        let row = outlineView.row(forItem: draftNode)
+    private func suspendEditCell() {
+        let row = editRow
         guard row >= 0,
               let cell = outlineView.view(atColumn: 0, row: row, makeIfNecessary: false)
                 as? SidebarDraftCell else { return }
         cell.isSuspended = true
     }
 
-    /// Focus the draft field one tick after the reload, when the row's cell exists.
-    private func focusDraftField(restoring text: String) {
+    /// Focus the editable field one tick after the reload, when the row's cell exists.
+    private func focusEditField(restoring text: String, selectAll: Bool = false) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.draft != nil, self.draft?.committedName == nil else { return }
-            let row = self.outlineView.row(forItem: self.draftNode)
+            guard let self, self.edit != nil, self.edit?.committedName == nil else { return }
+            let row = self.editRow
             guard row >= 0,
                   let cell = self.outlineView.view(atColumn: 0, row: row, makeIfNecessary: true)
                     as? SidebarDraftCell else { return }
@@ -428,7 +490,9 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
                 editor.backgroundColor = .clear
                 editor.focusRingType = .none
             }
-            cell.field.currentEditor()?.selectedRange = NSRange(location: text.count, length: 0)
+            cell.field.currentEditor()?.selectedRange = selectAll
+                ? NSRange(location: 0, length: text.count)
+                : NSRange(location: text.count, length: 0)
         }
     }
 
@@ -455,7 +519,9 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
     private func children(of item: Any?) -> [CollectionNode] {
         let node = item as? CollectionNode
         let base = node?.children ?? roots
-        guard let draft, !isDraftNode(node), draft.parentID == node?.id else { return base }
+        // Only a DRAFT adds a row; a rename edits an existing one in place.
+        guard case let .draft(parent)? = edit?.session, !isDraftNode(node), parent == node?.id
+        else { return base }
         return base + [draftNode]
     }
 
@@ -463,45 +529,63 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
 
     func outlineView(_ ov: NSOutlineView, viewFor column: NSTableColumn?, item: Any) -> NSView? {
         guard let node = item as? CollectionNode else { return nil }
-        // The draft row: an editable field while typing, a plain label once committed
-        // (kept until the real folder lands, so the swap is jump-free).
-        if isDraftNode(node) {
-            if let committed = draft?.committedName {
+        // A row under an inline session: an editable field while typing, a plain
+        // label once committed (kept until the write lands, so the swap is
+        // jump-free). Both the phantom draft row and a renamed row take this path.
+        if isDraftNode(node) || isRenaming(node) {
+            if let committed = edit?.committedName {
                 let cell = ov.makeView(withIdentifier: Self.columnID, owner: self) as? SidebarCell
                     ?? SidebarCell(identifier: Self.columnID)
-                cell.configure(name: committed, expandable: false, expanded: false)
+                // The phantom draft row has no children; a renamed one keeps its
+                // chevron so a parent doesn't blink flat between commit and reload.
+                let expandable = !isDraftNode(node) && !children(of: node).isEmpty
+                cell.onToggle = { [weak self] in self?.toggleExpansion(of: node) }
+                cell.configure(
+                    name: committed, expandable: expandable,
+                    expanded: expandable && ov.isItemExpanded(node))
                 return cell
             }
             let cell = ov.makeView(withIdentifier: Self.draftColumnID, owner: self) as? SidebarDraftCell
                 ?? SidebarDraftCell(identifier: Self.draftColumnID)
             cell.prepareForEditing()
-            cell.placeholder = draft?.parentID == nil ? "New Collection" : "New Subfolder"
-            cell.field.stringValue = draft?.text ?? ""
-            cell.onTextChange = { [weak self] in self?.draft?.text = $0 }
+            cell.placeholder = draftPlaceholder(for: node)
+            cell.field.stringValue = edit?.text ?? ""
+            cell.onTextChange = { [weak self] in self?.edit?.text = $0 }
             cell.onCommit = { [weak self] name in
-                DispatchQueue.main.async { self?.endDraft(commit: name) }
+                DispatchQueue.main.async { self?.endEdit(commit: name) }
             }
             cell.onCancel = { [weak self] in
-                DispatchQueue.main.async { self?.endDraft(commit: nil) }
+                DispatchQueue.main.async { self?.endEdit(commit: nil) }
             }
             return cell
         }
         let cell = ov.makeView(withIdentifier: Self.columnID, owner: self) as? SidebarCell
             ?? SidebarCell(identifier: Self.columnID)
+        // The chevron BUTTON toggles; the row click navigates (025 · S1).
+        cell.onToggle = { [weak self] in self?.toggleExpansion(of: node) }
         cell.configure(
             name: node.name, expandable: !children(of: node).isEmpty,
             expanded: ov.isItemExpanded(node))
         return cell
     }
 
+    /// A rename shows the name it is editing, so the placeholder only matters for a
+    /// draft — where it names what is about to be created.
+    private func draftPlaceholder(for node: CollectionNode) -> String {
+        guard case let .draft(parent)? = edit?.session else { return node.name }
+        return parent == nil ? "New Collection" : "New Subfolder"
+    }
+
     /// Borderless, Theme-tinted selection (no focus ring / emphasized blue). The
     /// inline draft row (214) is never selectable, so force its highlight on so it
-    /// reads exactly like the active/selected row while typing.
+    /// reads exactly like the active/selected row while typing — and a rename does
+    /// the same, so an edit begun from the context menu on an unselected row still
+    /// reads as the row being worked on.
     func outlineView(_ ov: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
         let id = NSUserInterfaceItemIdentifier("row")
         let view = ov.makeView(withIdentifier: id, owner: self) as? SidebarRowView
             ?? { let v = SidebarRowView(); v.identifier = id; return v }()
-        view.forceSelected = isDraftNode(item)
+        view.forceSelected = isDraftNode(item) || isRenaming(item)
         return view
     }
 
@@ -518,12 +602,44 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         nav.selectSidebar(.collection(node.id))
     }
 
-    func outlineViewItemDidExpand(_ notification: Notification) { reportMeasuredHeight() }
-    func outlineViewItemDidCollapse(_ notification: Notification) { reportMeasuredHeight() }
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        refreshChevron(from: notification)
+        reportMeasuredHeight()
+    }
 
-    /// A click anywhere on a parent row toggles its children (leaves just select).
-    /// The chevron glyph is refreshed directly so it never lags. Fires from a click
-    /// event, so the synchronous height report is safe.
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        refreshChevron(from: notification)
+        reportMeasuredHeight()
+    }
+
+    /// Flip the toggled row's glyph. This lives on the expand/collapse delegates —
+    /// not in the click handler where it used to — so EVERY path refreshes it: the
+    /// chevron button, →/←, and programmatic reveals (`expandAncestors`,
+    /// `beginDraft`), which previously left a stale glyph behind.
+    private func refreshChevron(from notification: Notification) {
+        guard let node = notification.userInfo?["NSObject"] as? CollectionNode else { return }
+        let row = outlineView.row(forItem: node)
+        guard row >= 0 else { return }
+        (outlineView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell)?
+            .setExpanded(outlineView.isItemExpanded(node))
+    }
+
+    /// The chevron button's action: expansion ONLY — it never touches `nav`, and
+    /// because a cell subview takes the mouse first the outline's own `action` fires
+    /// with `clickedRow == -1`, so the row is neither selected nor navigated to.
+    /// Synchronous, so the disclosure never lags the press.
+    private func toggleExpansion(of node: CollectionNode) {
+        guard !children(of: node).isEmpty else { return }
+        if outlineView.isItemExpanded(node) {
+            outlineView.collapseItem(node)
+        } else {
+            outlineView.expandItem(node)
+        }
+    }
+
+    /// A row click NAVIGATES, full stop (025 · S1). It no longer toggles: expansion
+    /// is the chevron button's job, so opening a folder can't collapse the children
+    /// you just opened, and expanding one can't drag you off the page you are on.
     @objc private func rowClicked() {
         let row = outlineView.clickedRow
         guard row >= 0, let node = outlineView.item(atRow: row) as? CollectionNode,
@@ -535,20 +651,40 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         if nav.sidebarSelection != .collection(node.id) {
             nav.selectSidebar(.collection(node.id))
         }
-        guard !children(of: node).isEmpty else { return }
-        let willExpand = !outlineView.isItemExpanded(node)
-        if willExpand { outlineView.expandItem(node) } else { outlineView.collapseItem(node) }
-        (outlineView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell)?
-            .setExpanded(willExpand)
-        reportMeasuredHeight()
+    }
+
+    /// Double-click renames in place (025 · S3). AppKit sends the single-click
+    /// action first, so a double-click navigates THEN renames — you renamed the
+    /// thing you opened. Deferring nav by the double-click interval to avoid that
+    /// would make every single click feel laggy, so we don't.
+    @objc private func rowDoubleClicked() {
+        let row = outlineView.clickedRow
+        guard row >= 0, let node = outlineView.item(atRow: row) as? CollectionNode,
+              !isDraftNode(node), edit == nil else { return }
+        beginRename(id: node.id)                          // no-ops on Unsorted
+    }
+
+    /// Enter renames the selected row (025 · S3). Ignored while a session is already
+    /// open — the field owns the key then, and re-entering the commit path from here
+    /// is exactly the double-commit the draft cell guards against.
+    private func handleKeyDown(_ event: NSEvent) -> Bool {
+        let isReturn = event.keyCode == 36 || event.keyCode == 76
+        guard isReturn else { return false }
+        guard edit == nil else { return true }            // swallow, don't re-enter
+        let row = outlineView.selectedRow
+        guard row >= 0, let node = outlineView.item(atRow: row) as? CollectionNode,
+              !isDraftNode(node) else { return true }
+        beginRename(id: node.id)                          // no-ops on Unsorted
+        return true
     }
 
     // MARK: - Drag source
 
     func outlineView(_ ov: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
-        // No drags at all while a draft is open (avoids drop-index math against the
-        // phantom row), and the draft row itself is never draggable.
-        guard draft == nil, let node = item as? CollectionNode, !node.isUnsorted else { return nil }
+        // No drags at all while an inline session is open (avoids drop-index math
+        // against the phantom row, and a rename that scrolls out from under itself),
+        // and the draft row itself is never draggable.
+        guard edit == nil, let node = item as? CollectionNode, !node.isUnsorted else { return nil }
         return CollectionDragPayload(collectionID: node.id).makePasteboardItem()
     }
 
@@ -577,8 +713,9 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         _ ov: NSOutlineView, validateDrop info: NSDraggingInfo,
         proposedItem item: Any?, proposedChildIndex index: Int
     ) -> NSDragOperation {
-        // Refuse every drop while an inline draft is open.
-        guard draft == nil else { return [] }
+        // Refuse every drop while an inline session is open — a draft OR a rename,
+        // else a drop lands mid-edit.
+        guard edit == nil else { return [] }
         let pb = info.draggingPasteboard
         // Folder reparent / reorder (our own drag).
         if pb.data(forType: CollectionDragPayload.pasteboardType) != nil {

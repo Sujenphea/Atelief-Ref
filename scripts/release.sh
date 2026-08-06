@@ -13,8 +13,12 @@
 #     -> staple -> create-dmg -> Sparkle generate_appcast (appcast.xml)
 #
 # Usage:
-#   ./scripts/release.sh                 # versions read from the project
+#   ./scripts/release.sh                 # marketing version from the project,
+#                                        # build number from `git rev-list --count`
 #   MARKETING_VERSION=1.2 CURRENT_PROJECT_VERSION=34 ./scripts/release.sh
+#
+# Distribution only — it deliberately does not install anything locally. To put a
+# build where you launch from, use scripts/run-local.command.
 #
 # Override any of the env vars in the CONFIG block below to retarget output,
 # scheme, team, or the notary profile. Requires a provisioned release machine
@@ -56,11 +60,34 @@ SPARKLE_BIN_DIR="${SPARKLE_BIN_DIR:-}"
 
 # --- Version resolution ----------------------------------------------------
 # The project uses GENERATE_INFOPLIST_FILE, so MARKETING_VERSION /
-# CURRENT_PROJECT_VERSION are the source of truth. Accept them from the
-# environment; otherwise read the project's resolved build settings so the
-# artifact names, DMG, and appcast all agree on one version string.
+# CURRENT_PROJECT_VERSION are the build settings that matter. The environment
+# still wins over everything below — that is the manual override for a re-cut of
+# a version already published.
+#
+# MARKETING_VERSION comes from the project (the human decision).
+# CURRENT_PROJECT_VERSION does NOT: pinned in the pbxproj it never moves, and a
+# Sparkle appcast in which every entry claims build 1 has no way to order its
+# updates. Derive it from `git rev-list --count HEAD` instead — monotonic on this
+# branch, no state file to forget to bump, no version-bump commits. This is the
+# release lane only; run-local.command keeps the project's pinned number, so a
+# local build never invents a build number that was never published.
 resolve_version() {
   echo "==> Resolving version/build"
+
+  # A count only exists inside a repo with at least one commit; a tarball export
+  # or a broken git has neither. Fall through to the build settings in that case
+  # rather than failing a release over a version string.
+  if [[ -z "${CURRENT_PROJECT_VERSION:-}" ]] && command -v git >/dev/null 2>&1; then
+    local count
+    # --count works on a shallow clone and on a detached HEAD; it just counts
+    # what is actually present, which is exactly the property we want.
+    count="$(git -C "${REPO_ROOT}" rev-list --count HEAD 2>/dev/null || true)"
+    if [[ "${count}" =~ ^[0-9]+$ && "${count}" != "0" ]]; then
+      CURRENT_PROJECT_VERSION="${count}"
+      echo "    build ${CURRENT_PROJECT_VERSION} (git rev-list --count HEAD)"
+    fi
+  fi
+
   if [[ -z "${MARKETING_VERSION:-}" || -z "${CURRENT_PROJECT_VERSION:-}" ]]; then
     # Ask xcodebuild for the effective settings (respects xcconfig + pbxproj).
     local settings

@@ -9,10 +9,37 @@
 //  spaces are created from the sidebar's section "+".
 //
 //  009 · N6 — a marquee (drag-rectangle) selects cards across both sections; the
-//  selection is deletable via ⌫ / a contextual bar, through ONE confirmation.
+//  selection is deletable via ⌘⌫ / a contextual bar, through ONE confirmation.
 //  Unsorted is never selectable (it can't be deleted). The marquee reuses the
 //  pure ``marqueeRect``/``marqueeIndices`` geometry; card frames are captured with
 //  `onGeometryChange` in a shared named coordinate space.
+//
+//  073 / 345 — **Home joins the two-tier delete rule.** Everywhere else in the app
+//  "⌫ removes the item from where you are looking, ⌘⌫ removes it from the app".
+//  Home was the one surface that broke it — [024]'s key map recorded it as a known
+//  violation — because a bare ⌫ deleted the selected collections and spaces
+//  outright: `.onDeleteCommand` never sees a modifier and so structurally could
+//  not route through ``deleteIntent``. It is gone. In its place:
+//
+//   • **Bare ⌫ deletes nothing.** Home has no container to remove a card FROM, so
+//     the "remove from here" half of the rule has no meaning here — the same
+//     answer [073] already gave search results. It posts a notice naming the key
+//     that does delete, in the shape of the grid's Unsorted branch, rather than
+//     going silent on a key that used to be destructive.
+//   • **⌘⌫ deletes**, through the *existing* path: the same
+//     ``IngestionModel/deleteCards(collectionIDs:spaceIDs:)``, the same
+//     confirmation dialog, the same per-space undo. It arrives through Edit ▸
+//     Delete, the app-wide ⌘⌫ this view now feeds a ``DeleteVerbs``. There is no
+//     second ⌘⌫ binding here on purpose: a menu key equivalent is matched before
+//     the first responder is consulted, so a local one could only ever shadow it —
+//     exactly the collision `KeyMap.collisions` exists to catch.
+//
+//  A bare ⌫ is NOT registered as a menu key equivalent and never can be: that is
+//  matched before the event reaches the first responder and would swallow
+//  Backspace in every text field in the app (see `DeleteCommands` in
+//  `AtelierRefsApp.swift`). It is read here, on a `.onKeyPress` that only fires
+//  while this view holds SwiftUI focus — so the sidebar's rename field and the
+//  search field keep their Backspace by construction.
 //
 
 import AppKit
@@ -73,13 +100,37 @@ struct CollectionsGalleryView: View {
         .focusable()
         .focusEffectDisabled()
         .focused($galleryFocused)
-        .onDeleteCommand { requestBatchDelete() }
+        // ⌫ / ⌦, decoded through the SAME `deleteIntent` the grid, the board and the
+        // detail page read (073). This replaces `.onDeleteCommand`, which is handed
+        // no modifiers at all and so could only ever mean ONE thing — which is how
+        // Home ended up deleting collections on the softest key on the keyboard.
+        // `.onKeyPress` only fires while this view holds SwiftUI focus, so the
+        // sidebar's rename field and the search field keep their Backspace without a
+        // guard of our own.
+        .onKeyPress(keys: [.delete, .deleteForward]) { press in
+            galleryDeleteKeyPress(key: press.key, modifiers: press.modifiers)
+        }
         .onExitCommand { clearSelection() }
         .onKeyPress(keys: ["a"]) { press in
             guard press.modifiers.contains(.command) else { return .ignored }
             apply(.selectAll)
             return .handled
         }
+        // Edit ▸ Remove / Delete (073 · D5), for Home. Published only while cards are
+        // selected, so the ⌘⌫ item is greyed rather than clickable-and-inert with an
+        // empty selection. `canRemove: false` for the same reason search publishes it
+        // false: Home is not a container, so there is nothing to remove a card FROM —
+        // and this is what makes ⌘⌫ reach the gallery, since Edit ▸ Delete is the
+        // app-wide binding for it and a local one would only shadow it.
+        .focusedSceneValue(
+            \.deleteVerbs,
+            selection.isSelecting
+                ? DeleteVerbs(
+                    removeTitle: "Remove from Collection",
+                    canRemove: false,
+                    remove: {},
+                    destroy: { requestBatchDelete() })
+                : nil)
         .overlay(alignment: .bottom) {
             if selection.isSelecting { selectionBar }
         }
@@ -368,29 +419,55 @@ struct CollectionsGalleryView: View {
         if selection.isSelecting { apply(.clear) }
     }
 
+    /// A ⌫ / ⌦ press on Home, through the app-wide decoder (073).
+    ///
+    /// - ``DeleteIntent/remove`` (bare ⌫) — **nothing is deleted.** Home is not a
+    ///   container, so there is no membership to drop; the notice names ⌘⌫ instead of
+    ///   letting a key that used to be destructive go silently dead. `.handled` even
+    ///   with nothing selected, because the key IS this surface's now — it just has
+    ///   nothing to say about an empty selection.
+    /// - ``DeleteIntent/destroy`` (⌘⌫) — not ours. Edit ▸ Delete owns that chord
+    ///   app-wide and, being a menu key equivalent, is matched before this ever runs;
+    ///   the `DeleteVerbs` published above is what points it at this selection.
+    /// - `nil` (⌥⌫, ⌃⌫) — word / line deletes. They fall through untouched.
+    private func galleryDeleteKeyPress(
+        key: KeyEquivalent, modifiers: EventModifiers
+    ) -> KeyPress.Result {
+        switch galleryDeleteIntent(key: key, modifiers: modifiers) {
+        case .remove:
+            if selection.isSelecting { model.explainHomeDeleteKey() }
+            return .handled
+        case .destroy, .none:
+            return .ignored
+        }
+    }
+
     private func requestBatchDelete() {
         guard selection.isSelecting else { return }
         showBatchDelete = true
     }
 
     private func performBatchDelete() {
-        model.deleteCards(collectionIDs: selectedCollectionIDs, spaceIDs: selectedSpaceIDs)
+        let targets = deleteTargets
+        model.deleteCards(collectionIDs: targets.collectionIDs, spaceIDs: targets.spaceIDs)
         clearSelection()
     }
 
-    private var selectedCollectionIDs: [UUID] {
-        let valid = Set(orderedRoots.map(\.id)).subtracting([model.unsortedFolderID])
-        return Array(selection.ids.filter { valid.contains($0) })
-    }
-
-    private var selectedSpaceIDs: [UUID] {
-        let valid = Set(model.spaces.map(\.id))
-        return Array(selection.ids.filter { valid.contains($0) })
+    /// What the confirmation is about to delete, split by kind. A Home selection can
+    /// hold both at once (⌘A takes every card, and the marquee crosses the two
+    /// sections), so this is genuinely a mixed set rather than one-or-the-other.
+    private var deleteTargets: GalleryDeleteTargets {
+        galleryDeleteTargets(
+            selection: selection.ids,
+            roots: orderedRoots.map(\.id),
+            unsortedID: model.unsortedFolderID,
+            spaces: model.spaces.map(\.id))
     }
 
     private var batchDeleteBreakdown: String {
-        let c = selectedCollectionIDs.count
-        let s = selectedSpaceIDs.count
+        let targets = deleteTargets
+        let c = targets.collectionIDs.count
+        let s = targets.spaceIDs.count
         var parts: [String] = []
         if c > 0 { parts.append("\(c) collection\(c == 1 ? "" : "s")") }
         if s > 0 { parts.append("\(s) space\(s == 1 ? "" : "s")") }
@@ -477,6 +554,83 @@ struct CollectionsGalleryView: View {
     private var spaceRenameBinding: Binding<Bool> {
         Binding(get: { spaceRenameTarget != nil }, set: { if !$0 { spaceRenameTarget = nil } })
     }
+}
+
+// MARK: - Home's delete keys (073 — pure, unit-tested)
+
+/// The SwiftUI modifier set as an `NSEvent`'s flags — the vocabulary every one of the
+/// app's key decoders speaks (073).
+///
+/// Home is the only surface that reads its keys through SwiftUI rather than AppKit, so
+/// it is the only one that needs the translation; without it the gallery could not
+/// reach ``deleteIntent`` at all and would be back to guessing what a ⌫ meant, which
+/// is precisely the bug `.onDeleteCommand` shipped. `.numericPad` / `.capsLock` have no
+/// bearing on any delete chord and are dropped rather than mapped.
+nonisolated func galleryEventFlags(_ modifiers: EventModifiers) -> NSEvent.ModifierFlags {
+    var flags: NSEvent.ModifierFlags = []
+    if modifiers.contains(.control) { flags.insert(.control) }
+    if modifiers.contains(.option) { flags.insert(.option) }
+    if modifiers.contains(.shift) { flags.insert(.shift) }
+    if modifiers.contains(.command) { flags.insert(.command) }
+    return flags
+}
+
+/// A ``KeyPress`` on Home as a ``DeleteIntent`` — the gallery's half of "⌫ removes
+/// from where you are looking, ⌘⌫ removes it from the app" (073).
+///
+/// Deliberately a thin adapter and not a second opinion: everything that decides which
+/// tier a chord is, including the ⌥ / ⌃ exclusion that keeps a word-delete away from
+/// the library, stays in ``deleteIntent``. What Home does with each tier is the
+/// caller's business (``CollectionsGalleryView``) — bare ⌫ deletes nothing here.
+///
+/// Main-actor isolated, like ``deleteIntent`` itself and for the same non-reason: the
+/// target's default isolation. Nothing here touches state.
+func galleryDeleteIntent(key: KeyEquivalent, modifiers: EventModifiers) -> DeleteIntent? {
+    deleteIntent(characters: galleryCharacters(key), modifiers: galleryEventFlags(modifiers))
+}
+
+/// A SwiftUI ``KeyEquivalent`` as the `charactersIgnoringModifiers` an `NSEvent` would
+/// carry for the same physical key.
+///
+/// **SwiftUI and AppKit disagree about the Backspace key, and the disagreement is
+/// silent.** `KeyEquivalent.delete` is BACKSPACE, `U+0008`; the same key read off an
+/// `NSEvent` is DEL, `U+007F`, which is what `gridIsDeleteKey` — and therefore every
+/// delete decoder in this app — recognises. Handing the raw character straight to
+/// ``deleteIntent`` makes a real ⌫ decode to `nil`: the key silently does nothing, no
+/// crash, no warning, and the gallery looks exactly as it would if the wiring were
+/// fine. `.deleteForward` needs no translation (both frameworks call it `U+F728`).
+///
+/// The other direction of the same trap is worth naming: `U+0008` is what ⌃H produces,
+/// so a naive "accept backspace too" widening of `gridIsDeleteKey` would have made a
+/// control chord delete things. The translation belongs here, at the one boundary that
+/// speaks both vocabularies, not in the shared decoder.
+nonisolated func galleryCharacters(_ key: KeyEquivalent) -> String {
+    key.character == "\u{8}" ? "\u{7f}" : String(key.character)
+}
+
+/// The cards a Home selection is about to delete, split by the two model verbs that
+/// delete them (`deleteFolder` / `deleteSpaceRecoverableWithUndo`).
+nonisolated struct GalleryDeleteTargets: Equatable, Sendable {
+    let collectionIDs: [UUID]
+    let spaceIDs: [UUID]
+
+    var isEmpty: Bool { collectionIDs.isEmpty && spaceIDs.isEmpty }
+    var count: Int { collectionIDs.count + spaceIDs.count }
+}
+
+/// Split a Home selection into the collections and the spaces it holds — a Home
+/// selection can mix the two, and they leave the library by different verbs.
+///
+/// Filtered from `roots` / `spaces` rather than from the selection, so the order is the
+/// on-screen one and not `Set` iteration order; Unsorted is dropped because it is never
+/// selectable and never deletable, and an id in neither list (a card deleted from
+/// elsewhere while it was selected) simply falls out.
+nonisolated func galleryDeleteTargets(
+    selection: Set<UUID>, roots: [UUID], unsortedID: UUID, spaces: [UUID]
+) -> GalleryDeleteTargets {
+    GalleryDeleteTargets(
+        collectionIDs: roots.filter { $0 != unsortedID && selection.contains($0) },
+        spaceIDs: spaces.filter { selection.contains($0) })
 }
 
 /// The ⌘-click (toggle) and ⇧-click (range) selection gestures for a card (048).

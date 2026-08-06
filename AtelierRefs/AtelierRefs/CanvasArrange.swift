@@ -20,9 +20,9 @@ import CoreGraphics
 /// spacing", [6A]).
 enum CanvasArrange {
 
-    /// The eight arrange operations: 6 aligns + 2 distributes. `allCases` drives
-    /// the table-driven kernel tests and the bar's op wiring, so a new op is added
-    /// in exactly one place.
+    /// The ten arrange operations: 6 aligns + 2 distributes + tidy + reflow.
+    /// `allCases` drives the table-driven kernel tests and the bar's op wiring, so a
+    /// new op is added in exactly one place.
     enum Operation: CaseIterable {
         // Aligns (bounding box): need ≥2 to be meaningful.
         case alignLeft, alignHorizontalCenter, alignRight
@@ -31,6 +31,9 @@ enum CanvasArrange {
         case distributeHorizontal, distributeVertical
         // Tidy up (066): snap the selection into clean rows at a uniform gap.
         case tidyUp
+        // Reflow into grid: repack the selection the way a bulk add flows it in —
+        // the ONE op that resizes (see ``reflowGrid(_:)``).
+        case reflowGrid
 
         /// The undo action name shown in the ⌘Z menu — carried by the op so the
         /// model doesn't scatter string literals.
@@ -45,6 +48,7 @@ enum CanvasArrange {
             case .distributeHorizontal: "Distribute Horizontally"
             case .distributeVertical: "Distribute Vertically"
             case .tidyUp: "Tidy Up"
+            case .reflowGrid: "Reflow Into Grid"
             }
         }
 
@@ -69,9 +73,12 @@ enum CanvasArrange {
     }
 
     /// Apply `op` to `rects`, returning a new index-aligned array (the caller zips
-    /// results back to ids by index). Pure: sizes are preserved, only the relevant
-    /// origin coordinate moves. Below `op.minimumCount` it returns `rects`
-    /// unchanged, so callers can invoke it safely on any selection.
+    /// results back to ids by index). Pure: for every op but one, sizes are preserved
+    /// and only the relevant origin coordinate moves. ``Operation/reflowGrid`` is the
+    /// exception and resizes deliberately — see ``reflowGrid(_:)`` — so callers must
+    /// carry the returned `size` through, not just the origin. Below
+    /// `op.minimumCount` it returns `rects` unchanged, so callers can invoke it
+    /// safely on any selection.
     static func apply(_ op: Operation, to rects: [CGRect]) -> [CGRect] {
         guard rects.count >= op.minimumCount else { return rects }
         switch op {
@@ -93,6 +100,8 @@ enum CanvasArrange {
             return distribute(rects, axis: .vertical)
         case .tidyUp:
             return tidy(rects)
+        case .reflowGrid:
+            return reflowGrid(rects)
         }
     }
 
@@ -118,33 +127,132 @@ enum CanvasArrange {
     ///   that, so re-deriving it returns the same number;
     /// - items in a row share a top edge afterwards, which is total overlap, so they
     ///   re-cluster into the same row.
+    ///
+    /// A cluster is not automatically a laid-out row: it wraps at ``tidyMaxRowWidth(_:)``
+    /// (028). Without that bound a row ran until its members ran out, so 60 tiles came
+    /// out as one row ~24,000pt wide — off-screen at any usable zoom, and the shape the
+    /// bug report described. The wrap re-uses the same `gap` and the same top-left
+    /// anchor, so a wrapped row is indistinguishable from a clustered one on the way
+    /// back in: pass two sees the wrapped rows AS clusters and lays them out where they
+    /// already are.
     private static func tidy(_ rects: [CGRect]) -> [CGRect] {
         let rows = tidyRows(rects)
         let gap = tidyGap(rects, rows: rows)
         let box = boundingBox(rects)
+        let maxWidth = tidyMaxRowWidth(rects)
 
         var result = rects
         var y = box.minY
         for row in rows {
             var x = box.minX
             var rowHeight: CGFloat = 0
+            var rowIsEmpty = true
             for index in row {
                 let size = rects[index].size
+                // Wrap when this item would push the row past the bound — but never
+                // when the row is still empty. A selection mixing a huge frame with
+                // small tiles has items wider than the bound on their own, and a row
+                // that can refuse every item is a loop that never terminates. Such an
+                // item lands alone on its row and overhangs, which is the honest
+                // result: tidy moves tiles, it does not resize them.
+                if !rowIsEmpty, x + size.width > box.minX + maxWidth {
+                    x = box.minX
+                    y += rowHeight + gap
+                    rowHeight = 0
+                    rowIsEmpty = true
+                }
                 result[index] = CGRect(x: x, y: y, width: size.width, height: size.height)
                 x += size.width + gap
                 rowHeight = max(rowHeight, size.height)
+                rowIsEmpty = false
             }
             y += rowHeight + gap
         }
         return result
     }
 
+    /// How wide a tidied row may get before it wraps, in world units (028).
+    ///
+    /// Derived from the rects' own total AREA — `sqrt(totalArea × 16:9)` — and
+    /// deliberately NOT from the selection's bounding box. The box is the obvious
+    /// source and the wrong one: it NARROWS the moment a wrap happens, so a
+    /// box-derived bound comes back smaller on the next pass and the layout creeps
+    /// narrower on every press. Total area is invariant under tidy — sizes are
+    /// preserved and the array order with them, so the sum is not merely equal but
+    /// bit-identical — which makes idempotence structural here rather than something
+    /// to hope for.
+    ///
+    /// The target aspect is a fixed 16:9, not the viewport's: the same selection must
+    /// tidy the same way in a resized window.
+    ///
+    /// Quantised to ``tidyBoundQuantum`` so the wrap decision cannot ride on the last
+    /// bits of a square root. The quantum is coarse (100pt, a quarter of a typical
+    /// tile) precisely so that no realistic selection lands near a quantum boundary,
+    /// where a hair of drift could move a tile between rows.
+    ///
+    /// ``fallbackMaxRowWidth`` is a FLOOR, not just a guard for the degenerate case.
+    /// Below it the derived bound would wrap selections that tidy already handles
+    /// correctly — three tiles in a row, a 2×2 grid — because `sqrt(area × 16:9)` for
+    /// a handful of tiles is narrower than the row they form. Flooring it keeps small
+    /// selections behaving exactly as they do today and confines the wrap to the
+    /// many-item case, which is where the bug lives. It also covers a zero-area
+    /// selection (every rect degenerate) with no division and no square root of zero.
+    static func tidyMaxRowWidth(_ rects: [CGRect]) -> CGFloat {
+        let area = rects.reduce(CGFloat(0)) { $0 + $1.width * $1.height }
+        guard area > 0 else { return fallbackMaxRowWidth }
+        let ideal = (area * tidyTargetAspect).squareRoot()
+        let quantised = (ideal / tidyBoundQuantum).rounded(.down) * tidyBoundQuantum
+        return max(fallbackMaxRowWidth, quantised)
+    }
+
+    /// Aspect (w/h) of the block a tidy aims to fill. Fixed at 16:9 — see
+    /// ``tidyMaxRowWidth(_:)`` for why it is not the viewport's.
+    static let tidyTargetAspect: CGFloat = 16.0 / 9.0
+
+    /// Rounding step for the derived wrap bound, world units.
+    static let tidyBoundQuantum: CGFloat = 100
+
+    /// Floor for the wrap bound — a mirror of `SpaceLayout.maxRowWidth`.
+    ///
+    /// Mirrored rather than read from `SpaceLayout` so this file stays the
+    /// `[CGRect] → [CGRect]` island its header describes, with no dependency on the
+    /// space layer. `CanvasTidyPackTests` asserts the two numbers agree, so the copy
+    /// cannot drift silently.
+    ///
+    /// 1600 is BORROWED, not derived: `SpaceLayout` picked it for flowing 240-high
+    /// rows on bulk add. As a floor for tidy it is arbitrary — it is here because it
+    /// is the row width the rest of the app already wraps at, and inventing a second
+    /// number would be worse than reusing an imperfect one.
+    static let fallbackMaxRowWidth: CGFloat = 1600
+
     /// Cluster indices into rows by vertical overlap — top-to-bottom, each row ordered
     /// left-to-right. Ties break on the original index so the result is deterministic.
     ///
-    /// A rect joins the open row when it starts ABOVE that row's lowest edge so far.
-    /// Strictly above: a rect starting exactly at the edge is touching, not overlapping,
-    /// and must begin a new row — that is what makes a `gap == 0` tidy stable.
+    /// A rect joins the open row when it starts ABOVE the row's BAND. Strictly above: a
+    /// rect starting exactly at the band's bottom is touching, not overlapping, and must
+    /// begin a new row — that is what makes a `gap == 0` tidy stable.
+    ///
+    /// The band is anchored at the row's top and reaches down by the tallest member's
+    /// height. It is emphatically NOT the running maximum of the members' bottom edges,
+    /// which is what this used to be (028): that bottom drifts down with every member's
+    /// POSITION, so membership became *transitive* overlap — A overlaps B, B overlaps C,
+    /// C overlaps D, and A and D end up in one row sharing no vertical extent at all. A
+    /// staircase chained end to end, and a bulk drop (tiles at slightly different y) is
+    /// exactly that chain, which is how 60 tiles became one row.
+    ///
+    /// Anchoring at the row's top bounds the chain by construction: the band can never
+    /// reach past `rowTop + tallestMemberHeight`, however many members join. Taking the
+    /// tallest member's height rather than only the FIRST member's extent is the one
+    /// concession — a row whose leftmost tile happens to be short still admits the tall
+    /// tiles beside it, which is what keeps a ragged row of mixed heights reading as one
+    /// row. The row's median was the other candidate and was rejected: the median moves
+    /// as members are added, so a shallow staircase still creeps in one tile at a time —
+    /// bounded in practice rather than bounded by construction.
+    ///
+    /// Idempotent, which is the whole constraint: after a pass a row's members all share
+    /// its top edge (so each one's `minY` sits strictly inside the band), and the next
+    /// row starts at `rowTop + tallestHeight + gap`, which is at or below the band's
+    /// bottom — never inside it, even at `gap == 0`.
     private static func tidyRows(_ rects: [CGRect]) -> [[Int]] {
         let topDown = rects.indices.sorted { a, b in
             let (ra, rb) = (rects[a], rects[b])
@@ -153,14 +261,17 @@ enum CanvasArrange {
             return a < b
         }
         var rows: [[Int]] = []
-        var openBottom: CGFloat = 0
+        var rowTop: CGFloat = 0       // where the open row's band starts…
+        var bandHeight: CGFloat = 0   // …and how far down it reaches
         for index in topDown {
-            if !rows.isEmpty, rects[index].minY < openBottom {
+            let rect = rects[index]
+            if !rows.isEmpty, rect.minY < rowTop + bandHeight {
                 rows[rows.count - 1].append(index)
-                openBottom = max(openBottom, rects[index].maxY)
+                bandHeight = max(bandHeight, rect.height)
             } else {
                 rows.append([index])
-                openBottom = rects[index].maxY
+                rowTop = rect.minY
+                bandHeight = rect.height
             }
         }
         return rows.map { row in
@@ -195,6 +306,107 @@ enum CanvasArrange {
     /// The spacing a tidy falls back to when the selection has no measurable gap —
     /// everything overlapping, or a single row of one. World units.
     static let defaultTidyGap: CGFloat = 20
+
+    // MARK: - Reflow into grid
+
+    /// Repack the selection the way a BULK ADD lays tiles in: every tile normalised to
+    /// one row height, flowed left-to-right into justified rows.
+    ///
+    /// The sibling of ``tidy(_:)``, and deliberately the opposite bargain. Tidy PRESERVES
+    /// your arrangement and cleans it up — sizes untouched, clusters kept, your own gap
+    /// re-used — which is why it can never give you rows that line up along their bottom
+    /// edge. Reflow DISCARDS the arrangement and keeps only the reading order: the shape
+    /// goes, the sequence stays. It is the only op in this file that resizes, and the
+    /// caller has to persist width and height, not just the origin.
+    ///
+    /// Each decision, and the alternative it beat:
+    ///
+    /// - **Order comes from `tidyRows(rects).flatMap { $0 }`** — top-to-bottom, then
+    ///   left-to-right, the same clustering tidy reads. Array order was the other
+    ///   candidate and is wrong: a selection arrives from a `Set`, so array order is not
+    ///   the order anything is on screen. Reading order is what the user built.
+    /// - **A uniform ``gridRowHeight``, aspect preserved per tile.** Cropping to a square
+    ///   cell would make the block rectangular at the cost of lying about the picture;
+    ///   fixing a row height and letting width follow is what `SpaceLayout.flowIn`
+    ///   already does on add, so a reflowed board and a freshly-added one look alike.
+    /// - **The wrap bound is derived from the RESIZED rects, not the input.**
+    ///   ``tidyMaxRowWidth(_:)`` reads total area, and the resize changes total area. Feed
+    ///   it the originals and pass two (whose input IS the resized set) sees a different
+    ///   area, gets a different bound, and lays out a different number of rows —
+    ///   idempotence gone. This one line is the correctness crux.
+    /// - **A fixed ``gridSpacing``, not `tidyGap`.** Once every tile is a different size
+    ///   from the one the user placed, the gaps they left describe a layout that no longer
+    ///   exists; deriving from them would carry a measurement of the discarded shape into
+    ///   the new one.
+    ///
+    /// Idempotent, like tidy, and for reasons that compose: after one pass every tile is
+    /// exactly `gridRowHeight` high, so the resize on pass two is the identity (a tile's
+    /// aspect is now `width / gridRowHeight`, and `gridRowHeight × that` is the width it
+    /// already has); total area is therefore unchanged, so the bound is unchanged; and
+    /// `tidyRows` over the output re-clusters exactly the rows just laid out — every
+    /// member of a row shares its top edge and the band is `gridRowHeight` tall, while the
+    /// next row starts at `+ gridRowHeight + gridSpacing`, strictly outside it. Same
+    /// order, same bound, same output.
+    ///
+    /// Anchored on the INPUT selection's top-left, so the block repacks where it already
+    /// sits rather than jumping across the canvas. The wrap never fires on an empty row,
+    /// for tidy's reason: a tile wider than the bound (a 32:9 panorama, say) lands alone
+    /// and overhangs, because a row that can refuse every item is a loop that never ends.
+    private static func reflowGrid(_ rects: [CGRect]) -> [CGRect] {
+        let order = tidyRows(rects).flatMap { $0 }
+        let box = boundingBox(rects)
+
+        // Resize first — the bound below reads the result, not the input.
+        var sized = rects
+        for index in rects.indices {
+            let rect = rects[index]
+            // `SpaceLayout.aspect`'s fallback, mirrored: a degenerate rect is a square,
+            // never a division by zero. The floor is `flowIn`'s, and stops a sliver
+            // from becoming a zero-width tile nothing can grab.
+            let aspect = (rect.width > 0 && rect.height > 0) ? rect.width / rect.height : 1
+            sized[index] = CGRect(x: rect.minX, y: rect.minY,
+                                  width: gridRowHeight * max(aspect, 0.01),
+                                  height: gridRowHeight)
+        }
+        let maxWidth = tidyMaxRowWidth(sized)
+
+        var result = sized
+        var x = box.minX
+        var y = box.minY
+        var rowIsEmpty = true
+        for index in order {
+            let size = sized[index].size
+            if !rowIsEmpty, x + size.width > box.minX + maxWidth {
+                x = box.minX
+                // Every row is exactly one tile tall now, so the step is a constant —
+                // no running row height to track, which is what makes the rows justify.
+                y += gridRowHeight + gridSpacing
+                rowIsEmpty = true
+            }
+            result[index] = CGRect(x: x, y: y, width: size.width, height: size.height)
+            x += size.width + gridSpacing
+            rowIsEmpty = false
+        }
+        return result
+    }
+
+    /// The height every tile takes in a reflow — a mirror of `SpaceLayout.rowHeight`.
+    ///
+    /// Mirrored rather than read from `SpaceLayout`, for ``fallbackMaxRowWidth``'s
+    /// reason: this file stays the `[CGRect] → [CGRect]` island its header describes.
+    /// `CanvasTidyPackTests` asserts the two numbers agree so the copy cannot drift.
+    ///
+    /// Fixed rather than derived from the selection (its median height, say). A derived
+    /// height would change under its own output — pass one normalises the heights, so
+    /// pass two measures a different median — and idempotence is the design constraint
+    /// here exactly as it is for tidy. Fixed also means a reflowed block and a
+    /// bulk-added one are the same size, which is the whole claim the verb makes.
+    static let gridRowHeight: CGFloat = 240
+
+    /// The gap a reflow uses, both ways — a mirror of `SpaceLayout.spacing`.
+    ///
+    /// Not ``tidyGap(_:rows:)``'s smallest-observed gap: see ``reflowGrid(_:)``.
+    static let gridSpacing: CGFloat = 16
 
     // MARK: - Pack at an exact gap (066)
 

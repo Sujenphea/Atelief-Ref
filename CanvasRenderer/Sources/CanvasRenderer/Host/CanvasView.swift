@@ -35,6 +35,9 @@ public struct CanvasView: NSViewRepresentable {
     /// than as a `keyboardShortcut` here, which would fire — and eat the keystroke —
     /// while the user is typing into a text box. See ``CanvasHostView/onSelectTool``.
     private let onSelectTool: ((CanvasTool) -> Void)?
+    /// `A` was pressed on the canvas (024 · K3) — file these tiles, placements
+    /// untouched. Same delivery argument as ``onSelectTool``.
+    private let onFileTiles: ((Set<Int>) -> Void)?
     private let onRemoveTiles: ((Set<Int>) -> Void)?
     private let onDeleteTiles: ((Set<Int>) -> Void)?
     private let onCopyTiles: ((Set<Int>) -> Void)?
@@ -86,6 +89,7 @@ public struct CanvasView: NSViewRepresentable {
         onActivateTile: ((Int) -> Void)? = nil,
         onSelectTiles: ((Set<Int>) -> Void)? = nil,
         onSelectTool: ((CanvasTool) -> Void)? = nil,
+        onFileTiles: ((Set<Int>) -> Void)? = nil,
         onRemoveTiles: ((Set<Int>) -> Void)? = nil,
         onDeleteTiles: ((Set<Int>) -> Void)? = nil,
         onCopyTiles: ((Set<Int>) -> Void)? = nil,
@@ -116,6 +120,7 @@ public struct CanvasView: NSViewRepresentable {
         self.editRequest = editRequest
         self.onActivateTile = onActivateTile
         self.onSelectTiles = onSelectTiles
+        self.onFileTiles = onFileTiles
         self.onRemoveTiles = onRemoveTiles
         self.onDeleteTiles = onDeleteTiles
         self.onCopyTiles = onCopyTiles
@@ -158,6 +163,7 @@ public struct CanvasView: NSViewRepresentable {
         view.onActivateTile = onActivateTile
         view.onSelectTiles = onSelectTiles
         view.onSelectTool = onSelectTool
+        view.onFileTiles = onFileTiles
         view.onRemoveTiles = onRemoveTiles
         view.onDeleteTiles = onDeleteTiles
         view.onCopyTiles = onCopyTiles

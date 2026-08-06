@@ -74,8 +74,19 @@ struct GridHostConfiguration {
     /// Open the detail overlay for a membership id — the `GridSelectionEffect`
     /// `.openDetail` sink (SwiftUI's `open(_:)`: lead + record-view + raise nav).
     var onOpenDetail: (UUID) -> Void
-    /// Delete the current selection (`deleteBackward`/`deleteForward`, replacing
-    /// `.onDeleteCommand` → `model.requestDeleteSelected()`).
+    /// **⌫** — remove the current selection from the container in view (022 · D2).
+    /// The collection grid drops the membership (undoable, no dialog); a
+    /// membership-less grid (search) passes a no-op, which is the correct answer
+    /// there rather than a missing feature.
+    ///
+    /// Split from ``onRequestDelete`` because ⌫ and ⌘⌫ now mean different verbs:
+    /// this used to be the same closure, which made the SOFTEST key on the keyboard
+    /// the one that left the library.
+    var onRequestRemove: () -> Void
+    /// **⌘⌫** — delete the current selection from the library (`model.requestDelete`
+    /// → the shared confirmation → `deleteAssetsRecoverable`). The one destructive
+    /// path; it arrives through `performKeyEquivalent`, not the delete responder
+    /// methods.
     var onRequestDelete: () -> Void
     /// Copy the current selection to the pasteboard (Edit ▸ Copy / ⌘C, 052 · B1) —
     /// wraps `model.copyToPasteboard(assets:sourceCollectionID:)` over the
@@ -87,6 +98,24 @@ struct GridHostConfiguration {
     var onZoomIn: () -> Void
     /// ⌘− — smaller cells, more columns (`gridPrefs.zoomOut`).
     var onZoomOut: () -> Void
+    /// **`M` / `A`** — raise the shared destination picker on "Move to…" / "Add to…"
+    /// (024 · K3). The grid reports only WHICH verb was pressed: what it acts on is
+    /// the owning view's business, and it is deliberately the same rule ⌫ and ⌘D
+    /// already use (``IngestionModel/destinationActionTargets``) rather than a second
+    /// one read off the cells here.
+    ///
+    /// `nil` — the default — leaves the two keys UNBOUND on this grid rather than
+    /// bound to nothing: the decoded command falls through to `super.keyDown` exactly
+    /// as it did before K3. That is the right answer on a membership-less surface (the
+    /// search grid has no collection to move out of), and it matters that the key is
+    /// unhandled rather than silently eaten, since a swallowed letter is how a surface
+    /// acquires a key that does nothing and cannot be explained.
+    var onDestinationVerb: ((CollectionDestinationMenu.Verb) -> Void)?
+    /// Filled with the grid's own view so the owning SwiftUI view can hand first
+    /// responder BACK after a keyboard-raised popover closes (024 · K3) — the
+    /// discipline `DetailKeyCatcher.restoreResponder` and `SpaceView`'s
+    /// `restoreCanvasFocus` both follow. `nil` on a surface that raises no popover.
+    var focusHandle: GridFocusHandle?
 
     // MARK: A3 — drag out / drop / context menu seams
 
@@ -114,9 +143,18 @@ struct GridHostConfiguration {
     /// rule (`IngestionModel.actionTargets(forCellItemID:)`): a right-click INSIDE
     /// the selection acts on the whole selection, OUTSIDE it on that one cell.
     var actionTargets: (UUID) -> [UUID]
-    /// The move/copy destinations for this collection (memoized `MoveTargetsCache`),
-    /// carried as a value so the native menu builds its submenus without recompute.
-    var moveTargets: MoveTargets
+    /// The WHOLE collection hierarchy as move/copy destinations (027 · G2), from
+    /// the memoized ``MoveTargetsCache`` — carried as a value so the native menu
+    /// nests its submenus on right-click without re-grouping the folder tree.
+    /// Replaced the old flat `MoveTargets` (direct subfolders + roots), which made
+    /// anything two levels down unreachable by right-click at any depth.
+    var destinationTree: [DestinationTreeNode]
+    /// The protected Unsorted root's id — the destination menu pins it first and
+    /// separates it from the user's own folders.
+    var destinationUnsortedID: UUID
+    /// Destinations listed but GREYED: the collection on screen (filing where the
+    /// items already live is a no-op). Empty on a membership-less surface.
+    var disabledDestinations: Set<UUID> = []
     /// Move the given assets into a collection (menu "Move to ▸").
     var onMoveToCollection: (_ assetIDs: [UUID], _ targetID: UUID) -> Void
     /// Copy (add) the given assets into a collection (menu "Add to ▸").
@@ -173,6 +211,29 @@ struct GridHostConfiguration {
     /// Defaulted to zero so the search grid — which keeps its own SwiftUI padding
     /// for now — and every prior caller are unchanged.
     var contentInsets = NSEdgeInsets()
+}
+
+/// A handle onto the live grid view, so whoever raised a popover over the grid can
+/// give the keyboard back when it closes (024 · K3).
+///
+/// A popover takes key window; when it goes away AppKit does not necessarily return
+/// first responder to the view that was focused before, and a grid that has lost it is
+/// deaf to the arrow keys — the exact symptom `SpaceView.restoreCanvasFocus` was
+/// written for on the board. The owning view holds one of these in `@State` and the
+/// coordinator fills it in; nothing else may write `view`.
+@MainActor
+final class GridFocusHandle {
+    fileprivate weak var view: NSView?
+
+    /// Return first responder to the grid, deferred off the current view update —
+    /// `onDisappear` runs inside one, and `makeFirstResponder` republishes focus state.
+    func restore() {
+        guard let view else { return }
+        Task { @MainActor [weak view] in
+            guard let view, let window = view.window else { return }
+            window.makeFirstResponder(view)
+        }
+    }
 }
 
 /// The one boundary supplementary kind — the scroll-away Collection header (222).
@@ -235,7 +296,10 @@ protocol MasonryGridViewEvents: AnyObject {
     func gridKeyDown(_ event: NSEvent) -> Bool
     /// A `performKeyEquivalent` for the ⌘-combos (⌘A / ⌘± ). Returns handled.
     func gridPerformKeyEquivalent(_ event: NSEvent) -> Bool
-    /// A responder-chain delete (Delete / Backspace / Forward-Delete).
+    /// A responder-chain delete (`deleteBackward:` / `deleteForward:`). AppKit only
+    /// sends these for a BARE Delete key — ⌘⌫ maps to `deleteToBeginningOfLine:` and
+    /// ⌥⌫ to `deleteWordBackward:`, neither of which we implement — so this is the
+    /// REMOVE verb, never the destructive one (022 · D2).
     func gridDeleteCommand()
     /// A responder-chain Copy (⌘C / Edit ▸ Copy, 052 · B1) — copy the selection.
     func gridCopyCommand()
@@ -523,6 +587,10 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         collectionView.registerForDraggedTypes([AssetDragPayload.pasteboardType])
         // A2 — keyboard + hover forwarding (cell mouse-down arrives via the cell).
         collectionView.events = self
+        // K3 — hand the owning view a way back to this responder after it raises a
+        // popover over the grid. Written here, and again on `update`, so a config
+        // rebuilt with a fresh handle still finds the live view.
+        configuration.focusHandle?.view = collectionView
 
         let scrollView = NSScrollView(frame: collectionView.frame)
         scrollView.autoresizingMask = [.width, .height]
@@ -624,6 +692,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     func update(configuration: GridHostConfiguration) {
         let old = self.configuration
         self.configuration = configuration
+        configuration.focusHandle?.view = collectionView
         layout.density = configuration.density
         layout.spacing = configuration.spacing
         layout.topInset = configuration.topInset
@@ -1214,27 +1283,27 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         return buildContextMenu(forCellItemID: items[index].item.id)
     }
 
-    /// The unchanged cell menu (009 · N2/N6 · C4 scope) as a native `NSMenu`:
-    /// Move to ▸ / Add to ▸ (from the memoized `MoveTargets`), Set as Cover (single
-    /// only), Remove, Delete — counts in the destructive verbs. Actions run on the
-    /// Finder-scope asset set from `actionTargets` (selection when the cell is in
-    /// the selection, else the one cell), exactly as the SwiftUI `cellMenu` did.
+    /// The cell menu (009 · N2/N6 · C4 scope) as a native `NSMenu`: Move to ▸ /
+    /// Add to ▸ (the whole collection hierarchy as NESTED submenus, 027 · G2), Set
+    /// as Cover (single only), Remove, Delete — counts in the destructive verbs.
+    /// Actions run on the Finder-scope asset set from `actionTargets` (selection
+    /// when the cell is in the selection, else the one cell), exactly as the
+    /// SwiftUI `cellMenu` did.
     private func buildContextMenu(forCellItemID itemID: UUID) -> NSMenu {
         let targets = configuration.actionTargets(itemID)   // asset ids
         let n = targets.count
-        let dests = configuration.moveTargets
         let menu = NSMenu()
 
         switch configuration.menuStyle {
         case .collection:
             let moveItem = NSMenuItem(title: "Move to", action: nil, keyEquivalent: "")
-            moveItem.submenu = targetSubmenu(dests) { [weak self] target in
+            moveItem.submenu = destinationSubmenu(verb: .move) { [weak self] target in
                 self?.configuration.onMoveToCollection(targets, target)
             }
             menu.addItem(moveItem)
 
             let addItem = NSMenuItem(title: "Add to", action: nil, keyEquivalent: "")
-            addItem.submenu = targetSubmenu(dests) { [weak self] target in
+            addItem.submenu = destinationSubmenu(verb: .add) { [weak self] target in
                 self?.configuration.onCopyToCollection(targets, target)
             }
             menu.addItem(addItem)
@@ -1258,7 +1327,9 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
             // Membership-less hits (search): Add (copy), Reveal a lone byte-backed
             // hit, Delete. No Move / Set Cover / Remove — there's no membership.
             let addItem = NSMenuItem(title: "Add to Collection", action: nil, keyEquivalent: "")
-            addItem.submenu = targetSubmenu(dests) { [weak self] target in
+            // 027 · G3 — the same nested tree as the collection grid. Search has no
+            // current collection, so nothing is greyed.
+            addItem.submenu = destinationSubmenu(verb: .add) { [weak self] target in
                 self?.configuration.onCopyToCollection(targets, target)
             }
             menu.addItem(addItem)
@@ -1277,20 +1348,19 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         return menu
     }
 
-    /// A Move-to / Add-to submenu: subfolders first, a divider, then roots — the
-    /// exact order of the SwiftUI `targetButtons`.
-    private func targetSubmenu(
-        _ dests: MoveTargets, action: @escaping (UUID) -> Void
+    /// A Move-to / Add-to submenu: the whole collection hierarchy NESTED (027 · G2),
+    /// in the same order the SwiftUI ``CollectionDestinationList`` indents — both
+    /// come from ``CollectionTargets/destinationTree``. Built here, on the
+    /// right-click, rather than per visible cell.
+    private func destinationSubmenu(
+        verb: CollectionDestinationMenu.Verb, action: @escaping @MainActor (UUID) -> Void
     ) -> NSMenu {
-        let submenu = NSMenu()
-        for c in dests.subfolders {
-            submenu.addItem(BlockMenuItem(title: c.name) { action(c.id) })
-        }
-        if !dests.subfolders.isEmpty && !dests.roots.isEmpty { submenu.addItem(.separator()) }
-        for c in dests.roots {
-            submenu.addItem(BlockMenuItem(title: c.name) { action(c.id) })
-        }
-        return submenu
+        CollectionDestinationMenu.menu(
+            CollectionDestinationMenu.items(
+                tree: configuration.destinationTree,
+                unsortedID: configuration.destinationUnsortedID,
+                disabled: configuration.disabledDestinations, verb: verb),
+            action: action)
     }
 
     /// " (N)" for a multi-item action, empty for a single — mirrors
@@ -1497,8 +1567,13 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         // ⌘-combos travel through `performKeyEquivalent`, earlier in the chain.
         if mods.contains(.command) { return false }
         let chars = event.charactersIgnoringModifiers ?? ""
-        if gridIsDeleteKey(characters: chars) {
-            configuration.onRequestDelete()
+        // ⌫ / ⌦ through the shared decoder rather than `gridIsDeleteKey` alone (022 ·
+        // D2): the predicate says only WHICH keys are delete keys, and the grid used
+        // to act on any of them regardless of modifiers — so ⌥⌫, a word-delete, ran
+        // the destructive verb. Only `.remove` can reach here (⌘ returned above);
+        // ⌘⌫ arrives at `gridPerformKeyEquivalent`.
+        if let intent = deleteIntent(characters: chars, modifiers: mods) {
+            execute(deleteIntent: intent)
             return true
         }
         guard let command = gridKeyCommand(characters: chars, modifiers: mods) else { return false }
@@ -1508,12 +1583,36 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     func gridPerformKeyEquivalent(_ event: NSEvent) -> Bool {
         let mods = event.modifierFlags
         guard mods.contains(.command) else { return false }
-        guard let command = gridKeyCommand(
-            characters: event.charactersIgnoringModifiers ?? "", modifiers: mods) else { return false }
+        let chars = event.charactersIgnoringModifiers ?? ""
+        // ⌘⌫ / ⌘⌦ — the destructive verb's ONLY keyboard seam (022 · D2). It has to be
+        // here: ⌘-combos are dispatched through `performKeyEquivalent` before
+        // `keyDown`, and `deleteBackward:` is never sent for a modified Delete.
+        //
+        // `isDetailPresented` gates it for the same reason `gridKeyDown` opens with
+        // that check, and it matters MORE here: `performKeyEquivalent` walks the view
+        // hierarchy rather than the responder chain, so the grid behind the page would
+        // receive this even though the page holds first responder — and would destroy
+        // the grid's selection while the user was looking at one item.
+        if !configuration.isDetailPresented,
+           let intent = deleteIntent(characters: chars, modifiers: mods) {
+            execute(deleteIntent: intent)
+            return true
+        }
+        guard let command = gridKeyCommand(characters: chars, modifiers: mods) else { return false }
         return execute(keyCommand: command)
     }
 
-    func gridDeleteCommand() { configuration.onRequestDelete() }
+    func gridDeleteCommand() { configuration.onRequestRemove() }
+
+    /// Run a decoded ``DeleteIntent`` against this grid's two seams — the ONE place
+    /// the grid turns "which delete key" into "which verb", so the responder-method
+    /// path, `keyDown` and `performKeyEquivalent` can never drift apart.
+    private func execute(deleteIntent intent: DeleteIntent) {
+        switch intent {
+        case .remove: configuration.onRequestRemove()
+        case .destroy: configuration.onRequestDelete()
+        }
+    }
 
     func gridCopyCommand() { configuration.onCopy() }
 
@@ -1543,6 +1642,14 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
             configuration.onQuickLook()
         case .toggleLead:
             store.apply(.toggleLead)
+        // Unbound on a surface that supplies no handler — fall through rather than
+        // swallowing the letter (see ``GridHostConfiguration/onDestinationVerb``).
+        case .moveTo:
+            guard let raise = configuration.onDestinationVerb else { return false }
+            raise(.move)
+        case .addTo:
+            guard let raise = configuration.onDestinationVerb else { return false }
+            raise(.add)
         case .selectAll:
             store.apply(.selectAll)
         case .zoomIn:
@@ -1607,7 +1714,9 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
 /// AppKit delivers menu actions on the main thread, and every closure passed here
 /// touches main-actor state, so the isolation belongs on the CLOSURE rather than
 /// on the menu item that merely carries it.
-nonisolated private final class BlockMenuItem: NSMenuItem {
+/// Internal (not `private`) since 027 · G2: ``CollectionDestinationMenu`` builds
+/// the nested destination submenus out of the same closure-backed item.
+nonisolated final class BlockMenuItem: NSMenuItem {
     private let handler: @MainActor () -> Void
     init(title: String, handler: @escaping @MainActor () -> Void) {
         self.handler = handler
@@ -1754,6 +1863,10 @@ nonisolated enum GridKeyCommand: Equatable {
     case quickLook
     /// X (no modifiers) — toggle the cursor cell in place.
     case toggleLead
+    /// M (bare) — open the destination picker on "Move to…" (024 · K3).
+    case moveTo
+    /// A (bare) — open the destination picker on "Add to…" (024 · K3).
+    case addTo
     /// ⌘A — select all.
     case selectAll
     /// ⌘+ / ⌘= — bigger cells (fewer columns).
@@ -1772,6 +1885,10 @@ nonisolated enum GridKeyCommand: Equatable {
 /// - Return → `.openLead`; Escape → `.escape`; Space → `.quickLook` — none under ⌘.
 /// - `x` with NO modifiers → `.toggleLead` (SwiftUI guards `modifiers.isEmpty`, so
 ///   even ⇧X is ignored — it never eats ⌘X etc).
+/// - `m` / `a` with no ⌘ / ⌥ / ⌃ → `.moveTo` / `.addTo` (024 · K3). ⇧ IS tolerated
+///   here, unlike `x`: these are verbs a user types, and a stray capital meant the
+///   verb. The guard that matters is the other one — ⌘A stays Select All below,
+///   ⌘M is nobody's, and ⌥A still types `å` in a text field.
 /// - ⌘A → `.selectAll`; ⌘+ / ⌘= → `.zoomIn`; ⌘− → `.zoomOut`.
 func gridKeyCommand(
     characters: String, modifiers: NSEvent.ModifierFlags
@@ -1779,6 +1896,8 @@ func gridKeyCommand(
     let command = modifiers.contains(.command)
     let shift = modifiers.contains(.shift)
     let bareModifiers = modifiers.intersection([.command, .shift, .option, .control])
+    // ⇧ omitted on purpose — see the `m` / `a` cases below.
+    let hardModifiers = modifiers.intersection([.command, .option, .control])
 
     // Function keys (arrows) arrive as their unicode scalars.
     if let scalar = characters.unicodeScalars.first {
@@ -1795,10 +1914,15 @@ func gridKeyCommand(
     case "\r", "\u{3}": return command ? nil : .openLead    // Return / Enter
     case "\u{1b}": return command ? nil : .escape           // Escape
     case " ": return command ? nil : .quickLook             // Space
-    case "a", "A": return command ? .selectAll : nil        // ⌘A
+    // ⌘A stays Select All; bare (or ⇧) A opens "Add to…" (024 · K3). ⌥A / ⌃A are
+    // neither — they belong to whatever a text field would do with them.
+    case "a", "A":
+        if command { return .selectAll }
+        return hardModifiers.isEmpty ? .addTo : nil
     case "=", "+": return command ? .zoomIn : nil           // ⌘= / ⌘+
     case "-": return command ? .zoomOut : nil               // ⌘−
     case "x", "X": return bareModifiers.isEmpty ? .toggleLead : nil  // X, no modifiers
+    case "m", "M": return hardModifiers.isEmpty ? .moveTo : nil      // M — "Move to…"
     default: return nil
     }
 }

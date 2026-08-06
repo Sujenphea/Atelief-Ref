@@ -51,10 +51,11 @@ struct CollectionView: View {
     /// Which overflow section is expanded (accordion — at most one). `nil` = both
     /// collapsed, the state the popover reopens in.
     @State private var expandedMoreSection: MoreSection?
-    /// The natural height of the currently-expanded destination list, measured so
-    /// the capped `ScrollView` can size to `min(content, 240)` — a bare `ScrollView`
-    /// reports no ideal height in a content-sized popover and collapses to zero.
-    @State private var destListHeight: CGFloat = 0
+    /// The destination picker `M` / `A` raised, or `nil` (024 · K3). Holds the assets
+    /// it will file, captured at the press — see ``DestinationRequest``.
+    @State private var destinationRequest: DestinationRequest?
+    /// The grid's own view, so the picker can hand the keyboard back on dismiss.
+    @State private var gridFocus = GridFocusHandle()
     /// The live grid viewport width, captured from the grid's `GeometryReader`, so
     /// the toolbar / ⌘+/⌘− density controls can clamp against the current width
     /// (011-B2 · 16A) without their own geometry reader.
@@ -86,9 +87,9 @@ struct CollectionView: View {
     /// measurement settles.
     @State private var headerHeight: CGFloat = 24
 
-    // Move/copy targets, memoized (012 · CQ 1A): the eager per-cell context menus
-    // share ONE computation instead of recomputing the identical folder list per
-    // cell. Plain `@State`; not observed.
+    // The destination hierarchy, memoized (012 · CQ 1A): the grid configuration
+    // carries the tree as a value on every body pass, so this keeps the grouping +
+    // per-parent sorts off the render path. Plain `@State`; not observed.
     @State private var moveTargetsCache = MoveTargetsCache()
 
     /// The backing scale the grid draws at — the other half of the thumbnail
@@ -169,6 +170,15 @@ struct CollectionView: View {
         .focusedSceneValue(
             \.exportWebPage,
             model.items.isEmpty ? nil : ExportWebPageAction(run: runWebPageExport))
+        // Edit ▸ Remove from Collection / Delete (022 · D5). `canRemove` is false in
+        // Unsorted, which disables the item rather than leaving it to explain itself:
+        // a menu item you can click and that then tells you it did nothing is worse
+        // than a greyed one.
+        .focusedSceneValue(\.deleteVerbs, DeleteVerbs(
+            removeTitle: "Remove from Collection",
+            canRemove: collectionID != model.unsortedFolderID,
+            remove: { model.removeSelectedFromFolder() },
+            destroy: { model.requestDeleteSelected() }))
     }
 
     /// The grid density control (011-B2): step the global column-count notch
@@ -303,6 +313,13 @@ struct CollectionView: View {
             // otherwise the lone import pill needs its own.
             .padding(.bottom, model.selection.isSelecting ? 0 : Theme.Spacing.lg)
         }
+        // M / A raise the destination picker HERE — from the same corner of the pane
+        // the selection bar's `…` overflow opens its Move to / Add to accordion from,
+        // opening upward for the same reason (024 · K3). It is anchored to the pane
+        // rather than to the lead tile because the verb can act on a scattered
+        // multi-selection, which has no one tile to point at; the picker's own count
+        // says what it caught.
+        .overlay(alignment: .bottom) { destinationPickerAnchor }
         // The floating "+" (moved down from the shell). Hidden while the full-window
         // item detail is up: this is an overlay on the PANE, and the detail host is a
         // later sibling in `body`'s ZStack, so a visible "+" would float over a page
@@ -351,11 +368,12 @@ struct CollectionView: View {
         ]
     }
 
-    /// This screen's move/copy targets, memoized (012 · CQ 1A) so every eager
-    /// per-cell context menu shares ONE computation, not N.
-    private var moveTargets: MoveTargets {
-        moveTargetsCache.targets(
-            from: collectionID, folders: model.folders, unsortedID: model.unsortedFolderID)
+    /// The whole collection hierarchy as move/copy destinations, memoized (012 ·
+    /// CQ 1A) so a body pass never re-groups + re-sorts the folder tree. The
+    /// right-click menu turns this into nested submenus lazily, on the click.
+    private var destinationTree: [DestinationTreeNode] {
+        moveTargetsCache.destinationTree(
+            folders: model.folders, unsortedID: model.unsortedFolderID)
     }
 
     /// The ASSET ids the selection bar's batch actions act on. `selection.ids` are
@@ -498,45 +516,56 @@ struct CollectionView: View {
         }
     }
 
-    /// The whole collection hierarchy, flattened + indented — every collection is a
-    /// Move to / Add to target (roots in gallery order, children in manual order).
-    /// The current collection is included but rendered disabled (greyed) below.
-    private var moveTargetTree: [MoveTargetNode] {
-        CollectionTargets.moveTargetTree(
-            folders: model.folders, unsortedID: model.unsortedFolderID)
+    /// One section's destination list — the shared ``CollectionDestinationList``
+    /// (026 · I1): the full collection tree as indented rows, capped and scrolled,
+    /// with the collection on screen listed but greyed. Lifted out of this file so
+    /// the item-detail page's add chip renders the identical list.
+    private func destinationList(copy: Bool) -> some View {
+        CollectionDestinationList(
+            folders: model.folders, unsortedID: model.unsortedFolderID,
+            disabled: [collectionID]) { id in
+            moveOrCopy(copy: copy, to: id)
+        }
     }
 
-    /// One section's destination list: the full collection tree as indented rows.
-    /// Capped at 240pt and scrolled, since the library's collection count is
-    /// unbounded.
-    @ViewBuilder
-    private func destinationList(copy: Bool) -> some View {
-        let nodes = moveTargetTree
-        if nodes.isEmpty {
-            SelectionMenuRow("No collections", isEnabled: false)
-        } else {
-            // A bare `ScrollView` reports no ideal height in a content-sized popover
-            // and collapses to zero (no rows show). Measure the content's natural
-            // height (it lays out full-size on the unbounded scroll axis regardless
-            // of the ScrollView's own frame) and pin the ScrollView to
-            // `min(content, 240)` — shrink-to-fit for short lists, scroll past 240.
-            ScrollView {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(nodes) { node in
-                        SelectionMenuRow(
-                            node.collection.name, indent: node.depth,
-                            isEnabled: node.collection.id != collectionID) {
-                            moveOrCopy(copy: copy, to: node.collection.id)
-                        }
-                    }
-                }
-                .background(GeometryReader { g in
-                    Color.clear.preference(key: MenuListHeightKey.self, value: g.size.height)
-                })
+    /// The zero-size anchor the `M` / `A` picker hangs off (024 · K3), sitting where
+    /// the floating selection bar does so the popover lands in the same place whether
+    /// it was raised by a key or by the bar's `…`.
+    ///
+    /// Non-interactive: it must never shadow a click meant for the grid behind it.
+    @ViewBuilder private var destinationPickerAnchor: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .padding(.bottom, Theme.Spacing.xxl)
+            .allowsHitTesting(false)
+            .popover(item: $destinationRequest, arrowEdge: .top) { request in
+                DestinationPicker(
+                    verb: request.verb,
+                    count: request.assetIDs.count,
+                    folders: model.folders,
+                    unsortedID: model.unsortedFolderID,
+                    // The collection on screen is listed and greyed, exactly as the
+                    // selection bar and the right-click menu list it — filing where
+                    // the items already are is a no-op, not a missing row.
+                    disabled: [collectionID],
+                    onSelect: { target in file(request, into: target) },
+                    onDismiss: { destinationRequest = nil })
             }
-            .frame(height: min(destListHeight, 240))
-            .scrollBounceBehavior(.basedOnSize)
-            .onPreferenceChange(MenuListHeightKey.self) { destListHeight = $0 }
+            // Whichever way it closed — a pick, Escape, or a click outside — the grid
+            // gets the keyboard back, or its arrows stay dead until the next click.
+            .onChange(of: destinationRequest?.id) { _, id in
+                if id == nil { gridFocus.restore() }
+            }
+    }
+
+    /// Run a keyboard-raised destination pick. The SAME two model verbs the selection
+    /// bar's accordion and the right-click menu call — one implementation per verb, so
+    /// the key and the menu can never mean different things.
+    private func file(_ request: DestinationRequest, into target: UUID) {
+        switch request.verb {
+        case .move: model.moveToCollection(assetIDs: request.assetIDs, to: target)
+        case .add: model.copyToCollection(
+            assetIDs: request.assetIDs, to: target, from: collectionID)
         }
     }
 
@@ -695,11 +724,26 @@ struct CollectionView: View {
             onOpenDetail: { id in
                 if let detail = model.items.first(where: { $0.item.id == id }) { open(detail) }
             },
+            // ⌫ removes from THIS collection, ⌘⌫ leaves the library (022 · D2). The
+            // pair used to be one closure landing on `requestDeleteSelected`, so the
+            // unmodified key was the destructive one; the remove verb existed and had
+            // no caller at all.
+            onRequestRemove: { model.removeSelectedFromFolder() },
             onRequestDelete: { model.requestDeleteSelected() },
             onCopy: { copySelectionToPasteboard() },
             onQuickLook: { presentQuickLook() },
             onZoomIn: { gridPrefs.zoomIn(forWidth: geo.size.width - 2 * Self.contentMargin) },
             onZoomOut: { gridPrefs.zoomOut(forWidth: geo.size.width - 2 * Self.contentMargin) },
+            // M / A — raise the shared destination list over the grid (024 · K3).
+            // `destinationActionTargets` is the SAME rule ⌫ and ⌘D use: the selection
+            // when there is one, else the keyboard cursor's post (widened, so a
+            // collapsed ⧉4 tile files all four).
+            onDestinationVerb: { verb in
+                let ids = model.destinationActionTargets
+                guard !ids.isEmpty else { return }
+                destinationRequest = DestinationRequest(verb: verb, assetIDs: ids)
+            },
+            focusHandle: gridFocus,
             // A3 — drag out / drop / context menu. Every closure forwards to the
             // SAME model/view seams the SwiftUI grid used, so parity is structural.
             dragPayload: { model.dragPayload(forCellItemID: $0) },
@@ -714,7 +758,12 @@ struct CollectionView: View {
                 handleSlotDrop(payload, insertAt: slot)
             },
             actionTargets: { model.actionTargets(forCellItemID: $0) },
-            moveTargets: moveTargets,
+            // 027 · G2 — the WHOLE hierarchy, not the old one-level `moveTargets`.
+            // The collection on screen is listed and greyed (not filtered out), so
+            // the nested menu reads as the complete tree.
+            destinationTree: destinationTree,
+            destinationUnsortedID: model.unsortedFolderID,
+            disabledDestinations: [collectionID],
             onMoveToCollection: { model.moveToCollection(assetIDs: $0, to: $1) },
             onCopyToCollection: { model.copyToCollection(assetIDs: $0, to: $1, from: collectionID) },
             onSetCover: { model.setCollectionCover(collectionID: collectionID, assetID: $0) },
@@ -1027,6 +1076,10 @@ private struct CollectionDetailHost: View {
             // open source (all funnel through `presentedItemID`) and both close +
             // auto-dismiss.
             model.isDetailPresented = newID != nil
+            // Opening a different item, or closing, ends whatever the last verb was
+            // waiting for: a step armed against the item we just left must never fire
+            // against the one we just arrived at (026 · I3).
+            _ = model.consumeDetailStepIntent()
             if let newID {
                 if let detail = model.items.first(where: { $0.item.id == newID }) {
                     // The RUN, not the raw feed (069): this list is both what the pager
@@ -1038,12 +1091,36 @@ private struct CollectionDetailHost: View {
                 withAnimation { session.dismiss() }
             }
         }
-        // Auto-dismiss on delete (parity with the old `leadItem == nil` gate): a
-        // content reload that removes the shown item closes the page. `contentsVersion`
-        // is `@Published` and bumps on every load / move / reorder / delete.
+        // **Step, don't dismiss** (026 · I3). `contentsVersion` bumps on every load /
+        // move / reorder / delete; when the bump takes the SHOWN item out of the feed,
+        // ``DetailStep/outcome(shownID:intent:newRun:runCollectionID:)`` decides between
+        // three answers,
+        // and the one it picks turns on the intent — consumed here, unconditionally, so
+        // it is genuinely one-shot even on the reloads that ignore it.
+        //
+        // The page used to close on any departure. That is still what an UNGATED one
+        // does (a move out of this collection, a reorder that dropped the item, a
+        // collection switch while the page is up) — only ⌫ / ⌘⌫ issued FROM the page
+        // arm the step, which is why this is not "the run shrank and the id is gone".
         .onChange(of: model.contentsVersion) { _, _ in
-            if let id = session.currentID,
-               !model.items.contains(where: { $0.item.id == id }) {
+            let intent = model.consumeDetailStepIntent()
+            let run = model.detailRun
+            switch DetailStep.outcome(
+                shownID: session.currentID, intent: intent, newRun: run.map { $0.item.id },
+                runCollectionID: model.loadedCollectionID) {
+            case .stay:
+                break
+            case .step(let nextID):
+                guard let next = run.first(where: { $0.item.id == nextID }) else { break }
+                // The pager's own move, exactly: `session.step` keeps the previous
+                // image up until this one decodes and writes nothing to the model, so
+                // the grid behind the overlay does not re-render for the step. The
+                // route (`nav.presentedItemID`) keeps pointing at the id the page was
+                // OPENED on — as it does for every ← / → — because `close()` reads
+                // `session.currentID`, not the route, when it syncs the grid's lead.
+                session.step(to: next, in: run)
+                model.recordView(assetID: next.asset.id)
+            case .close:
                 nav.presentedItemID = nil
             }
         }
@@ -1105,8 +1182,23 @@ private struct CollectionDetailHost: View {
                 openBlob: hasBlob ? { model.openBlob(detail) } : nil,
                 revealInFinder: hasBlob ? { model.revealInFinder(detail) } : nil,
                 copySourceLink: hasSource ? { model.copySourceLink(detail) } : nil,
-                removeFromFolder: { model.removeFromFolder(assetIDs: [detail.asset.id]) },
-                requestDelete: { model.requestDelete(assetIDs: [detail.asset.id]) },
+                // ⌫ and the overflow's Remove are the same verb through the same rule
+                // (022 · D4), so the page and the grid behind it cannot disagree about
+                // what Unsorted means. `detail.item.collectionID` IS this host's
+                // collection — the page can only be opened from the grid showing it —
+                // which is why the model's "current folder" is the right target.
+                //
+                // Both go through the `itemID:` overloads, which is the ONLY place a
+                // detail step is armed (026 · I3): the verb the user pressed on the
+                // page is the intent, so the reload it causes steps to the next item
+                // instead of throwing the user back to the grid.
+                removeFromFolder: {
+                    model.removeFromCurrentFolder(
+                        itemID: detail.item.id, assetIDs: [detail.asset.id])
+                },
+                requestDelete: {
+                    model.requestDelete(itemID: detail.item.id, assetIDs: [detail.asset.id])
+                },
                 // Through the model, not the tag store: this is the one host with a
                 // grid behind the overlay, and `setFavorite` reloads it so the cell's
                 // star repaints under the page (and the write is undoable, like ⌘D).

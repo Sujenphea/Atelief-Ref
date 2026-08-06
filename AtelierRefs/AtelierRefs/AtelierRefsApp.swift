@@ -54,6 +54,10 @@ struct AtelierRefsApp: App {
             // the other selection-scoped actions rather than beside Undo.
             CommandGroup(after: .pasteboard) {
                 FavoriteCommand()
+                // Edit ▸ Remove / Delete (022 · D5) — the two verbs, named for the
+                // surface that has focus, so both are discoverable and ⌘⌫ is visible
+                // where macOS users look for it.
+                DeleteCommands()
             }
             // View ▸ Sort (010 · Phase 2) — sort modes (007) act on the current
             // collection through the focused model.
@@ -84,6 +88,12 @@ struct AtelierRefsApp: App {
                 // collection as a self-contained index.html + assets folder;
                 // disabled elsewhere, and while the collection is empty.
                 ExportWebPageCommand()
+            }
+            // Help ▸ Keyboard Shortcuts (⌘/, 024 · K2) — the app's ~30 bindings had
+            // no listing anywhere in the UI. AFTER the default Help item rather than
+            // replacing it: this phase adds a menu item, it does not remove one.
+            CommandGroup(after: .help) {
+                KeyboardShortcutsCommand()
             }
         }
 
@@ -183,6 +193,71 @@ private struct FavoriteCommand: View {
     }
 }
 
+// MARK: - Edit ▸ Remove / Delete (022 · D5)
+
+/// The two delete verbs as the FOCUSED surface means them.
+///
+/// A focused VALUE published by each pane rather than a read of the shared model,
+/// because "where you are looking" is exactly what the model does not know: it holds
+/// the collection grid's selection, so a menu command reading it would remove a board's
+/// tiles from a collection, or destroy the grid's selection while a board had focus.
+/// Every pane that owns a delete verb publishes one of these; a pane that has none
+/// (Capture) publishes nothing and both items disable.
+///
+/// Home publishes one too, with `canRemove: false` — a collection has no container to
+/// be removed from, so ⌫ there explains itself and Delete does the work. Home is the
+/// one surface whose ⌫ reaches nothing at all rather than a lesser verb (345).
+struct DeleteVerbs {
+    /// What ⌫ removes FROM, in words — "Remove from Collection" on a grid, "Remove
+    /// from Board" on a canvas. The menu says where, because that is the only part of
+    /// the rule that changes between surfaces.
+    let removeTitle: String
+    /// Whether the remove verb applies here at all. `false` in search (a hit has no
+    /// container) and in Unsorted (the fallback every removal re-homes into).
+    let canRemove: Bool
+    let remove: () -> Void
+    let destroy: () -> Void
+}
+
+private struct DeleteVerbsKey: FocusedValueKey {
+    typealias Value = DeleteVerbs
+}
+
+extension FocusedValues {
+    var deleteVerbs: DeleteVerbs? {
+        get { self[DeleteVerbsKey.self] }
+        set { self[DeleteVerbsKey.self] = newValue }
+    }
+}
+
+/// Edit ▸ Remove … / Delete — the menu half of **⌫ removes, ⌘⌫ destroys** (022 · D5).
+///
+/// **Only Delete carries a key equivalent, and that is deliberate.** A menu key
+/// equivalent is matched by `NSMenu` before the event ever reaches the first
+/// responder, and it cannot see that the responder is a text view — the platform
+/// behaviour that killed the canvas's V/F/T shortcuts (269) and the detail page's
+/// arrows (069). Registering a BARE ⌫ here would therefore swallow Backspace in every
+/// text field in the app: the sidebar's rename row, the search field, the detail
+/// page's Name and Note. So ⌫ is delivered by the surfaces themselves — the grid's
+/// `deleteBackward:`, the canvas's `keyDown`, the detail page's key catcher — each of
+/// which knows whether a field has the keyboard. The menu item still names the verb
+/// and performs it on click; it just is not the thing that listens for the key.
+///
+/// ⌘⌫ is safe to register (it is nobody's text-entry key) and is the one that most
+/// needs to be visible: it is the destructive one, and it always raises the shared
+/// confirmation before anything is deleted.
+private struct DeleteCommands: View {
+    @FocusedValue(\.deleteVerbs) private var verbs
+
+    var body: some View {
+        Button(verbs?.removeTitle ?? "Remove from Collection") { verbs?.remove() }
+            .disabled(!(verbs?.canRemove ?? false))
+        Button("Delete") { verbs?.destroy() }
+            .keyboardShortcut(.delete, modifiers: .command)
+            .disabled(verbs == nil)
+    }
+}
+
 /// File-menu backup commands (008 H3) — reach the shared model via the focused
 /// scene value the shell publishes.
 private struct SnapshotCommands: View {
@@ -248,6 +323,26 @@ private struct NewItemCommand: View {
         default:
             break
         }
+    }
+}
+
+/// Help ▸ Keyboard Shortcuts (⌘/, 024 · K2).
+///
+/// ⌘/ is the chord users arrive with, and [024] · D verified it was bound nowhere
+/// (`?` is free too; ⌘/ is the convention). The title comes from ``KeyMap/pageTitle``
+/// so the menu item and the sheet's own heading cannot drift apart.
+///
+/// Observes ``NavModel`` as a focused OBJECT — the same reason ``NewItemCommand``
+/// does. The sheet is raised by flipping `nav.showShortcuts`, which ``AppShellView``
+/// presents from, because a sheet needs a view to hang on and a `Scene`-level command
+/// has none.
+private struct KeyboardShortcutsCommand: View {
+    @FocusedObject private var nav: NavModel?
+
+    var body: some View {
+        Button(KeyMap.pageTitle) { nav?.showShortcuts = true }
+            .keyboardShortcut("/", modifiers: .command)
+            .disabled(nav == nil)
     }
 }
 

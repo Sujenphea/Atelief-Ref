@@ -2267,20 +2267,101 @@ final class IngestionModel: ObservableObject {
     /// source — the asset is filed now, so it stops being unsorted — and calling
     /// that "Added" would describe a row the user just watched disappear. Callers
     /// with no folder source (search results) pass `nil` and keep "Added".
+    /// **Undoable since 024 · K3.** It was not before, and the asymmetry only became
+    /// dangerous when a single bare `A` could fire it: Move and Remove both register a
+    /// reversible action and raise an "…— Undo" toast, while Add published a plain
+    /// notice and left nothing to press. A key you can hit by accident needs the same
+    /// way back the two verbs beside it have.
+    ///
+    /// The inverse removes only the memberships this call actually CREATED — see
+    /// ``applyAdd(_:to:record:)`` — so undoing an add over a set that was already half
+    /// filed there leaves the half that predated it alone.
     func copyToCollection(assetIDs: [UUID], to targetID: UUID, from source: UUID? = nil) {
-        guard !assetIDs.isEmpty else { return }
+        guard !assetIDs.isEmpty, services != nil else { return }
         let verb = source == Collection.unsortedID ? "Moved" : "Added"
-        mutateContents { services in
-            try await services.addAssets(assetIDs, to: targetID)
-            return "\(verb) \(Self.itemCount(assetIDs.count)) to “\(self.name(for: targetID))”."
-        }
+        let message = "\(verb) \(Self.itemCount(assetIDs.count)) to “\(name(for: targetID))”."
+        // Shared by the forward pass and its inverse, so a redo re-records what the
+        // second run created rather than reusing the first run's answer.
+        let record = AddedMemberships()
+        enqueueUndoable { await self.applyAdd(assetIDs, to: targetID, record: record) }
+        registerReversible("Add",
+            primary: { self.enqueueUndoable { await self.applyAdd(assetIDs, to: targetID, record: record) } },
+            inverse: { self.enqueueUndoable { await self.applyUnadd(record, from: targetID) } })
+        announceUndoable(message)
     }
 
-    /// The asset ids a keyboard command (Delete / Remove) acts on: the whole
-    /// selection when selecting, else the lead cursor's single item.
-    private var keyboardActionTargets: [UUID] {
-        selection.isSelecting ? selectedAssetIDs : (leadItem.map { [$0.asset.id] } ?? [])
+    /// The memberships one `Add` created, written by the forward pass and read by its
+    /// inverse. A reference type because both closures are registered ONCE and must
+    /// see the same box across every undo ↔ redo ping-pong.
+    final class AddedMemberships {
+        var assetIDs: [UUID] = []
     }
+
+    /// Add memberships to `target` and record which ones were new, then refresh.
+    ///
+    /// The delta is measured by reading the target's membership before and after
+    /// rather than by predicting it. `addAssets` skips assets that are already
+    /// members, and — when the target is Unsorted — also skips assets that are filed
+    /// anywhere real (the F3 invariant). Reproducing both rules here to guess the
+    /// delta would be a second copy of them, which is how an inverse silently starts
+    /// removing a membership the user had before.
+    private func applyAdd(
+        _ assetIDs: [UUID], to target: UUID, record: AddedMemberships
+    ) async {
+        guard let services else { return }
+        do {
+            let before = Set(try await services.collectionItems(in: target).map(\.asset.id))
+            try await services.addAssets(assetIDs, to: target)
+            let after = Set(try await services.collectionItems(in: target).map(\.asset.id))
+            // In the given order, so the undo reads deterministically in a test.
+            record.assetIDs = assetIDs.filter { after.contains($0) && !before.contains($0) }
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// Drop exactly the memberships ``applyAdd(_:to:record:)`` created — the inverse.
+    ///
+    /// Does NOT touch the source: an add never removed anything, so there is nothing
+    /// to put back. An asset left with no memberships at all is re-homed to Unsorted by
+    /// `removeAssets` (F3), which is precisely where the forward pass evicted it from.
+    private func applyUnadd(_ record: AddedMemberships, from target: UUID) async {
+        guard let services, !record.assetIDs.isEmpty else { return }
+        do {
+            try await services.removeAssets(record.assetIDs, from: target)
+            await refreshFolders()
+            loadContents(of: selectedFolderID)
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    /// The asset ids a keyboard command (Delete / Remove / ⌘D) acts on: the whole
+    /// selection when selecting, else the lead cursor's item.
+    ///
+    /// The lead branch goes through the SAME two helpers as the right-click path
+    /// (``widenedForAction(_:)`` then ``assetIDs(for:)``) — a collapsed carousel
+    /// tile stands for its whole post (307), so a cursor sitting on a tile reading
+    /// ⧉4 must act on all four. Taking `leadItem.asset.id` raw was the one action
+    /// path that skipped the widening, and it produced exactly the failure
+    /// ``actionTargets(forCellItemID:)`` documents itself as preventing: ⌫ removed
+    /// one image and left the tile behind reading 3, and ⌘D starred one image of
+    /// four. Note it widens the ITEM id, not the asset id — `widenedForAction`
+    /// speaks membership ids. An OPENED post still acts per frame; that exception
+    /// lives inside `widenedForAction` and is deliberate.
+    private var keyboardActionTargets: [UUID] {
+        selection.isSelecting
+            ? selectedAssetIDs
+            : (leadItem.map { assetIDs(for: widenedForAction([$0.item.id])) } ?? [])
+    }
+
+    /// The assets `M` / `A` file (024 · K3) — **deliberately the same answer ⌫ and ⌘D
+    /// give**, not a second targeting rule read off the grid's cells.
+    ///
+    /// This exists only because ``keyboardActionTargets`` is private and the two new
+    /// verbs are raised from a view rather than from a method on this model (the key
+    /// opens a picker; the picker calls back with a destination later). A separate
+    /// rule would have re-introduced exactly the bug [027] G1 fixed: a cursor on a
+    /// collapsed ⧉4 tile must file all four, because that is what the tile stands for.
+    var destinationActionTargets: [UUID] { keyboardActionTargets }
 
     // MARK: - Favorites (011 · U5)
 
@@ -2377,9 +2458,37 @@ final class IngestionModel: ObservableObject {
         } catch { lastError = Self.message(for: error) }
     }
 
-    /// Remove the current selection (or the lead item) from the current folder.
+    /// Whether ⌫ has a container to remove from here (022 · D2). False in Unsorted,
+    /// which is the fallback every other removal re-homes INTO — there is nowhere
+    /// below it to fall to, so the Edit-menu item disables rather than offering a
+    /// verb that would only explain itself.
+    var canRemoveFromCurrentFolder: Bool { selectedFolderID != Collection.unsortedID }
+
+    /// **⌫ in the collection grid** (022 · D2): remove the current selection (or the
+    /// lead cursor's post) from the collection in view. Undoable, no dialog — the
+    /// "…— Undo" toast `removeFromFolder` raises is what makes the verb legible.
+    ///
+    /// Unsorted is the one collection where this cannot mean anything. `AppServices`
+    /// exempts it from the F3 re-home (`removeAssets(_:from:)`) precisely because a
+    /// removal there would re-add what it just removed — so removing from Unsorted
+    /// either does nothing or quietly orphans, and neither is a verb worth binding to
+    /// the softest key on the keyboard. It says so instead, and names the key that
+    /// DOES leave the library.
     func removeSelectedFromFolder() {
-        removeFromFolder(assetIDs: keyboardActionTargets)
+        removeFromCurrentFolder(assetIDs: keyboardActionTargets)
+    }
+
+    /// The ⌫ verb over an explicit id set — the item detail page's Remove, which acts
+    /// on the one item on screen rather than on the grid's cursor (022 · D4). Same
+    /// Unsorted rule, in the same place, so the page and the grid behind it cannot
+    /// answer that question differently.
+    func removeFromCurrentFolder(assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty else { return }
+        guard canRemoveFromCurrentFolder else {
+            notify("Unsorted is the fallback — press ⌘⌫ to delete.")
+            return
+        }
+        removeFromFolder(assetIDs: assetIDs)
     }
 
     /// Stage a destructive delete for confirmation (see ``confirmPendingDeletion``).
@@ -2395,8 +2504,87 @@ final class IngestionModel: ObservableObject {
     }
 
     /// Dismiss the pending delete without acting.
+    ///
+    /// Every dismissal route lands here — the Cancel button, Escape, and the dialog's
+    /// `isPresented` binding writing `false` — which is what makes it the right place
+    /// to disarm a detail step: a ⌘⌫ that was called off must not leave an intent
+    /// waiting to fire on some later, unrelated reload (026 · I3).
     func cancelPendingDeletion() {
         pendingDeletion = nil
+        detailStepIntent = nil
+    }
+
+    // MARK: - Step, don't dismiss (026 · I3)
+
+    /// The one-shot record that the detail page issued a verb which is about to take
+    /// the shown item out of this feed. Armed by the two `itemID:`-taking verbs below,
+    /// read-and-cleared by ``consumeDetailStepIntent()``.
+    ///
+    /// Deliberately NOT `@Published`: nothing renders from it: it is a handoff between
+    /// a verb and the very next reload, and a publish would re-render the grid under
+    /// the overlay for a value no view reads.
+    private var detailStepIntent: DetailStepIntent?
+
+    /// Capture where `itemID` sits RIGHT NOW, before the verb's reload replaces
+    /// ``detailRun``. This is the whole reason the intent exists as state rather than
+    /// as a boolean: the observer that reacts to the reload can only ever see the new
+    /// run, in which the departed item has no position at all.
+    ///
+    /// An id that is not in the run, or a feed that hasn't finished loading, arms
+    /// nothing — and clears any stale intent rather than leaving one behind.
+    ///
+    /// ``loadedCollectionID`` (not ``selectedFolderID``) is the folder stamped on the
+    /// intent, because it is the one that describes the run being captured: the
+    /// selected folder can already have moved on while the previous feed is still on
+    /// screen, and a step must land in the folder the user was actually judging.
+    private func armDetailStep(for itemID: UUID) {
+        guard let index = detailRunIndex(of: itemID), let collectionID = loadedCollectionID
+        else {
+            detailStepIntent = nil
+            return
+        }
+        detailStepIntent = DetailStepIntent(
+            itemID: itemID, index: index, run: detailRun.map { $0.item.id },
+            collectionID: collectionID)
+    }
+
+    /// Read the armed step intent AND clear it. One-shot by construction: the host
+    /// calls this on every content reload, so an intent that is never followed by the
+    /// departure it expected is spent on the next reload instead of lingering.
+    func consumeDetailStepIntent() -> DetailStepIntent? {
+        defer { detailStepIntent = nil }
+        return detailStepIntent
+    }
+
+    /// **The detail page's ⌫** (022 · D4 + 026 · I3): remove the shown item from the
+    /// collection in view, and arm the page to step to whatever takes its place.
+    ///
+    /// The Unsorted guard is checked BEFORE arming, not after: in Unsorted this verb
+    /// only says why it can't act, so there is no reload coming, and an intent armed
+    /// here would sit until some unrelated later reload consumed it — which is exactly
+    /// the "leaves the page showing a stranger" failure the explicit gate exists to
+    /// prevent. The plain ``removeFromCurrentFolder(assetIDs:)`` still runs, so the
+    /// notice and the rule stay in one place.
+    func removeFromCurrentFolder(itemID: UUID, assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty, canRemoveFromCurrentFolder else {
+            removeFromCurrentFolder(assetIDs: assetIDs)
+            return
+        }
+        armDetailStep(for: itemID)
+        removeFromCurrentFolder(assetIDs: assetIDs)
+    }
+
+    /// **The detail page's ⌘⌫** (022 · D4 + 026 · I3): stage the shared confirmation
+    /// and arm the step for the item it is about to destroy.
+    ///
+    /// Arming here rather than at confirmation time is what keeps the captured index
+    /// pre-reload — and the dialog is modal over the page, so the run cannot move
+    /// underneath the intent while it is up. A cancelled dialog disarms through
+    /// ``cancelPendingDeletion()``.
+    func requestDelete(itemID: UUID, assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty else { return }
+        armDetailStep(for: itemID)
+        requestDelete(assetIDs: assetIDs)
     }
 
     /// Carry out the confirmed delete (010 · delete-undo). Captures a verbatim
@@ -2833,6 +3021,19 @@ final class IngestionModel: ObservableObject {
             let name = spaces.first { $0.id == id }?.name ?? ""
             deleteSpaceRecoverableWithUndo(id: id, name: name)
         }
+    }
+
+    /// Home's answer to a bare ⌫ (073): **nothing is deleted, and it says so.**
+    ///
+    /// Everywhere else ⌫ drops the item from the container in view. Home is not a
+    /// container — a collection card is not "in" anything you could take it out of —
+    /// so the remove half of the rule has no meaning there and the key deletes
+    /// nothing. It used to delete the cards outright, which is exactly why this is a
+    /// notice and not silence: muscle memory trained on the old binding needs to be
+    /// told which key took the verb over. Same shape, same sentence pattern, as
+    /// ``removeFromCurrentFolder(assetIDs:)``'s Unsorted branch.
+    func explainHomeDeleteKey() {
+        notify("Home has nothing to remove from — press ⌘⌫ to delete.")
     }
 
     /// Restore a captured space delete (undo) — reinstates the board verbatim.

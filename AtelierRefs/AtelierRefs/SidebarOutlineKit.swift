@@ -11,8 +11,12 @@
 //   • ``SidebarOutlineView`` — the outline view with the native LEFT disclosure
 //     triangle suppressed and single-column auto-fill (no enclosing scroll view).
 //   • ``SidebarRowView`` — flat, borderless Theme-tinted selection (no focus ring).
-//   • ``SidebarCell`` — name label + optional right-aligned chevron (parents only).
-//   • ``SidebarDraftCell`` — the inline "new item" editable field (214).
+//   • ``SidebarCell`` — name label + optional right-aligned chevron BUTTON (parents
+//     only, 025 · S1).
+//   • ``SidebarDraftCell`` — the inline editable field, used for BOTH the "new item"
+//     draft (214) and rename-in-place (025 · S2).
+//   • ``SidebarEditState`` — the pure state machine behind that field: what a
+//     session is editing and what finishing it should do.
 //   • ``BlockMenuItem`` — a closure-backed `NSMenuItem` for dynamic row menus.
 //
 //  The coordinators own everything that DIFFERS (nesting vs flat, drag routing,
@@ -24,6 +28,16 @@ import AppKit
 /// The outline view with the native LEFT disclosure triangle suppressed — the cell
 /// draws its own chevron on the right (043 · Phase C styling).
 final class SidebarOutlineView: NSOutlineView {
+    /// A key-event hook for the owning coordinator (025 · S3 — Enter renames the
+    /// selected row). Return `true` to consume the event; `false` falls through to
+    /// `super`, which is what keeps →/← expand/collapse and ↑/↓ selection native.
+    var onKeyDown: ((NSEvent) -> Bool)?
+
+    override func keyDown(with event: NSEvent) {
+        if onKeyDown?(event) == true { return }
+        super.keyDown(with: event)
+    }
+
     override func frameOfOutlineCell(atRow row: Int) -> NSRect { .zero }
 
     /// NSOutlineView reserves a fixed leading gap for the (now-hidden) disclosure
@@ -77,7 +91,10 @@ final class SidebarRowView: NSTableRowView {
     }
 
     override func drawSelection(in dirtyRect: NSRect) {
-        guard isSelected else { return }
+        // `!forceSelected` so a row that is BOTH selected and force-selected (a
+        // rename session on the row you are already on, 025 · S2) paints the fill
+        // once rather than stroking its border twice.
+        guard isSelected, !forceSelected else { return }
         drawHighlight()
     }
 
@@ -138,11 +155,24 @@ final class SidebarRowView: NSTableRowView {
 }
 
 /// A sidebar row cell: name text in the Theme row font, NO leading icon, and a
-/// right-aligned chevron that expands/collapses (shown only for parents — a flat
-/// list like Spaces simply configures `expandable: false`).
+/// right-aligned chevron BUTTON that expands/collapses (shown only for parents — a
+/// flat list like Spaces simply configures `expandable: false`).
+///
+/// 025 · S1 — the chevron used to be a decorative `NSImageView` while the ROW
+/// handled the toggle, so one click both navigated and toggled: you could not
+/// expand a folder without leaving the page you were on, and the click that opened
+/// a parent collapsed the children you had just opened. The glyph stays trailing
+/// (the visual identity is deliberate); only the interaction split.
 final class SidebarCell: NSTableCellView {
     private let label = NSTextField(labelWithString: "")
-    private let chevron = NSImageView()   // indicator only — the row handles toggle
+    private let chevron = NSButton()
+
+    /// Fired by the chevron button only. The row's own click never toggles.
+    var onToggle: (() -> Void)?
+
+    /// The glyph stays 12pt — the BUTTON is padded to 20×20 around it for a
+    /// comfortable hit area, the same trade the detail pager's chevrons make.
+    private static let glyph = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -151,8 +181,17 @@ final class SidebarCell: NSTableCellView {
         label.textColor = Theme.NS.inkPrimary
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
+        chevron.isBordered = false
+        chevron.title = ""
+        chevron.imagePosition = .imageOnly
+        // `.momentaryChange` swaps nothing on press: a bordered-less image button
+        // otherwise paints AppKit's grey pressed plate behind the glyph.
+        chevron.setButtonType(.momentaryChange)
         chevron.contentTintColor = Theme.NS.inkSecondary
         chevron.imageScaling = .scaleProportionallyDown
+        chevron.focusRingType = .none
+        chevron.target = self
+        chevron.action = #selector(chevronPressed)
         chevron.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         addSubview(chevron)
@@ -161,11 +200,14 @@ final class SidebarCell: NSTableCellView {
             // Roots sit at 14pt; children add the outline view's per-level indent.
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: chevron.leadingAnchor, constant: -6),
-            chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            // -2 to the button's EDGE keeps the same 6pt visual gap to the glyph,
+            // which sits 4pt inside its 20pt pad.
+            label.trailingAnchor.constraint(lessThanOrEqualTo: chevron.leadingAnchor, constant: -2),
+            // Likewise -4 here keeps the glyph's trailing edge at the old 8pt inset.
+            chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
-            chevron.widthAnchor.constraint(equalToConstant: 12),
-            chevron.heightAnchor.constraint(equalToConstant: 12),
+            chevron.widthAnchor.constraint(equalToConstant: 20),
+            chevron.heightAnchor.constraint(equalToConstant: 20),
         ])
     }
 
@@ -175,21 +217,32 @@ final class SidebarCell: NSTableCellView {
     func configure(name: String, expandable: Bool, expanded: Bool) {
         label.stringValue = name
         chevron.isHidden = !expandable
+        chevron.isEnabled = expandable
         setExpanded(expanded)
     }
 
-    /// Flip the chevron glyph to match the expansion state — called immediately on
-    /// toggle so it never lags.
+    /// Flip the chevron glyph to match the expansion state. Driven by the outline's
+    /// `outlineViewItemDidExpand` / `…DidCollapse` delegates, so EVERY expansion
+    /// path refreshes it — the click, the keyboard, and programmatic reveals like
+    /// `expandAncestors` (which used to leave a stale glyph behind).
     func setExpanded(_ expanded: Bool) {
         chevron.image = NSImage(
             systemSymbolName: expanded ? "chevron.down" : "chevron.right",
-            accessibilityDescription: nil)
+            accessibilityDescription: expanded ? "Collapse" : "Expand"
+        )?.withSymbolConfiguration(Self.glyph)
     }
+
+    @objc private func chevronPressed() { onToggle?() }
 }
 
-/// The inline draft row's editable cell (214): a borderless text field pixel-matched
-/// to ``SidebarCell``'s label. Enter / focus-loss commit, Escape cancels; a one-shot
+/// The inline editable cell: a borderless text field pixel-matched to
+/// ``SidebarCell``'s label. Enter / focus-loss commit, Escape cancels; a one-shot
 /// `finished` guard stops Enter's end-editing echo from committing twice.
+///
+/// Used for BOTH the "new item" draft row (214) and rename-in-place (025 · S2) —
+/// the suspend/restore, the commit-once guard and the shared-field-editor
+/// transparency fix are identical for the two, which is the whole reason rename
+/// reuses this cell instead of growing a second editable one.
 final class SidebarDraftCell: NSTableCellView, NSTextFieldDelegate {
     // Built from `labelWithString:` (the plain, non-bezeled variant SidebarCell uses)
     // then made editable — NOT `NSTextField(string:)`, whose bezel paints the dark
@@ -270,6 +323,76 @@ final class SidebarDraftCell: NSTableCellView, NSTextFieldDelegate {
         finished = true
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if cancelled || name.isEmpty { onCancel?() } else { onCommit?(name) }
+    }
+}
+
+// MARK: - Inline edit session (025 · S2)
+
+/// What an inline sidebar edit is editing. The draft session (214) was always
+/// *"a new item under parent P"*; generalising it to *"an editing session on row R"*
+/// is all rename-in-place needs — a rename swaps an EXISTING row's cell, so none of
+/// the phantom-row / drop-index / reload machinery changes.
+enum SidebarEditSession: Equatable {
+    /// A phantom row appended under `parent` (`nil` ⇒ the root list).
+    case draft(parent: UUID?)
+    /// The existing row for `id`, edited in place.
+    case rename(id: UUID)
+}
+
+/// The live state of an inline edit — the pure half of both outline coordinators'
+/// session handling, so the rules below are unit-testable without an `NSOutlineView`.
+struct SidebarEditState: Equatable {
+    let session: SidebarEditSession
+    /// The name the row carried when the session opened (empty for a draft). For a
+    /// rename this is what "unchanged" is measured against, so committing without
+    /// typing writes nothing — and therefore registers no spurious undo entry.
+    let originalName: String
+    /// Mirrors the field live, so a model reload landing mid-edit can restore it.
+    var text: String
+    /// Set on commit: the row stays a static label carrying this name until the
+    /// model's refresh lands, so the swap in is jump-free.
+    var committedName: String?
+
+    init(session: SidebarEditSession, originalName: String = "") {
+        self.session = session
+        self.originalName = originalName
+        self.text = originalName
+    }
+
+    /// The row this session is editing, when it is a rename.
+    var renameID: UUID? {
+        if case let .rename(id) = session { return id }
+        return nil
+    }
+
+    /// Does this session edit the row for `id`?
+    func isRenaming(_ id: UUID) -> Bool { renameID == id }
+}
+
+/// What finishing a session should actually DO.
+enum SidebarEditOutcome: Equatable {
+    case create(parent: UUID?, name: String)
+    case rename(id: UUID, name: String)
+    /// Nothing is written and the row reverts: an explicit Escape, an empty or
+    /// whitespace-only name, or a rename that ended on the name it started with.
+    case cancel
+}
+
+extension SidebarEditState {
+    /// Resolve a finished session. `name == nil` is a cancel (Escape); anything else
+    /// is the field's text, which is trimmed here so the rules hold whatever the
+    /// caller passes.
+    func outcome(committing name: String?) -> SidebarEditOutcome {
+        guard let name else { return .cancel }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .cancel }
+        switch session {
+        case let .draft(parent):
+            return .create(parent: parent, name: trimmed)
+        case let .rename(id):
+            guard trimmed != originalName else { return .cancel }
+            return .rename(id: id, name: trimmed)
+        }
     }
 }
 

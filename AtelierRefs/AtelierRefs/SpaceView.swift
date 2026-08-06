@@ -88,6 +88,9 @@ struct SpaceView: View {
     /// two panels racing over the same corner of the canvas.
     @State private var openGroup: SpaceBarGroup?
     @State private var gapValue: Double = 24
+    /// The "Add to…" picker `A` raised, or `nil` (024 · K3). Holds the assets it will
+    /// file, captured at the press — see ``DestinationRequest``.
+    @State private var destinationRequest: DestinationRequest?
     /// Whether this board has already been framed to fit. Owned here rather than by the
     /// canvas host so it is a fact about the BOARD, not about a view instance — the
     /// camera is the user's from the first frame onward.
@@ -137,6 +140,32 @@ struct SpaceView: View {
         .onChange(of: tagStore.lastError) { _, message in
             if let message { model.lastError = message; tagStore.lastError = nil }
         }
+        // A ⌘⌫ destroy started HERE (022 · D3) deletes the asset, and `space_item`
+        // CASCADEs on `asset_id` — so the row is gone from the database while this
+        // board is still drawing its tile. Reload on the model's contents bump, which
+        // is the signal every asset write raises (the search grid re-runs its query on
+        // the same one). A delete from elsewhere lands the same way, which is a fix in
+        // its own right: a board left open behind a collection used to keep the tile.
+        .onChange(of: model.contentsVersion) { _, _ in
+            Task { await space.load() }
+        }
+        // Edit ▸ Remove / Delete, as a BOARD means them (022 · D5). Published from
+        // here so the menu titles name the placement rather than a collection, and so
+        // ⌘⌫ from the menu destroys what is selected on the canvas — not whatever the
+        // collection grid was last left holding.
+        .focusedSceneValue(\.deleteVerbs, DeleteVerbs(
+            removeTitle: "Remove from Board",
+            canRemove: true,
+            remove: {
+                let content = space.content()
+                space.removeTiles(tileIDs: space.selectedTileIDs(in: content), in: content)
+            },
+            destroy: {
+                let content = space.content()
+                let assetIDs = space.selectedTileIDs(in: content)
+                    .compactMap { content.detail(forTileID: $0)?.asset?.id }
+                model.requestDelete(assetIDs: assetIDs)
+            }))
         // Expose the board's export to the File-menu command (052 · B3): default
         // config (PDF, single page) for the same selection-or-whole-board rows.
         .focusedSceneValue(\.exportMoodboard, ExportMoodboardAction {
@@ -271,13 +300,47 @@ struct SpaceView: View {
                 // V / F / T, reported by the canvas because only the canvas knows
                 // whether a text box has the keyboard.
                 onSelectTool: { tool = $0 },
+                // `A` — file the selected tiles' ASSETS into a collection, placements
+                // untouched (024 · K3). Reported by the canvas for the same reason the
+                // tool keys are: its own focus is the gate that keeps a bare letter out
+                // of an open text box.
+                //
+                // **`M` is not bound here, deliberately.** [024] §C recommended M on
+                // every surface with a selection, but a board is not a collection, so
+                // "move" would have had to mean "file the assets AND drop the
+                // placements" — a destructive-adjacent composite wearing the same key
+                // as the grid's plain reparent. `A` is the verb a board actually has.
+                //
+                // Elements (frames, text) carry no asset and are skipped, exactly as
+                // ⌘⌫ skips them; a selection of nothing but elements files nothing.
+                onFileTiles: { tileIDs in
+                    let assetIDs = tileIDs
+                        .compactMap { content.detail(forTileID: $0) }
+                        .sorted { $0.item.z < $1.item.z }
+                        .compactMap { $0.asset?.id }
+                    guard !assetIDs.isEmpty else { return }
+                    destinationRequest = DestinationRequest(verb: .add, assetIDs: assetIDs)
+                },
+                // ⌫ — drop the PLACEMENT. A board owns placements, not memberships
+                // (019 · C1), so this is "remove from where you are looking" here.
                 onRemoveTiles: { tileIDs in
                     space.removeTiles(tileIDs: tileIDs, in: content)
                 },
+                // ⌘⌫ — leave the LIBRARY (022 · D3). These two were handed the same
+                // closure body, with a comment saying so: a board had no path to
+                // `deleteAssetsRecoverable` at all, and its context menu offered two
+                // labels for one behaviour. It stages the SHARED confirmation, so the
+                // one destructive implementation stays the only one.
+                //
+                // Element tiles (frame / text) carry no asset and are skipped — an
+                // element exists only as a placement, so ⌫ is already the whole verb
+                // for one. A selection of nothing but elements stages nothing.
                 onDeleteTiles: { tileIDs in
-                    // In a space, both "remove" and ⌫ drop the placement — the
-                    // underlying asset (in its collections) is never touched here.
-                    space.removeTiles(tileIDs: tileIDs, in: content)
+                    let assetIDs = tileIDs
+                        .compactMap { content.detail(forTileID: $0) }
+                        .sorted { $0.item.z < $1.item.z }
+                        .compactMap { $0.asset?.id }
+                    model.requestDelete(assetIDs: assetIDs)
                 },
                 onCopyTiles: { tileIDs in
                     // ⌘C writes TWO representations of the same selection (065), so the
@@ -488,6 +551,9 @@ struct SpaceView: View {
             }
         }
         .overlay(alignment: .bottom) { actionBar }
+        // `A`'s destination picker (024 · K3), anchored where the action bar's own
+        // popovers open from and opening upward like them.
+        .overlay(alignment: .bottom) { destinationPickerAnchor }
         // Live import feedback for an external drop (059 · SP3 / 5A) — the SAME
         // floating pill the collection grid shows, driven by the shared
         // `IngestionModel.progress`. Top-aligned so it never collides with the
@@ -501,6 +567,38 @@ struct SpaceView: View {
         // the label a bare disc can't. (Frames and text come from the tool picker; the
         // library comes in by drag.)
         .floatingAdd(help: "Import images onto this board", action: importFilesOntoBoard)
+    }
+
+    /// The zero-size anchor `A`'s picker hangs off (024 · K3) — the same corner the
+    /// action bar's align / spacing / z-order panels open from, so a keyboard-raised
+    /// panel lands where a clicked one does. Non-interactive, so it can never shadow a
+    /// press meant for the canvas.
+    ///
+    /// **Nothing is greyed.** The grid greys the collection you are looking at because
+    /// filing there is a no-op; a board is not a collection, so every destination is a
+    /// real one.
+    @ViewBuilder private var destinationPickerAnchor: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .padding(.bottom, Theme.Spacing.xxl)
+            .allowsHitTesting(false)
+            .popover(item: $destinationRequest, arrowEdge: .top) { request in
+                DestinationPicker(
+                    verb: request.verb,
+                    count: request.assetIDs.count,
+                    folders: model.folders,
+                    unsortedID: model.unsortedFolderID,
+                    // `copyToCollection` with no source: a board's tiles are
+                    // placements, not memberships, so there is no folder for the
+                    // notice's verb to read "moved out of" (019 · C1).
+                    onSelect: { model.copyToCollection(assetIDs: request.assetIDs, to: $0) },
+                    onDismiss: { destinationRequest = nil })
+            }
+            // However it closed, the canvas gets the keyboard back — the same
+            // `restoreCanvasFocus` every other bar popover runs on dismiss.
+            .onChange(of: destinationRequest?.id) { _, id in
+                if id == nil { restoreCanvasFocus() }
+            }
     }
 
     /// "+" on a board: choose files, ingest them, and flow them in below the content.

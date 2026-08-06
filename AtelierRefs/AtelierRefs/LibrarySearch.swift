@@ -774,6 +774,10 @@ private struct LibrarySearchResults: View {
     /// `CollectionView.gridWidth`), so zoom respects the 512px cell cap.
     @State private var gridWidth: CGFloat = 1
 
+    // The destination hierarchy for the "Add to Collection ▸" submenu, memoized on
+    // the folder list exactly as `CollectionView` does (027 · G3).
+    @State private var moveTargetsCache = MoveTargetsCache()
+
     // 048 — search now renders through the SAME AppKit `MasonryGridHost` as the
     // collection grid instead of a bespoke SwiftUI `LazyVGrid`. This gives search
     // the native `NSDraggingSession` (no per-frame SwiftUI rebuild → the old drag
@@ -861,6 +865,15 @@ private struct LibrarySearchResults: View {
             // sizing to the text.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        // Edit ▸ Remove / Delete (022 · D5). `canRemove: false` — search results have
+        // no container, so the Remove item is greyed here rather than picking one of
+        // the hit's collections on the user's behalf. ⌘⌫ still works: leaving the
+        // library is the one verb that means the same thing from every surface.
+        .focusedSceneValue(\.deleteVerbs, DeleteVerbs(
+            removeTitle: "Remove from Collection",
+            canRemove: false,
+            remove: {},
+            destroy: { requestDeleteTargets() }))
     }
 
     /// The keyword / meaning mode toggle (047 · 3a · 10A), relocated out of the native
@@ -945,6 +958,11 @@ private struct LibrarySearchResults: View {
             onOpenDetail: { id in
                 if let hit = search.results.first(where: { $0.asset.id == id }) { onOpen(hit) }
             },
+            // ⌫ is a NO-OP here, deliberately (022 · D2): a hit belongs to the query,
+            // not to a container, so there is nothing "where you are looking" to
+            // remove it from. Silently doing nothing beats guessing at one of its
+            // collections. ⌘⌫ still leaves the library, as it does everywhere.
+            onRequestRemove: {},
             onRequestDelete: { requestDeleteTargets() },
             // Search is MEMBERSHIP-LESS (019 · C1): the hits have no owning
             // collection, so the copy's private payload carries the nil-source
@@ -964,7 +982,11 @@ private struct LibrarySearchResults: View {
             canReorder: false,
             onReorderCommit: { _, _ in false },
             actionTargets: { actionTargets(for: $0) },
-            moveTargets: moveTargets,
+            // 027 · G3 — the same nested hierarchy the collection grid offers.
+            // Nothing is disabled: a hit belongs to no collection here, so every
+            // destination is a legitimate add.
+            destinationTree: destinationTree,
+            destinationUnsortedID: model.unsortedFolderID,
             onMoveToCollection: { _, _ in },   // membership-less: never moves
             onCopyToCollection: { ids, target in model.copyToCollection(assetIDs: ids, to: target) },
             onSetCover: { _ in },
@@ -1046,14 +1068,13 @@ private struct LibrarySearchResults: View {
         selectionStore.setOrder(orderIDs)
     }
 
-    /// Every collection as a copy target, Unsorted pinned first (search has no source
-    /// folder to exclude, so all are offered as roots — no subfolder grouping).
-    private var moveTargets: MoveTargets {
-        let unsorted = model.folders.filter { $0.id == model.unsortedFolderID }
-        let rest = model.folders
-            .filter { $0.id != model.unsortedFolderID }
-            .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
-        return MoveTargets(subfolders: [], roots: unsorted + rest)
+    /// Every collection as a copy target, memoized (027 · G3) — the SAME hierarchy
+    /// the collection grid and the selection bar offer. This used to flatten the
+    /// whole library into one alphabetical root list, which put a nested
+    /// `Refs/Type/Serif` beside unrelated roots as a bare `Serif`.
+    private var destinationTree: [DestinationTreeNode] {
+        moveTargetsCache.destinationTree(
+            folders: model.folders, unsortedID: model.unsortedFolderID)
     }
 
     // MARK: - Drag image (the small precomputed preview, 048)
