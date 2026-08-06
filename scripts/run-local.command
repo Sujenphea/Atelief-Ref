@@ -5,7 +5,8 @@
 # The companion to release.sh, for the case that script deliberately refuses to
 # serve: running the production build on THIS machine, right now, without a
 # Developer ID identity or a notarization round-trip. Same configuration, same
-# hardened runtime, same sandbox entitlements — only the signing identity differs.
+# hardened runtime, same sandbox entitlements — the signing identity differs, and
+# with it one entitlement an unteamed signature forces: see relax_library_validation.
 #
 # Why a `.command` and not a `.sh`: Finder runs a `.command` in Terminal on
 # double-click. That is the whole point of this file. It is otherwise an ordinary
@@ -15,8 +16,9 @@
 #   Shell  : ./scripts/run-local.command
 #
 # Pipeline:
-#   resolve signing identity -> xcodebuild (Release) -> quit old instance
-#     -> install into /Applications -> open the INSTALLED app
+#   resolve signing identity -> xcodebuild (Release) -> relax library validation
+#     (ad-hoc only) -> quit old instance -> install into /Applications
+#     -> open the INSTALLED app
 #
 # Why it installs: launching straight out of build/local-release leaves whatever
 # was hand-dragged into /Applications untouched, and that copy is what the Dock,
@@ -148,6 +150,50 @@ build_app() {
     exit 1
   }
   echo "    built -> ${APP_PATH}"
+}
+
+# --- Step 2b: make the ad-hoc build loadable -------------------------------
+# The hardened runtime turns on Library Validation, which lets a process load a
+# non-platform library only when that library carries the SAME Team ID as the
+# process. An ad-hoc signature carries no team at all — so the app (no team) and
+# Sparkle.framework (ad-hoc too, equally teamless) do not match, and dyld kills
+# the process at launch, before main() ever runs:
+#
+#   Library not loaded: @rpath/Sparkle.framework/Versions/B/Sparkle
+#   … not valid for use in process: mapping process and mapped file
+#     (non-platform) have different Team IDs
+#
+# A Developer ID build never meets this: app and framework both come out signed
+# L25247V6JG and the teams match. So the entitlement below is scoped to the
+# ad-hoc fallback and to nothing else — the hardened runtime stays on and every
+# sandbox entitlement is untouched; the only rule lifted is the team match an
+# unteamed signature can never satisfy in the first place.
+#
+# Only the .app wrapper is re-signed. The nested signatures — Sparkle and its two
+# XPC services — stay byte-for-byte as xcodebuild wrote them.
+relax_library_validation() {
+  [[ "${SIGN_ADHOC}" == "1" ]] || return 0
+  echo "==> Disabling library validation (ad-hoc build)"
+
+  local ents="${OUTPUT_DIR}/adhoc.entitlements"
+
+  # Read the entitlements back off the BUILT BUNDLE, not off the .entitlements
+  # source file: what xcodebuild signed has $(PRODUCT_BUNDLE_IDENTIFIER) already
+  # substituted into the two Sparkle mach-lookup names. The source file still has
+  # the literal $(…), and re-signing with those would cut the app off from its
+  # own updater XPC services.
+  if ! codesign -d --entitlements "${ents}" --xml "${APP_PATH}" 2>/dev/null; then
+    echo "error: could not read the entitlements back from ${APP_PATH}" >&2
+    exit 1
+  fi
+  /usr/libexec/PlistBuddy \
+    -c 'Add :com.apple.security.cs.disable-library-validation bool true' \
+    "${ents}" >/dev/null
+
+  # --options runtime is not inherited across a re-sign; without it this would
+  # quietly drop the hardened runtime the whole script exists to preserve.
+  codesign --force --sign - --options runtime --entitlements "${ents}" "${APP_PATH}"
+  echo "    re-signed ad-hoc with com.apple.security.cs.disable-library-validation"
 }
 
 # --- Step 3: quit the previous instance ------------------------------------
@@ -344,6 +390,7 @@ main() {
 
   resolve_signing
   build_app
+  relax_library_validation
 
   if [[ "${INSTALL}" == "1" ]]; then
     install_app
