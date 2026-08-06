@@ -93,10 +93,10 @@ Mechanics per surface:
 - **Detail** — the page needs a key catcher for these; `DetailKeyCatcher`
   (`ItemDetailView.swift:1424`) already holds first responder while the page is up,
   so both bindings go in its `keyDown` next to the arrows. Post-delete navigation
-  is [026](feature-todo/026-item-detail-gaps.md)'s problem, not this doc's.
+  is [078]'s problem, not this doc's.
 - **Menus** — Edit ▸ "Remove from Collection" (⌫) and "Delete" (⌘⌫), titles
   tracking the focused surface, so both verbs are discoverable and the shortcuts
-  are visible where macOS users look for them. This is also the surface [024](feature-todo/024-keyboard-map-and-shortcuts-page.md)'s
+  are visible where macOS users look for them. This is also the surface [077]'s
   shortcuts page reads from.
 
 ### Confirmation policy
@@ -124,7 +124,7 @@ Both verbs act on the post-widened id set. The lead-only path is currently
 2. **D2 (M)** — grid: split remove/delete, wire `removeSelectedFromFolder`,
    fix the lead-widening ([075] §B).
 3. **D3 (S)** — space: read the modifier, un-alias the two handlers, wire destroy.
-4. **D4 (S)** — detail page bindings (composes with [026](feature-todo/026-item-detail-gaps.md)).
+4. **D4 (S)** — detail page bindings (composes with [078]).
 5. **D5 (S)** — Edit-menu items with focused titles.
 
 ## Test strategy

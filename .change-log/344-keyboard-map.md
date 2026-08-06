@@ -1,6 +1,6 @@
 # 344 — The Keyboard Map, Written Down and Then Shown
 
-[024] K1, K2 and K4. K3 (the `M` / `A` bindings themselves) is not in this change —
+[077] K1, K2 and K4. K3 (the `M` / `A` bindings themselves) is not in this change —
 it needs the shared destination picker [343] is building.
 
 The app decided key presses in **seven** independent places and listed them in
@@ -61,7 +61,7 @@ in the file's own doc comments:
 ### The `M` / `A` rows
 
 `KeyMap.planned`, a **separate array** that the sheet does not render and `KeyMap.all`
-does not contain. [024] is explicit that "a table row without a binding is a lie the
+does not contain. [077] is explicit that "a table row without a binding is a lie the
 collision test cannot catch", so a user is never shown a key that does nothing, and
 a test asserts no planned row leaks into the bound table. They are still written down,
 because the collision test runs over `all + planned` too: K3 gets a failing build the
@@ -101,15 +101,15 @@ adds a menu item, it does not remove one.
 
 `.docs/feature-todo/011-ux-features.md` Cluster C-2 said **M** = "Move to…" and
 **⇧M** = "Add to…". Amended to **M** / **A**, with an inline note saying it was
-amended by [024] and why: `A` is mnemonic, it is one hand, and ⌘A being Select All
+amended by [077] and why: `A` is mnemonic, it is one hand, and ⌘A being Select All
 means the bare key is not confusingly "nearly" taken. [011] is unbuilt and neither
 key is bound today, so nothing migrates.
 
 ## A deviation from the plan, stated
 
-[024] specified six scopes: `.global | .collection | .detail | .space | .gallery |
+[077] specified six scopes: `.global | .collection | .detail | .space | .gallery |
 .search`. There are **seven** — `.sidebar` was added, because the sidebar grew real
-key bindings *after* [024] was written (`2b5560d`: Enter renames the selected row,
+key bindings *after* [077] was written (`2b5560d`: Enter renames the selected row,
 →/← expand and collapse). A keyboard map that omits the newest bindings in the app
 fails its one job, and the alternative — filing them under `.global` — would have
 been false (they only fire while the outline view holds first responder) and would

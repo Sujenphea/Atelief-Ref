@@ -73,7 +73,7 @@
    (same type-ahead list, Enter moves via `moveAssets`), **A** = "Add to…" (copy
    semantics). Complements drag; no number-key bindings v1 (collections are
    dynamic; muscle-memory slots can come later as pins).
-   > *Amended by [024] K4: `⇧M` → `A`.* [024] settles the same pair for Spaces, and
+   > *Amended by [077] K4: `⇧M` → `A`.* [077] settles the same pair for Spaces, and
    > shipping two spellings of "Add to…" is the exact failure that doc exists to
    > prevent. `A` is mnemonic, it is one hand, and — since ⌘A is already Select All —
    > the bare key is not confusingly "nearly" taken. Nothing migrates: this cluster

@@ -1,6 +1,6 @@
 # 348 — M Files It, A Copies It
 
-[024] K3 — the last phase of the keyboard map. `M` opens **Move to…**, `A` opens
+[077] K3 — the last phase of the keyboard map. `M` opens **Move to…**, `A` opens
 **Add to…**, both on the collection grid; on a Space board `A` is bound and **`M` is
 not**. The picker they raise is the destination list [343] already built, given a
 keyboard cursor.
@@ -11,7 +11,7 @@ in `KeyMap.all`, and `planned` is empty.
 
 ## The board has no `M`, and that is the decision
 
-[024] §C recommended "M = Move to…, A = Add to…, on **every** surface with a
+[077] §C recommended "M = Move to…, A = Add to…, on **every** surface with a
 selection". That was taken for the grid and **rejected for the board**.
 
 On a grid, `M` is a plain reparent: a membership leaves one collection and joins
@@ -26,7 +26,7 @@ into a collection and leaves every placement exactly where it was** — one
 `addAssets` call, undoable, nothing to explain. Filing *and* clearing the board is
 still reachable, as two deliberate acts: `A`, then ⌫.
 
-This retires [024]'s "Space `M` is destructive-adjacent — it needs a toast that names
+This retires [077]'s "Space `M` is destructive-adjacent — it needs a toast that names
 both halves" risk and the composite-undo test that went with it. There is no
 composite left to get wrong. §C carries the amendment in full, the way K4 amended
 [011].
@@ -162,7 +162,7 @@ page's chip all gain the same undo, which is the point — one verb, one behavio
   the ⌘-combos alone".
 - `AtelierRefs/AtelierRefsTests/SelectionCellDeltaTests.swift` — the bare-`a`
   assertion updated, a bare-`m` one added.
-- `.docs/feature-todo/024-keyboard-map-and-shortcuts-page.md` — §C amendment.
+- `.docs/077-keyboard-map-plan.md` — §C amendment.
 
 ## Verification
 

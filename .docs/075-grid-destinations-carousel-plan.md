@@ -88,11 +88,11 @@ Mechanics:
   that cost.
 
 Do it once: extract `CollectionDestinationMenu` (AppKit) beside the shared SwiftUI
-`CollectionDestinationList` that [026](feature-todo/026-item-detail-gaps.md) §A extracts. Same data, two renderers,
+`CollectionDestinationList` that [078] §A extracts. Same data, two renderers,
 **one ordering**.
 
 Same treatment for the `.looseAssets` menu style's "Add to Collection"
-(`:1260-1265`) and for the Space canvas's context menu if [024](feature-todo/024-keyboard-map-and-shortcuts-page.md) §C's M/A land
+(`:1260-1265`) and for the Space canvas's context menu if [077] §C's M/A land
 there.
 
 ## B — ⌫ on a carousel tile deletes one image
@@ -205,5 +205,5 @@ rather than each verb.
    visually. Pick one and use it for both, or accept the divergence explicitly.
 2. Should the current collection appear disabled (recommended, matches the bar)
    or be omitted entirely (matches today's `moveTargets`, which excludes it)?
-3. Does the Space canvas context menu get destinations at all, or does [024](feature-todo/024-keyboard-map-and-shortcuts-page.md) §C's
+3. Does the Space canvas context menu get destinations at all, or does [077] §C's
    M/A cover it?

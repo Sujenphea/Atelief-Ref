@@ -45,7 +45,7 @@ Open question 2 answered: refuse the Developer ID → ad-hoc downgrade unless
 (`ItemDetailView.swift:1424-1522`) — the NSView that borrows first responder so ←/→
 reach the pager instead of the grid behind the overlay. It is present in the
 working tree and absent from a 31 Jul bundle. **Not a detail-page bug; a stale
-binary.** (The genuine carousel gaps in the detail page are [026](feature-todo/026-item-detail-gaps.md); the genuine
+binary.** (The genuine carousel gaps in the detail page are [078]; the genuine
 arrow-key gap in the *grid* is none — the grid's map is `MasonryGridHost.swift:1776`.)
 
 ## The fix

@@ -1,4 +1,16 @@
-# 024 — The Keyboard Map, Written Down and Then Shown
+# 077 — The Keyboard Map, Written Down and Then Shown
+
+**Status: shipped** — K1, K2 and K4 in `3b507fb`; K3 in `0826991`. Open question
+1 answered: `A`, not [011](feature-todo/011-ux-features.md)'s `⇧M`. Open
+question 3 answered: a sheet on ⌘/, not a Settings tab. Open question 4 answered:
+⌘D keeps both meanings, separated by scope headings on the page.
+
+Three things the work settled that this doc did not anticipate. A **seventh
+scope**, `.sidebar`, because `2b5560d` gave the sidebar bindings while this was
+being written. **Home broke the two-tier rule** — a bare ⌫ there deleted whole
+collections through SwiftUI's `.onDeleteCommand`, which cannot see modifiers;
+fixed separately in `b467eb4`. And **there is no board `M`** — see the Amendment
+under §C.
 
 > Requested: **M = move, A = add** on Spaces, and **a shortcuts page**. The
 > shortcuts page is the load-bearing half — the app has ~30 bindings spread across

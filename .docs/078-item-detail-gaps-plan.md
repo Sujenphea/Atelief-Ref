@@ -1,4 +1,17 @@
-# 026 — The Item Detail Page: Three Gaps
+# 078 — The Item Detail Page: Three Gaps
+
+**Status: shipped** — I1 in `16e9fca`, I2 in `ef5201d`, I3 in `53d58bc`. Open
+questions 1 and 2 answered: ⌫ steps like ⌘⌫, and deleting the last item in a run
+steps back rather than closing. I4 ([070]'s carousel chip) remains deliberately
+optional and unbuilt.
+
+Two departures worth knowing. The step gate carries a **collection stamp** as
+well as an item id — an id-only gate steps to a stranger if you switch
+collections before the async reload lands, which is the exact failure the gate
+exists to prevent. And §A's shared list forced the detail page's Add chip from a
+`Menu` to a `Button` + `.popover`: a SwiftUI `Menu`'s content becomes `NSMenu`
+items, which cannot host the list's `ScrollView`, so the 240pt cap and the `Menu`
+were mutually exclusive.
 
 > Three requests on one screen: the sidebar's **"add to collection" menu is a
 > weird flat list**; the page has **no delete bindings**; and **deleting steps out

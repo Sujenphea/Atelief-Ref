@@ -23,7 +23,7 @@ phasing, tests, risks, and open questions — the [016]/[011] house shape.
   `archived_at`). Note `LibraryArchive*` already means [008]'s backup bundle —
   the word is taken. Second library remains [016] §C's deferred item; two new
   seams recorded.
-- **[024]** — ~30 bindings across six independent key-handling sites, documented
+- **[077]** — ~30 bindings across six independent key-handling sites, documented
   nowhere in the UI. Proposes a pure `KeyMap` table (whose real value is a
   collision test), a Help ▸ Keyboard Shortcuts sheet on ⌘/, and reconciles the
   requested `M`/`A` against [011] C-2's `M`/`⇧M`.
@@ -31,7 +31,7 @@ phasing, tests, risks, and open questions — the [016]/[011] house shape.
   handles toggle", `SidebarOutlineKit.swift:144`), so one click both navigates and
   toggles. Rename is context-menu-only; the inline editable cell it needs
   (`SidebarDraftCell`) already exists for the new-item draft.
-- **[026]** — item detail's add-to-collection menu is `listCollections()` filtered
+- **[078]** — item detail's add-to-collection menu is `listCollections()` filtered
   (flat, alphabetical across the whole tree, Unsorted unpinned, uncapped) while the
   correct indented tree sits in `CollectionTargets.moveTargetTree`. No delete
   bindings. Deleting closes the page via the `contentsVersion` auto-dismiss
@@ -53,9 +53,9 @@ phasing, tests, risks, and open questions — the [016]/[011] house shape.
 - `.docs/072-local-install-lane-plan.md` (new)
 - `.docs/073-two-tier-delete-plan.md` (new)
 - `.docs/feature-todo/023-archive-and-second-library.md` (new)
-- `.docs/feature-todo/024-keyboard-map-and-shortcuts-page.md` (new)
+- `.docs/077-keyboard-map-plan.md` (new)
 - `.docs/074-sidebar-row-interaction-plan.md` (new)
-- `.docs/feature-todo/026-item-detail-gaps.md` (new)
+- `.docs/078-item-detail-gaps-plan.md` (new)
 - `.docs/075-grid-destinations-carousel-plan.md` (new)
 - `.docs/076-spaces-tidy-wraps-plan.md` (new)
 
@@ -74,6 +74,6 @@ Three of these interlock and should not land independently:
 2. **[073] and [075] G1 in one window.** Together they change ⌫ on a carousel tile
    from "destroy one image" to "remove all four from this collection" — two
    surprises unless described as one change.
-3. **[026] §A and [075] §G2 share an extraction.** Both need the destination list
+3. **[078] §A and [075] §G2 share an extraction.** Both need the destination list
    (SwiftUI list / AppKit nested menu) built from `moveTargetTree`. Whichever
    lands first builds the shared piece.

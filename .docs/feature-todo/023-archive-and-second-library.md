@@ -63,7 +63,7 @@ Nothing else — no move, no add-to, no reorder: an archive you can reorganise i
 just another collection.
 
 Reachable from everywhere an item is: context menu "Archive", and a binding
-worth having ([024] owns the map — `E` for a bare-key triage verb is the natural
+worth having ([077] owns the map — `E` for a bare-key triage verb is the natural
 slot next to `X`).
 
 ### Why a flag rather than a system collection
@@ -121,7 +121,7 @@ expensive version and is what [016] §C actually deferred.
    `includeArchived` parameter on the read funnels.
 2. **A2 (M)** — the Archived sidebar destination (grid host reuse) + Unarchive.
 3. **A3 (S)** — archive verbs on grid / detail / space context menus + the key
-   binding ([024]).
+   binding ([077]).
 4. **A4 (S)** — [008] manifest field + orphan-sweep exclusion + [016] stats row.
 5. **B (0)** — discipline only; no code.
 

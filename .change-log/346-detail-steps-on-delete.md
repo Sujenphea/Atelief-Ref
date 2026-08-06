@@ -1,6 +1,6 @@
 # 346 — Delete Takes You To The Next One
 
-[026] I3. The item detail page no longer closes when you delete the item it is
+[078] I3. The item detail page no longer closes when you delete the item it is
 showing: it shows the item that took its place. Deleting the last item in the run
 steps back; only an emptied collection closes the page.
 
@@ -23,7 +23,7 @@ run except the last, where the clamp yields the item *before* it. The clamp is n
 an off-by-one guard; it is the behaviour, and it is the reason the decision is a
 pure function with a test that fails if you drop it.
 
-Two user decisions, from [026]'s open questions: **⌫ steps just like ⌘⌫** (same
+Two user decisions, from [078]'s open questions: **⌫ steps just like ⌘⌫** (same
 loop, same reasoning — remove-from-here is triage too), and **deleting the last
 item steps back rather than closing**.
 
@@ -110,7 +110,7 @@ doing there.
 - `AtelierRefs/AtelierRefsTests/DetailStepTests.swift` (new) — 23 tests in two
   suites (16 pure + 7 wiring). The pure suite covers middle / first / last (steps back) / run of one /
   emptied run / still-present / out-of-range / a shrink past the index, the three
-  intent-flag cases ([026]'s list: set + gone → step, clear + gone → close, set but
+  intent-flag cases ([078]'s list: set + gone → step, clear + gone → close, set but
   present → no step), a mismatched intent, the collection-switch race, and the
   five-in-a-row loop itself. The wiring suite pins the seam on `CarouselRig`: ⌫
   arms the pre-reload run and index, ⌘⌫ arms at request time, the flag is one-shot,

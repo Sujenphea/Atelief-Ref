@@ -92,7 +92,7 @@ Spaces are unaffected — `SpacesOutlineView` is flat (`expandable: false`,
 
 Keyboard parity, free with the split: →/← on a selected row expand/collapse
 (`NSOutlineView` gives this once the row isn't fighting the toggle). Worth adding
-to [024](feature-todo/024-keyboard-map-and-shortcuts-page.md)'s map.
+to [077]'s map.
 
 ### B — rename in place
 
@@ -145,7 +145,7 @@ stop mirroring.
    moves to the expand/collapse delegates; →/← keyboard toggle.
 2. **S2 (M)** — `EditSession` generalisation + `.rename` on both outlines.
 3. **S3 (XS)** — Enter + double-click triggers; context menu re-points at the
-   inline session; [024](feature-todo/024-keyboard-map-and-shortcuts-page.md) map rows.
+   inline session; [077] map rows.
 
 ## Test strategy
 
@@ -191,4 +191,4 @@ manual convention. What *can* be pinned:
    it trailing — the visual identity is deliberate and documented.)
 3. Does Enter-to-rename conflict with any future "Enter opens" convention in the
    sidebar? (The grid uses Return-to-open; the sidebar has no such binding, so no
-   conflict today — but [024](feature-todo/024-keyboard-map-and-shortcuts-page.md)'s collision test should carry the scope.)
+   conflict today — but [077]'s collision test should carry the scope.)
