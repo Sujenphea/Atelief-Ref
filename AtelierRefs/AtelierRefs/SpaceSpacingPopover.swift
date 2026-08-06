@@ -51,9 +51,9 @@ struct SpaceSpacingPopover: View {
     /// from flinging the selection across the world.
     private static let range: ClosedRange<Double> = 0...2000
 
-    /// Only the distribute row gates further than the panel itself. Tidy and the gap
-    /// share the align threshold (≥2), which `.multi` already guarantees before this
-    /// panel can be opened at all — so they are never dead here.
+    /// Only the distribute row gates further than the panel itself. Tidy, reflow and
+    /// the gap share the align threshold (≥2), which `.multi` already guarantees before
+    /// this panel can be opened at all — so they are never dead here.
     private var canDistribute: Bool {
         CanvasArrange.Operation.distributeHorizontal.isEnabled(selectionCount: selectionCount)
     }
@@ -86,6 +86,22 @@ struct SpaceSpacingPopover: View {
                 }
                 .buttonStyle(DialogButtonStyle())
                 .help("Snap the selection into clean rows at a uniform gap")
+            }
+
+            Divider()
+
+            // Its own section rather than a second button under "Tidy up", because the
+            // two are not two flavours of one verb: tidy CLEANS UP what you built and
+            // never touches a size, reflow THROWS THE ARRANGEMENT AWAY and resizes every
+            // tile to repack it. Sitting them side by side under one heading would read
+            // as a choice of strength; the divider says they are different acts. The
+            // help string names the resize, since it is the surprising half.
+            section("Reflow") {
+                Button { onArrange(.reflowGrid) } label: {
+                    Label("Repack into a grid", systemImage: "rectangle.grid.2x2")
+                }
+                .buttonStyle(DialogButtonStyle())
+                .help("Resize the selection to one row height and repack it, like a fresh add")
             }
 
             Divider()

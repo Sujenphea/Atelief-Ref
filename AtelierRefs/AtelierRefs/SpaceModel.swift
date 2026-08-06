@@ -548,7 +548,9 @@ final class SpaceModel: ObservableObject {
     /// results zip back to ids by index, apply IN-MEMORY (flicker-free, like a
     /// drag), and persist through the shared placement path as ONE undo step —
     /// forward `reload: false` (tiles already moved), undo/redo `reload: true`
-    /// (051 · 3A / 13A). Only x/y change: w/h/z are carried from the live rect.
+    /// (051 · 3A / 13A). `z` is always carried from the live rect; `w`/`h` come back
+    /// from the kernel, which for every op but `.reflowGrid` hands them straight back
+    /// unchanged.
     func arrange(_ op: CanvasArrange.Operation) {
         applySelectionLayout(minimumCount: op.minimumCount, name: op.actionName) {
             CanvasArrange.apply(op, to: $0)
@@ -575,6 +577,10 @@ final class SpaceModel: ObservableObject {
     /// Extracted so `arrange` and `pack` cannot drift on any of it — the no-op filter,
     /// the in-memory mirror, the `renderRevision` bump and the `reload: false` are each
     /// load-bearing, and each is easy to omit when writing a second copy.
+    ///
+    /// The rect that comes back is written whole, size included. `old` therefore carries
+    /// the pre-op size and `applyPlacementEdit`'s inverse restores it, so ⌘Z after a
+    /// resizing op puts the tiles back at the sizes the user had.
     private func applySelectionLayout(
         minimumCount: Int, name: String, transform: ([CGRect]) -> [CGRect]
     ) {
@@ -590,15 +596,20 @@ final class SpaceModel: ObservableObject {
         var edits: [(id: UUID, old: Placement, new: Placement)] = []
         for (index, entry) in entries.enumerated() {
             let r = arranged[index]
-            // Only x/y move; w/h/z are preserved from the live placement (the kernel
-            // never sees them — 051 · 5A).
+            // The WHOLE rect round-trips — origin AND size. Every op but
+            // `.reflowGrid` returns the size it was handed, so this is a no-op for
+            // them; reflow normalises tiles to a uniform row height, and writing only
+            // x/y (which this did until then) made it move tiles into a grid the
+            // sizes no longer fitted. `z` never reaches the kernel (051 · 5A) and is
+            // carried from the live placement.
             let new = Placement(x: Double(r.minX), y: Double(r.minY),
-                                w: entry.p.w, h: entry.p.h, z: entry.p.z)
+                                w: Double(r.width), h: Double(r.height), z: entry.p.z)
             guard new != entry.p else { continue }
             edits.append((id: entry.id, old: entry.p, new: new))
-            // Move the tile in memory so the canvas shows the result immediately.
+            // Move (and, for a reflow, resize) the tile in memory so the canvas shows
+            // the result immediately.
             if let tid = content.tileID(forSpaceItemID: entry.id) {
-                content.setPlacement(tileID: tid, x: new.x, y: new.y)
+                content.setPlacement(tileID: tid, x: new.x, y: new.y, w: new.w, h: new.h)
             }
         }
         guard !edits.isEmpty else { return } // already arranged → no write, no undo

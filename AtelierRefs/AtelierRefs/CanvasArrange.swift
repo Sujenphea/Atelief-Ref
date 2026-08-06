@@ -20,9 +20,9 @@ import CoreGraphics
 /// spacing", [6A]).
 enum CanvasArrange {
 
-    /// The eight arrange operations: 6 aligns + 2 distributes. `allCases` drives
-    /// the table-driven kernel tests and the bar's op wiring, so a new op is added
-    /// in exactly one place.
+    /// The ten arrange operations: 6 aligns + 2 distributes + tidy + reflow.
+    /// `allCases` drives the table-driven kernel tests and the bar's op wiring, so a
+    /// new op is added in exactly one place.
     enum Operation: CaseIterable {
         // Aligns (bounding box): need ≥2 to be meaningful.
         case alignLeft, alignHorizontalCenter, alignRight
@@ -31,6 +31,9 @@ enum CanvasArrange {
         case distributeHorizontal, distributeVertical
         // Tidy up (066): snap the selection into clean rows at a uniform gap.
         case tidyUp
+        // Reflow into grid: repack the selection the way a bulk add flows it in —
+        // the ONE op that resizes (see ``reflowGrid(_:)``).
+        case reflowGrid
 
         /// The undo action name shown in the ⌘Z menu — carried by the op so the
         /// model doesn't scatter string literals.
@@ -45,6 +48,7 @@ enum CanvasArrange {
             case .distributeHorizontal: "Distribute Horizontally"
             case .distributeVertical: "Distribute Vertically"
             case .tidyUp: "Tidy Up"
+            case .reflowGrid: "Reflow Into Grid"
             }
         }
 
@@ -69,9 +73,12 @@ enum CanvasArrange {
     }
 
     /// Apply `op` to `rects`, returning a new index-aligned array (the caller zips
-    /// results back to ids by index). Pure: sizes are preserved, only the relevant
-    /// origin coordinate moves. Below `op.minimumCount` it returns `rects`
-    /// unchanged, so callers can invoke it safely on any selection.
+    /// results back to ids by index). Pure: for every op but one, sizes are preserved
+    /// and only the relevant origin coordinate moves. ``Operation/reflowGrid`` is the
+    /// exception and resizes deliberately — see ``reflowGrid(_:)`` — so callers must
+    /// carry the returned `size` through, not just the origin. Below
+    /// `op.minimumCount` it returns `rects` unchanged, so callers can invoke it
+    /// safely on any selection.
     static func apply(_ op: Operation, to rects: [CGRect]) -> [CGRect] {
         guard rects.count >= op.minimumCount else { return rects }
         switch op {
@@ -93,6 +100,8 @@ enum CanvasArrange {
             return distribute(rects, axis: .vertical)
         case .tidyUp:
             return tidy(rects)
+        case .reflowGrid:
+            return reflowGrid(rects)
         }
     }
 
@@ -297,6 +306,107 @@ enum CanvasArrange {
     /// The spacing a tidy falls back to when the selection has no measurable gap —
     /// everything overlapping, or a single row of one. World units.
     static let defaultTidyGap: CGFloat = 20
+
+    // MARK: - Reflow into grid
+
+    /// Repack the selection the way a BULK ADD lays tiles in: every tile normalised to
+    /// one row height, flowed left-to-right into justified rows.
+    ///
+    /// The sibling of ``tidy(_:)``, and deliberately the opposite bargain. Tidy PRESERVES
+    /// your arrangement and cleans it up — sizes untouched, clusters kept, your own gap
+    /// re-used — which is why it can never give you rows that line up along their bottom
+    /// edge. Reflow DISCARDS the arrangement and keeps only the reading order: the shape
+    /// goes, the sequence stays. It is the only op in this file that resizes, and the
+    /// caller has to persist width and height, not just the origin.
+    ///
+    /// Each decision, and the alternative it beat:
+    ///
+    /// - **Order comes from `tidyRows(rects).flatMap { $0 }`** — top-to-bottom, then
+    ///   left-to-right, the same clustering tidy reads. Array order was the other
+    ///   candidate and is wrong: a selection arrives from a `Set`, so array order is not
+    ///   the order anything is on screen. Reading order is what the user built.
+    /// - **A uniform ``gridRowHeight``, aspect preserved per tile.** Cropping to a square
+    ///   cell would make the block rectangular at the cost of lying about the picture;
+    ///   fixing a row height and letting width follow is what `SpaceLayout.flowIn`
+    ///   already does on add, so a reflowed board and a freshly-added one look alike.
+    /// - **The wrap bound is derived from the RESIZED rects, not the input.**
+    ///   ``tidyMaxRowWidth(_:)`` reads total area, and the resize changes total area. Feed
+    ///   it the originals and pass two (whose input IS the resized set) sees a different
+    ///   area, gets a different bound, and lays out a different number of rows —
+    ///   idempotence gone. This one line is the correctness crux.
+    /// - **A fixed ``gridSpacing``, not `tidyGap`.** Once every tile is a different size
+    ///   from the one the user placed, the gaps they left describe a layout that no longer
+    ///   exists; deriving from them would carry a measurement of the discarded shape into
+    ///   the new one.
+    ///
+    /// Idempotent, like tidy, and for reasons that compose: after one pass every tile is
+    /// exactly `gridRowHeight` high, so the resize on pass two is the identity (a tile's
+    /// aspect is now `width / gridRowHeight`, and `gridRowHeight × that` is the width it
+    /// already has); total area is therefore unchanged, so the bound is unchanged; and
+    /// `tidyRows` over the output re-clusters exactly the rows just laid out — every
+    /// member of a row shares its top edge and the band is `gridRowHeight` tall, while the
+    /// next row starts at `+ gridRowHeight + gridSpacing`, strictly outside it. Same
+    /// order, same bound, same output.
+    ///
+    /// Anchored on the INPUT selection's top-left, so the block repacks where it already
+    /// sits rather than jumping across the canvas. The wrap never fires on an empty row,
+    /// for tidy's reason: a tile wider than the bound (a 32:9 panorama, say) lands alone
+    /// and overhangs, because a row that can refuse every item is a loop that never ends.
+    private static func reflowGrid(_ rects: [CGRect]) -> [CGRect] {
+        let order = tidyRows(rects).flatMap { $0 }
+        let box = boundingBox(rects)
+
+        // Resize first — the bound below reads the result, not the input.
+        var sized = rects
+        for index in rects.indices {
+            let rect = rects[index]
+            // `SpaceLayout.aspect`'s fallback, mirrored: a degenerate rect is a square,
+            // never a division by zero. The floor is `flowIn`'s, and stops a sliver
+            // from becoming a zero-width tile nothing can grab.
+            let aspect = (rect.width > 0 && rect.height > 0) ? rect.width / rect.height : 1
+            sized[index] = CGRect(x: rect.minX, y: rect.minY,
+                                  width: gridRowHeight * max(aspect, 0.01),
+                                  height: gridRowHeight)
+        }
+        let maxWidth = tidyMaxRowWidth(sized)
+
+        var result = sized
+        var x = box.minX
+        var y = box.minY
+        var rowIsEmpty = true
+        for index in order {
+            let size = sized[index].size
+            if !rowIsEmpty, x + size.width > box.minX + maxWidth {
+                x = box.minX
+                // Every row is exactly one tile tall now, so the step is a constant —
+                // no running row height to track, which is what makes the rows justify.
+                y += gridRowHeight + gridSpacing
+                rowIsEmpty = true
+            }
+            result[index] = CGRect(x: x, y: y, width: size.width, height: size.height)
+            x += size.width + gridSpacing
+            rowIsEmpty = false
+        }
+        return result
+    }
+
+    /// The height every tile takes in a reflow — a mirror of `SpaceLayout.rowHeight`.
+    ///
+    /// Mirrored rather than read from `SpaceLayout`, for ``fallbackMaxRowWidth``'s
+    /// reason: this file stays the `[CGRect] → [CGRect]` island its header describes.
+    /// `CanvasTidyPackTests` asserts the two numbers agree so the copy cannot drift.
+    ///
+    /// Fixed rather than derived from the selection (its median height, say). A derived
+    /// height would change under its own output — pass one normalises the heights, so
+    /// pass two measures a different median — and idempotence is the design constraint
+    /// here exactly as it is for tidy. Fixed also means a reflowed block and a
+    /// bulk-added one are the same size, which is the whole claim the verb makes.
+    static let gridRowHeight: CGFloat = 240
+
+    /// The gap a reflow uses, both ways — a mirror of `SpaceLayout.spacing`.
+    ///
+    /// Not ``tidyGap(_:rows:)``'s smallest-observed gap: see ``reflowGrid(_:)``.
+    static let gridSpacing: CGFloat = 16
 
     // MARK: - Pack at an exact gap (066)
 

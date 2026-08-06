@@ -160,6 +160,77 @@ struct SpaceArrangeTests {
         #expect(model.undoActionName == "Add Frame")
     }
 
+    // MARK: - Reflow integration (the one op that resizes)
+
+    /// The failure mode this exists to catch: `applySelectionLayout` used to build its
+    /// `Placement` as `w: entry.p.w, h: entry.p.h` — the kernel's size was computed and
+    /// thrown away. Every op preserved sizes, so nothing noticed until one didn't, and a
+    /// reflow would have moved tiles into a grid at the sizes they already had. This
+    /// asserts the whole rect round-trips to the store, and that ⌘Z brings the sizes back.
+    @Test("reflow persists the new sizes, and one undo restores the old ones")
+    func reflowRoundTripsSizes() async throws {
+        let (model, _) = try await makeModel()
+        // Three different aspect ratios, none of them 240 tall.
+        let rects = [CGRect(x: 0, y: 0, width: 100, height: 50),     // 2:1
+                     CGRect(x: 300, y: 20, width: 60, height: 120),  // 1:2
+                     CGRect(x: 600, y: 400, width: 80, height: 80)]  // 1:1
+        let ids = await seed(model, rects)
+        selectAll(model, ids)
+        let before = Dictionary(uniqueKeysWithValues: ids.map { ($0, item(model, $0)) })
+
+        model.arrange(.reflowGrid)
+        await model.waitForWrites()
+        await model.load()
+
+        for (id, source) in zip(ids, rects) {
+            let now = item(model, id)
+            #expect(now.h == Double(CanvasArrange.gridRowHeight))
+            #expect(now.w == Double(CanvasArrange.gridRowHeight) * (source.width / source.height))
+            #expect(now.z == before[id]!.z)   // z never reaches the kernel
+        }
+        // One row at the anchor: the block did not jump, and it justified.
+        #expect(model.items.filter { ids.contains($0.item.id) }.allSatisfy { $0.item.y == 0 })
+        #expect(model.undoActionName == "Reflow Into Grid")
+
+        // ONE undo restores position AND size for all three — the half that a
+        // size-blind `old` would have silently dropped.
+        model.undo()
+        await model.waitForWrites()
+        await model.load()
+        for id in ids {
+            let now = item(model, id), was = before[id]!
+            #expect(now.w == was.w && now.h == was.h)
+            #expect(now.x == was.x && now.y == was.y)
+        }
+        #expect(model.undoActionName == "Add Frame")
+    }
+
+    @Test("reflowing an already-reflowed selection writes nothing and adds no undo entry")
+    func reflowTwiceRegistersOneUndo() async throws {
+        let (model, _) = try await makeModel()
+        let ids = await seed(model, [CGRect(x: 0, y: 0, width: 100, height: 50),
+                                     CGRect(x: 300, y: 20, width: 60, height: 120),
+                                     CGRect(x: 600, y: 400, width: 80, height: 80)])
+        selectAll(model, ids)
+
+        model.arrange(.reflowGrid)
+        await model.waitForWrites()
+        let settled = Dictionary(uniqueKeysWithValues: ids.map { ($0, item(model, $0)) })
+        let revision = model.renderRevision
+
+        model.arrange(.reflowGrid)   // idempotent → no edits → no write, no redraw signal
+        await model.waitForWrites()
+        #expect(model.renderRevision == revision)
+        for id in ids {
+            let now = item(model, id), was = settled[id]!
+            #expect(now.x == was.x && now.y == was.y && now.w == was.w && now.h == was.h)
+        }
+        // Still exactly one reflow on the stack, so one ⌘Z undoes the whole thing.
+        model.undo()
+        await model.waitForWrites()
+        #expect(model.undoActionName == "Add Frame")
+    }
+
     // MARK: - No-op guard
 
     @Test("aligning already-aligned items registers no undo entry")
