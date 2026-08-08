@@ -99,33 +99,40 @@ enum SpaceTextChromeLayout {
     /// ring's overhang so two neighbours' rings never touch.
     static let swatchGap: CGFloat = 10
     /// Inset from the bubble's pill to its first and last segment. Wider than the
-    /// gap BETWEEN segments so the ends read as an edge rather than another gap —
-    /// at 8 the outer icons sat as close to the border as to their neighbours.
+    /// gap BETWEEN segments so the ends read as an edge rather than another gap.
     ///
     /// A spacing TOKEN, not a measured number like the segment widths below it: the
     /// inset of a floating pill is the same design decision here as in
-    /// `selectionBarChrome()`, so it reads off the same scale.
+    /// ``floatingBarChrome(leading:trailing:vertical:)``, so it reads off the same
+    /// scale. `md` rather than that modifier's `lg` because the bubble is the one bar
+    /// sized to the thing it formats — its own note below argues that chrome twice the
+    /// width of a text box defeats the point of it.
     static let bubblePadding = Theme.Spacing.md
-    static let segmentHeight: CGFloat = 22
+    /// The bar glyph unit (``SelectionBarIcon``). The bubble used to run 30×22
+    /// segments at an 8pt gap with no hover fill — a bar 34pt tall beside a 40pt one,
+    /// whose buttons were the only ones in the app that didn't answer the pointer.
+    static let segmentHeight = SelectionBarIcon.height
     /// The pill: a segment with half the horizontal inset above and below it (6pt
-    /// each side of a 22pt segment), so the icons sit inside an even margin rather
-    /// than against the border.
+    /// each side of a 28pt segment), so the icons sit inside an even margin rather
+    /// than against the border — and the bubble lands at the shared bar height.
     static let bubbleHeight: CGFloat = segmentHeight + bubblePadding
-    static let aaWidth: CGFloat = 30
+    static let aaWidth = SelectionBarIcon.width
     /// The alignment segment — one icon that mirrors the box's current alignment.
-    static let alignWidth: CGFloat = 30
+    static let alignWidth = SelectionBarIcon.width
     /// The colour segment — a single dot showing the box's current colour.
-    static let swatchSegmentWidth: CGFloat = 26
-    static let segmentGap: CGFloat = 8
+    static let swatchSegmentWidth = SelectionBarIcon.width
+    /// The bar's own gap. It is not the gap you SEE: each 30pt segment carries its
+    /// own margin around a 13–15pt glyph, so neighbours read ~17pt apart.
+    static let segmentGap: CGFloat = 2
     /// Columns in the colour panel's grid (11 swatches → 6 + 5).
     static let paletteColumns = 6
 
     /// The size segment's width for a given label — wide enough for "144", never
-    /// narrower than a tap target.
+    /// narrower than the bar's glyph unit.
     static func sizeSegmentWidth(label: String) -> CGFloat {
         let measured = (label as NSString)
             .size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width
-        return max(26, ceil(measured) + 16)
+        return max(SelectionBarIcon.width, ceil(measured) + 16)
     }
 
     /// The panels the bubble's segments open. Sized HERE, not by their content: a
@@ -312,7 +319,12 @@ struct SpaceFormatChrome: View {
                     // padding was in the geometry and not on screen.
                     bubbleBar
                         .frame(width: bubble.width, height: bubble.height)
-                        .bubbleChrome(cornerRadius: bubble.height / 2)
+                        // Zero insets: ``SpaceTextChromeLayout/bubbleSize(sizeLabel:)``
+                        // already folds `bubblePadding` into the frame above, because
+                        // this bar's origin — and its flip at a viewport edge — has to
+                        // be computed BEFORE layout. The chrome supplies the surface
+                        // only.
+                        .floatingBarChrome(leading: 0, trailing: 0, vertical: 0)
                         .position(x: bubble.midX, y: bubble.midY)
 
                     if let panel = activePanel {
@@ -376,16 +388,16 @@ struct SpaceFormatChrome: View {
         HStack(spacing: SpaceTextChromeLayout.segmentGap) {
             ForEach(TextAlign.allCases, id: \.self) { align in
                 Button { change { $0.textAlign = align.rawValue } } label: {
-                    Image(systemName: align.symbolName)
-                        .font(.system(size: 13, weight: .medium))
-                        .frame(width: SpaceTextChromeLayout.alignWidth,
-                               height: SpaceTextChromeLayout.segmentHeight)
-                        .contentShape(Rectangle())
+                    BarGlyphSlot(
+                        width: SpaceTextChromeLayout.alignWidth,
+                        height: SpaceTextChromeLayout.segmentHeight,
+                        isOn: style.align == align
+                    ) {
+                        Image(systemName: align.symbolName)
+                            .font(.system(size: 13, weight: .medium))
+                    }
                 }
                 .buttonStyle(.plain)
-                .background(
-                    style.align == align ? Theme.Colors.selection : Color.clear,
-                    in: RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
                 .help("Align \(align.rawValue)")
             }
         }
@@ -413,59 +425,64 @@ struct SpaceFormatChrome: View {
 
     // MARK: Bubble
 
+    /// Every segment is a ``BarGlyphSlot``, so the bubble's buttons hover, dim and
+    /// round exactly like the selection bar's. They used to be bare `.plain` labels
+    /// with a `.contentShape` and nothing else — the only row of buttons in the app
+    /// that gave no pointer feedback at all.
+    ///
+    /// `isOn` marks the segment whose panel is open, the same raised `selection` fill
+    /// the board's tool buttons use for the live tool.
     private var bubbleBar: some View {
         HStack(spacing: SpaceTextChromeLayout.segmentGap) {
             // The align segment doubles as a readout: its icon is the box's CURRENT
             // alignment, not a fixed glyph.
-            Button { toggle(.align) } label: {
+            segment(.align, width: SpaceTextChromeLayout.alignWidth, help: "Text alignment") {
                 Image(systemName: style.align.symbolName)
                     .font(.system(size: 13, weight: .medium))
-                    .frame(width: SpaceTextChromeLayout.alignWidth,
-                           height: SpaceTextChromeLayout.segmentHeight)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help("Text alignment")
 
             // The colour segment shows the box's CURRENT colour and opens the eleven.
             // A strip of all of them was the first cut, and it made the chrome twice
             // the size of the thing it formats — 252pt of panel over a box that is
             // often narrower than that.
-            Button { toggle(.color) } label: {
+            segment(.color, width: SpaceTextChromeLayout.swatchSegmentWidth,
+                    help: "Text colour") {
                 SwatchDotBody(swatch: currentSwatch, isCurrent: false, hovering: false)
-                    .frame(width: SpaceTextChromeLayout.swatchSegmentWidth,
-                           height: SpaceTextChromeLayout.segmentHeight)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help("Text colour")
 
-            Button { toggle(.font) } label: {
+            segment(.font, width: SpaceTextChromeLayout.aaWidth, help: "Font family") {
                 Text("Aa")
                     // A SPECIMEN, not body text: "Aa" stands in for the chosen font,
                     // so its size is the affordance and does not follow a text role.
                     .font(.system(size: 15, weight: .medium))
-                    .frame(width: SpaceTextChromeLayout.aaWidth,
-                           height: SpaceTextChromeLayout.segmentHeight)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help("Font family")
 
-            Button { toggle(.size) } label: {
+            segment(
+                .size,
+                width: SpaceTextChromeLayout.sizeSegmentWidth(
+                    label: SpaceTextChromeLayout.sizeLabel(for: style)),
+                help: "Text size"
+            ) {
                 Text(SpaceTextChromeLayout.sizeLabel(for: style))
                     .font(Theme.Typography.row)
                     .monospacedDigit()
-                    .frame(
-                        width: SpaceTextChromeLayout.sizeSegmentWidth(
-                            label: SpaceTextChromeLayout.sizeLabel(for: style)),
-                        height: SpaceTextChromeLayout.segmentHeight)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help("Text size")
         }
         .foregroundStyle(Theme.Colors.inkPrimary)
+    }
+
+    private func segment(
+        _ panel: Panel, width: CGFloat, help: String, @ViewBuilder label: () -> some View
+    ) -> some View {
+        Button { toggle(panel) } label: {
+            BarGlyphSlot(
+                width: width,
+                height: SpaceTextChromeLayout.segmentHeight,
+                isOn: activePanel == panel,
+                content: label)
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     /// The dot the colour segment shows: the matching palette swatch, or — for a
@@ -645,20 +662,13 @@ struct SpaceTextSizePanel: View {
     }
 }
 
-// MARK: - Shared chrome
-
-private extension View {
-    /// The BUBBLE's look: the floating-bar tokens, so the format bubble, the selection
-    /// action bar and the import pill read as one system rather than three ports.
-    ///
-    /// Deliberately not the popover surface the panels use. The bubble is a bar — it
-    /// belongs to the box it formats and tracks it — while a panel is a transient
-    /// layer over the board. Giving them the same fill made the panel look like more
-    /// bubble; `field` on `surface` is the app's existing bar-on-popover contrast.
-    func bubbleChrome(cornerRadius: CGFloat) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        return background(Theme.Colors.field, in: shape)
-            .overlay(shape.strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
-            .elevation(.floating)
-    }
-}
+// The bubble's private `bubbleChrome(cornerRadius:)` is gone: it was a hand-copy of
+// the floating-bar recipe that had drifted to a continuous rounded rect, and the
+// bubble calls ``floatingBarChrome(leading:trailing:vertical:)`` directly now.
+//
+// What it argued for is still true and still holds — the bubble takes the BAR's
+// surface, not the popover surface its own panels take. It belongs to the box it
+// formats and tracks it, while a panel is a transient layer over the board; giving
+// them the same fill made the panel look like more bubble. `field` on `surface` is
+// the app's existing bar-on-popover contrast, and that is exactly what calling the
+// shared modifier now expresses.

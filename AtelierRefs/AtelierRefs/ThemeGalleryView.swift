@@ -127,7 +127,6 @@ private struct ColourSpecimens: View {
         ("selectionMark", Theme.Colors.selectionMark),
         ("selectionMarkContrast", Theme.Colors.selectionMarkContrast),
         ("mediaBackdrop", Theme.Colors.mediaBackdrop),
-        ("filmstrip", Theme.Colors.filmstrip),
         ("inkPrimary", Theme.Colors.inkPrimary),
         ("inkSecondary", Theme.Colors.inkSecondary),
         ("hairline", Theme.Colors.hairline),

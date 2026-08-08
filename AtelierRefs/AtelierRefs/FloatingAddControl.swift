@@ -76,8 +76,9 @@ extension View {
     /// full-window overlay is up, since the "+" is an overlay on the PANE and would
     /// otherwise draw on top of a detail page it has nothing to do with.
     ///
-    /// The 16pt inset is `selectionBarChrome()`'s bottom inset, so the "+" and the
-    /// floating action bar share a baseline when both are on screen. (The shell-level
+    /// The `lg` inset is the one every floating bar's host now applies below it (the
+    /// chrome no longer bakes its own in), so the "+" and the floating action bar
+    /// share a baseline when both are on screen. (The shell-level
     /// button used to add 24/26 on top of the panel's own 12pt margins, landing at
     /// 12/14 from the panel edge — near the bar, but never on it.)
     func floatingAdd(isPresented: Bool = true, items: [FloatingAddItem]) -> some View {

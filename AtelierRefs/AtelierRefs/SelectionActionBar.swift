@@ -20,6 +20,14 @@ import SwiftUI
 /// crowded symbols. Reused directly as the `Menu`/popover trigger label too, which
 /// is why it's split out from `SelectionBarButton`.
 ///
+/// **The app has exactly two glyph units, and the rule is where the glyph sits.**
+/// This one — 30×28, `Radius.control`, a 15pt medium symbol — is for a STANDALONE
+/// floating bar: the selection bars, the board's action bar, the detail zoom
+/// controls, the text format bubble. ``CompactBarIcon`` is for a glyph nested INSIDE
+/// another pill, where 28pt of hit area cannot fit. Before this split there were
+/// four sizes and two radii for the same class of button, because each bar sized its
+/// own; a bar that is 40pt tall in one place and 29 in another is not one control.
+///
 /// `isOn` marks a glyph that carries STATE rather than firing an action — the board's
 /// Select / Frame / Text tools. It takes the raised `selection` fill, which is how a
 /// sidebar row and a chip already mark "this is the live one"; the hover fill steps
@@ -27,22 +35,73 @@ import SwiftUI
 struct SelectionBarIcon: View {
     let systemName: String
     var isOn = false
-    @State private var isHovering = false
 
     var body: some View {
-        Image(systemName: systemName)
-            .font(.system(size: 15, weight: .medium))
-            .frame(width: 30, height: 28)
+        BarGlyphSlot(isOn: isOn) {
+            Image(systemName: systemName).font(.system(size: 15, weight: .medium))
+        }
+    }
+
+    /// The unit, published so a non-glyph item can claim the same slot — the export
+    /// progress ring is 16pt of drawing and would otherwise dent the row.
+    static let width: CGFloat = 30
+    static let height: CGFloat = 28
+}
+
+/// The glyph unit for a button nested INSIDE another pill — today only the detail
+/// pager's chevrons, which live in a 28pt-tall pill that a 28pt glyph would fill
+/// edge to edge.
+///
+/// Same treatment as ``SelectionBarIcon``, one step down: 24×22 on `Radius.chip`
+/// with a 13pt symbol. It exists so "smaller because it is nested" is a stated rule
+/// with one size behind it, rather than whatever each pill's `HoverButtonStyle`
+/// padding happened to produce.
+struct CompactBarIcon: View {
+    let systemName: String
+
+    var body: some View {
+        BarGlyphSlot(width: 24, height: 22, cornerRadius: Theme.Radius.chip) {
+            Image(systemName: systemName).font(.system(size: 13, weight: .medium))
+        }
+    }
+}
+
+/// The bar glyph's SLOT, without assuming the content is an SF Symbol.
+///
+/// ``SelectionBarIcon`` and ``CompactBarIcon`` are this with a symbol in them; the
+/// format bubble's segments are this with a swatch dot, an "Aa" specimen and a point
+/// size in them. Splitting it out is what let the bubble join the system: its
+/// segments were plain `.buttonStyle(.plain)` labels with no hover treatment at all —
+/// the one row of buttons in the app that stayed inert under the pointer — because
+/// the shared hover fill was welded to `Image(systemName:)`.
+struct BarGlyphSlot<Content: View>: View {
+    var width: CGFloat = SelectionBarIcon.width
+    var height: CGFloat = SelectionBarIcon.height
+    var cornerRadius: CGFloat = Theme.Radius.control
+    var isOn = false
+    @ViewBuilder var content: Content
+
+    @State private var isHovering = false
+    /// Dimming is the ATOM's job, not the call site's. `.buttonStyle(.plain)` drops
+    /// the system's own disabled treatment, so every bar button used to re-apply
+    /// `.opacity(0.35)` by hand — and the two collection-bar export buttons simply
+    /// forgot, staying fully bright while unavailable. Reading the environment here
+    /// makes the dim unforgettable and deletes it from six call sites.
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        content
+            .frame(width: width, height: height)
             .background(
-                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                    .fill(fill))
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(fill))
             .contentShape(Rectangle())
+            .opacity(isEnabled ? 1 : Theme.disabledOpacity)
             .onHover { isHovering = $0 }
     }
 
     private var fill: Color {
         if isOn { return Theme.Colors.selection }
-        return isHovering ? Theme.Colors.hoverControl : .clear
+        return isHovering && isEnabled ? Theme.Colors.hoverControl : .clear
     }
 }
 
@@ -70,7 +129,11 @@ struct SelectionBarButton: View {
             SelectionBarIcon(systemName: systemName)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.primary)
+        // `inkPrimary`, not `.primary`. The system semantic resolves to pure #FFFFFF
+        // on a dark appearance, while every other piece of chrome — the mode buttons
+        // beside these, the format bubble, every panel — draws the warmer #F2F1EE
+        // token. The board's action bar carried both, so one row rendered two whites.
+        .foregroundStyle(Theme.Colors.inkPrimary)
         .help(help)
     }
 }
@@ -112,9 +175,9 @@ struct SelectionBarModeButton: View {
             SelectionBarIcon(systemName: systemName, isOn: isOn)
         }
         .buttonStyle(.plain)
-        // The off glyphs stay legible rather than dimmed to `0.35` — that opacity is
-        // the bar's DISABLED look (see the undo/redo and group buttons), and an
-        // inactive tool is one click away, not unavailable.
+        // The off glyphs stay legible rather than dimmed to `Theme.disabledOpacity` —
+        // that is the bar's DISABLED look, and an inactive tool is one click away,
+        // not unavailable.
         .foregroundStyle(isOn ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
         .help(help)
         .accessibilityAddTraits(isOn ? [.isButton, .isSelected] : .isButton)
@@ -124,22 +187,40 @@ struct SelectionBarModeButton: View {
 // MARK: - Chrome
 
 extension View {
-    /// Wrap a selection bar's `HStack` in the shared floating capsule. The fill is
-    /// the SOLID `field` token, not `.regularMaterial`: a translucent material tints
-    /// from whatever grid content sits behind it, so the Collection and Search bars
-    /// rendered slightly different greys over their different backdrops. A fixed
-    /// token makes both pixel-identical and matches the reference's opaque pill.
-    /// The leading inset is wider than the trailing one so the count text breathes
-    /// while the last icon's own hit area supplies the right margin.
-    func selectionBarChrome() -> some View {
+    /// **The** floating-bar container. Every bar that rides over content it did not
+    /// lay out wears this: the three selection bars, the board's action bar, the
+    /// detail zoom controls and top-bar pills, the text format bubble, the import
+    /// pill, the toast.
+    ///
+    /// The fill is the SOLID `field` token, not `.regularMaterial`: a translucent
+    /// material tints from whatever content sits behind it, so the same bar rendered a
+    /// different grey over a grid than over artwork. A fixed token makes every host
+    /// pixel-identical and matches the reference's opaque pill.
+    ///
+    /// It takes APPEARANCE only. It used to end with `.padding(.bottom, 16)`, which is
+    /// placement — so the modifier could only ever be used at the bottom of a pane, and
+    /// a caller that wanted the look somewhere else had to copy the four lines instead.
+    /// Three did exactly that (the zoom controls, the import pill and the format
+    /// bubble), and the four copies had already drifted apart on padding and shape by
+    /// the time they were counted. Call sites now supply their own inset.
+    ///
+    /// The default insets are asymmetric — 16 leading against 6 trailing — because a
+    /// bar that OPENS WITH TEXT needs the count to breathe while the last glyph's own
+    /// 30×28 hit area already supplies the right margin. An icon-only bar passes
+    /// `trailing: 16` to balance it; that is the one knob, and it is a knob rather than
+    /// a second modifier because it is the only thing that legitimately varies.
+    func floatingBarChrome(
+        leading: CGFloat = Theme.Spacing.lg,
+        trailing: CGFloat = 6,
+        vertical: CGFloat = 6
+    ) -> some View {
         self
-            .padding(.leading, 16)
-            .padding(.trailing, 6)
-            .padding(.vertical, 6)
+            .padding(.leading, leading)
+            .padding(.trailing, trailing)
+            .padding(.vertical, vertical)
             .background(Theme.Colors.field, in: Capsule())
             .overlay(Capsule().strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
             .elevation(.floating)
-            .padding(.bottom, 16)
     }
 
     /// Wrap the `…` overflow popover's content in the design-system container — the
@@ -150,6 +231,21 @@ extension View {
         // `xs`, not the `lg` every other popover takes: this one's ROWS carry their
         // own inset (they are the click targets), so a wide outer pad would double it.
         popoverContent(padding: Theme.Spacing.xs, width: 220)
+    }
+}
+
+extension View {
+    /// Give a non-glyph bar item the glyph's own 30×28 slot, so a row of
+    /// ``SelectionBarIcon``s keeps its rhythm around it.
+    ///
+    /// For the export progress ring, which draws 16pt of stroke: without this the
+    /// bar visibly narrowed the moment an export started and widened again when it
+    /// finished. Applied INSIDE each of the ring's branches rather than to the
+    /// enclosing `Group` — a `Group` whose branches all fail contributes no subview
+    /// at all, which is what keeps an idle bar from reserving an empty slot, and a
+    /// frame on the outside would take that away.
+    func barSlot() -> some View {
+        frame(width: SelectionBarIcon.width, height: SelectionBarIcon.height)
     }
 }
 

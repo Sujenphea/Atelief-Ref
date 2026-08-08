@@ -914,7 +914,9 @@ private struct LibrarySearchResults: View {
                 if abs(gridWidth - w) > 0.5 { gridWidth = w }
             }
             .overlay(alignment: .bottom) {
-                if selectionStore.selection.isSelecting { selectionBar }
+                if selectionStore.selection.isSelecting {
+                    selectionBar.padding(.bottom, Theme.Spacing.lg)
+                }
             }
             // Keep the reducer's feed order in step with the results (the host does
             // not push this itself — the collection grid's model does). Prune a stale
@@ -1121,7 +1123,8 @@ private struct LibrarySearchResults: View {
         let count = selectionStore.selection.ids.count
         return HStack(spacing: 2) {
             Text("\(count) selected")
-                .font(.callout.weight(.medium))
+                .font(Theme.Typography.barLabel)
+                .foregroundStyle(Theme.Colors.inkPrimary)
                 .padding(.trailing, 10)
             SelectionBarButton("xmark", help: "Clear selection") {
                 selectionStore.apply(.clear)
@@ -1131,7 +1134,7 @@ private struct LibrarySearchResults: View {
                 requestDeleteTargets()
             }
         }
-        .selectionBarChrome()
+        .floatingBarChrome()
     }
 }
 

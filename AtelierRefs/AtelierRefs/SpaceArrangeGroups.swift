@@ -147,7 +147,8 @@ enum SpaceArrangeSymbols {
 
 /// One glyph inside a group panel: the bar's own 30×28 ``SelectionBarIcon``, so a
 /// collapsed op looks identical to the button it used to be in the bar. Dimmed
-/// rather than hidden below its `minimumCount`.
+/// rather than hidden below its `minimumCount` — by the icon itself, which reads
+/// `isEnabled` from the environment.
 struct ArrangeGlyphButton: View {
     let systemName: String
     let help: String
@@ -159,10 +160,9 @@ struct ArrangeGlyphButton: View {
             SelectionBarIcon(systemName: systemName)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.primary)
+        .foregroundStyle(Theme.Colors.inkPrimary)
         .help(help)
         .disabled(!isEnabled)
-        .opacity(isEnabled ? 1 : 0.35)
     }
 }
 

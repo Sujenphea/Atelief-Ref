@@ -36,7 +36,7 @@ struct ContactSheetExportButton: View {
             SelectionBarIcon(systemName: "square.and.arrow.up")
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.primary)
+        .foregroundStyle(Theme.Colors.inkPrimary)
         .help("Export a contact sheet (PDF or PNG)")
         .disabled(controller.isExporting)
         .popover(isPresented: $showPanel, arrowEdge: .top) { panel }

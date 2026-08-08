@@ -21,13 +21,14 @@ struct ImportProgressPill: View {
                     total: Double(max(progress.total, 1)))
                 .frame(width: 120)
                 Text("\(progress.completed) / \(progress.total)")
-                    .font(Theme.Typography.caption).monospacedDigit().foregroundStyle(.secondary)
+                    .font(Theme.Typography.caption).monospacedDigit()
+                    .foregroundStyle(Theme.Colors.inkSecondary)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, Theme.Spacing.sm)
-            .background(Theme.Colors.field, in: Capsule())
-            .overlay(Capsule().strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
-            .elevation(.floating)
+            // The shared container, not a fourth hand-written copy of it. This pill
+            // used to declare the fill / border / shadow itself and pad V8 where the
+            // modifier pads V6 — one point taller than the selection bar it sits
+            // directly above on the collection screen.
+            .floatingBarChrome(leading: Theme.Spacing.lg, trailing: Theme.Spacing.lg)
         }
     }
 }

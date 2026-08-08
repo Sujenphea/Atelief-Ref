@@ -309,9 +309,10 @@ struct CollectionView: View {
                 importIndicator
                 if model.selection.isSelecting { selectionBar }
             }
-            // The selection bar's own chrome supplies the bottom inset when it's up;
-            // otherwise the lone import pill needs its own.
-            .padding(.bottom, model.selection.isSelecting ? 0 : Theme.Spacing.lg)
+            // One inset for the stack, whichever of the two is showing. The bar's
+            // chrome used to bake its own bottom padding in, so this had to cancel
+            // itself out whenever the bar was up; the chrome is appearance-only now.
+            .padding(.bottom, Theme.Spacing.lg)
         }
         // M / A raise the destination picker HERE — from the same corner of the pane
         // the selection bar's `…` overflow opens its Move to / Add to accordion from,
@@ -437,7 +438,8 @@ struct CollectionView: View {
         let count = model.selection.ids.count
         return HStack(spacing: 2) {
             Text("\(count) selected")
-                .font(.callout.weight(.medium))
+                .font(Theme.Typography.barLabel)
+                .foregroundStyle(Theme.Colors.inkPrimary)
                 .padding(.trailing, 10)
             SelectionBarButton("xmark", help: "Clear selection") {
                 model.selectionStore.apply(.clear)
@@ -468,13 +470,13 @@ struct CollectionView: View {
                 SelectionBarIcon(systemName: "ellipsis")
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.primary)
+            .foregroundStyle(Theme.Colors.inkPrimary)
             .help("More actions")
             .popover(isPresented: $showMoreActions, arrowEdge: .top) {
                 moreActionsMenu(count: count)
             }
         }
-        .selectionBarChrome()
+        .floatingBarChrome()
     }
 
     /// Which overflow destination section is open. Accordion — at most one.

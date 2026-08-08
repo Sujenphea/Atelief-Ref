@@ -37,7 +37,7 @@ struct CollectionSiteExportButton: View {
             SelectionBarIcon(systemName: "globe")
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.primary)
+        .foregroundStyle(Theme.Colors.inkPrimary)
         .help("Export a web page (index.html + assets folder)")
         .disabled(controller.isExporting || model.items.isEmpty)
         .popover(isPresented: $showPanel, arrowEdge: .top) { panel }

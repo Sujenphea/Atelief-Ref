@@ -132,7 +132,9 @@ struct CollectionsGalleryView: View {
                     destroy: { requestBatchDelete() })
                 : nil)
         .overlay(alignment: .bottom) {
-            if selection.isSelecting { selectionBar }
+            if selection.isSelecting {
+                selectionBar.padding(.bottom, Theme.Spacing.lg)
+            }
         }
         .task {
             await model.refreshFolders()
@@ -358,13 +360,14 @@ struct CollectionsGalleryView: View {
     private var selectionBar: some View {
         HStack(spacing: 2) {
             Text("\(selection.ids.count) selected")
-                .font(.callout.weight(.medium))
+                .font(Theme.Typography.barLabel)
+                .foregroundStyle(Theme.Colors.inkPrimary)
                 .padding(.trailing, 10)
             SelectionBarButton("xmark", help: "Clear selection") { clearSelection() }
             SelectionBarButton("trash", help: "Delete \(selection.ids.count)",
                                role: .destructive) { requestBatchDelete() }
         }
-        .selectionBarChrome()
+        .floatingBarChrome()
     }
 
     /// The ids the marquee may select: every root collection EXCEPT Unsorted, plus
