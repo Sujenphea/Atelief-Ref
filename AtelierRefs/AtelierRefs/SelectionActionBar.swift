@@ -213,14 +213,30 @@ extension View {
     /// bubble), and the four copies had already drifted apart on padding and shape by
     /// the time they were counted. Call sites now supply their own inset.
     ///
-    /// The default insets are asymmetric — 16 leading against 6 trailing — because a
+    /// The default insets are asymmetric — 16 leading against 8 trailing — because a
     /// bar that OPENS WITH TEXT needs the count to breathe while the last glyph's own
-    /// 30×28 hit area already supplies the right margin. An icon-only bar passes
-    /// `trailing: 16` to balance it; that is the one knob, and it is a knob rather than
-    /// a second modifier because it is the only thing that legitimately varies.
+    /// 30×28 hit area already supplies most of the right margin. An icon-only bar
+    /// passes `trailing: 16` to balance it; that is the one knob, and it is a knob
+    /// rather than a second modifier because it is the only thing that legitimately
+    /// varies.
+    ///
+    /// **Why 8 and not 6.** 6 was the first answer, and it is right for the RESTING
+    /// bar: a 15pt symbol centred in the 30×28 slot carries ~7.5pt of its own air, so
+    /// at 6 the symbol sits 13.5pt from the border against 12.5pt above and below it —
+    /// as near even as the two axes get.
+    ///
+    /// It is wrong for the HOVERED bar, and the reason is the cap. A hover fill is the
+    /// slot's full 30×28 rounded rect, and the capsule's trailing end is a 20pt-radius
+    /// arc that curves AWAY from it. Measured across the fill's height at `trailing:
+    /// 6`, the gap to the border runs 6.0 at the centre line, 4.7 at 7pt up, and
+    /// **4.0 at 10pt up** before the fill's own corner turns in — a third tighter than
+    /// the flat 6pt every other glyph in the row gets above and below it, at the one
+    /// corner the eye lands on. At 8 that minimum comes to exactly 6.0, so the last
+    /// button is evenly inset on all three sides in the state where the inset is
+    /// actually drawn. The resting symbol pays 2pt for it.
     func floatingBarChrome(
         leading: CGFloat = Theme.Spacing.lg,
-        trailing: CGFloat = 6,
+        trailing: CGFloat = Theme.Spacing.sm,
         vertical: CGFloat = 6
     ) -> some View {
         self

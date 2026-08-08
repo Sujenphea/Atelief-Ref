@@ -51,9 +51,34 @@ also what `floatingAdd` uses, so the "+" and a bar share a baseline).
 
 ### Insets
 
-The defaults are asymmetric — **16 leading, 6 trailing** — because a bar that opens
+The defaults are asymmetric — **16 leading, 8 trailing** — because a bar that opens
 with TEXT needs the count to breathe while the last glyph's own 30×28 hit area
-already supplies the right margin.
+already supplies most of the right margin.
+
+**8, not 6, and the capsule's cap is why.** 6 is the right number for a bar at
+REST: a 15pt symbol centred in the 30×28 slot carries ~7.5pt of its own air, so the
+symbol lands 13.5pt from the border against 12.5pt above and below — as near even as
+the two axes get. It is the wrong number for a bar under the POINTER. A hover fill
+is the slot's full 30×28 rounded rect, and the trailing end of the capsule is a
+20pt-radius arc curving away from it, so the gap is not the declared inset:
+
+| height from centre | gap at `trailing: 6` | gap at `trailing: 8` |
+|---|---|---|
+| 0 pt | 6.0 | 8.0 |
+| 7 pt | 4.7 | 6.7 |
+| **10 pt** | **4.0** | **6.0** |
+| 12 pt | 4.1 | 6.1 |
+| 14 pt | 7.3 | 9.3 |
+
+At 6 the last button's fill comes within 4.0pt of the border diagonally — a third
+tighter than the flat 6pt every other glyph in the row gets above and below it, at
+the corner the eye lands on first. At 8 the minimum is exactly 6.0, so the button is
+evenly inset on all three sides in the state where the inset is actually drawn. The
+resting symbol pays 2pt for it.
+
+The same measurement clears the other bars that end in a hover button: the toast's
+dismiss (`trailing: md`) clears by ~11.8pt and the bubble's size segment
+(`bubblePadding` 12) by ~10.0pt, both well above their 8 / 6pt vertical insets.
 
 An **icon-only** bar passes `trailing: Theme.Spacing.lg` to balance it. That is the
 one knob, and it is a knob rather than a second modifier because it is the only

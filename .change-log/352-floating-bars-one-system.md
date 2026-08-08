@@ -21,6 +21,10 @@ else is pixel-identical or a hair taller:
 - The toast's fill moves `surface` → `field` and its border strengthens.
 - The export success checkmark is no longer green, and no longer narrows the bar.
 - Both collection-bar export buttons now dim when unavailable (they never did).
+- The text-led bars gain 2pt of trailing inset (6 → 8), so a hovered last button
+  clears the capsule's cap by the same 6pt it clears the top and bottom by. At 6
+  the fill came within 4.0pt of the border diagonally — the measurement is in
+  `.docs/079`.
 
 ## Files changed
 
