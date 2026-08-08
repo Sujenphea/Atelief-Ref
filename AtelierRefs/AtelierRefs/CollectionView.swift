@@ -436,18 +436,11 @@ struct CollectionView: View {
     /// Styled to match Home / Search (`CollectionsGalleryView` / `LibrarySearch`).
     private var selectionBar: some View {
         let count = model.selection.ids.count
-        return HStack(spacing: 2) {
-            Text("\(count) selected")
-                .font(Theme.Typography.barLabel)
-                .foregroundStyle(Theme.Colors.inkPrimary)
-                .padding(.trailing, 10)
-            SelectionBarButton("xmark", help: "Clear selection") {
-                model.selectionStore.apply(.clear)
-            }
-            // `requestDelete` runs its own confirmation, so no extra dialog here.
-            SelectionBarButton("trash", help: "Delete \(count)", role: .destructive) {
-                model.requestDelete(assetIDs: selectedAssetIDs)
-            }
+        return CountSelectionBar(
+            count: count,
+            onClear: { model.selectionStore.apply(.clear) },
+            onDelete: { model.requestDelete(assetIDs: selectedAssetIDs) }
+        ) {
             SelectionBarButton("folder.badge.minus",
                                help: "Remove \(count) from collection") {
                 model.removeFromFolder(assetIDs: selectedAssetIDs)
@@ -476,7 +469,6 @@ struct CollectionView: View {
                 moreActionsMenu(count: count)
             }
         }
-        .floatingBarChrome()
     }
 
     /// Which overflow destination section is open. Accordion — at most one.

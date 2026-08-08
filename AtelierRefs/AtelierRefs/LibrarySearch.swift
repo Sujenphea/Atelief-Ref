@@ -1120,21 +1120,10 @@ private struct LibrarySearchResults: View {
     /// active. Delete routes through the same staged/undoable asset delete as the
     /// keyboard and context menu.
     private var selectionBar: some View {
-        let count = selectionStore.selection.ids.count
-        return HStack(spacing: 2) {
-            Text("\(count) selected")
-                .font(Theme.Typography.barLabel)
-                .foregroundStyle(Theme.Colors.inkPrimary)
-                .padding(.trailing, 10)
-            SelectionBarButton("xmark", help: "Clear selection") {
-                selectionStore.apply(.clear)
-            }
-            // `requestDelete` runs its own confirmation, so no extra dialog here.
-            SelectionBarButton("trash", help: "Delete \(count)", role: .destructive) {
-                requestDeleteTargets()
-            }
-        }
-        .floatingBarChrome()
+        CountSelectionBar(
+            count: selectionStore.selection.ids.count,
+            onClear: { selectionStore.apply(.clear) },
+            onDelete: { requestDeleteTargets() })
     }
 }
 

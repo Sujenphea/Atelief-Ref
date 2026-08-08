@@ -358,16 +358,10 @@ struct CollectionsGalleryView: View {
     /// The floating "N selected · Clear · Delete" bar, shown while a marquee
     /// selection is active.
     private var selectionBar: some View {
-        HStack(spacing: 2) {
-            Text("\(selection.ids.count) selected")
-                .font(Theme.Typography.barLabel)
-                .foregroundStyle(Theme.Colors.inkPrimary)
-                .padding(.trailing, 10)
-            SelectionBarButton("xmark", help: "Clear selection") { clearSelection() }
-            SelectionBarButton("trash", help: "Delete \(selection.ids.count)",
-                               role: .destructive) { requestBatchDelete() }
-        }
-        .floatingBarChrome()
+        CountSelectionBar(
+            count: selection.ids.count,
+            onClear: { clearSelection() },
+            onDelete: { requestBatchDelete() })
     }
 
     /// The ids the marquee may select: every root collection EXCEPT Unsorted, plus

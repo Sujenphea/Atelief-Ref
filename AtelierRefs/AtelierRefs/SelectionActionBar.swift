@@ -2,13 +2,22 @@
 //  SelectionActionBar.swift
 //  AtelierRefs
 //
-//  The floating "N selected" action bar shown over the grid whenever a selection
-//  is active — shared chrome + icon buttons so Collection (`CollectionView`) and
-//  Search (`LibrarySearch`) render the SAME pill. Previously each view inlined its
-//  own HStack with a text "Clear" button and default `Label` hit areas of varying
-//  width; this centralizes the look to the reference: a monochrome capsule with a
-//  leading "N selected" count, an `×` clear, then an evenly-sized row of action
-//  glyphs. Chrome only — every button calls back into the owning view's model.
+//  The app's floating-bar kit, and the "N selected" bar built from it.
+//
+//  ``floatingBarChrome(leading:trailing:vertical:)`` is the ONE container every bar
+//  that rides over content wears — the three selection bars, the board's action bar,
+//  the detail zoom controls and top-bar pills, the text format bubble, the import
+//  pill, the toast. ``BarGlyphSlot`` (and its ``SelectionBarIcon`` /
+//  ``CompactBarIcon`` faces) is the one button unit. The full rule set, including
+//  what is deliberately NOT unified, is `.docs/079-floating-bars-design.md`.
+//
+//  ``CountSelectionBar`` is the bar itself: a monochrome capsule with a leading
+//  "N selected" count, an `×` clear, a delete, and a trailing slot for whatever else
+//  the host offers. Home, Search and a Collection all render it — they used to hold
+//  three private copies, two of them byte-identical, which is how the label font and
+//  the missing disabled dim came to need fixing in three places.
+//
+//  Chrome only — every button calls back into the owning view's model.
 //
 
 import SwiftUI
@@ -246,6 +255,62 @@ extension View {
     /// frame on the outside would take that away.
     func barSlot() -> some View {
         frame(width: SelectionBarIcon.width, height: SelectionBarIcon.height)
+    }
+}
+
+// MARK: - The count bar
+
+/// The floating "N selected" bar itself — Home, Search and a Collection all show
+/// this one view.
+///
+/// The three used to be three private `selectionBar` properties, and Search's and
+/// Home's were byte-identical apart from which store they cleared. That duplication
+/// is where the drift in this pass started: the raw `.callout.weight(.medium)` label
+/// font was written out three times, so correcting it meant finding all three.
+///
+/// `extras` is the trailing slot. Search and Home pass nothing and get the plain
+/// Clear + Delete pair; a Collection passes its remove / contact-sheet / web-page /
+/// progress-ring / overflow glyphs. The slot sits AFTER Delete because the fixed
+/// leading run — count, Clear, Delete — is the part a reader learns once and expects
+/// in the same place on all three screens.
+///
+/// It supplies no bottom inset: the chrome is appearance only (see
+/// ``floatingBarChrome(leading:trailing:vertical:)``), so the host decides where the
+/// bar sits, and the host is the only thing that knows whether an import pill is
+/// stacked above it.
+struct CountSelectionBar<Extras: View>: View {
+    let count: Int
+    var deleteHelp: String
+    var onClear: () -> Void
+    var onDelete: () -> Void
+    @ViewBuilder var extras: Extras
+
+    init(
+        count: Int,
+        deleteHelp: String? = nil,
+        onClear: @escaping () -> Void,
+        onDelete: @escaping () -> Void,
+        @ViewBuilder extras: () -> Extras = { EmptyView() }
+    ) {
+        self.count = count
+        self.deleteHelp = deleteHelp ?? "Delete \(count)"
+        self.onClear = onClear
+        self.onDelete = onDelete
+        self.extras = extras()
+    }
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Text("\(count) selected")
+                .font(Theme.Typography.barLabel)
+                .foregroundStyle(Theme.Colors.inkPrimary)
+                .padding(.trailing, 10)
+            SelectionBarButton("xmark", help: "Clear selection", action: onClear)
+            // Every caller's delete runs its own confirmation, so no extra dialog here.
+            SelectionBarButton("trash", help: deleteHelp, role: .destructive, action: onDelete)
+            extras
+        }
+        .floatingBarChrome()
     }
 }
 
