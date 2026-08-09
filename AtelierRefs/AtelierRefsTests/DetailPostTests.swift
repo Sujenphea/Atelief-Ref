@@ -7,13 +7,13 @@
 //  `DetailStepTests` sets the strategy for this area out loud: the off-by-one lives
 //  here, and it "should not be tested through the view". So the whole of increment 1
 //  is testable without a SwiftUI harness — ``PostGroups/detailPost(forItem:thumbnailURL:jump:)``
-//  is a factory over an index the suite can build, and ``showsPostChip(memberCount:)``
+//  is a factory over an index the suite can build, and ``showsPostPosition(memberCount:)``
 //  is a predicate.
 //
 //  T2 is the reason the factory sits on ``PostGroups`` at all. The page's ← / → walk
-//  ``PostGroups/fullRun(_:)`` (069/316) and the chip counts a position inside a post;
+//  ``PostGroups/fullRun(_:)`` (069/316) and the Post row counts a position inside a post;
 //  those are two derivations of one fact, and nothing in the running app would say so
-//  if they drifted — the chip would simply read "3 of 4" while the arrows sat on image
+//  if they drifted — the row would simply read "Image 3 of 4" while the arrows sat on image
 //  2. `indexAgreesWithTheRun` is what makes that a build failure instead.
 //
 
@@ -81,11 +81,11 @@ struct DetailPostFactoryTests {
         ]
     }
 
-    /// **The load-bearing test.** For every item in the feed, the index the chip would
+    /// **The load-bearing test.** For every item in the feed, the index the Post row would
     /// print is the item's offset within its post's contiguous slice of the run the
     /// arrows walk. Checked for the whole feed rather than one hand-picked item, so a
     /// derivation that happens to agree at position 0 cannot pass.
-    @Test("the chip's index is the item's place in its post's slice of the run")
+    @Test("the row's index is the item's place in its post's slice of the run")
     func indexAgreesWithTheRun() throws {
         let feed = Self.feed()
         let groups = PostGroups(items: feed)
@@ -105,7 +105,7 @@ struct DetailPostFactoryTests {
             let subject = try #require(post(groups, id))
             let positions = try members.map { try #require(runPosition[$0]) }
             // 069/316: a post's members are ONE contiguous block of the run, in post
-            // order. If that ever stops being true the chip's arithmetic is meaningless,
+            // order. If that ever stops being true the row's arithmetic is meaningless,
             // so it is asserted here rather than assumed.
             let start = try #require(positions.first)
             let here = try #require(runPosition[id])
@@ -174,17 +174,17 @@ struct DetailPostFactoryTests {
     }
 }
 
-// MARK: - T3 · visibility (the chip half)
+// MARK: - T3 · visibility (the Post-row half)
 
-@Suite("Detail page: when the post chip draws (080 T3)")
-struct DetailPostChipVisibilityTests {
+@Suite("Detail page: when the post position is stated (080 T3)")
+struct DetailPostPositionVisibilityTests {
 
     /// `0` is "ungrouped", `1` cannot occur (groups of one are dropped) but is pinned
     /// anyway because the predicate is the defensive statement of the rule, and 15 is
     /// the top of a rednote carousel (020).
-    @Test("the chip needs a real post", arguments: [(0, false), (1, false), (2, true), (15, true)])
-    func chipVisibility(memberCount: Int, shows: Bool) {
-        #expect(showsPostChip(memberCount: memberCount) == shows)
+    @Test("the Post row needs a real post", arguments: [(0, false), (1, false), (2, true), (15, true)])
+    func positionVisibility(memberCount: Int, shows: Bool) {
+        #expect(showsPostPosition(memberCount: memberCount) == shows)
     }
 }
 
@@ -197,21 +197,21 @@ struct DetailPostMutationTests {
 
     /// **T4.1.** ⌫ / ⌘⌫ reach the page (`ItemDetailView.swift:233`), so a 2-image post
     /// can lose a member while it is being looked at. `PostGroups` drops every group of
-    /// one, so the survivor's count goes 2 → 0, not 2 → 1: the chip must VANISH rather
+    /// one, so the survivor's count goes 2 → 0, not 2 → 1: the row must VANISH rather
     /// than sit there reading "1 of 1 in this post".
-    @Test("a 2-image post losing a member dissolves the group, and the chip with it")
+    @Test("a 2-image post losing a member dissolves the group, and the row with it")
     func twoImagePostDissolves() throws {
         let kept = item(url: Self.url), deleted = item(url: Self.url)
 
         let before = PostGroups(items: [kept, deleted])
         let opened = try #require(post(before, kept.item.id))
         #expect(opened.memberCount == 2)
-        #expect(showsPostChip(memberCount: opened.memberCount))
+        #expect(showsPostPosition(memberCount: opened.memberCount))
 
         let after = PostGroups(items: [kept])
         #expect(after.memberCount(forItem: kept.item.id) == 0)
         #expect(post(after, kept.item.id) == nil)
-        #expect(!showsPostChip(memberCount: 0))
+        #expect(!showsPostPosition(memberCount: 0))
     }
 
     /// **T4.4.** Since 310 a post's members can be a mix of kinds, and a media-less one

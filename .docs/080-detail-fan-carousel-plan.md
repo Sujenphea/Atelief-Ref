@@ -126,7 +126,16 @@ point that is invisible under a tilted card. The purity argument is the one
 clipped' invariant is testable across aspect ratios instead of being eyeballed at
 one cell size."*
 
-### 3.3 The chip
+### 3.3 The chip → the sidebar's "Post" row
+
+> **Revised after building it** ([358](../.change-log/358-the-post-position-moves-to-the-sidebar.md)).
+> Beside the pager it read as clutter around the only *controls* in the top bar. The
+> position now lives in the sidebar's **Source** section as `Image 2 of 4` — Source
+> because post grouping is derived from the source, so the row can never be orphaned,
+> and because it is the same kind of fact as Platform / Author / Title. The narrow-width
+> machinery below (`ViewThatFits`, the measured budget, the `104` reserve) went with the
+> chip; a sidebar row has no width contest to lose. The rest of this section stands as
+> the reasoning for *why not to reuse `PostBadge`*, which is unchanged.
 
 `⧉ 2 of 4 in this post`, beside the centred pager.
 

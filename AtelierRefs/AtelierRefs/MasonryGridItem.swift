@@ -180,19 +180,21 @@ enum PostChipStyle {
     /// The gap between the glyph and the count.
     static let glyphGap: CGFloat = 3
 
-    /// A WHITE capsule with dark contents, the same inversion the selection
-    /// checkmark uses (a black tick on a white-filled circle): a solid light chip
-    /// carries its own contrast on any artwork, where a translucent dark one
-    /// disappeared into a dark photo.
-    static let capsule = Theme.Colors.selectionMark
-    static let contents = Theme.Colors.mediaBackdrop
-    /// Semibold at these sizes — the chip is small and sits on arbitrary artwork.
-    static let weight: Font.Weight = .semibold
-
-    /// The same tokens in AppKit types, for the pre-rendered cell chip.
+    /// The tokens in AppKit types, for the pre-rendered cell chip — the only renderer
+    /// there is.
+    ///
+    /// The SwiftUI-typed twins (`Color` capsule / contents, a `Font.Weight`) were here
+    /// for the detail page's own chip and went with it when the post's position moved
+    /// into the sidebar as text (080 §3.3). Unused tokens draw no warning, so they are
+    /// deleted rather than left to read as a second renderer that no longer exists.
     enum NS {
+        /// A WHITE capsule with dark contents, the same inversion the selection
+        /// checkmark uses (a black tick on a white-filled circle): a solid light chip
+        /// carries its own contrast on any artwork, where a translucent dark one
+        /// disappeared into a dark photo.
         static let capsule = Theme.NS.selectionMark
         static let contents = Theme.NS.mediaBackdrop
+        /// Semibold at these sizes — the chip is small and sits on arbitrary artwork.
         static let weight: NSFont.Weight = .semibold
         static var symbolConfiguration: NSImage.SymbolConfiguration {
             NSImage.SymbolConfiguration(

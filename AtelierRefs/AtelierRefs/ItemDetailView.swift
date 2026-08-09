@@ -87,13 +87,18 @@ struct ItemDetailPost {
     let jump: (Int) -> Void
 }
 
-/// Whether the page draws its `⧉ N of M in this post` chip — the mirror of the
-/// cell's own ``MasonryGridItem/showsPostChip`` (`MasonryGridItem.swift:635`), pure
-/// so the rule is pinned without a view harness (080 §3.4 · "Visibility").
+/// Whether the page states the item's place in its post — the sidebar's "Post" row.
+/// The mirror of the cell's own ``MasonryGridItem/showsPostChip``
+/// (`MasonryGridItem.swift:686`), pure so the rule is pinned without a view harness
+/// (080 §3.4 · "Visibility").
+///
+/// Named for the FACT, not the chrome: the position began life as a chip beside the
+/// pager and moved into the sidebar (see ``SourceSection``), and the rule that decides
+/// whether there is a position worth stating did not change when its drawing did.
 ///
 /// `> 1` rather than `> 0` even though ``PostGroups`` never reports 1: it is the
 /// rule the cell states, and stating it the same way twice is the point.
-nonisolated func showsPostChip(memberCount: Int) -> Bool { memberCount > 1 }
+nonisolated func showsPostPosition(memberCount: Int) -> Bool { memberCount > 1 }
 
 /// Whether the page draws its resting pile — the two blank cards behind the artwork —
 /// the mirror of the cell's own ``MasonryGridItem/showsFan`` (`MasonryGridItem.swift:627`)
@@ -241,15 +246,6 @@ struct ItemDetailView: View {
     /// kind or a missing blob. Consumed by the media area's `.onDrag` at fit.
     @State private var exportItem: AssetExportItem?
 
-    /// The top bar's width in POINTS (080 §3.3). The pager is CENTRED over the
-    /// leading / trailing controls, so the only thing that decides whether the post
-    /// chip fits beside it is how much room the bar has left after the widest side
-    /// cluster — a number no amount of `ViewThatFits` can infer from inside a `ZStack`
-    /// that proposes the full width to its centred child. `0` until first layout,
-    /// which is read as "unconstrained" so the long form draws first and the measure
-    /// only ever narrows it.
-    @State private var topBarWidth: CGFloat = 0
-
     /// The media area's size in POINTS, measured via `onGeometryChange` (036 §3 B3).
     /// `.zero` until the first layout measures it.
     ///
@@ -335,7 +331,7 @@ struct ItemDetailView: View {
                     }
                 Divider()
                 DetailSidebar(
-                    asset: asset, source: source, tags: tags,
+                    asset: asset, source: source, post: post, tags: tags,
                     onAddTag: onAddTag, onRemoveTag: onRemoveTag,
                     collections: collections, allCollections: allCollections,
                     onAddToCollection: onAddToCollection,
@@ -387,90 +383,9 @@ struct ItemDetailView: View {
                 if let setFavorite = actions.setFavorite { favoriteButton(setFavorite) }
                 overflowMenu
             }
-            topBarCentre
+            if let navigator { pager(navigator) }
         }
         .padding(Theme.Spacing.md)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-            if abs(topBarWidth - width) > 0.5 { topBarWidth = width }
-        }
-    }
-
-    /// The centred cluster: the feed pager, and — when the item came from a post —
-    /// the post chip beside it (070 §3.2). Two counters deliberately: the pager is
-    /// the FEED position, the chip is the POST position, and neither can express the
-    /// other's scope.
-    ///
-    /// ``ViewThatFits`` picks the widest form that survives ``centredBudget``, so the
-    /// long copy degrades to `⧉ 2/4` and finally to the bare pager rather than growing
-    /// the centred element into the trailing star and overflow menu (080 §3.3). The
-    /// last candidate is today's layout exactly, which is also what a bar too narrow
-    /// for any chip gets.
-    @ViewBuilder
-    private var topBarCentre: some View {
-        if let post, showsPostChip(memberCount: post.memberCount) {
-            ViewThatFits(in: .horizontal) {
-                centreCluster(post: post, short: false)
-                centreCluster(post: post, short: true)
-                centreCluster(post: nil, short: false)
-            }
-            .frame(maxWidth: topBarWidth > 0 ? centredBudget : nil)
-        } else if let navigator {
-            pager(navigator)
-        }
-    }
-
-    /// The widest the centred cluster may draw before it collides with the chrome on
-    /// either side.
-    ///
-    /// It is CENTRED, so it grows symmetrically and meets whichever side cluster is
-    /// wider at `width / 2 − cluster`. The reserve is a constant rather than a second
-    /// and third measurement: the leading "Back" pill is the wider side and is fixed
-    /// copy, and erring generous costs only the long form arriving a little late on a
-    /// narrow window — where the short form is the honest answer anyway.
-    private static let sideClusterReserve: CGFloat = 104
-    private var centredBudget: CGFloat {
-        max(0, topBarWidth - 2 * (Self.sideClusterReserve + Theme.Spacing.sm))
-    }
-
-    private func centreCluster(post: ItemDetailPost?, short: Bool) -> some View {
-        HStack(spacing: Theme.Spacing.sm) {
-            if let navigator { pager(navigator) }
-            if let post { postChip(post, short: short) }
-        }
-    }
-
-    /// `⧉ 2 of 4 in this post` — the grid's carousel chip, said in words, beside the
-    /// pager (080 §3.3).
-    ///
-    /// A second RENDERER of ``PostChipStyle``, not a reuse of ``PostBadge``: that one
-    /// is an `NSImage` cached by COUNT, and this copy is not a bare count. Every token
-    /// it draws with is shared, so the two chips cannot drift.
-    ///
-    /// Informational, like the grid's own favourite star — the chip does not jump. The
-    /// post is walked with ← / → (316), and random access is the spread's job (080 §6,
-    /// increment 3).
-    private func postChip(_ post: ItemDetailPost, short: Bool) -> some View {
-        let position = "\(post.index + 1)", total = "\(post.memberCount)"
-        return HStack(spacing: PostChipStyle.glyphGap) {
-            Image(systemName: PostChipStyle.glyph)
-                .font(.system(size: PostChipStyle.glyphPointSize, weight: PostChipStyle.weight))
-            Text(short ? "\(position)/\(total)" : "\(position) of \(total) in this post")
-                .font(.system(size: PostChipStyle.labelPointSize, weight: PostChipStyle.weight))
-                // The count ticks 9 → 10 as the run walks a long carousel; proportional
-                // digits would resize the capsule mid-step.
-                .monospacedDigit()
-                .lineLimit(1)
-                // Ideal width, always — `ViewThatFits` measures the candidate, and a
-                // `Text` that is willing to truncate would report that it "fits" at
-                // any width and the short form would never be chosen.
-                .fixedSize()
-        }
-        .foregroundStyle(PostChipStyle.contents)
-        .padding(.horizontal, PostChipStyle.horizontalPadding)
-        .frame(height: PostChipStyle.height)
-        .background(PostChipStyle.capsule, in: Capsule())
-        .help("Item \(position) of \(total) from the same post")
-        .accessibilityLabel("Item \(position) of \(total) from the same post")
     }
 
     /// The favorite star (011 · U5) — a top-bar pill beside the overflow menu, so
@@ -1289,6 +1204,9 @@ private struct DetailFanPile: View {
 private struct DetailSidebar: View {
     let asset: Asset
     let source: Source?
+    /// The post this item belongs to, for ``SourceSection``'s "Post" row. `nil` for an
+    /// ungrouped item or a host with no grouping context.
+    let post: ItemDetailPost?
     let tags: [Tag]
     let onAddTag: (String) -> Void
     let onRemoveTag: (Tag) -> Void
@@ -1305,7 +1223,7 @@ private struct DetailSidebar: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
                 DataSection(asset: asset)
                 if let source {
-                    SourceSection(source: source, onOpenSource: onOpenSource)
+                    SourceSection(source: source, post: post, onOpenSource: onOpenSource)
                 }
                 DetailsSection(
                     asset: asset, tags: tags, onAddTag: onAddTag, onRemoveTag: onRemoveTag,
@@ -1336,10 +1254,16 @@ private struct DataSection: View {
     }
 }
 
-/// "Source" — platform / author / title, then a full-width Visit button that
+/// "Source" — platform / author / title / post, then a full-width Visit button that
 /// opens the original URL (041; the raw-URL + handle rows are gone).
 private struct SourceSection: View {
     let source: Source
+    /// The post this item came out of (080 §3.3). It lives HERE, in Source, rather
+    /// than in a section of its own: post grouping is derived from the source
+    /// (`postGroupKey(for:)`), so an item that has a post always has this section,
+    /// and "which image of the post" is provenance — the same kind of fact as the
+    /// platform and the author, and read in the same glance.
+    let post: ItemDetailPost?
     let onOpenSource: (() -> Void)?
 
     /// "Name (@handle)" when both are present; whichever exists otherwise.
@@ -1360,6 +1284,12 @@ private struct SourceSection: View {
             if let author { DetailRow("Author", author) }
             if let title = source.title, !title.isEmpty {
                 DetailRow("Title", title)
+            }
+            // "Image 2 of 4" — the item's place inside its carousel (307/309), which
+            // the pager cannot express: that one counts the FEED. The pile behind the
+            // artwork says a post is there; this row says which of it you are on.
+            if let post, showsPostPosition(memberCount: post.memberCount) {
+                DetailRow("Post", "Image \(post.index + 1) of \(post.memberCount)")
             }
             if let onOpenSource {
                 VisitButton(action: onOpenSource)
