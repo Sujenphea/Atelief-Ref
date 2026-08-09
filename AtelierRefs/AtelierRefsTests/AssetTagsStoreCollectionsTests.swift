@@ -111,7 +111,7 @@ struct AssetTagsStoreCollectionsTests {
 
     // MARK: callback
 
-    @Test("onMembershipChanged fires after add and remove")
+    @Test("onMembershipChanged fires after add and remove, naming the removal's collection")
     func membershipCallbackFires() async throws {
         let services = try makeServices()
         let temp1 = try await services.createCollection(name: "Temp1")
@@ -123,16 +123,28 @@ struct AssetTagsStoreCollectionsTests {
         try await waitUntil("initial load") { store.collections.map(\.name) == ["Temp1"] }
 
         let counter = Counter()
-        store.onMembershipChanged = { counter.n += 1 }
+        store.onMembershipChanged = { removedFrom in
+            counter.n += 1
+            counter.removals.append(removedFrom)
+        }
 
         store.addToCollection(temp2)
         try await waitUntil("callback after add") { counter.n >= 1 }
 
         store.removeFromCollection(temp2)
         try await waitUntil("callback after remove") { counter.n >= 2 }
+
+        // The argument is what tells a host whether the edit can take the bound asset
+        // out of the feed behind it (355): `nil` for the add, the collection for the
+        // remove. `CollectionDetailHost` arms a detail step off exactly that.
+        #expect(counter.removals == [nil, temp2.id])
     }
 
     /// A tiny main-actor box so the callback can bump a value the test observes
     /// (avoids capturing a `var` across the escaping closure boundary).
-    @MainActor private final class Counter { var n = 0 }
+    @MainActor private final class Counter {
+        var n = 0
+        /// Each call's `removedFrom` argument, in order.
+        var removals: [UUID?] = []
+    }
 }

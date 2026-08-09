@@ -1042,6 +1042,12 @@ private struct CollectionDetailHost: View {
     /// The detail page's tags, on the shared asset-scoped store (the Space board +
     /// search overlays' path). Observed here so a chip edit repaints the overlay.
     @StateObject private var tags: AssetTagsStore
+    /// Where the shown item sat in the run, and which collection that run was — kept
+    /// current on every open and step (355). The `.close` branch needs it: by the time
+    /// a reload says the item is gone, its position is unrecoverable, and that position
+    /// is what says where to leave the grid's cursor. The collection is half of it, so
+    /// a reload that is really a folder SWITCH cannot move the new folder's cursor.
+    @State private var shownSlot: (collection: UUID, index: Int)?
 
     init(model: IngestionModel, nav: NavModel, services: AppServices) {
         _model = ObservedObject(wrappedValue: model)
@@ -1049,7 +1055,11 @@ private struct CollectionDetailHost: View {
         let tagStore = AssetTagsStore(services: services)
         // Collection chips mutate through the shared store, not `model` — bridge
         // the change back so the grid + counts refresh (041 · not just the chips).
-        tagStore.onMembershipChanged = { [weak model] in model?.reloadAfterMembershipChange() }
+        // The removed collection rides along (355): a chip that drops the collection in
+        // view is the page's ⌫ in different chrome, and the model arms the step for it.
+        tagStore.onMembershipChanged = { [weak model] removedFrom in
+            model?.reloadAfterMembershipChange(removedFrom: removedFrom)
+        }
         _tags = StateObject(wrappedValue: tagStore)
         _session = StateObject(wrappedValue: DetailSession(
             tags: tagStore,
@@ -1125,6 +1135,7 @@ private struct CollectionDetailHost: View {
             case .stay:
                 break
             case .step(let nextID):
+                // (the session-id observer below re-records the slot for the new item)
                 guard let next = run.first(where: { $0.item.id == nextID }) else { break }
                 // The pager's own move, exactly: `session.step` keeps the previous
                 // image up until this one decodes and writes nothing to the model, so
@@ -1135,8 +1146,46 @@ private struct CollectionDetailHost: View {
                 session.step(to: next, in: run)
                 model.recordView(assetID: next.asset.id)
             case .close:
+                // Land the cursor where the user was LOOKING (355). `close()` maps the
+                // shown id through `displayTile(for:)` and gets that for free; here the
+                // shown item is gone, so the landing is whatever took its slot — the
+                // same `min(index, count - 1)` clamp the step itself uses, for the same
+                // reason (the last item's replacement is the one before it).
+                //
+                // Only within the run's own collection. A folder switch reaches this
+                // branch too, and its reload is not a departure from anywhere — moving
+                // the newly-loaded folder's cursor to a slot index carried over from the
+                // folder the user just left is the same mistake the intent's collection
+                // stamp exists to prevent.
+                if let slot = shownSlot, slot.collection == model.loadedCollectionID,
+                   !run.isEmpty {
+                    let landing = run[min(slot.index, run.count - 1)]
+                    model.applySelection(.setLead(model.displayTile(for: landing.item.id)))
+                }
                 nav.presentedItemID = nil
             }
+        }
+        // Keep the model's handle on the shown item, and this host's record of where it
+        // sits, in step with the session — ONE place that catches an open, every ← / →,
+        // a step-on-delete and the teardown (355). The model's copy is what lets a chip
+        // or a drag-out — raised from surfaces that know assets, not memberships, and
+        // completed elsewhere — arm a step for the item on screen.
+        .onChange(of: session.state?.detail.item.id) { _, id in
+            model.detailShownItemID = id
+            shownSlot = id.flatMap { shown in
+                model.detailRunIndex(of: shown).flatMap { index in
+                    model.loadedCollectionID.map { (collection: $0, index: index) }
+                }
+            }
+        }
+        // Leaving the pane entirely (Home, a Space, ⌘[ out of a subfolder) unmounts this
+        // host without any of the observers above running. `NavModel` drops the route on
+        // those navigations (355); this clears the two plain flags that no publish would
+        // have carried, so a deferred Most-Viewed reorder cannot be stranded and a stale
+        // shown-item id cannot arm a step for a page that is no longer up.
+        .onDisappear {
+            model.isDetailPresented = false
+            model.detailShownItemID = nil
         }
         // Surface a tag write/read failure on the model's alert (mirrors the old
         // `IngestionModel` tag methods routing errors through `lastError`).

@@ -50,6 +50,71 @@ struct NavRouteTests {
         nav.goBack()
         #expect(nav.path.isEmpty)
     }
+
+    /// **Leaving the pane closes its item detail** (355). Home / Capture / a Space are
+    /// separate arms of the shell's `switch`, so the collection pane unmounts and the
+    /// overlay's host goes with it — none of its observers run. A route left pointing at
+    /// an item nothing is showing kept the sidebar collapsed, hid the pane's floating +,
+    /// and told the grid the page still owned the keyboard, so the grid answered no key
+    /// on return until an item had been opened and closed.
+    @Test("selecting a sidebar destination drops the presented item")
+    func sidebarSelectionClearsDetail() {
+        let nav = NavModel(initialPath: [])
+        nav.presentedItemID = UUID()
+        nav.selectSidebar(.home)
+        #expect(nav.presentedItemID == nil)
+
+        nav.presentedItemID = UUID()
+        nav.openCollection(UUID())
+        #expect(nav.presentedItemID == nil)
+
+        nav.presentedItemID = UUID()
+        nav.openSpace(UUID())
+        #expect(nav.presentedItemID == nil)
+    }
+
+    /// ⌘[ pops a drill-down, which unmounts the pane the same way.
+    @Test("goBack drops the presented item; a no-op back leaves it alone")
+    func backClearsDetail() {
+        let nav = NavModel(initialPath: [])
+        nav.drillIntoCollection(UUID())
+        let shown = UUID()
+        nav.presentedItemID = shown
+        nav.goBack()
+        #expect(nav.presentedItemID == nil)
+
+        // At the root there is nothing to pop, so nothing is torn down either.
+        nav.presentedItemID = shown
+        nav.goBack()
+        #expect(nav.presentedItemID == shown)
+    }
+
+    /// A collection DELETED under an open page moves the route through `reconcile`
+    /// rather than `selectSidebar`, and unmounts the pane just the same — but a
+    /// reconcile that moves nothing runs on every folder refresh, and must leave a live
+    /// page alone.
+    @Test("reconcile drops the presented item only when the route actually moves")
+    func reconcileClearsDetailOnlyWhenRouteMoves() {
+        let epoch = Date(timeIntervalSince1970: 0)
+        let live = UUID(), gone = UUID()
+        let collections = [Collection(
+            id: live, name: "c", createdAt: epoch, updatedAt: epoch, parentCollectionID: nil)]
+
+        // Still there → the page survives an ordinary refresh.
+        let nav = NavModel(initialPath: [], initialSelection: .collection(live))
+        let shown = UUID()
+        nav.presentedItemID = shown
+        nav.reconcile(using: collections)
+        #expect(nav.presentedItemID == shown)
+        #expect(nav.sidebarSelection == .collection(live))
+
+        // Deleted → falls back to Home, and the page goes with it.
+        let orphaned = NavModel(initialPath: [], initialSelection: .collection(gone))
+        orphaned.presentedItemID = UUID()
+        orphaned.reconcile(using: collections)
+        #expect(orphaned.sidebarSelection == .home)
+        #expect(orphaned.presentedItemID == nil)
+    }
 }
 
 /// The pure route-reconcile core (043 · 3A / 11A) — truncate a drill-down at the

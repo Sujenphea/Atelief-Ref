@@ -29,7 +29,13 @@ final class AssetTagsStore: ObservableObject {
     /// so the host can refresh state the store doesn't own — the collection grid,
     /// sidebar counts, stack previews (041). Without it the chips update but the
     /// grid behind the overlay goes stale, reading as "the edit didn't take."
-    var onMembershipChanged: (() -> Void)?
+    ///
+    /// The argument is the collection the asset was REMOVED from, or `nil` for an
+    /// add (355). A remove is the only membership edit that can take the bound asset
+    /// out of the feed behind the page, so it is the only one whose reload can be a
+    /// detail step — and the host cannot tell the two apart after the fact, because
+    /// by then the chips have already been refreshed.
+    var onMembershipChanged: ((_ removedFrom: UUID?) -> Void)?
 
     private let services: AppServices
     /// The asset the store currently reflects; `nil` when unbound.
@@ -107,7 +113,7 @@ final class AssetTagsStore: ObservableObject {
             do {
                 try await services.addAssets([assetID], to: collection.id)
                 reloadIfCurrent(assetID)
-                onMembershipChanged?()
+                onMembershipChanged?(nil)
             } catch {
                 lastError = "\(error)"
             }
@@ -124,7 +130,7 @@ final class AssetTagsStore: ObservableObject {
             do {
                 try await services.removeAssets([assetID], from: collection.id)
                 reloadIfCurrent(assetID)
-                onMembershipChanged?()
+                onMembershipChanged?(collection.id)
             } catch {
                 lastError = "\(error)"
             }
