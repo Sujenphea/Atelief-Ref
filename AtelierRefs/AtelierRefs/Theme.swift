@@ -112,6 +112,7 @@ enum Theme {
         static let inkSecondary = NSColor(hex: 0x9A9A9E)
         static let hairlineStrong = NSColor.white.withAlphaComponent(0.14)
         static let hoverRow = NSColor.white.withAlphaComponent(0.06)
+        static let hoverControl = NSColor.white.withAlphaComponent(0.10)
     }
 
     // MARK: - Spacing (4-pt scale)

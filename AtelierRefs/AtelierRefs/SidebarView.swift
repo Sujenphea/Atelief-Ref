@@ -204,7 +204,7 @@ struct SidebarView: View {
                             spaceRenameTargetID = id
                         })
                         .frame(height: max(spaceOutlineHeight, 1))
-                        .padding(.trailing, -8)
+                        .padding(.trailing, -SidebarMetrics.outlineOverhang)
                     // Empty / loading state lives in SwiftUI — shown only when there
                     // are no spaces AND the outline reports no rows (so an open draft,
                     // which gives the outline a row's worth of height, hides it).
@@ -258,9 +258,11 @@ struct SidebarView: View {
                         renameTargetID = id
                     })
                     .frame(height: max(outlineHeight, 1))
-                    // Extend 8pt into the sidebar's right padding so the rows /
-                    // selection reach closer to the edge.
-                    .padding(.trailing, -8)
+                    // Extend into the sidebar's right padding so the rows / selection
+                    // reach closer to the edge. The amount is ``SidebarMetrics`` and not
+                    // a literal because `SidebarCell` lines its chevron up with the
+                    // section header's "+" ACROSS this overhang.
+                    .padding(.trailing, -SidebarMetrics.outlineOverhang)
             }
         }
     }
