@@ -2509,7 +2509,18 @@ final class IngestionModel: ObservableObject {
     /// `isPresented` binding writing `false` — which is what makes it the right place
     /// to disarm a detail step: a ⌘⌫ that was called off must not leave an intent
     /// waiting to fire on some later, unrelated reload (026 · I3).
+    ///
+    /// **The guard is what keeps CONFIRMING out of that set** (354). SwiftUI writes
+    /// `false` into the dialog's `isPresented` binding when it dismisses — including
+    /// after the Delete button's action has run — so the confirm path arrives here too,
+    /// a moment after ``confirmPendingDeletion()`` cleared the pending state and long
+    /// before the delete's asynchronous reload lands. Disarming there took the intent
+    /// away from the very reload it was armed for, and the page closed instead of
+    /// stepping. Nothing pending means nothing was called off: the second write is a
+    /// no-op, and Cancel / Escape (which arrive with the deletion still staged) disarm
+    /// exactly as before.
     func cancelPendingDeletion() {
+        guard pendingDeletion != nil else { return }
         pendingDeletion = nil
         detailStepIntent = nil
     }

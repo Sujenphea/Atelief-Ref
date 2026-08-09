@@ -174,11 +174,31 @@ struct CollectionView: View {
         // Unsorted, which disables the item rather than leaving it to explain itself:
         // a menu item you can click and that then tells you it did nothing is worse
         // than a greyed one.
-        .focusedSceneValue(\.deleteVerbs, DeleteVerbs(
+        //
+        // Published only while the detail page is DOWN (354). Edit ▸ Delete carries a
+        // key equivalent, and `NSMenu` matches those BEFORE the event reaches the first
+        // responder — the platform behaviour `DeleteCommands` documents for bare ⌫ and
+        // that killed 069's arrows. So ⌘⌫ pressed ON the page arrives at whichever
+        // `DeleteVerbs` is published, never at the page's key catcher; these closures
+        // act on the grid's cursor, which is neither the item on screen nor a verb that
+        // arms a step. `CollectionDetailHost` publishes the page's own verbs while it
+        // is up, and gating here — rather than relying on which of two live publishers
+        // wins — is what makes exactly one of them answer at any moment.
+        //
+        // Off the ROUTE for 069's reason: `nav.presentedItemID` is the published truth
+        // this body already observes for handing the keyboard over.
+        .focusedSceneValue(
+            \.deleteVerbs, nav.presentedItemID == nil ? gridDeleteVerbs : nil)
+    }
+
+    /// The grid's ⌫ / ⌘⌫, as the Edit menu performs them — the selection, or the lead
+    /// cursor's post when nothing is selected (``IngestionModel/keyboardActionTargets``).
+    private var gridDeleteVerbs: DeleteVerbs {
+        DeleteVerbs(
             removeTitle: "Remove from Collection",
             canRemove: collectionID != model.unsortedFolderID,
             remove: { model.removeSelectedFromFolder() },
-            destroy: { model.requestDeleteSelected() }))
+            destroy: { model.requestDeleteSelected() })
     }
 
     /// The grid density control (011-B2): step the global column-count notch
@@ -1126,6 +1146,44 @@ private struct CollectionDetailHost: View {
                 tags.lastError = nil
             }
         }
+        // **The page's own ⌫ / ⌘⌫, for the Edit menu** (354). ⌘⌫ carries a key
+        // equivalent (`DeleteCommands`), and `NSMenu` matches key equivalents before the
+        // event reaches the first responder — so ``DetailKeyCatcher``'s ⌘⌫ branch never
+        // runs while a `DeleteVerbs` is published, and the menu's `destroy` is what the
+        // press actually performs. Publishing the PAGE's verbs while the page is up puts
+        // that press on the same call the overflow menu's Delete makes:
+        //
+        //  • it targets the item ON SCREEN. The grid's closures act on the lead cursor,
+        //    which ← / → deliberately never move (stepping writes nothing to the model),
+        //    so ⌘⌫ after arrowing destroyed the picture the grid was pointing at rather
+        //    than the one being looked at;
+        //  • it goes through the `itemID:` overloads, the ONLY place a step is armed
+        //    (026 · I3) — which is why ⌘⌫ closed the page instead of stepping.
+        //
+        // `CollectionView` publishes the grid's verbs only while the route is empty, so
+        // exactly one of the two is live at any moment. `session.state` (not the route)
+        // is the gate here for the same reason `close()` reads it: it is the item the
+        // user is actually looking at after any number of steps.
+        .focusedSceneValue(\.deleteVerbs, session.state.map(pageDeleteVerbs))
+    }
+
+    /// The Edit-menu verbs for the item the page is SHOWING, routed through the same
+    /// `itemID:` overloads the overflow menu's Remove / Delete use — one rule for the
+    /// page's two verbs, whichever surface raises them (022 · D4, 026 · I3).
+    private func pageDeleteVerbs(for state: DetailSession.State) -> DeleteVerbs {
+        let detail = state.detail
+        return DeleteVerbs(
+            // The same Unsorted rule the grid behind the page answers with, read off
+            // the model so the two cannot disagree (022 · D2).
+            removeTitle: "Remove from Collection",
+            canRemove: model.canRemoveFromCurrentFolder,
+            remove: {
+                model.removeFromCurrentFolder(
+                    itemID: detail.item.id, assetIDs: [detail.asset.id])
+            },
+            destroy: {
+                model.requestDelete(itemID: detail.item.id, assetIDs: [detail.asset.id])
+            })
     }
 
     /// Build the presentation-only ``ItemDetailView`` from the session state +
