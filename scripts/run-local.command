@@ -177,6 +177,14 @@ relax_library_validation() {
 
   local ents="${OUTPUT_DIR}/adhoc.entitlements"
 
+  # Delete it first. `codesign -d --entitlements FILE` APPENDS to an existing
+  # file rather than truncating it, and OUTPUT_DIR survives between runs — so on
+  # the second run the file holds two concatenated plists, PlistBuddy reads only
+  # the first (last run's, already carrying the key below) and fails the whole
+  # script with "Entry Already Exists". Reading the stale copy would also undo
+  # the point of reading off the built bundle at all.
+  rm -f "${ents}"
+
   # Read the entitlements back off the BUILT BUNDLE, not off the .entitlements
   # source file: what xcodebuild signed has $(PRODUCT_BUNDLE_IDENTIFIER) already
   # substituted into the two Sparkle mach-lookup names. The source file still has
@@ -186,6 +194,14 @@ relax_library_validation() {
     echo "error: could not read the entitlements back from ${APP_PATH}" >&2
     exit 1
   fi
+  # Delete-then-Add, because bare `Add` is not idempotent and this step runs on
+  # a bundle that may ALREADY carry the key: an incremental build that re-links
+  # nothing also re-signs nothing, so the app keeps the previous run's re-signed
+  # entitlements. `Add` onto an existing key fails, and under `set -e` that ends
+  # the script. Delete tolerates a missing key; Add then puts it back true.
+  /usr/libexec/PlistBuddy \
+    -c 'Delete :com.apple.security.cs.disable-library-validation' \
+    "${ents}" >/dev/null 2>&1 || true
   /usr/libexec/PlistBuddy \
     -c 'Add :com.apple.security.cs.disable-library-validation bool true' \
     "${ents}" >/dev/null
