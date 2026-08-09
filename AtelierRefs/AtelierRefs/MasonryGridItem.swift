@@ -716,11 +716,12 @@ final class MasonryGridItem: NSCollectionViewItem {
             for card in fanLayers { card.isHidden = true }
             return
         }
-        // count: 3 — index 0 is the upright front card (the artwork itself), so the
-        // two behind take indices 1 and 2, matching `FanCard`'s convention. The angle
-        // is the one the geometry ACTUALLY allows at this size, not the ideal.
-        let angles = fanRotations(
-            seed: fanSeed, count: 3, maxDegrees: fanGeometry.degrees)
+        // One angle per BACKING card: the artwork is the upright front card, and
+        // ``fanBackingRotations`` owns that off-by-one for all three of the app's piles
+        // (080 §3.4). The angle is the one the geometry ACTUALLY allows at this size,
+        // not the ideal.
+        let angles = fanBackingRotations(
+            seed: fanSeed, cardCount: fanLayers.count, maxDegrees: fanGeometry.degrees)
         for (offset, card) in fanLayers.enumerated() {
             card.isHidden = false
             // `bounds` + `position`, NOT `frame`. `frame` is derived, so assigning it
@@ -730,7 +731,7 @@ final class MasonryGridItem: NSCollectionViewItem {
             card.bounds = CGRect(origin: .zero, size: rect.size)
             card.position = CGPoint(x: rect.midX, y: rect.midY)
             card.transform = CATransform3DMakeRotation(
-                CGFloat(angles[offset + 1] * .pi / 180), 0, 0, 1)
+                CGFloat(angles[offset] * .pi / 180), 0, 0, 1)
         }
     }
 

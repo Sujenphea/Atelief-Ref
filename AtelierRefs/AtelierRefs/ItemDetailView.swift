@@ -95,6 +95,57 @@ struct ItemDetailPost {
 /// rule the cell states, and stating it the same way twice is the point.
 nonisolated func showsPostChip(memberCount: Int) -> Bool { memberCount > 1 }
 
+/// Whether the page draws its resting pile — the two blank cards behind the artwork —
+/// the mirror of the cell's own ``MasonryGridItem/showsFan`` (`MasonryGridItem.swift:627`)
+/// in name and shape, and pure for the same reason the chip's predicate is (080 §3.4).
+///
+/// The cell's second clause is `!postExpanded`; the page's is the zoom, and it is
+/// deliberately NOT `zoom == 1`. 070 §5.2 proposed that gate as *"the same gate the
+/// drag-out already uses"*, but `zoom` is `@State` that only moves at a settle point —
+/// the live magnification is `ZoomableImage`'s `@GestureState pinch`, folded into `zoom`
+/// in `MagnifyGesture.onEnded`. Gated on `zoom` alone the pile keeps drawing at FIT
+/// geometry through every pinch, while the artwork scales away from underneath it, and
+/// then vanishes when the fingers lift. So the caller hands in `zoom * pinch` (080 §2.3).
+///
+/// The tolerance rather than `== 1`: the scale is a product of two `CGFloat`s that a
+/// gesture returns to fit by clamping, and a pile that failed to come back because the
+/// last multiply landed on `0.9999999` would be a bug no one could reproduce.
+nonisolated func showsFanPile(memberCount: Int, effectiveScale: CGFloat) -> Bool {
+    memberCount > 1 && abs(effectiveScale - 1) < 0.001
+}
+
+/// Where a `.aspectRatio(contentMode: .fit)` image of `contentWidth × contentHeight`
+/// actually lands inside a `pane`-sized box, in that box's own coordinates (080 §3.2).
+/// `nil` when the content has no intrinsic size to fit, or the box no room to fit it in.
+///
+/// The page measures the PANE (`onGeometryChange`, `:195`) and nothing anywhere computed
+/// where the picture inside it ends up, so anything laid against the pane floats detached
+/// on the long axis for every image whose aspect ratio differs from the pane's — which is
+/// [313](313-a-carousel-outlined-in-black.md) reappearing on a new surface.
+///
+/// Fed from ``Asset/width`` / ``Asset/height`` (`Int?`, *"Intrinsic … layout without
+/// decoding"*), so the answer is known before a single byte is decoded and does not
+/// change when the 1280 preview swaps for the full-resolution image. `nil` dimensions are
+/// a media-less kind (003 · O1) and mean no pile; zero or negative would be a corrupt row,
+/// and returning `nil` for those keeps every consumer from having to divide by them.
+///
+/// Reporting the true drawn rect out of `ZoomableImage` was considered and rejected: it
+/// would add a geometry → `@State` → layout loop to the one view already doing
+/// state-driven geometry work (`reportDisplayTarget`), to buy a fraction of a point that
+/// is invisible under a tilted card. Purity is the same argument ``fanPileGeometry``
+/// already makes about itself — the "no card is ever clipped" invariant is testable across
+/// aspect ratios instead of being eyeballed at one window size.
+nonisolated func fitRect(contentWidth: Int?, contentHeight: Int?, in pane: CGSize) -> CGRect? {
+    guard let contentWidth, let contentHeight, contentWidth > 0, contentHeight > 0,
+          pane.width > 0, pane.height > 0
+    else { return nil }
+    let scale = min(pane.width / CGFloat(contentWidth), pane.height / CGFloat(contentHeight))
+    let size = CGSize(width: CGFloat(contentWidth) * scale, height: CGFloat(contentHeight) * scale)
+    return CGRect(
+        x: (pane.width - size.width) / 2, y: (pane.height - size.height) / 2,
+        width: size.width, height: size.height)
+}
+
 /// The detail page's source / lifecycle actions. Each is optional so a caller can
 /// omit the ones that don't apply — a Space board, for instance, has no
 /// folder-membership to remove from.
@@ -177,6 +228,13 @@ struct ItemDetailView: View {
     @State private var zoom: CGFloat = 1
     @State private var pan: CGSize = .zero
 
+    /// The artwork's scale RIGHT NOW — `zoom` folded together with `ZoomableImage`'s
+    /// transient pinch into one scalar (080 §2.3). ``zoom`` alone is a settle-point value
+    /// and says `1` for the whole of a pinch out from fit; anything laid against the FIT
+    /// geometry has to watch this instead or it sits still while the picture moves.
+    /// Written by `ZoomableImage` from `onChange`, never during a body pass.
+    @State private var effectiveZoom: CGFloat = 1
+
     /// The drag-out export item (011 · Cluster A) — the original blob + human
     /// filename this item drops as. Computed ONCE per asset in `loadMedia` (not per
     /// body pass, so no repeated `stat` during zoom/pan), `nil` for a media-less
@@ -192,10 +250,17 @@ struct ItemDetailView: View {
     /// only ever narrows it.
     @State private var topBarWidth: CGFloat = 0
 
-    /// The media area's long side in POINTS, measured via `onGeometryChange` (036 §3
-    /// B3). Combined with ``displayScale`` into the FIT pixel size reported through
-    /// ``onDisplayTarget``. `0` until the first layout measures it.
-    @State private var mediaLongSidePt: CGFloat = 0
+    /// The media area's size in POINTS, measured via `onGeometryChange` (036 §3 B3).
+    /// `.zero` until the first layout measures it.
+    ///
+    /// Its long side feeds the FIT pixel size reported through ``onDisplayTarget``; both
+    /// sides feed ``fitRect`` for the pile (080 §3.2), which is why the whole size is
+    /// kept now rather than the one number B3 needed.
+    @State private var mediaPaneSize: CGSize = .zero
+
+    /// The media area's long side in POINTS. Combined with ``displayScale`` into the FIT
+    /// pixel size reported through ``onDisplayTarget``.
+    private var mediaLongSidePt: CGFloat { max(mediaPaneSize.width, mediaPaneSize.height) }
 
     /// Bumped by a click on the artwork to hand the keyboard back to the page (316).
     /// The ``DetailKeyCatcher`` claims focus once, when the page opens, and must not
@@ -242,6 +307,12 @@ struct ItemDetailView: View {
                     // image's own edges reading as part of the chrome. `mediaBackdrop`
                     // has claimed this surface in its doc since it was written; it
                     // just was not applied, so the media sat on `panel`.
+                    // The resting pile (080 §3.4), BEHIND the artwork and ABOVE the
+                    // backdrop — hence between the two `.background`s, since each one
+                    // stacks under the last. It is laid against the FITTED rect, not the
+                    // pane: against the pane it would float detached on the long axis for
+                    // every image whose aspect ratio isn't the window's (313).
+                    .background(alignment: .center) { fanPile }
                     .background(Theme.Colors.mediaBackdrop)
                     // B3: measure the media area and report its FIT size + zoom up to
                     // the `DetailSession`, which picks the decode tier. `zoom` (the
@@ -250,7 +321,7 @@ struct ItemDetailView: View {
                     // zoom SETTLE, never per pinch tick; the loader's bucket
                     // quantization is the second line of defence against a decode storm.
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
-                        mediaLongSidePt = max(size.width, size.height)
+                        mediaPaneSize = size
                         reportDisplayTarget()
                     }
                     .onChange(of: zoom) { _, _ in reportDisplayTarget() }
@@ -631,6 +702,50 @@ struct ItemDetailView: View {
         return nil
     }
 
+    /// The box the artwork is actually fitted into: the measured pane less ``mediaArea``'s
+    /// own `lg` padding on every side. `fitRect` is fed THIS, not `mediaPaneSize`, or the
+    /// pile would sit 16pt proud of the picture on the constraining axis.
+    private var mediaContentSize: CGSize {
+        CGSize(
+            width: max(0, mediaPaneSize.width - 2 * Theme.Spacing.lg),
+            height: max(0, mediaPaneSize.height - 2 * Theme.Spacing.lg))
+    }
+
+    /// The resting pile: two blank tilted cards behind the fitted artwork, saying *"this
+    /// item belongs to a post"* in the grid's own vocabulary (080 §3.4).
+    ///
+    /// Drawn for ANY grouped item, including one opened out of an already-EXPANDED post
+    /// whose tile drew no pile at all. 070 §2 justified the seed as making this
+    /// "geometrically the same pile the user just clicked", and that claim does not hold
+    /// in general — the grid fans only a COLLAPSED post (`MasonryGridItem.swift:627`), and
+    /// since 316 made every member reachable, opening from an expanded post is ordinary.
+    /// The pile is not a promise about the transition; suppressing it would leave the page
+    /// silent in exactly the case the grid was silent too, and would drag grid view state
+    /// across this view's presentation-only contract (`:10-15`).
+    ///
+    /// The image branch only. A media-less kind has no intrinsic size to fit (`fitRect`
+    /// returns `nil` for it anyway) and video's fitted rect belongs to `AVPlayerView`'s
+    /// own layout, controls included — 080 §7 defers what a non-image member should draw.
+    @ViewBuilder
+    private var fanPile: some View {
+        if isImage, let post,
+           let fitted = fitRect(
+               contentWidth: asset.width, contentHeight: asset.height, in: mediaContentSize),
+           min(fitted.width, fitted.height) >= DetailFanPileMetrics.minFittedSide {
+            DetailFanPile(fitted: fitted.size, seed: post.seed)
+                // Present but transparent while zoomed, rather than removed: the pile is
+                // two rounded rectangles, and fading is what keeps a double-tap back to
+                // fit (which snaps `zoom` to 1 instantly, then springs the picture home)
+                // from popping the cards in a beat before the artwork arrives.
+                .opacity(
+                    showsFanPile(memberCount: post.memberCount, effectiveScale: effectiveZoom)
+                        ? 1 : 0)
+                .animation(Theme.Motion.gentle, value: effectiveZoom)
+                // Decoration. The artwork's drag-out and the pan gesture own this area.
+                .allowsHitTesting(false)
+        }
+    }
+
     @ViewBuilder
     private var mediaArea: some View {
         Group {
@@ -651,7 +766,9 @@ struct ItemDetailView: View {
                     // Zoom/pan lives in this view (top-bar buttons + ⌘± drive it),
                     // reset per-navigation in `loadMedia` — so no `.id(asset.id)`
                     // remount is needed to clear it.
-                    ZoomableImage(image: image, zoom: $zoom, pan: $pan, maxZoom: maxZoom)
+                    ZoomableImage(
+                        image: image, zoom: $zoom, pan: $pan, maxZoom: maxZoom,
+                        effectiveScale: $effectiveZoom)
                 } else {
                     ProgressView()
                 }
@@ -707,6 +824,9 @@ struct ItemDetailView: View {
         // Fresh item → back to fit (the previous item's zoom shouldn't carry over).
         zoom = 1
         pan = .zero
+        // And its live twin, which a media-less next item would otherwise leave holding
+        // the previous picture's pinch — there is no `ZoomableImage` there to reset it.
+        effectiveZoom = 1
         player?.pause()
         player = nil
         // Drag-out export item (011 · Cluster A): the original blob + human name for
@@ -1015,6 +1135,15 @@ private struct ZoomableImage: View {
     /// Ceiling so a huge pinch can't lose the image off-screen (passed in so it
     /// matches the button clamp).
     let maxZoom: CGFloat
+    /// The scale the artwork is drawn at RIGHT NOW — `zoom × pinch`, published upward so
+    /// anything laid against the FIT geometry can gate on it (080 §2.3). One scalar, not
+    /// the pinch itself: `pinch` is meaningless without the `zoom` it multiplies, and the
+    /// caller having to recombine them is how the wrong variable got read the first time.
+    ///
+    /// Written from `onChange`, never mid-body — a `@GestureState` moves on every tick of
+    /// a magnification, and a binding written during a body pass is a state mutation
+    /// inside view update.
+    @Binding var effectiveScale: CGFloat
 
     @GestureState private var pinch: CGFloat = 1
     @GestureState private var dragTranslation: CGSize = .zero
@@ -1024,6 +1153,11 @@ private struct ZoomableImage: View {
             .resizable()
             .aspectRatio(contentMode: .fit)
             .scaleEffect(zoom * pinch)
+            // `initial` so the first frame publishes fit rather than whatever the previous
+            // item left behind, and so the gesture-end reset of `pinch` to 1 is reported
+            // like any other change. Double-tap-to-reset rides this too: it sets `zoom`,
+            // and `zoom` is half of the product.
+            .onChange(of: zoom * pinch, initial: true) { _, scale in effectiveScale = scale }
             .offset(
                 x: pan.width + dragTranslation.width,
                 y: pan.height + dragTranslation.height)
@@ -1058,6 +1192,93 @@ private struct ZoomableImage: View {
                 pan.width += value.translation.width
                 pan.height += value.translation.height
             }
+    }
+}
+
+// MARK: - The resting pile (307 · carousel grouping, 080 §3.4)
+
+/// The page's pile in numbers. Internal rather than private so 080 §5 · T1 composes the
+/// values the page actually uses — a test that re-typed `5, 12, 5` would keep passing
+/// after someone retuned them here.
+enum DetailFanPileMetrics {
+    /// The deepest card's ideal tilt, matching the grid cell's. At page scale
+    /// ``fanPileGeometry`` almost always reduces it (its cap is `2 · maxInset / longest
+    /// side`, and the page's longest side is measured in hundreds of points), so this is
+    /// the ceiling for a small window rather than the number usually drawn.
+    static let maxDegrees: Double = 5
+    /// The most the pile may swing out past the artwork — see ``DetailFanPile`` for why
+    /// the cell's inset becomes an outset here, and why this stays under
+    /// `Theme.Spacing.lg` (16), the padding it swings into.
+    static let maxInset: CGFloat = 12
+    /// A visible minimum, so the cards still read as cards behind a small picture.
+    static let minInset: CGFloat = 5
+    /// The cards' own corner rounding — `card`, not the grid's `tile`: this pile sits at
+    /// picture scale, where the tile's 8pt reads as a sharp corner.
+    static let cornerRadius: CGFloat = Theme.Radius.card
+    /// Two, exactly as the grid tile draws two. The post's real size is said in words by
+    /// the chip; a card per member is the spread's job (080 §3.5), if it ships.
+    static let cardCount = 2
+    /// The smallest fitted artwork worth putting a pile behind. A tall-and-thin asset
+    /// (080 §5 · T1's `1 × 20000`) fits to a sliver a fraction of a point wide, where two
+    /// tilted cards are not a pile but a smear — and where ``fanPileGeometry``'s "never
+    /// eat more than half" ceiling starts governing its own answer.
+    static let minFittedSide: CGFloat = 48
+}
+
+/// Two blank tilted cards behind the fitted artwork — the third of the app's fanned piles
+/// (080 §3.4 · *"Three fan implementations, and that is fine"*): SwiftUI like ``FanCard``,
+/// aspect-sized and artwork-free like ``MasonryGridItem``'s, and neither one's code.
+///
+/// **Blank on purpose.** 080 §2.2 settled a contradiction in 070: these carry NO
+/// thumbnails, exactly as the grid tile's do — *"they stand for 'more behind this', not
+/// for any particular image"* — so the resting state costs two rounded rectangles rather
+/// than a decode per member. Cards with artwork are the spread's job (§3.5).
+///
+/// **Why the cell's inset becomes an outset.** The tile pulls its ARTWORK in by
+/// ``fanPileGeometry``'s inset to make room for the tilt inside a cell that clips. The
+/// page cannot: the artwork is already at fit, and shrinking it would be a visible lurch
+/// on every post you open. So the same inset is spent the other way round — the cards are
+/// the fitted rect's own size and their corners swing OUT by (at most) that inset, into
+/// `mediaArea`'s `lg` padding. The invariant is the same one either way, and 080 §5 · T1
+/// pins it on this rectangle: an inset card fits the fitted rect ⟺ a fitted-size card
+/// overhangs it by no more than the inset.
+private struct DetailFanPile: View {
+    /// The artwork's own rect, from ``fitRect`` — the pile is concentric with it.
+    let fitted: CGSize
+    /// The post's representative id. Stable across launches because ``fanRotations`` reads
+    /// raw uuid bytes rather than `hashValue`, so this pile does not re-jitter per process
+    /// — and it is the same seed the collapsed tile used, so it is the same pile whenever
+    /// the grid drew one.
+    let seed: UUID
+
+    var body: some View {
+        let (inset, degrees) = fanPileGeometry(
+            in: fitted, maxDegrees: DetailFanPileMetrics.maxDegrees,
+            maxInset: DetailFanPileMetrics.maxInset, minInset: DetailFanPileMetrics.minInset,
+            cornerRadius: DetailFanPileMetrics.cornerRadius)
+        // The tilt the geometry ACTUALLY allows at this size, not the ideal — a wide
+        // panorama and a tall screenshot get different angles for the same reason a
+        // masonry cell does.
+        let angles = fanBackingRotations(
+            seed: seed, cardCount: DetailFanPileMetrics.cardCount, maxDegrees: degrees)
+        ZStack {
+            ForEach(Array(angles.enumerated()), id: \.offset) { _, tilt in
+                RoundedRectangle(cornerRadius: DetailFanPileMetrics.cornerRadius)
+                    .fill(Theme.Colors.selection)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: DetailFanPileMetrics.cornerRadius)
+                            .strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 1)
+                    }
+                    .frame(width: fitted.width, height: fitted.height)
+                    .rotationEffect(.degrees(tilt))
+            }
+        }
+        // A rotation draws outside its layout bounds, so the box is claimed explicitly —
+        // the pile RESERVES at least what it covers, for anything that later measures or
+        // clips this background. (`inset` carries `fanPileGeometry`'s rounded-corner
+        // allowance, which the swing itself does not spend, so the claim is a few points
+        // generous rather than exact.)
+        .frame(width: fitted.width + 2 * inset, height: fitted.height + 2 * inset)
     }
 }
 
