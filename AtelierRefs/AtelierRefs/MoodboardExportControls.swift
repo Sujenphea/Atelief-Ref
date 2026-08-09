@@ -28,9 +28,10 @@ struct MoodboardExportButton: View {
     @State private var showPanel = false
 
     var body: some View {
-        // Dimmed-not-hidden while there's nothing to export, the idiom every other
-        // button in the board's floating bar follows — `.plain` drops the system's
-        // own disabled dimming, so the opacity is explicit.
+        // Dimmed-not-hidden while there's nothing to export. `SelectionBarIcon` now
+        // draws that dim itself off `\.isEnabled`, so `.disabled` is the whole
+        // statement — which is also what fixed the two collection-bar export buttons
+        // that had `.disabled` without the matching opacity.
         let isDisabled = space.items.isEmpty || controller.isExporting
         return Button {
             showPanel.toggle()
@@ -38,9 +39,8 @@ struct MoodboardExportButton: View {
             SelectionBarIcon(systemName: "square.and.arrow.up")
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.primary)
+        .foregroundStyle(Theme.Colors.inkPrimary)
         .disabled(isDisabled)
-        .opacity(isDisabled ? 0.35 : 1)
         .help("Export this board as a moodboard PDF or PNG")
         // Opens ABOVE the floating bar, like the collection's export popover.
         .popover(isPresented: $showPanel, arrowEdge: .top) { panel }
@@ -149,15 +149,20 @@ struct ExportProgressRing: View {
     var body: some View {
         Group {
             if controller.isExporting {
-                Button { showCancel.toggle() } label: { ring }
+                Button { showCancel.toggle() } label: { ring.barSlot() }
                     .buttonStyle(.plain)
                     .help("Exporting…")
                     // Both hosts are floating BOTTOM bars now, so the cancel panel
                     // opens upward — downward would clip off the window edge.
                     .popover(isPresented: $showCancel, arrowEdge: .top) { cancelPanel }
             } else if showDone {
+                // Monochrome. `.green` was the app's one accent in a theme whose
+                // stated rule is that it has none — and success is already carried by
+                // the glyph's shape, which is why `warning` orange (the only semantic
+                // colour the app does keep) has no counterpart here.
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Theme.Colors.inkPrimary)
+                    .barSlot()
                     .transition(.opacity)
             }
         }

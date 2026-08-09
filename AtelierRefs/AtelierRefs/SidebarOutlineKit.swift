@@ -25,6 +25,22 @@
 
 import AppKit
 
+/// The one piece of geometry the sidebar's SwiftUI shell and its AppKit outline views
+/// have to AGREE on. Both draw into ``SidebarView``'s column but are laid out by
+/// different frameworks, so a measurement taken across that seam is named here rather
+/// than written out on each side of it.
+enum SidebarMetrics {
+    /// How far both outline views extend INTO the sidebar's trailing padding, so a
+    /// row's fill and selection reach closer to the edge than the section headers and
+    /// nav rows do.
+    ///
+    /// Named because ``SidebarCell`` measures its chevron against it: the cell's
+    /// trailing edge sits this much further right than a header's, and the row chevron
+    /// still has to line up with that header's "+". Changing the overhang without this
+    /// constant is exactly how the two drifted 6pt apart.
+    static let outlineOverhang: CGFloat = 8
+}
+
 /// The outline view with the native LEFT disclosure triangle suppressed — the cell
 /// draws its own chevron on the right (043 · Phase C styling).
 final class SidebarOutlineView: NSOutlineView {
@@ -165,14 +181,33 @@ final class SidebarRowView: NSTableRowView {
 /// (the visual identity is deliberate); only the interaction split.
 final class SidebarCell: NSTableCellView {
     private let label = NSTextField(labelWithString: "")
-    private let chevron = NSButton()
+    private let chevron = SidebarChevronButton()
 
     /// Fired by the chevron button only. The row's own click never toggles.
     var onToggle: (() -> Void)?
 
-    /// The glyph stays 12pt — the BUTTON is padded to 20×20 around it for a
+    /// The glyph stays 12pt — the BUTTON is padded to ``chevronButton`` around it for a
     /// comfortable hit area, the same trade the detail pager's chevrons make.
     private static let glyph = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+    private static let chevronButton: CGFloat = 20
+
+    /// Where a section header's "+" centres, measured in from the SIDEBAR's trailing
+    /// edge: the `Spacing.lg` content inset, ``HoverHighlight``'s 6pt pad, and half of
+    /// the 12pt `plus` glyph inside it.
+    private static let headerGlyphCenter: CGFloat = Theme.Spacing.lg + 6 + 6
+
+    /// The chevron button's inset from the CELL's trailing edge, chosen so its glyph
+    /// shares a centre x with that "+". The cell overhangs the header's content edge by
+    /// ``SidebarMetrics/outlineOverhang``, so the same centre is that much nearer here;
+    /// half the button width then puts its EDGE at the value below.
+    ///
+    /// Centres, not edges: `chevron.right` is 9pt wide and `chevron.down` 14pt, so an
+    /// edge-aligned glyph would shift sideways every time the row toggles. (The former
+    /// -4 came from 074 · S1, where it preserved the pre-button glyph's 8pt inset — a
+    /// measurement inherited from the decorative `NSImageView` and never checked
+    /// against the header it sits under, which left the two 6pt out.)
+    private static let chevronInset =
+        headerGlyphCenter - SidebarMetrics.outlineOverhang - chevronButton / 2
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -200,14 +235,14 @@ final class SidebarCell: NSTableCellView {
             // Roots sit at 14pt; children add the outline view's per-level indent.
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            // -2 to the button's EDGE keeps the same 6pt visual gap to the glyph,
-            // which sits 4pt inside its 20pt pad.
+            // -2 to the button's EDGE; the glyph sits a further ~3-5pt inside its pad,
+            // so what the eye reads is a comfortable gap, not a 2pt one.
             label.trailingAnchor.constraint(lessThanOrEqualTo: chevron.leadingAnchor, constant: -2),
-            // Likewise -4 here keeps the glyph's trailing edge at the old 8pt inset.
-            chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            chevron.trailingAnchor.constraint(
+                equalTo: trailingAnchor, constant: -Self.chevronInset),
             chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
-            chevron.widthAnchor.constraint(equalToConstant: 20),
-            chevron.heightAnchor.constraint(equalToConstant: 20),
+            chevron.widthAnchor.constraint(equalToConstant: Self.chevronButton),
+            chevron.heightAnchor.constraint(equalToConstant: Self.chevronButton),
         ])
     }
 
@@ -233,6 +268,59 @@ final class SidebarCell: NSTableCellView {
     }
 
     @objc private func chevronPressed() { onToggle?() }
+}
+
+/// The disclosure chevron's button, which answers the pointer the way every other
+/// chrome glyph button does.
+///
+/// 074 · S1 gave the chevron a 20pt hit area of its own but no hover state, so the
+/// one genuinely clickable target inside a row looked as inert as the label beside
+/// it — the row's `hoverRow` fill underneath reads as "this ROW is hoverable", which
+/// is the opposite of what the split was for. `NSButton` draws no hover of its own,
+/// so this is the AppKit half of ``HoverButtonStyle``: the same
+/// ``Theme/Colors/hoverControl`` token at the same ``Theme/Radius/control``, a step
+/// up from the row fill it sits on.
+final class SidebarChevronButton: NSButton {
+    private var isHovered = false {
+        didSet { if isHovered != oldValue { needsDisplay = true } }
+    }
+    private var hoverTracking: NSTrackingArea?
+
+    override func draw(_ dirtyRect: NSRect) {
+        if isHovered && isEnabled {
+            let path = NSBezierPath(
+                roundedRect: bounds,
+                xRadius: Theme.Radius.control, yRadius: Theme.Radius.control)
+            Theme.NS.hoverControl.setFill()
+            path.fill()
+        }
+        super.draw(dirtyRect)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = hoverTracking { removeTrackingArea(existing) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil)
+        addTrackingArea(area)
+        hoverTracking = area
+        // The same reconcile ``SidebarRowView`` needs, for the same reasons: cells are
+        // recycled, so a reused button can carry a stale hover from the row it used to
+        // be, and `mouseEntered` never fires for a pointer that was already inside
+        // before this tracking area existed.
+        if let window = window {
+            let inView = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            isHovered = bounds.contains(inView)
+        } else {
+            isHovered = false
+        }
+    }
+
+    override func mouseEntered(with event: NSEvent) { isHovered = true }
+    override func mouseExited(with event: NSEvent) { isHovered = false }
 }
 
 /// The inline editable cell: a borderless text field pixel-matched to

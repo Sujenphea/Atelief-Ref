@@ -126,16 +126,18 @@ struct ToastCard: View {
             }
             .buttonStyle(HoverButtonStyle(cornerRadius: Theme.Radius.chip, padding: Theme.Spacing.xs))
         }
-        .padding(.vertical, Theme.Spacing.sm)
-        .padding(.horizontal, Theme.Spacing.md)
-        // Opaque `surface`, not `.regularMaterial`: a translucent pill tints from
-        // whatever it happens to be floating over, so the same toast rendered a
-        // different grey on the grid than on the canvas. `Elevation.floating` is the
-        // token for exactly this shape — a pill riding over content it did not lay out
-        // — which replaces the one-off 0.15/8/3 shadow this card used to carry.
-        .background(Theme.Colors.surface, in: Capsule())
-        .overlay(Capsule().strokeBorder(Theme.Colors.hairline, lineWidth: 1))
-        .elevation(.floating)
+        // The shared floating container. Opaque `field`, not `.regularMaterial`: a
+        // translucent pill tints from whatever it happens to be floating over, so the
+        // same toast rendered a different grey on the grid than on the canvas.
+        //
+        // It used to draw its own `surface` fill behind the weaker `hairline` border —
+        // the popover recipe, on the grounds that a toast is a message rather than a
+        // control. Defensible in isolation, but it made this the third fill and the
+        // third border in a set of nine floating bars, with nothing in the code saying
+        // which of the three was the rule. One container; a toast is distinguished by
+        // being a sentence, not by being a different grey.
+        .floatingBarChrome(
+            leading: Theme.Spacing.md, trailing: Theme.Spacing.md, vertical: Theme.Spacing.sm)
         // `.trailing`, not the default `.center`: this frame sits OUTSIDE the capsule
         // background, and the host proposes an infinite width down through the stack,
         // so it always resolves to the full 420 — a short pill was being centred in it

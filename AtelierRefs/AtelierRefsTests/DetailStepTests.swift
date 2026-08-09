@@ -408,6 +408,88 @@ struct DetailStepIntentWiringTests {
         model.cancelPendingDeletion()
     }
 
+    /// **The page's verbs target the item ON SCREEN, never the grid's cursor** (354).
+    ///
+    /// Stepping with ← / → writes nothing to the model on purpose (that is what keeps
+    /// the grid from re-rendering per step), so the lead stays parked on the item the
+    /// page was OPENED on however far the user pages. A verb that reads the lead is
+    /// therefore not a near-miss on this page — it acts on a different picture, and for
+    /// ⌘⌫ that is a destroyed picture the user was not looking at. This pins the two
+    /// answers apart at the seam the Edit menu and the overflow menu both call.
+    @Test("the page's ⌘⌫ destroys the shown item, not the lead the grid parked on")
+    func pageDeleteTargetsShownItemNotLead() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededFolder(model, services)
+        // Opened on the first item — the lead the grid keeps — then paged to the third.
+        let opened = model.detailRun[0]
+        _ = model.selectionStore.apply(.setLead(opened.item.id))
+        let shown = model.detailRun[2]
+        #expect(model.leadItem?.item.id == opened.item.id)
+
+        model.requestDelete(itemID: shown.item.id, assetIDs: [shown.asset.id])
+
+        #expect(model.pendingDeletion?.assetIDs == [shown.asset.id])
+        #expect(model.pendingDeletion?.assetIDs.contains(opened.asset.id) == false)
+        #expect(model.consumeDetailStepIntent()?.itemID == shown.item.id)
+        model.cancelPendingDeletion()
+    }
+
+    /// The same, for ⌫: the removal leaves the SHOWN item's asset, and the lead's
+    /// survives — the verb the softest key on the keyboard is bound to.
+    @Test("the page's ⌫ removes the shown item, not the lead")
+    func pageRemoveTargetsShownItemNotLead() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededFolder(model, services)
+        let opened = model.detailRun[0]
+        _ = model.selectionStore.apply(.setLead(opened.item.id))
+        let shown = model.detailRun[2]
+
+        model.removeFromCurrentFolder(itemID: shown.item.id, assetIDs: [shown.asset.id])
+        try await waitForDeparture(model, of: shown.item.id)
+
+        #expect(!model.detailRun.contains { $0.item.id == shown.item.id })
+        #expect(model.detailRun.contains { $0.item.id == opened.item.id })
+    }
+
+    /// **Confirming is not cancelling** (354). SwiftUI writes `false` into the dialog's
+    /// `isPresented` binding when it dismisses — including on the way out of the Delete
+    /// button — so `ContentView`'s binding calls `cancelPendingDeletion()` on the
+    /// CONFIRM path too, a moment after the confirm cleared the pending state and well
+    /// before the delete's asynchronous reload lands. That disarmed the intent the
+    /// press had just armed, and the page closed instead of stepping. Here in the exact
+    /// order the app produces it.
+    @Test("the dialog's dismissal write after Delete does not disarm the step")
+    func confirmThenDismissalWriteKeepsIntent() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededFolder(model, services)
+        let shown = model.detailRun[1]
+
+        model.requestDelete(itemID: shown.item.id, assetIDs: [shown.asset.id])
+        model.confirmPendingDeletion()      // the button's action
+        model.cancelPendingDeletion()       // the binding's `false`, right behind it
+
+        // Still armed for the reload the delete is about to cause.
+        let intent = try #require(model.consumeDetailStepIntent())
+        #expect(intent.itemID == shown.item.id)
+        #expect(intent.index == 1)
+        try await waitForDeparture(model, of: shown.item.id)
+    }
+
+    /// And the guard that makes that work does not cost Cancel its disarm: a dialog the
+    /// user calls off still arrives with the deletion staged, so it still clears.
+    @Test("cancelling with a deletion staged still disarms")
+    func cancelWithPendingStillDisarms() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededFolder(model, services)
+        let shown = model.detailRun[0]
+
+        model.requestDelete(itemID: shown.item.id, assetIDs: [shown.asset.id])
+        #expect(model.pendingDeletion != nil)
+        model.cancelPendingDeletion()
+        #expect(model.pendingDeletion == nil)
+        #expect(model.consumeDetailStepIntent() == nil)
+    }
+
     /// ⌫ on an item whose ONLY membership is this collection re-homes it to Unsorted
     /// (the F3 invariant in `AppServices.removeAssets`). It still leaves THIS feed, so
     /// the page steps — the behaviour reads as "filed away", not as a failed delete.

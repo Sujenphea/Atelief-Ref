@@ -54,8 +54,11 @@ enum Theme {
         static let selectionMarkContrast = Color.black.opacity(0.5)
         /// Grid tiles + the detail media area — the art's stable dark ground.
         static let mediaBackdrop = Color(hex: 0x141416)
-        /// Detail filmstrip thumbs + the Back-button fill.
-        static let filmstrip = Color(hex: 0x1A1A1C)
+        // No `filmstrip` (#1A1A1C). It named the detail filmstrip's thumb ground and
+        // the Back-button fill; the thumbs stopped drawing it, and the top bar's pills
+        // — its last holder — moved onto `field` with the rest of the floating chrome.
+        // Dropped rather than left standing, per `.change-log/295`: a token nothing
+        // draws is a fourth copy of the palette waiting to be picked up by mistake.
         /// Section titles + primary text.
         static let inkPrimary = Color(hex: 0xF2F1EE)
         /// Labels, values, captions.
@@ -109,6 +112,7 @@ enum Theme {
         static let inkSecondary = NSColor(hex: 0x9A9A9E)
         static let hairlineStrong = NSColor.white.withAlphaComponent(0.14)
         static let hoverRow = NSColor.white.withAlphaComponent(0.06)
+        static let hoverControl = NSColor.white.withAlphaComponent(0.10)
     }
 
     // MARK: - Spacing (4-pt scale)
@@ -144,6 +148,18 @@ enum Theme {
         // AppKit draws their corners. The token named a radius the app never got to
         // choose.
     }
+
+    // MARK: - Disabled
+
+    /// What "unavailable" looks like on a `.plain`-family control.
+    ///
+    /// `.buttonStyle(.plain)` and the `HoverHighlight` family drop the system's own
+    /// disabled dimming, so the app has to draw it. 0.35 is what ``DialogButtonStyle``,
+    /// ``HoverHighlight`` and every hand-written `.opacity(…: 0.35)` in a floating bar
+    /// had each arrived at separately — named once here so the next control inherits it
+    /// instead of rediscovering it, and so the two export buttons that never applied it
+    /// at all can't recur.
+    static let disabledOpacity: Double = 0.35
 
     // MARK: - Motion (one canonical set — replaces the per-site springs)
 
@@ -225,6 +241,14 @@ enum Theme {
         static let bodyEmphasis = Font.system(.headline, design: .default, weight: .semibold)
         /// Running text: descriptions, toast messages, secondary rows.
         static let body = Font.system(.callout, design: .default, weight: .regular)
+        /// The count label in a floating action bar ("16 selected") — `body` weight
+        /// raised to medium so a short string holds its own beside 15pt glyphs.
+        ///
+        /// A role rather than the raw `.callout.weight(.medium)` the three selection
+        /// bars each wrote out: the app defines its text sizes here precisely so a
+        /// specimen page can show them, and a weight applied at a call site is a size
+        /// decision made where nothing can see it.
+        static let barLabel = Font.system(.callout, design: .default, weight: .medium)
         /// Metadata labels + values.
         static let label = Font.system(.subheadline, design: .default, weight: .regular)
         /// The smallest text the app draws — captions, counters, badge numerals.
@@ -272,7 +296,7 @@ extension View {
     /// A popover is the app's only chrome that floats over content it did not lay
     /// out, so its separation has to come from the shadow rather than from a heavy
     /// border — hence the subtle hairline paired with the strongest elevation token.
-    /// That is the opposite balance to a floating BAR (`selectionBarChrome()`), which
+    /// That is the opposite balance to a floating BAR (`floatingBarChrome()`), which
     /// sits in known space and can afford `hairlineStrong`.
     ///
     /// The radius is a parameter only so a pill-shaped popover can pass its own; the

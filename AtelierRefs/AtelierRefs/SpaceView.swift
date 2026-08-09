@@ -254,7 +254,10 @@ struct SpaceView: View {
     @ViewBuilder private var editButton: some View {
         if let element = space.selectedElement {
             SelectionBarButton("slider.horizontal.3", help: "Edit style") { showEditor = true }
-                .popover(isPresented: $showEditor, arrowEdge: .bottom) {
+                // `.top`, like every other popover hung off this bar: downward is
+                // clipped by the floating capsule (see `groupButton`). This one was
+                // the last `.bottom` left.
+                .popover(isPresented: $showEditor, arrowEdge: .top) {
                     ElementInspector(
                         kind: element.item.kind,
                         initialStyle: space.style(forItemID: element.item.id),
@@ -550,7 +553,7 @@ struct SpaceView: View {
                     .onChange(of: space.renderRevision) { _, _ in chromeAnchor.refresh() }
             }
         }
-        .overlay(alignment: .bottom) { actionBar }
+        .overlay(alignment: .bottom) { actionBar.padding(.bottom, Theme.Spacing.lg) }
         // `A`'s destination picker (024 · K3), anchored where the action bar's own
         // popovers open from and opening upward like them.
         .overlay(alignment: .bottom) { destinationPickerAnchor }
@@ -687,9 +690,14 @@ struct SpaceView: View {
     /// spacing (distribute ×2 + tidy + gap) and z-order (2) now sit behind one glyph
     /// each, so the row is eight wide in every mode and no longer roughly doubles when
     /// a second tile is selected. Reuses the shared `SelectionBarButton` glyphs +
-    /// `selectionBarChrome()` capsule (parity with the Collection/Search bar) — a flat
-    /// `spacing: 2` row. The trailing pad balances the chrome's text-tuned leading
-    /// inset (16) for this icon-only bar.
+    /// ``floatingBarChrome(leading:trailing:vertical:)`` capsule (parity with the
+    /// Collection/Search bar) — a flat `spacing: 2` row.
+    ///
+    /// It is the app's one ICON-ONLY bar, so it passes `trailing: 16` to balance the
+    /// chrome's text-tuned leading inset. That used to be a local
+    /// `.padding(.trailing, 10)` stacked on top of the modifier's own 6 — the same
+    /// number, arrived at by addition, which read as this bar disagreeing with the
+    /// chrome rather than as the chrome having a documented second case.
     private var actionBar: some View {
         HStack(spacing: 2) {
             undoRedoBar // mode-invariant (051 · E-2)
@@ -702,8 +710,7 @@ struct SpaceView: View {
             barSeparator
             exportBar // mode-invariant
         }
-        .padding(.trailing, 10)
-        .selectionBarChrome()
+        .floatingBarChrome(trailing: Theme.Spacing.lg)
     }
 
     /// The rule between the mode-switched half and the export.
@@ -757,7 +764,6 @@ struct SpaceView: View {
             help: space.canUndo ? "Undo \(space.undoActionName)" : "Nothing to undo"
         ) { space.undo() }
             .disabled(!space.canUndo)
-            .opacity(space.canUndo ? 1 : 0.35)
             .keyboardShortcut(editing ? nil : KeyboardShortcut("z", modifiers: .command))
 
         SelectionBarButton(
@@ -765,7 +771,6 @@ struct SpaceView: View {
             help: space.canRedo ? "Redo \(space.redoActionName)" : "Nothing to redo"
         ) { space.redo() }
             .disabled(!space.canRedo)
-            .opacity(space.canRedo ? 1 : 0.35)
             .keyboardShortcut(
                 editing ? nil : KeyboardShortcut("z", modifiers: [.command, .shift]))
     }
@@ -813,7 +818,6 @@ struct SpaceView: View {
             openGroup = (openGroup == group) ? nil : group
         }
         .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.35)
         .popover(item: popoverBinding(for: group), arrowEdge: .top) { _ in
             groupPanel(group, selectionCount: count)
                 .onDisappear { restoreCanvasFocus() }

@@ -306,29 +306,36 @@ struct ItemDetailView: View {
     ///
     /// The chevrons carry their own hover pad, so the pill's outer inset is `sm` where
     /// the other two take `TopBarPill.inset` — the glyph's padded hit area supplies the
-    /// rest, the same trade ``selectionBarChrome()`` makes on its trailing edge.
+    /// rest, the same trade ``floatingBarChrome(leading:trailing:vertical:)`` makes on
+    /// its trailing edge.
+    ///
+    /// These are the app's only NESTED bar glyphs, so they take ``CompactBarIcon``
+    /// rather than the 30×28 unit: this pill is 28pt tall, which a 28pt glyph would
+    /// fill edge to edge. That is the whole of the rule — standalone bar or nested in
+    /// a pill — and it replaces four sizes arrived at by four different
+    /// `HoverButtonStyle` paddings.
     private func pager(_ navigator: ItemDetailNavigator) -> some View {
-        HStack(spacing: Theme.Spacing.xs) {
+        HStack(spacing: 2) {
             // No `.keyboardShortcut` on either chevron: the arrows are handled by
             // `DetailKeyCatcher`, which is the only path that actually receives them,
             // and a second registration here would risk stepping twice per press.
-            Button { navigator.step(-1) } label: { Image(systemName: "chevron.left") }
+            Button { navigator.step(-1) } label: { CompactBarIcon(systemName: "chevron.left") }
+                .buttonStyle(.plain)
                 .disabled(navigator.index <= 0)
                 .help("Previous item (←)")
 
             Text("\(navigator.index + 1) / \(navigator.count)")
                 .font(Theme.Typography.row).monospacedDigit()
 
-            Button { navigator.step(1) } label: { Image(systemName: "chevron.right") }
+            Button { navigator.step(1) } label: { CompactBarIcon(systemName: "chevron.right") }
+                .buttonStyle(.plain)
                 .disabled(navigator.index >= navigator.count - 1)
                 .help("Next item (→)")
         }
-        .buttonStyle(HoverButtonStyle(
-            cornerRadius: Theme.Radius.chip, padding: Theme.Spacing.xs))
         // ONE ink for the whole pill. The numerals were tokenized and the chevrons
         // were not, so a single pill drew its text in two different whites.
         .foregroundStyle(Theme.Colors.inkPrimary)
-        .padding(.horizontal, Theme.Spacing.sm)
+        .padding(.horizontal, Theme.Spacing.xs)
         .topBarPill()
     }
 
@@ -382,53 +389,53 @@ struct ItemDetailView: View {
     /// button doubles as ⌘0 "fit," and a hidden ⌘= mirror makes zoom-in reachable
     /// without Shift (⌘+ on most layouts is Shift-⌘=).
     ///
-    /// Wears the app's floating-bar chrome — the ``selectionBarChrome()`` recipe: an
-    /// OPAQUE `field` capsule on a `hairlineStrong` border, lifted by
+    /// Wears the app's floating-bar chrome by CALLING it —
+    /// ``floatingBarChrome(leading:trailing:vertical:)`` — rather than restating the
+    /// recipe. An OPAQUE `field` capsule on a `hairlineStrong` border, lifted by
     /// ``Theme/Elevation/floating``. Opaque is the load-bearing word. These buttons
     /// carried NO style at all, so they got macOS's default bezel, which is a
     /// TRANSLUCENT vibrant material: over bright artwork the picture read straight
     /// through them and the bar looked like it sat UNDER the image. It never did — an
     /// `.overlay` always composites above its content, and the glyphs drew on top the
     /// whole time. The bezel was simply see-through.
+    ///
+    /// The fix that followed re-declared those four lines locally, which is how this
+    /// bar came to be 29pt tall next to a 40pt selection bar: its glyphs were
+    /// `HoverButtonStyle` at intrinsic size, not the app's 30×28 unit. Both are the
+    /// shared ones now. Icon-only, so it takes the balanced `trailing: 16` the board's
+    /// action bar takes — the percentage reads as a value, not as a leading label.
     private var zoomControls: some View {
-        HStack(spacing: Theme.Spacing.xs) {
-            Button {
+        HStack(spacing: 2) {
+            SelectionBarButton("minus.magnifyingglass", help: "Zoom out (⌘−)") {
                 zoomBy(1 / zoomStep)
-            } label: {
-                Image(systemName: "minus.magnifyingglass")
             }
             .keyboardShortcut("-", modifiers: .command)
             .disabled(zoom <= 1)
-            .help("Zoom out (⌘−)")
 
             Button {
                 resetZoom()
             } label: {
                 Text("\(Int((zoom * 100).rounded()))%")
+                    .font(Theme.Typography.row)
                     .monospacedDigit()
-                    .frame(minWidth: 42)
+                    // The one non-glyph item in the row, so it claims the glyph's
+                    // HEIGHT and only widens for its digits — a 42pt minimum that
+                    // "100%" fills and "8%" does not, so the bar never twitches.
+                    .frame(minWidth: 42, minHeight: SelectionBarIcon.height)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.Colors.inkPrimary)
             .keyboardShortcut("0", modifiers: .command)
             .help("Fit to view (⌘0)")
 
-            Button {
+            SelectionBarButton("plus.magnifyingglass", help: "Zoom in (⌘+)") {
                 zoomBy(zoomStep)
-            } label: {
-                Image(systemName: "plus.magnifyingglass")
             }
             .keyboardShortcut("+", modifiers: .command)
             .disabled(zoom >= maxZoom)
-            .help("Zoom in (⌘+)")
         }
-        .buttonStyle(HoverButtonStyle(
-            cornerRadius: Theme.Radius.control, padding: Theme.Spacing.xs))
-        .font(Theme.Typography.row)
-        .foregroundStyle(Theme.Colors.inkPrimary)
-        .padding(.horizontal, Theme.Spacing.xs)
-        .padding(.vertical, Theme.Spacing.xs)
-        .background(Theme.Colors.field, in: Capsule())
-        .overlay(Capsule().strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
-        .elevation(.floating)
+        .floatingBarChrome(trailing: Theme.Spacing.lg)
         // ⌘= mirror (no Shift) — same action, no visible control. Kept OUT of the
         // HStack: inside it the bar's `HoverButtonStyle` would give this zero-size
         // button a 4pt hover pad plus a spacing gap, i.e. stray width in a capsule
@@ -611,24 +618,33 @@ private enum TopBarPill {
 }
 
 private extension View {
-    /// The shared pill container: a `filmstrip` capsule on a `hairlineStrong` border,
-    /// at ``TopBarPill/height``.
+    /// The shared pill container: the app's floating-bar surface, at
+    /// ``TopBarPill/height``.
+    ///
+    /// It used to be a `filmstrip` capsule (#1A1A1C) on a **1.0pt** border with NO
+    /// shadow — three departures from the floating recipe at once, on the one bar in
+    /// the app that floats over full-bleed artwork. The zoom controls a few inches
+    /// below carry a long comment about why an opaque, ELEVATED capsule is required
+    /// there; this bar never got the same fix, so it read as printed onto the picture
+    /// rather than lifted off it. Same tokens as every other bar now: `field`,
+    /// `hairlineStrong` at 0.5, `Elevation.floating`.
     ///
     /// `hovered` lays the `hoverControl` wash OVER the pill's opaque fill, for a pill
     /// that is itself the button. It has to be composited on this side because the
     /// shared ``HoverHighlight`` draws into a `.background` — which would land BEHIND
-    /// the opaque `filmstrip` and never show. Same token, other side of the fill. A
-    /// pill that merely CONTAINS buttons (the pager) leaves this false and lets its
-    /// glyphs own the hover.
+    /// the opaque fill and never show. Same token, other side of the fill. A pill that
+    /// merely CONTAINS buttons (the pager) leaves this false and lets its glyphs own
+    /// the hover.
     func topBarPill(hovered: Bool = false) -> some View {
         frame(height: TopBarPill.height)
             .background {
                 ZStack {
-                    Capsule().fill(Theme.Colors.filmstrip)
+                    Capsule().fill(Theme.Colors.field)
                     if hovered { Capsule().fill(Theme.Colors.hoverControl) }
                 }
             }
-            .overlay(Capsule().strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 1))
+            .overlay(Capsule().strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 0.5))
+            .elevation(.floating)
     }
 }
 

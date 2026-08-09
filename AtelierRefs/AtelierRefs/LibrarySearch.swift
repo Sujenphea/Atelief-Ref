@@ -914,7 +914,9 @@ private struct LibrarySearchResults: View {
                 if abs(gridWidth - w) > 0.5 { gridWidth = w }
             }
             .overlay(alignment: .bottom) {
-                if selectionStore.selection.isSelecting { selectionBar }
+                if selectionStore.selection.isSelecting {
+                    selectionBar.padding(.bottom, Theme.Spacing.lg)
+                }
             }
             // Keep the reducer's feed order in step with the results (the host does
             // not push this itself — the collection grid's model does). Prune a stale
@@ -1118,20 +1120,10 @@ private struct LibrarySearchResults: View {
     /// active. Delete routes through the same staged/undoable asset delete as the
     /// keyboard and context menu.
     private var selectionBar: some View {
-        let count = selectionStore.selection.ids.count
-        return HStack(spacing: 2) {
-            Text("\(count) selected")
-                .font(.callout.weight(.medium))
-                .padding(.trailing, 10)
-            SelectionBarButton("xmark", help: "Clear selection") {
-                selectionStore.apply(.clear)
-            }
-            // `requestDelete` runs its own confirmation, so no extra dialog here.
-            SelectionBarButton("trash", help: "Delete \(count)", role: .destructive) {
-                requestDeleteTargets()
-            }
-        }
-        .selectionBarChrome()
+        CountSelectionBar(
+            count: selectionStore.selection.ids.count,
+            onClear: { selectionStore.apply(.clear) },
+            onDelete: { requestDeleteTargets() })
     }
 }
 

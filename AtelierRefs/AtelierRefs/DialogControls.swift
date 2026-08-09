@@ -27,7 +27,8 @@
 //  the drift — an outline marker on a bar that marks everything else with a fill.
 //
 //  Naming follows the existing precedent: `*Chrome()` for a container recipe applied to
-//  a view (``popoverChrome()``, ``selectionBarChrome()``), a `ButtonStyle` for a button.
+//  a view (``popoverChrome()``, ``floatingBarChrome(leading:trailing:vertical:)``), a
+//  `ButtonStyle` for a button.
 //
 
 import AppKit
