@@ -30,11 +30,13 @@ final class AssetTagsStore: ObservableObject {
     /// sidebar counts, stack previews (041). Without it the chips update but the
     /// grid behind the overlay goes stale, reading as "the edit didn't take."
     ///
-    /// The argument is the collection the asset was REMOVED from, or `nil` for an
-    /// add (355). A remove is the only membership edit that can take the bound asset
-    /// out of the feed behind the page, so it is the only one whose reload can be a
-    /// detail step — and the host cannot tell the two apart after the fact, because
-    /// by then the chips have already been refreshed.
+    /// The argument is the collection the asset LEFT, or `nil` when the edit took it
+    /// out of nothing (355). That is the collection a chip removed it from — and, for
+    /// an add, Unsorted, whenever the funnel evicted it there (356): filing an asset
+    /// IS unfiling it, so from the Unsorted feed an add is a departure like any other.
+    /// It has to be the argument rather than something the host infers, because by the
+    /// time the callback lands the chips have already been refreshed and the edit that
+    /// caused it is unrecoverable.
     var onMembershipChanged: ((_ removedFrom: UUID?) -> Void)?
 
     private let services: AppServices
@@ -107,13 +109,18 @@ final class AssetTagsStore: ObservableObject {
 
     /// Add the bound asset to `collection`, then reload the membership chips.
     /// Idempotent — an already-member asset is a no-op in the funnel.
+    ///
+    /// Filing into a real collection also EVICTS the asset from Unsorted (the F3
+    /// invariant, enforced in the same transaction), so this verb reports Unsorted as
+    /// what the asset left whenever the funnel says it did — which is what lets a page
+    /// opened from the Unsorted feed step instead of closing (356).
     func addToCollection(_ collection: Collection) {
         guard let assetID else { return }
         Task {
             do {
-                try await services.addAssets([assetID], to: collection.id)
+                let evicted = try await services.addAssets([assetID], to: collection.id)
                 reloadIfCurrent(assetID)
-                onMembershipChanged?(nil)
+                onMembershipChanged?(evicted.isEmpty ? nil : Collection.unsortedID)
             } catch {
                 lastError = "\(error)"
             }

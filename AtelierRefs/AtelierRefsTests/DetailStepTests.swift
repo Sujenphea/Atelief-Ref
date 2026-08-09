@@ -309,6 +309,19 @@ struct DetailStepIntentWiringTests {
         return (folder.id, ids)
     }
 
+    /// The same three items, in UNSORTED — the one feed an add can empty (356).
+    private func seededUnsorted(
+        _ model: IngestionModel, _ services: AppServices
+    ) async throws -> [UUID] {
+        let unsorted = Collection.unsortedID
+        let ids = try await CarouselRig.seedPost(
+            url: nil, count: 3, into: unsorted, services, hexSeed: 0)
+        try await services.setCollectionSortMode(.manual, for: unsorted)
+        try await services.setGridOrder(collectionID: unsorted, orderedAssetIDs: ids)
+        try await open(model, unsorted)
+        return ids
+    }
+
     /// ⌫ from the page captures the run AS IT IS, with the departing item's position
     /// in it — the whole reason the intent is state and not a boolean.
     @Test("the page's ⌫ arms an intent carrying the PRE-reload run and index")
@@ -593,5 +606,65 @@ struct DetailStepIntentWiringTests {
                 newRun: model.detailRun.map { $0.item.id },
                 runCollectionID: model.loadedCollectionID) == .step(runBefore[2]))
         #expect(model.loadedCollectionID == folder.id)
+    }
+
+    // MARK: - Unsorted, where an add is a removal (356)
+
+    /// **From Unsorted, filing the item IS taking it out of the feed.**
+    /// `AppServices.addAssets` drops the batch's Unsorted membership in the same
+    /// transaction (rule 1), so the chip's "add" ends with the shown item gone from the
+    /// run behind the page. It reaches the model as a departure from Unsorted — the
+    /// store reads the eviction off the funnel's return — and steps like any other.
+    @Test("an add out of Unsorted arms the step")
+    func addOutOfUnsortedArms() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededUnsorted(model, services)
+        let shown = model.detailRun[1]
+        let runBefore = model.detailRun.map { $0.item.id }
+        model.detailShownItemID = shown.item.id
+
+        model.reloadAfterMembershipChange(removedFrom: model.unsortedFolderID)
+
+        let intent = try #require(model.consumeDetailStepIntent())
+        #expect(intent.itemID == shown.item.id)
+        #expect(intent.index == 1)
+        #expect(intent.run == runBefore)
+        #expect(intent.collectionID == model.unsortedFolderID)
+    }
+
+    /// **⌥-dragging the page's picture onto a collection is the same trap.** It routes to
+    /// `copyToCollection` — a copy, which never empties its source anywhere except here.
+    /// The notice has always known (it says "Moved" out of Unsorted); now the step does.
+    @Test("an ⌥-drag copy out of Unsorted arms the step")
+    func copyOutOfUnsortedArms() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededUnsorted(model, services)
+        let target = try await services.createCollection(name: "Refs")
+        let shown = model.detailRun[2]
+        model.detailShownItemID = shown.item.id
+
+        model.copyToCollection(
+            assetIDs: [shown.asset.id], to: target.id, from: model.unsortedFolderID)
+
+        #expect(model.consumeDetailStepIntent()?.itemID == shown.item.id)
+        try await waitForDeparture(model, of: shown.item.id)
+        #expect(!model.detailRun.contains { $0.item.id == shown.item.id })
+    }
+
+    /// The same call from a REAL folder is what "copy" says on the tin — the item keeps
+    /// its membership here and the page has no reason to move.
+    @Test("a copy out of a real folder arms nothing")
+    func copyOutOfRealFolderArmsNothing() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededFolder(model, services)
+        let target = try await services.createCollection(name: "Elsewhere")
+        let shown = model.detailRun[1]
+        model.detailShownItemID = shown.item.id
+
+        model.copyToCollection(assetIDs: [shown.asset.id], to: target.id, from: nil)
+
+        #expect(model.consumeDetailStepIntent() == nil)
+        await model.waitForWrites()
+        #expect(model.detailRun.contains { $0.item.id == shown.item.id })
     }
 }

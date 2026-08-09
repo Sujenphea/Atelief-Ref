@@ -2249,11 +2249,12 @@ final class IngestionModel: ObservableObject {
     /// from the current folder, the `contentsVersion` bump drives the overlay's
     /// auto-dismiss, matching ``removeFromFolder(assetIDs:)``.
     ///
-    /// `removedFrom` names the collection a chip REMOVED the asset from (`nil` for an
-    /// add, and for the archive import that also calls this). When that collection is
-    /// the one the run belongs to, the chip is the page's ⌫ wearing different chrome —
-    /// the shown item is about to leave this feed because the user said so — so it
-    /// arms the same step (355). Everything else reloads exactly as it did.
+    /// `removedFrom` names the collection the chip took the asset OUT of — the one it
+    /// was removed from, or Unsorted when an ADD evicted it there (356; `nil` for the
+    /// archive import, which also calls this). When that collection is the one the run
+    /// belongs to, the chip is the page's ⌫ wearing different chrome — the shown item
+    /// is about to leave this feed because the user said so — so it arms the same step
+    /// (355). Everything else reloads exactly as it did.
     func reloadAfterMembershipChange(removedFrom collectionID: UUID? = nil) {
         guard services != nil else { return }
         if let collectionID, collectionID == loadedCollectionID, let shown = detailShownItemID {
@@ -2309,6 +2310,14 @@ final class IngestionModel: ObservableObject {
     /// filed there leaves the half that predated it alone.
     func copyToCollection(assetIDs: [UUID], to targetID: UUID, from source: UUID? = nil) {
         guard !assetIDs.isEmpty, services != nil else { return }
+        // The same invariant the notice's verb reads, applied to the detail page (356):
+        // out of Unsorted this "copy" is a departure, so an ⌥-drag of the page's picture
+        // onto a collection has to arm the step exactly as the plain drag does. The
+        // guard is the loaded folder, not `source` — a caller that passes no source
+        // (a Space board, a search hit) has no Unsorted feed behind it to leave.
+        if targetID != unsortedFolderID {
+            armDetailStepIfShown(assetIDs: assetIDs, leaving: unsortedFolderID)
+        }
         let verb = source == Collection.unsortedID ? "Moved" : "Added"
         let message = "\(verb) \(Self.itemCount(assetIDs.count)) to “\(name(for: targetID))”."
         // Shared by the forward pass and its inverse, so a redo re-records what the

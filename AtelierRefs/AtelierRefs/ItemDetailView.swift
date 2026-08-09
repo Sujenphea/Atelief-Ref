@@ -108,6 +108,16 @@ struct ItemDetailView: View {
     var allCollections: [Collection] = []
     var onAddToCollection: (Collection) -> Void = { _ in }
     var onRemoveFromCollection: (Collection) -> Void = { _ in }
+    /// **Move** the item to a collection — add it there and drop the one in view, as
+    /// ONE action (355). `nil` on a host with no collection context (a Space board, a
+    /// search hit), which hides the verb: there is nothing to move OUT of.
+    ///
+    /// It exists because "move this item" was two chips — add the target, remove the
+    /// current — and the two are no longer interchangeable in order. Removing first
+    /// takes the item out of the feed, which now steps the page to the next one, so
+    /// the add that followed landed on a picture the user had not chosen. One verb has
+    /// no order to get wrong, and it is a single undo.
+    var onMoveToCollection: ((Collection) -> Void)?
     /// Persist the item's Name / Note (041 · Details). Default no-ops keep older
     /// call sites compiling; every real host wires them to the funnel.
     var onSetName: (String) -> Void = { _ in }
@@ -212,6 +222,7 @@ struct ItemDetailView: View {
                     collections: collections, allCollections: allCollections,
                     onAddToCollection: onAddToCollection,
                     onRemoveFromCollection: onRemoveFromCollection,
+                    onMoveToCollection: onMoveToCollection,
                     onSetName: onSetName, onSetNote: onSetNote,
                     onOpenSource: actions.openSource)
                     .frame(width: 298)
@@ -937,6 +948,7 @@ private struct DetailSidebar: View {
     let allCollections: [Collection]
     let onAddToCollection: (Collection) -> Void
     let onRemoveFromCollection: (Collection) -> Void
+    let onMoveToCollection: ((Collection) -> Void)?
     let onSetName: (String) -> Void
     let onSetNote: (String) -> Void
     let onOpenSource: (() -> Void)?
@@ -953,6 +965,7 @@ private struct DetailSidebar: View {
                     collections: collections, allCollections: allCollections,
                     onAddToCollection: onAddToCollection,
                     onRemoveFromCollection: onRemoveFromCollection,
+                    onMoveToCollection: onMoveToCollection,
                     onSetName: onSetName, onSetNote: onSetNote)
             }
             .padding(Theme.Spacing.lg)
@@ -1056,6 +1069,7 @@ private struct DetailsSection: View {
     let allCollections: [Collection]
     let onAddToCollection: (Collection) -> Void
     let onRemoveFromCollection: (Collection) -> Void
+    let onMoveToCollection: ((Collection) -> Void)?
     let onSetName: (String) -> Void
     let onSetNote: (String) -> Void
 
@@ -1070,7 +1084,8 @@ private struct DetailsSection: View {
                 .id(asset.id)
             CollectionsField(
                 collections: collections, allCollections: allCollections,
-                onAdd: onAddToCollection, onRemove: onRemoveFromCollection)
+                onAdd: onAddToCollection, onRemove: onRemoveFromCollection,
+                onMove: onMoveToCollection)
             TagsField(tags: tags, onAddTag: onAddTag, onRemoveTag: onRemoveTag)
         }
     }
@@ -1118,8 +1133,18 @@ private struct CollectionsField: View {
     let allCollections: [Collection]
     let onAdd: (Collection) -> Void
     let onRemove: (Collection) -> Void
+    /// Move rather than add (355) — `nil` on a host with nothing to move out of, which
+    /// drops the segmented control and leaves the popover exactly as it was.
+    var onMove: ((Collection) -> Void)?
 
     @State private var showAdd = false
+    /// Which verb the popover's rows perform. Resets to `.add` on every open, so the
+    /// destructive-ish one is never the state you inherit from last time.
+    @State private var verb: Verb = .add
+
+    /// What a row in the destination list does. Two verbs, one list — the alternative
+    /// was two 240pt lists stacked in one popover.
+    private enum Verb: Hashable { case add, move }
 
     /// A real collection is ALWAYS removable — dropping its last real membership
     /// re-homes the asset to Unsorted (handled in the store), so it never orphans.
@@ -1127,6 +1152,20 @@ private struct CollectionsField: View {
     /// membership (there is nothing to fall back to).
     private func removable(_ c: Collection) -> Bool {
         c.id != Collection.unsortedID || collections.count > 1
+    }
+
+    /// Add / Move, above the shared destination list. A plain segmented `Picker`: the
+    /// two verbs act on the same rows, so the choice belongs to the LIST rather than to
+    /// each row, and duplicating every destination under two headings would double a
+    /// list that is already height-capped.
+    private var verbPicker: some View {
+        Picker("", selection: $verb) {
+            Text("Add to").tag(Verb.add)
+            Text("Move to").tag(Verb.move)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .help("Add keeps this item where it is; Move takes it out of the collection you're viewing")
     }
 
     var body: some View {
@@ -1145,20 +1184,30 @@ private struct CollectionsField: View {
                     DetailAddChip()
                 }
                 .buttonStyle(.plain).fixedSize()
-                .help("Add to a collection")
+                .help(onMove == nil ? "Add to a collection" : "Add to or move to a collection")
                 .popover(isPresented: $showAdd, arrowEdge: .bottom) {
-                    CollectionDestinationList(
-                        folders: allCollections, unsortedID: Collection.unsortedID,
-                        // The asset's OWN memberships are excluded rather than greyed:
-                        // they are already chips beside this trigger, so a greyed row
-                        // would say the same thing twice.
-                        excluded: Set(collections.map(\.id)),
-                        emptyTitle: "No other collections"
-                    ) { id in
-                        if let c = allCollections.first(where: { $0.id == id }) { onAdd(c) }
-                        showAdd = false
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                        // Only where a move MEANS something: the page has to be showing
+                        // this item inside a collection for there to be one to leave.
+                        if onMove != nil { verbPicker }
+                        CollectionDestinationList(
+                            folders: allCollections, unsortedID: Collection.unsortedID,
+                            // The asset's OWN memberships are excluded rather than greyed:
+                            // they are already chips beside this trigger, so a greyed row
+                            // would say the same thing twice. It reads for both verbs —
+                            // moving into a collection you are already in is the no-op an
+                            // add into it would be.
+                            excluded: Set(collections.map(\.id)),
+                            emptyTitle: "No other collections"
+                        ) { id in
+                            guard let c = allCollections.first(where: { $0.id == id })
+                            else { return }
+                            if verb == .move, let onMove { onMove(c) } else { onAdd(c) }
+                            showAdd = false
+                        }
                     }
                     .selectionMenuChrome()
+                    .onAppear { verb = .add }
                 }
 
                 ForEach(collections) { c in

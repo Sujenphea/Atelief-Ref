@@ -1154,7 +1154,16 @@ public final class AppServices: Sendable {
     ///   is SKIPPED. Un-triage is only meaningful for an asset with nowhere else
     ///   to live; filing something into Unsorted alongside its real folders is
     ///   exactly the state this invariant exists to prevent.
-    public func addAssets(_ assetIDs: [UUID], to collectionID: UUID) async throws {
+    ///
+    /// **Returns the assets this add EVICTED from Unsorted** — empty for every add
+    /// that did not (into Unsorted itself, or a batch that was already filed). The
+    /// first rule above means an "add" is also a removal for exactly one collection,
+    /// so a caller watching Unsorted cannot tell from the verb alone whether the
+    /// asset just left the feed in front of it (356). Reporting it here keeps that
+    /// rule stated once, where it runs, instead of mirrored by every client that
+    /// needs to know. `@discardableResult` — most callers legitimately don't care.
+    @discardableResult
+    public func addAssets(_ assetIDs: [UUID], to collectionID: UUID) async throws -> [UUID] {
         try await write { db in
             guard try Collection.exists(db, key: Self.key(collectionID)) else {
                 throw AtelierError.notFound(entity: "collection", id: collectionID)
@@ -1180,9 +1189,8 @@ public final class AppServices: Sendable {
                     order += 1
                 }
             }
-            if !intoUnsorted {
-                try Self.evictFromUnsorted(db, assetIDs: assetIDs)
-            }
+            guard !intoUnsorted else { return [] }
+            return try Self.evictFromUnsorted(db, assetIDs: assetIDs)
         }
     }
 
@@ -3296,13 +3304,21 @@ public final class AppServices: Sendable {
 
     /// Drop each listed asset's Unsorted membership — rule 1. Idempotent; a
     /// non-member is a no-op.
-    private static func evictFromUnsorted(_ db: Database, assetIDs: [UUID]) throws {
-        guard !assetIDs.isEmpty else { return }
+    ///
+    /// Returns the assets that ACTUALLY held one, which is not the input: the
+    /// caller passes a whole batch and most of it is usually filed already. The
+    /// rows are read before the delete because afterwards there is nothing left to
+    /// ask (356).
+    @discardableResult
+    private static func evictFromUnsorted(_ db: Database, assetIDs: [UUID]) throws -> [UUID] {
+        guard !assetIDs.isEmpty else { return [] }
         let keys = assetIDs.map(key)
-        try CollectionItem
+        let doomed = CollectionItem
             .filter(Column("collection_id") == key(Collection.unsortedID))
             .filter(keys.contains(Column("asset_id")))
-            .deleteAll(db)
+        let evicted = try doomed.fetchAll(db).map(\.assetID)
+        try doomed.deleteAll(db)
+        return evicted
     }
 
     /// Give each listed asset that now has NO membership at all an Unsorted one —

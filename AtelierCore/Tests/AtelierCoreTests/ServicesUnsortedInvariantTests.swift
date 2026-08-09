@@ -87,6 +87,36 @@ struct ServicesUnsortedInvariantTests {
         #expect(try await memberAssetIDs(services, of: unsorted).isEmpty)
     }
 
+    /// The eviction is the one thing about an add a caller cannot predict, so the add
+    /// reports it (356). A UI watching the Unsorted feed reads this to know its verb was
+    /// also a departure; guessing at it means a second copy of rule 1 in every client.
+    @Test("addAssets returns the assets it evicted from Unsorted — and only those")
+    func addReportsTheEviction() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let refs = try await services.createCollection(name: "Refs")
+        let moods = try await services.createCollection(name: "Moods")
+        let unfiled = try await seedAsset(services, into: unsorted, tag: "e")
+        let filed = try await seedAsset(services, into: refs.id, tag: "f")
+
+        // Mixed batch: only the unsorted one has a membership to lose.
+        #expect(try await services.addAssets([unfiled, filed], to: moods.id) == [unfiled])
+        // Nothing left to evict the second time round.
+        #expect(try await services.addAssets([unfiled, filed], to: moods.id).isEmpty)
+    }
+
+    /// Into Unsorted there is no eviction to report by construction — rule 1 only fires
+    /// on the way IN to a real collection.
+    @Test("addAssets into Unsorted reports no eviction")
+    func addIntoUnsortedReportsNothing() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let refs = try await services.createCollection(name: "Refs")
+        let asset = try await seedAsset(services, into: refs.id, tag: "g")
+
+        #expect(try await services.addAssets([asset], to: unsorted).isEmpty)
+    }
+
     @Test("a second real folder is additive — multi-membership still works")
     func addToSecondFolderKeepsBoth() async throws {
         let (services, temp) = try makeServices()

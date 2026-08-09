@@ -1276,6 +1276,19 @@ private struct CollectionDetailHost: View {
             allCollections: tags.allCollections,
             onAddToCollection: { tags.addToCollection($0) },
             onRemoveFromCollection: { tags.removeFromCollection($0) },
+            // Move as ONE action (355): through the model, not the tag store, because
+            // this is the same verb as the grid's Move to ▸ and a drag onto a sidebar
+            // collection — one transaction, one undo, and it arms the page's step via
+            // `armDetailStepIfShown` exactly as those do. Two chips (add there, remove
+            // here) can no longer do this safely: the remove steps the page, so the add
+            // that followed would land on the next item.
+            //
+            // Not offered in Unsorted (356): filing an asset unfiles it, so there Add
+            // IS Move — the same transaction under two labels. A picker whose sides do
+            // the same thing teaches the user a distinction that does not exist.
+            onMoveToCollection: model.loadedCollectionID == model.unsortedFolderID
+                ? nil
+                : { model.moveToCollection(assetIDs: [detail.asset.id], to: $0.id) },
             onSetName: { tags.setName($0) },
             onSetNote: { tags.setNote($0) },
             actions: ItemDetailActions(
