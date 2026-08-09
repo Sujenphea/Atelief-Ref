@@ -51,6 +51,50 @@ struct ItemDetailNavigator {
     let step: (Int) -> Void
 }
 
+/// The post this item belongs to (307/309): its members in post order, the open
+/// item's place in them, and a jump. `nil` for an ungrouped item, or a host with
+/// no grouping context (the Space board) — so the page is unchanged for the
+/// overwhelming majority of items.
+///
+/// Assembled by ONE pure factory, ``PostGroups/detailPost(forItem:thumbnailURL:jump:)``,
+/// rather than per host: the two grid-backed hosts reach post data differently
+/// (`CollectionView` reads `model.postGroups`, `LibrarySearch` builds its own), so
+/// "plumb it through both hosts" would mean writing the same derivation twice
+/// against different sources — the shape 316 was written to fix. Each host supplies
+/// only its own `jump`.
+struct ItemDetailPost {
+    /// 0-based, within the post — NOT within the feed. The pager beside it counts
+    /// the feed; this counts the post, and 070 §3.2 wants both said out loud.
+    let index: Int
+    /// Never `1`: ``PostGroups`` drops every group of one (`PostGrouping.swift:170`),
+    /// so a would-be single is simply ungrouped and this whole value is `nil`.
+    let memberCount: Int
+    /// The members' blob hashes in post order, MEDIA-LESS MEMBERS OMITTED (080 §7 —
+    /// since 310 a post's members can be a mix of kinds). So this is deliberately not
+    /// index-aligned with ``index``: the spread draws cards from it, it is not a
+    /// positional map of the post.
+    let blobHashes: [String]
+    /// Resolve a blob hash to its on-disk thumbnail URL — the shape ``FanCard`` takes,
+    /// and for its reason (080 §2.1): `AsyncThumbnail` keys its cache on the HASH, so
+    /// a bare `[URL?]` would miss the shared cache and re-decode every card.
+    let thumbnailURL: (String) -> URL?
+    /// The post's representative id — the same `detail.item.id` the collapsed tile
+    /// seeds its fan with (`MasonryGridItem.swift:731`), so the page's pile is the
+    /// pile the user clicked whenever the grid drew one.
+    let seed: UUID
+    /// Jump to the member at a post-relative index. **Clamped by the callee**, not the
+    /// caller: a reload can shrink the post while the page is open (080 §5 · T4.3).
+    let jump: (Int) -> Void
+}
+
+/// Whether the page draws its `⧉ N of M in this post` chip — the mirror of the
+/// cell's own ``MasonryGridItem/showsPostChip`` (`MasonryGridItem.swift:635`), pure
+/// so the rule is pinned without a view harness (080 §3.4 · "Visibility").
+///
+/// `> 1` rather than `> 0` even though ``PostGroups`` never reports 1: it is the
+/// rule the cell states, and stating it the same way twice is the point.
+nonisolated func showsPostChip(memberCount: Int) -> Bool { memberCount > 1 }
+
 /// The detail page's source / lifecycle actions. Each is optional so a caller can
 /// omit the ones that don't apply — a Space board, for instance, has no
 /// folder-membership to remove from.
@@ -116,6 +160,10 @@ struct ItemDetailView: View {
     let actions: ItemDetailActions
     /// Optional prev/next; `nil` hides the navigator (no ordered set).
     let navigator: ItemDetailNavigator?
+    /// The post this item came from (307/309), or `nil` — an ungrouped item, a host
+    /// with no grouping context, or grouping switched off. Defaulted so the Space
+    /// board's call site is untouched.
+    var post: ItemDetailPost? = nil
     /// Dismiss the page (Back button / Escape).
     let onClose: () -> Void
 
@@ -134,6 +182,15 @@ struct ItemDetailView: View {
     /// body pass, so no repeated `stat` during zoom/pan), `nil` for a media-less
     /// kind or a missing blob. Consumed by the media area's `.onDrag` at fit.
     @State private var exportItem: AssetExportItem?
+
+    /// The top bar's width in POINTS (080 §3.3). The pager is CENTRED over the
+    /// leading / trailing controls, so the only thing that decides whether the post
+    /// chip fits beside it is how much room the bar has left after the widest side
+    /// cluster — a number no amount of `ViewThatFits` can infer from inside a `ZStack`
+    /// that proposes the full width to its centred child. `0` until first layout,
+    /// which is read as "unconstrained" so the long form draws first and the measure
+    /// only ever narrows it.
+    @State private var topBarWidth: CGFloat = 0
 
     /// The media area's long side in POINTS, measured via `onGeometryChange` (036 §3
     /// B3). Combined with ``displayScale`` into the FIT pixel size reported through
@@ -259,9 +316,90 @@ struct ItemDetailView: View {
                 if let setFavorite = actions.setFavorite { favoriteButton(setFavorite) }
                 overflowMenu
             }
-            if let navigator { pager(navigator) }
+            topBarCentre
         }
         .padding(Theme.Spacing.md)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            if abs(topBarWidth - width) > 0.5 { topBarWidth = width }
+        }
+    }
+
+    /// The centred cluster: the feed pager, and — when the item came from a post —
+    /// the post chip beside it (070 §3.2). Two counters deliberately: the pager is
+    /// the FEED position, the chip is the POST position, and neither can express the
+    /// other's scope.
+    ///
+    /// ``ViewThatFits`` picks the widest form that survives ``centredBudget``, so the
+    /// long copy degrades to `⧉ 2/4` and finally to the bare pager rather than growing
+    /// the centred element into the trailing star and overflow menu (080 §3.3). The
+    /// last candidate is today's layout exactly, which is also what a bar too narrow
+    /// for any chip gets.
+    @ViewBuilder
+    private var topBarCentre: some View {
+        if let post, showsPostChip(memberCount: post.memberCount) {
+            ViewThatFits(in: .horizontal) {
+                centreCluster(post: post, short: false)
+                centreCluster(post: post, short: true)
+                centreCluster(post: nil, short: false)
+            }
+            .frame(maxWidth: topBarWidth > 0 ? centredBudget : nil)
+        } else if let navigator {
+            pager(navigator)
+        }
+    }
+
+    /// The widest the centred cluster may draw before it collides with the chrome on
+    /// either side.
+    ///
+    /// It is CENTRED, so it grows symmetrically and meets whichever side cluster is
+    /// wider at `width / 2 − cluster`. The reserve is a constant rather than a second
+    /// and third measurement: the leading "Back" pill is the wider side and is fixed
+    /// copy, and erring generous costs only the long form arriving a little late on a
+    /// narrow window — where the short form is the honest answer anyway.
+    private static let sideClusterReserve: CGFloat = 104
+    private var centredBudget: CGFloat {
+        max(0, topBarWidth - 2 * (Self.sideClusterReserve + Theme.Spacing.sm))
+    }
+
+    private func centreCluster(post: ItemDetailPost?, short: Bool) -> some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            if let navigator { pager(navigator) }
+            if let post { postChip(post, short: short) }
+        }
+    }
+
+    /// `⧉ 2 of 4 in this post` — the grid's carousel chip, said in words, beside the
+    /// pager (080 §3.3).
+    ///
+    /// A second RENDERER of ``PostChipStyle``, not a reuse of ``PostBadge``: that one
+    /// is an `NSImage` cached by COUNT, and this copy is not a bare count. Every token
+    /// it draws with is shared, so the two chips cannot drift.
+    ///
+    /// Informational, like the grid's own favourite star — the chip does not jump. The
+    /// post is walked with ← / → (316), and random access is the spread's job (080 §6,
+    /// increment 3).
+    private func postChip(_ post: ItemDetailPost, short: Bool) -> some View {
+        let position = "\(post.index + 1)", total = "\(post.memberCount)"
+        return HStack(spacing: PostChipStyle.glyphGap) {
+            Image(systemName: PostChipStyle.glyph)
+                .font(.system(size: PostChipStyle.glyphPointSize, weight: PostChipStyle.weight))
+            Text(short ? "\(position)/\(total)" : "\(position) of \(total) in this post")
+                .font(.system(size: PostChipStyle.labelPointSize, weight: PostChipStyle.weight))
+                // The count ticks 9 → 10 as the run walks a long carousel; proportional
+                // digits would resize the capsule mid-step.
+                .monospacedDigit()
+                .lineLimit(1)
+                // Ideal width, always — `ViewThatFits` measures the candidate, and a
+                // `Text` that is willing to truncate would report that it "fits" at
+                // any width and the short form would never be chosen.
+                .fixedSize()
+        }
+        .foregroundStyle(PostChipStyle.contents)
+        .padding(.horizontal, PostChipStyle.horizontalPadding)
+        .frame(height: PostChipStyle.height)
+        .background(PostChipStyle.capsule, in: Capsule())
+        .help("Item \(position) of \(total) from the same post")
+        .accessibilityLabel("Item \(position) of \(total) from the same post")
     }
 
     /// The favorite star (011 · U5) — a top-bar pill beside the overflow menu, so

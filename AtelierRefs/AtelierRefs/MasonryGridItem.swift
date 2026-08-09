@@ -152,6 +152,59 @@ func fanPileGeometry(
     return (min(max(minInset, needed), max(1, ceiling)), degrees)
 }
 
+// MARK: - Carousel chip tokens (307 · carousel grouping, 080 §3.3)
+
+/// The `⧉ N` chip's look, in ONE place, because it is now drawn twice.
+///
+/// The grid's chip is an `NSImage` cached by count (``PostBadge``) and the detail
+/// page's is live SwiftUI (`ItemDetailView.postChip`) — two renderers by necessity,
+/// not by accident: 080 §3.3 rejected generalising `PostBadge` to cache by string
+/// (it breaks that cache's documented safety argument, and hands SwiftUI a
+/// fixed-scale bitmap tracking neither `displayScale` nor Dynamic Type) and rejected
+/// hosting SwiftUI in the cell (036 §2 A1 — the cell exists precisely so it doesn't).
+/// So the SPEC is extracted instead: change a number here and both chips move.
+///
+/// Split AppKit / SwiftUI exactly as ``Theme`` splits ``Theme/NS`` from
+/// ``Theme/Colors`` — the geometry and the glyph are unit-free and shared, only the
+/// typed colours and weights fork.
+enum PostChipStyle {
+    /// The capsule's height. ``FavoriteBadge/side`` matches it so a cell carrying
+    /// both marks reads as one family.
+    static let height: CGFloat = 18
+    /// The stacked-squares glyph — the `⧉` of "⧉ N".
+    static let glyph = "square.on.square"
+    static let glyphPointSize: CGFloat = 10
+    static let labelPointSize: CGFloat = 11
+    /// Padding inside the capsule, per side.
+    static let horizontalPadding: CGFloat = 6
+    /// The gap between the glyph and the count.
+    static let glyphGap: CGFloat = 3
+
+    /// A WHITE capsule with dark contents, the same inversion the selection
+    /// checkmark uses (a black tick on a white-filled circle): a solid light chip
+    /// carries its own contrast on any artwork, where a translucent dark one
+    /// disappeared into a dark photo.
+    static let capsule = Theme.Colors.selectionMark
+    static let contents = Theme.Colors.mediaBackdrop
+    /// Semibold at these sizes — the chip is small and sits on arbitrary artwork.
+    static let weight: Font.Weight = .semibold
+
+    /// The same tokens in AppKit types, for the pre-rendered cell chip.
+    enum NS {
+        static let capsule = Theme.NS.selectionMark
+        static let contents = Theme.NS.mediaBackdrop
+        static let weight: NSFont.Weight = .semibold
+        static var symbolConfiguration: NSImage.SymbolConfiguration {
+            NSImage.SymbolConfiguration(
+                pointSize: PostChipStyle.glyphPointSize, weight: weight)
+        }
+        /// Monospaced digits so a count ticking 9 → 10 doesn't reflow the capsule.
+        static var labelFont: NSFont {
+            .monospacedDigitSystemFont(ofSize: PostChipStyle.labelPointSize, weight: weight)
+        }
+    }
+}
+
 // MARK: - Carousel badge (307 · carousel grouping)
 
 /// The "N items from this post" chip painted into a cell's top-leading corner.
@@ -174,7 +227,6 @@ enum PostBadge {
     /// on an appearance change or it will serve stale pixmaps.
     private static var cache: [Int: NSImage] = [:]
 
-    static let height: CGFloat = 18
     /// The inset from the cell's top-leading corner (the selection circle owns
     /// the opposite corner, so the two never collide).
     static let inset: CGFloat = 6
@@ -192,33 +244,32 @@ enum PostBadge {
         return made
     }
 
+    /// Every number and tone here comes from ``PostChipStyle`` (080 §3.3) so the
+    /// page's live chip and this pixmap cannot drift; the DRAWING is still bespoke,
+    /// because a cached bitmap is the whole point of the cell path.
     private static func render(count: Int) -> NSImage? {
-        let symbolConfig = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
         guard let glyph = NSImage(
-            systemSymbolName: "square.on.square", accessibilityDescription: nil)?
-            .withSymbolConfiguration(symbolConfig) else { return nil }
+            systemSymbolName: PostChipStyle.glyph, accessibilityDescription: nil)?
+            .withSymbolConfiguration(PostChipStyle.NS.symbolConfiguration) else { return nil }
 
+        let height = PostChipStyle.height
         let text = "\(count)" as NSString
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: Theme.NS.mediaBackdrop,
+            .font: PostChipStyle.NS.labelFont,
+            .foregroundColor: PostChipStyle.NS.contents,
         ]
         let textSize = text.size(withAttributes: attributes)
-        let hPad: CGFloat = 6, gap: CGFloat = 3
+        let hPad = PostChipStyle.horizontalPadding, gap = PostChipStyle.glyphGap
         let width = (hPad * 2 + glyph.size.width + gap + textSize.width).rounded(.up)
         let size = NSSize(width: width, height: height)
 
         let image = NSImage(size: size)
         image.lockFocusFlipped(false)
-        // A WHITE capsule with dark contents, the same inversion the selection
-        // checkmark uses (a black tick on a white-filled circle): a solid light chip
-        // carries its own contrast on any artwork, where a translucent dark one
-        // disappeared into a dark photo.
-        Theme.NS.selectionMark.setFill()
+        PostChipStyle.NS.capsule.setFill()
         NSBezierPath(roundedRect: NSRect(origin: .zero, size: size),
                      xRadius: height / 2, yRadius: height / 2).fill()
         glyph.isTemplate = true
-        Theme.NS.mediaBackdrop.set()
+        PostChipStyle.NS.contents.set()
         let glyphRect = NSRect(
             x: hPad, y: ((height - glyph.size.height) / 2).rounded(),
             width: glyph.size.width, height: glyph.size.height)
@@ -257,7 +308,7 @@ enum FavoriteBadge {
     /// event can change it.
     private static var cached: NSImage?
 
-    /// Matches ``PostBadge/height`` so a cell carrying both reads as one family.
+    /// Matches ``PostChipStyle/height`` so a cell carrying both reads as one family.
     static let side: CGFloat = 18
     /// The inset from the cell's bottom-leading corner — `PostBadge`'s, mirrored.
     static let inset: CGFloat = 6

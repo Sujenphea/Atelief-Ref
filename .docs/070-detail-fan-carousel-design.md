@@ -1,5 +1,11 @@
 # 070 — The detail page says "this is a carousel"
 
+**Superseded in part by [080](./080-detail-fan-carousel-plan.md)**, which is the
+settled plan. 080 corrects three statements below that are not true of this codebase
+— §3.4's `[URL?]` member list, the §3.1 / §3.4 disagreement about whether the resting
+pile carries artwork, and §5.2's zoom gate — and adds the test plan this doc has
+none of. Read this for the reasoning; build from 080.
+
 > An exploration, not yet a commitment. Once [069](./069-detail-arrows-plan.md) makes
 > prev/next walk the post, the page still gives no sign that a post is what you are
 > walking. Bring the grid's fanned pile onto the detail page so the carousel is obvious
