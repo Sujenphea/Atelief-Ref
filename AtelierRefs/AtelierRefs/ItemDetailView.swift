@@ -373,6 +373,21 @@ struct ItemDetailView: View {
             HStack(spacing: 0) {
                 mediaArea
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // The zoom's surface, and the whole reason this clip is HERE rather
+                    // than inside `ZoomableImage` where it started: a zoomed picture may
+                    // grow across the entire pane, right up to the sidebar's divider and
+                    // the top bar's. Clipped one level in, it could only ever fill the
+                    // rect it occupied at fit.
+                    //
+                    // The `lg` inset the picture is FITTED into is unchanged — it lives
+                    // on `mediaArea`'s own padding, inside this clip — so the pile, the
+                    // spread and the zoom controls still align to the same rect
+                    // (``mediaContentSize``). Only the growing does not stop there.
+                    //
+                    // Before the backgrounds and overlays on purpose: each is added
+                    // after this and so is NOT clipped, which keeps the pile's deliberate
+                    // 12pt swing-out past the artwork (080 §3.4).
+                    .clipped()
                     // The art's stable dark ground, a shade below the panel: a light
                     // image and a dark one then sit on the same tone instead of the
                     // image's own edges reading as part of the chrome. `mediaBackdrop`
@@ -1217,14 +1232,27 @@ private struct ZoomableImage: View {
             .offset(
                 x: pan.width + dragTranslation.width,
                 y: pan.height + dragTranslation.height)
+            // **No clip here, and no aspect-sized bounds to clip to.** This view used to
+            // end in `.clipped()`, which clips to the view's own LAYOUT bounds — and
+            // `.aspectRatio(contentMode: .fit)` makes those bounds the FIT rect, since
+            // `scaleEffect` is a render-time transform and never widens them. So a zoomed
+            // picture was trimmed back into the window it occupied at fit: the letterbox
+            // bars stayed empty however far you zoomed. The clip now lives on the media
+            // pane (`:390`), which is the surface the picture is allowed to grow across.
+            //
+            // The frame stays for the OTHER half of that bug: the hit shape was the fit
+            // rect too, so a pan that began in the letterbox bars missed the image
+            // entirely. It expands to `mediaArea`'s inset box — the picture still fits
+            // that box, which is what ``ItemDetailView/mediaContentSize`` and therefore
+            // the pile and the spread are laid against.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
             .gesture(magnify)
             .simultaneousGesture(dragToPan)
             .onTapGesture(count: 2) {
                 withAnimation(.spring(duration: 0.25)) { zoom = 1; pan = .zero }
             }
             .animation(.interactiveSpring, value: zoom)
-            .contentShape(Rectangle())
-            .clipped()
     }
 
     private var magnify: some Gesture {
