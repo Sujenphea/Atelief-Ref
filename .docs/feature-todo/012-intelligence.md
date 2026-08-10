@@ -19,8 +19,19 @@
 | I6 feature-print similarity | **shipped early** | `AssetEmbedding` + schema **v14** dense-vector search, `ServicesEmbeddingTests`, `ServicesSemanticSearchTests`. Marked "deliberately v2" below; it landed anyway |
 
 Live remainder: **I3's accept/dismiss/suppress semantics** and **I4's swatch row
-+ color filter**. Both are UI on top of data that is already being computed and
-stored — no analyzer work, no schema.
++ color filter**.
+
+**I4 is UI on top of data that is already computed and stored** — `colors` is
+populated for every analyzed asset. Planned in
+[085](../085-color-filter-plan.md); it needs one additive table (v21) to make the
+data filterable in SQL, but no analyzer work.
+
+**I3 is not** — that claim was wrong when written (corrected 2026-08-11).
+*Nothing in the tree produces an agent tag.* The only `.agent` references are the
+two rendering sites that would draw a sparkle if one existed
+(`ItemDetailView.swift:1915`, `LibrarySearch.swift:642`). I3 needs the suggestion
+producer built before accept/dismiss/suppress has anything to act on, which makes
+it materially larger than an accept/dismiss UI.
 
 The suppression memory (a dismissed suggestion that must survive an
 `analyzer_version` bump) is the only piece with a real design question left in
