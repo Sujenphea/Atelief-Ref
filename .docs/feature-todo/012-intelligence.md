@@ -5,7 +5,28 @@
 > machine tags **suggest, never self-apply** — the user confirms. OCR text and
 > color data are passive indexes and need no confirmation.
 
-## Current state (verified)
+## Status (re-verified against the tree 2026-08-10)
+
+**Four of six phases have shipped, including the one this doc deferred to v2.**
+
+| Phase | State | Where |
+|---|---|---|
+| I1 analyzer plumbing | **shipped** | schema **v7** `asset_analysis` (`ocr_text` / `colors` / `phash` / `analyzer_version` + its index), `AnalysisCoordinator.swift`, `AssetAnalysis.swift`, `ServicesAnalysisTests` |
+| I2 OCR into search | **shipped** | `analysis_fts`, external-content synchronized with `asset_analysis` via triggers (`Migrator.swift:803-811`); scored into the search union at `AppServices.swift:2722` |
+| I3 suggested tags | **rendering only** | agent tags render as a sparkle chip (`ItemDetailView.swift:1894`, `tag.source == .agent`). **No accept, no dismiss, no suppression memory exists** — the half that makes suggest-and-confirm real is unbuilt |
+| I4 color | **computed, never surfaced** | `colors` is populated by the backfill and decodes via `ColorSwatch.decodeList`, but nothing displays a swatch row and no color filter exists. The app's `ColorSwatchTile` / `ColorSwatchWell` are the *color-kind* UI (`AddColorForm`), a different feature |
+| I5 duplicates review | **shipped** | `DuplicateReviewController.swift` + `DuplicateReviewSheet.swift`, `ServicesDuplicateHashesTests`, `DuplicateReviewControllerTests` |
+| I6 feature-print similarity | **shipped early** | `AssetEmbedding` + schema **v14** dense-vector search, `ServicesEmbeddingTests`, `ServicesSemanticSearchTests`. Marked "deliberately v2" below; it landed anyway |
+
+Live remainder: **I3's accept/dismiss/suppress semantics** and **I4's swatch row
++ color filter**. Both are UI on top of data that is already being computed and
+stored — no analyzer work, no schema.
+
+The suppression memory (a dismissed suggestion that must survive an
+`analyzer_version` bump) is the only piece with a real design question left in
+it, and it is the one this doc's risk list already flags.
+
+## Current state at the time of writing (historical — see Status above)
 
 - `TagSource.agent` has existed in the schema since v1 and is **used nowhere** —
   the data model anticipated this feature.
@@ -69,13 +90,19 @@ tags reuse `asset_tag` unchanged.
 
 ## Phased implementation
 
-1. **I1 (M)** — analyzer plumbing: table, versioned backfill queue, injectable
-   Vision seam, dHash + k-means pure implementations.
-2. **I2 (S–M)** — OCR into the search union ([007] G1 must exist).
-3. **I3 (M)** — suggestion chips in 006 + accept/dismiss/suppress semantics.
-4. **I4 (S–M)** — color swatches + color filter conjunct.
-5. **I5 (M)** — duplicates review surface.
-6. **I6 (v2)** — feature-print similarity browse.
+1. ~~**I1 (M)** — analyzer plumbing.~~ **Shipped** (v7).
+2. ~~**I2 (S–M)** — OCR into the search union.~~ **Shipped** (`analysis_fts`).
+3. **I3 (S–M now) — accept / dismiss / suppress.** The chips render already; what
+   is missing is the interaction: one click accepts (source flips `.agent` →
+   `.user`), ✕ dismisses (row deleted **plus** a suppression memory), and the
+   suppression must survive an `analyzer_version` bump or every re-analysis
+   resurrects what the user rejected. That last clause is the whole design.
+4. **I4 (S–M) — color swatches + color filter conjunct.** Data is already stored;
+   this is a swatch row in detail plus one WHERE conjunct in the search builder.
+   Note it must land as a **conjunct**, not a post-filter, for the same paging
+   reason [023](023-archive-and-second-library.md) settles for `archived_at`.
+5. ~~**I5 (M)** — duplicates review surface.~~ **Shipped.**
+6. ~~**I6 (v2)** — feature-print similarity browse.~~ **Shipped** (v14).
 
 ## Test strategy
 
@@ -100,7 +127,7 @@ tags reuse `asset_tag` unchanged.
 - OCR on video: poster frame only in v1 (frame sampling is v2 cost).
 - Dismissed-suggestion memory must survive re-analysis (`analyzer_version` bump
   must not resurrect dismissed tags).
-- `asset_analysis` is derived data — excluded from [008] export (recomputable),
+- `asset_analysis` is derived data — excluded from [081](../081-backup-plan.md) export (recomputable),
   included in snapshots (it's in the DB anyway).
 
 ## Settled decisions

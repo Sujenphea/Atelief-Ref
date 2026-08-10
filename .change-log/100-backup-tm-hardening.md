@@ -2,7 +2,7 @@
 
 Fulfills the `LibraryLayout` doc-comment's long-standing promise that
 `thumbnails/` is "excluded from backups" — nothing implemented it until now
-([008-backup](../.docs/feature-todo/008-backup.md), H2).
+([081-backup](../.docs/081-backup-plan.md), H2).
 
 ## Summary
 

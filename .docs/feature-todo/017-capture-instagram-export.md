@@ -6,6 +6,13 @@
 > 2026-07-15** (review issue 4/4A) because the path the original plan assumed is a
 > dead end — see §Why this is its own feature.
 
+## Status (re-verified 2026-08-10)
+
+**Not started, still blocked, and the blocker is unchanged**: no fresh
+`saved_posts.json` from the user's account has been obtained, so the 2026 schema
+remains unverified. Nothing in the tree references it. This doc is correct as
+written — it is the one backlog entry that has not drifted.
+
 ## Why this is its own feature (not an "S" parser)
 
 The 002 draft said: parse `saved_posts.json` → URL list → "feed through 001's

@@ -63,7 +63,7 @@ re-baselined to as-built reality in the same change.
 - Tests: `AtelierCore/Tests/AtelierCoreTests/PreMigrationSnapshotTests.swift`,
   `…/SQLiteFileSetTests.swift` (new),
   `AtelierRefs/AtelierRefsTests/SnapshotManagerTests.swift`.
-- Docs: `.docs/feature-todo/008-backup.md` re-baselined (status, as-built
+- Docs: `.docs/081-backup-plan.md` re-baselined (status, as-built
   deviations, H4–H7 respec, review decision log).
 
 ## Migration notes

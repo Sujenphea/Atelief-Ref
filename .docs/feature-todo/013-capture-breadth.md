@@ -5,7 +5,32 @@
 > screenshot hotkey and an iOS share-sheet companion were considered and **not
 > selected** — recorded below so the map stays closed.
 
-## Current state (verified)
+## Status (re-verified against the tree 2026-08-10)
+
+| Phase | State | Where |
+|---|---|---|
+| K1 `extension/` restructure | **not started** | `extension/src/` is still flat — ~30 sibling files, no `shared/`, no `chrome/` |
+| K2 Safari target + glue | **not started** | no Safari Web Extension target; `CaptureAuth` knows no `safari-web-extension://` origin form |
+| K3 clipboard watcher | **shipped** | `ClipboardWatcher.swift`, `ClipboardWatch.swift`, `ClipboardWatchTests` (the pure decision core, as specced) |
+
+K3 was the independent phase and it landed. The remainder is **A** — the Safari
+line, K1 then K2 — and it carries two costs this doc already names: K1 is a pure
+refactor with no user-visible payoff, and K2 pulls in App Store review even for a
+notarized app's bundled extension.
+
+Two things worth settling before K1 is scheduled:
+
+- **The restructure only gets more expensive.** Every capture platform added
+  first (e.g. [020](020-capture-rednote.md)'s `rednote-hook.js` +
+  `bulk-rednote.js`) is another file to move — though at +2 files the marginal
+  cost is genuinely small, so this is a weak argument for doing K1 *first*.
+- **K2 weakens the origin check by design.** The Safari extension origin carries
+  a per-install UUID, so `CaptureAuth` would match on **scheme only**, leaving
+  the 256-bit token as the sole real barrier. That is defensible and mirrors the
+  shipped G17 posture, but it is a security decision that should be taken
+  explicitly rather than discovered in a diff.
+
+## Current state at the time of writing (historical — see Status above)
 
 - Capture is Chrome-only: MV3 extension (`extension/`, vanilla JS, ~270
   `node --test` tests) → loopback `AtelierServer` (`:47321`) with Origin
@@ -67,7 +92,7 @@ work).
 - **Screenshot hotkey** (global region-capture → library): evaluated, not chosen.
   Cheapest of the four if demand appears later (ScreenCaptureKit + hotkey).
 - **iOS share-sheet companion**: an entire iOS app + a transport, compounded by
-  multi-Mac sync being a non-goal ([008] note). Revisit only if mobile capture
+  multi-Mac sync being a non-goal ([081](../081-backup-plan.md) note). Revisit only if mobile capture
   becomes a real habit.
 
 ## Schema / migration impact
@@ -78,11 +103,13 @@ whole capture DTO path.
 ## Phased implementation
 
 1. **K1 (M)** — `extension/` restructure into `shared/` + `chrome/` (pure
-   refactor, all tests green before any Safari code).
+   refactor, all tests green before any Safari code). **Outstanding.**
 2. **K2 (M)** — Safari target + glue + `CaptureAuth` origin form + pairing UX.
-3. **K3 (S–M)** — clipboard watcher + menu-bar indicator + Settings toggle.
+   **Outstanding**, and gated on the scheme-only origin decision above.
+3. ~~**K3 (S–M)** — clipboard watcher + menu-bar indicator + Settings toggle.~~
+   **Shipped.**
 
-K3 is independent of K1/K2.
+K3 was independent of K1/K2, which is why it went first.
 
 ## Test strategy
 

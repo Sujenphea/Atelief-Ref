@@ -1,6 +1,6 @@
 # 101 — Backup: pre-migration snapshot hook + naming (008 H3a)
 
-The automatic safety net for migrations ([008-backup](../.docs/feature-todo/008-backup.md),
+The automatic safety net for migrations ([081-backup](../.docs/081-backup-plan.md),
 H3): opening a library whose on-disk schema is behind copies it aside as a
 `pre-migration-…` snapshot before migrating — a recovery point in case a schema
 migration corrupts data. This is the protection the risky 003 rebuild (and every

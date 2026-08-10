@@ -86,7 +86,7 @@ Three of everything: ingest paths, joins, renderers, dedup rules. Anti-DRY. **Re
 
 **Migration sequencing (cross-doc):** this rebuild, [005](./031-spaces-overview.md)'s space
 tables, and [007](./007-search-sort.md)'s columns are three separate append-only
-migrations, numbered by actual ship order. Take an [008](./feature-todo/008-backup.md) snapshot
+migrations, numbered by actual ship order. Take an [081](./081-backup-plan.md) snapshot
 before each once snapshots exist — this rebuild is the single riskiest migration in the
 roadmap and is the strongest argument for shipping 008's snapshot early.
 

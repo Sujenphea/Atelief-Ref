@@ -7,7 +7,28 @@
 > [029](../029-capture-instagram-bulk-overview.md) (the carousel-shaped precedent),
 > [028](../028-capture-link-resolution-overview.md) (the junk-card stopgap in C).
 
-## Current state (verified)
+## Status (re-verified against the tree 2026-08-10)
+
+| Phase | State | Where |
+|---|---|---|
+| K1 `PageResolver` walled-host stopgap | **shipped** | the live junk-card bug is fixed — a pasted rednote link now says "capture with the extension" instead of saving a `"Web - rednote"` card |
+| K2 platform + single-note capture | **shipped** | `rednote` exists as a platform, and schema **v18** (`Migrator.swift:162`) re-tagged the pre-platform harvest — closing Open question 1 as **yes, re-tag**, the recommended answer |
+| K3 bulk board sweep | **not started, BLOCKED** | no `rednote-hook.js`, no `bulk-rednote.js` in `extension/src/` |
+| K4 video stream ladder | **not started** | depends on K3's driver seam |
+
+**K3 is blocked on Open question 3 and that blocker is unchanged**: the sample
+board never fired a page-2 request, so the paginated board-feed response shape is
+still unverified. A board with **more than 30 notes** is the single input the
+driver most depends on, and it can only be captured out-of-band from a logged-in
+session (save the response via DevTools into the gitignored `resources/`, then
+run `node scripts/drift-check.js`).
+
+Because K4 sits behind K3's seam, "do rednote next" is not currently an
+available choice — **capturing that fixture is the next action on this doc**, not
+writing code. Everything else here (§A's interception design, §B's three video
+rules, the fixtures and drift-canary plan) is ready to build the moment it lands.
+
+## Current state at the time of writing (historical — see Status above)
 
 - **Unsupported everywhere.** `extractors/registry.js:36` registers only
   `twitter, pinterest, instagram, cosmos, web`; rednote is absent from
@@ -114,14 +135,13 @@ Optional backfill of the 145 already-harvested assets — see Open question 1.
 
 ## Phased implementation
 
-1. **K1 (S)** — `PageResolver` walled-host stopgap. Independent; ship immediately.
-2. **K2 (M)** — Swift enum + `media-hosts` + manifest + `extractors/rednote.js`
-   → single-note right-click capture works end to end.
+1. ~~**K1 (S)** — `PageResolver` walled-host stopgap.~~ **Shipped.**
+2. ~~**K2 (M)** — Swift enum + `media-hosts` + manifest + `extractors/rednote.js`.~~
+   **Shipped**, with v18 re-tagging the earlier harvest.
 3. **K3 (L)** — `rednote-hook.js` + `bulk-rednote.js` + `bulk-context` → image
-   sweep. **Blocked on the pagination fixture** (Open question 3).
+   sweep. **Blocked on the pagination fixture** (Open question 3) — see Status.
 4. **K4 (M)** — video ladder module + codec selection + `thumbnailFailed` retry.
-
-K1 is independent of everything. K4 depends on K3's driver seam.
+   Depends on K3's driver seam, so blocked transitively.
 
 ## Test strategy
 
@@ -171,10 +191,8 @@ K1 is independent of everything. K4 depends on K3's driver seam.
 
 ## Open questions
 
-1. **Backfill?** The 145 assets from the 2026-07-31 run are tagged
-   `platform: web` + `rawMetadata.source = "rednote"`. Once `rednote` exists as a
-   platform, do we re-tag them (a one-shot UPDATE, recommended) or leave them as
-   historical `web` rows?
+1. ~~**Backfill?**~~ **Answered: re-tagged.** Schema v18 (`Migrator.swift:162`)
+   ran the one-shot UPDATE over the 2026-07-31 harvest.
 2. **Live Photos in scope?** `imageList` entries carry `livePhoto` and `stream`
    fields — some *stills* on non-video notes have motion attached. Never captured,
    never scoped. Recommend deferring to a follow-up.

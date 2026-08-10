@@ -6,6 +6,32 @@
 > Archive is small and should be built; the second library is [016] §C, still
 > deferred, and this doc says what archive must not do to it.
 
+## Status: next up (review-settled 2026-08-10)
+
+Not started. Selected as the next feature to build after a pass over the whole
+backlog: it is the only sizeable item with **no blocker** — [020](020-capture-rednote.md)
+K3 waits on a pagination fixture, [017](017-capture-instagram-export.md) waits on
+a Meta export, [013](013-capture-breadth.md) K2 waits on App Store appetite, and
+[016](016-library-management.md) L3 / [011](011-ux-features.md) U4·U6 /
+[012](012-intelligence.md) I3·I4 are all smaller.
+
+Sixteen decisions from that review are inlined below rather than left as prose to
+rediscover. The short version:
+
+| # | Decision |
+|---|---|
+| Naming | **`Shelf` in Swift, `archived_at` in SQL, "Archived" in the UI** |
+| Reads | `includeArchived` is **non-defaulted** on each funnel — a new read must not compile without deciding |
+| DRY | Extract the duplicated cover/preview query pairs **first**, so the predicate is added once |
+| Home counts | Scope the count aggregate to the roots already fetched, while that query is open |
+| Search | The predicate is a **WHERE conjunct**, never a post-filter (paging) |
+| Index | The partial index **ships with v20**, not "later if slow" |
+| Verbs | A `ShelfController` beside the other feature controllers, not inside `IngestionModel` |
+| Intent | A pure `ShelfIntent` for verb availability, tested like `DeleteIntent` |
+| Tests | Source-scan allowlist **+** behavioural absence tests **+** full-fidelity round trip **+** manifest exhaustiveness guard |
+| Measurement | Extend `ScaleHarnessTests` with a seeded-archived variant |
+| Scope | **Assets only** in v1; Space tiles vanish and return; **never** auto-purge |
+
 ## Current state (verified)
 
 - **No archive concept anywhere.** `AtelierCore/Persistence/` has no `archived`,
@@ -18,7 +44,7 @@
   - Unsorted — the opposite of an archive (a to-do pile).
 - "Archive" is already a **taken word** in this codebase and means something else:
   `LibraryArchive` / `LibraryArchiveWriter` / `ArchiveExportController` are
-  [008]'s portable `.atelier` backup bundle. **Do not overload it.** Use *Shelf*,
+  [081](../081-backup-plan.md)'s portable `.atelier` backup bundle. **Do not overload it.** Use *Shelf*,
   *Archived*, or *Vault* in code; user-facing copy can still say "Archived" if the
   export surface is renamed to "Backup" consistently.
 - **Second library**: [016] §C already records the seams (`LibraryLayout` root is
@@ -40,18 +66,73 @@ offer.
 Same cost, and it buys the sort order ("recently archived" first), the "archived
 3 months ago" copy, and any future auto-purge policy, for free.
 
-Reads: one predicate, added at **the funnels, not the call sites** —
+### Code name (settled)
 
-- `collectionItems(...)`, the [P14] joined read behind every grid;
-- the space content read;
-- [003]'s `asset_fts` search query;
-- the Collections gallery / space fan previews and their counts.
+**`Shelf` in Swift, `archived_at` in SQL, "Archived" in the UI.** `LibraryArchive`
+and friends keep meaning the backup bundle; nothing is renamed. The column name
+stays as specced because [081](../081-backup-plan.md)'s manifest field references
+it, and the Swift-vs-SQL naming split already exists throughout this schema.
 
-The rule is `archived_at IS NULL` **unless the caller is the Archived surface**,
-so it rides one `includeArchived: Bool = false` parameter through the read layer.
-Getting this wrong in one place is how an archived item resurfaces in a count but
-not a grid, so the parameter must be on the funnel signature, not defaulted per
-query.
+Renaming the backup family to `Backup*` — which is arguably the *correct* fix,
+since that type is the actual misnomer — is a worthwhile standalone cleanup and
+deliberately **not** ridden on this feature.
+
+### Reads (settled)
+
+One predicate, added at **the funnels, not the call sites**. The rule is
+`archived_at IS NULL` unless the caller is the Archived surface, carried by an
+`includeArchived: Bool` parameter that is **NOT defaulted**. A default is exactly
+the shape that leaks: read #9 gets added and silently omits it. Non-defaulted
+means every call site gets a compile error until someone decides, which is the
+whole protection.
+
+The funnel list is longer than this doc originally claimed. `AppServices.swift`
+has 27 `FROM asset` sites; the ones that browse are:
+
+| Funnel | Line | Note |
+|---|---|---|
+| `collectionItems(in:sort:)` | `:1693` | the P14 joined read behind every grid |
+| `searchAssets(...)` | `:2386` | FTS + trigram + OCR union — **conjunct, see below** |
+| the semantic/vector read | `:395` | same conjunct treatment |
+| `collectionCovers(_:)` | `:1742` | an archived cover must fall back, not render a hole |
+| `collectionStackPreviews(...)` | `:1772` | count **and** hash queries, which must agree |
+| `spaceCovers(_:)` | `:2031` | |
+| `spaceStackPreviews(...)` | `:2052` | |
+| library stats | `:1546`, `:1564`, `:1590` | [016] **wants** archived counted, reported separately |
+
+Two of those pairs are structurally identical copies of each other — see the DRY
+note below, which is why the extraction happens **before** the predicate is added
+rather than after.
+
+**In `searchAssets` the predicate is a WHERE conjunct**, alongside the existing
+`asset.id IN (…)` conjuncts (`:2590`, `:2603`) — never a post-filter over scored
+results. Two reasons, and the second is the serious one: archived rows then never
+reach the per-row correlated scorer at `:2730` (a speedup), and a post-filter
+silently shortens pages — a page of 50 that loses 7 archived rows returns 43.
+
+### Extract the duplicated queries first (settled)
+
+`collectionCovers`/`spaceCovers` and `collectionStackPreviews`/`spaceStackPreviews`
+are two structurally identical pairs — same shape, differing only in table names
+and recency columns; `spaceStackPreviews`'s own doc comment calls itself "the
+space analog of `collectionStackPreviews`". Adding the archive predicate naively
+means **8 edits** (four count queries, four hash queries) that must agree
+pairwise, and the failure mode when they don't is this doc's own named risk: a
+collection reading "12 items" while showing 9.
+
+So A1 begins with a refactor: one private `stackPreviews(parent:child:recency:)`
+helper and one `covers(table:)` helper, both taking explicit table/column
+parameters (parameters, not a query DSL). The predicate is then added **once**.
+Existing `ServicesReadTests` / `LibraryStatsControllerTests` guard the move, plus
+a new paired assertion that `itemCount` equals the visible hash count.
+
+While that query is open, **scope the count aggregate to the roots being
+rendered**. Today `SELECT collection_id, COUNT(*) FROM collection_item GROUP BY
+collection_id` (`:1786`) is unfiltered — it counts every collection in the
+library on every Home render and throws the non-roots away in Swift. The root ids
+are already in hand two lines above, so this is a `WHERE … IN` over data we have,
+not new machinery. Archive would otherwise turn a full aggregate into a full
+indexed join.
 
 ### The surface
 
@@ -78,13 +159,39 @@ the round-trip lossless.
 
 - **[073] delete**: ⌫ (remove) and archive are different verbs — remove drops one
   membership, archive hides the asset from all of them. Both stay.
-- **[008] backup**: `archived_at` ships in the manifest and round-trips, or a
+- **[081] backup**: `archived_at` ships in the manifest and round-trips, or a
   restore silently un-archives the user's whole shelf.
 - **[016] stats**: the Library pane should report archived count + bytes — that
-  is precisely the "what can I reclaim" question archive creates.
-- **Blobs are NOT reaped for archived assets.** Archive is not a delete; the
-  orphan sweep must skip them explicitly, or the shelf becomes a shelf of
-  missing files.
+  is precisely the "what can I reclaim" question archive creates. Note this is
+  the one read that deliberately **includes** archived rows.
+- **Blobs are NOT reaped for archived assets — and this needs no work.** An
+  earlier draft of this doc said "the orphan sweep must skip them explicitly, or
+  the shelf becomes a shelf of missing files." That was **wrong**.
+  `referencedBlobHashes()` (`AppServices.swift:1489`) is
+  `SELECT DISTINCT blob_hash FROM asset WHERE blob_hash IS NOT NULL` — an
+  archived asset is still an `asset` row, so its blob is in the keep set by
+  construction. What this needs is a **regression test**, not a code change.
+
+### Four edge cases, settled before building (2026-08-10)
+
+1. **An archived cover renders a hole.** `collectionCovers` (`:1746`) joins
+   `asset ON asset.id = collection.cover_asset_id`. A *deleted* cover is handled
+   by `SET NULL`; an *archived* cover is not null, so it stays a live cover of an
+   invisible item. Fix: `AND asset.archived_at IS NULL` in the join, and the card
+   falls back to its most-recent non-archived member — the same class of fallback
+   a deleted cover already gets.
+2. **The orphan sweep is safe already** — see above. Regression test only.
+3. **Counts must join `asset`.** The count queries don't join it at all today.
+   Covered by the extraction above and its paired count-vs-visible assertion.
+4. **Destructive and write verbs on an archived asset.** Settled:
+   - Delete an archived item → a normal recoverable delete, and **⌘Z restores it
+     archived** — so `DeletedAssetsBackup` must carry `archived_at`. This is the
+     assertion that catches a "restore forgets the flag" regression.
+   - Archived assets stay **taggable and favoritable**. Archive hides an item from
+     browsing; it does not freeze it, and a write verb that silently no-ops is
+     worse than one that works on something you can't currently see.
+   - Archived assets are **excluded from search** (both the FTS/trigram and the
+     semantic path) and **included in [016] stats**, counted separately.
 
 ## B — another library (still deferred — [016] §C)
 
@@ -110,52 +217,149 @@ expensive version and is what [016] §C actually deferred.
 ## Schema / migration impact
 
 - **v20**: `ALTER TABLE asset ADD COLUMN archived_at`. Additive, nullable, no
-  backfill. A partial index `WHERE archived_at IS NOT NULL` only if the Archived
-  view proves slow — the un-archived predicate is the hot one, and it is a null
-  check on a column that is null for ~everything.
-- [008]'s manifest gains one optional field.
+  backfill. Remember to append `"v20"` to `registeredIdentifiers`
+  (`Migrator.swift:40`) **and** to the pinning test.
+- **The partial index ships with v20** (revised): `CREATE INDEX … ON
+  asset(archived_at) WHERE archived_at IS NOT NULL`.
+
+  The original reasoning — that the un-archived predicate is the hot one and an
+  index is useless for a null check on a column that is null for ~everything — is
+  correct **for the hot path** and does not extend to the shelf itself. The
+  Archived destination is `WHERE archived_at IS NOT NULL ORDER BY archived_at
+  DESC` across the **whole library, with no collection scope**, and `asset` has
+  no index that helps it (`source_id`, `blob_hash`, `created_at`, `view_count`,
+  `dedup_key` — `Migrator.swift:617-621`). Without the index, every open of the
+  shelf is a full `asset` scan plus a sort, on the one surface whose row count
+  only ever grows: archiving is how you accumulate.
+
+  A partial index over archived rows only is tiny and costs nothing on the hot
+  path. One line at v20; a whole migration at v21. Ship it now.
+
+  Pagination is explicitly **not** in v1. Note that `collectionItems`' "return the
+  FULL array, no keyset cursor needed" reasoning (`:1682`) is justified by the
+  read being *collection-scoped* — that justification does not hold for a
+  library-wide shelf. Let the harness (below) say whether it ever matters.
+- [081]'s manifest gains one optional field.
 
 ## Phased implementation
 
-1. **A1 (S)** — v20 migration + `archive` / `unarchive` in `AppServices` + the
-   `includeArchived` parameter on the read funnels.
-2. **A2 (M)** — the Archived sidebar destination (grid host reuse) + Unarchive.
-3. **A3 (S)** — archive verbs on grid / detail / space context menus + the key
-   binding ([077]).
-4. **A4 (S)** — [008] manifest field + orphan-sweep exclusion + [016] stats row.
+0. **A0 (M) — the query extraction**, before any archive code: the shared
+   `stackPreviews` / `covers` helpers, plus scoping Home's count aggregate to its
+   roots. Pure refactor; existing tests must be green before A1 starts.
+1. **A1 (S–M)** — v20 migration (`archived_at` **+ the partial index**) +
+   `archive` / `unarchive` in `AppServices` + the **non-defaulted**
+   `includeArchived` parameter on the read funnels + the search conjuncts on both
+   the FTS/trigram and semantic paths.
+2. **A2 (M)** — `ShelfController` + the Archived sidebar destination (grid host
+   reuse) + Unarchive. The controller follows the shipped feature-controller
+   pattern (`@MainActor final class … ObservableObject`, own test file) already
+   used by `LibraryStatsController`, `DuplicateReviewController`,
+   `RestoreController` and `BackupController` — **not** another ~200 lines inside
+   `IngestionModel.swift`, which is already the largest file in the repo at 3,599
+   lines.
+3. **A3 (S)** — a pure `ShelfIntent` deciding verb availability and label per
+   selection and surface, consumed by the grid / detail / space context menus and
+   the key binding ([077]). Mirrors `DeleteIntent` + `DeleteIntentTests`: the
+   mixed-selection question (some archived, some not) is real logic and belongs
+   somewhere testable, not inline in a view body.
+4. **A4 (S)** — [081] manifest field + [016] stats row + the orphan-sweep
+   regression test (no code change — see Interactions) + the manifest
+   exhaustiveness guard.
 5. **B (0)** — discipline only; no code.
 
 ## Test strategy
 
-- Round-trip: archive → absent from collection read, space read, search, counts,
-  gallery previews → unarchive → **byte-identical memberships and order**.
-- The funnel predicate: a test that enumerates every read entry point and asserts
-  each honours `includeArchived` (the leak this design is most exposed to).
-- Orphan sweep over a library whose only reference to a blob is an archived asset
-  → blob survives.
-- Backup round-trip with archived items ([008]'s existing suite, extended).
-- Delete an archived item → normal recoverable delete; ⌘Z restores it *archived*.
+**Round trip, at full fidelity.** Archive → absent from collection read, space
+read, search, counts, gallery previews → unarchive → **byte-identical memberships
+and order**. Not a count-level assertion: capture the ordered membership arrays,
+the `manual_order` values, the space placement rows, tags and note *before*
+archiving and assert identity after, over an asset that is in **≥2 collections
+and ≥1 space**. Losslessness is the feature's entire justification over delete,
+so this is the assertion that makes its premise falsifiable — and it is exactly
+where a delete-and-recreate-memberships implementation would pass a weaker test
+and fail this one. `ServicesCollectionOrderTests` / `ServicesSpaceOrderTests` are
+the precedent for order-level assertions.
 
-## Effort: **A: M total (A1 S · A2 M · A3 S · A4 S) · B: 0**
+**The funnel predicate, in two layers** — they catch different failures:
+
+1. *Shape*: a source-scan test in **`AtelierCoreTests`** that reads
+   `AppServices.swift` via `#filePath` and asserts every `FROM asset` / `JOIN
+   asset` site is in an explicit allowlist with a stated reason. This is the only
+   thing that fails when a **new** read is added. It must live in the SwiftPM
+   target: the app test host is the sandboxed app and cannot read repo source
+   files — `ConfigContractTests.swift:8-16` documents the EPERM. Precedent for
+   shape-level canaries: the extension's `src/drift.js` `CHECKS`.
+2. *Behaviour*: seed one archived asset, call each browse read, assert absence —
+   this is the only thing that fails when a read **misapplies** the predicate.
+
+**Verb availability**: `ShelfIntent` over all-archived / none-archived / mixed /
+empty selections, on the shelf itself, and on the protected Unsorted case.
+
+**Orphan sweep** over a library whose only reference to a blob is an archived
+asset → blob survives. Asserts the by-construction safety, so a future change to
+`referencedBlobHashes` can't quietly break it.
+
+**Backup round-trip**, following the favorites precedent exactly — that trio is
+the template ([081]'s suite already has "Favorites survive…", "A favorite on a
+multi-collection asset survives in every collection", "Re-importing an unstarred
+archive never unstars what is here"). Plus **one exhaustiveness guard**: every
+`asset` column is either in the manifest or in a named derived-and-excluded list.
+[081] already states that rule in prose (`asset_analysis` and embeddings are
+derived and excluded); nothing currently *enforces* it, which is how a future
+column gets silently dropped from a backup.
+
+**Delete an archived item** → normal recoverable delete; ⌘Z restores it
+*archived* (so `DeletedAssetsBackup` carries the column).
+
+**Measurement**: extend `ScaleHarnessTests` — which already seeds N assets at an
+env-overridable count and times `collectionItems` + FTS search, the two funnels
+this feature modifies — with a seeded-archived variant (N assets, M archived)
+timing the shelf read, both stack-preview calls, and the search conjunct. It is
+env-gated, so CI cost is zero, and it turns the index and aggregate decisions
+above into measured ones rather than asserted ones.
+
+## Effort: **A: M–L total (A0 M · A1 S–M · A2 M · A3 S · A4 S) · B: 0**
+
+Larger than the original "A: M" estimate, because A0 (the query extraction) was
+added and A1 grew the search conjuncts, the index and the source-scan test. The
+extraction is not overhead: without it the same predicate work happens eight
+times over instead of once.
 
 ## Risks & edge cases
 
-- **The word collision with `LibraryArchive`** is the single likeliest source of
-  confusion in this doc's implementation. Pick the code name before writing a line.
-- An archived item that is a **collection cover** — the cover query must fall
-  back rather than render a hole (same class of bug as a deleted cover).
-- An archived item **placed on a Space board**: does the tile vanish? Recommended
-  **yes** (archive means "not in my working set"), and unarchive restores the
-  placement — which only works because the placement row is untouched.
-- Counts are the sneaky surface: a collection reading "12 items" while showing 9
-  is worse than either number being wrong.
+- ~~**The word collision with `LibraryArchive`.**~~ **Resolved**: `Shelf` in
+  Swift, `archived_at` in SQL, "Archived" in the UI. Nothing is renamed.
+- ~~An archived item that is a **collection cover**.~~ **Resolved**: filter the
+  join and fall back to the most-recent non-archived member (edge case 1).
+- ~~An archived item **placed on a Space board**.~~ **Resolved**: the tile
+  vanishes and unarchive restores the placement.
+- **Counts are the sneaky surface** — a collection reading "12 items" while
+  showing 9 is worse than either number being wrong. This is why A0 extracts the
+  duplicated queries *before* the predicate is added: the naive route is 8 edits
+  that must agree pairwise, and one missed edit produces exactly this.
+- **The read surface is bigger than four funnels.** The source-scan test exists
+  because a hand-maintained list of reads is the thing that drifts.
 
-## Open questions
+## Open questions — closed 2026-08-10
 
-1. Code name — `Shelf`, `Archived`, or rename the backup writer instead?
-2. Does archiving a **collection** (not just an asset) make sense, and does it
-   archive its contents? (Recommended: v1 is assets only.)
-3. Auto-purge after N months — offer it, or never? (Recommended: never
-   automatically; surface age in [016]'s stats and let the user act.)
-4. Second library: is the relaunch-scoped "open another root" version wanted
-   sooner than the full multi-library work?
+1. ~~Code name?~~ **`Shelf` in Swift, `archived_at` in SQL, "Archived" in the
+   UI.** Nothing is renamed; the `Backup*` rename of the existing archive family
+   is a worthwhile separate cleanup, deliberately not ridden on this feature.
+2. ~~Does archiving a **collection** make sense?~~ **Assets only in v1.**
+   Archiving a container makes an asset in two collections ambiguous — unarchiving
+   one collection would have to decide whether shared assets come back — and that
+   ambiguity is precisely what the per-asset flag avoids. The lossless round trip
+   stays trivially true.
+3. ~~Auto-purge after N months?~~ **Never automatically.** Surface archived age
+   and bytes in [016]'s stats and let the user act. A scheduled deleter is a large
+   new risk surface for a feature whose whole premise is that nothing is lost.
+4. **Second library**: still open, still deferred. If it is ever wanted sooner,
+   the cheapest honest version is the relaunch-scoped "open a different library
+   root" described in §B — not simultaneous libraries in two windows.
+
+### Also settled
+
+**An archived asset placed on a Space board: the tile vanishes**, and unarchiving
+restores the placement exactly — which works only because the placement row is
+never touched. "Archived" then means one thing everywhere rather than something
+different on boards.

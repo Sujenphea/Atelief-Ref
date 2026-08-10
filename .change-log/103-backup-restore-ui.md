@@ -1,6 +1,6 @@
 # 103 — Backup: restore + manual snapshot UI (008 H3c)
 
-Completes the snapshot safety net ([008-backup](../.docs/feature-todo/008-backup.md),
+Completes the snapshot safety net ([081-backup](../.docs/081-backup-plan.md),
 H1–H3): restore, plus a manual surface. "An unrestorable backup is theater" — so
 restore is a real, tested round trip.
 
