@@ -197,7 +197,7 @@ struct MostViewedReorderTests {
         }
 
         // Baseline order (all view_count 0) BEFORE any views.
-        let base = try await services.collectionItems(in: folder.id, sort: .mostViewed)
+        let base = try await services.collectionItems(in: folder.id, sort: .mostViewed, includeArchived: false)
 
         // Apply an uneven view spread: one asset viewed 3×, another 1× (each
         // recordViews call = +1 per distinct id, matching the local +1-per-flush).
@@ -208,7 +208,7 @@ struct MostViewedReorderTests {
         try await services.recordViews([light])
 
         // Core's truth after the views.
-        let coreOrder = try await services.collectionItems(in: folder.id, sort: .mostViewed)
+        let coreOrder = try await services.collectionItems(in: folder.id, sort: .mostViewed, includeArchived: false)
             .map(\.asset.id)
 
         // Local reorder from the baseline with the same deltas.

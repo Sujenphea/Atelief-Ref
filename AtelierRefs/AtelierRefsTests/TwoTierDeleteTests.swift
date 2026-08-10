@@ -42,7 +42,7 @@ struct GridRemoveVerbTests {
     }
 
     private func members(of collectionID: UUID, _ services: AppServices) async throws -> [UUID] {
-        try await services.collectionItems(in: collectionID).map { $0.asset.id }
+        try await services.collectionItems(in: collectionID, includeArchived: false).map { $0.asset.id }
     }
 
     /// Open `collectionID` the way navigating to it does. `selectedFolderID` is what
@@ -291,7 +291,7 @@ struct SpaceDeleteVerbTests {
     }
 
     private func members(of collectionID: UUID, _ services: AppServices) async throws -> [UUID] {
-        try await services.collectionItems(in: collectionID).map { $0.asset.id }
+        try await services.collectionItems(in: collectionID, includeArchived: false).map { $0.asset.id }
     }
 
     /// ⌫ on a board drops the PLACEMENT and nothing else — a board owns placements,

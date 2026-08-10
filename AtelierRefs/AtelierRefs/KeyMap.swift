@@ -387,6 +387,11 @@ nonisolated enum KeyMap {
                  scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
         Shortcut([.character("a")], [], "Add to…",
                  scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
+        // 023 · A3. Bare `E`, ⇧ tolerated like M / A. One key for both
+        // directions: `shelfVerb` reads the selection and archives unless every
+        // target already is, so E on the Archived pane puts things back.
+        Shortcut([.character("e")], [], "Archive (or unarchive) the selection",
+                 scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
         Shortcut([.character("a")], [.command], "Select all",
                  scope: .collection, decoder: .grid, source: "gridKeyCommand — MasonryGridHost.swift:1893"),
         Shortcut([.escape], [], "Clear the selection",

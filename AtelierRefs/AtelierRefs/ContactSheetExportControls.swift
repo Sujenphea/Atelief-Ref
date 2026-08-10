@@ -3,10 +3,11 @@
 //  AtelierRefs
 //
 //  052 · B4 — the collection contact-sheet export chrome:
-//   • ``ContactSheetExportButton`` — a config popover (format + PDF layout / PNG
-//     scale + column count + captions) raised from the selection bar; Export…
-//     hands the generated ``MoodboardExport/Mapping`` to the shared
-//     ``ExportController`` (same save panel / progress / toast as the moodboard).
+//   • ``ContactSheetExportPanel`` — a config popover (format + PDF layout / PNG
+//     scale + column count + captions) raised from the selection bar's `…`
+//     overflow; Export… hands the generated ``MoodboardExport/Mapping`` to the
+//     shared ``ExportController`` (same save panel / progress / toast as the
+//     moodboard).
 //   • ``ExportContactSheetCommand`` — the File-menu path, exporting the
 //     selection-or-whole-collection with default settings whenever a collection
 //     is focused.
@@ -19,28 +20,23 @@ import AtelierCore
 import AtelierExport
 import SwiftUI
 
-// MARK: - Export button + config popover
+// MARK: - Config popover
 
-struct ContactSheetExportButton: View {
+/// The contact sheet's knobs, presented from the selection bar's `…` overflow.
+///
+/// **The knobs are the HOST's state, not this view's.** A popover's content is
+/// built fresh on each presentation, so `@State` here would reset format and
+/// column count every time the panel opened — the bar-glyph version this replaced
+/// kept them because its button view outlived the popover. `CollectionView` owns
+/// them now, which preserves that for as long as the collection is on screen.
+struct ContactSheetExportPanel: View {
     @ObservedObject var model: IngestionModel
     let collectionID: UUID
+    @Binding var config: ExportConfig
+    @Binding var sheet: ContactSheetConfig
+    /// Dismiss the popover — the host owns its presentation.
+    var onClose: () -> Void
     @EnvironmentObject private var controller: ExportController
-    @State private var config = ExportConfig()
-    @State private var sheet = ContactSheetConfig()
-    @State private var showPanel = false
-
-    var body: some View {
-        Button {
-            showPanel.toggle()
-        } label: {
-            SelectionBarIcon(systemName: "square.and.arrow.up")
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Theme.Colors.inkPrimary)
-        .help("Export a contact sheet (PDF or PNG)")
-        .disabled(controller.isExporting)
-        .popover(isPresented: $showPanel, arrowEdge: .top) { panel }
-    }
 
     /// The selection-or-whole-collection mapping for the current knobs.
     private var mapping: MoodboardExport.Mapping {
@@ -50,7 +46,7 @@ struct ContactSheetExportButton: View {
             imageURL: { model.previewImageURL(forAsset: $0) })
     }
 
-    private var panel: some View {
+    var body: some View {
         let map = mapping
         let pageCount = MoodboardExport.pages(for: map.elements, config: config).count
         // Refs = image/colour elements; captions are extra text elements, so count
@@ -96,7 +92,7 @@ struct ContactSheetExportButton: View {
                 .foregroundStyle(Theme.Colors.inkSecondary)
 
             Button("Export…") {
-                showPanel = false
+                onClose()
                 controller.requestExport(
                     mapping: map, config: config, suggestedName: model.name(for: collectionID))
             }

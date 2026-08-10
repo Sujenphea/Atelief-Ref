@@ -597,7 +597,7 @@ struct DetailStepIntentWiringTests {
 
         // Gone from here, alive in Unsorted.
         #expect(!model.detailRun.contains { $0.item.id == shown.item.id })
-        let unsorted = try await services.collectionItems(in: Collection.unsortedID)
+        let unsorted = try await services.collectionItems(in: Collection.unsortedID, includeArchived: false)
         #expect(unsorted.contains { $0.asset.id == shown.asset.id })
         // And the page has somewhere to go.
         #expect(

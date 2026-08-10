@@ -161,7 +161,7 @@ struct BakeoffSeedTests {
         let elapsed = Date().timeIntervalSince(started)
 
         // Report real, measured evidence rather than assumptions.
-        let members = try await services.collectionItems(in: collection.id)
+        let members = try await services.collectionItems(in: collection.id, includeArchived: false)
         let blobCount = store.enumerateBlobFiles().count
         let onDisk = Self.directorySize(layout.root)
 

@@ -471,7 +471,7 @@ struct LibrarySearchable<Content: View>: View {
     @State private var detail: AssetDetail?
     /// The detail page's run + grouping, memoized on `(resultsVersion, grouping)` so
     /// the page does not rebuild a whole `PostGroups` per body pass (080 §4).
-    @State private var detailContexts = SearchDetailContextCache()
+    @State private var detailContexts = LooseDetailContextCache()
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -520,7 +520,7 @@ struct LibrarySearchable<Content: View>: View {
                 let context = detailContexts.context(
                     results: search.results, resultsVersion: search.resultsVersion,
                     groupCarousels: gridPrefs.groupCarousels)
-                SearchDetailOverlay(
+                LooseDetailOverlay(
                     services: services, model: model,
                     context: context,
                     current: $detail)
@@ -730,8 +730,14 @@ private struct SearchTokenChip: View {
 
 // MARK: - Results grid
 
-/// A synthetic membership per search hit, so anything keyed on a `CollectionItemDetail`
-/// — the grid host, ``PostGroups`` — can take search results unchanged.
+/// A synthetic membership per MEMBERSHIP-LESS asset, so anything keyed on a
+/// `CollectionItemDetail` — the grid host, ``PostGroups`` — can take a bare
+/// `[AssetDetail]` unchanged.
+///
+/// Two surfaces feed it: search hits (048) and the archive shelf (023 · A2).
+/// Neither has a membership to render from, and both want every behaviour the
+/// AppKit grid already has. Named for the shape rather than for search, which is
+/// what it was called when it had one caller.
 ///
 /// `item.id == asset.id`, so every closure keyed on a cell id coincides with the asset
 /// id and no mapping is needed anywhere. `collectionID` is the membership-less sentinel
@@ -740,7 +746,7 @@ private struct SearchTokenChip: View {
 /// File-scope rather than a method on the results grid because the DETAIL overlay is
 /// presented by `LibrarySearchable`, one view up, and has to group the identical feed
 /// (069). Two copies of this mapping would be two feeds that could disagree.
-func searchItems(for results: [AssetDetail]) -> [CollectionItemDetail] {
+func looseItems(for results: [AssetDetail]) -> [CollectionItemDetail] {
     results.map { detail in
         CollectionItemDetail(
             item: CollectionItem(
@@ -753,8 +759,9 @@ func searchItems(for results: [AssetDetail]) -> [CollectionItemDetail] {
     }
 }
 
-/// What the search detail page needs from the result set: the run its ← / → walk, and
-/// the grouping THAT SAME PASS produced.
+/// What a membership-less detail page needs from its feed: the run its ← / →
+/// walk, and the grouping THAT SAME PASS produced. Serves search results and the
+/// archive shelf alike — both are an ordered `[AssetDetail]` with no container.
 ///
 /// One value rather than two calls, because the two have to be the same derivation: the
 /// chip says "2 of 4 in this post" about the very index the arrows step through, and a
@@ -763,13 +770,13 @@ func searchItems(for results: [AssetDetail]) -> [CollectionItemDetail] {
 ///
 /// Empty grouping when the carousel toggle is off — then the run is raw result order,
 /// and a chip counting post positions would describe a walk the arrows do not take.
-struct SearchDetailContext {
+struct LooseDetailContext {
     /// The hits in the order the DETAIL page walks them (069): result order, but with
     /// each post's images together and in the post's own order — the same rule the
     /// results grid draws by, so the page's ← / → agree with what is on screen.
     let run: [AssetDetail]
     /// The result set bucketed by post. `item.id == asset.id` here
-    /// (``searchItems(for:)``), so an `AssetDetail` can be looked up in it directly.
+    /// (``looseItems(for:)``), so an `AssetDetail` can be looked up in it directly.
     let groups: PostGroups
 
     init(results: [AssetDetail] = [], groupCarousels: Bool = false) {
@@ -778,7 +785,7 @@ struct SearchDetailContext {
             groups = PostGroups()
             return
         }
-        let items = searchItems(for: results)
+        let items = looseItems(for: results)
         let grouping = PostGroups(items: items)
         let byID = Dictionary(
             results.map { ($0.asset.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -787,7 +794,7 @@ struct SearchDetailContext {
     }
 }
 
-/// The memo that keeps ``SearchDetailContext`` off the body-pass hot path (080 §4).
+/// The memo that keeps ``LooseDetailContext`` off the body-pass hot path (080 §4).
 ///
 /// The grouping used to be built INSIDE `LibrarySearchable.body` — a full bucket +
 /// per-group sort + `fullRun` + a `Dictionary` over every hit, i.e. O(n log n) across
@@ -807,24 +814,24 @@ struct SearchDetailContext {
 /// a whole `[AssetDetail]` per body pass would reintroduce an O(n) pass to avoid an
 /// O(n log n) one.
 @MainActor
-final class SearchDetailContextCache {
+final class LooseDetailContextCache {
     private struct Key: Equatable {
         var resultsVersion: Int
         var groupCarousels: Bool
     }
 
     private var key: Key?
-    private var value = SearchDetailContext()
+    private var value = LooseDetailContext()
     /// Cache misses since init — the handle a perf test would take to prove the memo
     /// hits across renders, as ``MoveTargetsCache/buildCount`` does.
     private(set) var buildCount = 0
 
     func context(
         results: [AssetDetail], resultsVersion: Int, groupCarousels: Bool
-    ) -> SearchDetailContext {
+    ) -> LooseDetailContext {
         let k = Key(resultsVersion: resultsVersion, groupCarousels: groupCarousels)
         if key == k { return value }
-        value = SearchDetailContext(results: results, groupCarousels: groupCarousels)
+        value = LooseDetailContext(results: results, groupCarousels: groupCarousels)
         key = k
         buildCount += 1
         return value
@@ -905,8 +912,8 @@ private struct LibrarySearchResults: View {
     }
 
     /// A synthetic membership per hit so the host (keyed on `item.id`) can render
-    /// search results — see ``searchItems(for:)``.
-    private var items: [CollectionItemDetail] { searchItems(for: search.results) }
+    /// search results — see ``looseItems(for:)``.
+    private var items: [CollectionItemDetail] { looseItems(for: search.results) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1073,7 +1080,16 @@ private struct LibrarySearchResults: View {
                 if let hit = search.results.first(where: { $0.asset.id == id }) {
                     model.revealInFinder(asset: hit.asset)
                 }
-            })
+            },
+            // 023 · A3. Archiving a hit is legitimate from here — search shows
+            // only unarchived items, so the verb resolves to Archive, and the
+            // hit leaves the results on the re-run `contentsVersion` triggers.
+            onArchiveVerb: {
+                let targets = actionTargetsForKey()
+                guard !targets.isEmpty else { return }
+                Task { await model.toggleArchived(assetIDs: targets) }
+            },
+            onArchive: { ids in Task { await model.toggleArchived(assetIDs: ids) } })
     }
 
     // MARK: - Finder-scope target rules (whole selection when the cell is in it)
@@ -1097,13 +1113,19 @@ private struct LibrarySearchResults: View {
         return Array(widenedForAction(scope))
     }
 
-    /// The ids a keyboard/bar Delete acts on: the selection while selecting, else the
-    /// cursor's lone item.
-    private func requestDeleteTargets() {
+    /// The ids a bare-key verb acts on: the selection while selecting, else the
+    /// cursor's lone item — the same rule ⌫ uses, widened to whole posts.
+    private func actionTargetsForKey() -> [UUID] {
         let selection = selectionStore.selection
         let scope: Set<UUID> = selection.isSelecting
             ? selection.ids : Set(selection.lead.map { [$0] } ?? [])
-        let targets = Array(widenedForAction(scope))
+        return Array(widenedForAction(scope))
+    }
+
+    /// Delete from the keyboard or the bar — the same targets every other verb
+    /// here acts on, rather than a second copy of the widening rule.
+    private func requestDeleteTargets() {
+        let targets = actionTargetsForKey()
         guard !targets.isEmpty else { return }
         model.requestDelete(assetIDs: targets)
     }
@@ -1186,14 +1208,26 @@ private struct LibrarySearchResults: View {
 
     // MARK: - Selection bar
 
-    /// The floating "N selected · Clear · Delete" bar, shown while a selection is
-    /// active. Delete routes through the same staged/undoable asset delete as the
-    /// keyboard and context menu.
+    /// The floating "N selected · Clear · Delete · Archive" bar, shown while a
+    /// selection is active. Both verbs route through the same staged/undoable
+    /// paths as the keyboard and the context menu.
     private var selectionBar: some View {
-        CountSelectionBar(
-            count: selectionStore.selection.ids.count,
+        let count = selectionStore.selection.ids.count
+        return CountSelectionBar(
+            count: count,
             onClear: { selectionStore.apply(.clear) },
-            onDelete: { requestDeleteTargets() })
+            onDelete: { requestDeleteTargets() }
+        ) {
+            // 023 · A3, and the peer of the collection bar's Archive: the
+            // recoverable answer to the Delete beside it. Search only ever shows
+            // unarchived hits, so the verb resolves to Archive; the hit leaves the
+            // results on the re-run `contentsVersion` triggers.
+            SelectionBarButton("archivebox", help: "Archive \(count)") {
+                let targets = actionTargetsForKey()
+                guard !targets.isEmpty else { return }
+                Task { await model.toggleArchived(assetIDs: targets) }
+            }
+        }
     }
 }
 
@@ -1227,12 +1261,17 @@ private struct SearchModeToggle: View {
 /// The presentation-only `ItemDetailView` for a search hit — an asset with no
 /// folder membership (so no folder remove/delete), with prev/next across the
 /// result set and asset-scoped tags via `AssetTagsStore`.
-private struct SearchDetailOverlay: View {
+/// The detail page for a membership-less feed — search results and the archive
+/// shelf both present it (023 · A2). Internal rather than file-private now that
+/// it has a second caller; it takes a ``LooseDetailContext``, which is just an
+/// ordered `[AssetDetail]` plus its grouping, and knows nothing about where the
+/// list came from.
+struct LooseDetailOverlay: View {
     let services: AppServices
     @ObservedObject var model: IngestionModel
     /// The run the page walks AND the grouping that ordered it — one derivation, so
     /// the pager and the post chip cannot tell different stories (080 §4).
-    let context: SearchDetailContext
+    let context: LooseDetailContext
     @Binding var current: AssetDetail?
 
     @StateObject private var tags: AssetTagsStore
@@ -1240,7 +1279,7 @@ private struct SearchDetailOverlay: View {
     private var results: [AssetDetail] { context.run }
 
     init(services: AppServices, model: IngestionModel,
-         context: SearchDetailContext, current: Binding<AssetDetail?>) {
+         context: LooseDetailContext, current: Binding<AssetDetail?>) {
         self.services = services
         self.model = model
         self.context = context
@@ -1280,7 +1319,9 @@ private struct SearchDetailOverlay: View {
                         // bumps `contentsVersion`, which the results grid already
                         // watches to re-run the query — so the hit's star repaints
                         // instead of going stale behind the page.
-                        setFavorite: { model.setFavorite($0, assetIDs: [asset.id]) }),
+                        setFavorite: { model.setFavorite($0, assetIDs: [asset.id]) },
+                        // 023 · A3 — the same verb the grid menus offer, from the page.
+                        setArchived: { model.setArchived($0, assetIDs: [asset.id]) }),
                     navigator: index.map { i in
                         ItemDetailNavigator(index: i, count: results.count) { delta in
                             let target = i + delta

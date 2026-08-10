@@ -54,7 +54,7 @@ struct GridSelectionStoreTests {
         let (model, services) = try await makeModel()
         let folder = try await services.createCollection(name: "Grid")
         _ = try await seedColors(3, into: folder.id, services)
-        let items = try await services.collectionItems(in: folder.id)
+        let items = try await services.collectionItems(in: folder.id, includeArchived: false)
         model.setItemsForTesting(items)                 // pushes feed order to the store
 
         let targetItemID = items[1].item.id
@@ -81,7 +81,7 @@ struct GridSelectionStoreTests {
         let (model, services) = try await makeModel()
         let folder = try await services.createCollection(name: "Grid")
         _ = try await seedColors(3, into: folder.id, services)
-        let items = try await services.collectionItems(in: folder.id)
+        let items = try await services.collectionItems(in: folder.id, includeArchived: false)
         model.setItemsForTesting(items)
 
         model.applySelection(.selectAll)
@@ -98,7 +98,7 @@ struct GridSelectionStoreTests {
         let (model, services) = try await makeModel()
         let folder = try await services.createCollection(name: "Grid")
         _ = try await seedColors(2, into: folder.id, services)
-        let items = try await services.collectionItems(in: folder.id)
+        let items = try await services.collectionItems(in: folder.id, includeArchived: false)
         model.setItemsForTesting(items)
 
         model.selectionStore.setLead(items[0].item.id)

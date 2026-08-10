@@ -301,6 +301,15 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
         /// tell "written by a build that knows favorites, and this one isn't one"
         /// from "written before the flag existed" if it ever needs to.
         var isFavorite: Bool
+        /// When the item was put on the archive shelf (023 · A), or `nil` for the
+        /// overwhelming majority that never were. Carried for the same reason the
+        /// star is — it is user intent nothing can recompute — and it is the
+        /// field that makes including archived items in the export SAFE: the
+        /// writer walks every collection with `includeArchived: true`, so without
+        /// this key a restore would put the user's whole shelf back in the middle
+        /// of their collections. Optional on the way in, so archives written
+        /// before v20 decode unchanged.
+        var archivedAt: Date?
         var viewCount: Int
         var lastViewedAt: Date?
         var payload: String?
@@ -324,6 +333,7 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
             self.name = asset.name
             self.note = asset.note
             self.isFavorite = asset.isFavorite
+            self.archivedAt = asset.archivedAt.map(ArchiveManifest.wire)
             self.viewCount = asset.viewCount
             self.lastViewedAt = asset.lastViewedAt.map(ArchiveManifest.wire)
             self.payload = asset.payload
@@ -341,6 +351,7 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
             case downloadState = "download_state"
             case createdAt = "created_at"
             case isFavorite = "is_favorite"
+            case archivedAt = "archived_at"
             case viewCount = "view_count"
             case lastViewedAt = "last_viewed_at"
             case dedupKey = "dedup_key"
@@ -373,6 +384,9 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
             note = try container.decodeIfPresent(String.self, forKey: .note)
             // Absent = written before favorites existed = not a favorite.
             isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+            // Absent = written before the shelf existed = never archived. The
+            // property is already optional, so this needs no `?? default`.
+            archivedAt = try container.decodeIfPresent(Date.self, forKey: .archivedAt)
             viewCount = try container.decode(Int.self, forKey: .viewCount)
             lastViewedAt = try container.decodeIfPresent(Date.self, forKey: .lastViewedAt)
             payload = try container.decodeIfPresent(String.self, forKey: .payload)

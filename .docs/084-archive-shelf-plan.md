@@ -1,36 +1,72 @@
-# 023 — An Archive Shelf, and the Second Library Behind It
+# 084 — An Archive Shelf, and the Second Library Behind It
 
 > "A feature to have another library / archived section." Two requests that look
 > alike and are not: **archive** is a place inside this library for things you
 > don't want to see; **another library** is a second container entirely.
-> Archive is small and should be built; the second library is [016] §C, still
-> deferred, and this doc says what archive must not do to it.
+> Archive is small and was built; the second library is
+> [016](feature-todo/016-library-management.md) §C, still deferred, and this doc
+> says what archive must not do to it.
+>
+> Was `feature-todo/023-archive-and-second-library.md`. Promoted on shipping
+> phase A, following the ritual of `.change-log/347` / `349` / `365`.
 
-## Status: next up (review-settled 2026-08-10)
+## Status: A shipped, B still deferred (2026-08-10)
 
-Not started. Selected as the next feature to build after a pass over the whole
-backlog: it is the only sizeable item with **no blocker** — [020](020-capture-rednote.md)
-K3 waits on a pagination fixture, [017](017-capture-instagram-export.md) waits on
-a Meta export, [013](013-capture-breadth.md) K2 waits on App Store appetite, and
-[016](016-library-management.md) L3 / [011](011-ux-features.md) U4·U6 /
-[012](012-intelligence.md) I3·I4 are all smaller.
+**Phase A is complete**, in five commits over `feat/archive-shelf`:
 
-Sixteen decisions from that review are inlined below rather than left as prose to
-rediscover. The short version:
+| Phase | Commit | Changelog |
+|---|---|---|
+| A0 — extract the duplicated gallery-card queries | `44f2e93` | [366](../.change-log/366-gallery-card-queries-extracted.md) |
+| A1 — v20 `archived_at`, the verbs, the predicate at every funnel | `64542ed`, `4a23879` | [367](../.change-log/367-the-archive-predicate.md) |
+| A2 — `ShelfController` + the Archived destination | `6e8b0fa` | [368](../.change-log/368-the-archived-destination.md) |
+| A3 — `ShelfIntent`, `E`, the verb on every surface | `5dede49` | [369](../.change-log/369-the-archive-verb.md) |
+| A4 — the 016 stats row + the exhaustiveness guard | (this) | [370](../.change-log/370-what-the-shelf-is-holding.md) |
 
-| # | Decision |
-|---|---|
-| Naming | **`Shelf` in Swift, `archived_at` in SQL, "Archived" in the UI** |
-| Reads | `includeArchived` is **non-defaulted** on each funnel — a new read must not compile without deciding |
-| DRY | Extract the duplicated cover/preview query pairs **first**, so the predicate is added once |
-| Home counts | Scope the count aggregate to the roots already fetched, while that query is open |
-| Search | The predicate is a **WHERE conjunct**, never a post-filter (paging) |
-| Index | The partial index **ships with v20**, not "later if slow" |
-| Verbs | A `ShelfController` beside the other feature controllers, not inside `IngestionModel` |
-| Intent | A pure `ShelfIntent` for verb availability, tested like `DeleteIntent` |
-| Tests | Source-scan allowlist **+** behavioural absence tests **+** full-fidelity round trip **+** manifest exhaustiveness guard |
-| Measurement | Extend `ScaleHarnessTests` with a seeded-archived variant |
-| Scope | **Assets only** in v1; Space tiles vanish and return; **never** auto-purge |
+**Phase B is unchanged**: the second library is still deferred, and nothing in A
+regressed its seams. `archived_at` is per-asset and therefore per-library by
+construction.
+
+### What was built differently from the plan below
+
+The plan is left intact underneath; these are the four places the build
+diverged, each because the code said something the review could not have known.
+
+1. **`includeArchived` went on ONE funnel, not all of them.** Applied literally,
+   the non-defaulted parameter was 158 call sites — and on the search side the
+   `true` branch is unreachable, since archived items are excluded from search
+   outright. It landed on `collectionItems`, which genuinely has callers on both
+   sides: browsing passes `false`, and `LibraryArchiveWriter` passes `true`
+   because a backup is a copy of the library rather than a view of it. That one
+   compile error was the whole value of the decision.
+2. **The manifest field moved from A4 to A1.** Once the writer included archived
+   rows, carrying `archived_at` stopped being a nicety: without it every restore
+   silently un-archives the user's whole shelf.
+3. **`ShelfIntent` has no `surface` parameter**, though the plan asked for "per
+   selection and surface". The surface is implied by the data — a browsing read
+   hides archived items, so a collection selection is all-unarchived by
+   construction — and a surface argument would be a second source of truth free
+   to disagree with the first.
+4. **The exhaustiveness guard became a two-link chain**: schema ⇄ `Asset` record
+   (Core), and `Asset` record ⇄ manifest (app). A column added without a thought
+   now fails a test twice, and the second failure is the one that matters — a
+   field can work perfectly in-app while being dropped from every export.
+
+### What the measurements said
+
+`ScaleHarnessTests` at N=8000 with 2000 archived: `shelfAssets` 84 ms for 2000
+rows (~42 µs/row) against ~57 µs/row for the collection read that already
+returns a full array. The cost is row materialization, not the scan — the v20
+partial index is doing its job — so **pagination stays out of v1 on evidence**,
+not on assumption.
+
+### Settled at build time, and worth knowing
+
+- **No drag out, and no ⌘C, from the shelf.** Both are an *add*, and an
+  added-but-still-archived item is invisible where it lands. The only way off
+  the shelf is Unarchive. If copy-out is ever wanted, the honest version is
+  add-implies-unarchive — a rule change in the paste path, not a flag.
+- **Archiving from Unsorted is allowed.** Archive changes no membership, so the
+  F3 invariant survives, and "not now" is arguably the verb's best use.
 
 ## Current state (verified)
 
@@ -44,7 +80,7 @@ rediscover. The short version:
   - Unsorted — the opposite of an archive (a to-do pile).
 - "Archive" is already a **taken word** in this codebase and means something else:
   `LibraryArchive` / `LibraryArchiveWriter` / `ArchiveExportController` are
-  [081](../081-backup-plan.md)'s portable `.atelier` backup bundle. **Do not overload it.** Use *Shelf*,
+  [081](081-backup-plan.md)'s portable `.atelier` backup bundle. **Do not overload it.** Use *Shelf*,
   *Archived*, or *Vault* in code; user-facing copy can still say "Archived" if the
   export surface is renamed to "Backup" consistently.
 - **Second library**: [016] §C already records the seams (`LibraryLayout` root is
@@ -70,7 +106,7 @@ Same cost, and it buys the sort order ("recently archived" first), the "archived
 
 **`Shelf` in Swift, `archived_at` in SQL, "Archived" in the UI.** `LibraryArchive`
 and friends keep meaning the backup bundle; nothing is renamed. The column name
-stays as specced because [081](../081-backup-plan.md)'s manifest field references
+stays as specced because [081](081-backup-plan.md)'s manifest field references
 it, and the Swift-vs-SQL naming split already exists throughout this schema.
 
 Renaming the backup family to `Backup*` — which is arguably the *correct* fix,

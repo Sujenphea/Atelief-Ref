@@ -35,6 +35,10 @@ nonisolated enum AppRoute: Hashable {
 nonisolated enum SidebarItem: Hashable {
     case home
     case capture
+    /// The archive shelf (023 · A2) — every archived item, newest first. A
+    /// top-level destination rather than a collection, because it is not one: it
+    /// has no memberships, no order to arrange and nothing to add to it.
+    case shelf
     /// A collection selected in the sidebar tree (the panel shows its grid).
     case collection(UUID)
     /// A space selected in the sidebar's Spaces section.

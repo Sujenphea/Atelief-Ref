@@ -91,13 +91,25 @@ nonisolated struct ImportItem: Sendable, Equatable {
     /// archive saying "not a favorite" is the absence of a claim, not an
     /// instruction to unstar something the user starred here.
     var isFavorite: Bool
+    /// Whether the source had this asset on its archive shelf (023 · A). Applied
+    /// like the star, and for the same reasons: archiving is additive user intent
+    /// that nothing can recompute, and `false` is never replayed — a plan saying
+    /// "not archived" is the absence of a claim, not an instruction to pull an
+    /// item off the shelf the user put it on in THIS library.
+    ///
+    /// A Bool rather than the source's timestamp, because the timestamp is not
+    /// replayable: `archive(_:)` is server-authoritative, exactly as `created_at`
+    /// already is on this path. A restored shelf keeps its membership, not its
+    /// original ordering.
+    var isArchived: Bool
     /// This membership's canvas placement, when it had one.
     var placement: CanvasPlacement?
 
     init(
         key: String, body: ImportBody, source: SourceDraft,
         tags: [ImportTag] = [], name: String? = nil, note: String? = nil,
-        isFavorite: Bool = false, placement: CanvasPlacement? = nil
+        isFavorite: Bool = false, isArchived: Bool = false,
+        placement: CanvasPlacement? = nil
     ) {
         self.key = key
         self.body = body
@@ -106,6 +118,7 @@ nonisolated struct ImportItem: Sendable, Equatable {
         self.name = name
         self.note = note
         self.isFavorite = isFavorite
+        self.isArchived = isArchived
         self.placement = placement
     }
 }

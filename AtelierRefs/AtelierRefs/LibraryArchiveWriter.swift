@@ -109,7 +109,13 @@ nonisolated struct LibraryArchiveWriter: Sendable {
             let directory = url(root, node.components)
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
-            let details = try await services.collectionItems(in: node.collection.id, sort: .manual)
+            // `includeArchived: true` — a backup is a copy of the library, not a
+            // view of it (023 · A). Archiving is a browsing state, so an archive
+            // that skipped the shelf would lose it silently on every restore.
+            // The manifest carries `archivedAt`, so a restored item comes back
+            // archived rather than reappearing in the middle of a collection.
+            let details = try await services.collectionItems(
+                in: node.collection.id, sort: .manual, includeArchived: true)
 
             // One allocator per DESTINATION FOLDER. Keying it by the resolved
             // directory rather than by the collection is what makes

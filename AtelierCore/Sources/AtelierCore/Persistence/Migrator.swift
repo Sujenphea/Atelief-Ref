@@ -37,7 +37,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -172,6 +172,14 @@ enum Migrator {
         // table rebuild. SHIPPED once released: never edit this body.
         migrator.registerMigration("v19") { db in
             try createV19Schema(db)
+        }
+
+        // v20 — the archive shelf (023 · A). One additive nullable
+        // `asset.archived_at` TEXT column plus a PARTIAL index over the archived
+        // rows only. NULL for every existing row, so nothing is archived by an
+        // upgrade. SHIPPED once released: never edit this body.
+        migrator.registerMigration("v20") { db in
+            try createV20Schema(db)
         }
 
         return migrator
@@ -1055,6 +1063,52 @@ enum Migrator {
     private static func createV19Schema(_ db: Database) throws {
         try db.execute(sql: """
             ALTER TABLE asset ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0;
+            """)
+    }
+
+    // MARK: - v20
+
+    /// The archive shelf (023 · A). ONE additive `asset.archived_at` column —
+    /// nullable TEXT, the timestamp encoding this schema uses throughout (C5).
+    /// Every existing row is NULL, i.e. not archived, which is the truth: nothing
+    /// could have been archived before the column existed, so there is nothing to
+    /// back-fill.
+    ///
+    /// A **timestamp, not a boolean**, at the same storage cost: it buys the
+    /// shelf's "most recently archived first" order, "archived 3 months ago"
+    /// copy, and any future purge policy without a second migration.
+    ///
+    /// The flag lives on `asset` for the same reason `is_favorite` (v19) does: an
+    /// asset in three collections is ONE item the user put away once. On
+    /// `collection_item` it would mean something different per folder and would
+    /// be lost the moment a membership moved — and unarchiving could not then
+    /// restore memberships it had itself destroyed, which is the whole point of
+    /// archiving rather than deleting.
+    ///
+    /// **A partial index ships with the column** — unlike v19, which deliberately
+    /// shipped none. The difference is the surface each one serves. The favorites
+    /// filter is a conjunct on an already-bounded query (`searchAssets` clamps to
+    /// ≤500 rows), so the planner meets it holding a small row set. The Archived
+    /// destination is the opposite: `WHERE archived_at IS NOT NULL ORDER BY
+    /// archived_at DESC` across the WHOLE library with no collection scope, and
+    /// `asset` carries no index that helps it (`source_id`, `blob_hash`,
+    /// `created_at`, `view_count`, `dedup_key`). Unindexed, every open of the
+    /// shelf is a full table scan plus a sort — on the one surface whose row
+    /// count only ever grows, because archiving is how it grows.
+    ///
+    /// Partial (`WHERE archived_at IS NOT NULL`) so it indexes only archived
+    /// rows: tiny in a library where almost nothing is archived, and it costs the
+    /// hot un-archived path nothing, since a NULL check over a column that is
+    /// NULL for ~everything is not a lookup an index can improve.
+    ///
+    /// If a later migration ever REBUILDS `asset` (the v10 pattern — SQLite
+    /// cannot drop a column in place), it must recreate this index along with the
+    /// v1/v5 ones; indexes drop with their table.
+    private static func createV20Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            ALTER TABLE asset ADD COLUMN archived_at TEXT;
+            CREATE INDEX index_asset_on_archived_at ON asset(archived_at)
+                WHERE archived_at IS NOT NULL;
             """)
     }
 }

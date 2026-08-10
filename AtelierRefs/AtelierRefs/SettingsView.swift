@@ -297,6 +297,17 @@ struct SettingsView: View {
                     Text("\(entry.count)").monospacedDigit()
                 }
             }
+            // The shelf (023 · A4) — omitted when empty, following this
+            // section's rule that a library with no videos gets no Videos row.
+            // It sits below the kind / platform breakdown because it is not one
+            // of them: those partition the library, this one names a state a few
+            // of its items are in.
+            if !stats.archived.isEmpty {
+                LabeledContent("Archived") {
+                    Text(LibraryStatsCopy.archived(stats.archived))
+                        .monospacedDigit()
+                }
+            }
         }
     }
 

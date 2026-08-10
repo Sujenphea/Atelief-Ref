@@ -227,14 +227,14 @@ struct MoveAddTargetTests {
 
         model.moveToCollection(assetIDs: assetIDs, to: destination.id)
         await model.waitForWrites()
-        var filed = try await services.collectionItems(in: destination.id).map(\.asset.id)
+        var filed = try await services.collectionItems(in: destination.id, includeArchived: false).map(\.asset.id)
         #expect(Set(filed) == Set(assetIDs))
 
         model.undo()
         await model.waitForWrites()
-        filed = try await services.collectionItems(in: destination.id).map(\.asset.id)
+        filed = try await services.collectionItems(in: destination.id, includeArchived: false).map(\.asset.id)
         #expect(filed.isEmpty)
-        let back = try await services.collectionItems(in: source).map(\.asset.id)
+        let back = try await services.collectionItems(in: source, includeArchived: false).map(\.asset.id)
         #expect(Set(assetIDs).isSubset(of: Set(back)))
     }
 }
@@ -316,7 +316,7 @@ struct BoardAddToCollectionTests {
         rig.model.copyToCollection(assetIDs: targets, to: destination.id)
         await rig.model.waitForWrites()
 
-        let filed = try await rig.services.collectionItems(in: destination.id).map(\.asset.id)
+        let filed = try await rig.services.collectionItems(in: destination.id, includeArchived: false).map(\.asset.id)
         #expect(Set(filed) == Set(rig.assetIDs))
 
         // …and the board is untouched: same rows, same ids, same count.
@@ -352,7 +352,7 @@ struct BoardAddToCollectionTests {
         // And it really reverses: the memberships go, the board does not.
         rig.model.undo()
         await rig.model.waitForWrites()
-        let filed = try await rig.services.collectionItems(in: destination.id)
+        let filed = try await rig.services.collectionItems(in: destination.id, includeArchived: false)
         #expect(filed.isEmpty)
         await rig.space.load()
         #expect(rig.space.items.count == boardCountBefore)
@@ -371,12 +371,12 @@ struct BoardAddToCollectionTests {
 
         rig.model.copyToCollection(assetIDs: rig.assetIDs, to: destination.id)
         await rig.model.waitForWrites()
-        var filed = try await rig.services.collectionItems(in: destination.id).map(\.asset.id)
+        var filed = try await rig.services.collectionItems(in: destination.id, includeArchived: false).map(\.asset.id)
         #expect(Set(filed) == Set(rig.assetIDs))
 
         rig.model.undo()
         await rig.model.waitForWrites()
-        filed = try await rig.services.collectionItems(in: destination.id).map(\.asset.id)
+        filed = try await rig.services.collectionItems(in: destination.id, includeArchived: false).map(\.asset.id)
         #expect(filed == [rig.assetIDs[0]])
     }
 }

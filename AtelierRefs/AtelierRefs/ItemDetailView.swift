@@ -225,6 +225,12 @@ struct ItemDetailActions {
     /// Set the item's favorite flag (011 · U5). `nil` on a host with no writer
     /// wired, which hides the star entirely rather than drawing a dead control.
     var setFavorite: ((Bool) -> Void)?
+    /// Put the item on the archive shelf, or take it off (023 · A3). The label
+    /// follows the item's OWN state — `asset.archivedAt` — so a page opened from
+    /// the shelf offers Unarchive and a page opened from a collection offers
+    /// Archive, without the host having to say which it is. `nil` on a host with
+    /// no writer wired, which omits the item rather than drawing a dead one.
+    var setArchived: ((Bool) -> Void)?
 }
 
 struct ItemDetailView: View {
@@ -574,8 +580,23 @@ struct ItemDetailView: View {
             if let copySourceLink = actions.copySourceLink {
                 Button { copySourceLink() } label: { Label("Copy Source Link", systemImage: "link") }
             }
-            if actions.removeFromFolder != nil || actions.requestDelete != nil {
+            if actions.setArchived != nil || actions.removeFromFolder != nil
+                || actions.requestDelete != nil {
                 Divider()
+            }
+            if let setArchived = actions.setArchived {
+                // Titled off the item's own state through the one type that
+                // decides it (023 · A3), so this page and the grid menus cannot
+                // word the same verb differently.
+                let verb = shelfVerb(
+                    targets: [asset.id],
+                    archived: asset.archivedAt != nil ? [asset.id] : [])
+                if let verb {
+                    Button { setArchived(asset.archivedAt == nil) } label: {
+                        Label(verb.title, systemImage: asset.archivedAt == nil
+                            ? "archivebox" : "arrow.uturn.backward")
+                    }
+                }
             }
             if let removeFromFolder = actions.removeFromFolder {
                 Button { removeFromFolder() } label: { Label("Remove from Folder", systemImage: "minus.circle") }

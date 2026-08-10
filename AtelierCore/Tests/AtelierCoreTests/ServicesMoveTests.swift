@@ -52,7 +52,7 @@ struct ServicesMoveTests {
     private func memberAssetIDs(
         _ services: AppServices, of collectionID: UUID
     ) async throws -> Set<UUID> {
-        Set(try await services.collectionItems(in: collectionID).map { $0.asset.id })
+        Set(try await services.collectionItems(in: collectionID, includeArchived: false).map { $0.asset.id })
     }
 
     // MARK: Basic move
@@ -159,7 +159,7 @@ struct ServicesMoveTests {
         try await services.moveAssets([a], from: src.id, to: dst.id)
 
         #expect(try await memberAssetIDs(services, of: src.id) == [])
-        let dstItems = try await services.collectionItems(in: dst.id)
+        let dstItems = try await services.collectionItems(in: dst.id, includeArchived: false)
         #expect(dstItems.map { $0.asset.id } == [a])
     }
 
@@ -190,7 +190,7 @@ struct ServicesMoveTests {
 
         try await services.moveAssets([a, a, a], from: src.id, to: dst.id)
 
-        let dstItems = try await services.collectionItems(in: dst.id)
+        let dstItems = try await services.collectionItems(in: dst.id, includeArchived: false)
         #expect(dstItems.map { $0.asset.id } == [a])
         #expect(try await memberAssetIDs(services, of: src.id) == [])
     }
@@ -260,7 +260,7 @@ struct ServicesMoveTests {
 
         try await services.moveAssets([a, b], from: src.id, to: dst.id)
 
-        let order = try await services.collectionItems(in: dst.id, sort: .manual)
+        let order = try await services.collectionItems(in: dst.id, sort: .manual, includeArchived: false)
             .map { $0.asset.id }
         #expect(order == [x, y, a, b])
     }
@@ -276,7 +276,7 @@ struct ServicesMoveTests {
 
         try await services.moveAssets([a], from: src.id, to: dst.id)
 
-        let order = try await services.collectionItems(in: dst.id, sort: .manual)
+        let order = try await services.collectionItems(in: dst.id, sort: .manual, includeArchived: false)
             .map { $0.asset.id }
         #expect(order == [existing, a])
     }
@@ -419,7 +419,7 @@ struct ServicesStackPreviewTests {
                 services, temp, into: c.id, tag: "h-\(i)",
                 addedAt: base.addingTimeInterval(Double(i)))
         }
-        assetIDs = try await services.collectionItems(in: c.id)
+        assetIDs = try await services.collectionItems(in: c.id, includeArchived: false)
             .sorted { $0.item.addedAt > $1.item.addedAt }
             .map { $0.asset.id }
         // Delete the second-newest — the fan should skip to the third.
@@ -430,6 +430,54 @@ struct ServicesStackPreviewTests {
 
         #expect(card?.itemCount == 3)
         #expect(card?.recentBlobHashes == [hexHash("h-3"), hexHash("h-1"), hexHash("h-0")])
+    }
+
+    /// The pairing guard. `itemCount` and `recentBlobHashes` come from two
+    /// separate queries that must agree about which rows exist; when they drift,
+    /// a card reads "12 items" and shows 9. With every item byte-backed and
+    /// fewer than `limit` of them, the two numbers are the SAME number, so a
+    /// predicate applied to one query and not the other fails here.
+    @Test("count and fan agree when every item is byte-backed and under the limit")
+    func countAgreesWithFan() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Paired")
+        let base = Date(timeIntervalSince1970: 1_000_000)
+        for i in 0..<3 {
+            _ = try await seedAsset(
+                services, temp, into: c.id, tag: "p-\(i)",
+                addedAt: base.addingTimeInterval(Double(i)))
+        }
+
+        let card = try await services.collectionStackPreviews(limit: 5)
+            .first { $0.collection.id == c.id }
+
+        #expect(card?.itemCount == 3)
+        #expect(card?.recentBlobHashes.count == card?.itemCount)
+    }
+
+    /// The count query is scoped to the roots being rendered, so a subfolder's
+    /// items must not be attributed to the parent — the count is DIRECT items.
+    @Test("a subfolder's items stay out of its root's count and fan")
+    func subfolderItemsDoNotLeakUp() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let root = try await services.createCollection(name: "Root")
+        let child = try await services.createCollection(name: "Child", parent: root.id)
+        let base = Date(timeIntervalSince1970: 1_000_000)
+        _ = try await seedAsset(services, temp, into: root.id, tag: "mine", addedAt: base)
+        for i in 0..<2 {
+            _ = try await seedAsset(
+                services, temp, into: child.id, tag: "theirs-\(i)",
+                addedAt: base.addingTimeInterval(Double(i + 1)))
+        }
+
+        let previews = try await services.collectionStackPreviews()
+        let card = previews.first { $0.collection.id == root.id }
+
+        #expect(!previews.contains { $0.collection.id == child.id })
+        #expect(card?.itemCount == 1)
+        #expect(card?.recentBlobHashes == [hexHash("mine")])
     }
 
     @Test("no root collections besides Unsorted → empty result")

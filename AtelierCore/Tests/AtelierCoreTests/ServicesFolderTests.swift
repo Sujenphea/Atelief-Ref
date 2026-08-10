@@ -235,7 +235,7 @@ struct ServicesFolderTests {
         defer { temp.cleanup() }
         let folder = try await services.createCollection(name: "Refs")
         let result = try await services.ingest(assetDraft(), from: sourceDraft(), into: folder.id)
-        let items = try await services.collectionItems(in: folder.id)
+        let items = try await services.collectionItems(in: folder.id, includeArchived: false)
         #expect(items.map(\.asset.id) == [result.asset.id])
     }
 }

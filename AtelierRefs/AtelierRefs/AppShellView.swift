@@ -168,6 +168,15 @@ struct AppShellView: View {
             LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: nil) {
                 CapturePane(model: model, onOpenSweeps: { showSweeps = true })
             }
+        // The shelf IS wrapped in `LibrarySearchable`, like every other pane, so
+        // the toolbar height never shifts between panes — but a search run from
+        // here is global and will never return an archived item (023 · A1). That
+        // is the intended reading: searching leaves the shelf, it does not
+        // search within it.
+        case .shelf:
+            LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: nil) {
+                shelfDestination
+            }
         case let .collection(id):
             LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: id) {
                 CollectionView(model: model, nav: nav, gridPrefs: gridPrefs, collectionID: id)
@@ -203,6 +212,15 @@ struct AppShellView: View {
             CollectionView(model: model, nav: nav, gridPrefs: gridPrefs, collectionID: id)
         case .space(let id):
             spaceDestination(id)
+        }
+    }
+
+    @ViewBuilder
+    private var shelfDestination: some View {
+        if let services = model.services {
+            ShelfView(model: model, nav: nav, gridPrefs: gridPrefs, services: services)
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 

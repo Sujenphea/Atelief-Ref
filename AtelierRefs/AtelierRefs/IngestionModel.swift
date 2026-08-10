@@ -1626,7 +1626,7 @@ final class IngestionModel: ObservableObject {
     private func applyOrder(folder: UUID, desired: [UUID]) async {
         guard let services, !desired.isEmpty else { return }
         do {
-            let members = Set(try await services.collectionItems(in: folder).map { $0.asset.id })
+            let members = Set(try await services.collectionItems(in: folder, includeArchived: false).map { $0.asset.id })
             let filtered = desired.filter(members.contains)
             guard !filtered.isEmpty else { return }
             try await services.setGridOrder(collectionID: folder, orderedAssetIDs: filtered)
@@ -1831,7 +1831,7 @@ final class IngestionModel: ObservableObject {
             do {
                 // The two reads are independent — run them concurrently so the
                 // reload latency is the slowest ONE, not their sum (009 · 16A).
-                async let itemsRead = services.collectionItems(in: id, sort: sort)
+                async let itemsRead = services.collectionItems(in: id, sort: sort, includeArchived: false)
                 async let subfoldersRead = services.childCollections(of: id)
                 let loadedItems = try await itemsRead
                 let loadedSubfolders = try await subfoldersRead
@@ -2350,9 +2350,9 @@ final class IngestionModel: ObservableObject {
     ) async {
         guard let services else { return }
         do {
-            let before = Set(try await services.collectionItems(in: target).map(\.asset.id))
+            let before = Set(try await services.collectionItems(in: target, includeArchived: false).map(\.asset.id))
             try await services.addAssets(assetIDs, to: target)
-            let after = Set(try await services.collectionItems(in: target).map(\.asset.id))
+            let after = Set(try await services.collectionItems(in: target, includeArchived: false).map(\.asset.id))
             // In the given order, so the undo reads deterministically in a test.
             record.assetIDs = assetIDs.filter { after.contains($0) && !before.contains($0) }
             await refreshFolders()
@@ -2495,6 +2495,85 @@ final class IngestionModel: ObservableObject {
         do {
             try await services.setFavorite(isFavorite, for: assetIDs)
             loadContents(of: selectedFolderID)
+        } catch { lastError = Self.message(for: error) }
+    }
+
+    // MARK: - The archive shelf (023 · A3)
+
+    /// Archive (or unarchive) `assetIDs` explicitly. Undoable, in the same shape
+    /// as ``setFavorite(_:assetIDs:)``: the inverse is the opposite verb over
+    /// exactly these ids.
+    ///
+    /// Reversible rather than confirmed, because that is what archive IS — the
+    /// verb you reach for instead of delete precisely because nothing is lost.
+    /// A confirmation dialog on a lossless, one-key-undoable action would teach
+    /// the user to dismiss dialogs.
+    func setArchived(_ archived: Bool, assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty, services != nil else { return }
+        let verb: ShelfVerb = archived
+            ? .archive(count: assetIDs.count) : .unarchive(count: assetIDs.count)
+        enqueueUndoable { await self.applyArchived(archived, to: assetIDs) }
+        registerReversible("Archive",
+            primary: { self.enqueueUndoable { await self.applyArchived(archived, to: assetIDs) } },
+            inverse: { self.enqueueUndoable { await self.applyArchived(!archived, to: assetIDs) } })
+        announceUndoable(verb.completedMessage + ".")
+    }
+
+    /// The `E` verb over `assetIDs` — archive unless every one of them already
+    /// is (023 · A3, and the ⌘D rule it mirrors).
+    ///
+    /// The archived state is READ rather than assumed. Every browsing surface
+    /// hides archived items, so the answer is nearly always "none of them", but
+    /// a selection can outlive the rows under it — and assuming here is exactly
+    /// how a stale selection would archive something twice and then undo into a
+    /// state the user never had.
+    /// `async` rather than fire-and-forget, deliberately. The read has to finish
+    /// before the verb is even known, so a detached `Task` would put it OUTSIDE
+    /// the undo stack's serial write chain — and `waitForWrites()`, which is how
+    /// every caller and every test knows the verb is done, would return before
+    /// this had decided anything. Callers wrap it in a `Task`; that is visible
+    /// at the call site rather than hidden here.
+    func toggleArchived(assetIDs: [UUID]) async {
+        guard !assetIDs.isEmpty, let services else { return }
+        let archived: Set<UUID>
+        do {
+            archived = try await services.archivedAssetIDs(among: assetIDs)
+        } catch {
+            lastError = Self.message(for: error)
+            return
+        }
+        guard let verb = shelfVerb(targets: assetIDs, archived: archived) else { return }
+        switch verb {
+        case .archive:
+            // Only the ids this press actually CHANGES, so the toast's count and
+            // the undo both describe what happened — and undoing over a mixed
+            // selection restores the mixture rather than clearing it.
+            setArchived(true, assetIDs: assetIDs.filter { !archived.contains($0) })
+        case .unarchive:
+            setArchived(false, assetIDs: assetIDs.filter { archived.contains($0) })
+        }
+    }
+
+    /// The `E` key's entry point — the current selection, or the lead cursor's
+    /// post, exactly as ⌫ and ⌘D resolve their targets.
+    func toggleArchivedSelected() async {
+        await toggleArchived(assetIDs: keyboardActionTargets)
+    }
+
+    /// Apply and reload. Shared by the verb and its inverse (no undo
+    /// re-registration — the ping-pong installs the mirror). The reload is a
+    /// membership-shaped one even though no membership changed: which items are
+    /// VISIBLE changed, and that is what the grid, the counts and the gallery
+    /// covers all render from.
+    private func applyArchived(_ archived: Bool, to assetIDs: [UUID]) async {
+        guard let services else { return }
+        do {
+            if archived {
+                _ = try await services.archive(assetIDs)
+            } else {
+                _ = try await services.unarchive(assetIDs)
+            }
+            reloadAfterMembershipChange()
         } catch { lastError = Self.message(for: error) }
     }
 
@@ -2886,7 +2965,7 @@ final class IngestionModel: ObservableObject {
     /// collections while a space is open.
     func items(in collectionID: UUID) async throws -> [CollectionItemDetail] {
         guard let services else { return [] }
-        return try await services.collectionItems(in: collectionID)
+        return try await services.collectionItems(in: collectionID, includeArchived: false)
     }
 
     /// The on-disk 512-tier thumbnail URL for a blob hash (pure — no decode).
@@ -3134,7 +3213,7 @@ final class IngestionModel: ObservableObject {
     func newSpaceFromCollection(_ collectionID: UUID) async -> UUID? {
         guard let services else { return nil }
         do {
-            let sourceItems = try await services.collectionItems(in: collectionID)
+            let sourceItems = try await services.collectionItems(in: collectionID, includeArchived: false)
             guard !sourceItems.isEmpty else {
                 notify("That collection has no items to seed a space.")
                 return nil

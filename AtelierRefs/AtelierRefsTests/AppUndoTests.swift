@@ -49,7 +49,7 @@ struct AppUndoTests {
     }
 
     private func members(of collectionID: UUID, _ services: AppServices) async throws -> [UUID] {
-        try await services.collectionItems(in: collectionID).map { $0.asset.id }
+        try await services.collectionItems(in: collectionID, includeArchived: false).map { $0.asset.id }
     }
 
     // MARK: - Rename
@@ -211,7 +211,7 @@ struct AppUndoTests {
     /// Load the folder's items into the model deterministically so a verb that
     /// reads `items` (reorder / remove / move capture the live order) sees them.
     private func primeItems(_ model: IngestionModel, folder: UUID, _ services: AppServices) async throws {
-        model.setItemsForTesting(try await services.collectionItems(in: folder))
+        model.setItemsForTesting(try await services.collectionItems(in: folder, includeArchived: false))
     }
 
     // MARK: - Delete (010 · delete-undo)

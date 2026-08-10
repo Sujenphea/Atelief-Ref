@@ -54,6 +54,15 @@ struct CollectionView: View {
     /// The destination picker `M` / `A` raised, or `nil` (024 · K3). Holds the assets
     /// it will file, captured at the press — see ``DestinationRequest``.
     @State private var destinationRequest: DestinationRequest?
+    /// Which export config panel the `…` overflow raised, or `nil`.
+    @State private var exportPanel: ExportPanelKind?
+    /// The export knobs, held HERE rather than in the panels: a popover rebuilds
+    /// its content on every presentation, so panel-local `@State` would reset the
+    /// format and column count each time one opened. These persist for as long as
+    /// the collection is on screen, which is what the old bar glyphs gave.
+    @State private var contactSheetExport = ExportConfig()
+    @State private var contactSheetLayout = ContactSheetConfig()
+    @State private var siteExport = SiteExportConfig()
     /// The grid's own view, so the picker can hand the keyboard back on dismiss.
     @State private var gridFocus = GridFocusHandle()
     /// The live grid viewport width, captured from the grid's `GeometryReader`, so
@@ -341,6 +350,7 @@ struct CollectionView: View {
         // multi-selection, which has no one tile to point at; the picker's own count
         // says what it caught.
         .overlay(alignment: .bottom) { destinationPickerAnchor }
+        .overlay(alignment: .bottom) { exportPanelAnchor }
         // The floating "+" (moved down from the shell). Hidden while the full-window
         // item detail is up: this is an overlay on the PANE, and the detail host is a
         // later sibling in `body`'s ZStack, so a visible "+" would float over a page
@@ -465,13 +475,25 @@ struct CollectionView: View {
                                help: "Remove \(count) from collection") {
                 model.removeFromFolder(assetIDs: selectedAssetIDs)
             }
-            // Contact-sheet export of the selection (052 · B4) — its own config
-            // popover, opening ABOVE the floating bar like the overflow. The ring
-            // shows progress + Cancel while a sheet renders.
-            ContactSheetExportButton(model: model, collectionID: collectionID)
-            // …and the same refs as a self-contained web page folder (014 · S3),
-            // sharing the ring beside it.
-            CollectionSiteExportButton(model: model, collectionID: collectionID)
+            // 023 · A3. Archive sits beside Delete and Remove — the three "make it
+            // not be here" verbs — rather than under the `…`, because it is the
+            // RECOVERABLE alternative to the Delete two glyphs to its left. A bar
+            // where the irreversible verb is one click and the reversible one is
+            // two nudges toward the wrong one.
+            //
+            // Every visible item is unarchived by construction (a browsing read
+            // hides the shelf, 023 · A1), so the verb always resolves to Archive
+            // here — but it still routes through `toggleArchived`, the same call
+            // the cell menu and `E` make, so the three cannot drift.
+            SelectionBarButton("archivebox", help: "Archive \(count)") {
+                Task { await model.toggleArchived(assetIDs: selectedAssetIDs) }
+            }
+            // The two exports (052 · B4, 014 · S3) live in the `…` overflow, not
+            // out here. This bar carries the verbs a selection is FOR — delete,
+            // remove, archive — and an export is a considered, occasional act that
+            // opens a config panel anyway; two more glyphs bought nothing but
+            // width. The ring stays: it is status rather than an action, and
+            // cancelling a running export must not require reopening a menu.
             ExportProgressRing()
             // Overflow as a popover so it opens ABOVE the bar (`arrowEdge: .top`),
             // not clipped below the floating capsule the way a `Menu` would.
@@ -495,9 +517,10 @@ struct CollectionView: View {
     private enum MoreSection { case move, add }
 
     /// The `…` overflow contents: collapsible Move to / Add to accordion sections
-    /// (each a scrollable, height-capped destination list) and a single-item Set as
-    /// Cover. Both sections start collapsed; opening one collapses the other. Every
-    /// action still calls the SAME `IngestionModel` method as the context menu.
+    /// (each a scrollable, height-capped destination list), then a leaf group —
+    /// single-item Set as Cover and the two exports. Both sections start collapsed;
+    /// opening one collapses the other. Every action still calls the SAME
+    /// `IngestionModel` method or `ExportController` request the other paths do.
     private func moreActionsMenu(count: Int) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             SelectionMenuSectionHeader(
@@ -508,15 +531,34 @@ struct CollectionView: View {
                 "Add to", isExpanded: expandedMoreSection == .add) { toggleSection(.add) }
             if expandedMoreSection == .add { destinationList(copy: true) }
 
+            Rectangle().fill(Theme.Colors.hairline)
+                .frame(height: 1).padding(.vertical, 3)
+
             // Set as Cover is a single-item action (parity with the context menu's
             // `n == 1` gate) — a leaf row, always visible, never collapsed.
             if count == 1, let assetID = selectedAssetIDs.first {
-                Rectangle().fill(Theme.Colors.hairline)
-                    .frame(height: 1).padding(.vertical, 3)
                 SelectionMenuRow("Set as Cover", systemImage: "photo") {
                     model.setCollectionCover(collectionID: collectionID, assetID: assetID)
                     showMoreActions = false
                 }
+            }
+
+            // The exports. Each closes this popover and opens its config panel on
+            // the shared anchor rather than presenting from inside here — a popover
+            // raised from a popover's content dismisses with its parent on the
+            // first outside click, which is the click that lands on the panel.
+            //
+            // Disabled while an export runs, exactly as the bar glyphs were; the
+            // web page additionally needs something to render.
+            SelectionMenuRow("Export Contact Sheet…", systemImage: "square.and.arrow.up",
+                             isEnabled: !exportController.isExporting) {
+                showMoreActions = false
+                exportPanel = .contactSheet
+            }
+            SelectionMenuRow("Export Web Page…", systemImage: "globe",
+                             isEnabled: !exportController.isExporting && !model.items.isEmpty) {
+                showMoreActions = false
+                exportPanel = .webPage
             }
         }
         .selectionMenuChrome()
@@ -569,6 +611,47 @@ struct CollectionView: View {
             // gets the keyboard back, or its arrows stay dead until the next click.
             .onChange(of: destinationRequest?.id) { _, id in
                 if id == nil { gridFocus.restore() }
+            }
+    }
+
+    /// Which export panel the overflow raised. `Identifiable` so it can drive a
+    /// `.popover(item:)` the same way ``DestinationRequest`` does.
+    private enum ExportPanelKind: String, Identifiable {
+        case contactSheet, webPage
+        var id: String { rawValue }
+    }
+
+    /// The zero-size anchor the export config panels hang off — the same trick and
+    /// the same place as ``destinationPickerAnchor``, so a panel raised from the
+    /// `…` lands exactly where the popover that raised it was.
+    ///
+    /// They cannot present from inside the overflow popover itself: on macOS a
+    /// popover raised from a popover's content is torn down with its parent, and
+    /// the parent dismisses on the first click outside it — which is any click on
+    /// the panel.
+    @ViewBuilder private var exportPanelAnchor: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .padding(.bottom, Theme.Spacing.xxl)
+            .allowsHitTesting(false)
+            .popover(item: $exportPanel, arrowEdge: .top) { kind in
+                switch kind {
+                case .contactSheet:
+                    ContactSheetExportPanel(
+                        model: model, collectionID: collectionID,
+                        config: $contactSheetExport, sheet: $contactSheetLayout,
+                        onClose: { exportPanel = nil })
+                case .webPage:
+                    CollectionSiteExportPanel(
+                        model: model, collectionID: collectionID,
+                        config: $siteExport,
+                        onClose: { exportPanel = nil })
+                }
+            }
+            // Same reason as the destination picker: however it closed, the grid
+            // gets the keyboard back, or its arrows stay dead until the next click.
+            .onChange(of: exportPanel) { _, panel in
+                if panel == nil { gridFocus.restore() }
             }
     }
 
@@ -785,6 +868,7 @@ struct CollectionView: View {
             onDelete: { model.requestDelete(assetIDs: $0) },
             onToggleExpand: { model.toggleExpansion(forItem: $0) },
             expandedPosts: model.expandedPosts,
+
             // 069 — hand the keyboard to the detail page while it is up, so the grid
             // behind it stops eating the page's arrows. Off the ROUTE, not off
             // `model.isDetailPresented`: that flag is deliberately un-`@Published`
@@ -792,6 +876,14 @@ struct CollectionView: View {
             // body reading it could render before it was set. `nav.presentedItemID` is
             // the published truth this body already observes.
             isDetailPresented: nav.presentedItemID != nil,
+            // 023 · A3 — the menu's Archive acts on the cell's Finder-scope
+            // targets; `E` acts on the same set ⌫ and ⌘D do. Both route through
+            // `toggleArchived`, which READS the archived state rather than
+            // assuming this grid can only be showing unarchived rows: it can,
+            // but a selection can outlive the rows under it.
+            onArchiveVerb: { Task { await model.toggleArchivedSelected() } },
+            onArchive: { ids in Task { await model.toggleArchived(assetIDs: ids) } },
+
             // 222 — the title row scrolls away inside the grid's own scroll region,
             // its band sized to the row's measured natural height.
             header: AnyView(headerContent),
@@ -1316,7 +1408,9 @@ private struct CollectionDetailHost: View {
                 // Through the model, not the tag store: this is the one host with a
                 // grid behind the overlay, and `setFavorite` reloads it so the cell's
                 // star repaints under the page (and the write is undoable, like ⌘D).
-                setFavorite: { model.setFavorite($0, assetIDs: [detail.asset.id]) }),
+                setFavorite: { model.setFavorite($0, assetIDs: [detail.asset.id]) },
+                // 023 · A3 — the same verb the grid menus offer, from the page.
+                setArchived: { model.setArchived($0, assetIDs: [detail.asset.id]) }),
             navigator: index.map { i in
                 ItemDetailNavigator(index: i, count: model.detailRun.count) { delta in
                     let run = model.detailRun

@@ -191,7 +191,7 @@ struct SpaceImportPlaceTests {
         #expect(model.items.isEmpty)
         let survivor = try await services.getAsset(id: a.id)
         #expect(survivor.asset.id == a.id)                        // asset not deleted
-        let unsortedIDs = try await services.collectionItems(in: unsorted).map(\.asset.id)
+        let unsortedIDs = try await services.collectionItems(in: unsorted, includeArchived: false).map(\.asset.id)
         #expect(unsortedIDs.contains(a.id))                       // still in the library
 
         // Redo — the tile comes back with its original id.

@@ -137,7 +137,7 @@ struct ServicesFavoritesTests {
         try await services.setFavorite(true, for: asset)
 
         for collection in [alpha, beta, gamma] {
-            let items = try await services.collectionItems(in: collection.id)
+            let items = try await services.collectionItems(in: collection.id, includeArchived: false)
             #expect(items.count == 1)
             #expect(items.first?.asset.isFavorite == true)
         }

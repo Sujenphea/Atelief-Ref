@@ -467,3 +467,29 @@ public struct AssetPerceptualHash: Sendable, Equatable, Hashable {
         self.phash = phash
     }
 }
+
+/// What the archive shelf is holding (023 · A4) — the Library pane's answer to
+/// "what have I put away, and what would clearing it free?".
+///
+/// Two numbers rather than one because they answer different questions and can
+/// diverge wildly: a shelf of a thousand media-less color swatches is a large
+/// count and zero bytes, and one archived video is the opposite.
+public struct ArchivedUsage: Sendable, Equatable {
+    /// How many assets are archived, byte-backed or not.
+    public let assetCount: Int
+    /// Bytes held by blobs that ONLY archived assets reference — what deleting
+    /// the whole shelf would actually free. A blob an un-archived asset still
+    /// points at is not counted, because unarchiving nothing would release it.
+    public let exclusiveBytes: Int
+
+    public init(assetCount: Int, exclusiveBytes: Int) {
+        self.assetCount = assetCount
+        self.exclusiveBytes = exclusiveBytes
+    }
+
+    /// Nothing archived — the overwhelmingly common state, and the one the stats
+    /// pane omits a row for rather than showing as zero.
+    public static let empty = ArchivedUsage(assetCount: 0, exclusiveBytes: 0)
+
+    public var isEmpty: Bool { assetCount == 0 }
+}

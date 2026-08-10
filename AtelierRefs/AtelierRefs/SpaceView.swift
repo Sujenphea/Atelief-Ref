@@ -338,6 +338,18 @@ struct SpaceView: View {
                 // Element tiles (frame / text) carry no asset and are skipped — an
                 // element exists only as a placement, so ⌫ is already the whole verb
                 // for one. A selection of nothing but elements stages nothing.
+                // Archive (023 · A3) — the tile vanishes from the board and comes
+                // back, in the same place, when the asset is unarchived: the
+                // placement row is untouched, only the read hides it. Elements
+                // carry no asset and are skipped, exactly as ⌘⌫ skips them.
+                onArchiveTiles: { tileIDs in
+                    let assetIDs = tileIDs
+                        .compactMap { content.detail(forTileID: $0) }
+                        .sorted { $0.item.z < $1.item.z }
+                        .compactMap { $0.asset?.id }
+                    guard !assetIDs.isEmpty else { return }
+                    Task { await model.toggleArchived(assetIDs: assetIDs) }
+                },
                 onDeleteTiles: { tileIDs in
                     let assetIDs = tileIDs
                         .compactMap { content.detail(forTileID: $0) }
@@ -1027,7 +1039,9 @@ struct SpaceView: View {
                     // A board has no membership verbs, but the star is a property of
                     // the ASSET (011 · U5) — favoriting from a Space is the same
                     // write, visible in every collection that holds the item.
-                    setFavorite: { model.setFavorite($0, assetIDs: [asset.id]) }),
+                    setFavorite: { model.setFavorite($0, assetIDs: [asset.id]) },
+                    // 023 · A3 — the same verb the grid menus offer, from the page.
+                    setArchived: { model.setArchived($0, assetIDs: [asset.id]) }),
                 navigator: nil,
                 onClose: {
                     model.flushViewBumps()

@@ -51,6 +51,13 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
     /// three. `false` for every row that predates the flag. Added by migration
     /// v19, `DEFAULT 0`.
     public var isFavorite: Bool
+    /// When the user put this item on the archive shelf (023 · A); `nil` — the
+    /// overwhelmingly common case — means "not archived". A property of the
+    /// ASSET, like ``isFavorite``: archiving hides the item from every browsing
+    /// surface at once without touching a single membership, which is what makes
+    /// unarchiving able to restore it exactly where it was. A timestamp rather
+    /// than a flag so the shelf can order by it. Added by migration v20.
+    public var archivedAt: Date?
     /// FK → ``Source``. **Required** — where the asset came from.
     public var sourceId: UUID
     /// How many times this asset's detail page has been opened (007 · sort). A
@@ -83,6 +90,7 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         case createdAt = "created_at"
         case name, note
         case isFavorite = "is_favorite"
+        case archivedAt = "archived_at"
         case sourceId = "source_id"
         case viewCount = "view_count"
         case lastViewedAt = "last_viewed_at"
@@ -105,6 +113,7 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         name: String? = nil,
         note: String? = nil,
         isFavorite: Bool = false,
+        archivedAt: Date? = nil,
         sourceId: UUID,
         viewCount: Int = 0,
         lastViewedAt: Date? = nil,
@@ -125,6 +134,7 @@ public struct Asset: Sendable, Equatable, Hashable, Codable, Identifiable {
         self.name = name
         self.note = note
         self.isFavorite = isFavorite
+        self.archivedAt = archivedAt
         self.sourceId = sourceId
         self.viewCount = viewCount
         self.lastViewedAt = lastViewedAt

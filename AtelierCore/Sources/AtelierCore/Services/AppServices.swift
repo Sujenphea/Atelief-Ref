@@ -431,6 +431,12 @@ public final class AppServices: Sendable {
             if favoritesOnly {
                 conditions.append("a.is_favorite = 1")
             }
+            // The archive shelf (023 · A), for the same reason the favorites chip
+            // is here: flipping keyword → meaning must not resurrect items the
+            // keyword search hides. A candidate-stage conjunct, so archived rows
+            // never reach the scorer — the vector maths below is per-candidate,
+            // which makes filtering here strictly cheaper than filtering after.
+            conditions.append("a.archived_at IS NULL")
             sql += "\n                WHERE " + conditions.joined(separator: " AND ")
 
             let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
@@ -1690,8 +1696,18 @@ public final class AppServices: Sendable {
     ///     tie-breaks keep the order deterministic).
     /// Switching modes never rewrites `manual_order`, so it is non-destructive.
     /// `.notFound` if the collection is absent.
+    ///
+    /// `includeArchived` (023 · A) is deliberately **NOT defaulted**, and this is
+    /// the one funnel where that earns its keep, because it has callers on both
+    /// sides. Browsing passes `false` — an archived asset keeps its membership
+    /// row and is hidden at the READ, which is what lets unarchiving put it back
+    /// exactly where it was. The backup writer passes `true`: it walks the
+    /// library one collection at a time through this same read, and a default
+    /// here would mean every backup silently omitted the user's whole shelf and
+    /// every restore lost it — a data-loss bug with no symptom until far too
+    /// late. A non-defaulted parameter turns that into a compile error instead.
     public func collectionItems(
-        in collectionID: UUID, sort: SortMode = .manual
+        in collectionID: UUID, sort: SortMode = .manual, includeArchived: Bool
     ) async throws -> [CollectionItemDetail] {
         try await read { db in
             guard try Collection.exists(db, key: Self.key(collectionID)) else {
@@ -1701,10 +1717,16 @@ public final class AppServices: Sendable {
             // no N+1. GRDB qualifies bare base columns to `collection_item`, so
             // the asset-keyed orderings reference the joined `asset` table by
             // name to avoid picking the membership row's columns.
+            var assetJoin = CollectionItem.asset.including(required: Asset.source)
+            if !includeArchived {
+                // On the JOIN rather than as a trailing WHERE: this is a required
+                // (INNER) join, so the two are equivalent to SQLite, and putting
+                // it here keeps the predicate next to the table it is about.
+                assetJoin = assetJoin.filter(Column("archived_at") == nil)
+            }
             var request = CollectionItem
                 .filter(Column("collection_id") == Self.key(collectionID))
-                .including(required: CollectionItem.asset
-                    .including(required: Asset.source))
+                .including(required: assetJoin)
             switch sort {
             case .manual:
                 request = request.order(Column("manual_order"), Column("id"))
@@ -1716,6 +1738,34 @@ public final class AppServices: Sendable {
             }
             return try CollectionItemRow.fetchAll(db, request).map {
                 CollectionItemDetail(item: $0.item, asset: $0.asset, source: $0.source)
+            }
+        }
+    }
+
+    /// The archive shelf itself (023 · A) — every archived asset with its
+    /// provenance, most recently archived first.
+    ///
+    /// Its own function rather than a flag on a browse read, because it is not a
+    /// collection and shares nothing with one: no membership rows, no manual
+    /// order, no sort modes, and no scope. It is the whole library filtered to
+    /// `archived_at IS NOT NULL`, which is exactly the query the v20 partial
+    /// index exists to serve.
+    ///
+    /// **Returns the full array, no cursor** — a deliberate v1 choice, not an
+    /// oversight. `collectionItems` justifies the same shape by being
+    /// collection-scoped (P16), and that justification does NOT carry over to a
+    /// library-wide read, so this one is measured instead: `ScaleHarnessTests`
+    /// times a seeded shelf, and paging lands if and when that says it must.
+    /// `archived_at DESC, id DESC` — the id tie-break keeps a batch archived in
+    /// one gesture (one `UPDATE`, one timestamp) in a deterministic order.
+    public func shelfAssets() async throws -> [AssetDetail] {
+        try await read { db in
+            let request = Asset
+                .filter(sql: "asset.archived_at IS NOT NULL")
+                .including(required: Asset.source)
+                .order(sql: "asset.archived_at DESC, asset.id DESC")
+            return try AssetSourceRow.fetchAll(db, request).map {
+                AssetDetail(asset: $0.asset, source: $0.source)
             }
         }
     }
@@ -1740,22 +1790,9 @@ public final class AppServices: Sendable {
     /// a cover asset that was deleted (`SET NULL`) — are simply absent from the
     /// result. One joined round-trip; ids not present in the store are skipped.
     public func collectionCovers(_ ids: [UUID]) async throws -> [UUID: String] {
-        let keys = ids.map(Self.key)
-        guard !keys.isEmpty else { return [:] }
+        guard !ids.isEmpty else { return [:] }
         return try await read { db in
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT collection.id AS cid, asset.blob_hash AS hash
-                FROM collection
-                JOIN asset ON asset.id = collection.cover_asset_id
-                WHERE collection.id IN (\(databaseQuestionMarks(count: keys.count)))
-                  AND asset.blob_hash IS NOT NULL
-                """, arguments: StatementArguments(keys))
-            var covers: [UUID: String] = [:]
-            for row in rows {
-                guard let cid = UUID(uuidString: row["cid"]) else { continue }
-                covers[cid] = row["hash"]
-            }
-            return covers
+            try Self.covers(in: db, table: "collection", ids: ids)
         }
     }
 
@@ -1781,38 +1818,10 @@ public final class AppServices: Sendable {
                 .fetchAll(db)
             guard !roots.isEmpty else { return [] }
 
-            var counts: [UUID: Int] = [:]
-            let countRows = try Row.fetchAll(db, sql: """
-                SELECT collection_id AS cid, COUNT(*) AS cnt
-                FROM collection_item GROUP BY collection_id
-                """)
-            for row in countRows {
-                guard let cid = UUID(uuidString: row["cid"]) else { continue }
-                counts[cid] = row["cnt"]
-            }
-
-            var hashes: [UUID: [String]] = [:]
-            if limit > 0 {
-                // `added_at DESC, id DESC` — the id tie-break keeps a
-                // same-instant batch deterministic.
-                let hashRows = try Row.fetchAll(db, sql: """
-                    SELECT cid, hash FROM (
-                        SELECT ci.collection_id AS cid, a.blob_hash AS hash,
-                               ROW_NUMBER() OVER (
-                                   PARTITION BY ci.collection_id
-                                   ORDER BY ci.added_at DESC, ci.id DESC
-                               ) AS rn
-                        FROM collection_item ci
-                        JOIN asset a ON a.id = ci.asset_id
-                        WHERE a.blob_hash IS NOT NULL
-                    ) WHERE rn <= ?
-                    ORDER BY cid, rn
-                    """, arguments: [limit])
-                for row in hashRows {
-                    guard let cid = UUID(uuidString: row["cid"]) else { continue }
-                    hashes[cid, default: []].append(row["hash"])
-                }
-            }
+            let (counts, hashes) = try Self.stackPreviews(
+                in: db, parentIDs: roots.map(\.id),
+                childTable: "collection_item", parentColumn: "collection_id",
+                recencyColumn: "added_at", limit: limit)
 
             return roots.map {
                 CollectionStackPreview(
@@ -2029,22 +2038,9 @@ public final class AppServices: Sendable {
     /// cover asset maps to that asset's `blob_hash`. Spaces with no cover are
     /// absent from the result.
     public func spaceCovers(_ ids: [UUID]) async throws -> [UUID: String] {
-        let keys = ids.map(Self.key)
-        guard !keys.isEmpty else { return [:] }
+        guard !ids.isEmpty else { return [:] }
         return try await read { db in
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT space.id AS sid, asset.blob_hash AS hash
-                FROM space
-                JOIN asset ON asset.id = space.cover_asset_id
-                WHERE space.id IN (\(databaseQuestionMarks(count: keys.count)))
-                  AND asset.blob_hash IS NOT NULL
-                """, arguments: StatementArguments(keys))
-            var covers: [UUID: String] = [:]
-            for row in rows {
-                guard let sid = UUID(uuidString: row["sid"]) else { continue }
-                covers[sid] = row["hash"]
-            }
-            return covers
+            try Self.covers(in: db, table: "space", ids: ids)
         }
     }
 
@@ -2064,38 +2060,10 @@ public final class AppServices: Sendable {
                 .fetchAll(db)
             guard !spaces.isEmpty else { return [] }
 
-            var counts: [UUID: Int] = [:]
-            let countRows = try Row.fetchAll(db, sql: """
-                SELECT space_id AS sid, COUNT(*) AS cnt
-                FROM space_item GROUP BY space_id
-                """)
-            for row in countRows {
-                guard let sid = UUID(uuidString: row["sid"]) else { continue }
-                counts[sid] = row["cnt"]
-            }
-
-            var hashes: [UUID: [String]] = [:]
-            if limit > 0 {
-                // `created_at DESC, id DESC` — the id tie-break keeps a
-                // same-instant batch deterministic.
-                let hashRows = try Row.fetchAll(db, sql: """
-                    SELECT sid, hash FROM (
-                        SELECT si.space_id AS sid, a.blob_hash AS hash,
-                               ROW_NUMBER() OVER (
-                                   PARTITION BY si.space_id
-                                   ORDER BY si.created_at DESC, si.id DESC
-                               ) AS rn
-                        FROM space_item si
-                        JOIN asset a ON a.id = si.asset_id
-                        WHERE a.blob_hash IS NOT NULL
-                    ) WHERE rn <= ?
-                    ORDER BY sid, rn
-                    """, arguments: [limit])
-                for row in hashRows {
-                    guard let sid = UUID(uuidString: row["sid"]) else { continue }
-                    hashes[sid, default: []].append(row["hash"])
-                }
-            }
+            let (counts, hashes) = try Self.stackPreviews(
+                in: db, parentIDs: spaces.map(\.id),
+                childTable: "space_item", parentColumn: "space_id",
+                recencyColumn: "created_at", limit: limit)
 
             return spaces.map {
                 SpaceStackPreview(
@@ -2623,6 +2591,22 @@ public final class AppServices: Sendable {
                 request = request.filter(sql: "asset.is_favorite = 1")
             }
 
+            // The archive shelf (023 · A). Search NEVER returns archived items,
+            // so this takes no parameter: there is no caller that wants them,
+            // and a knob whose `true` branch is unreachable is noise on every
+            // call site rather than an explicit choice. What guards a NEW read
+            // against forgetting the predicate is the source-scan allowlist
+            // test, not a parameter this funnel would have to be handed.
+            //
+            // A WHERE CONJUNCT, never a post-filter over the returned page, and
+            // the second reason is the serious one: archived rows never reach
+            // the per-row correlated scorer in `ordered(_:by:…)` (a speedup),
+            // and a post-filter would silently SHORTEN pages — a page of 50
+            // that loses 7 archived rows hands back 43, and the keyset cursor
+            // would then page through gaps. Qualified `asset.archived_at`: the
+            // source join makes a bare column ambiguous.
+            request = request.filter(sql: "asset.archived_at IS NULL")
+
             // Keyset seek: rows strictly after the cursor in the DESC order.
             // GRDB qualifies these `Column`s to the base `asset` table; the Date
             // binds to the same sortable text encoding the column stores (C5).
@@ -2813,6 +2797,120 @@ public final class AppServices: Sendable {
                 SELECT id FROM asset WHERE id IN (\(placeholders)) AND is_favorite = 1
                 """, arguments: StatementArguments(keys))
             return Set(found.compactMap(UUID.init(uuidString:)))
+        }
+    }
+
+    // MARK: - Shelf (023 · A — archive / unarchive)
+
+    /// Put `assetIDs` on the archive shelf, in ONE transaction. Returns the
+    /// number of rows that actually changed.
+    ///
+    /// Archiving touches ONE column. It does not remove a membership, move a
+    /// space placement, drop a tag or reap a blob — that is the entire
+    /// difference between this and a delete, and it is why unarchiving can put
+    /// the item back exactly where it was without having to remember anything.
+    ///
+    /// **Idempotent, and re-archiving keeps the ORIGINAL timestamp.** The
+    /// `UPDATE` is filtered to `archived_at IS NULL`, so archiving an already
+    /// archived asset writes nothing rather than bumping it to the top of the
+    /// shelf. A batch that mixes archived and un-archived assets therefore
+    /// archives only the un-archived ones and leaves the rest where they sit,
+    /// which is what the shelf's "most recently archived first" order means.
+    ///
+    /// The timestamp is server-authoritative (the service stamps `Date()`, like
+    /// every other `*_at` in this layer). A missing id is silently ignored, for
+    /// the same reason ``setFavorite(_:for:)`` ignores one: the caller is a
+    /// multi-select over a grid that can be reloaded underneath it, and failing
+    /// the whole batch because one tile was deleted a moment ago is worse than
+    /// archiving the rest. An empty set is a no-op.
+    @discardableResult
+    public func archive(_ assetIDs: [UUID]) async throws -> Int {
+        let keys = Array(Set(assetIDs)).map(Self.key)
+        guard !keys.isEmpty else { return 0 }
+        return try await write { db in
+            let placeholders = databaseQuestionMarks(count: keys.count)
+            var args: [(any DatabaseValueConvertible)?] = [Date()]
+            args.append(contentsOf: keys.map { $0 as (any DatabaseValueConvertible)? })
+            try db.execute(sql: """
+                UPDATE asset SET archived_at = ?
+                WHERE id IN (\(placeholders)) AND archived_at IS NULL
+                """, arguments: StatementArguments(args))
+            return db.changesCount
+        }
+    }
+
+    /// Take `assetIDs` off the shelf, in ONE transaction. Returns the number of
+    /// rows that actually changed.
+    ///
+    /// The inverse of ``archive(_:)`` and lossless by construction: clearing the
+    /// timestamp is the whole operation, because archiving never destroyed
+    /// anything to restore. Filtered to `archived_at IS NOT NULL`, so
+    /// unarchiving something that was never archived writes nothing.
+    @discardableResult
+    public func unarchive(_ assetIDs: [UUID]) async throws -> Int {
+        let keys = Array(Set(assetIDs)).map(Self.key)
+        guard !keys.isEmpty else { return 0 }
+        return try await write { db in
+            let placeholders = databaseQuestionMarks(count: keys.count)
+            try db.execute(sql: """
+                UPDATE asset SET archived_at = NULL
+                WHERE id IN (\(placeholders)) AND archived_at IS NOT NULL
+                """, arguments: StatementArguments(keys))
+            return db.changesCount
+        }
+    }
+
+    /// The ids among `assetIDs` that are currently archived — the read half of a
+    /// mixed selection, mirroring ``favoritedAssetIDs(among:)``. `ShelfIntent`
+    /// (023 · A3) asks this to decide which way a mixed selection flips and to
+    /// build the exact inverse an undo has to restore.
+    public func archivedAssetIDs(among assetIDs: [UUID]) async throws -> Set<UUID> {
+        let keys = Array(Set(assetIDs)).map(Self.key)
+        guard !keys.isEmpty else { return [] }
+        return try await read { db in
+            let placeholders = databaseQuestionMarks(count: keys.count)
+            let found = try String.fetchAll(db, sql: """
+                SELECT id FROM asset
+                WHERE id IN (\(placeholders)) AND archived_at IS NOT NULL
+                """, arguments: StatementArguments(keys))
+            return Set(found.compactMap(UUID.init(uuidString:)))
+        }
+    }
+
+    /// What the archive shelf is holding (023 · A4 / 016 stats): how many items
+    /// are on it, and how many bytes deleting all of them would actually free.
+    ///
+    /// This is the ONE read that deliberately looks at archived rows and reports
+    /// them as their own figure rather than hiding or merging them. Archive
+    /// creates the question "what can I reclaim", and the Library pane is where
+    /// that question is asked.
+    ///
+    /// `exclusiveBytes` counts a blob only when EVERY asset referencing it is
+    /// archived — which is the honest answer, and the reason it is not a simple
+    /// `SUM(file_size)`. Blobs are shared (one file, many asset rows), so
+    /// summing per-asset sizes would double-count a picture saved into three
+    /// collections, and counting a blob an un-archived asset still points at
+    /// would promise space that unarchiving nothing could release. A number in a
+    /// "reclaim" row that overstates is worse than no number.
+    public func archivedUsage() async throws -> ArchivedUsage {
+        try await read { db in
+            let count = try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM asset WHERE archived_at IS NOT NULL") ?? 0
+            // Per DISTINCT blob: keep it only if no un-archived asset references
+            // it, then add its size once. `MAX(file_size)` collapses the rows
+            // sharing a hash — they carry the same bytes by construction, so any
+            // aggregate would do; MAX is the one that cannot return NULL while a
+            // size exists.
+            let bytes = try Int.fetchOne(db, sql: """
+                SELECT COALESCE(SUM(size), 0) FROM (
+                    SELECT MAX(file_size) AS size
+                    FROM asset
+                    WHERE blob_hash IS NOT NULL
+                    GROUP BY blob_hash
+                    HAVING SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END) = 0
+                )
+                """) ?? 0
+            return ArchivedUsage(assetCount: count, exclusiveBytes: bytes)
         }
     }
 
@@ -3229,6 +3327,119 @@ public final class AppServices: Sendable {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "%", with: "\\%")
             .replacingOccurrences(of: "_", with: "\\_")
+    }
+
+    /// The shared body behind ``collectionCovers(_:)`` and ``spaceCovers(_:)``,
+    /// which are the same query over two parent tables: given a parent carrying
+    /// `cover_asset_id`, map each requested id that HAS a surviving, byte-backed
+    /// cover to that asset's `blob_hash`. Parents with no cover — or a cover asset
+    /// that was deleted (`SET NULL`) — are simply absent from the result.
+    ///
+    /// An ARCHIVED cover is treated exactly like a deleted one (023 · A, edge
+    /// case 1). A deleted cover is handled by the schema (`SET NULL`); an
+    /// archived cover is not null, so without the predicate the card would keep
+    /// rendering a picture of an item the user has put out of sight. Filtered
+    /// out here, the parent is simply absent from the result and the gallery
+    /// falls back to its most-recent non-archived member — the same fallback a
+    /// deleted cover already gets, reached by the same route.
+    ///
+    /// `table` is interpolated into the SQL, so it must stay a compile-time
+    /// literal from the call sites below and never user input; only the ids bind
+    /// as arguments.
+    private static func covers(
+        in db: Database, table: String, ids: [UUID]
+    ) throws -> [UUID: String] {
+        let keys = ids.map(Self.key)
+        guard !keys.isEmpty else { return [:] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT \(table).id AS pid, asset.blob_hash AS hash
+            FROM \(table)
+            JOIN asset ON asset.id = \(table).cover_asset_id
+            WHERE \(table).id IN (\(databaseQuestionMarks(count: keys.count)))
+              AND asset.blob_hash IS NOT NULL
+              AND asset.archived_at IS NULL
+            """, arguments: StatementArguments(keys))
+        var covers: [UUID: String] = [:]
+        for row in rows {
+            guard let pid = UUID(uuidString: row["pid"]) else { continue }
+            covers[pid] = row["hash"]
+        }
+        return covers
+    }
+
+    /// The shared body behind ``collectionStackPreviews(limit:includeUnsorted:)``
+    /// and ``spaceStackPreviews(limit:)`` (009 · N4). Both gallery cards want the
+    /// same two things about a set of parents the caller has already fetched in
+    /// its own order: the DIRECT item count, and the blob hashes of the `limit`
+    /// most recently added byte-backed items, newest first. The pair differs only
+    /// in the child table, its foreign key and its recency column, so those are
+    /// parameters. One window-function query, not a per-parent N+1.
+    ///
+    /// Rows whose `asset_id` is NULL (a Space's element rows) or whose asset has
+    /// no blob (media-less kinds, 003 · O1) still COUNT but cannot fan, which the
+    /// `JOIN` + `blob_hash IS NOT NULL` gives for free.
+    ///
+    /// BOTH queries are scoped to `parentIDs`, which is what the caller is about
+    /// to render. Unscoped, the count aggregate walked every collection in the
+    /// library on each Home render and Swift threw the surplus away.
+    ///
+    /// `childTable` / `parentColumn` / `recencyColumn` are interpolated into the
+    /// SQL, so they must stay compile-time literals from the call sites and never
+    /// user input; only the ids and `limit` bind as arguments.
+    private static func stackPreviews(
+        in db: Database, parentIDs: [UUID],
+        childTable: String, parentColumn: String, recencyColumn: String,
+        limit: Int
+    ) throws -> (counts: [UUID: Int], hashes: [UUID: [String]]) {
+        let keys = parentIDs.map(Self.key)
+        guard !keys.isEmpty else { return ([:], [:]) }
+        let placeholders = databaseQuestionMarks(count: keys.count)
+
+        // The count JOINS `asset` — it did not need to before the shelf existed
+        // (023 · A, edge case 3). A **LEFT** join, and the predicate admits a
+        // missing asset: a Space's element rows carry a NULL `asset_id` and are
+        // real items that must keep counting. An inner join would silently drop
+        // every element row and the card would read "2 items" over a board of 3.
+        var counts: [UUID: Int] = [:]
+        let countRows = try Row.fetchAll(db, sql: """
+            SELECT ch.\(parentColumn) AS pid, COUNT(*) AS cnt
+            FROM \(childTable) ch
+            LEFT JOIN asset a ON a.id = ch.asset_id
+            WHERE ch.\(parentColumn) IN (\(placeholders))
+              AND (a.id IS NULL OR a.archived_at IS NULL)
+            GROUP BY ch.\(parentColumn)
+            """, arguments: StatementArguments(keys))
+        for row in countRows {
+            guard let pid = UUID(uuidString: row["pid"]) else { continue }
+            counts[pid] = row["cnt"]
+        }
+
+        guard limit > 0 else { return (counts, [:]) }
+        var hashArgs = keys.map { $0 as any DatabaseValueConvertible }
+        hashArgs.append(limit)
+        // `<recency> DESC, id DESC` — the id tie-break keeps a same-instant
+        // batch deterministic.
+        var hashes: [UUID: [String]] = [:]
+        let hashRows = try Row.fetchAll(db, sql: """
+            SELECT pid, hash FROM (
+                SELECT ch.\(parentColumn) AS pid, a.blob_hash AS hash,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ch.\(parentColumn)
+                           ORDER BY ch.\(recencyColumn) DESC, ch.id DESC
+                       ) AS rn
+                FROM \(childTable) ch
+                JOIN asset a ON a.id = ch.asset_id
+                WHERE a.blob_hash IS NOT NULL
+                  AND a.archived_at IS NULL
+                  AND ch.\(parentColumn) IN (\(placeholders))
+            ) WHERE rn <= ?
+            ORDER BY pid, rn
+            """, arguments: StatementArguments(hashArgs))
+        for row in hashRows {
+            guard let pid = UUID(uuidString: row["pid"]) else { continue }
+            hashes[pid, default: []].append(row["hash"])
+        }
+        return (counts, hashes)
     }
 
     /// The on-disk key form of a UUID (lowercased TEXT, C5) — what GRDB's

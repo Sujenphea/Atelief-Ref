@@ -44,7 +44,7 @@ struct ServicesContentTests {
         #expect(asset.payloadValue?.color?.hex == "#ff0000")
 
         // It's a member of the collection feed.
-        let items = try await services.collectionItems(in: c.id).map(\.asset.id)
+        let items = try await services.collectionItems(in: c.id, includeArchived: false).map(\.asset.id)
         #expect(items == [asset.id])
     }
 
@@ -62,7 +62,7 @@ struct ServicesContentTests {
         #expect(b.wasDeduplicated == true)
         #expect(a.asset.id == b.asset.id)
         // One membership, one asset.
-        let items = try await services.collectionItems(in: c.id)
+        let items = try await services.collectionItems(in: c.id, includeArchived: false)
         #expect(items.count == 1)
     }
 
@@ -76,7 +76,7 @@ struct ServicesContentTests {
         let b = try await services.ingestContent(.color(hex: "#00ff00"), from: source, into: c.id)
         #expect(a.asset.id != b.asset.id)
         #expect(b.wasDeduplicated == false)
-        #expect(try await services.collectionItems(in: c.id).count == 2)
+        #expect(try await services.collectionItems(in: c.id, includeArchived: false).count == 2)
     }
 
     // MARK: validation
@@ -181,7 +181,7 @@ struct ServicesContentTests {
 
         #expect(b.wasDeduplicated == true)
         #expect(a.asset.id == b.asset.id)
-        #expect(try await services.collectionItems(in: c.id).count == 1)
+        #expect(try await services.collectionItems(in: c.id, includeArchived: false).count == 1)
     }
 
     @Test("a non-http(s) link URL is rejected (.invalidLinkURL)")
@@ -258,7 +258,7 @@ struct ServicesContentTests {
 
         #expect(b.wasDeduplicated == true)
         #expect(a.asset.id == b.asset.id)
-        #expect(try await services.collectionItems(in: c.id).count == 1)
+        #expect(try await services.collectionItems(in: c.id, includeArchived: false).count == 1)
     }
 
     @Test("a tweet with no usable id is rejected (.emptyTweet)")
@@ -366,7 +366,7 @@ struct ServicesContentTests {
         #expect(b.wasDeduplicated == true)
         #expect(a.asset.id == b.asset.id)
         #expect(b.asset.blobHash == "aaa1")               // first card image kept
-        #expect(try await services.collectionItems(in: c.id).count == 1)
+        #expect(try await services.collectionItems(in: c.id, includeArchived: false).count == 1)
     }
 
     @Test("invalid card-image blob facts (non-positive dims) are rejected")

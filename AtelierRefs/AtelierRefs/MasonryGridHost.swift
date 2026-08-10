@@ -192,6 +192,24 @@ struct GridHostConfiguration {
     /// by default (the collection menu has no Reveal verb).
     var onReveal: (UUID) -> Void = { _ in }
 
+    // MARK: 023 · A2 — the archive shelf
+
+    /// Take assets off the archive shelf — offered only by the `.shelf` menu.
+    /// A no-op by default: every other surface shows items that are, by
+    /// construction, not archived, so there is nothing there to unarchive.
+    var onUnarchive: (_ assetIDs: [UUID]) -> Void = { _ in }
+
+    /// The `E` key's archive verb (023 · A3), raised for the surface to resolve
+    /// against its own selection — the same shape as ``onDestinationVerb``, and
+    /// `nil` for the same reason: a surface that does not bind the letter lets
+    /// it fall through rather than swallowing it.
+    var onArchiveVerb: (() -> Void)?
+
+    /// Put specific assets on the shelf — the menu's Archive item, which acts on
+    /// the cell's Finder-scope targets rather than on the keyboard selection.
+    /// A no-op by default, so a surface that binds neither is unchanged.
+    var onArchive: (_ assetIDs: [UUID]) -> Void = { _ in }
+
     // MARK: 222 — scroll-away header
 
     /// A header hosted INSIDE the grid's scroll region (222), so it scrolls away
@@ -281,6 +299,11 @@ final class MasonryHeaderContainer: NSView, NSCollectionViewElement {
 enum GridMenuStyle {
     case collection
     case looseAssets
+    /// The archive shelf (023 · A2): Unarchive and Delete, and nothing else. No
+    /// Move / Add / Set Cover / Remove — every one of those needs a membership
+    /// the shelf does not have, and an archive you can file into is just another
+    /// collection.
+    case shelf
 }
 
 // MARK: - The collection view subclass (A2 seam)
@@ -1314,6 +1337,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
                 })
             }
             menu.addItem(.separator())
+            addArchiveItem(to: menu, targets: targets)
             menu.addItem(BlockMenuItem(
                 title: "Remove from Collection\(Self.countSuffix(n))"
             ) { [weak self] in
@@ -1333,6 +1357,32 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
                 self?.configuration.onCopyToCollection(targets, target)
             }
             menu.addItem(addItem)
+
+            if n == 1, let idx = idToIndex[itemID], items.indices.contains(idx),
+               configuration.blobURL(items[idx]) != nil {
+                menu.addItem(BlockMenuItem(title: "Reveal in Finder") { [weak self] in
+                    self?.configuration.onReveal(itemID)
+                })
+            }
+            menu.addItem(.separator())
+            addArchiveItem(to: menu, targets: targets)
+            menu.addItem(BlockMenuItem(title: "Delete\(Self.countSuffix(n))") { [weak self] in
+                self?.configuration.onDelete(targets)
+            })
+
+        case .shelf:
+            // Unarchive is the shelf's ONE verb, and it reads first because it
+            // is the reason anyone opens this pane. Delete stays because leaving
+            // the library means the same thing from every surface (022 · D5) —
+            // and it is the recoverable delete, with the same ⌘Z.
+            // Titled by `ShelfVerb`, not by a second string built here: the
+            // shelf is all-archived by construction, so the verb resolves to
+            // unarchive and its title counts the way every other verb does.
+            if let verb = shelfVerb(targets: targets, archived: Set(targets)) {
+                menu.addItem(BlockMenuItem(title: verb.title) { [weak self] in
+                    self?.configuration.onUnarchive(targets)
+                })
+            }
 
             if n == 1, let idx = idToIndex[itemID], items.indices.contains(idx),
                configuration.blobURL(items[idx]) != nil {
@@ -1366,6 +1416,21 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// " (N)" for a multi-item action, empty for a single — mirrors
     /// `CollectionView.countSuffix`.
     private static func countSuffix(_ n: Int) -> String { n > 1 ? " (\(n))" : "" }
+
+    /// The Archive item for a BROWSING menu (collection / loose assets), added
+    /// only when the surface binds the verb. Nothing a browsing surface can show
+    /// is archived (023 · A1), so the verb always resolves to Archive here —
+    /// asked through ``shelfVerb(targets:archived:)`` anyway rather than
+    /// hard-coded, so the title and the count come from the one place that
+    /// decides them.
+    private func addArchiveItem(to menu: NSMenu, targets: [UUID]) {
+        guard configuration.onArchiveVerb != nil,
+              let verb = shelfVerb(targets: targets, archived: [])
+        else { return }
+        menu.addItem(BlockMenuItem(title: verb.title) { [weak self] in
+            self?.configuration.onArchive(targets)
+        })
+    }
 
     // MARK: Drop onto a cell (036 §4 A3 · 011 — NSView-level reception)
 
@@ -1650,6 +1715,11 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         case .addTo:
             guard let raise = configuration.onDestinationVerb else { return false }
             raise(.add)
+        // Unbound on a surface that supplies no handler — fall through rather
+        // than swallowing the letter, exactly as Move to / Add to do.
+        case .archiveVerb:
+            guard let archive = configuration.onArchiveVerb else { return false }
+            archive()
         case .selectAll:
             store.apply(.selectAll)
         case .zoomIn:
@@ -1867,6 +1937,11 @@ nonisolated enum GridKeyCommand: Equatable {
     case moveTo
     /// A (bare) — open the destination picker on "Add to…" (024 · K3).
     case addTo
+    /// E (bare) — the archive verb (023 · A3). Which verb it IS — archive or
+    /// unarchive — is not decided here: the key press only says "the archive
+    /// verb", and ``shelfVerb(targets:archived:)`` decides what that means for
+    /// the selection at hand.
+    case archiveVerb
     /// ⌘A — select all.
     case selectAll
     /// ⌘+ / ⌘= — bigger cells (fewer columns).
@@ -1923,6 +1998,11 @@ func gridKeyCommand(
     case "-": return command ? .zoomOut : nil               // ⌘−
     case "x", "X": return bareModifiers.isEmpty ? .toggleLead : nil  // X, no modifiers
     case "m", "M": return hardModifiers.isEmpty ? .moveTo : nil      // M — "Move to…"
+    // E — the archive verb (023 · A3). Same guard as M / A: ⇧ tolerated (a
+    // stray capital still meant the verb), ⌘ / ⌥ / ⌃ disqualify — ⌘E is Find
+    // Next by convention and ⇧⌘E is Export moodboard, so neither may be eaten,
+    // and ⌥E is a dead-key accent in a text field.
+    case "e", "E": return hardModifiers.isEmpty ? .archiveVerb : nil
     default: return nil
     }
 }

@@ -26,6 +26,23 @@ enum LibraryStatsCopy {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
+    /// The Archived row's value (023 · A4). Two facts in one line because they
+    /// answer different halves of the same question, and either alone misleads:
+    /// a count with no size says nothing about reclaiming, and a size with no
+    /// count hides a shelf of a thousand weightless swatches.
+    ///
+    /// The size is what deleting the shelf would ACTUALLY free — blobs a visible
+    /// item still shares are excluded — so the row can be read as an offer.
+    /// Zero bytes is spelled out rather than hidden: "12 items · nothing to
+    /// reclaim" is a real and useful answer, and a bare "12 items" would leave
+    /// the reader to guess.
+    static func archived(_ usage: ArchivedUsage) -> String {
+        guard usage.exclusiveBytes > 0 else {
+            return "\(items(usage.assetCount)) · nothing to reclaim"
+        }
+        return "\(items(usage.assetCount)) · \(size(Int64(usage.exclusiveBytes))) reclaimable"
+    }
+
     /// The row label for a storage tier.
     static func tier(_ tier: LibraryStorageTier) -> String {
         switch tier {

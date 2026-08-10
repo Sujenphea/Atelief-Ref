@@ -118,6 +118,17 @@ public final class CanvasHostView: NSView {
     /// confirmation, and its copy has to say "the library", not "this board".
     public var onDeleteTiles: ((Set<Int>) -> Void)?
 
+    /// **Archive** — put the tiles' assets on the archive shelf (023 · A3). The
+    /// context menu's Archive item; the tile then vanishes from the board and
+    /// returns, in place, when the asset is unarchived. `nil` omits the item
+    /// rather than drawing a dead one, so a host that has no shelf is unchanged.
+    ///
+    /// The renderer deliberately does NOT decide the verb's direction or its
+    /// title: a board can only ever show unarchived assets, and what "archive"
+    /// means for a mixed set is an app-level rule (`shelfVerb`) that has no
+    /// business being duplicated in a rendering package.
+    public var onArchiveTiles: ((Set<Int>) -> Void)?
+
     /// Called with the selected tile ids for Edit ▸ Copy (⌘C, 052 · B1). The host
     /// maps them to assets and writes the pasteboard; `nil` disables Copy.
     public var onCopyTiles: ((Set<Int>) -> Void)?
@@ -1168,6 +1179,13 @@ public final class CanvasHostView: NSView {
         delete.target = self
         menu.addItem(remove)
         menu.addItem(delete)
+        if onArchiveTiles != nil {
+            let archive = NSMenuItem(
+                title: "Archive", action: #selector(contextArchive), keyEquivalent: "")
+            archive.target = self
+            menu.addItem(.separator())
+            menu.addItem(archive)
+        }
         return menu
     }
 
@@ -1387,6 +1405,11 @@ public final class CanvasHostView: NSView {
     @objc private func contextRemove() {
         let ids = engine.selectedTileIDs
         if !ids.isEmpty { onRemoveTiles?(ids) }
+    }
+
+    @objc private func contextArchive() {
+        let ids = engine.selectedTileIDs
+        if !ids.isEmpty { onArchiveTiles?(ids) }
     }
 
     @objc private func contextDelete() {
