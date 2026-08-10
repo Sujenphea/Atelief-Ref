@@ -61,7 +61,7 @@ struct IngestPipelineTests {
         #expect(asset.fileSize == bytes.count)
 
         // Reachable via the read API, in the target collection.
-        let items = try await env.services.collectionItems(in: env.collectionID)
+        let items = try await env.services.collectionItems(in: env.collectionID, includeArchived: false)
         #expect(items.count == 1)
         #expect(items.first?.asset.id == asset.id)
         #expect(items.first?.asset.blobHash == asset.blobHash)
@@ -99,7 +99,7 @@ struct IngestPipelineTests {
         // Nothing written to the blob store — the content path skips it entirely.
         #expect(env.blobFiles().isEmpty)
         // Reachable via the read API.
-        let items = try await env.services.collectionItems(in: env.collectionID)
+        let items = try await env.services.collectionItems(in: env.collectionID, includeArchived: false)
         #expect(items.map(\.asset.id) == [asset.id])
     }
 
@@ -228,7 +228,7 @@ struct IngestPipelineTests {
         #expect(env.blobFiles().count == 1)
         let all = try await env.services.searchAssets(text: nil)
         #expect(all.count == 1)
-        let items = try await env.services.collectionItems(in: env.collectionID)
+        let items = try await env.services.collectionItems(in: env.collectionID, includeArchived: false)
         #expect(items.count == 1)
     }
 

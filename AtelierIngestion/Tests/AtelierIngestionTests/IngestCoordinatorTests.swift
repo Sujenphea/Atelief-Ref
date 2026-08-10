@@ -220,7 +220,7 @@ struct IngestCoordinatorTests {
         }
 
         // All three in the target collection.
-        let items = try await env.services.collectionItems(in: env.collectionID)
+        let items = try await env.services.collectionItems(in: env.collectionID, includeArchived: false)
         #expect(items.count == 3)
     }
 }

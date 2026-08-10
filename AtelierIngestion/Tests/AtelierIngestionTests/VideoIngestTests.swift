@@ -113,7 +113,7 @@ struct VideoIngestTests {
         }
 
         // Reachable via the read API in the target collection.
-        let items = try await env.services.collectionItems(in: env.collectionID)
+        let items = try await env.services.collectionItems(in: env.collectionID, includeArchived: false)
         #expect(items.count == 1)
         #expect(items.first?.asset.kind == .video)
     }
