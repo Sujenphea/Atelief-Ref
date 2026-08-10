@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -2796,5 +2796,122 @@ struct MigrationV20Tests {
         let placement = try dbQueue.read { try columnNotNull($0, table: "space_item") }
         #expect(membership["archived_at"] == nil)
         #expect(placement["archived_at"] == nil)
+    }
+}
+
+// MARK: - v21 (085 · C1 — asset_color)
+
+@Suite("Migration v21 — the color filter's index")
+struct MigrationV21Tests {
+
+    @Test("a fresh install lands at v21 with an empty asset_color")
+    func freshInstallHasTable() throws {
+        let dbQueue = try makeMigratedQueue()
+        let applied = try dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations")
+        }
+        #expect(applied.contains("v21"))
+        // Empty is correct: the table is DERIVED, and a backfill pass fills it.
+        // Deriving it inside the migration would run at launch — fine at 500
+        // assets, a stall at 50,000.
+        let count = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_color")
+        }
+        #expect(count == 0)
+    }
+
+    /// The composite key IS the merge invariant: same-bucket swatches are summed
+    /// upstream, so one asset cannot hold two rows for one bucket. Without this
+    /// the coverage floor would compare against a fragment instead of the total.
+    @Test("(asset_id, bucket) is the primary key, so a bucket cannot repeat")
+    func compositePrimaryKey() throws {
+        let dbQueue = try makeMigratedQueue()
+        let columns = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: "PRAGMA table_info(asset_color)")
+                .filter { ($0["pk"] as Int) > 0 }
+                .sorted { ($0["pk"] as Int) < ($1["pk"] as Int) }
+                .map { $0["name"] as String }
+        }
+        #expect(columns == ["asset_id", "bucket"])
+    }
+
+    /// `bucket = ? AND coverage >= ?` is the filter's exact shape, so the index
+    /// carries both columns in that order — a bucket-only index would leave the
+    /// coverage floor to a row scan.
+    @Test("the index covers bucket AND coverage, in that order")
+    func indexShape() throws {
+        let dbQueue = try makeMigratedQueue()
+        let sql = try dbQueue.read { db in
+            try String.fetchOne(db, sql: """
+                SELECT sql FROM sqlite_master
+                WHERE type = 'index' AND tbl_name = 'asset_color'
+                  AND name = 'index_asset_color_on_bucket'
+                """)
+        }
+        let normalized = try #require(sql).replacingOccurrences(of: " ", with: "")
+        #expect(normalized.contains("(bucket,coverage)"))
+    }
+
+    /// Mirrors `asset_analysis`: derived rows die with the asset they describe,
+    /// so no orphan sweep is needed. Asserted by DELETING an asset, not by
+    /// reading the DDL — the FK is only real if it is enforced.
+    @Test("rows cascade away with their asset")
+    func cascadeOnAssetDelete() throws {
+        let dbQueue = try makeMigratedQueue()
+        let assetID = newID()
+        try dbQueue.write { db in
+            let sourceID = newID()
+            try db.execute(sql: """
+                INSERT INTO source (id, platform, original_url, author_handle,
+                    author_name, title, captured_at, raw_metadata)
+                VALUES (?, 'pinterest', NULL, NULL, NULL, NULL, ?, '{}');
+                """, arguments: [sourceID, ts])
+            try db.execute(sql: """
+                INSERT INTO asset (id, kind, blob_hash, mime_type, width, height,
+                    duration, file_size, download_state, created_at, source_id)
+                VALUES (?, 'image', 'abc123', 'image/png', 10, 10, NULL, 4,
+                    'downloaded', ?, ?);
+                """, arguments: [assetID, ts, sourceID])
+            try db.execute(sql: """
+                INSERT INTO asset_color (asset_id, bucket, coverage)
+                VALUES (?, 3, 0.5);
+                """, arguments: [assetID])
+        }
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM asset WHERE id = ?", arguments: [assetID])
+        }
+        let remaining = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_color")
+        }
+        #expect(remaining == 0)
+    }
+
+    /// The table is additive and independent of the library schema, so an
+    /// upgrade from v20 must neither touch `asset` nor arrive holding rows.
+    @Test("upgrading from v20 adds the table without disturbing asset")
+    func upgradeFromV20IsAdditive() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v20")
+        let before = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: "PRAGMA table_info(asset)").map { $0["name"] as String }
+        }
+        let hadTable = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM sqlite_master
+                WHERE type = 'table' AND name = 'asset_color'
+                """)
+        }
+        #expect(hadTable == 0)
+
+        try Migrator.makeMigrator().migrate(dbQueue)   // apply v21
+
+        let after = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: "PRAGMA table_info(asset)").map { $0["name"] as String }
+        }
+        #expect(after == before, "v21 must not alter the asset table")
+        let count = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_color")
+        }
+        #expect(count == 0)
     }
 }

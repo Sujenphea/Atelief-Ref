@@ -37,7 +37,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -180,6 +180,14 @@ enum Migrator {
         // upgrade. SHIPPED once released: never edit this body.
         migrator.registerMigration("v20") { db in
             try createV20Schema(db)
+        }
+
+        // v21 — the color filter's index (085 · C1). One additive `asset_color`
+        // table, derived from `asset_analysis.colors`, holding the palette bucket
+        // each dominant swatch was filed under. Empty on upgrade; a backfill pass
+        // fills it. SHIPPED once released: never edit this body.
+        migrator.registerMigration("v21") { db in
+            try createV21Schema(db)
         }
 
         return migrator
@@ -1109,6 +1117,71 @@ enum Migrator {
             ALTER TABLE asset ADD COLUMN archived_at TEXT;
             CREATE INDEX index_asset_on_archived_at ON asset(archived_at)
                 WHERE archived_at IS NOT NULL;
+            """)
+    }
+
+    // MARK: - v21
+
+    /// The color filter's index (085 · C1). One additive `asset_color` table
+    /// holding, per asset, which palette buckets its dominant colors fell into
+    /// and how much of the image each covers.
+    ///
+    /// **Derived, not authoritative.** `asset_analysis.colors` remains the source
+    /// of truth; these rows are `ColorPalette.bucketCoverages` applied to it. The
+    /// table exists because the filter must be a SQL predicate — a post-filter
+    /// shortens pages and the keyset cursor then pages through the gaps (023 ·
+    /// A1) — and AtelierCore cannot see the imaging types that know what a color
+    /// is. So Ingestion decides the bucket and this layer stores an integer it
+    /// never interprets, exactly as it stores `colors` as opaque JSON.
+    ///
+    /// - `(asset_id, bucket)` is the PRIMARY KEY: swatches that land in the same
+    ///   bucket are MERGED upstream (two reds at 12% and 8% are one red at 20%,
+    ///   or neither clears a filter floor), so a bucket appears at most once per
+    ///   asset. No `rank` column — display order falls out of `coverage DESC`,
+    ///   and a stored rank would be a second thing to keep consistent with it.
+    /// - `ON DELETE CASCADE` mirrors `asset_analysis`: the rows die with the
+    ///   asset, so no orphan sweep is needed (17A discipline).
+    /// - The index is `(bucket, coverage)` because that is the filter's own
+    ///   shape — `bucket = ? AND coverage >= ?` is a range scan over it. The PK
+    ///   already serves the correlated `asset_id` probe from the other direction,
+    ///   so between them SQLite can drive the join from whichever side is more
+    ///   selective.
+    ///
+    /// Empty after this migration: it is populated by a backfill pass, not here.
+    /// Deriving ~5 rows per asset at launch is fine at 500 assets and a stall at
+    /// 50,000, and the derivation needs no blob bytes — only the hex already
+    /// stored in `asset_analysis.colors`.
+    private static func createV21Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE asset_color (
+                asset_id TEXT    NOT NULL
+                    REFERENCES asset(id) ON DELETE CASCADE,
+                bucket   INTEGER NOT NULL,
+                coverage REAL    NOT NULL,
+                PRIMARY KEY (asset_id, bucket)
+            );
+            CREATE INDEX index_asset_color_on_bucket
+                ON asset_color(bucket, coverage);
+            """)
+
+        // The derivation marker, on `asset_analysis` beside `analyzer_version`
+        // it mirrors. NULL means "these colors have not been filed into buckets
+        // at any palette version".
+        //
+        // Without it, "derived and produced nothing" is indistinguishable from
+        // "not derived yet" — the row count is zero either way — so an asset
+        // whose `colors` JSON is unreadable, or whose every hex is malformed,
+        // would be handed to the backfill on every pass forever. A queue that
+        // never drains is worse than a slow one: `drain()` would spin to its
+        // batch cap on every launch.
+        //
+        // Storing the VERSION rather than a boolean also makes a palette change
+        // a WHERE clause instead of a schema event, exactly as
+        // `analyzer_version` does for the analyzer: widen a threshold or add a
+        // bucket, bump the constant, and every asset re-derives — from the hex
+        // already on disk, with no image decoded.
+        try db.execute(sql: """
+            ALTER TABLE asset_analysis ADD COLUMN colors_palette_version INTEGER;
             """)
     }
 }

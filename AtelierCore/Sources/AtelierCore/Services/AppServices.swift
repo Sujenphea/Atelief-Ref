@@ -146,6 +146,108 @@ public final class AppServices: Sendable {
         }
     }
 
+    // MARK: - Color buckets (085 · C1)
+
+    /// How much of an image a color must cover before the filter calls the image
+    /// that color.
+    ///
+    /// Applied at QUERY time, not at write time — every bucket is stored, so this
+    /// can be re-judged without re-deriving a single row. 0.15 keeps a wall or a
+    /// backdrop qualifying while a 3% accent does not; an image where a color is
+    /// merely *present* is not an image a search for that color wants back.
+    public static let defaultColorCoverageFloor = 0.15
+
+    /// Replace `assetID`'s palette-bucket rows wholesale.
+    ///
+    /// `buckets` maps a bucket's raw value to the share of the image it covers.
+    /// **A dictionary rather than a list, deliberately**: the table's primary key
+    /// is `(asset_id, bucket)` because same-bucket swatches are merged upstream,
+    /// and a dictionary makes "one entry per bucket" impossible to violate at the
+    /// call site rather than a constraint violation at the write.
+    ///
+    /// Delete-then-insert in ONE transaction, so a re-derivation never leaves an
+    /// asset briefly colorless and a bucket it no longer has cannot survive.
+    /// Passing an empty dictionary clears the asset's rows, which is what an
+    /// extraction that produced nothing means.
+    ///
+    /// The bucket values are opaque here — see ``AssetColor``.
+    /// `paletteVersion` is STAMPED on the asset's analysis row, and it is what
+    /// takes the asset out of ``assetIDsNeedingColorBuckets(paletteVersion:limit:)``.
+    /// Row count cannot do that job: an unreadable palette derives zero rows,
+    /// which is indistinguishable from "not derived yet", so such an asset would
+    /// be handed back on every pass forever.
+    public func replaceColors(
+        assetID: UUID, buckets: [Int: Double], paletteVersion: Int
+    ) async throws {
+        try await write { db in
+            guard try Asset.exists(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            try db.execute(
+                sql: "DELETE FROM asset_color WHERE asset_id = ?",
+                arguments: [Self.key(assetID)])
+            // Sorted so the write order is deterministic — it makes a failing
+            // test's diff readable and costs nothing at five rows.
+            for (bucket, coverage) in buckets.sorted(by: { $0.key < $1.key }) {
+                try AssetColor(assetID: assetID, bucket: bucket, coverage: coverage)
+                    .insert(db)
+            }
+            // No-op when the asset has never been analyzed — the rows are still
+            // written, so a caller that derives buckets by another route is not
+            // silently dropped.
+            try db.execute(sql: """
+                UPDATE asset_analysis SET colors_palette_version = ?
+                WHERE asset_id = ?
+                """, arguments: [paletteVersion, Self.key(assetID)])
+        }
+    }
+
+    /// `assetID`'s palette buckets, most-covering first.
+    ///
+    /// Ties break on the bucket's raw value so the order is total — the detail
+    /// page's swatch row must not reshuffle between reads of unchanged data.
+    public func colors(for assetID: UUID) async throws -> [AssetColor] {
+        try await read { db in
+            try AssetColor
+                .filter(Column("asset_id") == Self.key(assetID))
+                .order(Column("coverage").desc, Column("bucket").asc)
+                .fetchAll(db)
+        }
+    }
+
+    /// The next batch of asset ids whose colors have been extracted but not yet
+    /// filed into buckets — the resumable derivation pass (085 · C1).
+    ///
+    /// "Has `colors`, and has not been filed at this palette version" is the
+    /// entire state, so it is one WHERE clause and needs no ledger. The work is
+    /// pure string→bucket arithmetic over data already on disk: **no blob is read
+    /// and no image is decoded**, which is why this is its own pass rather than
+    /// an `analyzer_version` bump that would re-decode the whole library.
+    ///
+    /// The comparison is `<`, not `IS NULL`, so bumping the palette — a new
+    /// bucket, a widened threshold — re-queues every asset without a migration,
+    /// exactly as `analyzer_version` does for the analyzer.
+    ///
+    /// Newest-first, capped at `limit` (clamped to `1...1000`), matching
+    /// ``assetIDsNeedingAnalysis(analyzerVersion:limit:)``.
+    public func assetIDsNeedingColorBuckets(
+        paletteVersion: Int, limit: Int = 200
+    ) async throws -> [UUID] {
+        let clamped = min(max(limit, 1), 1000)
+        return try await read { db in
+            try UUID.fetchAll(db, sql: """
+                SELECT an.asset_id
+                FROM asset_analysis an
+                JOIN asset a ON a.id = an.asset_id
+                WHERE an.colors IS NOT NULL
+                  AND (an.colors_palette_version IS NULL
+                       OR an.colors_palette_version < ?)
+                ORDER BY a.created_at DESC, a.id DESC
+                LIMIT ?
+                """, arguments: [paletteVersion, clamped])
+        }
+    }
+
     /// The analysis row for `assetID`, or `nil` when the asset has not been
     /// analyzed yet.
     public func analysis(for assetID: UUID) async throws -> AssetAnalysis? {
@@ -2359,6 +2461,9 @@ public final class AppServices: Sendable {
         tagNameContains: String? = nil,
         collectionIDs: [UUID] = [],
         favoritesOnly: Bool = false,
+        colorBuckets: [Int] = [],
+        colorMatch: TagMatch = .any,
+        minimumColorCoverage: Double = AppServices.defaultColorCoverageFloor,
         sort: SearchSort = .newest,
         limit: Int = 50,
         after cursor: AssetPageCursor? = nil
@@ -2396,6 +2501,11 @@ public final class AppServices: Sendable {
         // it is compared against must match the distinct set).
         let distinctTagIDs = Array(Set(tagIDs))
         let distinctCollectionIDs = Array(Set(collectionIDs))
+        // Sorted as well as de-duplicated: the bucket list becomes SQL argument
+        // order, and two calls asking for the same colors must build the same
+        // statement so SQLite's prepared-statement cache sees one query rather
+        // than one per permutation the caller happened to assemble.
+        let distinctColorBuckets = Array(Set(colorBuckets)).sorted()
         return try await read { db in
             // The source is required and carries the platform filter when given,
             // so the included join doubles as the filter (inner join).
@@ -2606,6 +2716,43 @@ public final class AppServices: Sendable {
             // would then page through gaps. Qualified `asset.archived_at`: the
             // source join makes a bare column ambiguous.
             request = request.filter(sql: "asset.archived_at IS NULL")
+
+            // Color filter (085 · C1). One EXISTS per requested bucket, so the
+            // rows never multiply the result the way a JOIN would — an asset
+            // holding two of the chosen colors must appear once, not twice, and
+            // `.all` needs each bucket checked independently anyway.
+            //
+            // `.any` (the default) is a single EXISTS over `bucket IN (…)`;
+            // `.all` is one EXISTS per bucket, AND-combined. Same vocabulary as
+            // `tagMatch`, deliberately — a second word for "match every one of
+            // these" would be a second thing to learn.
+            //
+            // The coverage floor is applied HERE rather than at write time: every
+            // bucket is stored, and what counts as "this image is red" is a
+            // query-time judgement that can change without a re-derivation.
+            if !distinctColorBuckets.isEmpty {
+                switch colorMatch {
+                case .any:
+                    let placeholders = databaseQuestionMarks(count: distinctColorBuckets.count)
+                    request = request.filter(sql: """
+                        EXISTS (SELECT 1 FROM asset_color c
+                                WHERE c.asset_id = asset.id
+                                  AND c.bucket IN (\(placeholders))
+                                  AND c.coverage >= ?)
+                        """, arguments: StatementArguments(
+                            distinctColorBuckets.map { $0 as DatabaseValueConvertible }
+                                + [minimumColorCoverage]))
+                case .all:
+                    for bucket in distinctColorBuckets {
+                        request = request.filter(sql: """
+                            EXISTS (SELECT 1 FROM asset_color c
+                                    WHERE c.asset_id = asset.id
+                                      AND c.bucket = ?
+                                      AND c.coverage >= ?)
+                            """, arguments: [bucket, minimumColorCoverage])
+                    }
+                }
+            }
 
             // Keyset seek: rows strictly after the cursor in the DESC order.
             // GRDB qualifies these `Column`s to the base `asset` table; the Date

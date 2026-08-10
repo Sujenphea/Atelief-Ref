@@ -108,6 +108,18 @@ public enum ColorBucket: Int, CaseIterable, Sendable, Hashable {
 /// Files a color into a ``ColorBucket``. A stateless namespace of pure functions,
 /// matching the imaging layer's other utilities.
 public enum ColorPalette {
+    // MARK: - Version
+
+    /// The palette's version, stamped on each asset as its swatches are filed
+    /// (`asset_analysis.colors_palette_version`).
+    ///
+    /// **Bump this whenever an assignment could change** — a new ``ColorBucket``,
+    /// a moved anchor, a retuned threshold. Every asset then re-derives on the
+    /// next backfill pass, from the hex already on disk, with nothing decoded.
+    /// Leaving it stale after a retune is the one way this design goes wrong:
+    /// old rows keep an assignment the current code would not make.
+    public static let version = 1
+
     // MARK: - Thresholds
 
     /// Lab chroma below which a color is a NEUTRAL regardless of its hue angle.

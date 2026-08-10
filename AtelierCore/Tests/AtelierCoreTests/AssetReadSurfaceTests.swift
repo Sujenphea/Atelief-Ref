@@ -59,6 +59,8 @@ struct AssetReadSurfaceTests {
             "the favorited subset of an explicit id set. Archived items stay favoritable; archive hides an item, it does not freeze it.",
         "referencedBlobHashes":
             "the orphan sweep's KEEP SET. Must include archived, or the shelf becomes a shelf of missing files.",
+        "assetIDsNeedingColorBuckets":
+            "the color-derivation backfill queue (085 · C1). Joins asset only to order newest-first. Deliberately includes archived: an item on the shelf still needs its buckets derived, or unarchiving it would leave a hole in the color filter that nothing ever fills.",
         "referencedBlobs":
             "the off-device copy set. Same reason as referencedBlobHashes — an archived item's bytes are still the user's.",
         "blobUsage":

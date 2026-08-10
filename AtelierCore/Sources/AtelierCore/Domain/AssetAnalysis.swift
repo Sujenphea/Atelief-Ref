@@ -39,6 +39,14 @@ public struct AssetAnalysis: Sendable, Equatable, Hashable, Codable, Identifiabl
     public var analyzedAt: Date
     /// The analyzer algorithm version that produced this row (drives re-analysis).
     public var analyzerVersion: Int
+    /// The ``ColorPalette`` version that filed ``colors`` into `asset_color`
+    /// rows, or `nil` when they have not been filed at all (085 · C1).
+    ///
+    /// `nil` and "older than the current palette" both mean the derivation pass
+    /// owes this asset work. It is deliberately NOT a boolean: emptiness is not
+    /// a usable marker, because an unreadable palette derives zero rows and would
+    /// otherwise be re-queued forever.
+    public var colorsPaletteVersion: Int?
 
     public var id: UUID { assetID }
 
@@ -50,6 +58,7 @@ public struct AssetAnalysis: Sendable, Equatable, Hashable, Codable, Identifiabl
         case phash
         case analyzedAt = "analyzed_at"
         case analyzerVersion = "analyzer_version"
+        case colorsPaletteVersion = "colors_palette_version"
     }
 
     public init(
@@ -58,7 +67,8 @@ public struct AssetAnalysis: Sendable, Equatable, Hashable, Codable, Identifiabl
         colors: String? = nil,
         phash: Int64? = nil,
         analyzedAt: Date,
-        analyzerVersion: Int
+        analyzerVersion: Int,
+        colorsPaletteVersion: Int? = nil
     ) {
         self.assetID = assetID
         self.ocrText = ocrText
@@ -66,5 +76,6 @@ public struct AssetAnalysis: Sendable, Equatable, Hashable, Codable, Identifiabl
         self.phash = phash
         self.analyzedAt = analyzedAt
         self.analyzerVersion = analyzerVersion
+        self.colorsPaletteVersion = colorsPaletteVersion
     }
 }
