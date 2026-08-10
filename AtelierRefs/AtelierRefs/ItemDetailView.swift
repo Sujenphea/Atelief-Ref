@@ -126,6 +126,45 @@ nonisolated func showsFanPile(memberCount: Int, effectiveScale: CGFloat) -> Bool
     memberCount > 1 && abs(effectiveScale - 1) < 0.001
 }
 
+/// Which members the spread actually draws, and how many it cannot (080 §3.5).
+struct FanSpreadWindow: Equatable {
+    /// Member indices in POST order — a contiguous run, so the spread reads as a slice of
+    /// the carousel rather than a sample of it.
+    let indices: [Int]
+    /// The members outside the window: the `+N`. Zero when the whole post fits.
+    let hidden: Int
+}
+
+/// The slice of a post the spread shows, centred on the open item.
+///
+/// A rednote note runs to 15 images ([020](../.docs/feature-todo/020-capture-rednote.md))
+/// and a 15-card arc is a layout problem before it is a performance one — the cards would
+/// be too small to recognise and the sweep too wide to sit under the picture. So the arc
+/// is capped and the remainder is SAID, as `+N`, never silently dropped.
+///
+/// Centred on `currentIndex` and then clamped to the ends, which is the load-bearing part:
+/// the open item must be inside the window at every position, including the last few of a
+/// long post, or the spread would show you a slice you are not in. Walking a 15-post to
+/// image 12 with a cap of 7 slides the window to `8…14` rather than leaving it at `0…6`.
+///
+/// Pure so the arithmetic is pinned without a view (080 §5) — this is where the
+/// off-by-ones live, exactly as `DetailStep` documents for the pager's own clamp.
+nonisolated func fanSpreadWindow(
+    memberCount: Int, currentIndex: Int, cap: Int
+) -> FanSpreadWindow {
+    guard memberCount > 0, cap > 0 else { return FanSpreadWindow(indices: [], hidden: 0) }
+    guard memberCount > cap else {
+        return FanSpreadWindow(indices: Array(0..<memberCount), hidden: 0)
+    }
+    // Defensive: a reload can shrink a post while the page is open (080 §5 · T4.2), and a
+    // stale index must not produce a window off the end of the list.
+    let current = min(max(currentIndex, 0), memberCount - 1)
+    // `cap / 2` before the item, the rest after — an even cap therefore leans one card
+    // FORWARD, which is the direction → is walking.
+    let start = min(max(current - cap / 2, 0), memberCount - cap)
+    return FanSpreadWindow(indices: Array(start..<(start + cap)), hidden: memberCount - cap)
+}
+
 /// Where a `.aspectRatio(contentMode: .fit)` image of `contentWidth × contentHeight`
 /// actually lands inside a `pane`-sized box, in that box's own coordinates (080 §3.2).
 /// `nil` when the content has no intrinsic size to fit, or the box no room to fit it in.
@@ -253,6 +292,10 @@ struct ItemDetailView: View {
     /// kind or a missing blob. Consumed by the media area's `.onDrag` at fit.
     @State private var exportItem: AssetExportItem?
 
+    /// Whether the pointer is in the strip of artwork that opens the spread (080 §3.5).
+    /// Hover alone, deliberately: a click there belongs to the artwork's own drag-out.
+    @State private var isSpreadHovered = false
+
     /// The media area's size in POINTS, measured via `onGeometryChange` (036 §3 B3).
     /// `.zero` until the first layout measures it.
     ///
@@ -317,6 +360,9 @@ struct ItemDetailView: View {
                     // every image whose aspect ratio isn't the window's (313).
                     .background(alignment: .center) { fanPile }
                     .background(Theme.Colors.mediaBackdrop)
+                    // The spread sits OVER the artwork — it is the one piece of this
+                    // feature you click, so it cannot be a background like the pile.
+                    .overlay(alignment: .center) { fanSpread }
                     // B3: measure the media area and report its FIT size + zoom up to
                     // the `DetailSession`, which picks the decode tier. `zoom` (the
                     // @State, not the transient pinch) only changes at a settle point
@@ -665,6 +711,49 @@ struct ItemDetailView: View {
                 .animation(Theme.Motion.gentle, value: effectiveZoom)
                 // Decoration. The artwork's drag-out and the pan gesture own this area.
                 .allowsHitTesting(false)
+        }
+    }
+
+    /// The spread, and the strip of artwork that opens it (080 §3.5).
+    ///
+    /// **Why a hover ZONE and not the pile.** 070 §3.3 says "hovering the pile spreads
+    /// it", but on the page the pile is BEHIND the artwork — only a few points of tilted
+    /// corner ever show, which is a mean target, and the pile is deliberately
+    /// hit-transparent so it cannot steal the drag-out. So the trigger is the bottom strip
+    /// of the fitted artwork instead: where a filmstrip would live, big enough to find, and
+    /// nowhere near the middle of the picture, so looking at an image never summons chrome
+    /// over it.
+    ///
+    /// Gated on the same effective scale as the pile — one rule, not two: a zoomed page is
+    /// for looking at ONE image, and a spread inviting you elsewhere is noise there.
+    @ViewBuilder
+    private var fanSpread: some View {
+        if isImage, let post, showsPostPosition(memberCount: post.memberCount),
+           let fitted = fitRect(
+               contentWidth: asset.width, contentHeight: asset.height, in: mediaContentSize),
+           min(fitted.width, fitted.height) >= DetailFanPileMetrics.minFittedSide {
+            let open = isSpreadHovered
+                && showsFanPile(memberCount: post.memberCount, effectiveScale: effectiveZoom)
+            VStack {
+                Spacer(minLength: 0)
+                DetailFanSpread(post: post, fitted: fitted.size)
+                    .opacity(open ? 1 : 0)
+                    // Slides up out of the picture's edge rather than fading in place, so
+                    // the pile behind the artwork reads as the thing that opened.
+                    .offset(y: open ? 0 : DetailFanSpreadMetrics.raise * 2)
+                    .allowsHitTesting(open)
+                    .padding(.bottom, Theme.Spacing.md)
+            }
+            .frame(
+                width: fitted.width,
+                height: min(fitted.height, DetailFanSpreadMetrics.hoverZoneHeight),
+                alignment: .bottom)
+            // The zone is positioned on the ARTWORK's bottom edge, which is not the pane's
+            // whenever the picture is letterboxed.
+            .offset(y: (mediaContentSize.height - fitted.height) / 2)
+            .contentShape(Rectangle())
+            .onHover { isSpreadHovered = $0 }
+            .animation(Theme.Motion.gentle, value: open)
         }
     }
 
@@ -1147,6 +1236,41 @@ enum DetailFanPileMetrics {
     static let minFittedSide: CGFloat = 48
 }
 
+/// The spread's numbers (080 §3.5). Internal for the same reason as
+/// ``DetailFanPileMetrics``: the tests compose the values the page actually draws with.
+enum DetailFanSpreadMetrics {
+    /// The most cards the arc will draw. Seven is odd on purpose — an odd cap puts the
+    /// open item dead centre at every position except the two ends.
+    static let cap = 7
+    /// A card's long side in POINTS. Small enough that seven sit under the picture without
+    /// crowding it, large enough to recognise a photo in.
+    static let cardSide: CGFloat = 64
+    /// The whole arc's sweep. Shallow — 070 §3.3 asks for "a shallow arc", and past about
+    /// this the end cards lie on their sides and stop reading as a row.
+    static let sweepDegrees: Double = 24
+    /// How far apart neighbouring cards sit along the arc.
+    static let cardSpacing: CGFloat = 52
+    /// How far the current card lifts out of the arc, so "you are here" needs no marker.
+    static let raise: CGFloat = 10
+    /// The card's corner rounding — the pile's, so the two read as one family.
+    static let cornerRadius: CGFloat = Theme.Radius.card
+    /// The strip of the fitted artwork that opens the spread on hover, measured up from
+    /// its bottom edge. A zone rather than the whole picture: the artwork is the thing you
+    /// move the pointer across, and a spread that appeared on any hover would be in the way
+    /// of looking at the image — which is the page's actual job.
+    static let hoverZoneHeight: CGFloat = 96
+
+    /// The pixel bucket a card decodes at, from its own point size.
+    ///
+    /// The pipeline requires the caller to size itself — *"the cell never guesses its own
+    /// size (036 §4 C3)"* — and ``AsyncThumbnail/bucket`` defaults to the 512 ceiling,
+    /// which for a 64pt card is sixteen times the pixels it can show, per card, on every
+    /// spread of a cold post.
+    static func bucket(scale: CGFloat) -> Int {
+        thumbnailPixelBucket(pointLongSide: cardSide, scale: scale)
+    }
+}
+
 /// Two blank tilted cards behind the fitted artwork — the third of the app's fanned piles
 /// (080 §3.4 · *"Three fan implementations, and that is fine"*): SwiftUI like ``FanCard``,
 /// aspect-sized and artwork-free like ``MasonryGridItem``'s, and neither one's code.
@@ -1201,6 +1325,115 @@ private struct DetailFanPile: View {
         // allowance, which the swing itself does not spend, so the claim is a few points
         // generous rather than exact.)
         .frame(width: fitted.width + 2 * inset, height: fitted.height + 2 * inset)
+    }
+}
+
+// MARK: - The spread (080 §3.5)
+
+/// The pile opened: a shallow arc of the post's members with the current one raised,
+/// click to jump (070 §3.3, 080 §3.5).
+///
+/// **What it adds over the arrows.** Since [316](316-detail-arrows-walk-the-post.md) a
+/// post is contiguous in the run, so ← / → already walks it. The spread does not make the
+/// walk possible; it makes it VISIBLE, and adds random access to a member four steps away.
+///
+/// **Cold by construction.** A collapsed post renders only its representative in the grid,
+/// so every other member is absent from ``ThumbnailPipeline``'s cache — the spread is
+/// coldest on exactly the posts it is most wanted for, and may open while ``DetailSession``
+/// still has a full-res decode in flight. ``DetailFanSpreadMetrics/cap`` is the bound on
+/// that, and the reason there is no prefetch here: the cheapest decode is the one a closed
+/// spread never asks for.
+private struct DetailFanSpread: View {
+    let post: ItemDetailPost
+    /// The artwork's own rect, so the arc sits under the PICTURE rather than the pane —
+    /// the same rule the pile follows, and for [313](313-a-carousel-outlined-in-black.md)'s
+    /// reason.
+    let fitted: CGSize
+
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        let window = fanSpreadWindow(
+            memberCount: post.memberCount, currentIndex: post.index,
+            cap: DetailFanSpreadMetrics.cap)
+        HStack(spacing: DetailFanSpreadMetrics.cardSpacing
+            - DetailFanSpreadMetrics.cardSide) {
+            ForEach(window.indices, id: \.self) { member in
+                card(member: member, window: window)
+            }
+            if window.hidden > 0 { overflowLabel(window.hidden) }
+        }
+        .padding(.horizontal, Theme.Spacing.md)
+        .padding(.vertical, Theme.Spacing.sm)
+        .background(.ultraThinMaterial, in: Capsule())
+        .frame(maxWidth: fitted.width)
+    }
+
+    /// One member's card. A `Button`, not a tap gesture: the spread's whole point is that
+    /// the cards are targets, and a button carries the focus ring and the accessibility
+    /// action a bare gesture does not.
+    private func card(member: Int, window: FanSpreadWindow) -> some View {
+        let isCurrent = member == post.index
+        // The card's place along the sweep, -1…1 across the drawn window, so the arc is
+        // the same shape whether it holds three cards or seven.
+        let span = max(window.indices.count - 1, 1)
+        let position = Double(member - (window.indices.first ?? 0)) / Double(span)
+        let tilt = (position - 0.5) * DetailFanSpreadMetrics.sweepDegrees
+        return Button {
+            // Post-relative, and the callee clamps (080 §5 · T4.3) — a reload can shrink
+            // the post between this card being drawn and the click landing.
+            post.jump(member)
+        } label: {
+            thumbnail(member: member)
+                .frame(
+                    width: DetailFanSpreadMetrics.cardSide,
+                    height: DetailFanSpreadMetrics.cardSide)
+                .clipShape(RoundedRectangle(cornerRadius: DetailFanSpreadMetrics.cornerRadius))
+                .overlay {
+                    RoundedRectangle(cornerRadius: DetailFanSpreadMetrics.cornerRadius)
+                        .strokeBorder(
+                            isCurrent ? Theme.Colors.selectionMark : Theme.Colors.hairlineStrong,
+                            lineWidth: isCurrent ? 2 : 1)
+                }
+                .rotationEffect(.degrees(tilt))
+                // The raise IS the "you are here" marker — no badge, no dot.
+                .offset(y: isCurrent ? -DetailFanSpreadMetrics.raise : 0)
+                .zIndex(isCurrent ? 1 : 0)
+        }
+        .buttonStyle(.plain)
+        .help("Image \(member + 1) of \(post.memberCount)")
+        .accessibilityLabel("Image \(member + 1) of \(post.memberCount)")
+    }
+
+    /// A member's artwork, or the placeholder a media-less one draws (359). `nil` is a
+    /// SLOT, not a gap: the member is real, it is counted, and it can be jumped to.
+    @ViewBuilder
+    private func thumbnail(member: Int) -> some View {
+        if let hash = post.blobHashes[member] {
+            AsyncThumbnail(
+                hash: hash, url: post.thumbnailURL(hash),
+                cornerRadius: DetailFanSpreadMetrics.cornerRadius,
+                // Sized from the CARD, not defaulted — see `DetailFanSpreadMetrics.bucket`.
+                bucket: DetailFanSpreadMetrics.bucket(scale: displayScale))
+        } else {
+            RoundedRectangle(cornerRadius: DetailFanSpreadMetrics.cornerRadius)
+                .fill(Theme.Colors.mediaBackdrop)
+                .overlay {
+                    Image(systemName: "doc")
+                        .font(.system(size: 18))
+                        .foregroundStyle(Theme.Colors.inkSecondary)
+                }
+        }
+    }
+
+    /// `+N` — the members the cap could not draw, said rather than dropped.
+    private func overflowLabel(_ hidden: Int) -> some View {
+        Text("+\(hidden)")
+            .font(Theme.Typography.caption).monospacedDigit()
+            .foregroundStyle(Theme.Colors.inkSecondary)
+            .padding(.leading, DetailFanSpreadMetrics.cardSide
+                - DetailFanSpreadMetrics.cardSpacing + Theme.Spacing.sm)
+            .help("\(hidden) more in this post — walk to them with the arrow keys")
     }
 }
 

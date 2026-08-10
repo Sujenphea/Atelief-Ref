@@ -199,6 +199,12 @@ shape.
 
 ### 3.5 The spread — optional, and now costed
 
+> **Built** ([360](../.change-log/360-the-pile-opens.md)). One departure from what is
+> written below: the trigger is the bottom strip of the fitted artwork, not the pile
+> itself. The pile is *behind* the picture and hit-transparent, so hovering it is both a
+> mean target and a thing that would fight the drag-out. Everything else — the ~7 cap
+> with a spoken `+N`, the per-card bucket, no prefetch — landed as specified.
+
 Hover or click spreads the pile into a shallow arc; click a card to jump. Motion off
 `Theme.Motion.gentle`.
 
