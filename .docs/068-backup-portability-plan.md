@@ -1,6 +1,6 @@
 # 068 — Backup H4–H7 Plan: Off-Device Backup + Portability Archive
 
-> The remaining half of [008](feature-todo/008-backup.md), planned against the
+> The remaining half of [081](081-backup-plan.md), planned against the
 > code as it actually stands after the 2026-07-31 backup-hardening pass
 > (changelog 290). H1–H3 (snapshots, TM hardening, staged restore) are shipped;
 > this doc plans **H4–H5** (back up the library to a user-chosen folder) and

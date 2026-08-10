@@ -14,7 +14,32 @@
 > ~2.5k lines of tests behind it. The value in Easel is the **interaction layer
 > layered on top**, which Spaces largely lacks. That layer is what this doc scopes.
 
-## Current state (verified)
+## Status (re-verified against the tree 2026-08-10)
+
+**Six of seven phases have shipped.** Everything below describing "no snapping of
+any kind", "no resize on canvas at all", "no cursor feedback", "no camera
+persistence" and "schema is at v15" is **historical** — the reconnaissance
+snapshot of 2026-07-27, not the code as it stands.
+
+| Phase | State | Where |
+|---|---|---|
+| C1 snapping | **shipped** | `CanvasRenderer/CanvasSnapping.swift` + `CanvasSnappingTests` |
+| C2 resize handles | **shipped** | `CanvasRenderer/ResizeHandles.swift` + `ResizeHandleTests`, `EngineResizeTests` |
+| C3 camera persistence | **shipped** | schema **v17** (`Migrator.swift:155`), `SpaceCamera.swift`, `SpaceCameraTests`, `SpaceCameraPersistTests`, `CameraRestoreTests` |
+| C4 paste + duplicate | **shipped** | `SpaceView.pasteOntoBoard` (`:948`), `space.duplicateTiles` (`:389`, ⌥-drag), `PasteSeamTests`, `SpaceDuplicateTests` |
+| C5 format bubble | **shipped** | `SpaceFormatChrome.swift` + `SpaceFormatChromeTests`; see also `.change-log/352` (floating bars unified into one container) |
+| C6 cursor state machine | **shipped** | `CanvasHostView.swift:420` tracks the hovered **handle** rather than the cursor (`NSCursor.frameResize` vends a fresh instance per call), original art — no Arc assets taken |
+| C7 perf harness + pinch smoothing | **half** | `CanvasRenderer/Tests/CanvasBenchmark.swift` exists as the instrument. **Pinch smoothing is not built**: `magnify(with:)` (`CanvasHostView.swift:735`) is still a direct `engine.zoom(by:aroundScreenPoint:)` per event — no gesture-scoped GPU scale, no deferred re-raster |
+
+Live remainder: **C7's pinch smoothing only** — and this doc's own sequencing
+advice applies, which is to run the harness first and let it say whether the
+smoothing is needed at all. Schema is now at **v19**, not v15.
+
+The licensing question (below) resolved in practice: Clusters A and B were
+implemented from the described behaviour into our own files with our own tests,
+and the cursor art was not taken.
+
+## Current state at the time of writing (historical — see Status above)
 
 Grepped across `AtelierRefs/AtelierRefs`, `CanvasRenderer/Sources`, and
 `AtelierCore/Sources`:
@@ -192,22 +217,20 @@ itself copyrightable.
 
 ## Phased implementation
 
-1. **C1 (S) — snapping.** `CanvasSnap.swift` pure helper + guide overlay layer in
-   `CanvasHostView`, wired into the existing object-drag path. No schema, no new
-   drag mode, fully unit-testable. Highest value per effort; do this first.
-2. **C2 (M) — resize handles.** `Handle` type + hit-testing + `resizedFrame` +
-   a fourth drag mode. Consumes C1's `snapResizePoint`/`snapAspectFrame`.
-   Settle the [053] `.auto` → `.fixed` demotion rule before starting.
-3. **C3 (S) — camera persistence.** v16 migration + debounced write + flush on
-   switch/close + `frameToContent` fallback.
-4. **C4 (S–M) — paste + duplicate.** Responder actions + `SpaceModel` row-clone op
-   with undo. After C2 (pasted objects should be immediately resizable).
-5. **C5 (M) — format bubble.** Screen-space chrome; supersedes or supplements
-   `ElementInspector`. After C1–C4.
-6. **C6 (S) — cursor state machine.** Needs C2 (handle hover is half its states)
-   and original art.
-7. **C7 (M) — perf harness + pinch smoothing.** Do the harness *first*; it is the
-   instrument that tells us whether pinch smoothing is even needed.
+1. ~~**C1 (S) — snapping.**~~ **Shipped** as `CanvasSnapping.swift`.
+2. ~~**C2 (M) — resize handles.**~~ **Shipped** as `ResizeHandles.swift`.
+3. ~~**C3 (S) — camera persistence.**~~ **Shipped** — as **v17**, not the v16 this
+   doc predicted (v16 went to the Unsorted-home reconcile).
+4. ~~**C4 (S–M) — paste + duplicate.**~~ **Shipped.**
+5. ~~**C5 (M) — format bubble.**~~ **Shipped** as `SpaceFormatChrome`.
+6. ~~**C6 (S) — cursor state machine.**~~ **Shipped**, original art.
+7. **C7 (M) — perf harness + pinch smoothing.** The only phase left. `CanvasBenchmark`
+   is the harness; **run it before building the smoothing**, because it is the
+   instrument that says whether the smoothing is needed at all. If it is, the two
+   traps this doc records — `zPosition` alone will not composite above AppKit's
+   subview-managed layers, and text must be laid out at a *reference* point size
+   so gesture-scaled and settled renders are pixel-identical — are the reason to
+   read Easel's comments even while writing our own.
 
 ## Test strategy
 
@@ -260,15 +283,19 @@ E depends on all of them.
   **superseded** by 2B's transform seam — screen-space floating chrome is now on
   the table.
 
-## Open questions
+## Open questions — closed by C1–C6 shipping
 
-1. Snap targets: sibling objects only (recommended, matches Easel) — or also a
-   space grid / canvas guides?
-2. Manual resize of an `.auto` text element: demote to `.fixed` (recommended,
-   matches Figma) or suppress the height handle?
-3. Paste of an asset tile: clone the `space_item` row only (recommended — blobs are
-   immutable and shared) or duplicate the underlying asset?
-4. Does the format bubble **replace** `ElementInspector` or supplement it (bubble
-   for the hot controls — size, weight, align; popover for the long tail)?
-5. Is Nook's license compatible with verbatim reuse, or do A/B need clean
-   reimplementation from this spec?
+1. ~~Snap targets: sibling objects only, or also a space grid?~~ Settled by
+   `CanvasSnapping` as built; see `CanvasSnappingTests` for the pinned behaviour.
+2. ~~Manual resize of an `.auto` text element?~~ Settled in `EngineResizeTests` /
+   `TextAutoWidthTests`.
+3. ~~Paste of an asset tile: clone the row or the asset?~~ **The row.** Blobs are
+   immutable and shared; `PasteSeamTests` pins it.
+4. ~~Format bubble replaces or supplements `ElementInspector`?~~ Settled by
+   `SpaceFormatChrome` + `.change-log/352`, which folded the floating chrome into
+   one container.
+5. ~~Is Nook's license compatible with verbatim reuse?~~ **Moot** — A and B were
+   reimplemented from the described behaviour into our own files and tests, and
+   none of the Arc-derived cursor art was taken.
+
+Nothing is open for C7 beyond "measure first".

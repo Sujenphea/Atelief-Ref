@@ -6,7 +6,29 @@
 > floating always-on-top reference palette. All four clusters were confirmed as
 > v1 priorities (user, 2026-07-13).
 
-## Current state (verified)
+## Status (re-verified against the tree 2026-08-10)
+
+**Five of seven phases have shipped.** Two remain, and they are the whole reason
+this doc is still in the backlog:
+
+| Phase | State | Where |
+|---|---|---|
+| U1 out-flow | **shipped** | `AssetExport.swift` (+`AssetExportTests`), `AssetFilePromise.swift`, `AssetPasteboard.swift`; ⌘C in `4be6f88` |
+| U2 justified grid + density | **shipped, as masonry** | `MasonryLayout/CollectionLayout/GridHost/GridItem/LayoutCache`, `GridDensity.swift`. Landed as a masonry layout rather than the justified-rows sketch below; marquee + keyboard nav consume its frames as planned (`MarqueeMath`, `GridNavigation`) |
+| U3 Quick Look + toasts | **shipped** | `QuickLookController.swift`, `ToastQueue.swift` (+`ToastQueueTests`) |
+| U4 ⌘K switcher + triage | **half shipped** | `M` / `A` triage landed (`.change-log/348`, `MoveAddShortcutTests`, `KeyMap`). **The ⌘K quick switcher does not exist** — no switcher type anywhere in the app target |
+| U5 favorites | **shipped** | schema **v19** `asset.is_favorite`, ⌘D, star chip, search token (`567c302`, `ServicesFavoritesTests`, `AppFavoritesTests`) |
+| U6 floating palette | **not started** | `AtelierRefsApp.swift:30` declares one `WindowGroup`; no auxiliary window, no `.windowLevel(.floating)` |
+| U7 notes | **shipped** | schema **v10** `asset.note` + `AppServices.setNote` (`:2752`); searchable via v12 |
+
+So the live remainder is **U4's ⌘K switcher** and **U6's floating palette** —
+both M, both zero-schema, neither blocked by anything.
+
+The `is_favorite` and `note` migration slots this doc speculated about are spent:
+`note` rode v10, `is_favorite` landed as its own v19. Schema impact from here is
+**zero**.
+
+## Current state at the time of writing (historical — see Status above)
 
 - **Nothing leaves the app.** No `NSFilePromiseProvider`/`Transferable` file
   representation anywhere — the grid drag payload is internal-only ([009]'s
@@ -28,7 +50,7 @@
    payload (009 semantics untouched); external targets (Figma, Finder, Photoshop)
    receive the original file. Mechanism: `Transferable` `FileRepresentation`
    exporting the blob with a human filename (`<title-or-source>-<shorthash>.<ext>`,
-   the [008] export sanitizer — build once, share). Blobs are already immutable
+   the [081](../081-backup-plan.md) export sanitizer — build once, share). Blobs are already immutable
    files on disk, so export = copy/hardlink to a promise temp dir, no re-encode.
    - Rejected: `NSFilePromiseProvider` via AppKit subclassing — the `Transferable`
      route composes with the SwiftUI `.draggable` already in use; drop to AppKit
@@ -81,7 +103,7 @@
 3. **Favorites** (settled: simple flag): `asset.is_favorite` boolean, **⌘D**
    toggles (works on selection), star chip in grid cells + detail, a favorites
    filter token in [007]'s search field and a filter chip on collection screens.
-   Exported in [008]'s manifest. — *Effort: M total; one tiny additive migration
+   Exported in [081]'s manifest. — *Effort: M total; one tiny additive migration
    (`is_favorite` — can ride 007's migration slot).*
 
 ## Cluster D — Floating reference palette
@@ -115,16 +137,19 @@ rebuild, not before; the UI slot in 006 can land earlier showing provenance only
 
 ## Phased implementation
 
-1. **U1 (M) — out-flow.** File-export helper (shared with 008's exporter) +
-   `FileRepresentation` on drags + ⌘C/⌘⌥C + share sheet. Independent; highest
-   daily value per effort.
-2. **U2 (M) — justified grid + density.** `JustifiedLayout` pure helper + frame
-   feed to 009's marquee/keyboard nav + ⌘+/⌘− notches.
-3. **U3 (S) — spacebar Quick Look + capture toasts.**
-4. **U4 (M) — ⌘K switcher + M/⇧M triage.** After 009 N1 (needs `moveAssets`).
-5. **U5 (S–M) — favorites.** Column + ⌘D + chips + 007 filter token.
-6. **U6 (M) — floating palette.** After U1 (drag-out is its point).
-7. **U7 — notes.** Deferred into 003's phasing; UI shell in 006.
+1. ~~**U1 (M) — out-flow.**~~ **Shipped.**
+2. ~~**U2 (M) — justified grid + density.**~~ **Shipped as masonry.**
+3. ~~**U3 (S) — spacebar Quick Look + capture toasts.**~~ **Shipped.**
+4. **U4 (M) — ⌘K switcher.** The `M` / `A` triage half shipped; the switcher
+   itself is outstanding. Its ranking helper is the pure, testable core (see Test
+   strategy); selection routes through `NavModel`. Note the shipped
+   `CollectionDestinationList` already solves "type-ahead over collections" for
+   the triage sheet — **reuse it rather than growing a second list widget**, and
+   settle up front whether ⌘K is that list plus spaces plus verbs, or a genuinely
+   separate surface.
+5. ~~**U5 (S–M) — favorites.**~~ **Shipped** (v19).
+6. **U6 (M) — floating palette.** After U1, which is done — so unblocked.
+7. ~~**U7 — notes.**~~ **Shipped** (v10 `asset.note`, searchable from v12).
 
 ## Test strategy
 
@@ -167,10 +192,15 @@ rebuild, not before; the UI slot in 006 can land earlier showing provenance only
 
 ## Open questions
 
-1. Drag-out format for multi-select: N separate files (recommended) or a folder?
-2. Density notches global (recommended, one muscle memory) — confirm vs
-   per-collection.
-3. Palette content: spaces only, or collections too (recommended: both — it's a
-   read-only projection either way)?
-4. Toast position/stacking style — bottom-trailing stack (recommended) vs
-   top-center single-slot?
+Only the ones still live for U4 / U6 remain; 1, 2 and 4 were answered by U1, U2
+and U3 shipping.
+
+1. ~~Drag-out format for multi-select?~~ Answered by `AssetFilePromise`.
+2. ~~Density notches global or per-collection?~~ Answered by `GridDensity`.
+3. **Palette content: spaces only, or collections too** (recommended: both — it's
+   a read-only projection either way)?
+4. ~~Toast position/stacking?~~ Answered by `ToastHost` / `.change-log/352`.
+5. **New — does ⌘K subsume the shipped destination list, or sit beside it?** The
+   `M`/`A` sheet already does type-ahead over collections
+   (`CollectionDestinationList`). Building a second ranked list for ⌘K would be
+   the exact duplication [077](../077-keyboard-map-plan.md) exists to prevent.

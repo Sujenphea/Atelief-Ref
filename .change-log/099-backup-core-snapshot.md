@@ -1,6 +1,6 @@
 # 099 — Backup: Core snapshot + integrity (008 H1)
 
-First slice of the backup safety net ([008-backup](../.docs/feature-todo/008-backup.md),
+First slice of the backup safety net ([081-backup](../.docs/081-backup-plan.md),
 H1). Adds the two Core primitives every snapshot/restore path builds on. Scope
 for this pass is **H1–H3** (the snapshot safety net); off-device backup (H4–H5)
 and portability export (H6–H7) are deferred. Confirmed policy: auto-snapshot on

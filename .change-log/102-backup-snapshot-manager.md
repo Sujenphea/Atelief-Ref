@@ -1,6 +1,6 @@
 # 102 — Backup: snapshot manager + auto-triggers (008 H3b)
 
-The app-side snapshot orchestration ([008-backup](../.docs/feature-todo/008-backup.md),
+The app-side snapshot orchestration ([081-backup](../.docs/081-backup-plan.md),
 H3): snapshots now get taken automatically and pruned on a retention policy.
 Restore + the manual UI land next (H3c).
 

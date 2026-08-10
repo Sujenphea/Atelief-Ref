@@ -1,15 +1,33 @@
-# 008 — Backup: Snapshots, Off-Device Backup, Portability Export
+# 081 — Backup: Snapshots, Off-Device Backup, Portability Export
+
+**Status: shipped** — all seven phases. H1–H3 in `.change-log/099`–`103`,
+hardened in `290`; H4/H5 in `cfd94eb` (back up now, progress, last-run status)
+and `5ff8d24` (launch cadence + sampled re-hash verification); H6 in `e37282c`
+(a portable library folder plus its manifest); H7 in `00500b2` (an importer that
+replays through the public writers); omissions + restore-window hardening in
+`962aca5`.
+
+All three open questions are answered by what shipped:
+
+1. **Multi-collection assets duplicate per folder.** `LibraryArchiveWriter.swift:101`
+   — "an asset in five collections is copied five [times]" — with the manifest
+   recording the single canonical asset, so re-import yields N memberships and
+   exactly 1 asset (`LibraryArchiveRoundTripTests:325`). No `_assets/` pool.
+2. **No zip wrapper.** Folder tree only; the archive is a directory the user can
+   open in Finder.
+3. **Cadence is manual + on-launch-if-stale**, as a visible user preference
+   rather than a hidden behaviour — `BackupCadence.swift` (H5d), three options
+   deliberately far apart.
+
+Promoted out of `feature-todo/008-backup.md`. Previously re-baselined 2026-07-31
+after the plan review, when H1–H3 had shipped and H4–H7 had not; the sections
+below are that respec, now describing built code.
 
 > Covers the "Backup" group: **snapshot** + **export**. Settled scope (user): all three
 > goals — (a) corruption/mistake recovery, (b) machine-loss/off-device, (c)
-> portability/data-freedom. Entitlement additions for (b) are **approved**.
->
-> **Re-baselined 2026-07-31** after the 008 plan review: goal (a) — phases H1–H3 —
-> is **SHIPPED and hardened**; this doc now records the as-built design (including
-> deviations from the original plan) and respecs the remaining phases H4–H7
-> against it. Review decisions are inlined as settled.
+> portability/data-freedom. Entitlement additions for (b) were **approved**.
 
-## Status
+## Phase status
 
 - **H1 (done)** — `AppServices.snapshot(to:)` via `VACUUM INTO`;
   `integrityCheck()`; static `isHealthy(databaseFileAt:)` (read-only file check).
@@ -19,7 +37,13 @@
   pre-migration snapshot in `LibraryDatabase.init` (Core), app-side
   `SnapshotManager` (retention, daily-on-launch, pre-destructive gate, staged
   restore), `SnapshotsSheet` UI, `SQLiteFileSet` file-set helper (Core).
-- **H4–H7 (not started)** — folder backup + export/import; respecced below.
+- **H4–H7 (done)** — `FolderAccess` + `BackupTarget` + `BackupFolderPanel`
+  (bookmarks), `BackupController` + `BackupCadence` + `BackupVerifyController`
+  (incremental blob backup, verify, progress/cancel), `LibraryArchive` +
+  `LibraryArchiveWriter` + `ArchiveExportController` (export), and
+  `LibraryArchiveReader` + `ImportPlan` + `ImportReplay` +
+  `ArchiveImportController` (import). The replay layer is the one
+  [016](feature-todo/016-library-management.md) L3's competitor importers consume.
 
 ## As-built architecture (deviations from the original plan, all settled)
 
@@ -121,13 +145,27 @@ sheet. Location: `<root>/snapshots/` — deliberately NOT excluded from backups.
 - `asset_analysis` is derived data — excluded from export (recomputable),
   included in snapshots (it's in the DB anyway).
 
-## Remaining phases
+## Phases as built
 
-1. **H4 (S)** — `files.bookmarks.app-scope` + bookmark plumbing + folder picker.
-2. **H5 (M)** — incremental blob backup + verify + progress/cancel; restore via
-   the staged-restore seam.
-3. **H6 (M)** — manifest model + exporter (reusing `AssetExport` naming).
-4. **H7 (M)** — importer + round-trip harness (the replay layer 016 consumes).
+1. **H4** — `files.bookmarks.app-scope` + bookmark plumbing + folder picker:
+   `FolderAccess.swift` (injectable protocol, `FolderAccessTests`),
+   `BackupTarget.swift`, `BackupFolderPanel.swift`.
+2. **H5** — incremental blob backup + verify + progress/cancel:
+   `BackupController.swift` (`cfd94eb`), `BackupVerifyController.swift` +
+   `BackupCadence.swift` (`5ff8d24`), `BackupRunSummary.swift`. Restore goes
+   through the staged-restore seam — no second swap path, as specced.
+3. **H6** — manifest model + exporter: `LibraryArchive.swift` (the versioned
+   manifest contract), `LibraryArchiveWriter.swift`,
+   `ArchiveExportController.swift` (`e37282c`).
+4. **H7** — importer + round-trip harness: `LibraryArchiveReader.swift`,
+   `ImportPlan.swift` (the parse↔replay vocabulary), `ImportReplay.swift`
+   (`LibraryImporter`), `ArchiveImportController.swift` (`00500b2`), covered by
+   `LibraryArchiveRoundTripTests`.
+
+**The replay layer stays in the app target**, as this doc's as-built §1 decided.
+[016](feature-todo/016-library-management.md) L3's competitor parsers are its
+second consumer; the agreed trigger for extracting `ImportPlan` + parsers into a
+package is **parser #2**, not parser #1 (settled 2026-08-10).
 
 ## Test strategy
 
@@ -180,9 +218,18 @@ sheet. Location: `<root>/snapshots/` — deliberately NOT excluded from backups.
   (13A); 10-min pre-destructive freshness gate (14A); no sheet-render caching
   (16A — measured as noise).
 
-## Open questions (H4–H7 only)
+## Open questions — all closed
 
-1. Export duplicates multi-collection files per folder (recommended) — or a
-   single `_assets/` pool + links (compact, less browsable)?
-2. Zip wrapper in v1 or folder-tree only?
-3. H5 backup cadence: manual + on-launch-if-stale (recommended) — confirm.
+Answered by what shipped; see the Status block at the top of this file.
+
+1. ~~Export duplicates multi-collection files per folder, or a single `_assets/`
+   pool + links?~~ **Duplicated per folder**, one canonical asset in the manifest.
+2. ~~Zip wrapper in v1 or folder-tree only?~~ **Folder tree only.**
+3. ~~H5 backup cadence?~~ **Manual + on-launch-if-stale**, as a visible
+   preference (`BackupCadence`).
+
+## Still to come from elsewhere
+
+[023](feature-todo/023-archive-and-second-library.md)'s `archived_at` adds one
+optional field to the manifest — a restore that dropped it would silently
+un-archive the user's whole shelf. That is 023's A4, tracked there.

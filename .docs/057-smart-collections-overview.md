@@ -22,7 +22,7 @@ CREATE TABLE saved_search (
 ```
 
 - ✅ Explicit: a smart collection IS a saved query, so it gets its own entity.
-  `rules` carries a `version` field (the [008]-manifest discipline) so the shape
+  `rules` carries a `version` field (the [081]-manifest discipline) so the shape
   can grow (kinds from [003], color from [012], favorite from [011]).
 - Rejected: a `type` flag + rules column on `collection` — overloads the folder
   entity with rows that have no memberships, no manual order, no nesting, can't
@@ -59,7 +59,7 @@ collection grid (justified layout, selection, detail — all of [009]/[011] free
 ## Schema / migration impact
 
 One additive table (can ride any nearby migration slot — sequencing note in
-[003]). [008] export includes `saved_search` rows in the manifest (portable);
+[003]). [081] export includes `saved_search` rows in the manifest (portable);
 import replays them (unknown newer rule versions → import with a warning,
 evaluate what parses).
 

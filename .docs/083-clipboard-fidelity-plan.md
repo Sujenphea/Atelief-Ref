@@ -1,9 +1,19 @@
-# 019 — Clipboard Fidelity: ⌘C/⌘V Inside the App Should Not Re-Import
+# 083 — Clipboard Fidelity: ⌘C/⌘V Inside the App Should Not Re-Import
+
+**Status: shipped** — C1, C2 and C3 in `c672373` ("copy-paste keeps the asset,
+not its bytes"), on top of `4be6f88`'s ⌘C across surfaces. The dual write is
+`AssetPasteboard.swift:143` (the private `AssetDragPayload` appended *after*
+`AssetPasteboardWriter.write`, order load-bearing); the grid paste branch is
+`CollectionView.resolvePaste` (`:947`) feeding `paste()` (`:957`); the board
+branch is `SpaceView.pasteOntoBoard` (`:948`). Covered by `AssetPasteboardTests`
+and `ServicesClipboardPasteTests`.
+
+Promoted out of `feature-todo/019-clipboard-fidelity.md`.
 
 > Dragging assets between collections keeps the asset row (and therefore its note,
 > tags, provenance, analysis). Copy-pasting the same assets silently rebuilds them
 > from bytes and can lose all of it. The board already solved this in
-> [065](../065-spaces-duplicate-clipboard-plan.md) §2.4–2.5 by writing a second,
+> [065](065-spaces-duplicate-clipboard-plan.md) §2.4–2.5 by writing a second,
 > app-private pasteboard representation; the grid never got it. This doc is that
 > gap, and the fix is the 065 pattern applied outside Spaces.
 
@@ -143,13 +153,17 @@ the drag path already use.
 - **Stale ids.** A copy, then a delete, then a paste: `addAssets` must fail closed on
   a missing asset id and report it, not throw at the user.
 
-## Open questions
+## Open questions — closed
 
-1. Copy report wording when the two representations disagree — keep it about the
-   external copy (recommended: it is the honest number for other apps) or report the
-   in-app count and lose the "this won't paste into Figma" warning?
-2. Should ⌘V into the *same* collection be a no-op with a notice (recommended) or
-   move the pasted items to the end of the manual order?
-3. Does ⌘⌥V ("paste as new copy" — force the old re-import, giving a genuinely
-   independent asset row) earn its keystroke, or is that what the export/import
-   round-trip is for?
+1. ~~Copy report wording when the two representations disagree?~~ **Kept about the
+   external copy.** `ExportSelection.considered` is `entries.count + skipped`
+   (`AssetPasteboard.swift:35`) — the byte representation's denominator, which is
+   the honest number for Figma and Finder.
+2. ~~⌘V into the *same* collection: no-op with a notice, or move to the end of the
+   manual order?~~ **No-op with a notice.** `resolvePaste` returns
+   `.alreadyMembers` when `payload.sourceCollectionID == target`, and `paste()`
+   calls `model.reportAlreadyInCollection()` (`CollectionView.swift:948`, `:983`).
+3. ~~Does ⌘⌥V ("paste as new copy") earn its keystroke?~~ **Not built**, and
+   deliberately: a genuinely independent asset row is what the
+   [081](081-backup-plan.md) export/import round trip is for. No binding exists in
+   `KeyMap`.

@@ -11,7 +11,7 @@
 ## Current state (verified)
 
 - **Backup/undo: nothing.** Zero `UndoManager` in the codebase; no snapshot,
-  integrity-check, or restore path (see [008](./008-backup.md)); the README's library
+  integrity-check, or restore path (see [081](./081-backup-plan.md)); the README's library
   reset is a literal `rm -rf`.
 - **Distribution: ~0%** (unchanged from 020). No Developer ID / notarization /
   hardened runtime; deployment target macOS 26.5; `AppIcon.appiconset` contains only
@@ -37,7 +37,7 @@
 
 | Gap | Recommendation |
 |---|---|
-| No backup/snapshot/restore | Execute [008](./008-backup.md) H1–H3 (VACUUM INTO snapshots, pre-migration + pre-destructive hooks, restore flow, TM hardening). Everything else in this doc is safer once this exists. |
+| No backup/snapshot/restore | Execute [081](./081-backup-plan.md) H1–H3 (VACUUM INTO snapshots, pre-migration + pre-destructive hooks, restore flow, TM hardening). Everything else in this doc is safer once this exists. |
 | No undo | App-level `UndoManager` for the destructive verbs: delete, remove-from-collection, move (009), reorder, rename. Register inverses at the model layer, each paired with its `AppServices` call (the same pattern [005](../031-spaces-overview.md) specs for element editing — build the seam once, share it). Tradeoff: undo across async writes needs serialization through the model; start with the five verbs above, not a universal system. |
 | No corruption detection | `PRAGMA integrity_check` (008's `integrityCheck()`) at bootstrap; on failure → guided restore-from-snapshot instead of a hang or silent reset. |
 
@@ -74,7 +74,7 @@
   exists, it's just undiscoverable) → capture something → drop zone tour. Empty
   states already exist; the *path into* the app doesn't.
 - **Settings scene (⌘,):** token regenerate/copy, library location + size, backup
-  target + retention ([008](./008-backup.md)), future per-app toggles. SwiftUI
+  target + retention ([081](./081-backup-plan.md)), future per-app toggles. SwiftUI
   `Settings` scene — S effort, unblocks several other docs' UI homes.
 - **Menu bar:** standard Edit (undo/redo/cut/copy/paste/select-all wired to the grid
   and 009's selection), View (sort modes from [007](./007-search-sort.md)), Window

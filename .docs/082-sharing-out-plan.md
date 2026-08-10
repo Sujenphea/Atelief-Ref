@@ -1,4 +1,25 @@
-# 014 — Sharing Outward: Moodboard PNG / PDF / Static HTML Export
+# 082 — Sharing Outward: Moodboard PNG / PDF / Static HTML Export
+
+**Status: shipped** — all three phases. S1 in `8162c58` (moodboard PDF/PNG UI,
+progress ring, save panel); S2 in `eda306c` (collection contact-sheet PDF/PNG via
+masonry); S3 in `87eb2e7` (a collection as a self-contained web page, recorded in
+`.change-log/323`), with `7cad73c` fixing board text survival in the page.
+
+Both open questions are answered by what shipped, and one settled decision moved:
+
+1. **PNG scale** — neither answer: it became a control, not a default. A 1/2/3
+   segmented picker on the export row (`MoodboardExportControls.swift:79`).
+2. **Contact-sheet captions** — likewise a control, one `Captions` toggle on the
+   contact-sheet popover (`ContactSheetExportControls.swift:92`), alongside scale
+   and column count.
+3. The composer landed as its own package, **`AtelierExport`**
+   (`Layout/MoodboardLayout`, `Model/`, `Render/MoodboardRenderer`,
+   `Site/StaticSiteRenderer`), not as a seam inside `CanvasRenderer` as sketched
+   below — pure, GRDB-free and golden-file tested, with the app-side controllers
+   (`MoodboardExport`, `ContactSheetExport`, `CollectionSiteExport`) holding the
+   panels and progress.
+
+Promoted out of `feature-todo/014-sharing-out.md`.
 
 > Presenting references to clients/teams without collaboration infrastructure.
 > Settled scope (user, 2026-07-13): **local files only** — no hosted publish, no
@@ -7,11 +28,11 @@
 
 ## Current state (verified)
 
-- Nothing exports a composed view. [008]'s export is a *data* round-trip
-  (originals + manifest); [011]'s out-flow is per-item. No board/contact-sheet
+- Nothing exports a composed view. [081](081-backup-plan.md)'s export is a *data* round-trip
+  (originals + manifest); [011](feature-todo/011-ux-features.md)'s out-flow is per-item. No board/contact-sheet
   rendering exists.
 - The rendering ingredients all exist: `CanvasRenderer` composes tiles into
-  CALayers; [005]'s hybrid renderer adds vector frames/text as layers; justified
+  CALayers; [005](005-canvas-overview.md)'s hybrid renderer adds vector frames/text as layers; justified
   layout math ([011] U2) composes collections.
 
 ## Outputs
@@ -43,7 +64,7 @@ breaks) — testable.
 A self-contained folder: `index.html` + `assets/` (originals or sized-down
 copies), zero JS dependencies, justified CSS layout, optional source-link
 captions. Works from disk, email, or any static host — *the user's* hosting
-choice, not the app's. Reuses [008]'s filename sanitizer + [011]'s export helper
+choice, not the app's. Reuses [081]'s filename sanitizer + [011]'s export helper
 (one export layer, three consumers — DRY).
 
 - Rejected: single-file HTML with data-URI images (multi-hundred-MB files);
@@ -75,7 +96,7 @@ helper). All after [005] E2/E3 for space content to exist.
 - Composer: fixture space → bitmap hash stability (determinism), content-bounds
   math, dimension-cap behavior — pure over injected tile sources.
 - Pagination + HTML template rendering: pure golden-file tests.
-- Caption/sanitizer matrix shared with [008]'s suite (same helper).
+- Caption/sanitizer matrix shared with [081]'s suite (same helper).
 - PDF/save-panel glue: compile-only + manual print/preview pass.
 
 ## Effort: **M per phase, L total**
@@ -94,7 +115,7 @@ helper). All after [005] E2/E3 for space content to exist.
 ## Settled decisions
 
 - Local files only; no hosted publish (user, 2026-07-13). Provenance inclusion is
-  an explicit toggle. One shared export layer with [008]/[011].
+  an explicit toggle. One shared export layer with [081]/[011].
 - HTML export carries **poster frames only** — a still plus a play glyph, and a
   line in the page's own footer saying so. Videos are not copied (closes OQ1;
   shipped in `323-a-collection-becomes-a-web-page`).
