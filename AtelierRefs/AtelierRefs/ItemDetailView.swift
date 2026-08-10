@@ -182,6 +182,21 @@ nonisolated func fanSpreadZoneOffset(fittedHeight: CGFloat, zoneHeight: CGFloat)
     (fittedHeight - zoneHeight) / 2
 }
 
+/// Which drawn card a scrub at `x` is over — a slot index into the window, not a member.
+///
+/// The cards overlap (`cardSpacing` is narrower than `cardSide`, which is what makes the
+/// arc read as a fanned deck rather than a row), so "the card under the pointer" is the
+/// card whose SLOT `x` falls in, at a pitch of `cardSpacing`. Monotonic, so dragging one
+/// way never steps back.
+///
+/// Clamped rather than optional at the ends: a drag that runs off the arc should hold the
+/// last card, the way a scrubber holds its end, instead of blinking out. `nil` only when
+/// there is nothing drawn to be over.
+nonisolated func fanSpreadScrubSlot(x: CGFloat, pitch: CGFloat, count: Int) -> Int? {
+    guard count > 0, pitch > 0, x.isFinite else { return nil }
+    return min(max(Int((x / pitch).rounded(.down)), 0), count - 1)
+}
+
 /// Where a `.aspectRatio(contentMode: .fit)` image of `contentWidth × contentHeight`
 /// actually lands inside a `pane`-sized box, in that box's own coordinates (080 §3.2).
 /// `nil` when the content has no intrinsic size to fit, or the box no room to fit it in.
@@ -1366,6 +1381,18 @@ private struct DetailFanSpread: View {
 
     @Environment(\.displayScale) private var displayScale
 
+    /// The member under the pointer mid-scrub, or `nil` when not scrubbing.
+    ///
+    /// Held locally as well as jumped to, because the raise has to answer the pointer on
+    /// the same frame: `jump` goes out to the host, which reloads and comes back through
+    /// `post.index` a beat later, and a card that lifted one frame behind the finger would
+    /// feel broken in exactly the gesture that is meant to feel direct.
+    @State private var scrubbed: Int?
+
+    /// The arc's own coordinate space, so a scrub is measured from the first card's
+    /// leading edge rather than from wherever the page happens to have put the arc.
+    private static let arcSpace = "detailFanSpreadArc"
+
     var body: some View {
         let window = fanSpreadWindow(
             memberCount: post.memberCount, currentIndex: post.index,
@@ -1377,17 +1404,55 @@ private struct DetailFanSpread: View {
             }
             if window.hidden > 0 { overflowLabel(window.hidden) }
         }
+        .coordinateSpace(name: Self.arcSpace)
+        // Simultaneous, so a plain click still reaches the card's own `Button` (and its
+        // focus ring and accessibility action) while a drag past the threshold scrubs.
+        // The two agree at the end of a scrub: the button that fires is the card the
+        // pointer is over, which is the member already jumped to, so the jump is idempotent.
+        .simultaneousGesture(scrub(window: window))
         .padding(.horizontal, Theme.Spacing.md)
         .padding(.vertical, Theme.Spacing.sm)
         .background(.ultraThinMaterial, in: Capsule())
         .frame(maxWidth: fitted.width)
     }
 
+    /// Drag along the arc to walk the post, previewing each member as you pass it.
+    ///
+    /// `minimumDistance` above zero so a click is a click: below the threshold the card's
+    /// `Button` owns the event, above it this does.
+    ///
+    /// The jump fires when the member under the pointer CHANGES, not per pixel — so a
+    /// sweep across seven cards costs seven steps, exactly what holding → down already
+    /// costs, and `DetailSession`'s LRU plus the loader's bucket quantization are the same
+    /// defences that walk relies on. Per-pixel would be a decode storm.
+    private func scrub(window: FanSpreadWindow) -> some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.arcSpace))
+            .onChanged { value in
+                guard let slot = fanSpreadScrubSlot(
+                    x: value.location.x,
+                    pitch: DetailFanSpreadMetrics.cardSpacing,
+                    count: window.indices.count)
+                else { return }
+                // In range by construction: `fanSpreadScrubSlot` clamps to `0..<count`
+                // and was handed this array's own count, which is why it clamps rather
+                // than returning an optional at the ends.
+                let member = window.indices[slot]
+                guard member != scrubbed else { return }
+                scrubbed = member
+                // Post-relative, clamped by the callee (080 §5 · T4.3) — a reload can
+                // shrink the post between the card being drawn and the drag reaching it.
+                post.jump(member)
+            }
+            .onEnded { _ in scrubbed = nil }
+    }
+
     /// One member's card. A `Button`, not a tap gesture: the spread's whole point is that
     /// the cards are targets, and a button carries the focus ring and the accessibility
     /// action a bare gesture does not.
     private func card(member: Int, window: FanSpreadWindow) -> some View {
-        let isCurrent = member == post.index
+        // The pointer wins while a scrub is in flight, the page when it is not — see
+        // ``scrubbed`` for why the raise cannot wait for `post.index` to come back.
+        let isCurrent = member == (scrubbed ?? post.index)
         // The card's place along the sweep, -1…1 across the drawn window, so the arc is
         // the same shape whether it holds three cards or seven.
         let span = max(window.indices.count - 1, 1)

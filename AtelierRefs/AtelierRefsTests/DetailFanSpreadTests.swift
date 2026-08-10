@@ -194,6 +194,80 @@ struct FanSpreadBucketTests {
     }
 }
 
+// MARK: - Dragging along the arc
+
+/// Drag-to-scrub: the pointer's x, in the arc's own space, becomes the card it is over.
+///
+/// The cards OVERLAP — `cardSpacing` (52) is narrower than `cardSide` (64), which is what
+/// makes the arc read as a fanned deck rather than a row — so "the card under the pointer"
+/// is a slot at the spacing's pitch, not a hit test against a card's drawn bounds. Those
+/// two answers differ for every pointer position in an overlap, which is most of them.
+@Suite("Detail page: dragging along the arc picks a card")
+struct FanSpreadScrubTests {
+
+    private let pitch = DetailFanSpreadMetrics.cardSpacing
+
+    @Test("each slot's own span maps to that slot")
+    func slotsMapToThemselves() {
+        for slot in 0..<7 {
+            let mid = CGFloat(slot) * pitch + pitch / 2
+            #expect(fanSpreadScrubSlot(x: mid, pitch: pitch, count: 7) == slot)
+        }
+    }
+
+    /// The property that matters for a scrub: dragging one way never steps back. A
+    /// non-monotonic mapping would make the raise stutter under a steady drag.
+    @Test("the mapping is monotonic across the whole arc")
+    func mappingIsMonotonic() {
+        var last = -1
+        for step in 0...(7 * 52) {
+            let slot = fanSpreadScrubSlot(x: CGFloat(step), pitch: pitch, count: 7)
+            let value = try! #require(slot)
+            #expect(value >= last)
+            last = value
+        }
+    }
+
+    /// Running off either end holds the end card, the way a scrubber holds its end,
+    /// rather than blinking out or wrapping to the other side of the post.
+    @Test("a drag past either end holds the end card")
+    func endsClamp() {
+        #expect(fanSpreadScrubSlot(x: -500, pitch: pitch, count: 7) == 0)
+        #expect(fanSpreadScrubSlot(x: 99_999, pitch: pitch, count: 7) == 6)
+    }
+
+    @Test("a shorter arc clamps to its own last card, not the cap")
+    func shortArcClampsToItsOwnEnd() {
+        #expect(fanSpreadScrubSlot(x: 99_999, pitch: pitch, count: 3) == 2)
+    }
+
+    @Test("degenerate inputs yield no slot rather than a crash")
+    func degenerateInputs() {
+        #expect(fanSpreadScrubSlot(x: 10, pitch: pitch, count: 0) == nil)
+        #expect(fanSpreadScrubSlot(x: 10, pitch: 0, count: 7) == nil)
+        #expect(fanSpreadScrubSlot(x: .nan, pitch: pitch, count: 7) == nil)
+        #expect(fanSpreadScrubSlot(x: .infinity, pitch: pitch, count: 7) == nil)
+    }
+
+    /// A slot is an index into the WINDOW, not a member of the post — the two differ by
+    /// the window's start for any post past the cap, and conflating them would scrub to
+    /// the wrong image on exactly the long posts the spread exists for.
+    @Test("a slot resolves through the window to the right member")
+    func slotResolvesThroughTheWindow() {
+        let window = fanSpreadWindow(memberCount: 15, currentIndex: 11, cap: 7)
+        #expect(window.indices == [8, 9, 10, 11, 12, 13, 14])
+
+        let firstSlot = try! #require(
+            fanSpreadScrubSlot(x: pitch / 2, pitch: pitch, count: window.indices.count))
+        #expect(window.indices[firstSlot] == 8)   // NOT 0
+
+        let lastSlot = try! #require(
+            fanSpreadScrubSlot(x: 6 * pitch + pitch / 2, pitch: pitch,
+                               count: window.indices.count))
+        #expect(window.indices[lastSlot] == 14)   // NOT 6
+    }
+}
+
 // MARK: - Where the hover zone sits
 
 /// The zone that opens the spread has to sit on the ARTWORK's bottom edge, not the pane's
