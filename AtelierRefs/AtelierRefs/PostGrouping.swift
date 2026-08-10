@@ -132,11 +132,24 @@ struct PostGroups {
     /// Post key → its member item ids, in the post's OWN order where the capture
     /// recorded one (see the `init`), otherwise feed order.
     private let membersByKey: [String: [UUID]]
+    /// Blob hash by MEMBER id, for grouped items only — what the detail page's fan
+    /// needs to draw a post's other images (080 §2.1: the hash is the thumbnail
+    /// cache's key, so a URL alone would re-decode every card).
+    ///
+    /// Recorded HERE rather than resolved at the call site because the `init` is
+    /// already the one pass over the feed that has the details in hand. The
+    /// alternative — handing ``detailPost(forItem:thumbnailURL:jump:)`` the whole
+    /// `[CollectionItemDetail]` — would put an O(feed) index build inside a view
+    /// body, which is exactly the cost 080 §4 exists to remove. Absent for a
+    /// media-less member (003 · O1), which the factory carries through as a `nil`
+    /// slot rather than compacting away — see ``ItemDetailPost/blobHashes``.
+    private let blobHashByItem: [UUID: String]
 
     /// The empty index — no grouping (used before the first load).
     init() {
         keyByItem = [:]
         membersByKey = [:]
+        blobHashByItem = [:]
     }
 
     /// Bucket `items` by post, dropping every group of one, and put each group in
@@ -160,12 +173,14 @@ struct PostGroups {
         var members: [String: [UUID]] = [:]
         var carouselIndexByItem: [UUID: Int] = [:]
         var feedPositionByItem: [UUID: Int] = [:]
+        var hashByItem: [UUID: String] = [:]
         for (position, detail) in items.enumerated() {
             guard let key = postGroupKey(for: detail.source) else { continue }
             let id = detail.item.id
             members[key, default: []].append(id)
             feedPositionByItem[id] = position
             if let index = carouselIndex(for: detail.source) { carouselIndexByItem[id] = index }
+            if let hash = detail.asset.blobHash { hashByItem[id] = hash }
         }
         members = members.filter { $0.value.count > 1 }
         for (key, ids) in members where ids.allSatisfy({ carouselIndexByItem[$0] != nil }) {
@@ -181,6 +196,10 @@ struct PostGroups {
         }
         keyByItem = byItem
         membersByKey = members
+        // Only GROUPED items can ever be asked for a hash, and the ungrouped ones are
+        // the overwhelming majority — pruning here keeps the map the size of the
+        // carousels in the feed rather than the size of the feed.
+        blobHashByItem = hashByItem.filter { byItem[$0.key] != nil }
     }
 
     /// How many items of this feed came from `id`'s post — `0` when the item isn't
@@ -194,6 +213,44 @@ struct PostGroups {
     func members(forItem id: UUID) -> [UUID] {
         guard let key = keyByItem[id], let ids = membersByKey[key] else { return [] }
         return ids
+    }
+
+    /// The detail page's view of `id`'s post (080 §3.1) — `nil` when `id` is
+    /// ungrouped, which is the page's "draw nothing" answer.
+    ///
+    /// ONE factory rather than a derivation per host. Both grid-backed hosts want the
+    /// same four facts and reach post data by different routes, so writing it twice
+    /// is the "two lists, one of them unseen" shape 316 was written to fix. It lives
+    /// HERE, on the type that already owns post semantics and carries this area's
+    /// heaviest test suite, so the one thing that can silently rot — that ``index``
+    /// agrees with the position ← / → actually walks in ``fullRun(_:)`` — is pinned
+    /// by a unit test rather than by eye on the page.
+    ///
+    /// The caller supplies only the two things ``PostGroups`` cannot know: how to turn
+    /// a blob hash into a thumbnail URL, and what a jump means on its surface.
+    func detailPost(
+        forItem id: UUID,
+        thumbnailURL: @escaping (String) -> URL?,
+        jump: @escaping (Int) -> Void
+    ) -> ItemDetailPost? {
+        let ids = members(forItem: id)
+        // `index` before `count`: an id that is somehow keyed but missing from its own
+        // member list must yield nothing rather than a chip reading "1 of N".
+        guard let index = ids.firstIndex(of: id), let seed = ids.first else { return nil }
+        return ItemDetailPost(
+            index: index,
+            memberCount: ids.count,
+            // `map`, NOT `compactMap`: one slot per member, in post order, so
+            // `blobHashes[i]` is member `i`. A media-less member (003 · O1) has no blob
+            // and lands as `nil` — a placeholder card, not a missing one. Compacting
+            // here would silently renumber every card after such a member, and `jump`
+            // takes a POST-RELATIVE index, so the spread would send you to the wrong
+            // image. 080 §7 still defers what a mixed-kind post should DRAW; this only
+            // fixes where each member SITS.
+            blobHashes: ids.map { blobHashByItem[$0] },
+            thumbnailURL: thumbnailURL,
+            seed: seed,
+            jump: jump)
     }
 
     /// Whether `id` is the member that STANDS FOR its post in a collapsed feed —

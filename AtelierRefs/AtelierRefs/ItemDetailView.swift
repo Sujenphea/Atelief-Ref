@@ -51,6 +51,167 @@ struct ItemDetailNavigator {
     let step: (Int) -> Void
 }
 
+/// The post this item belongs to (307/309): its members in post order, the open
+/// item's place in them, and a jump. `nil` for an ungrouped item, or a host with
+/// no grouping context (the Space board) — so the page is unchanged for the
+/// overwhelming majority of items.
+///
+/// Assembled by ONE pure factory, ``PostGroups/detailPost(forItem:thumbnailURL:jump:)``,
+/// rather than per host: the two grid-backed hosts reach post data differently
+/// (`CollectionView` reads `model.postGroups`, `LibrarySearch` builds its own), so
+/// "plumb it through both hosts" would mean writing the same derivation twice
+/// against different sources — the shape 316 was written to fix. Each host supplies
+/// only its own `jump`.
+struct ItemDetailPost {
+    /// 0-based, within the post — NOT within the feed. The pager beside it counts
+    /// the feed; this counts the post, and 070 §3.2 wants both said out loud.
+    let index: Int
+    /// Never `1`: ``PostGroups`` drops every group of one (`PostGrouping.swift:170`),
+    /// so a would-be single is simply ungrouped and this whole value is `nil`.
+    let memberCount: Int
+    /// The members' blob hashes in post order, **index-aligned with ``index``**:
+    /// `blobHashes[i]` is member `i`'s artwork, and `nil` is a MEDIA-LESS member (003 · O1
+    /// — since 310 a post's members can be a mix of kinds), which draws a placeholder card
+    /// rather than a gap.
+    ///
+    /// It began life compacted, with a doc that said the non-alignment was deliberate. That
+    /// was a trap: ``jump`` takes a POST-RELATIVE index, and the spread calls it with the
+    /// position of the card it drew — so one media-less member anywhere in a post silently
+    /// shifted every card after it onto the wrong image. Alignment is the invariant that
+    /// makes "the i-th card is member i" true by construction instead of by luck, and
+    /// `[String?]` is how the compiler is told about it.
+    let blobHashes: [String?]
+    /// Resolve a blob hash to its on-disk thumbnail URL — the shape ``FanCard`` takes,
+    /// and for its reason (080 §2.1): `AsyncThumbnail` keys its cache on the HASH, so
+    /// a bare `[URL?]` would miss the shared cache and re-decode every card.
+    let thumbnailURL: (String) -> URL?
+    /// The post's representative id — the same `detail.item.id` the collapsed tile
+    /// seeds its fan with (`MasonryGridItem.swift:731`), so the page's pile is the
+    /// pile the user clicked whenever the grid drew one.
+    let seed: UUID
+    /// Jump to the member at a post-relative index. **Clamped by the callee**, not the
+    /// caller: a reload can shrink the post while the page is open (080 §5 · T4.3).
+    let jump: (Int) -> Void
+}
+
+/// Whether the page states the item's place in its post — the sidebar's "Post" row.
+/// The mirror of the cell's own ``MasonryGridItem/showsPostChip``
+/// (`MasonryGridItem.swift:686`), pure so the rule is pinned without a view harness
+/// (080 §3.4 · "Visibility").
+///
+/// Named for the FACT, not the chrome: the position began life as a chip beside the
+/// pager and moved into the sidebar (see ``SourceSection``), and the rule that decides
+/// whether there is a position worth stating did not change when its drawing did.
+///
+/// `> 1` rather than `> 0` even though ``PostGroups`` never reports 1: it is the
+/// rule the cell states, and stating it the same way twice is the point.
+nonisolated func showsPostPosition(memberCount: Int) -> Bool { memberCount > 1 }
+
+/// Whether the page draws its resting pile — the two blank cards behind the artwork —
+/// the mirror of the cell's own ``MasonryGridItem/showsFan`` (`MasonryGridItem.swift:627`)
+/// in name and shape, and pure for the same reason the chip's predicate is (080 §3.4).
+///
+/// The cell's second clause is `!postExpanded`; the page's is the zoom, and it is
+/// deliberately NOT `zoom == 1`. 070 §5.2 proposed that gate as *"the same gate the
+/// drag-out already uses"*, but `zoom` is `@State` that only moves at a settle point —
+/// the live magnification is `ZoomableImage`'s `@GestureState pinch`, folded into `zoom`
+/// in `MagnifyGesture.onEnded`. Gated on `zoom` alone the pile keeps drawing at FIT
+/// geometry through every pinch, while the artwork scales away from underneath it, and
+/// then vanishes when the fingers lift. So the caller hands in `zoom * pinch` (080 §2.3).
+///
+/// The tolerance rather than `== 1`: the scale is a product of two `CGFloat`s that a
+/// gesture returns to fit by clamping, and a pile that failed to come back because the
+/// last multiply landed on `0.9999999` would be a bug no one could reproduce.
+nonisolated func showsFanPile(memberCount: Int, effectiveScale: CGFloat) -> Bool {
+    memberCount > 1 && abs(effectiveScale - 1) < 0.001
+}
+
+/// Which members the spread actually draws, and how many it cannot (080 §3.5).
+struct FanSpreadWindow: Equatable {
+    /// Member indices in POST order — a contiguous run, so the spread reads as a slice of
+    /// the carousel rather than a sample of it.
+    let indices: [Int]
+    /// The members outside the window: the `+N`. Zero when the whole post fits.
+    let hidden: Int
+}
+
+/// The slice of a post the spread shows, centred on the open item.
+///
+/// A rednote note runs to 15 images ([020](../.docs/feature-todo/020-capture-rednote.md))
+/// and a 15-card arc is a layout problem before it is a performance one — the cards would
+/// be too small to recognise and the sweep too wide to sit under the picture. So the arc
+/// is capped and the remainder is SAID, as `+N`, never silently dropped.
+///
+/// Centred on `currentIndex` and then clamped to the ends, which is the load-bearing part:
+/// the open item must be inside the window at every position, including the last few of a
+/// long post, or the spread would show you a slice you are not in. Walking a 15-post to
+/// image 12 with a cap of 7 slides the window to `8…14` rather than leaving it at `0…6`.
+///
+/// Pure so the arithmetic is pinned without a view (080 §5) — this is where the
+/// off-by-ones live, exactly as `DetailStep` documents for the pager's own clamp.
+nonisolated func fanSpreadWindow(
+    memberCount: Int, currentIndex: Int, cap: Int
+) -> FanSpreadWindow {
+    guard memberCount > 0, cap > 0 else { return FanSpreadWindow(indices: [], hidden: 0) }
+    guard memberCount > cap else {
+        return FanSpreadWindow(indices: Array(0..<memberCount), hidden: 0)
+    }
+    // Defensive: a reload can shrink a post while the page is open (080 §5 · T4.2), and a
+    // stale index must not produce a window off the end of the list.
+    let current = min(max(currentIndex, 0), memberCount - 1)
+    // `cap / 2` before the item, the rest after — an even cap therefore leans one card
+    // FORWARD, which is the direction → is walking.
+    let start = min(max(current - cap / 2, 0), memberCount - cap)
+    return FanSpreadWindow(indices: Array(start..<(start + cap)), hidden: memberCount - cap)
+}
+
+/// Which drawn card a scrub at `x` is over — a slot index into the window, not a member.
+///
+/// The cards overlap (`cardSpacing` is narrower than `cardSide`, which is what makes the
+/// arc read as a fanned deck rather than a row), so "the card under the pointer" is the
+/// card whose SLOT `x` falls in, at a pitch of `cardSpacing`. Monotonic, so dragging one
+/// way never steps back.
+///
+/// Clamped rather than optional at the ends: a drag that runs off the arc should hold the
+/// last card, the way a scrubber holds its end, instead of blinking out. `nil` only when
+/// there is nothing drawn to be over.
+nonisolated func fanSpreadScrubSlot(x: CGFloat, pitch: CGFloat, count: Int) -> Int? {
+    guard count > 0, pitch > 0, x.isFinite else { return nil }
+    return min(max(Int((x / pitch).rounded(.down)), 0), count - 1)
+}
+
+/// Where a `.aspectRatio(contentMode: .fit)` image of `contentWidth × contentHeight`
+/// actually lands inside a `pane`-sized box, in that box's own coordinates (080 §3.2).
+/// `nil` when the content has no intrinsic size to fit, or the box no room to fit it in.
+///
+/// The page measures the PANE (`onGeometryChange`, `:195`) and nothing anywhere computed
+/// where the picture inside it ends up, so anything laid against the pane floats detached
+/// on the long axis for every image whose aspect ratio differs from the pane's — which is
+/// [313](313-a-carousel-outlined-in-black.md) reappearing on a new surface.
+///
+/// Fed from ``Asset/width`` / ``Asset/height`` (`Int?`, *"Intrinsic … layout without
+/// decoding"*), so the answer is known before a single byte is decoded and does not
+/// change when the 1280 preview swaps for the full-resolution image. `nil` dimensions are
+/// a media-less kind (003 · O1) and mean no pile; zero or negative would be a corrupt row,
+/// and returning `nil` for those keeps every consumer from having to divide by them.
+///
+/// Reporting the true drawn rect out of `ZoomableImage` was considered and rejected: it
+/// would add a geometry → `@State` → layout loop to the one view already doing
+/// state-driven geometry work (`reportDisplayTarget`), to buy a fraction of a point that
+/// is invisible under a tilted card. Purity is the same argument ``fanPileGeometry``
+/// already makes about itself — the "no card is ever clipped" invariant is testable across
+/// aspect ratios instead of being eyeballed at one window size.
+nonisolated func fitRect(contentWidth: Int?, contentHeight: Int?, in pane: CGSize) -> CGRect? {
+    guard let contentWidth, let contentHeight, contentWidth > 0, contentHeight > 0,
+          pane.width > 0, pane.height > 0
+    else { return nil }
+    let scale = min(pane.width / CGFloat(contentWidth), pane.height / CGFloat(contentHeight))
+    let size = CGSize(width: CGFloat(contentWidth) * scale, height: CGFloat(contentHeight) * scale)
+    return CGRect(
+        x: (pane.width - size.width) / 2, y: (pane.height - size.height) / 2,
+        width: size.width, height: size.height)
+}
+
 /// The detail page's source / lifecycle actions. Each is optional so a caller can
 /// omit the ones that don't apply — a Space board, for instance, has no
 /// folder-membership to remove from.
@@ -126,6 +287,10 @@ struct ItemDetailView: View {
     let actions: ItemDetailActions
     /// Optional prev/next; `nil` hides the navigator (no ordered set).
     let navigator: ItemDetailNavigator?
+    /// The post this item came from (307/309), or `nil` — an ungrouped item, a host
+    /// with no grouping context, or grouping switched off. Defaulted so the Space
+    /// board's call site is untouched.
+    var post: ItemDetailPost? = nil
     /// Dismiss the page (Back button / Escape).
     let onClose: () -> Void
 
@@ -139,16 +304,34 @@ struct ItemDetailView: View {
     @State private var zoom: CGFloat = 1
     @State private var pan: CGSize = .zero
 
+    /// The artwork's scale RIGHT NOW — `zoom` folded together with `ZoomableImage`'s
+    /// transient pinch into one scalar (080 §2.3). ``zoom`` alone is a settle-point value
+    /// and says `1` for the whole of a pinch out from fit; anything laid against the FIT
+    /// geometry has to watch this instead or it sits still while the picture moves.
+    /// Written by `ZoomableImage` from `onChange`, never during a body pass.
+    @State private var effectiveZoom: CGFloat = 1
+
     /// The drag-out export item (011 · Cluster A) — the original blob + human
     /// filename this item drops as. Computed ONCE per asset in `loadMedia` (not per
     /// body pass, so no repeated `stat` during zoom/pan), `nil` for a media-less
     /// kind or a missing blob. Consumed by the media area's `.onDrag` at fit.
     @State private var exportItem: AssetExportItem?
 
-    /// The media area's long side in POINTS, measured via `onGeometryChange` (036 §3
-    /// B3). Combined with ``displayScale`` into the FIT pixel size reported through
-    /// ``onDisplayTarget``. `0` until the first layout measures it.
-    @State private var mediaLongSidePt: CGFloat = 0
+    /// Whether the pointer is in the strip of artwork that opens the spread (080 §3.5).
+    /// Hover alone, deliberately: a click there belongs to the artwork's own drag-out.
+    @State private var isSpreadHovered = false
+
+    /// The media area's size in POINTS, measured via `onGeometryChange` (036 §3 B3).
+    /// `.zero` until the first layout measures it.
+    ///
+    /// Its long side feeds the FIT pixel size reported through ``onDisplayTarget``; both
+    /// sides feed ``fitRect`` for the pile (080 §3.2), which is why the whole size is
+    /// kept now rather than the one number B3 needed.
+    @State private var mediaPaneSize: CGSize = .zero
+
+    /// The media area's long side in POINTS. Combined with ``displayScale`` into the FIT
+    /// pixel size reported through ``onDisplayTarget``.
+    private var mediaLongSidePt: CGFloat { max(mediaPaneSize.width, mediaPaneSize.height) }
 
     /// Bumped by a click on the artwork to hand the keyboard back to the page (316).
     /// The ``DetailKeyCatcher`` claims focus once, when the page opens, and must not
@@ -195,7 +378,16 @@ struct ItemDetailView: View {
                     // image's own edges reading as part of the chrome. `mediaBackdrop`
                     // has claimed this surface in its doc since it was written; it
                     // just was not applied, so the media sat on `panel`.
+                    // The resting pile (080 §3.4), BEHIND the artwork and ABOVE the
+                    // backdrop — hence between the two `.background`s, since each one
+                    // stacks under the last. It is laid against the FITTED rect, not the
+                    // pane: against the pane it would float detached on the long axis for
+                    // every image whose aspect ratio isn't the window's (313).
+                    .background(alignment: .center) { fanPile }
                     .background(Theme.Colors.mediaBackdrop)
+                    // The spread sits OVER the artwork — it is the one piece of this
+                    // feature you click, so it cannot be a background like the pile.
+                    .overlay(alignment: .center) { fanSpread }
                     // B3: measure the media area and report its FIT size + zoom up to
                     // the `DetailSession`, which picks the decode tier. `zoom` (the
                     // @State, not the transient pinch) only changes at a settle point
@@ -203,7 +395,7 @@ struct ItemDetailView: View {
                     // zoom SETTLE, never per pinch tick; the loader's bucket
                     // quantization is the second line of defence against a decode storm.
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
-                        mediaLongSidePt = max(size.width, size.height)
+                        mediaPaneSize = size
                         reportDisplayTarget()
                     }
                     .onChange(of: zoom) { _, _ in reportDisplayTarget() }
@@ -217,7 +409,7 @@ struct ItemDetailView: View {
                     }
                 Divider()
                 DetailSidebar(
-                    asset: asset, source: source, tags: tags,
+                    asset: asset, source: source, post: post, tags: tags,
                     onAddTag: onAddTag, onRemoveTag: onRemoveTag,
                     collections: collections, allCollections: allCollections,
                     onAddToCollection: onAddToCollection,
@@ -504,6 +696,112 @@ struct ItemDetailView: View {
         return nil
     }
 
+    /// The box the artwork is actually fitted into: the measured pane less ``mediaArea``'s
+    /// own `lg` padding on every side. `fitRect` is fed THIS, not `mediaPaneSize`, or the
+    /// pile would sit 16pt proud of the picture on the constraining axis.
+    private var mediaContentSize: CGSize {
+        CGSize(
+            width: max(0, mediaPaneSize.width - 2 * Theme.Spacing.lg),
+            height: max(0, mediaPaneSize.height - 2 * Theme.Spacing.lg))
+    }
+
+    /// The resting pile: two blank tilted cards behind the fitted artwork, saying *"this
+    /// item belongs to a post"* in the grid's own vocabulary (080 §3.4).
+    ///
+    /// Drawn for ANY grouped item, including one opened out of an already-EXPANDED post
+    /// whose tile drew no pile at all. 070 §2 justified the seed as making this
+    /// "geometrically the same pile the user just clicked", and that claim does not hold
+    /// in general — the grid fans only a COLLAPSED post (`MasonryGridItem.swift:627`), and
+    /// since 316 made every member reachable, opening from an expanded post is ordinary.
+    /// The pile is not a promise about the transition; suppressing it would leave the page
+    /// silent in exactly the case the grid was silent too, and would drag grid view state
+    /// across this view's presentation-only contract (`:10-15`).
+    ///
+    /// The image branch only. A media-less kind has no intrinsic size to fit (`fitRect`
+    /// returns `nil` for it anyway) and video's fitted rect belongs to `AVPlayerView`'s
+    /// own layout, controls included — 080 §7 defers what a non-image member should draw.
+    @ViewBuilder
+    private var fanPile: some View {
+        if isImage, let post,
+           let fitted = fitRect(
+               contentWidth: asset.width, contentHeight: asset.height, in: mediaContentSize),
+           min(fitted.width, fitted.height) >= DetailFanPileMetrics.minFittedSide {
+            DetailFanPile(fitted: fitted.size, seed: post.seed)
+                // Present but transparent while zoomed, rather than removed: the pile is
+                // two rounded rectangles, and fading is what keeps a double-tap back to
+                // fit (which snaps `zoom` to 1 instantly, then springs the picture home)
+                // from popping the cards in a beat before the artwork arrives.
+                .opacity(
+                    showsFanPile(memberCount: post.memberCount, effectiveScale: effectiveZoom)
+                        ? 1 : 0)
+                .animation(Theme.Motion.gentle, value: effectiveZoom)
+                // Decoration. The artwork's drag-out and the pan gesture own this area.
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// The spread, and the strip of artwork that opens it (080 §3.5).
+    ///
+    /// **Why a hover ZONE and not the pile.** 070 §3.3 says "hovering the pile spreads
+    /// it", but on the page the pile is BEHIND the artwork — only a few points of tilted
+    /// corner ever show, which is a mean target, and the pile is deliberately
+    /// hit-transparent so it cannot steal the drag-out. So the trigger is the bottom strip
+    /// of the fitted artwork instead: where a filmstrip would live, big enough to find, and
+    /// nowhere near the middle of the picture, so looking at an image never summons chrome
+    /// over it.
+    ///
+    /// Gated on the same effective scale as the pile — one rule, not two: a zoomed page is
+    /// for looking at ONE image, and a spread inviting you elsewhere is noise there.
+    ///
+    /// **Positioned by layout, never by `offset`.** The zone sits at the bottom of a box
+    /// the size of the fitted artwork, so its layout frame, its pixels and its hit region
+    /// are the same rectangle by construction.
+    ///
+    /// The first version computed the position instead — centred the zone on the pane and
+    /// pushed it down — and that decoupled the two: `.contentShape(Rectangle())` applied
+    /// after `.offset` defines the hit shape in the view's UNTRANSFORMED space, so the arc
+    /// drew along the bottom of the picture while the thing that responded to the pointer
+    /// stayed in the middle of it. Pressing the visible arc did nothing, which took the
+    /// scrub with it. A computed position can disagree with a drawn one; a laid-out one
+    /// cannot.
+    @ViewBuilder
+    private var fanSpread: some View {
+        if isImage, let post, showsPostPosition(memberCount: post.memberCount),
+           let fitted = fitRect(
+               contentWidth: asset.width, contentHeight: asset.height, in: mediaContentSize),
+           min(fitted.width, fitted.height) >= DetailFanPileMetrics.minFittedSide {
+            let open = isSpreadHovered
+                && showsFanPile(memberCount: post.memberCount, effectiveScale: effectiveZoom)
+            let zoneHeight = min(fitted.height, DetailFanSpreadMetrics.hoverZoneHeight)
+            // A box the size of the fitted ARTWORK, centred by the overlay exactly as the
+            // artwork is. The spacer does the pushing, so the zone's bottom edge is the
+            // picture's bottom edge by layout rather than by arithmetic.
+            VStack(spacing: 0) {
+                // Not hit-testable: a `Spacer` has no content shape, so the upper reaches
+                // of the picture stay the artwork's — its drag-out and its pan.
+                Spacer(minLength: 0)
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    DetailFanSpread(post: post, fitted: fitted.size)
+                        .opacity(open ? 1 : 0)
+                        // Slides up out of the picture's edge rather than fading in place,
+                        // so the pile behind the artwork reads as the thing that opened.
+                        // Safe as an `offset` where the zone's was not: it is zero whenever
+                        // the arc is interactive, so the drawn and hittable arcs never
+                        // disagree — only the closed, hit-transparent one is displaced.
+                        .offset(y: open ? 0 : DetailFanSpreadMetrics.raise * 2)
+                        .allowsHitTesting(open)
+                        .padding(.bottom, Theme.Spacing.md)
+                }
+                .frame(height: zoneHeight)
+                .contentShape(Rectangle())
+                .onHover { isSpreadHovered = $0 }
+            }
+            .frame(width: fitted.width, height: fitted.height)
+            .animation(Theme.Motion.gentle, value: open)
+        }
+    }
+
     @ViewBuilder
     private var mediaArea: some View {
         Group {
@@ -524,7 +822,9 @@ struct ItemDetailView: View {
                     // Zoom/pan lives in this view (top-bar buttons + ⌘± drive it),
                     // reset per-navigation in `loadMedia` — so no `.id(asset.id)`
                     // remount is needed to clear it.
-                    ZoomableImage(image: image, zoom: $zoom, pan: $pan, maxZoom: maxZoom)
+                    ZoomableImage(
+                        image: image, zoom: $zoom, pan: $pan, maxZoom: maxZoom,
+                        effectiveScale: $effectiveZoom)
                 } else {
                     ProgressView()
                 }
@@ -580,6 +880,9 @@ struct ItemDetailView: View {
         // Fresh item → back to fit (the previous item's zoom shouldn't carry over).
         zoom = 1
         pan = .zero
+        // And its live twin, which a media-less next item would otherwise leave holding
+        // the previous picture's pinch — there is no `ZoomableImage` there to reset it.
+        effectiveZoom = 1
         player?.pause()
         player = nil
         // Drag-out export item (011 · Cluster A): the original blob + human name for
@@ -888,6 +1191,15 @@ private struct ZoomableImage: View {
     /// Ceiling so a huge pinch can't lose the image off-screen (passed in so it
     /// matches the button clamp).
     let maxZoom: CGFloat
+    /// The scale the artwork is drawn at RIGHT NOW — `zoom × pinch`, published upward so
+    /// anything laid against the FIT geometry can gate on it (080 §2.3). One scalar, not
+    /// the pinch itself: `pinch` is meaningless without the `zoom` it multiplies, and the
+    /// caller having to recombine them is how the wrong variable got read the first time.
+    ///
+    /// Written from `onChange`, never mid-body — a `@GestureState` moves on every tick of
+    /// a magnification, and a binding written during a body pass is a state mutation
+    /// inside view update.
+    @Binding var effectiveScale: CGFloat
 
     @GestureState private var pinch: CGFloat = 1
     @GestureState private var dragTranslation: CGSize = .zero
@@ -897,6 +1209,11 @@ private struct ZoomableImage: View {
             .resizable()
             .aspectRatio(contentMode: .fit)
             .scaleEffect(zoom * pinch)
+            // `initial` so the first frame publishes fit rather than whatever the previous
+            // item left behind, and so the gesture-end reset of `pinch` to 1 is reported
+            // like any other change. Double-tap-to-reset rides this too: it sets `zoom`,
+            // and `zoom` is half of the product.
+            .onChange(of: zoom * pinch, initial: true) { _, scale in effectiveScale = scale }
             .offset(
                 x: pan.width + dragTranslation.width,
                 y: pan.height + dragTranslation.height)
@@ -934,6 +1251,287 @@ private struct ZoomableImage: View {
     }
 }
 
+// MARK: - The resting pile (307 · carousel grouping, 080 §3.4)
+
+/// The page's pile in numbers. Internal rather than private so 080 §5 · T1 composes the
+/// values the page actually uses — a test that re-typed `5, 12, 5` would keep passing
+/// after someone retuned them here.
+enum DetailFanPileMetrics {
+    /// The deepest card's ideal tilt, matching the grid cell's. At page scale
+    /// ``fanPileGeometry`` almost always reduces it (its cap is `2 · maxInset / longest
+    /// side`, and the page's longest side is measured in hundreds of points), so this is
+    /// the ceiling for a small window rather than the number usually drawn.
+    static let maxDegrees: Double = 5
+    /// The most the pile may swing out past the artwork — see ``DetailFanPile`` for why
+    /// the cell's inset becomes an outset here, and why this stays under
+    /// `Theme.Spacing.lg` (16), the padding it swings into.
+    static let maxInset: CGFloat = 12
+    /// A visible minimum, so the cards still read as cards behind a small picture.
+    static let minInset: CGFloat = 5
+    /// The cards' own corner rounding — `card`, not the grid's `tile`: this pile sits at
+    /// picture scale, where the tile's 8pt reads as a sharp corner.
+    static let cornerRadius: CGFloat = Theme.Radius.card
+    /// Two, exactly as the grid tile draws two. The post's real size is said in words by
+    /// the chip; a card per member is the spread's job (080 §3.5), if it ships.
+    static let cardCount = 2
+    /// The smallest fitted artwork worth putting a pile behind. A tall-and-thin asset
+    /// (080 §5 · T1's `1 × 20000`) fits to a sliver a fraction of a point wide, where two
+    /// tilted cards are not a pile but a smear — and where ``fanPileGeometry``'s "never
+    /// eat more than half" ceiling starts governing its own answer.
+    static let minFittedSide: CGFloat = 48
+}
+
+/// The spread's numbers (080 §3.5). Internal for the same reason as
+/// ``DetailFanPileMetrics``: the tests compose the values the page actually draws with.
+enum DetailFanSpreadMetrics {
+    /// The most cards the arc will draw. Seven is odd on purpose — an odd cap puts the
+    /// open item dead centre at every position except the two ends.
+    static let cap = 7
+    /// A card's long side in POINTS. Small enough that seven sit under the picture without
+    /// crowding it, large enough to recognise a photo in.
+    static let cardSide: CGFloat = 64
+    /// The whole arc's sweep. Shallow — 070 §3.3 asks for "a shallow arc", and past about
+    /// this the end cards lie on their sides and stop reading as a row.
+    static let sweepDegrees: Double = 24
+    /// How far apart neighbouring cards sit along the arc.
+    static let cardSpacing: CGFloat = 52
+    /// How far the current card lifts out of the arc, so "you are here" needs no marker.
+    static let raise: CGFloat = 10
+    /// The card's corner rounding — the pile's, so the two read as one family.
+    static let cornerRadius: CGFloat = Theme.Radius.card
+    /// The strip of the fitted artwork that opens the spread on hover, measured up from
+    /// its bottom edge. A zone rather than the whole picture: the artwork is the thing you
+    /// move the pointer across, and a spread that appeared on any hover would be in the way
+    /// of looking at the image — which is the page's actual job.
+    static let hoverZoneHeight: CGFloat = 96
+
+    /// The pixel bucket a card decodes at, from its own point size.
+    ///
+    /// The pipeline requires the caller to size itself — *"the cell never guesses its own
+    /// size (036 §4 C3)"* — and ``AsyncThumbnail/bucket`` defaults to the 512 ceiling,
+    /// which for a 64pt card is sixteen times the pixels it can show, per card, on every
+    /// spread of a cold post.
+    static func bucket(scale: CGFloat) -> Int {
+        thumbnailPixelBucket(pointLongSide: cardSide, scale: scale)
+    }
+}
+
+/// Two blank tilted cards behind the fitted artwork — the third of the app's fanned piles
+/// (080 §3.4 · *"Three fan implementations, and that is fine"*): SwiftUI like ``FanCard``,
+/// aspect-sized and artwork-free like ``MasonryGridItem``'s, and neither one's code.
+///
+/// **Blank on purpose.** 080 §2.2 settled a contradiction in 070: these carry NO
+/// thumbnails, exactly as the grid tile's do — *"they stand for 'more behind this', not
+/// for any particular image"* — so the resting state costs two rounded rectangles rather
+/// than a decode per member. Cards with artwork are the spread's job (§3.5).
+///
+/// **Why the cell's inset becomes an outset.** The tile pulls its ARTWORK in by
+/// ``fanPileGeometry``'s inset to make room for the tilt inside a cell that clips. The
+/// page cannot: the artwork is already at fit, and shrinking it would be a visible lurch
+/// on every post you open. So the same inset is spent the other way round — the cards are
+/// the fitted rect's own size and their corners swing OUT by (at most) that inset, into
+/// `mediaArea`'s `lg` padding. The invariant is the same one either way, and 080 §5 · T1
+/// pins it on this rectangle: an inset card fits the fitted rect ⟺ a fitted-size card
+/// overhangs it by no more than the inset.
+private struct DetailFanPile: View {
+    /// The artwork's own rect, from ``fitRect`` — the pile is concentric with it.
+    let fitted: CGSize
+    /// The post's representative id. Stable across launches because ``fanRotations`` reads
+    /// raw uuid bytes rather than `hashValue`, so this pile does not re-jitter per process
+    /// — and it is the same seed the collapsed tile used, so it is the same pile whenever
+    /// the grid drew one.
+    let seed: UUID
+
+    var body: some View {
+        let (inset, degrees) = fanPileGeometry(
+            in: fitted, maxDegrees: DetailFanPileMetrics.maxDegrees,
+            maxInset: DetailFanPileMetrics.maxInset, minInset: DetailFanPileMetrics.minInset,
+            cornerRadius: DetailFanPileMetrics.cornerRadius)
+        // The tilt the geometry ACTUALLY allows at this size, not the ideal — a wide
+        // panorama and a tall screenshot get different angles for the same reason a
+        // masonry cell does.
+        let angles = fanBackingRotations(
+            seed: seed, cardCount: DetailFanPileMetrics.cardCount, maxDegrees: degrees)
+        ZStack {
+            ForEach(Array(angles.enumerated()), id: \.offset) { _, tilt in
+                RoundedRectangle(cornerRadius: DetailFanPileMetrics.cornerRadius)
+                    .fill(Theme.Colors.selection)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: DetailFanPileMetrics.cornerRadius)
+                            .strokeBorder(Theme.Colors.hairlineStrong, lineWidth: 1)
+                    }
+                    .frame(width: fitted.width, height: fitted.height)
+                    .rotationEffect(.degrees(tilt))
+            }
+        }
+        // A rotation draws outside its layout bounds, so the box is claimed explicitly —
+        // the pile RESERVES at least what it covers, for anything that later measures or
+        // clips this background. (`inset` carries `fanPileGeometry`'s rounded-corner
+        // allowance, which the swing itself does not spend, so the claim is a few points
+        // generous rather than exact.)
+        .frame(width: fitted.width + 2 * inset, height: fitted.height + 2 * inset)
+    }
+}
+
+// MARK: - The spread (080 §3.5)
+
+/// The pile opened: a shallow arc of the post's members with the current one raised,
+/// click to jump (070 §3.3, 080 §3.5).
+///
+/// **What it adds over the arrows.** Since [316](316-detail-arrows-walk-the-post.md) a
+/// post is contiguous in the run, so ← / → already walks it. The spread does not make the
+/// walk possible; it makes it VISIBLE, and adds random access to a member four steps away.
+///
+/// **Cold by construction.** A collapsed post renders only its representative in the grid,
+/// so every other member is absent from ``ThumbnailPipeline``'s cache — the spread is
+/// coldest on exactly the posts it is most wanted for, and may open while ``DetailSession``
+/// still has a full-res decode in flight. ``DetailFanSpreadMetrics/cap`` is the bound on
+/// that, and the reason there is no prefetch here: the cheapest decode is the one a closed
+/// spread never asks for.
+private struct DetailFanSpread: View {
+    let post: ItemDetailPost
+    /// The artwork's own rect, so the arc sits under the PICTURE rather than the pane —
+    /// the same rule the pile follows, and for [313](313-a-carousel-outlined-in-black.md)'s
+    /// reason.
+    let fitted: CGSize
+
+    @Environment(\.displayScale) private var displayScale
+
+    /// The member under the pointer mid-scrub, or `nil` when not scrubbing.
+    ///
+    /// Held locally as well as jumped to, because the raise has to answer the pointer on
+    /// the same frame: `jump` goes out to the host, which reloads and comes back through
+    /// `post.index` a beat later, and a card that lifted one frame behind the finger would
+    /// feel broken in exactly the gesture that is meant to feel direct.
+    @State private var scrubbed: Int?
+
+    /// The arc's own coordinate space, so a scrub is measured from the first card's
+    /// leading edge rather than from wherever the page happens to have put the arc.
+    private static let arcSpace = "detailFanSpreadArc"
+
+    var body: some View {
+        let window = fanSpreadWindow(
+            memberCount: post.memberCount, currentIndex: post.index,
+            cap: DetailFanSpreadMetrics.cap)
+        HStack(spacing: DetailFanSpreadMetrics.cardSpacing
+            - DetailFanSpreadMetrics.cardSide) {
+            ForEach(window.indices, id: \.self) { member in
+                card(member: member, window: window)
+            }
+            if window.hidden > 0 { overflowLabel(window.hidden) }
+        }
+        .coordinateSpace(name: Self.arcSpace)
+        // Simultaneous, so a plain click still reaches the card's own `Button` (and its
+        // focus ring and accessibility action) while a drag past the threshold scrubs.
+        // The two agree at the end of a scrub: the button that fires is the card the
+        // pointer is over, which is the member already jumped to, so the jump is idempotent.
+        .simultaneousGesture(scrub(window: window))
+        .padding(.horizontal, Theme.Spacing.md)
+        .padding(.vertical, Theme.Spacing.sm)
+        .background(.ultraThinMaterial, in: Capsule())
+        .frame(maxWidth: fitted.width)
+    }
+
+    /// Drag along the arc to walk the post, previewing each member as you pass it.
+    ///
+    /// `minimumDistance` above zero so a click is a click: below the threshold the card's
+    /// `Button` owns the event, above it this does.
+    ///
+    /// The jump fires when the member under the pointer CHANGES, not per pixel — so a
+    /// sweep across seven cards costs seven steps, exactly what holding → down already
+    /// costs, and `DetailSession`'s LRU plus the loader's bucket quantization are the same
+    /// defences that walk relies on. Per-pixel would be a decode storm.
+    private func scrub(window: FanSpreadWindow) -> some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.arcSpace))
+            .onChanged { value in
+                guard let slot = fanSpreadScrubSlot(
+                    x: value.location.x,
+                    pitch: DetailFanSpreadMetrics.cardSpacing,
+                    count: window.indices.count)
+                else { return }
+                // In range by construction: `fanSpreadScrubSlot` clamps to `0..<count`
+                // and was handed this array's own count, which is why it clamps rather
+                // than returning an optional at the ends.
+                let member = window.indices[slot]
+                guard member != scrubbed else { return }
+                scrubbed = member
+                // Post-relative, clamped by the callee (080 §5 · T4.3) — a reload can
+                // shrink the post between the card being drawn and the drag reaching it.
+                post.jump(member)
+            }
+            .onEnded { _ in scrubbed = nil }
+    }
+
+    /// One member's card. A `Button`, not a tap gesture: the spread's whole point is that
+    /// the cards are targets, and a button carries the focus ring and the accessibility
+    /// action a bare gesture does not.
+    private func card(member: Int, window: FanSpreadWindow) -> some View {
+        // The pointer wins while a scrub is in flight, the page when it is not — see
+        // ``scrubbed`` for why the raise cannot wait for `post.index` to come back.
+        let isCurrent = member == (scrubbed ?? post.index)
+        // The card's place along the sweep, -1…1 across the drawn window, so the arc is
+        // the same shape whether it holds three cards or seven.
+        let span = max(window.indices.count - 1, 1)
+        let position = Double(member - (window.indices.first ?? 0)) / Double(span)
+        let tilt = (position - 0.5) * DetailFanSpreadMetrics.sweepDegrees
+        return Button {
+            // Post-relative, and the callee clamps (080 §5 · T4.3) — a reload can shrink
+            // the post between this card being drawn and the click landing.
+            post.jump(member)
+        } label: {
+            thumbnail(member: member)
+                .frame(
+                    width: DetailFanSpreadMetrics.cardSide,
+                    height: DetailFanSpreadMetrics.cardSide)
+                .clipShape(RoundedRectangle(cornerRadius: DetailFanSpreadMetrics.cornerRadius))
+                .overlay {
+                    RoundedRectangle(cornerRadius: DetailFanSpreadMetrics.cornerRadius)
+                        .strokeBorder(
+                            isCurrent ? Theme.Colors.selectionMark : Theme.Colors.hairlineStrong,
+                            lineWidth: isCurrent ? 2 : 1)
+                }
+                .rotationEffect(.degrees(tilt))
+                // The raise IS the "you are here" marker — no badge, no dot.
+                .offset(y: isCurrent ? -DetailFanSpreadMetrics.raise : 0)
+                .zIndex(isCurrent ? 1 : 0)
+        }
+        .buttonStyle(.plain)
+        .help("Image \(member + 1) of \(post.memberCount)")
+        .accessibilityLabel("Image \(member + 1) of \(post.memberCount)")
+    }
+
+    /// A member's artwork, or the placeholder a media-less one draws (359). `nil` is a
+    /// SLOT, not a gap: the member is real, it is counted, and it can be jumped to.
+    @ViewBuilder
+    private func thumbnail(member: Int) -> some View {
+        if let hash = post.blobHashes[member] {
+            AsyncThumbnail(
+                hash: hash, url: post.thumbnailURL(hash),
+                cornerRadius: DetailFanSpreadMetrics.cornerRadius,
+                // Sized from the CARD, not defaulted — see `DetailFanSpreadMetrics.bucket`.
+                bucket: DetailFanSpreadMetrics.bucket(scale: displayScale))
+        } else {
+            RoundedRectangle(cornerRadius: DetailFanSpreadMetrics.cornerRadius)
+                .fill(Theme.Colors.mediaBackdrop)
+                .overlay {
+                    Image(systemName: "doc")
+                        .font(.system(size: 18))
+                        .foregroundStyle(Theme.Colors.inkSecondary)
+                }
+        }
+    }
+
+    /// `+N` — the members the cap could not draw, said rather than dropped.
+    private func overflowLabel(_ hidden: Int) -> some View {
+        Text("+\(hidden)")
+            .font(Theme.Typography.caption).monospacedDigit()
+            .foregroundStyle(Theme.Colors.inkSecondary)
+            .padding(.leading, DetailFanSpreadMetrics.cardSide
+                - DetailFanSpreadMetrics.cardSpacing + Theme.Spacing.sm)
+            .help("\(hidden) more in this post — walk to them with the arrow keys")
+    }
+}
+
 /// The right-hand details column (041 · Figma `6:4`): three sections — **Data**
 /// (saved + dimensions), **Source** (platform / author / title + Visit), and
 /// **Details** (Name, Note, Collections, Tags). The former in-panel Actions block
@@ -941,6 +1539,9 @@ private struct ZoomableImage: View {
 private struct DetailSidebar: View {
     let asset: Asset
     let source: Source?
+    /// The post this item belongs to, for ``SourceSection``'s "Post" row. `nil` for an
+    /// ungrouped item or a host with no grouping context.
+    let post: ItemDetailPost?
     let tags: [Tag]
     let onAddTag: (String) -> Void
     let onRemoveTag: (Tag) -> Void
@@ -958,7 +1559,7 @@ private struct DetailSidebar: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
                 DataSection(asset: asset)
                 if let source {
-                    SourceSection(source: source, onOpenSource: onOpenSource)
+                    SourceSection(source: source, post: post, onOpenSource: onOpenSource)
                 }
                 DetailsSection(
                     asset: asset, tags: tags, onAddTag: onAddTag, onRemoveTag: onRemoveTag,
@@ -990,10 +1591,16 @@ private struct DataSection: View {
     }
 }
 
-/// "Source" — platform / author / title, then a full-width Visit button that
+/// "Source" — platform / author / title / post, then a full-width Visit button that
 /// opens the original URL (041; the raw-URL + handle rows are gone).
 private struct SourceSection: View {
     let source: Source
+    /// The post this item came out of (080 §3.3). It lives HERE, in Source, rather
+    /// than in a section of its own: post grouping is derived from the source
+    /// (`postGroupKey(for:)`), so an item that has a post always has this section,
+    /// and "which image of the post" is provenance — the same kind of fact as the
+    /// platform and the author, and read in the same glance.
+    let post: ItemDetailPost?
     let onOpenSource: (() -> Void)?
 
     /// "Name (@handle)" when both are present; whichever exists otherwise.
@@ -1014,6 +1621,12 @@ private struct SourceSection: View {
             if let author { DetailRow("Author", author) }
             if let title = source.title, !title.isEmpty {
                 DetailRow("Title", title)
+            }
+            // "Image 2 of 4" — the item's place inside its carousel (307/309), which
+            // the pager cannot express: that one counts the FEED. The pile behind the
+            // artwork says a post is there; this row says which of it you are on.
+            if let post, showsPostPosition(memberCount: post.memberCount) {
+                DetailRow("Post", "Image \(post.index + 1) of \(post.memberCount)")
             }
             if let onOpenSource {
                 VisitButton(action: onOpenSource)

@@ -469,6 +469,9 @@ struct LibrarySearchable<Content: View>: View {
 
     @StateObject private var search = LibrarySearchModel()
     @State private var detail: AssetDetail?
+    /// The detail page's run + grouping, memoized on `(resultsVersion, grouping)` so
+    /// the page does not rebuild a whole `PostGroups` per body pass (080 §4).
+    @State private var detailContexts = SearchDetailContextCache()
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -509,14 +512,17 @@ struct LibrarySearchable<Content: View>: View {
             }
 
             if let services = model.services, detail != nil {
+                // The RUN, not raw result order (069) — a carousel among the hits is
+                // walked as one post, in the post's order, exactly as the grid drew it.
+                // Still asked for inside this branch, so a query with no page open pays
+                // nothing; the memo is what stops the page ITSELF re-deriving it on
+                // every step, zoom settle and resize tick (080 §4).
+                let context = detailContexts.context(
+                    results: search.results, resultsVersion: search.resultsVersion,
+                    groupCarousels: gridPrefs.groupCarousels)
                 SearchDetailOverlay(
                     services: services, model: model,
-                    // The RUN, not raw result order (069) — a carousel among the hits is
-                    // walked as one post, in the post's order, exactly as the grid drew
-                    // it. Computed inside this branch, so a query with no page open pays
-                    // nothing.
-                    results: searchDetailRun(
-                        search.results, groupCarousels: gridPrefs.groupCarousels),
+                    context: context,
                     current: $detail)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(.opacity)
@@ -747,18 +753,82 @@ func searchItems(for results: [AssetDetail]) -> [CollectionItemDetail] {
     }
 }
 
-/// The hits in the order the DETAIL page walks them (069): result order, but with each
-/// post's images together and in the post's own order — the same rule the results grid
-/// draws by, so the page's ← / → agree with what is on screen.
+/// What the search detail page needs from the result set: the run its ← / → walk, and
+/// the grouping THAT SAME PASS produced.
 ///
-/// Identity when grouping is off or nothing is grouped, so the common query pays only
-/// the grouping pass it was already paying for the grid.
-func searchDetailRun(_ results: [AssetDetail], groupCarousels: Bool) -> [AssetDetail] {
-    guard groupCarousels else { return results }
-    let items = searchItems(for: results)
-    let run = PostGroups(items: items).fullRun(items)
-    let byID = Dictionary(results.map { ($0.asset.id, $0) }, uniquingKeysWith: { first, _ in first })
-    return run.compactMap { byID[$0.item.id] }
+/// One value rather than two calls, because the two have to be the same derivation: the
+/// chip says "2 of 4 in this post" about the very index the arrows step through, and a
+/// second ``PostGroups`` built beside the first is a second answer waiting to differ
+/// (316's "two lists, one of them unseen").
+///
+/// Empty grouping when the carousel toggle is off — then the run is raw result order,
+/// and a chip counting post positions would describe a walk the arrows do not take.
+struct SearchDetailContext {
+    /// The hits in the order the DETAIL page walks them (069): result order, but with
+    /// each post's images together and in the post's own order — the same rule the
+    /// results grid draws by, so the page's ← / → agree with what is on screen.
+    let run: [AssetDetail]
+    /// The result set bucketed by post. `item.id == asset.id` here
+    /// (``searchItems(for:)``), so an `AssetDetail` can be looked up in it directly.
+    let groups: PostGroups
+
+    init(results: [AssetDetail] = [], groupCarousels: Bool = false) {
+        guard groupCarousels else {
+            run = results
+            groups = PostGroups()
+            return
+        }
+        let items = searchItems(for: results)
+        let grouping = PostGroups(items: items)
+        let byID = Dictionary(
+            results.map { ($0.asset.id, $0) }, uniquingKeysWith: { first, _ in first })
+        run = grouping.fullRun(items).compactMap { byID[$0.item.id] }
+        groups = grouping
+    }
+}
+
+/// The memo that keeps ``SearchDetailContext`` off the body-pass hot path (080 §4).
+///
+/// The grouping used to be built INSIDE `LibrarySearchable.body` — a full bucket +
+/// per-group sort + `fullRun` + a `Dictionary` over every hit, i.e. O(n log n) across
+/// the whole result set, re-run on every ← / →, every zoom settle and every geometry
+/// tick of a live window resize. The call site's "a query with no page open pays
+/// nothing" was true and accounted only for the CLOSED case; search is the one surface
+/// with no bound on `n`.
+///
+/// A memo box in `@State` rather than a `.task(id:)` or an `.onChange` rebuild, for two
+/// reasons: it stays LAZY (a query with no page open still pays nothing — the box is
+/// only asked inside the `detail != nil` branch), and it is SYNCHRONOUS, so the page's
+/// first frame has its run instead of opening on an empty pager. Same idiom, and the
+/// same reason, as ``MoveTargetsCache`` (027 · G3).
+///
+/// Keyed on `search.resultsVersion` rather than the array: it is the identity the model
+/// already publishes and the results grid already keys its own rebuild on, and comparing
+/// a whole `[AssetDetail]` per body pass would reintroduce an O(n) pass to avoid an
+/// O(n log n) one.
+@MainActor
+final class SearchDetailContextCache {
+    private struct Key: Equatable {
+        var resultsVersion: Int
+        var groupCarousels: Bool
+    }
+
+    private var key: Key?
+    private var value = SearchDetailContext()
+    /// Cache misses since init — the handle a perf test would take to prove the memo
+    /// hits across renders, as ``MoveTargetsCache/buildCount`` does.
+    private(set) var buildCount = 0
+
+    func context(
+        results: [AssetDetail], resultsVersion: Int, groupCarousels: Bool
+    ) -> SearchDetailContext {
+        let k = Key(resultsVersion: resultsVersion, groupCarousels: groupCarousels)
+        if key == k { return value }
+        value = SearchDetailContext(results: results, groupCarousels: groupCarousels)
+        key = k
+        buildCount += 1
+        return value
+    }
 }
 
 private struct LibrarySearchResults: View {
@@ -1160,16 +1230,20 @@ private struct SearchModeToggle: View {
 private struct SearchDetailOverlay: View {
     let services: AppServices
     @ObservedObject var model: IngestionModel
-    let results: [AssetDetail]
+    /// The run the page walks AND the grouping that ordered it — one derivation, so
+    /// the pager and the post chip cannot tell different stories (080 §4).
+    let context: SearchDetailContext
     @Binding var current: AssetDetail?
 
     @StateObject private var tags: AssetTagsStore
 
+    private var results: [AssetDetail] { context.run }
+
     init(services: AppServices, model: IngestionModel,
-         results: [AssetDetail], current: Binding<AssetDetail?>) {
+         context: SearchDetailContext, current: Binding<AssetDetail?>) {
         self.services = services
         self.model = model
-        self.results = results
+        self.context = context
         _current = current
         _tags = StateObject(wrappedValue: AssetTagsStore(services: services))
     }
@@ -1216,6 +1290,24 @@ private struct SearchDetailOverlay: View {
                             }
                         }
                     },
+                    // The post the page is inside (080 §3.1), off the SAME grouping
+                    // that produced `results` above. Search's synthetic membership
+                    // makes `item.id == asset.id`, so the asset id is the key.
+                    post: context.groups.detailPost(
+                        forItem: asset.id,
+                        thumbnailURL: { model.thumbnailURL(forBlobHash: $0) },
+                        jump: { target in
+                            // Clamped by the CALLEE (080 §3.1): a re-run can shrink the
+                            // post under an armed jump, and the run is re-derived with
+                            // it, so both the member and its place are resolved fresh.
+                            let members = context.groups.members(forItem: asset.id)
+                            guard !members.isEmpty else { return }
+                            let member = members[min(max(0, target), members.count - 1)]
+                            guard let hit = results.first(where: { $0.asset.id == member })
+                            else { return }
+                            current = hit
+                            model.recordView(assetID: hit.asset.id)
+                        }),
                     onClose: {
                         model.flushViewBumps()
                         withAnimation { current = nil }

@@ -1330,7 +1330,40 @@ private struct CollectionDetailHost: View {
                     }
                 }
             },
+            // The post the page is inside (080 §3.1). Gated on `groupCarousels` for
+            // the same reason `detailRun` is (`IngestionModel.swift:559`): with
+            // grouping off the run is raw feed order, so a chip counting post
+            // positions would be describing a walk the arrows do not take.
+            post: detailPost(for: detail),
             onClose: { close() })
+    }
+
+    /// The shown item's post, for the page's chip (080 §3.1) — `nil` when it is
+    /// ungrouped or grouping is off.
+    ///
+    /// Left to run per body pass, deliberately (080 §4): this is a dictionary hit
+    /// plus an array of at most a post's worth of ids, where the win celebrated at
+    /// the `detailRunIndex` call site above was replacing a linear scan of thousands.
+    private func detailPost(for detail: CollectionItemDetail) -> ItemDetailPost? {
+        guard model.groupCarousels else { return nil }
+        return model.postGroups.detailPost(
+            forItem: detail.item.id,
+            thumbnailURL: { model.thumbnailURL(forBlobHash: $0) },
+            jump: { target in
+                // CLAMPED HERE, not by the caller (080 §3.1): a delete or a reload can
+                // shrink the post while the page is open, so a jump armed a moment ago
+                // may name a member that no longer exists — and `detailRunIndex` is
+                // rebuilt by the same reload, so the run position must be looked up
+                // fresh rather than captured.
+                let members = model.postGroups.members(forItem: detail.item.id)
+                guard !members.isEmpty else { return }
+                let member = members[min(max(0, target), members.count - 1)]
+                let run = model.detailRun
+                guard let position = model.detailRunIndex(of: member),
+                      run.indices.contains(position) else { return }
+                session.step(to: run[position], in: run)
+                model.recordView(assetID: run[position].asset.id)
+            })
     }
 
     /// Close the page (Back / Escape): flush the coalesced view bumps, sync the

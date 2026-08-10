@@ -26,6 +26,27 @@ func fanRotations(seed: UUID, count: Int, maxDegrees: Double = 8) -> [Double] {
     }
 }
 
+/// The tilts for the cards BEHIND the upright front one — `cardCount` angles, front
+/// to back — for any of the app's three fanned piles (080 §3.4).
+///
+/// Every pile in the app draws its front card upright, because the front card IS the
+/// artwork: ``FanCard``'s top tile, the grid cell's thumbnail, the detail page's fitted
+/// image. So a caller wanting N cards behind it has to ask ``fanRotations`` for `N + 1`
+/// and start reading at index 1. That off-by-one was written out twice — once in
+/// `FanCard.fanStack`, once in `MasonryGridItem.layOutFan`, whose comment could only say
+/// *"matching `FanCard`'s convention"* and hope the next reader opened the other file.
+/// It is arithmetic, not a convention, and it lives here now: a fourth pile can differ in
+/// rendering layer and sizing model (they all do, for real reasons) without differing in
+/// this.
+///
+/// Deliberately a wrapper rather than a replacement — ``fanRotations`` still answers "the
+/// angles for `count` cards", which is what a caller with no upright front card wants.
+func fanBackingRotations(seed: UUID, cardCount: Int, maxDegrees: Double = 8) -> [Double] {
+    guard cardCount > 0 else { return [] }
+    return Array(
+        fanRotations(seed: seed, count: cardCount + 1, maxDegrees: maxDegrees).dropFirst())
+}
+
 /// A Home overview card that draws an entity's recent thumbnails as a fanned pile
 /// (009 · N4), sized to fill the adaptive gallery grid cell. Matches ``CoverCard``'s
 /// outer chrome (padding, background, title) so collections and spaces read as one
@@ -81,16 +102,20 @@ struct FanCard: View {
 
     @ViewBuilder
     private func fanStack(side: CGFloat) -> some View {
-        let angles = fanRotations(seed: seed, count: max(recentBlobHashes.count, 1))
         ZStack {
             if recentBlobHashes.isEmpty {
+                // No pile at all — one lone tile, which takes the front card's angle
+                // rather than sitting bolt upright with nothing to sit against.
                 placeholder(side: side)
-                    .rotationEffect(.degrees(angles.first ?? 0))
+                    .rotationEffect(.degrees(fanRotations(seed: seed, count: 1).first ?? 0))
             } else {
+                // The front tile (index 0) rides on top with no tilt, so the tilted ones
+                // are the `count - 1` behind it — see ``fanBackingRotations``.
+                let angles = fanBackingRotations(
+                    seed: seed, cardCount: recentBlobHashes.count - 1)
                 ForEach(Array(recentBlobHashes.enumerated().reversed()), id: \.offset) { index, hash in
                     tile(hash: hash, side: side)
-                        // The front tile (index 0) rides on top with no tilt.
-                        .rotationEffect(.degrees(index == 0 ? 0 : angles[index]))
+                        .rotationEffect(.degrees(index == 0 ? 0 : angles[index - 1]))
                         .zIndex(Double(recentBlobHashes.count - index))
                 }
             }
