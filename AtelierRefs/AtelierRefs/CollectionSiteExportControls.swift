@@ -4,9 +4,9 @@
 //
 //  014 · S3 — the collection→web-page export chrome, shaped exactly like the
 //  contact sheet's (052 · B4) so a third export is not a third set of habits:
-//   • ``CollectionSiteExportButton`` — a config popover (columns + captions +
-//     source links) raised from the selection bar; Export… hands the
-//     ``CollectionSiteExport/Plan`` to the shared ``ExportController``, which
+//   • ``CollectionSiteExportPanel`` — a config popover (columns + captions +
+//     source links) raised from the selection bar's `…` overflow; Export… hands
+//     the ``CollectionSiteExport/Plan`` to the shared ``ExportController``, which
 //     owns the save panel, the progress ring and the completion toast.
 //   • ``ExportWebPageCommand`` — the File-menu path, exporting the
 //     selection-or-whole-collection with default settings. Absent (and so
@@ -21,27 +21,18 @@ import AtelierCore
 import AtelierExport
 import SwiftUI
 
-// MARK: - Export button + config popover
+// MARK: - Config popover
 
-struct CollectionSiteExportButton: View {
+/// The web page's knobs, presented from the selection bar's `…` overflow. Shaped
+/// exactly like ``ContactSheetExportPanel``, including where its state lives —
+/// see that type for why the host owns `config` rather than this view.
+struct CollectionSiteExportPanel: View {
     @ObservedObject var model: IngestionModel
     let collectionID: UUID
+    @Binding var config: SiteExportConfig
+    /// Dismiss the popover — the host owns its presentation.
+    var onClose: () -> Void
     @EnvironmentObject private var controller: ExportController
-    @State private var config = SiteExportConfig()
-    @State private var showPanel = false
-
-    var body: some View {
-        Button {
-            showPanel.toggle()
-        } label: {
-            SelectionBarIcon(systemName: "globe")
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Theme.Colors.inkPrimary)
-        .help("Export a web page (index.html + assets folder)")
-        .disabled(controller.isExporting || model.items.isEmpty)
-        .popover(isPresented: $showPanel, arrowEdge: .top) { panel }
-    }
 
     /// The selection-or-whole-collection plan for the current knobs.
     private var plan: CollectionSiteExport.Plan {
@@ -54,7 +45,7 @@ struct CollectionSiteExportButton: View {
             posterURL: { model.previewImageURL(forAsset: $0) })
     }
 
-    private var panel: some View {
+    var body: some View {
         let export = plan
         return VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             Text("Export Web Page").font(Theme.Typography.bodyEmphasis)
@@ -76,7 +67,7 @@ struct CollectionSiteExportButton: View {
                 .foregroundStyle(Theme.Colors.inkSecondary)
 
             Button("Export…") {
-                showPanel = false
+                onClose()
                 controller.requestSiteExport(
                     plan: export,
                     suggestedName: CollectionSiteExport.folderName(
