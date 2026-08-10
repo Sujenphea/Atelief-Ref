@@ -165,23 +165,6 @@ nonisolated func fanSpreadWindow(
     return FanSpreadWindow(indices: Array(start..<(start + cap)), hidden: memberCount - cap)
 }
 
-/// How far to push the spread's hover zone down from the media pane's centre so its
-/// BOTTOM edge lands on the fitted artwork's bottom edge.
-///
-/// The overlay is centred on the pane and the artwork is centred in the pane, so they
-/// share a centre; the artwork's bottom edge is `fittedHeight / 2` below it, and a zone of
-/// `zoneHeight` has to sit half its own height above that.
-///
-/// Pure because the first version of this was written inline as
-/// `(paneHeight − fittedHeight) / 2` — the LETTERBOX GAP, a different length that also
-/// compiles, is also "about how the picture sits in the pane", and goes to zero exactly
-/// when the picture fills the pane. Which put the arc dead centre over the image on every
-/// photo that filled its pane. An inline expression cannot be wrong in a way a test
-/// notices; this one can.
-nonisolated func fanSpreadZoneOffset(fittedHeight: CGFloat, zoneHeight: CGFloat) -> CGFloat {
-    (fittedHeight - zoneHeight) / 2
-}
-
 /// Which drawn card a scrub at `x` is over — a slot index into the window, not a member.
 ///
 /// The cards overlap (`cardSpacing` is narrower than `cardSide`, which is what makes the
@@ -758,6 +741,18 @@ struct ItemDetailView: View {
     ///
     /// Gated on the same effective scale as the pile — one rule, not two: a zoomed page is
     /// for looking at ONE image, and a spread inviting you elsewhere is noise there.
+    ///
+    /// **Positioned by layout, never by `offset`.** The zone sits at the bottom of a box
+    /// the size of the fitted artwork, so its layout frame, its pixels and its hit region
+    /// are the same rectangle by construction.
+    ///
+    /// The first version computed the position instead — centred the zone on the pane and
+    /// pushed it down — and that decoupled the two: `.contentShape(Rectangle())` applied
+    /// after `.offset` defines the hit shape in the view's UNTRANSFORMED space, so the arc
+    /// drew along the bottom of the picture while the thing that responded to the pointer
+    /// stayed in the middle of it. Pressing the visible arc did nothing, which took the
+    /// scrub with it. A computed position can disagree with a drawn one; a laid-out one
+    /// cannot.
     @ViewBuilder
     private var fanSpread: some View {
         if isImage, let post, showsPostPosition(memberCount: post.memberCount),
@@ -767,21 +762,31 @@ struct ItemDetailView: View {
             let open = isSpreadHovered
                 && showsFanPile(memberCount: post.memberCount, effectiveScale: effectiveZoom)
             let zoneHeight = min(fitted.height, DetailFanSpreadMetrics.hoverZoneHeight)
-            VStack {
+            // A box the size of the fitted ARTWORK, centred by the overlay exactly as the
+            // artwork is. The spacer does the pushing, so the zone's bottom edge is the
+            // picture's bottom edge by layout rather than by arithmetic.
+            VStack(spacing: 0) {
+                // Not hit-testable: a `Spacer` has no content shape, so the upper reaches
+                // of the picture stay the artwork's — its drag-out and its pan.
                 Spacer(minLength: 0)
-                DetailFanSpread(post: post, fitted: fitted.size)
-                    .opacity(open ? 1 : 0)
-                    // Slides up out of the picture's edge rather than fading in place, so
-                    // the pile behind the artwork reads as the thing that opened.
-                    .offset(y: open ? 0 : DetailFanSpreadMetrics.raise * 2)
-                    .allowsHitTesting(open)
-                    .padding(.bottom, Theme.Spacing.md)
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    DetailFanSpread(post: post, fitted: fitted.size)
+                        .opacity(open ? 1 : 0)
+                        // Slides up out of the picture's edge rather than fading in place,
+                        // so the pile behind the artwork reads as the thing that opened.
+                        // Safe as an `offset` where the zone's was not: it is zero whenever
+                        // the arc is interactive, so the drawn and hittable arcs never
+                        // disagree — only the closed, hit-transparent one is displaced.
+                        .offset(y: open ? 0 : DetailFanSpreadMetrics.raise * 2)
+                        .allowsHitTesting(open)
+                        .padding(.bottom, Theme.Spacing.md)
+                }
+                .frame(height: zoneHeight)
+                .contentShape(Rectangle())
+                .onHover { isSpreadHovered = $0 }
             }
-            .frame(width: fitted.width, height: zoneHeight, alignment: .bottom)
-            .offset(y: fanSpreadZoneOffset(
-                fittedHeight: fitted.height, zoneHeight: zoneHeight))
-            .contentShape(Rectangle())
-            .onHover { isSpreadHovered = $0 }
+            .frame(width: fitted.width, height: fitted.height)
             .animation(Theme.Motion.gentle, value: open)
         }
     }
