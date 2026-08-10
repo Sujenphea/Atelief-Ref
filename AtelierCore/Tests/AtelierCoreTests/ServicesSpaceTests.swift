@@ -143,6 +143,33 @@ struct ServicesSpaceTests {
         #expect(byID[empty.id]?.recentBlobHashes == [])
     }
 
+    /// The pairing guard, matching `ServicesStackPreviewTests.countAgreesWithFan`
+    /// on the collections side: count and fan are two queries that must agree
+    /// about which rows exist, and one board's rows must never be attributed to
+    /// another's. Both queries are scoped to the spaces being rendered.
+    @Test("spaceStackPreviews: count agrees with the fan, and boards do not bleed")
+    func countAgreesWithFanPerBoard() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let left = try await services.createSpace(name: "Left")
+        let right = try await services.createSpace(name: "Right")
+        let l1 = try await makeAsset(services, hash: "aaa111", url: "https://example.com/l1")
+        let l2 = try await makeAsset(services, hash: "bbb222", url: "https://example.com/l2")
+        let r1 = try await makeAsset(services, hash: "ccc333", url: "https://example.com/r1")
+        _ = try await services.addAssetToSpace(assetID: l1, to: left.id, x: 0, y: 0, w: 10, h: 10, z: 0)
+        _ = try await services.addAssetToSpace(assetID: l2, to: left.id, x: 20, y: 0, w: 10, h: 10, z: 1)
+        _ = try await services.addAssetToSpace(assetID: r1, to: right.id, x: 0, y: 0, w: 10, h: 10, z: 0)
+
+        let previews = try await services.spaceStackPreviews(limit: 5)
+        let byID = Dictionary(uniqueKeysWithValues: previews.map { ($0.space.id, $0) })
+
+        #expect(byID[left.id]?.itemCount == 2)
+        #expect(byID[left.id]?.recentBlobHashes.count == byID[left.id]?.itemCount)
+        #expect(Set(byID[left.id]?.recentBlobHashes ?? []) == ["aaa111", "bbb222"])
+        #expect(byID[right.id]?.itemCount == 1)
+        #expect(byID[right.id]?.recentBlobHashes == ["ccc333"])
+    }
+
     @Test("the same asset may be added twice — each row has its own id")
     func addAssetTwice() async throws {
         let (services, temp) = try makeServices()

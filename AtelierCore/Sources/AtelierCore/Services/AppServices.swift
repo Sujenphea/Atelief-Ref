@@ -1740,22 +1740,9 @@ public final class AppServices: Sendable {
     /// a cover asset that was deleted (`SET NULL`) — are simply absent from the
     /// result. One joined round-trip; ids not present in the store are skipped.
     public func collectionCovers(_ ids: [UUID]) async throws -> [UUID: String] {
-        let keys = ids.map(Self.key)
-        guard !keys.isEmpty else { return [:] }
+        guard !ids.isEmpty else { return [:] }
         return try await read { db in
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT collection.id AS cid, asset.blob_hash AS hash
-                FROM collection
-                JOIN asset ON asset.id = collection.cover_asset_id
-                WHERE collection.id IN (\(databaseQuestionMarks(count: keys.count)))
-                  AND asset.blob_hash IS NOT NULL
-                """, arguments: StatementArguments(keys))
-            var covers: [UUID: String] = [:]
-            for row in rows {
-                guard let cid = UUID(uuidString: row["cid"]) else { continue }
-                covers[cid] = row["hash"]
-            }
-            return covers
+            try Self.covers(in: db, table: "collection", ids: ids)
         }
     }
 
@@ -1781,38 +1768,10 @@ public final class AppServices: Sendable {
                 .fetchAll(db)
             guard !roots.isEmpty else { return [] }
 
-            var counts: [UUID: Int] = [:]
-            let countRows = try Row.fetchAll(db, sql: """
-                SELECT collection_id AS cid, COUNT(*) AS cnt
-                FROM collection_item GROUP BY collection_id
-                """)
-            for row in countRows {
-                guard let cid = UUID(uuidString: row["cid"]) else { continue }
-                counts[cid] = row["cnt"]
-            }
-
-            var hashes: [UUID: [String]] = [:]
-            if limit > 0 {
-                // `added_at DESC, id DESC` — the id tie-break keeps a
-                // same-instant batch deterministic.
-                let hashRows = try Row.fetchAll(db, sql: """
-                    SELECT cid, hash FROM (
-                        SELECT ci.collection_id AS cid, a.blob_hash AS hash,
-                               ROW_NUMBER() OVER (
-                                   PARTITION BY ci.collection_id
-                                   ORDER BY ci.added_at DESC, ci.id DESC
-                               ) AS rn
-                        FROM collection_item ci
-                        JOIN asset a ON a.id = ci.asset_id
-                        WHERE a.blob_hash IS NOT NULL
-                    ) WHERE rn <= ?
-                    ORDER BY cid, rn
-                    """, arguments: [limit])
-                for row in hashRows {
-                    guard let cid = UUID(uuidString: row["cid"]) else { continue }
-                    hashes[cid, default: []].append(row["hash"])
-                }
-            }
+            let (counts, hashes) = try Self.stackPreviews(
+                in: db, parentIDs: roots.map(\.id),
+                childTable: "collection_item", parentColumn: "collection_id",
+                recencyColumn: "added_at", limit: limit)
 
             return roots.map {
                 CollectionStackPreview(
@@ -2029,22 +1988,9 @@ public final class AppServices: Sendable {
     /// cover asset maps to that asset's `blob_hash`. Spaces with no cover are
     /// absent from the result.
     public func spaceCovers(_ ids: [UUID]) async throws -> [UUID: String] {
-        let keys = ids.map(Self.key)
-        guard !keys.isEmpty else { return [:] }
+        guard !ids.isEmpty else { return [:] }
         return try await read { db in
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT space.id AS sid, asset.blob_hash AS hash
-                FROM space
-                JOIN asset ON asset.id = space.cover_asset_id
-                WHERE space.id IN (\(databaseQuestionMarks(count: keys.count)))
-                  AND asset.blob_hash IS NOT NULL
-                """, arguments: StatementArguments(keys))
-            var covers: [UUID: String] = [:]
-            for row in rows {
-                guard let sid = UUID(uuidString: row["sid"]) else { continue }
-                covers[sid] = row["hash"]
-            }
-            return covers
+            try Self.covers(in: db, table: "space", ids: ids)
         }
     }
 
@@ -2064,38 +2010,10 @@ public final class AppServices: Sendable {
                 .fetchAll(db)
             guard !spaces.isEmpty else { return [] }
 
-            var counts: [UUID: Int] = [:]
-            let countRows = try Row.fetchAll(db, sql: """
-                SELECT space_id AS sid, COUNT(*) AS cnt
-                FROM space_item GROUP BY space_id
-                """)
-            for row in countRows {
-                guard let sid = UUID(uuidString: row["sid"]) else { continue }
-                counts[sid] = row["cnt"]
-            }
-
-            var hashes: [UUID: [String]] = [:]
-            if limit > 0 {
-                // `created_at DESC, id DESC` — the id tie-break keeps a
-                // same-instant batch deterministic.
-                let hashRows = try Row.fetchAll(db, sql: """
-                    SELECT sid, hash FROM (
-                        SELECT si.space_id AS sid, a.blob_hash AS hash,
-                               ROW_NUMBER() OVER (
-                                   PARTITION BY si.space_id
-                                   ORDER BY si.created_at DESC, si.id DESC
-                               ) AS rn
-                        FROM space_item si
-                        JOIN asset a ON a.id = si.asset_id
-                        WHERE a.blob_hash IS NOT NULL
-                    ) WHERE rn <= ?
-                    ORDER BY sid, rn
-                    """, arguments: [limit])
-                for row in hashRows {
-                    guard let sid = UUID(uuidString: row["sid"]) else { continue }
-                    hashes[sid, default: []].append(row["hash"])
-                }
-            }
+            let (counts, hashes) = try Self.stackPreviews(
+                in: db, parentIDs: spaces.map(\.id),
+                childTable: "space_item", parentColumn: "space_id",
+                recencyColumn: "created_at", limit: limit)
 
             return spaces.map {
                 SpaceStackPreview(
@@ -3229,6 +3147,102 @@ public final class AppServices: Sendable {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "%", with: "\\%")
             .replacingOccurrences(of: "_", with: "\\_")
+    }
+
+    /// The shared body behind ``collectionCovers(_:)`` and ``spaceCovers(_:)``,
+    /// which are the same query over two parent tables: given a parent carrying
+    /// `cover_asset_id`, map each requested id that HAS a surviving, byte-backed
+    /// cover to that asset's `blob_hash`. Parents with no cover — or a cover asset
+    /// that was deleted (`SET NULL`) — are simply absent from the result.
+    ///
+    /// `table` is interpolated into the SQL, so it must stay a compile-time
+    /// literal from the call sites below and never user input; only the ids bind
+    /// as arguments.
+    private static func covers(
+        in db: Database, table: String, ids: [UUID]
+    ) throws -> [UUID: String] {
+        let keys = ids.map(Self.key)
+        guard !keys.isEmpty else { return [:] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT \(table).id AS pid, asset.blob_hash AS hash
+            FROM \(table)
+            JOIN asset ON asset.id = \(table).cover_asset_id
+            WHERE \(table).id IN (\(databaseQuestionMarks(count: keys.count)))
+              AND asset.blob_hash IS NOT NULL
+            """, arguments: StatementArguments(keys))
+        var covers: [UUID: String] = [:]
+        for row in rows {
+            guard let pid = UUID(uuidString: row["pid"]) else { continue }
+            covers[pid] = row["hash"]
+        }
+        return covers
+    }
+
+    /// The shared body behind ``collectionStackPreviews(limit:includeUnsorted:)``
+    /// and ``spaceStackPreviews(limit:)`` (009 · N4). Both gallery cards want the
+    /// same two things about a set of parents the caller has already fetched in
+    /// its own order: the DIRECT item count, and the blob hashes of the `limit`
+    /// most recently added byte-backed items, newest first. The pair differs only
+    /// in the child table, its foreign key and its recency column, so those are
+    /// parameters. One window-function query, not a per-parent N+1.
+    ///
+    /// Rows whose `asset_id` is NULL (a Space's element rows) or whose asset has
+    /// no blob (media-less kinds, 003 · O1) still COUNT but cannot fan, which the
+    /// `JOIN` + `blob_hash IS NOT NULL` gives for free.
+    ///
+    /// BOTH queries are scoped to `parentIDs`, which is what the caller is about
+    /// to render. Unscoped, the count aggregate walked every collection in the
+    /// library on each Home render and Swift threw the surplus away.
+    ///
+    /// `childTable` / `parentColumn` / `recencyColumn` are interpolated into the
+    /// SQL, so they must stay compile-time literals from the call sites and never
+    /// user input; only the ids and `limit` bind as arguments.
+    private static func stackPreviews(
+        in db: Database, parentIDs: [UUID],
+        childTable: String, parentColumn: String, recencyColumn: String,
+        limit: Int
+    ) throws -> (counts: [UUID: Int], hashes: [UUID: [String]]) {
+        let keys = parentIDs.map(Self.key)
+        guard !keys.isEmpty else { return ([:], [:]) }
+        let placeholders = databaseQuestionMarks(count: keys.count)
+
+        var counts: [UUID: Int] = [:]
+        let countRows = try Row.fetchAll(db, sql: """
+            SELECT \(parentColumn) AS pid, COUNT(*) AS cnt
+            FROM \(childTable)
+            WHERE \(parentColumn) IN (\(placeholders))
+            GROUP BY \(parentColumn)
+            """, arguments: StatementArguments(keys))
+        for row in countRows {
+            guard let pid = UUID(uuidString: row["pid"]) else { continue }
+            counts[pid] = row["cnt"]
+        }
+
+        guard limit > 0 else { return (counts, [:]) }
+        var hashArgs = keys.map { $0 as any DatabaseValueConvertible }
+        hashArgs.append(limit)
+        // `<recency> DESC, id DESC` — the id tie-break keeps a same-instant
+        // batch deterministic.
+        var hashes: [UUID: [String]] = [:]
+        let hashRows = try Row.fetchAll(db, sql: """
+            SELECT pid, hash FROM (
+                SELECT ch.\(parentColumn) AS pid, a.blob_hash AS hash,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ch.\(parentColumn)
+                           ORDER BY ch.\(recencyColumn) DESC, ch.id DESC
+                       ) AS rn
+                FROM \(childTable) ch
+                JOIN asset a ON a.id = ch.asset_id
+                WHERE a.blob_hash IS NOT NULL
+                  AND ch.\(parentColumn) IN (\(placeholders))
+            ) WHERE rn <= ?
+            ORDER BY pid, rn
+            """, arguments: StatementArguments(hashArgs))
+        for row in hashRows {
+            guard let pid = UUID(uuidString: row["pid"]) else { continue }
+            hashes[pid, default: []].append(row["hash"])
+        }
+        return (counts, hashes)
     }
 
     /// The on-disk key form of a UUID (lowercased TEXT, C5) — what GRDB's
