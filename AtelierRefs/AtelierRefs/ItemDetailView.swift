@@ -165,6 +165,23 @@ nonisolated func fanSpreadWindow(
     return FanSpreadWindow(indices: Array(start..<(start + cap)), hidden: memberCount - cap)
 }
 
+/// How far to push the spread's hover zone down from the media pane's centre so its
+/// BOTTOM edge lands on the fitted artwork's bottom edge.
+///
+/// The overlay is centred on the pane and the artwork is centred in the pane, so they
+/// share a centre; the artwork's bottom edge is `fittedHeight / 2` below it, and a zone of
+/// `zoneHeight` has to sit half its own height above that.
+///
+/// Pure because the first version of this was written inline as
+/// `(paneHeight − fittedHeight) / 2` — the LETTERBOX GAP, a different length that also
+/// compiles, is also "about how the picture sits in the pane", and goes to zero exactly
+/// when the picture fills the pane. Which put the arc dead centre over the image on every
+/// photo that filled its pane. An inline expression cannot be wrong in a way a test
+/// notices; this one can.
+nonisolated func fanSpreadZoneOffset(fittedHeight: CGFloat, zoneHeight: CGFloat) -> CGFloat {
+    (fittedHeight - zoneHeight) / 2
+}
+
 /// Where a `.aspectRatio(contentMode: .fit)` image of `contentWidth × contentHeight`
 /// actually lands inside a `pane`-sized box, in that box's own coordinates (080 §3.2).
 /// `nil` when the content has no intrinsic size to fit, or the box no room to fit it in.
@@ -734,6 +751,7 @@ struct ItemDetailView: View {
            min(fitted.width, fitted.height) >= DetailFanPileMetrics.minFittedSide {
             let open = isSpreadHovered
                 && showsFanPile(memberCount: post.memberCount, effectiveScale: effectiveZoom)
+            let zoneHeight = min(fitted.height, DetailFanSpreadMetrics.hoverZoneHeight)
             VStack {
                 Spacer(minLength: 0)
                 DetailFanSpread(post: post, fitted: fitted.size)
@@ -744,13 +762,9 @@ struct ItemDetailView: View {
                     .allowsHitTesting(open)
                     .padding(.bottom, Theme.Spacing.md)
             }
-            .frame(
-                width: fitted.width,
-                height: min(fitted.height, DetailFanSpreadMetrics.hoverZoneHeight),
-                alignment: .bottom)
-            // The zone is positioned on the ARTWORK's bottom edge, which is not the pane's
-            // whenever the picture is letterboxed.
-            .offset(y: (mediaContentSize.height - fitted.height) / 2)
+            .frame(width: fitted.width, height: zoneHeight, alignment: .bottom)
+            .offset(y: fanSpreadZoneOffset(
+                fittedHeight: fitted.height, zoneHeight: zoneHeight))
             .contentShape(Rectangle())
             .onHover { isSpreadHovered = $0 }
             .animation(Theme.Motion.gentle, value: open)
