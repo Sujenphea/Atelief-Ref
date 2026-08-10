@@ -407,16 +407,6 @@ struct CollectionView: View {
             folders: model.folders, unsortedID: model.unsortedFolderID)
     }
 
-    /// The ASSET ids the selection bar's batch actions act on. `selection.ids` are
-    /// membership ids (`CollectionItem.id`); the model methods take asset ids, so
-    /// map through the current feed — the same lookup the detail / Quick Look path
-    /// (`presentQuickLook`) does.
-    private var selectedAssetIDs: [UUID] {
-        model.items
-            .filter { model.selection.ids.contains($0.item.id) }
-            .map(\.asset.id)
-    }
-
     /// Copy the current selection to the pasteboard (Edit ▸ Copy / ⌘C, 052 · B1) in
     /// GRID order, via the shared grid-copy path.
     ///
@@ -426,7 +416,7 @@ struct CollectionView: View {
     /// back into this collection (a no-op) from a paste into another one.
     private func copySelectionToPasteboard() {
         model.copySelectedToPasteboard(
-            from: model.items, selection: model.selection.ids,
+            from: model.items, selection: model.itemIDsForAction(model.selection.ids),
             sourceCollectionID: model.selectedFolderID)
     }
 
@@ -435,7 +425,9 @@ struct CollectionView: View {
     /// selection bar is where format / columns change.
     private func runContactSheetExport() {
         let mapping = ContactSheetExport.map(
-            details: ContactSheetExport.rows(items: model.items, selectedIDs: model.selection.ids),
+            details: ContactSheetExport.rows(
+                items: model.items,
+                selectedIDs: model.itemIDsForAction(model.selection.ids)),
             config: ContactSheetConfig(),
             imageURL: { model.previewImageURL(forAsset: $0) })
         exportController.requestExport(
@@ -450,7 +442,8 @@ struct CollectionView: View {
         let plan = CollectionSiteExport.plan(
             title: name,
             details: CollectionSiteExport.rows(
-                items: model.items, selectedIDs: model.selection.ids),
+                items: model.items,
+                selectedIDs: model.itemIDsForAction(model.selection.ids)),
             config: SiteExportConfig(),
             blobURL: { model.blobURL(forAsset: $0) },
             posterURL: { model.previewImageURL(forAsset: $0) })
@@ -469,11 +462,11 @@ struct CollectionView: View {
         return CountSelectionBar(
             count: count,
             onClear: { model.selectionStore.apply(.clear) },
-            onDelete: { model.requestDelete(assetIDs: selectedAssetIDs) }
+            onDelete: { model.requestDelete(assetIDs: model.selectedAssetIDs) }
         ) {
             SelectionBarButton("folder.badge.minus",
                                help: "Remove \(count) from collection") {
-                model.removeFromFolder(assetIDs: selectedAssetIDs)
+                model.removeFromFolder(assetIDs: model.selectedAssetIDs)
             }
             // 023 · A3. Archive sits beside Delete and Remove — the three "make it
             // not be here" verbs — rather than under the `…`, because it is the
@@ -486,7 +479,7 @@ struct CollectionView: View {
             // here — but it still routes through `toggleArchived`, the same call
             // the cell menu and `E` make, so the three cannot drift.
             SelectionBarButton("archivebox", help: "Archive \(count)") {
-                Task { await model.toggleArchived(assetIDs: selectedAssetIDs) }
+                Task { await model.toggleArchived(assetIDs: model.selectedAssetIDs) }
             }
             // The two exports (052 · B4, 014 · S3) live in the `…` overflow, not
             // out here. This bar carries the verbs a selection is FOR — delete,
@@ -536,7 +529,15 @@ struct CollectionView: View {
 
             // Set as Cover is a single-item action (parity with the context menu's
             // `n == 1` gate) — a leaf row, always visible, never collapsed.
-            if count == 1, let assetID = selectedAssetIDs.first {
+            //
+            // The one verb here that reads the TILE rather than the tile's post: a
+            // collapsed carousel's cover should be the post's own cover, which is the
+            // representative the tile is already showing. `model.selectedAssetIDs` is
+            // widened (307) and ordered by the FEED, so its `.first` would drift off
+            // carousel image #1 the moment a reorder or a partial move separated the
+            // two — hence the membership id, resolved directly.
+            if count == 1, let itemID = model.selection.ids.first,
+               let assetID = model.assetID(forItem: itemID) {
                 SelectionMenuRow("Set as Cover", systemImage: "photo") {
                     model.setCollectionCover(collectionID: collectionID, assetID: assetID)
                     showMoreActions = false
@@ -669,9 +670,9 @@ struct CollectionView: View {
     /// Run the chosen destination action on the current selection and dismiss.
     private func moveOrCopy(copy: Bool, to id: UUID) {
         if copy {
-            model.copyToCollection(assetIDs: selectedAssetIDs, to: id, from: collectionID)
+            model.copyToCollection(assetIDs: model.selectedAssetIDs, to: id, from: collectionID)
         } else {
-            model.moveToCollection(assetIDs: selectedAssetIDs, to: id)
+            model.moveToCollection(assetIDs: model.selectedAssetIDs, to: id)
         }
         showMoreActions = false
     }
@@ -930,15 +931,23 @@ struct CollectionView: View {
     /// the whole selection when selecting, else the keyboard-cursor (`lead`) item.
     /// Media-less items are skipped by `quickLookPlan`; an all-media-less set is a
     /// no-op. Flipping starts at the lead item.
+    ///
+    /// Both branches widen to whole posts (307), the same rule ⌫ / `E` / ⌘D use — a
+    /// collapsed tile reading ⧉4 is FOUR images to flip through, and previewing only
+    /// its cover was the least defensible version of that: the panel is where you go
+    /// precisely to see what is behind the tile. Walking `items` rather than
+    /// `displayItems` is what reaches the hidden members. `leadID` is the tile, which
+    /// is in the widened set, so the flip still starts where the cursor is.
     private func presentQuickLook() {
-        let details: [CollectionItemDetail]
+        let scope: Set<UUID>
         if model.selection.isSelecting {
-            details = model.items.filter { model.selection.ids.contains($0.item.id) }
-        } else if let lead = model.leadItem {
-            details = [lead]
+            scope = model.itemIDsForAction(model.selection.ids)
+        } else if let lead = model.selection.lead {
+            scope = model.itemIDsForAction([lead])
         } else {
-            details = []
+            scope = []
         }
+        let details = model.items.filter { scope.contains($0.item.id) }
         let plan = quickLookPlan(
             for: details, leadID: model.selection.lead,
             blobURL: { model.blobURL(for: $0) })

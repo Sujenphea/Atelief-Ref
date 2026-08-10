@@ -750,3 +750,180 @@ struct KeyboardActionScopeTests {
         #expect(model.lastUndoableAction?.message == "Favorited 4 items.")
     }
 }
+
+/// The SELECTION BAR's action scope (042) — the last surface that skipped the
+/// widening every other one applies.
+///
+/// `CollectionView` carried its own `selectedAssetIDs`, a plain
+/// `items.filter { selection.ids.contains(…) }` that predated carousel grouping and
+/// shadowed `IngestionModel.selectedAssetIDs` (which has widened since 307). A
+/// collapsed tile's selection holds only its representative, so every bar verb —
+/// Delete, Remove, Archive, Move to, Add to — acted on ONE image of a post reading
+/// ⧉4 and left the tile behind. The keyboard and the right-click menu were correct
+/// throughout, which is exactly why it survived: the same gesture through a
+/// different door did the right thing.
+///
+/// The bar is a SwiftUI body and cannot be driven from here, so what these pin is the
+/// seam it now reads — that `selectedAssetIDs` answers for a MIXED selection (the
+/// reported case: a carousel tile picked alongside ordinary items) and that it agrees
+/// with the keyboard's answer id for id. A view that reaches past it can still go
+/// wrong; a view that calls it cannot.
+@MainActor
+@Suite("Carousel grouping: the selection bar's action scope")
+struct SelectionBarActionScopeTests {
+
+    /// A four-image post plus two lone captures — 6 items, 3 tiles.
+    private func loadedFeed(
+        _ tag: String
+    ) async throws -> (model: IngestionModel, services: AppServices) {
+        let (model, services) = try await CarouselRig.makeModel(tag)
+        let target = Collection.unsortedID
+        try await CarouselRig.seedPost(
+            url: "https://www.instagram.com/p/AbCd/", count: 4, into: target, services,
+            hexSeed: 0)
+        try await CarouselRig.seedPost(
+            url: nil, count: 2, into: target, services, hexSeed: 60)
+        try await CarouselRig.load(model, target)
+        return (model, services)
+    }
+
+    /// The tiles by how many images each stands for, so the suite doesn't depend on
+    /// the collection's sort order.
+    private func tileID(_ model: IngestionModel, standsFor images: Int) throws -> UUID {
+        try #require(model.displayItems.first {
+            max(model.postGroups.members(forItem: $0.item.id).count, 1) == images
+        }).item.id
+    }
+
+    /// Select these tiles and nothing else.
+    private func select(_ model: IngestionModel, _ ids: [UUID]) {
+        _ = model.selectionStore.apply(.clear)
+        _ = model.selectionStore.apply(.union(Set(ids)))
+    }
+
+    // MARK: the reported case
+
+    @Test("a carousel tile picked ALONGSIDE ordinary items still contributes all four")
+    func mixedSelectionWidensThePostOnly() async throws {
+        let (model, _) = try await loadedFeed("bar-scope-mixed")
+        #expect(model.items.count == 6)
+        #expect(model.displayItems.count == 3)
+
+        let post = try tileID(model, standsFor: 4)
+        let lones = model.displayItems.map { $0.item.id }.filter { $0 != post }
+        #expect(lones.count == 2)
+        select(model, [post] + lones)
+
+        // Three tiles selected, six assets acted on: 4 + 1 + 1. The bar's own
+        // property answered 3 — one image of the post, and the bug as reported.
+        #expect(model.selection.ids.count == 3)
+        #expect(model.selectedAssetIDs.count == 6)
+    }
+
+    @Test("the bar's targets are the keyboard's targets, id for id")
+    func barAgreesWithTheKeyboard() async throws {
+        let (model, _) = try await loadedFeed("bar-scope-parity")
+        let post = try tileID(model, standsFor: 4)
+        select(model, [post])
+
+        // Delete / Remove / Archive / Move / Add in the bar all read this one
+        // property; ⌫ stages `keyboardActionTargets`. Same list, same ORDER — feed
+        // order both times, so an undo message counts the same items.
+        model.requestDeleteSelected()
+        defer { model.cancelPendingDeletion() }
+        #expect(model.pendingDeletion?.assetIDs == model.selectedAssetIDs)
+        #expect(model.selectedAssetIDs.count == 4)
+    }
+
+    @Test("an OPENED post's member selected in the bar acts on itself alone")
+    func openedMemberStaysNarrow() async throws {
+        let (model, _) = try await loadedFeed("bar-scope-opened")
+        let post = try tileID(model, standsFor: 4)
+        model.toggleExpansion(forItem: post)
+        #expect(model.displayItems.count == 6)
+
+        // Opening a carousel to archive ONE bad frame must archive one.
+        for member in model.postGroups.members(forItem: post) {
+            select(model, [member])
+            #expect(model.selectedAssetIDs.count == 1)
+        }
+    }
+
+    @Test("with grouping off every selected tile is one asset again")
+    func groupingOffNarrows() async throws {
+        let (model, _) = try await loadedFeed("bar-scope-ungrouped")
+        let post = try tileID(model, standsFor: 4)
+        model.groupCarousels = false
+        #expect(model.displayItems.count == 6)
+
+        select(model, [post])
+        #expect(model.selectedAssetIDs.count == 1)
+    }
+
+    // MARK: the item-id readers — ⌘C, the two exports, Quick Look
+
+    @Test("the membership-id seam widens the same way the asset-id one does")
+    func itemIDSeamWidens() async throws {
+        let (model, _) = try await loadedFeed("bar-scope-itemids")
+        let post = try tileID(model, standsFor: 4)
+        let lone = try tileID(model, standsFor: 1)
+
+        #expect(model.itemIDsForAction([post]).count == 4)
+        #expect(model.itemIDsForAction([lone]) == [lone])
+        #expect(model.itemIDsForAction([post, lone]).count == 5)
+
+        // Both seams must name the SAME rows — ⌘C copying a different set from the
+        // one Delete removes is the divergence this replaced.
+        select(model, [post, lone])
+        let widened = model.itemIDsForAction(model.selection.ids)
+        #expect(model.items.filter { widened.contains($0.item.id) }.map { $0.asset.id }
+                == model.selectedAssetIDs)
+    }
+
+    @Test("an empty selection widens to nothing — the exports' whole-collection signal")
+    func emptyStaysEmpty() async throws {
+        let (model, _) = try await loadedFeed("bar-scope-empty")
+        // `ContactSheetExport.rows` / `CollectionSiteExport.rows` read an empty set as
+        // "no selection, take everything", so widening must not invent a row.
+        #expect(model.itemIDsForAction([]).isEmpty)
+        #expect(model.selectedAssetIDs.isEmpty)
+    }
+
+    // MARK: Set as Cover — the one verb that reads the TILE, not the post
+
+    @Test("Set as Cover resolves the tile's own asset, not the post's feed-first")
+    func coverTakesTheRepresentative() async throws {
+        let (model, services) = try await CarouselRig.makeModel("bar-scope-cover")
+        let target = Collection.unsortedID
+        // Stamped in REVERSE, so the post's own order and the feed's disagree: the
+        // last image captured is carousel #1 and therefore the tile's cover. This is
+        // the shape a reorder or a partial move leaves behind, and the reason
+        // `selectedAssetIDs.first` (feed order) is the wrong answer here.
+        for offset in 0..<4 {
+            let source = SourceDraft(
+                platform: .instagram, originalURL: "https://www.instagram.com/p/AbCd/",
+                capturedAt: Date(),
+                rawMetadata: .object(["carouselIndex": .number(Double(3 - offset))]))
+            _ = try await services.ingestContent(
+                .color(hex: String(format: "#%02x2030", 40 + offset * 30)),
+                from: source, into: target)
+        }
+        try await CarouselRig.load(model, target)
+        #expect(model.displayItems.count == 1)
+
+        let tile = try #require(model.displayItems.first).item.id
+        let members = model.postGroups.members(forItem: tile)
+        let feedFirst = try #require(
+            model.items.first { members.contains($0.item.id) })
+        // The orders really did diverge — otherwise the assertion below proves nothing.
+        try #require(feedFirst.item.id != tile)
+
+        select(model, [tile])
+        let tileAsset = try #require(model.assetID(forItem: tile))
+        #expect(model.selectedAssetIDs.count == 4)
+        #expect(model.selectedAssetIDs.first == feedFirst.asset.id)
+        // Cover = carousel image #1, which is what the collapsed tile is drawing.
+        #expect(tileAsset != model.selectedAssetIDs.first)
+        #expect(model.selectedAssetIDs.contains(tileAsset))
+    }
+}
