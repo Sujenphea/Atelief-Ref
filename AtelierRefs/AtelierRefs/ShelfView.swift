@@ -276,7 +276,16 @@ struct ShelfView: View {
                     model.revealInFinder(asset: hit.asset)
                 }
             },
-            onUnarchive: { ids in unarchive(ids) })
+            onUnarchive: { ids in unarchive(ids) },
+            // `E` on the shelf is the same verb pointing the other way: every
+            // row here is archived, so `shelfVerb` resolves to unarchive. One
+            // key, both directions, decided by the data rather than by which
+            // pane is open (023 · A3).
+            onArchiveVerb: {
+                let targets = actionTargetsForKey()
+                guard !targets.isEmpty else { return }
+                unarchive(targets)
+            })
     }
 
     // MARK: - Verbs
@@ -298,13 +307,22 @@ struct ShelfView: View {
         }
     }
 
+    /// The ids a bare-key verb acts on: the selection while selecting, else the
+    /// cursor's lone item, widened to whole posts.
+    private func actionTargetsForKey() -> [UUID] {
+        let selection = selectionStore.selection
+        let scope: Set<UUID> = selection.isSelecting
+            ? selection.ids : Set(selection.lead.map { [$0] } ?? [])
+        return Array(widenedForAction(scope))
+    }
+
     /// The ids a keyboard / bar Delete acts on: the selection while selecting,
     /// else the cursor's lone item.
     private func requestDeleteTargets() {
         let selection = selectionStore.selection
         let scope: Set<UUID> = selection.isSelecting
             ? selection.ids : Set(selection.lead.map { [$0] } ?? [])
-        let targets = Array(widenedForAction(scope))
+        let targets = actionTargetsForKey()
         guard !targets.isEmpty else { return }
         model.requestDelete(assetIDs: targets)
     }

@@ -39,6 +39,7 @@ public struct CanvasView: NSViewRepresentable {
     /// untouched. Same delivery argument as ``onSelectTool``.
     private let onFileTiles: ((Set<Int>) -> Void)?
     private let onRemoveTiles: ((Set<Int>) -> Void)?
+    private let onArchiveTiles: ((Set<Int>) -> Void)?
     private let onDeleteTiles: ((Set<Int>) -> Void)?
     private let onCopyTiles: ((Set<Int>) -> Void)?
     private let onMoveTile: ((Int, CGPoint) -> Void)?
@@ -91,6 +92,7 @@ public struct CanvasView: NSViewRepresentable {
         onSelectTool: ((CanvasTool) -> Void)? = nil,
         onFileTiles: ((Set<Int>) -> Void)? = nil,
         onRemoveTiles: ((Set<Int>) -> Void)? = nil,
+        onArchiveTiles: ((Set<Int>) -> Void)? = nil,
         onDeleteTiles: ((Set<Int>) -> Void)? = nil,
         onCopyTiles: ((Set<Int>) -> Void)? = nil,
         onMoveTile: ((Int, CGPoint) -> Void)? = nil,
@@ -122,6 +124,7 @@ public struct CanvasView: NSViewRepresentable {
         self.onSelectTiles = onSelectTiles
         self.onFileTiles = onFileTiles
         self.onRemoveTiles = onRemoveTiles
+        self.onArchiveTiles = onArchiveTiles
         self.onDeleteTiles = onDeleteTiles
         self.onCopyTiles = onCopyTiles
         self.onMoveTile = onMoveTile
@@ -165,6 +168,7 @@ public struct CanvasView: NSViewRepresentable {
         view.onSelectTool = onSelectTool
         view.onFileTiles = onFileTiles
         view.onRemoveTiles = onRemoveTiles
+        view.onArchiveTiles = onArchiveTiles
         view.onDeleteTiles = onDeleteTiles
         view.onCopyTiles = onCopyTiles
         view.onMoveTile = onMoveTile

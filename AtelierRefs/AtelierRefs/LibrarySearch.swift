@@ -1080,7 +1080,16 @@ private struct LibrarySearchResults: View {
                 if let hit = search.results.first(where: { $0.asset.id == id }) {
                     model.revealInFinder(asset: hit.asset)
                 }
-            })
+            },
+            // 023 · A3. Archiving a hit is legitimate from here — search shows
+            // only unarchived items, so the verb resolves to Archive, and the
+            // hit leaves the results on the re-run `contentsVersion` triggers.
+            onArchiveVerb: {
+                let targets = actionTargetsForKey()
+                guard !targets.isEmpty else { return }
+                Task { await model.toggleArchived(assetIDs: targets) }
+            },
+            onArchive: { ids in Task { await model.toggleArchived(assetIDs: ids) } })
     }
 
     // MARK: - Finder-scope target rules (whole selection when the cell is in it)
@@ -1101,6 +1110,15 @@ private struct LibrarySearchResults: View {
         let selection = selectionStore.selection
         let scope: Set<UUID> = (selection.isSelecting && selection.ids.contains(id))
             ? selection.ids : [id]
+        return Array(widenedForAction(scope))
+    }
+
+    /// The ids a bare-key verb acts on: the selection while selecting, else the
+    /// cursor's lone item — the same rule ⌫ uses, widened to whole posts.
+    private func actionTargetsForKey() -> [UUID] {
+        let selection = selectionStore.selection
+        let scope: Set<UUID> = selection.isSelecting
+            ? selection.ids : Set(selection.lead.map { [$0] } ?? [])
         return Array(widenedForAction(scope))
     }
 
@@ -1292,7 +1310,9 @@ struct LooseDetailOverlay: View {
                         // bumps `contentsVersion`, which the results grid already
                         // watches to re-run the query — so the hit's star repaints
                         // instead of going stale behind the page.
-                        setFavorite: { model.setFavorite($0, assetIDs: [asset.id]) }),
+                        setFavorite: { model.setFavorite($0, assetIDs: [asset.id]) },
+                        // 023 · A3 — the same verb the grid menus offer, from the page.
+                        setArchived: { model.setArchived($0, assetIDs: [asset.id]) }),
                     navigator: index.map { i in
                         ItemDetailNavigator(index: i, count: results.count) { delta in
                             let target = i + delta

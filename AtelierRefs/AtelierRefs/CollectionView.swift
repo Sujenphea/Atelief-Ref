@@ -785,6 +785,7 @@ struct CollectionView: View {
             onDelete: { model.requestDelete(assetIDs: $0) },
             onToggleExpand: { model.toggleExpansion(forItem: $0) },
             expandedPosts: model.expandedPosts,
+
             // 069 — hand the keyboard to the detail page while it is up, so the grid
             // behind it stops eating the page's arrows. Off the ROUTE, not off
             // `model.isDetailPresented`: that flag is deliberately un-`@Published`
@@ -792,6 +793,14 @@ struct CollectionView: View {
             // body reading it could render before it was set. `nav.presentedItemID` is
             // the published truth this body already observes.
             isDetailPresented: nav.presentedItemID != nil,
+            // 023 · A3 — the menu's Archive acts on the cell's Finder-scope
+            // targets; `E` acts on the same set ⌫ and ⌘D do. Both route through
+            // `toggleArchived`, which READS the archived state rather than
+            // assuming this grid can only be showing unarchived rows: it can,
+            // but a selection can outlive the rows under it.
+            onArchiveVerb: { Task { await model.toggleArchivedSelected() } },
+            onArchive: { ids in Task { await model.toggleArchived(assetIDs: ids) } },
+
             // 222 — the title row scrolls away inside the grid's own scroll region,
             // its band sized to the row's measured natural height.
             header: AnyView(headerContent),
@@ -1316,7 +1325,9 @@ private struct CollectionDetailHost: View {
                 // Through the model, not the tag store: this is the one host with a
                 // grid behind the overlay, and `setFavorite` reloads it so the cell's
                 // star repaints under the page (and the write is undoable, like ⌘D).
-                setFavorite: { model.setFavorite($0, assetIDs: [detail.asset.id]) }),
+                setFavorite: { model.setFavorite($0, assetIDs: [detail.asset.id]) },
+                // 023 · A3 — the same verb the grid menus offer, from the page.
+                setArchived: { model.setArchived($0, assetIDs: [detail.asset.id]) }),
             navigator: index.map { i in
                 ItemDetailNavigator(index: i, count: model.detailRun.count) { delta in
                     let run = model.detailRun

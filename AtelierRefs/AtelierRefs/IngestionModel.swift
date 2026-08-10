@@ -2498,6 +2498,85 @@ final class IngestionModel: ObservableObject {
         } catch { lastError = Self.message(for: error) }
     }
 
+    // MARK: - The archive shelf (023 · A3)
+
+    /// Archive (or unarchive) `assetIDs` explicitly. Undoable, in the same shape
+    /// as ``setFavorite(_:assetIDs:)``: the inverse is the opposite verb over
+    /// exactly these ids.
+    ///
+    /// Reversible rather than confirmed, because that is what archive IS — the
+    /// verb you reach for instead of delete precisely because nothing is lost.
+    /// A confirmation dialog on a lossless, one-key-undoable action would teach
+    /// the user to dismiss dialogs.
+    func setArchived(_ archived: Bool, assetIDs: [UUID]) {
+        guard !assetIDs.isEmpty, services != nil else { return }
+        let verb: ShelfVerb = archived
+            ? .archive(count: assetIDs.count) : .unarchive(count: assetIDs.count)
+        enqueueUndoable { await self.applyArchived(archived, to: assetIDs) }
+        registerReversible("Archive",
+            primary: { self.enqueueUndoable { await self.applyArchived(archived, to: assetIDs) } },
+            inverse: { self.enqueueUndoable { await self.applyArchived(!archived, to: assetIDs) } })
+        announceUndoable(verb.completedMessage + ".")
+    }
+
+    /// The `E` verb over `assetIDs` — archive unless every one of them already
+    /// is (023 · A3, and the ⌘D rule it mirrors).
+    ///
+    /// The archived state is READ rather than assumed. Every browsing surface
+    /// hides archived items, so the answer is nearly always "none of them", but
+    /// a selection can outlive the rows under it — and assuming here is exactly
+    /// how a stale selection would archive something twice and then undo into a
+    /// state the user never had.
+    /// `async` rather than fire-and-forget, deliberately. The read has to finish
+    /// before the verb is even known, so a detached `Task` would put it OUTSIDE
+    /// the undo stack's serial write chain — and `waitForWrites()`, which is how
+    /// every caller and every test knows the verb is done, would return before
+    /// this had decided anything. Callers wrap it in a `Task`; that is visible
+    /// at the call site rather than hidden here.
+    func toggleArchived(assetIDs: [UUID]) async {
+        guard !assetIDs.isEmpty, let services else { return }
+        let archived: Set<UUID>
+        do {
+            archived = try await services.archivedAssetIDs(among: assetIDs)
+        } catch {
+            lastError = Self.message(for: error)
+            return
+        }
+        guard let verb = shelfVerb(targets: assetIDs, archived: archived) else { return }
+        switch verb {
+        case .archive:
+            // Only the ids this press actually CHANGES, so the toast's count and
+            // the undo both describe what happened — and undoing over a mixed
+            // selection restores the mixture rather than clearing it.
+            setArchived(true, assetIDs: assetIDs.filter { !archived.contains($0) })
+        case .unarchive:
+            setArchived(false, assetIDs: assetIDs.filter { archived.contains($0) })
+        }
+    }
+
+    /// The `E` key's entry point — the current selection, or the lead cursor's
+    /// post, exactly as ⌫ and ⌘D resolve their targets.
+    func toggleArchivedSelected() async {
+        await toggleArchived(assetIDs: keyboardActionTargets)
+    }
+
+    /// Apply and reload. Shared by the verb and its inverse (no undo
+    /// re-registration — the ping-pong installs the mirror). The reload is a
+    /// membership-shaped one even though no membership changed: which items are
+    /// VISIBLE changed, and that is what the grid, the counts and the gallery
+    /// covers all render from.
+    private func applyArchived(_ archived: Bool, to assetIDs: [UUID]) async {
+        guard let services else { return }
+        do {
+            if archived {
+                _ = try await services.archive(assetIDs)
+            } else {
+                _ = try await services.unarchive(assetIDs)
+            }
+            reloadAfterMembershipChange()
+        } catch { lastError = Self.message(for: error) }
+    }
+
     /// Whether ⌫ has a container to remove from here (022 · D2). False in Unsorted,
     /// which is the fallback every other removal re-homes INTO — there is nowhere
     /// below it to fall to, so the Edit-menu item disables rather than offering a
