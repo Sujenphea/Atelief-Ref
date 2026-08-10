@@ -334,6 +334,20 @@ final class IngestionModel: ObservableObject {
     /// grids and never set this, so their flushes reorder as before.)
     var isDetailPresented = false
 
+    /// The membership id the COLLECTION item-detail page is showing right now, or
+    /// `nil` when it is down (355). A PLAIN flag for the same reason
+    /// ``isDetailPresented`` is: nothing renders from it, and a publish would re-run
+    /// the grid under the overlay on every step.
+    ///
+    /// It exists because two verbs that can take the shown item out of the feed are
+    /// raised from surfaces that do not know what the page is showing — the detail
+    /// sidebar's collection chips (which speak asset ids) and a drag out of the page
+    /// onto a sidebar collection (which the outline view completes). Both need to arm
+    /// a ``DetailStepIntent`` for the item ON SCREEN, and after however many ← / →
+    /// steps that is neither the lead nor the route. `CollectionDetailHost` keeps it
+    /// in step with `DetailSession`.
+    var detailShownItemID: UUID?
+
     /// Per-asset view-count deltas that have been PERSISTED (`recordViews`) but not
     /// yet reflected in the local ``items`` (036 §3 B4). This is exactly
     /// `DB.view_count − items.viewCount` for every asset, so the invariant
@@ -2234,8 +2248,18 @@ final class IngestionModel: ObservableObject {
     /// edit is reflected behind the overlay; if the change dropped the shown item
     /// from the current folder, the `contentsVersion` bump drives the overlay's
     /// auto-dismiss, matching ``removeFromFolder(assetIDs:)``.
-    func reloadAfterMembershipChange() {
+    ///
+    /// `removedFrom` names the collection the chip took the asset OUT of — the one it
+    /// was removed from, or Unsorted when an ADD evicted it there (356; `nil` for the
+    /// archive import, which also calls this). When that collection is the one the run
+    /// belongs to, the chip is the page's ⌫ wearing different chrome — the shown item
+    /// is about to leave this feed because the user said so — so it arms the same step
+    /// (355). Everything else reloads exactly as it did.
+    func reloadAfterMembershipChange(removedFrom collectionID: UUID? = nil) {
         guard services != nil else { return }
+        if let collectionID, collectionID == loadedCollectionID, let shown = detailShownItemID {
+            armDetailStep(for: shown)
+        }
         Task { await refreshFolders() }
         loadContents(of: selectedFolderID)
     }
@@ -2248,6 +2272,14 @@ final class IngestionModel: ObservableObject {
         guard !assetIDs.isEmpty, services != nil else { return }
         let source = selectedFolderID
         guard source != targetID else { return }
+        // A move that carries the item the detail page is SHOWING is that page's verb,
+        // wherever the drop was completed (355): dragging the picture off the page onto
+        // a sidebar collection is finished by the outline view, which knows the asset
+        // ids and nothing about the overlay. The shown item leaves this feed either
+        // way — armed, the page steps to what takes its place instead of dropping the
+        // user back on the grid. A move raised from anywhere else (the grid's Move to ▸,
+        // M, a drag of a different tile) does not name the shown item and arms nothing.
+        armDetailStepIfShown(assetIDs: assetIDs, leaving: source)
         // Capture the source order so undo restores the moved items' positions.
         let priorOrder = items.map { $0.asset.id }
         let message = "Moved \(Self.itemCount(assetIDs.count)) to “\(name(for: targetID))”."
@@ -2278,6 +2310,14 @@ final class IngestionModel: ObservableObject {
     /// filed there leaves the half that predated it alone.
     func copyToCollection(assetIDs: [UUID], to targetID: UUID, from source: UUID? = nil) {
         guard !assetIDs.isEmpty, services != nil else { return }
+        // The same invariant the notice's verb reads, applied to the detail page (356):
+        // out of Unsorted this "copy" is a departure, so an ⌥-drag of the page's picture
+        // onto a collection has to arm the step exactly as the plain drag does. The
+        // guard is the loaded folder, not `source` — a caller that passes no source
+        // (a Space board, a search hit) has no Unsorted feed behind it to leave.
+        if targetID != unsortedFolderID {
+            armDetailStepIfShown(assetIDs: assetIDs, leaving: unsortedFolderID)
+        }
         let verb = source == Collection.unsortedID ? "Moved" : "Added"
         let message = "\(verb) \(Self.itemCount(assetIDs.count)) to “\(name(for: targetID))”."
         // Shared by the forward pass and its inverse, so a redo re-records what the
@@ -2557,6 +2597,26 @@ final class IngestionModel: ObservableObject {
         detailStepIntent = DetailStepIntent(
             itemID: itemID, index: index, run: detailRun.map { $0.item.id },
             collectionID: collectionID)
+    }
+
+    /// Arm the step when `assetIDs` carries the item the detail page is SHOWING and it
+    /// is leaving the collection that run belongs to (355).
+    ///
+    /// The asset-id detour is the point: the two verbs that reach here — a chip and a
+    /// drag-out — are raised by surfaces that speak assets, not memberships, and are
+    /// completed somewhere other than the page. Resolving through ``detailShownItemID``
+    /// is what keeps them aimed at what the user is looking at rather than at the
+    /// grid's cursor, which ← / → deliberately leave behind.
+    ///
+    /// Both guards matter. Without the id check, any move out of this folder would arm
+    /// a step for a page showing something else; without the folder check, a move whose
+    /// source is not the loaded run would arm against a feed it was never in.
+    private func armDetailStepIfShown(assetIDs: [UUID], leaving collectionID: UUID) {
+        guard collectionID == loadedCollectionID, let shown = detailShownItemID,
+              let detail = detailRun.first(where: { $0.item.id == shown }),
+              assetIDs.contains(detail.asset.id)
+        else { return }
+        armDetailStep(for: shown)
     }
 
     /// Read the armed step intent AND clear it. One-shot by construction: the host

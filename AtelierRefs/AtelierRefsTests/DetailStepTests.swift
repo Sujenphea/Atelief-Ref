@@ -309,6 +309,19 @@ struct DetailStepIntentWiringTests {
         return (folder.id, ids)
     }
 
+    /// The same three items, in UNSORTED — the one feed an add can empty (356).
+    private func seededUnsorted(
+        _ model: IngestionModel, _ services: AppServices
+    ) async throws -> [UUID] {
+        let unsorted = Collection.unsortedID
+        let ids = try await CarouselRig.seedPost(
+            url: nil, count: 3, into: unsorted, services, hexSeed: 0)
+        try await services.setCollectionSortMode(.manual, for: unsorted)
+        try await services.setGridOrder(collectionID: unsorted, orderedAssetIDs: ids)
+        try await open(model, unsorted)
+        return ids
+    }
+
     /// ⌫ from the page captures the run AS IT IS, with the departing item's position
     /// in it — the whole reason the intent is state and not a boolean.
     @Test("the page's ⌫ arms an intent carrying the PRE-reload run and index")
@@ -490,6 +503,84 @@ struct DetailStepIntentWiringTests {
         #expect(model.consumeDetailStepIntent() == nil)
     }
 
+    // MARK: - Verbs raised elsewhere, aimed at the shown item (355)
+
+    /// **The detail sidebar's collection chip is the page's ⌫ in different chrome.**
+    /// Removing the chip for the collection in view takes the shown item out of this
+    /// feed exactly as ⌫ does, so it steps rather than dropping the user on the grid.
+    ///
+    /// The chip speaks ASSET ids and is completed by `AssetTagsStore`, not the page,
+    /// which is why the model resolves the target through `detailShownItemID` instead
+    /// of being handed a membership id.
+    @Test("a chip removing the collection in view arms the step")
+    func chipRemoveOfCurrentCollectionArms() async throws {
+        let (model, services) = try await makeModel()
+        let folder = try await seededFolder(model, services)
+        let shown = model.detailRun[1]
+        let runBefore = model.detailRun.map { $0.item.id }
+        model.detailShownItemID = shown.item.id
+
+        model.reloadAfterMembershipChange(removedFrom: folder.id)
+
+        let intent = try #require(model.consumeDetailStepIntent())
+        #expect(intent.itemID == shown.item.id)
+        #expect(intent.index == 1)
+        #expect(intent.run == runBefore)
+    }
+
+    /// A chip for some OTHER collection, and the "add" side, both reload without taking
+    /// the item out of this feed — so neither is a step.
+    @Test("an add, and a chip for another collection, arm nothing")
+    func otherMembershipEditsArmNothing() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededFolder(model, services)
+        model.detailShownItemID = model.detailRun[1].item.id
+
+        model.reloadAfterMembershipChange()                     // the add side
+        #expect(model.consumeDetailStepIntent() == nil)
+
+        model.reloadAfterMembershipChange(removedFrom: UUID())  // a chip for elsewhere
+        #expect(model.consumeDetailStepIntent() == nil)
+    }
+
+    /// **Dragging the picture off the page onto a sidebar collection** is a move, and
+    /// the outline view completes it — so the arming has to recognise the shown item in
+    /// a plain asset-id move rather than being told by the page.
+    @Test("a move carrying the shown item arms the step")
+    func moveOfShownItemArms() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededFolder(model, services)
+        let target = try await services.createCollection(name: "Elsewhere")
+        let shown = model.detailRun[2]
+        model.detailShownItemID = shown.item.id
+
+        model.moveToCollection(assetIDs: [shown.asset.id], to: target.id)
+
+        #expect(model.consumeDetailStepIntent()?.itemID == shown.item.id)
+        try await waitForDeparture(model, of: shown.item.id)
+    }
+
+    /// The same verb from the grid — a Move to ▸ or an M on a different tile — names an
+    /// asset the page is not showing, so it stays a plain move. And with no page up,
+    /// nothing arms at all.
+    @Test("a move of some other item, or with no page up, arms nothing")
+    func moveOfOtherItemArmsNothing() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededFolder(model, services)
+        let target = try await services.createCollection(name: "Elsewhere")
+        let shown = model.detailRun[0]
+        let other = model.detailRun[1]
+
+        model.detailShownItemID = shown.item.id
+        model.moveToCollection(assetIDs: [other.asset.id], to: target.id)
+        #expect(model.consumeDetailStepIntent() == nil)
+        try await waitForDeparture(model, of: other.item.id)
+
+        model.detailShownItemID = nil
+        model.moveToCollection(assetIDs: [shown.asset.id], to: target.id)
+        #expect(model.consumeDetailStepIntent() == nil)
+    }
+
     /// ⌫ on an item whose ONLY membership is this collection re-homes it to Unsorted
     /// (the F3 invariant in `AppServices.removeAssets`). It still leaves THIS feed, so
     /// the page steps — the behaviour reads as "filed away", not as a failed delete.
@@ -515,5 +606,65 @@ struct DetailStepIntentWiringTests {
                 newRun: model.detailRun.map { $0.item.id },
                 runCollectionID: model.loadedCollectionID) == .step(runBefore[2]))
         #expect(model.loadedCollectionID == folder.id)
+    }
+
+    // MARK: - Unsorted, where an add is a removal (356)
+
+    /// **From Unsorted, filing the item IS taking it out of the feed.**
+    /// `AppServices.addAssets` drops the batch's Unsorted membership in the same
+    /// transaction (rule 1), so the chip's "add" ends with the shown item gone from the
+    /// run behind the page. It reaches the model as a departure from Unsorted — the
+    /// store reads the eviction off the funnel's return — and steps like any other.
+    @Test("an add out of Unsorted arms the step")
+    func addOutOfUnsortedArms() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededUnsorted(model, services)
+        let shown = model.detailRun[1]
+        let runBefore = model.detailRun.map { $0.item.id }
+        model.detailShownItemID = shown.item.id
+
+        model.reloadAfterMembershipChange(removedFrom: model.unsortedFolderID)
+
+        let intent = try #require(model.consumeDetailStepIntent())
+        #expect(intent.itemID == shown.item.id)
+        #expect(intent.index == 1)
+        #expect(intent.run == runBefore)
+        #expect(intent.collectionID == model.unsortedFolderID)
+    }
+
+    /// **⌥-dragging the page's picture onto a collection is the same trap.** It routes to
+    /// `copyToCollection` — a copy, which never empties its source anywhere except here.
+    /// The notice has always known (it says "Moved" out of Unsorted); now the step does.
+    @Test("an ⌥-drag copy out of Unsorted arms the step")
+    func copyOutOfUnsortedArms() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededUnsorted(model, services)
+        let target = try await services.createCollection(name: "Refs")
+        let shown = model.detailRun[2]
+        model.detailShownItemID = shown.item.id
+
+        model.copyToCollection(
+            assetIDs: [shown.asset.id], to: target.id, from: model.unsortedFolderID)
+
+        #expect(model.consumeDetailStepIntent()?.itemID == shown.item.id)
+        try await waitForDeparture(model, of: shown.item.id)
+        #expect(!model.detailRun.contains { $0.item.id == shown.item.id })
+    }
+
+    /// The same call from a REAL folder is what "copy" says on the tin — the item keeps
+    /// its membership here and the page has no reason to move.
+    @Test("a copy out of a real folder arms nothing")
+    func copyOutOfRealFolderArmsNothing() async throws {
+        let (model, services) = try await makeModel()
+        _ = try await seededFolder(model, services)
+        let target = try await services.createCollection(name: "Elsewhere")
+        let shown = model.detailRun[1]
+        model.detailShownItemID = shown.item.id
+
+        model.copyToCollection(assetIDs: [shown.asset.id], to: target.id, from: nil)
+
+        #expect(model.consumeDetailStepIntent() == nil)
+        await model.waitForWrites()
+        #expect(model.detailRun.contains { $0.item.id == shown.item.id })
     }
 }

@@ -111,7 +111,7 @@ struct AssetTagsStoreCollectionsTests {
 
     // MARK: callback
 
-    @Test("onMembershipChanged fires after add and remove")
+    @Test("onMembershipChanged fires after add and remove, naming the removal's collection")
     func membershipCallbackFires() async throws {
         let services = try makeServices()
         let temp1 = try await services.createCollection(name: "Temp1")
@@ -123,16 +123,61 @@ struct AssetTagsStoreCollectionsTests {
         try await waitUntil("initial load") { store.collections.map(\.name) == ["Temp1"] }
 
         let counter = Counter()
-        store.onMembershipChanged = { counter.n += 1 }
+        store.onMembershipChanged = { removedFrom in
+            counter.n += 1
+            counter.removals.append(removedFrom)
+        }
 
         store.addToCollection(temp2)
         try await waitUntil("callback after add") { counter.n >= 1 }
 
         store.removeFromCollection(temp2)
         try await waitUntil("callback after remove") { counter.n >= 2 }
+
+        // The argument is what tells a host whether the edit can take the bound asset
+        // out of the feed behind it (355): `nil` for the add, the collection for the
+        // remove. `CollectionDetailHost` arms a detail step off exactly that.
+        #expect(counter.removals == [nil, temp2.id])
+    }
+
+    /// **An add out of Unsorted is a removal** (356). Filing an asset unfiles it — the
+    /// funnel drops the Unsorted membership in the same transaction — so a page opened
+    /// from the Unsorted feed watches its item leave on an "add". The callback has to
+    /// say so, or the host has no way to tell this apart from an add that changed
+    /// nothing behind it, and the page closes instead of stepping.
+    @Test("an add that evicts from Unsorted names Unsorted as what the asset left")
+    func addOutOfUnsortedNamesUnsorted() async throws {
+        let services = try makeServices()
+        let refs = try await services.createCollection(name: "Refs")
+        let moods = try await services.createCollection(name: "Moods")
+        let assetID = try await seedColor(into: Collection.unsortedID, services)
+
+        let store = AssetTagsStore(services: services)
+        store.bind(to: assetID)
+        try await waitUntil("initial load") { store.collections.map(\.id) == [Collection.unsortedID] }
+
+        let counter = Counter()
+        store.onMembershipChanged = { removedFrom in
+            counter.n += 1
+            counter.removals.append(removedFrom)
+        }
+
+        store.addToCollection(refs)
+        try await waitUntil("callback after the filing add") { counter.n >= 1 }
+
+        // A SECOND add has nothing left to evict — the asset is already filed, so this
+        // one really is additive and reports nothing.
+        store.addToCollection(moods)
+        try await waitUntil("callback after the additive add") { counter.n >= 2 }
+
+        #expect(counter.removals == [Collection.unsortedID, nil])
     }
 
     /// A tiny main-actor box so the callback can bump a value the test observes
     /// (avoids capturing a `var` across the escaping closure boundary).
-    @MainActor private final class Counter { var n = 0 }
+    @MainActor private final class Counter {
+        var n = 0
+        /// Each call's `removedFrom` argument, in order.
+        var removals: [UUID?] = []
+    }
 }

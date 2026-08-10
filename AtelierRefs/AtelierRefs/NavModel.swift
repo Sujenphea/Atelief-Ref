@@ -132,6 +132,15 @@ final class NavModel: ObservableObject {
     /// Select a top-level sidebar destination — resets the within-collection
     /// drill-down `path` so the destination renders as the panel root.
     func selectSidebar(_ item: SidebarItem) {
+        // Leaving the pane closes its item detail (355). Home / Capture / a Space are
+        // different `switch` arms in the shell, so the collection pane — and with it the
+        // overlay's host — UNMOUNTS: none of the host's observers run, and the route was
+        // left pointing at an item nothing was showing. That stale id kept the sidebar
+        // collapsed, hid the pane's floating +, and told the grid the page still had the
+        // keyboard, so on return the grid answered no key until an item was opened and
+        // closed. Cleared BEFORE the selection changes, so the host is still mounted to
+        // see it and can tear the session down properly.
+        presentedItemID = nil
         sidebarSelection = item
         navigationPulse &+= 1
         if !path.isEmpty { path = [] }
@@ -157,6 +166,7 @@ final class NavModel: ObservableObject {
     /// Go back one drill-down step (⌘[). A no-op at a sidebar root.
     func goBack() {
         guard !path.isEmpty else { return }
+        presentedItemID = nil   // as ``selectSidebar(_:)`` — popping unmounts the host
         path.removeLast()
     }
 
@@ -198,6 +208,13 @@ final class NavModel: ObservableObject {
         guard !collections.isEmpty else { return }
         let ids = Set(collections.map(\.id))
         let result = Self.reconciled(selection: sidebarSelection, path: path, existing: ids)
+        // A route that moves because a collection was DELETED unmounts the pane exactly
+        // as a navigation does, and reaches here instead of `selectSidebar` — so it owes
+        // the same cleanup (355). Guarded, because this runs on every folder refresh and
+        // must not clear a live page when nothing moved.
+        if result.path != path || result.selection != sidebarSelection {
+            presentedItemID = nil
+        }
         if result.path != path { path = result.path }
         if result.selection != sidebarSelection { sidebarSelection = result.selection }
     }
