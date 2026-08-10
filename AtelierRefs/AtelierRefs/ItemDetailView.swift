@@ -69,11 +69,18 @@ struct ItemDetailPost {
     /// Never `1`: ``PostGroups`` drops every group of one (`PostGrouping.swift:170`),
     /// so a would-be single is simply ungrouped and this whole value is `nil`.
     let memberCount: Int
-    /// The members' blob hashes in post order, MEDIA-LESS MEMBERS OMITTED (080 §7 —
-    /// since 310 a post's members can be a mix of kinds). So this is deliberately not
-    /// index-aligned with ``index``: the spread draws cards from it, it is not a
-    /// positional map of the post.
-    let blobHashes: [String]
+    /// The members' blob hashes in post order, **index-aligned with ``index``**:
+    /// `blobHashes[i]` is member `i`'s artwork, and `nil` is a MEDIA-LESS member (003 · O1
+    /// — since 310 a post's members can be a mix of kinds), which draws a placeholder card
+    /// rather than a gap.
+    ///
+    /// It began life compacted, with a doc that said the non-alignment was deliberate. That
+    /// was a trap: ``jump`` takes a POST-RELATIVE index, and the spread calls it with the
+    /// position of the card it drew — so one media-less member anywhere in a post silently
+    /// shifted every card after it onto the wrong image. Alignment is the invariant that
+    /// makes "the i-th card is member i" true by construction instead of by luck, and
+    /// `[String?]` is how the compiler is told about it.
+    let blobHashes: [String?]
     /// Resolve a blob hash to its on-disk thumbnail URL — the shape ``FanCard`` takes,
     /// and for its reason (080 §2.1): `AsyncThumbnail` keys its cache on the HASH, so
     /// a bare `[URL?]` would miss the shared cache and re-decode every card.

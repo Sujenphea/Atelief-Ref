@@ -141,7 +141,8 @@ struct PostGroups {
     /// alternative — handing ``detailPost(forItem:thumbnailURL:jump:)`` the whole
     /// `[CollectionItemDetail]` — would put an O(feed) index build inside a view
     /// body, which is exactly the cost 080 §4 exists to remove. Absent for a
-    /// media-less member (003 · O1), which is why the factory compacts.
+    /// media-less member (003 · O1), which the factory carries through as a `nil`
+    /// slot rather than compacting away — see ``ItemDetailPost/blobHashes``.
     private let blobHashByItem: [UUID: String]
 
     /// The empty index — no grouping (used before the first load).
@@ -239,10 +240,14 @@ struct PostGroups {
         return ItemDetailPost(
             index: index,
             memberCount: ids.count,
-            // `compactMap`, not `map`: a media-less member (003 · O1) has no blob and
-            // contributes no card. 080 §7 defers what a mixed-kind post should DRAW;
-            // until then it is skipped, never crashed on.
-            blobHashes: ids.compactMap { blobHashByItem[$0] },
+            // `map`, NOT `compactMap`: one slot per member, in post order, so
+            // `blobHashes[i]` is member `i`. A media-less member (003 · O1) has no blob
+            // and lands as `nil` — a placeholder card, not a missing one. Compacting
+            // here would silently renumber every card after such a member, and `jump`
+            // takes a POST-RELATIVE index, so the spread would send you to the wrong
+            // image. 080 §7 still defers what a mixed-kind post should DRAW; this only
+            // fixes where each member SITS.
+            blobHashes: ids.map { blobHashByItem[$0] },
             thumbnailURL: thumbnailURL,
             seed: seed,
             jump: jump)

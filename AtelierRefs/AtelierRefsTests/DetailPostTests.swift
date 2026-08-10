@@ -216,10 +216,16 @@ struct DetailPostMutationTests {
 
     /// **T4.4.** Since 310 a post's members can be a mix of kinds, and a media-less one
     /// (003 · O1) has no blob to draw. It stays a MEMBER — it is counted, it has a
-    /// position, the arrows walk onto it — it simply contributes no card to the spread.
-    /// Which is why `blobHashes` is deliberately not index-aligned with `index`.
-    @Test("a media-less member is skipped, not crashed on")
-    func mediaLessMemberIsSkipped() throws {
+    /// position, the arrows walk onto it — and it holds its SLOT: `blobHashes[i]` is
+    /// member `i`, with `nil` where the artwork would be.
+    ///
+    /// This suite previously pinned the opposite (a compacted `["aaa", "ccc"]`) and
+    /// called the misalignment deliberate. It was a trap: ``ItemDetailPost/jump`` takes a
+    /// post-relative index, so a spread drawing card `k` from a compacted list would send
+    /// you to member `k` — a different image the moment any earlier member lacked media.
+    /// The alignment is the fix; this test is what holds it.
+    @Test("a media-less member keeps its slot as nil, not a gap")
+    func mediaLessMemberKeepsItsSlot() throws {
         let first = item(url: Self.url, carouselIndex: 0, blobHash: "aaa")
         let mediaLess = item(url: Self.url, carouselIndex: 1, blobHash: nil)
         let third = item(url: Self.url, carouselIndex: 2, blobHash: "ccc")
@@ -231,22 +237,28 @@ struct DetailPostMutationTests {
             jump: { _ in }))
         #expect(subject.memberCount == 3)
         #expect(subject.index == 1)
-        #expect(subject.blobHashes == ["aaa", "ccc"])
+        #expect(subject.blobHashes == ["aaa", nil, "ccc"])
+        // The invariant stated as the spread will rely on it: one slot per member, and
+        // the open item's own slot is the one at its own index.
+        #expect(subject.blobHashes.count == subject.memberCount)
+        #expect(subject.blobHashes[subject.index] == nil)
         #expect(subject.thumbnailURL("aaa") == URL(string: "file:///thumbs/aaa.jpg"))
 
-        // And from a neighbour, so the compaction is not accidentally keyed on who asks.
+        // And from a neighbour, so alignment is not accidentally keyed on who asks.
         let neighbour = try #require(post(groups, third.item.id))
-        #expect(neighbour.blobHashes == ["aaa", "ccc"])
+        #expect(neighbour.blobHashes == ["aaa", nil, "ccc"])
+        #expect(neighbour.blobHashes[neighbour.index] == "ccc")
     }
 
-    /// A post of nothing but media-less members yields an empty card list rather than a
-    /// crash or a phantom — the count still says there are three of them.
-    @Test("a post with no media at all still counts its members")
+    /// A post of nothing but media-less members yields a slot per member, every one
+    /// `nil` — rather than an empty list that would leave the spread with no cards to
+    /// draw and no way to jump to the members that are undeniably there.
+    @Test("a post with no media at all still holds a slot per member")
     func allMediaLessPost() throws {
         let members = (0..<3).map { item(url: Self.url, carouselIndex: $0, blobHash: nil) }
         let groups = PostGroups(items: members)
         let subject = try #require(post(groups, members[0].item.id))
         #expect(subject.memberCount == 3)
-        #expect(subject.blobHashes.isEmpty)
+        #expect(subject.blobHashes == [nil, nil, nil])
     }
 }
