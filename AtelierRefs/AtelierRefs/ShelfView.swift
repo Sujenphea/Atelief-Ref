@@ -196,15 +196,27 @@ struct ShelfView: View {
             }
     }
 
-    /// The selection bar's one verb. Delete is reachable from the menu and ⌘⌫;
-    /// Unarchive gets the bar because it is the reason the pane exists.
+    /// The selection bar's one extra. Unarchive earns the slot because it is the
+    /// only way off this pane and the reason the pane exists.
+    ///
+    /// A ``SelectionBarButton`` like every other bar item — it was briefly a bare
+    /// `Button("Unarchive")`, which draws the system's bordered push button, accent
+    /// bezel and all, inside a capsule whose whole premise is that there is no
+    /// coloured accent (079).
+    ///
+    /// Targets come from ``actionTargetsForKey()``, the SAME answer the bar's
+    /// Delete and the `E` key give. Taking `selection.ids` raw would skip the
+    /// widening, and a collapsed ⧉4 tile would then unarchive one of its four.
     private var selectionBar: some View {
-        CountSelectionBar(
-            count: selectionStore.selection.ids.count,
+        let count = selectionStore.selection.ids.count
+        return CountSelectionBar(
+            count: count,
             onClear: { selectionStore.apply(.clear) },
             onDelete: { requestDeleteTargets() }
         ) {
-            Button("Unarchive") { unarchive(Array(selectionStore.selection.ids)) }
+            SelectionBarButton("tray.and.arrow.up", help: "Unarchive \(count)") {
+                unarchive(actionTargetsForKey())
+            }
         }
     }
 
@@ -316,12 +328,9 @@ struct ShelfView: View {
         return Array(widenedForAction(scope))
     }
 
-    /// The ids a keyboard / bar Delete acts on: the selection while selecting,
-    /// else the cursor's lone item.
+    /// Delete from the keyboard or the bar — the same targets every other verb
+    /// here acts on.
     private func requestDeleteTargets() {
-        let selection = selectionStore.selection
-        let scope: Set<UUID> = selection.isSelecting
-            ? selection.ids : Set(selection.lead.map { [$0] } ?? [])
         let targets = actionTargetsForKey()
         guard !targets.isEmpty else { return }
         model.requestDelete(assetIDs: targets)

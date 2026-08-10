@@ -1122,13 +1122,10 @@ private struct LibrarySearchResults: View {
         return Array(widenedForAction(scope))
     }
 
-    /// The ids a keyboard/bar Delete acts on: the selection while selecting, else the
-    /// cursor's lone item.
+    /// Delete from the keyboard or the bar — the same targets every other verb
+    /// here acts on, rather than a second copy of the widening rule.
     private func requestDeleteTargets() {
-        let selection = selectionStore.selection
-        let scope: Set<UUID> = selection.isSelecting
-            ? selection.ids : Set(selection.lead.map { [$0] } ?? [])
-        let targets = Array(widenedForAction(scope))
+        let targets = actionTargetsForKey()
         guard !targets.isEmpty else { return }
         model.requestDelete(assetIDs: targets)
     }
@@ -1211,14 +1208,26 @@ private struct LibrarySearchResults: View {
 
     // MARK: - Selection bar
 
-    /// The floating "N selected · Clear · Delete" bar, shown while a selection is
-    /// active. Delete routes through the same staged/undoable asset delete as the
-    /// keyboard and context menu.
+    /// The floating "N selected · Clear · Delete · Archive" bar, shown while a
+    /// selection is active. Both verbs route through the same staged/undoable
+    /// paths as the keyboard and the context menu.
     private var selectionBar: some View {
-        CountSelectionBar(
-            count: selectionStore.selection.ids.count,
+        let count = selectionStore.selection.ids.count
+        return CountSelectionBar(
+            count: count,
             onClear: { selectionStore.apply(.clear) },
-            onDelete: { requestDeleteTargets() })
+            onDelete: { requestDeleteTargets() }
+        ) {
+            // 023 · A3, and the peer of the collection bar's Archive: the
+            // recoverable answer to the Delete beside it. Search only ever shows
+            // unarchived hits, so the verb resolves to Archive; the hit leaves the
+            // results on the re-run `contentsVersion` triggers.
+            SelectionBarButton("archivebox", help: "Archive \(count)") {
+                let targets = actionTargetsForKey()
+                guard !targets.isEmpty else { return }
+                Task { await model.toggleArchived(assetIDs: targets) }
+            }
+        }
     }
 }
 

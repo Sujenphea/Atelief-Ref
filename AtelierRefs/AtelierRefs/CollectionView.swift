@@ -465,6 +465,19 @@ struct CollectionView: View {
                                help: "Remove \(count) from collection") {
                 model.removeFromFolder(assetIDs: selectedAssetIDs)
             }
+            // 023 · A3. Archive sits beside Delete and Remove — the three "make it
+            // not be here" verbs — rather than under the `…`, because it is the
+            // RECOVERABLE alternative to the Delete two glyphs to its left. A bar
+            // where the irreversible verb is one click and the reversible one is
+            // two nudges toward the wrong one.
+            //
+            // Every visible item is unarchived by construction (a browsing read
+            // hides the shelf, 023 · A1), so the verb always resolves to Archive
+            // here — but it still routes through `toggleArchived`, the same call
+            // the cell menu and `E` make, so the three cannot drift.
+            SelectionBarButton("archivebox", help: "Archive \(count)") {
+                Task { await model.toggleArchived(assetIDs: selectedAssetIDs) }
+            }
             // Contact-sheet export of the selection (052 · B4) — its own config
             // popover, opening ABOVE the floating bar like the overflow. The ring
             // shows progress + Cancel while a sheet renders.
