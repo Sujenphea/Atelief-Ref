@@ -40,6 +40,11 @@ struct LibraryStatsSnapshot: Sendable, Equatable {
     /// Top-N by on-disk size. Sizes come from THIS scan and are then read from
     /// here — the "cached, never `stat` per render" rule the 016 brief sets.
     var largest: [LargestItem]
+    /// What the archive shelf is holding (023 · A4). Measured here rather than
+    /// on the shelf pane, because "what can I reclaim" is a LIBRARY question and
+    /// this is the surface that answers those — and because the shelf pane
+    /// deliberately shows items, not accounting.
+    var archived: ArchivedUsage = .empty
     var scannedAt: Date
 
     /// Total assets across every kind — the headline count.
@@ -257,10 +262,12 @@ final class LibraryStatsController: ObservableObject {
             let kinds = try await services.assetCountsByKind()
             let platforms = try await services.assetCountsByPlatform()
             let blobs = try await services.blobUsage()
+            let archived = try await services.archivedUsage()
             return LibraryStatsSnapshot(
                 usage: scan.usage, countsByKind: kinds, countsByPlatform: platforms,
                 largest: LibraryStats.largestItems(
                     blobs: blobs, sizes: scan.blobSizes, limit: limit),
+                archived: archived,
                 scannedAt: scan.scannedAt)
         } finish: { [weak self] snapshot in
             self?.stats = snapshot

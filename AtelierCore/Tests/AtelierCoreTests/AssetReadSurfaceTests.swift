@@ -47,6 +47,8 @@ struct AssetReadSurfaceTests {
         // ── The shelf itself. These show ONLY archived items. ────────────────
         "shelfAssets":
             "the Archived destination — the whole library filtered to archived_at IS NOT NULL, newest first.",
+        "archivedUsage":
+            "the Library pane's shelf row (016 / 023 · A4). Counts ONLY archived rows, and reports the bytes only archived assets hold — the one read whose subject IS the shelf.",
         "archivedAssetIDs":
             "the archived subset of an explicit id set, for mixed-selection verb availability.",
 

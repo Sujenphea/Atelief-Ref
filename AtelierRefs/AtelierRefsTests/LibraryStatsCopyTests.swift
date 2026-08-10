@@ -190,4 +190,36 @@ struct LibraryStatsJobCopyTests {
         #expect(report.isFailure)
         #expect(report.message == "Couldn't measure the library: disk gone")
     }
+
+    // MARK: - The archived row (023 · A4)
+
+    /// The row reports two facts because either alone misleads, and the size is
+    /// what deleting the shelf would ACTUALLY free — so the sentence has to be
+    /// readable as an offer.
+    @Test("the archived row states the count and the reclaimable size")
+    func archivedRowWording() {
+        let usage = ArchivedUsage(assetCount: 12, exclusiveBytes: 2_400_000)
+        let line = LibraryStatsCopy.archived(usage)
+        #expect(line.contains("12 items"))
+        #expect(line.contains("reclaimable"))
+        // The number in the sentence, not merely that a sentence appeared.
+        #expect(line.contains(LibraryStatsCopy.size(2_400_000)))
+    }
+
+    /// A shelf of media-less items is a real state — a large count and nothing
+    /// to free — and saying "0 bytes reclaimable" reads as a bug rather than an
+    /// answer.
+    @Test("a weightless shelf says there is nothing to reclaim")
+    func archivedRowWithNoBytes() {
+        let line = LibraryStatsCopy.archived(
+            ArchivedUsage(assetCount: 40, exclusiveBytes: 0))
+        #expect(line == "40 items · nothing to reclaim")
+    }
+
+    @Test("one archived item is singular")
+    func archivedRowSingular() {
+        let line = LibraryStatsCopy.archived(
+            ArchivedUsage(assetCount: 1, exclusiveBytes: 0))
+        #expect(line.hasPrefix("1 item ·"))
+    }
 }

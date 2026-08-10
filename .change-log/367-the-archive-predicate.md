@@ -1,6 +1,6 @@
 # 367 — The Archive Predicate, at Every Funnel
 
-[023](../.docs/feature-todo/023-archive-and-second-library.md) phase **A1**. The
+[084](../.docs/084-archive-shelf-plan.md) phase **A1**. The
 shelf now exists in the data layer: a column, two verbs, and one predicate
 applied at every read that browses. No UI yet — that is A2.
 

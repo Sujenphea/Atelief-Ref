@@ -230,6 +230,6 @@ Answered by what shipped; see the Status block at the top of this file.
 
 ## Still to come from elsewhere
 
-[023](feature-todo/023-archive-and-second-library.md)'s `archived_at` adds one
+[084](084-archive-shelf-plan.md)'s `archived_at` adds one
 optional field to the manifest — a restore that dropped it would silently
 un-archive the user's whole shelf. That is 023's A4, tracked there.

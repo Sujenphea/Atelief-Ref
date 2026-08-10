@@ -2609,6 +2609,70 @@ struct MigrationV19Tests {
     }
 }
 
+// MARK: - Schema ⇄ model exhaustiveness (023 · A4)
+
+/// Link one of the manifest exhaustiveness chain: **every `asset` COLUMN has a
+/// field on the `Asset` record, and vice versa.**
+///
+/// Link two — every `Asset` field is in the backup manifest or in a named
+/// derived-and-excluded list — lives app-side in `ArchiveManifestFieldTests`,
+/// because that is where the manifest type is. Together they mean a column
+/// added without a thought fails a test twice: once here for the model, once
+/// there for the backup. `archived_at` is exactly the field that would have
+/// slipped through silently (023 · A1).
+@Suite("Schema: the asset table and the Asset record agree")
+struct AssetColumnCoverageTests {
+
+    /// The `Asset` record's column names, taken from what GRDB actually writes
+    /// rather than from a hand-kept list — a hand-kept list is the thing this
+    /// test exists to make unnecessary.
+    private func recordColumns() throws -> Set<String> {
+        let asset = Asset(
+            id: UUID(), kind: .image, blobHash: "abc", mimeType: "image/png",
+            width: 1, height: 1, fileSize: 1, downloadState: .downloaded,
+            createdAt: Date(), sourceId: UUID())
+        return Set(try asset.databaseDictionary.keys)
+    }
+
+    @Test("every asset column has an Asset field, and every field a column")
+    func columnsAndFieldsAgree() throws {
+        let dbQueue = try makeMigratedQueue()
+        let schema = try dbQueue.read { db -> Set<String> in
+            Set(try Row.fetchAll(db, sql: "PRAGMA table_info(asset)").map { $0["name"] })
+        }
+        let record = try recordColumns()
+
+        let missingFromRecord = schema.subtracting(record).sorted()
+        let missingFromSchema = record.subtracting(schema).sorted()
+
+        #expect(
+            missingFromRecord.isEmpty,
+            """
+            asset column(s) with no `Asset` field: \(missingFromRecord.joined(separator: ", ")). \
+            Add the property (and its CodingKey), then decide whether the backup \
+            manifest carries it — see ArchiveManifestFieldTests.
+            """)
+        #expect(
+            missingFromSchema.isEmpty,
+            """
+            `Asset` field(s) with no asset column: \(missingFromSchema.joined(separator: ", ")). \
+            Either the migration is missing or the CodingKey is misspelled.
+            """)
+    }
+
+    /// A guard whose set was empty would pass while checking nothing.
+    @Test("the column scan is not vacuous")
+    func scanIsNotVacuous() throws {
+        let dbQueue = try makeMigratedQueue()
+        let schema = try dbQueue.read { db -> Set<String> in
+            Set(try Row.fetchAll(db, sql: "PRAGMA table_info(asset)").map { $0["name"] })
+        }
+        #expect(schema.count >= 15)
+        #expect(schema.contains("archived_at"))
+        #expect(schema.contains("is_favorite"))
+    }
+}
+
 // MARK: - v20 · the archive shelf (023 · A)
 
 @Suite("Migration v20: asset.archived_at")

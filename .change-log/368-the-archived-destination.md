@@ -1,6 +1,6 @@
 # 368 — The Archived Destination
 
-[023](../.docs/feature-todo/023-archive-and-second-library.md) phase **A2**. The
+[084](../.docs/084-archive-shelf-plan.md) phase **A2**. The
 shelf is now a place you can go: a sidebar destination beside Home and Capture,
 showing every archived item newest-first, with Unarchive as its verb.
 

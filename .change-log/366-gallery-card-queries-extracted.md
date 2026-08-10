@@ -1,6 +1,6 @@
 # 366 — One Gallery-Card Query, Not Two Copies
 
-[023](../.docs/feature-todo/023-archive-and-second-library.md) phase **A0**. A
+[084](../.docs/084-archive-shelf-plan.md) phase **A0**. A
 pure refactor with no behaviour change, done before the archive shelf rather
 than after, because the shelf's predicate would otherwise be added in eight
 places that have to agree.

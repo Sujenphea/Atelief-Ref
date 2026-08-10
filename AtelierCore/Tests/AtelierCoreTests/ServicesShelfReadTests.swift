@@ -293,6 +293,94 @@ struct ServicesShelfReadTests {
         #expect(try await services.shelfAssets().isEmpty)
     }
 
+    // MARK: - What the shelf is holding (016 stats)
+
+    /// The reclaim figure has to be honest in the case that actually recurs: a
+    /// blob shared between an archived asset and a visible one frees NOTHING,
+    /// and counting it would promise space that unarchiving nothing could
+    /// release.
+    @Test("archivedUsage counts a shared blob only when every referrer is archived")
+    func archivedUsageCountsOnlyExclusiveBytes() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let left = try await services.createCollection(name: "Left")
+        let right = try await services.createCollection(name: "Right")
+
+        // One blob, two asset rows (the same picture saved twice from different
+        // sources, which is how a shared blob arises).
+        let hash = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        func seedSharing(_ collectionID: UUID, url: String) async throws -> UUID {
+            let draft = AssetDraft(
+                kind: .image, blobHash: hash, mimeType: "image/png",
+                width: 10, height: 10, duration: nil, fileSize: 100,
+                downloadState: .downloaded)
+            let source = SourceDraft(platform: .web, originalURL: url, capturedAt: Date())
+            return try await services.ingest(draft, from: source, into: collectionID).asset.id
+        }
+        let shared1 = try await seedSharing(left.id, url: "https://e/shared-1")
+        _ = try await seedSharing(right.id, url: "https://e/shared-2")
+        let lone = try await seedAsset(services, into: left.id)
+
+        #expect(try await services.archivedUsage() == .empty)
+
+        // Archive ONE of the two sharers: the count moves, the bytes do not.
+        try await services.archive([shared1])
+        let partial = try await services.archivedUsage()
+        #expect(partial.assetCount == 1)
+        #expect(partial.exclusiveBytes == 0)
+
+        // Archive a lone byte-backed asset: its bytes are genuinely reclaimable.
+        try await services.archive([lone])
+        let withLone = try await services.archivedUsage()
+        #expect(withLone.assetCount == 2)
+        #expect(withLone.exclusiveBytes == 10)   // the seeded fileSize
+    }
+
+    @Test("archivedUsage counts media-less items but adds no bytes for them")
+    func archivedUsageHandlesMediaLessItems() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let refs = try await services.createCollection(name: "Refs")
+        let color = try await services.ingestContent(
+            .color(hex: "#123456"),
+            from: SourceDraft(platform: .localPaste, capturedAt: Date()),
+            into: refs.id).asset.id
+
+        try await services.archive([color])
+
+        let usage = try await services.archivedUsage()
+        // A shelf of a thousand swatches is a large count and zero bytes — which
+        // is why the pane reports two numbers rather than one.
+        #expect(usage.assetCount == 1)
+        #expect(usage.exclusiveBytes == 0)
+        #expect(usage.isEmpty == false)
+    }
+
+    /// The same blob under TWO archived assets is one file, so its bytes are
+    /// counted once — not once per referring row.
+    @Test("a blob shared by two archived assets is counted once")
+    func sharedArchivedBlobCountedOnce() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let refs = try await services.createCollection(name: "Refs")
+        let hash = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        var ids: [UUID] = []
+        for i in 0..<2 {
+            let draft = AssetDraft(
+                kind: .image, blobHash: hash, mimeType: "image/png",
+                width: 10, height: 10, duration: nil, fileSize: 250,
+                downloadState: .downloaded)
+            let source = SourceDraft(
+                platform: .web, originalURL: "https://e/dup-\(i)", capturedAt: Date())
+            ids.append(try await services.ingest(draft, from: source, into: refs.id).asset.id)
+        }
+        try await services.archive(ids)
+
+        let usage = try await services.archivedUsage()
+        #expect(usage.assetCount == 2)
+        #expect(usage.exclusiveBytes == 250)     // one file, not two
+    }
+
     // MARK: - The orphan sweep
 
     /// 023 claimed the sweep "must skip archived assets explicitly, or the shelf

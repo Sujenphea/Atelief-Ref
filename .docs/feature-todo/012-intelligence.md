@@ -100,7 +100,7 @@ tags reuse `asset_tag` unchanged.
 4. **I4 (S–M) — color swatches + color filter conjunct.** Data is already stored;
    this is a swatch row in detail plus one WHERE conjunct in the search builder.
    Note it must land as a **conjunct**, not a post-filter, for the same paging
-   reason [023](023-archive-and-second-library.md) settles for `archived_at`.
+   reason [084](../084-archive-shelf-plan.md) settles for `archived_at`.
 5. ~~**I5 (M)** — duplicates review surface.~~ **Shipped.**
 6. ~~**I6 (v2)** — feature-print similarity browse.~~ **Shipped** (v14).
 

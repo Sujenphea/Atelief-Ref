@@ -1,6 +1,6 @@
 # 369 — The Archive Verb, Everywhere an Item Is
 
-[023](../.docs/feature-todo/023-archive-and-second-library.md) phase **A3**. The
+[084](../.docs/084-archive-shelf-plan.md) phase **A3**. The
 shelf now has something to put on it: `E` and an Archive menu item on every
 surface an item appears on.
 

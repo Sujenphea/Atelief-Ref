@@ -2877,6 +2877,43 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// What the archive shelf is holding (023 · A4 / 016 stats): how many items
+    /// are on it, and how many bytes deleting all of them would actually free.
+    ///
+    /// This is the ONE read that deliberately looks at archived rows and reports
+    /// them as their own figure rather than hiding or merging them. Archive
+    /// creates the question "what can I reclaim", and the Library pane is where
+    /// that question is asked.
+    ///
+    /// `exclusiveBytes` counts a blob only when EVERY asset referencing it is
+    /// archived — which is the honest answer, and the reason it is not a simple
+    /// `SUM(file_size)`. Blobs are shared (one file, many asset rows), so
+    /// summing per-asset sizes would double-count a picture saved into three
+    /// collections, and counting a blob an un-archived asset still points at
+    /// would promise space that unarchiving nothing could release. A number in a
+    /// "reclaim" row that overstates is worse than no number.
+    public func archivedUsage() async throws -> ArchivedUsage {
+        try await read { db in
+            let count = try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM asset WHERE archived_at IS NOT NULL") ?? 0
+            // Per DISTINCT blob: keep it only if no un-archived asset references
+            // it, then add its size once. `MAX(file_size)` collapses the rows
+            // sharing a hash — they carry the same bytes by construction, so any
+            // aggregate would do; MAX is the one that cannot return NULL while a
+            // size exists.
+            let bytes = try Int.fetchOne(db, sql: """
+                SELECT COALESCE(SUM(size), 0) FROM (
+                    SELECT MAX(file_size) AS size
+                    FROM asset
+                    WHERE blob_hash IS NOT NULL
+                    GROUP BY blob_hash
+                    HAVING SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END) = 0
+                )
+                """) ?? 0
+            return ArchivedUsage(assetCount: count, exclusiveBytes: bytes)
+        }
+    }
+
     /// The collections an asset is a direct member of, name-ordered — the reverse
     /// of ``addAssets(_:to:)``. Powers the Item Detail "Collections" chips; kept
     /// off the joined grid read (``collectionItems``) so the hot path stays a
