@@ -87,7 +87,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -2606,5 +2606,131 @@ struct MigrationV19Tests {
         let dbQueue = try makeMigratedQueue()
         let indices = try dbQueue.read { try indexNames($0, table: "asset") }
         #expect(!indices.contains { $0.contains("is_favorite") })
+    }
+}
+
+// MARK: - v20 · the archive shelf (023 · A)
+
+@Suite("Migration v20: asset.archived_at")
+struct MigrationV20Tests {
+
+    /// A migrator applied only THROUGH v19 (pre `archived_at`), so a test can
+    /// seed rows the way an existing install holds them and then migrate v20
+    /// over them — the upgrade path a fresh-install test cannot cover.
+    private func makeQueueThroughV19() throws -> DatabaseQueue {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v19")
+        return dbQueue
+    }
+
+    /// Seed one source + one asset with RAW SQL naming only the pre-v20 columns
+    /// — the `Asset` record would not compile against a v19 schema, and that is
+    /// the point: this is what a real v19 database contains.
+    private func seedV19Asset(_ db: Database, id: String) throws {
+        let sourceID = newID()
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, original_url, author_handle,
+                author_name, title, captured_at, raw_metadata)
+            VALUES (?, 'pinterest', NULL, NULL, NULL, NULL, ?, '{}');
+            """, arguments: [sourceID, ts])
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, blob_hash, mime_type, width, height,
+                duration, file_size, download_state, created_at, source_id)
+            VALUES (?, 'image', 'abc123', 'image/png', 10, 10, NULL, 4,
+                'downloaded', ?, ?);
+            """, arguments: [id, ts, sourceID])
+    }
+
+    @Test("a fresh install lands at v20 with a NULLABLE archived_at")
+    func freshInstallHasColumn() throws {
+        let dbQueue = try makeMigratedQueue()
+        let notNull = try dbQueue.read { try columnNotNull($0, table: "asset") }
+        // Present, and nullable — NULL is what "not archived" means, so a NOT
+        // NULL column here would be a different (and wrong) design.
+        #expect(notNull["archived_at"] == 0)
+        let applied = try dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations")
+        }
+        #expect(applied.contains("v20"))
+    }
+
+    @Test("upgrading from v19 leaves every existing row un-archived")
+    func upgradeFromV19LeavesRowsUnarchived() throws {
+        let dbQueue = try makeQueueThroughV19()
+        let assetID = newID()
+        try dbQueue.write { try seedV19Asset($0, id: assetID) }
+        // The column genuinely does not exist yet — otherwise the assertion
+        // below would prove nothing about the upgrade.
+        let before = try dbQueue.read { try columnNotNull($0, table: "asset") }
+        #expect(before["archived_at"] == nil)
+
+        try Migrator.makeMigrator().migrate(dbQueue)   // apply v20
+
+        let after = try dbQueue.read { try columnNotNull($0, table: "asset") }
+        #expect(after["archived_at"] == 0)
+        // An upgrade must not archive anything — nothing could have been
+        // archived before the column existed.
+        let archivedCount = try dbQueue.read { db in
+            try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM asset WHERE archived_at IS NOT NULL")
+        }
+        #expect(archivedCount == 0)
+        let fetched = try dbQueue.read { try Asset.fetchOne($0, key: assetID) }
+        #expect(fetched?.archivedAt == nil)
+    }
+
+    @Test("the timestamp round-trips through the Asset record")
+    func recordRoundTrip() throws {
+        let dbQueue = try makeQueueThroughV19()
+        let assetID = newID()
+        try dbQueue.write { try seedV19Asset($0, id: assetID) }
+        try Migrator.makeMigrator().migrate(dbQueue)
+
+        let when = Date(timeIntervalSince1970: 1_700_000_000)
+        try dbQueue.write { db in
+            var asset = try #require(try Asset.fetchOne(db, key: assetID))
+            asset.archivedAt = when
+            try asset.update(db)
+        }
+        let fetched = try dbQueue.read { try Asset.fetchOne($0, key: assetID) }
+        // A timestamp, not a flag — the shelf orders by it, so the VALUE has to
+        // survive, not merely its non-nil-ness.
+        #expect(fetched?.archivedAt == when)
+    }
+
+    /// The shelf is a library-wide `IS NOT NULL` scan and sort with no
+    /// collection scope, on the one surface whose row count only ever grows.
+    /// v19 deliberately shipped no index and pinned that; v20 deliberately ships
+    /// one, so pin THAT — including its partiality, which is what keeps it tiny
+    /// and free on the hot un-archived path.
+    @Test("a PARTIAL index over archived rows ships with the column")
+    func partialIndexShips() throws {
+        let dbQueue = try makeMigratedQueue()
+        let rows = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: "PRAGMA index_list(asset)")
+        }
+        let index = try #require(rows.first { ($0["name"] as String).contains("archived_at") })
+        #expect(index["partial"] == 1)
+
+        // …and it is partial over the ARCHIVED rows, not some other predicate.
+        let sql = try dbQueue.read { db in
+            try String.fetchOne(
+                db, sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+                arguments: [index["name"] as String])
+        }
+        #expect(sql?.contains("archived_at IS NOT NULL") == true)
+    }
+
+    /// Same reasoning as v19's `columnIsOnAssetOnly`: archiving is a property of
+    /// the ITEM. On `collection_item` it would mean something different in each
+    /// folder, and unarchiving could not restore memberships archiving had
+    /// itself destroyed.
+    @Test("archived_at lives on asset only, never on collection_item or space_item")
+    func columnIsOnAssetOnly() throws {
+        let dbQueue = try makeMigratedQueue()
+        let membership = try dbQueue.read { try columnNotNull($0, table: "collection_item") }
+        let placement = try dbQueue.read { try columnNotNull($0, table: "space_item") }
+        #expect(membership["archived_at"] == nil)
+        #expect(placement["archived_at"] == nil)
     }
 }

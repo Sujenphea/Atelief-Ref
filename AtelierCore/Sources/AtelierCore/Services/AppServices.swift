@@ -2734,6 +2734,83 @@ public final class AppServices: Sendable {
         }
     }
 
+    // MARK: - Shelf (023 · A — archive / unarchive)
+
+    /// Put `assetIDs` on the archive shelf, in ONE transaction. Returns the
+    /// number of rows that actually changed.
+    ///
+    /// Archiving touches ONE column. It does not remove a membership, move a
+    /// space placement, drop a tag or reap a blob — that is the entire
+    /// difference between this and a delete, and it is why unarchiving can put
+    /// the item back exactly where it was without having to remember anything.
+    ///
+    /// **Idempotent, and re-archiving keeps the ORIGINAL timestamp.** The
+    /// `UPDATE` is filtered to `archived_at IS NULL`, so archiving an already
+    /// archived asset writes nothing rather than bumping it to the top of the
+    /// shelf. A batch that mixes archived and un-archived assets therefore
+    /// archives only the un-archived ones and leaves the rest where they sit,
+    /// which is what the shelf's "most recently archived first" order means.
+    ///
+    /// The timestamp is server-authoritative (the service stamps `Date()`, like
+    /// every other `*_at` in this layer). A missing id is silently ignored, for
+    /// the same reason ``setFavorite(_:for:)`` ignores one: the caller is a
+    /// multi-select over a grid that can be reloaded underneath it, and failing
+    /// the whole batch because one tile was deleted a moment ago is worse than
+    /// archiving the rest. An empty set is a no-op.
+    @discardableResult
+    public func archive(_ assetIDs: [UUID]) async throws -> Int {
+        let keys = Array(Set(assetIDs)).map(Self.key)
+        guard !keys.isEmpty else { return 0 }
+        return try await write { db in
+            let placeholders = databaseQuestionMarks(count: keys.count)
+            var args: [(any DatabaseValueConvertible)?] = [Date()]
+            args.append(contentsOf: keys.map { $0 as (any DatabaseValueConvertible)? })
+            try db.execute(sql: """
+                UPDATE asset SET archived_at = ?
+                WHERE id IN (\(placeholders)) AND archived_at IS NULL
+                """, arguments: StatementArguments(args))
+            return db.changesCount
+        }
+    }
+
+    /// Take `assetIDs` off the shelf, in ONE transaction. Returns the number of
+    /// rows that actually changed.
+    ///
+    /// The inverse of ``archive(_:)`` and lossless by construction: clearing the
+    /// timestamp is the whole operation, because archiving never destroyed
+    /// anything to restore. Filtered to `archived_at IS NOT NULL`, so
+    /// unarchiving something that was never archived writes nothing.
+    @discardableResult
+    public func unarchive(_ assetIDs: [UUID]) async throws -> Int {
+        let keys = Array(Set(assetIDs)).map(Self.key)
+        guard !keys.isEmpty else { return 0 }
+        return try await write { db in
+            let placeholders = databaseQuestionMarks(count: keys.count)
+            try db.execute(sql: """
+                UPDATE asset SET archived_at = NULL
+                WHERE id IN (\(placeholders)) AND archived_at IS NOT NULL
+                """, arguments: StatementArguments(keys))
+            return db.changesCount
+        }
+    }
+
+    /// The ids among `assetIDs` that are currently archived — the read half of a
+    /// mixed selection, mirroring ``favoritedAssetIDs(among:)``. `ShelfIntent`
+    /// (023 · A3) asks this to decide which way a mixed selection flips and to
+    /// build the exact inverse an undo has to restore.
+    public func archivedAssetIDs(among assetIDs: [UUID]) async throws -> Set<UUID> {
+        let keys = Array(Set(assetIDs)).map(Self.key)
+        guard !keys.isEmpty else { return [] }
+        return try await read { db in
+            let placeholders = databaseQuestionMarks(count: keys.count)
+            let found = try String.fetchAll(db, sql: """
+                SELECT id FROM asset
+                WHERE id IN (\(placeholders)) AND archived_at IS NOT NULL
+                """, arguments: StatementArguments(keys))
+            return Set(found.compactMap(UUID.init(uuidString:)))
+        }
+    }
+
     /// The collections an asset is a direct member of, name-ordered — the reverse
     /// of ``addAssets(_:to:)``. Powers the Item Detail "Collections" chips; kept
     /// off the joined grid read (``collectionItems``) so the hot path stays a
