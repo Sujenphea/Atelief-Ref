@@ -609,6 +609,31 @@ final class IngestionModel: ObservableObject {
         return result
     }
 
+    /// ``widenedForAction(_:)`` as a seam for the readers that never leave
+    /// MEMBERSHIP-id space — ⌘C, the two exports, and Quick Look, all of which take
+    /// a `Set<CollectionItem.id>` rather than asset ids.
+    ///
+    /// Every asset-id verb already widens on its way through ``selectedAssetIDs`` or
+    /// ``actionTargets(forCellItemID:)``, so those callers never see this. The item-id
+    /// readers had no such funnel and so quietly skipped the widening entirely: ⌘C on a
+    /// tile reading ⧉4 copied one image, and Space previewed one. Exposing the rule —
+    /// rather than letting each surface re-derive "which ids does this act on" — is the
+    /// same argument ``assetIDs(for:)`` makes one line down.
+    ///
+    /// An empty set widens to an empty set, which the exports rely on: they read empty
+    /// as "no selection, take the whole collection".
+    func itemIDsForAction(_ ids: Set<UUID>) -> Set<UUID> { widenedForAction(ids) }
+
+    /// The asset behind a membership id, or `nil` when the item has left the loaded
+    /// feed. O(1) off the same index the drag/action scope uses.
+    ///
+    /// For the single-item verbs that must act on the TILE rather than on its post —
+    /// Set as Cover, where the cover wanted is the post's own cover, i.e. the
+    /// representative the collapsed tile is already showing. Widening there and taking
+    /// `.first` would pick the post's earliest member in FEED order, which a reorder or
+    /// a partial move can drift away from carousel image #1.
+    func assetID(forItem itemID: UUID) -> UUID? { assetIDByItemID[itemID] }
+
     /// The asset ids for `itemIDs`, in feed order — THE action boundary (307).
     ///
     /// Callers pass ids already widened through ``PostGroups/expand(_:)``, so a
