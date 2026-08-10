@@ -55,7 +55,7 @@ struct DetailSessionTests {
     }
 
     private func items(in collectionID: UUID, _ services: AppServices) async throws -> [CollectionItemDetail] {
-        try await services.collectionItems(in: collectionID)
+        try await services.collectionItems(in: collectionID, includeArchived: false)
     }
 
     // MARK: - present() is one publish

@@ -55,7 +55,7 @@ struct ScaleHarnessTests {
 
         // Time: the full collection listing (P16 returns the whole array).
         let listStart = ContinuousClock.now
-        let items = try await services.collectionItems(in: c.id)
+        let items = try await services.collectionItems(in: c.id, includeArchived: false)
         let listElapsed = ContinuousClock.now - listStart
         #expect(items.count == n)
 
@@ -69,11 +69,53 @@ struct ScaleHarnessTests {
         let one = try await services.searchAssets(text: "ref\(n - 1)")
         #expect(one.count == 1)
 
+        // The shelf (023 · A). Archive a QUARTER of the library, then time the
+        // three reads the shelf changes:
+        //
+        //   • `shelfAssets` — the one genuinely new cost. Library-wide
+        //     `archived_at IS NOT NULL` with a sort and NO collection scope, and
+        //     the read whose row count only ever grows. It deliberately returns
+        //     the full array with no cursor in v1; this number is what decides
+        //     whether that stays true, which is the whole reason it is measured
+        //     here rather than argued about.
+        //   • `collectionItems` again — the browse read now carries the
+        //     predicate, so the delta against the un-archived timing above is
+        //     what the hot path actually pays.
+        //   • `searchAssets` again — same question for the FTS path, where the
+        //     conjunct sits alongside the MATCH.
+        let toArchive = try await services.collectionItems(in: c.id, includeArchived: false)
+            .prefix(n / 4)
+            .map(\.asset.id)
+        let archiveStart = ContinuousClock.now
+        let archivedCount = try await services.archive(Array(toArchive))
+        let archiveElapsed = ContinuousClock.now - archiveStart
+        #expect(archivedCount == toArchive.count)
+
+        let shelfStart = ContinuousClock.now
+        let shelf = try await services.shelfAssets()
+        let shelfElapsed = ContinuousClock.now - shelfStart
+        #expect(shelf.count == toArchive.count)
+
+        let listAfterStart = ContinuousClock.now
+        let remaining = try await services.collectionItems(in: c.id, includeArchived: false)
+        let listAfterElapsed = ContinuousClock.now - listAfterStart
+        #expect(remaining.count == n - toArchive.count)
+
+        let searchAfterStart = ContinuousClock.now
+        let hitsAfter = try await services.searchAssets(text: "swatch", limit: 50)
+        let searchAfterElapsed = ContinuousClock.now - searchAfterStart
+        #expect(hitsAfter.allSatisfy { $0.asset.archivedAt == nil })
+
         print("""
         [scale] N=\(n)
           seed:            \(ms(seedElapsed)) ms  (\(ms(seedElapsed) / Double(n)) ms/asset)
           collectionItems: \(ms(listElapsed)) ms  (\(items.count) rows)
           search 'swatch': \(ms(searchElapsed)) ms  (page of \(hits.count))
+        [scale] archived=\(shelf.count) of \(n)
+          archive:         \(ms(archiveElapsed)) ms  (one UPDATE)
+          shelfAssets:     \(ms(shelfElapsed)) ms  (\(shelf.count) rows, no cursor)
+          collectionItems: \(ms(listAfterElapsed)) ms  (\(remaining.count) rows, predicate on)
+          search 'swatch': \(ms(searchAfterElapsed)) ms  (page of \(hitsAfter.count))
         """)
     }
 

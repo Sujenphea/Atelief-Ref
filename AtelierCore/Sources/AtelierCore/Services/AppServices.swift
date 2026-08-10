@@ -431,6 +431,12 @@ public final class AppServices: Sendable {
             if favoritesOnly {
                 conditions.append("a.is_favorite = 1")
             }
+            // The archive shelf (023 · A), for the same reason the favorites chip
+            // is here: flipping keyword → meaning must not resurrect items the
+            // keyword search hides. A candidate-stage conjunct, so archived rows
+            // never reach the scorer — the vector maths below is per-candidate,
+            // which makes filtering here strictly cheaper than filtering after.
+            conditions.append("a.archived_at IS NULL")
             sql += "\n                WHERE " + conditions.joined(separator: " AND ")
 
             let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
@@ -1690,8 +1696,18 @@ public final class AppServices: Sendable {
     ///     tie-breaks keep the order deterministic).
     /// Switching modes never rewrites `manual_order`, so it is non-destructive.
     /// `.notFound` if the collection is absent.
+    ///
+    /// `includeArchived` (023 · A) is deliberately **NOT defaulted**, and this is
+    /// the one funnel where that earns its keep, because it has callers on both
+    /// sides. Browsing passes `false` — an archived asset keeps its membership
+    /// row and is hidden at the READ, which is what lets unarchiving put it back
+    /// exactly where it was. The backup writer passes `true`: it walks the
+    /// library one collection at a time through this same read, and a default
+    /// here would mean every backup silently omitted the user's whole shelf and
+    /// every restore lost it — a data-loss bug with no symptom until far too
+    /// late. A non-defaulted parameter turns that into a compile error instead.
     public func collectionItems(
-        in collectionID: UUID, sort: SortMode = .manual
+        in collectionID: UUID, sort: SortMode = .manual, includeArchived: Bool
     ) async throws -> [CollectionItemDetail] {
         try await read { db in
             guard try Collection.exists(db, key: Self.key(collectionID)) else {
@@ -1701,10 +1717,16 @@ public final class AppServices: Sendable {
             // no N+1. GRDB qualifies bare base columns to `collection_item`, so
             // the asset-keyed orderings reference the joined `asset` table by
             // name to avoid picking the membership row's columns.
+            var assetJoin = CollectionItem.asset.including(required: Asset.source)
+            if !includeArchived {
+                // On the JOIN rather than as a trailing WHERE: this is a required
+                // (INNER) join, so the two are equivalent to SQLite, and putting
+                // it here keeps the predicate next to the table it is about.
+                assetJoin = assetJoin.filter(Column("archived_at") == nil)
+            }
             var request = CollectionItem
                 .filter(Column("collection_id") == Self.key(collectionID))
-                .including(required: CollectionItem.asset
-                    .including(required: Asset.source))
+                .including(required: assetJoin)
             switch sort {
             case .manual:
                 request = request.order(Column("manual_order"), Column("id"))
@@ -1716,6 +1738,34 @@ public final class AppServices: Sendable {
             }
             return try CollectionItemRow.fetchAll(db, request).map {
                 CollectionItemDetail(item: $0.item, asset: $0.asset, source: $0.source)
+            }
+        }
+    }
+
+    /// The archive shelf itself (023 · A) — every archived asset with its
+    /// provenance, most recently archived first.
+    ///
+    /// Its own function rather than a flag on a browse read, because it is not a
+    /// collection and shares nothing with one: no membership rows, no manual
+    /// order, no sort modes, and no scope. It is the whole library filtered to
+    /// `archived_at IS NOT NULL`, which is exactly the query the v20 partial
+    /// index exists to serve.
+    ///
+    /// **Returns the full array, no cursor** — a deliberate v1 choice, not an
+    /// oversight. `collectionItems` justifies the same shape by being
+    /// collection-scoped (P16), and that justification does NOT carry over to a
+    /// library-wide read, so this one is measured instead: `ScaleHarnessTests`
+    /// times a seeded shelf, and paging lands if and when that says it must.
+    /// `archived_at DESC, id DESC` — the id tie-break keeps a batch archived in
+    /// one gesture (one `UPDATE`, one timestamp) in a deterministic order.
+    public func shelfAssets() async throws -> [AssetDetail] {
+        try await read { db in
+            let request = Asset
+                .filter(sql: "asset.archived_at IS NOT NULL")
+                .including(required: Asset.source)
+                .order(sql: "asset.archived_at DESC, asset.id DESC")
+            return try AssetSourceRow.fetchAll(db, request).map {
+                AssetDetail(asset: $0.asset, source: $0.source)
             }
         }
     }
@@ -2541,6 +2591,22 @@ public final class AppServices: Sendable {
                 request = request.filter(sql: "asset.is_favorite = 1")
             }
 
+            // The archive shelf (023 · A). Search NEVER returns archived items,
+            // so this takes no parameter: there is no caller that wants them,
+            // and a knob whose `true` branch is unreachable is noise on every
+            // call site rather than an explicit choice. What guards a NEW read
+            // against forgetting the predicate is the source-scan allowlist
+            // test, not a parameter this funnel would have to be handed.
+            //
+            // A WHERE CONJUNCT, never a post-filter over the returned page, and
+            // the second reason is the serious one: archived rows never reach
+            // the per-row correlated scorer in `ordered(_:by:…)` (a speedup),
+            // and a post-filter would silently SHORTEN pages — a page of 50
+            // that loses 7 archived rows hands back 43, and the keyset cursor
+            // would then page through gaps. Qualified `asset.archived_at`: the
+            // source join makes a bare column ambiguous.
+            request = request.filter(sql: "asset.archived_at IS NULL")
+
             // Keyset seek: rows strictly after the cursor in the DESC order.
             // GRDB qualifies these `Column`s to the base `asset` table; the Date
             // binds to the same sortable text encoding the column stores (C5).
@@ -3232,6 +3298,14 @@ public final class AppServices: Sendable {
     /// cover to that asset's `blob_hash`. Parents with no cover — or a cover asset
     /// that was deleted (`SET NULL`) — are simply absent from the result.
     ///
+    /// An ARCHIVED cover is treated exactly like a deleted one (023 · A, edge
+    /// case 1). A deleted cover is handled by the schema (`SET NULL`); an
+    /// archived cover is not null, so without the predicate the card would keep
+    /// rendering a picture of an item the user has put out of sight. Filtered
+    /// out here, the parent is simply absent from the result and the gallery
+    /// falls back to its most-recent non-archived member — the same fallback a
+    /// deleted cover already gets, reached by the same route.
+    ///
     /// `table` is interpolated into the SQL, so it must stay a compile-time
     /// literal from the call sites below and never user input; only the ids bind
     /// as arguments.
@@ -3246,6 +3320,7 @@ public final class AppServices: Sendable {
             JOIN asset ON asset.id = \(table).cover_asset_id
             WHERE \(table).id IN (\(databaseQuestionMarks(count: keys.count)))
               AND asset.blob_hash IS NOT NULL
+              AND asset.archived_at IS NULL
             """, arguments: StatementArguments(keys))
         var covers: [UUID: String] = [:]
         for row in rows {
@@ -3283,12 +3358,19 @@ public final class AppServices: Sendable {
         guard !keys.isEmpty else { return ([:], [:]) }
         let placeholders = databaseQuestionMarks(count: keys.count)
 
+        // The count JOINS `asset` — it did not need to before the shelf existed
+        // (023 · A, edge case 3). A **LEFT** join, and the predicate admits a
+        // missing asset: a Space's element rows carry a NULL `asset_id` and are
+        // real items that must keep counting. An inner join would silently drop
+        // every element row and the card would read "2 items" over a board of 3.
         var counts: [UUID: Int] = [:]
         let countRows = try Row.fetchAll(db, sql: """
-            SELECT \(parentColumn) AS pid, COUNT(*) AS cnt
-            FROM \(childTable)
-            WHERE \(parentColumn) IN (\(placeholders))
-            GROUP BY \(parentColumn)
+            SELECT ch.\(parentColumn) AS pid, COUNT(*) AS cnt
+            FROM \(childTable) ch
+            LEFT JOIN asset a ON a.id = ch.asset_id
+            WHERE ch.\(parentColumn) IN (\(placeholders))
+              AND (a.id IS NULL OR a.archived_at IS NULL)
+            GROUP BY ch.\(parentColumn)
             """, arguments: StatementArguments(keys))
         for row in countRows {
             guard let pid = UUID(uuidString: row["pid"]) else { continue }
@@ -3311,6 +3393,7 @@ public final class AppServices: Sendable {
                 FROM \(childTable) ch
                 JOIN asset a ON a.id = ch.asset_id
                 WHERE a.blob_hash IS NOT NULL
+                  AND a.archived_at IS NULL
                   AND ch.\(parentColumn) IN (\(placeholders))
             ) WHERE rn <= ?
             ORDER BY pid, rn

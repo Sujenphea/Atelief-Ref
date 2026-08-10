@@ -58,7 +58,7 @@ struct AppFavoritesTests {
     private func primeItems(
         _ model: IngestionModel, folder: UUID, _ services: AppServices
     ) async throws {
-        model.setItemsForTesting(try await services.collectionItems(in: folder))
+        model.setItemsForTesting(try await services.collectionItems(in: folder, includeArchived: false))
     }
 
     private func favorites(

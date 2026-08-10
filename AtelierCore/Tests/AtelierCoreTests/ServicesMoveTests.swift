@@ -52,7 +52,7 @@ struct ServicesMoveTests {
     private func memberAssetIDs(
         _ services: AppServices, of collectionID: UUID
     ) async throws -> Set<UUID> {
-        Set(try await services.collectionItems(in: collectionID).map { $0.asset.id })
+        Set(try await services.collectionItems(in: collectionID, includeArchived: false).map { $0.asset.id })
     }
 
     // MARK: Basic move
@@ -159,7 +159,7 @@ struct ServicesMoveTests {
         try await services.moveAssets([a], from: src.id, to: dst.id)
 
         #expect(try await memberAssetIDs(services, of: src.id) == [])
-        let dstItems = try await services.collectionItems(in: dst.id)
+        let dstItems = try await services.collectionItems(in: dst.id, includeArchived: false)
         #expect(dstItems.map { $0.asset.id } == [a])
     }
 
@@ -190,7 +190,7 @@ struct ServicesMoveTests {
 
         try await services.moveAssets([a, a, a], from: src.id, to: dst.id)
 
-        let dstItems = try await services.collectionItems(in: dst.id)
+        let dstItems = try await services.collectionItems(in: dst.id, includeArchived: false)
         #expect(dstItems.map { $0.asset.id } == [a])
         #expect(try await memberAssetIDs(services, of: src.id) == [])
     }
@@ -260,7 +260,7 @@ struct ServicesMoveTests {
 
         try await services.moveAssets([a, b], from: src.id, to: dst.id)
 
-        let order = try await services.collectionItems(in: dst.id, sort: .manual)
+        let order = try await services.collectionItems(in: dst.id, sort: .manual, includeArchived: false)
             .map { $0.asset.id }
         #expect(order == [x, y, a, b])
     }
@@ -276,7 +276,7 @@ struct ServicesMoveTests {
 
         try await services.moveAssets([a], from: src.id, to: dst.id)
 
-        let order = try await services.collectionItems(in: dst.id, sort: .manual)
+        let order = try await services.collectionItems(in: dst.id, sort: .manual, includeArchived: false)
             .map { $0.asset.id }
         #expect(order == [existing, a])
     }
@@ -419,7 +419,7 @@ struct ServicesStackPreviewTests {
                 services, temp, into: c.id, tag: "h-\(i)",
                 addedAt: base.addingTimeInterval(Double(i)))
         }
-        assetIDs = try await services.collectionItems(in: c.id)
+        assetIDs = try await services.collectionItems(in: c.id, includeArchived: false)
             .sorted { $0.item.addedAt > $1.item.addedAt }
             .map { $0.asset.id }
         // Delete the second-newest — the fan should skip to the third.

@@ -219,6 +219,14 @@ nonisolated struct LibraryImporter: Sendable {
         if item.isFavorite {
             try await services.setFavorite(true, for: asset.id)
         }
+        // The shelf rides with the star, for the same reason: archiving is
+        // additive and idempotent, so applying it to a deduplicated asset can
+        // only add information, and `false` is never replayed (023 · A). Without
+        // this, the writer's `includeArchived: true` would restore the user's
+        // whole shelf into the middle of their collections.
+        if item.isArchived {
+            try await services.archive([asset.id])
+        }
         if asset.isNew {
             if let name = item.name { try await services.setName(name, for: asset.id) }
             if let note = item.note { try await services.setNote(note, for: asset.id) }

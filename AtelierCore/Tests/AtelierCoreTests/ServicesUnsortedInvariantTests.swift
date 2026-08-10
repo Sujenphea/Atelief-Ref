@@ -67,7 +67,7 @@ struct ServicesUnsortedInvariantTests {
     private func memberAssetIDs(
         _ services: AppServices, of collectionID: UUID
     ) async throws -> [UUID] {
-        try await services.collectionItems(in: collectionID).map { $0.asset.id }
+        try await services.collectionItems(in: collectionID, includeArchived: false).map { $0.asset.id }
     }
 
     private var unsorted: UUID { Collection.unsortedID }

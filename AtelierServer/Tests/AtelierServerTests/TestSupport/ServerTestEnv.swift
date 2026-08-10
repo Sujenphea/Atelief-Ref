@@ -29,7 +29,7 @@ struct ServerTestEnv {
 
     /// The items currently in the target collection (to assert persistence).
     func items() async throws -> [CollectionItemDetail] {
-        try await services.collectionItems(in: collectionID)
+        try await services.collectionItems(in: collectionID, includeArchived: false)
     }
 }
 

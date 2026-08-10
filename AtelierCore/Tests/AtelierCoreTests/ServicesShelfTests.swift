@@ -177,14 +177,18 @@ struct ServicesShelfTests {
         try await services.setFavorite(true, for: subject)
         _ = try await services.applyTag("brutalism", to: subject, source: .user)
 
-        func snapshot() async throws -> (
+        /// `includeArchived` is the parameter under test as much as the verbs
+        /// are: the SAME snapshot read either hides the subject or does not.
+        func snapshot(includeArchived: Bool) async throws -> (
             left: [UUID], right: [UUID], placement: [SpaceItem],
             tagNames: [String], asset: Asset?
         ) {
             (
-                left: try await services.collectionItems(in: left.id, sort: .manual)
+                left: try await services.collectionItems(
+                    in: left.id, sort: .manual, includeArchived: includeArchived)
                     .map(\.asset.id),
-                right: try await services.collectionItems(in: right.id, sort: .manual)
+                right: try await services.collectionItems(
+                    in: right.id, sort: .manual, includeArchived: includeArchived)
                     .map(\.asset.id),
                 placement: try await services.spaceItems(in: board.id).map(\.item),
                 tagNames: try await services.tags(for: subject).map(\.name),
@@ -192,19 +196,26 @@ struct ServicesShelfTests {
             )
         }
 
-        let before = try await snapshot()
+        let before = try await snapshot(includeArchived: false)
         #expect(before.left.contains(subject))     // the fixture is real
         #expect(before.right.contains(subject))
 
         try await services.archive([subject])
-        // Archived is a state of the ASSET. The membership rows are untouched
-        // WHILE it is archived — hiding happens at the read, not by deletion.
-        let during = try await snapshot()
+        // Archived is a state of the ASSET, applied at the READ. The membership
+        // rows are untouched while it is archived — which is exactly why the
+        // same read, asked to include archived items, still sees the ORIGINAL
+        // arrays, neighbours and order intact.
+        let hidden = try await snapshot(includeArchived: false)
+        #expect(!hidden.left.contains(subject))
+        #expect(hidden.right.isEmpty)
+        #expect(hidden.left == before.left.filter { $0 != subject })
+
+        let during = try await snapshot(includeArchived: true)
         #expect(during.left == before.left)
         #expect(during.right == before.right)
 
         try await services.unarchive([subject])
-        let after = try await snapshot()
+        let after = try await snapshot(includeArchived: false)
 
         #expect(after.left == before.left)
         #expect(after.right == before.right)
@@ -244,6 +255,33 @@ struct ServicesShelfTests {
         #expect(try await services.tags(for: asset).map(\.name) == ["still-editable"])
         // …and none of that took it off the shelf.
         #expect(after.archivedAt == stamped)
+    }
+
+    /// Deleting an archived item is an ordinary recoverable delete, and ⌘Z must
+    /// put it back ARCHIVED — not resurrect it into the middle of a collection
+    /// the user had already tidied. `DeletedAssetsBackup` captures whole `Asset`
+    /// rows, so this works by construction; the test exists because "restore
+    /// forgets one column" is a silent, plausible regression (023 · edge case 4).
+    @Test("delete → undo restores an archived item still archived")
+    func deleteUndoKeepsTheShelf() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let refs = try await services.createCollection(name: "Refs")
+        let asset = try await seedAsset(services, into: refs.id)
+        try await services.archive([asset])
+        let stamped = try #require(try fetchAsset(temp, asset)?.archivedAt)
+
+        let backup = try await services.deleteAssetsRecoverable([asset])
+        #expect(try fetchAsset(temp, asset) == nil)
+
+        try await services.restoreDeletedAssets(backup)
+
+        let restored = try #require(try fetchAsset(temp, asset))
+        #expect(restored.archivedAt == stamped)
+        // …and it is on the shelf, not in the collection.
+        #expect(try await services.shelfAssets().map(\.asset.id) == [asset])
+        #expect(try await services.collectionItems(
+            in: refs.id, includeArchived: false).isEmpty)
     }
 
     // MARK: - The mixed-selection read

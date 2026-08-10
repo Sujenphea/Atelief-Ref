@@ -65,7 +65,8 @@ private struct RoundTripRig {
     func seedImage(
         bytes: String, into collectionID: UUID, title: String? = "Hero",
         url: String? = nil, platform: Platform = .pinterest,
-        name: String? = nil, note: String? = nil, favorite: Bool = false
+        name: String? = nil, note: String? = nil, favorite: Bool = false,
+        archived: Bool = false
     ) async throws -> Asset {
         let data = Data(bytes.utf8)
         let hash = ContentHasher.hash(data)
@@ -85,6 +86,7 @@ private struct RoundTripRig {
         if let name { try await self.source.setName(name, for: asset.id) }
         if let note { try await self.source.setNote(note, for: asset.id) }
         if favorite { try await self.source.setFavorite(true, for: asset.id) }
+        if archived { try await self.source.archive([asset.id]) }
         return asset
     }
 
@@ -93,6 +95,18 @@ private struct RoundTripRig {
     func targetFavorites(_ collection: String) async throws -> [String: Bool] {
         Dictionary(
             try await targetItems(collection).map { ($0.source.title ?? "", $0.asset.isFavorite) },
+            uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Whether each item is on the TARGET's shelf, by source title. Reads with
+    /// `includeArchived: true` on purpose — the browse read cannot see the
+    /// answer, which is the whole point of the round trip.
+    func targetArchived(_ collection: String) async throws -> [String: Bool] {
+        guard let c = try await targetCollections()[collection] else { return [:] }
+        let details = try await target.collectionItems(
+            in: c.id, sort: .manual, includeArchived: true)
+        return Dictionary(
+            details.map { ($0.source.title ?? "", $0.asset.archivedAt != nil) },
             uniquingKeysWith: { first, _ in first })
     }
 
@@ -130,7 +144,7 @@ private struct RoundTripRig {
 
     func targetItems(_ name: String) async throws -> [CollectionItemDetail] {
         guard let collection = try await targetCollections()[name] else { return [] }
-        return try await target.collectionItems(in: collection.id, sort: .manual)
+        return try await target.collectionItems(in: collection.id, sort: .manual, includeArchived: false)
     }
 
     /// Distinct assets in a library, counted across every collection — the
@@ -138,7 +152,7 @@ private struct RoundTripRig {
     func assetCount(in services: AppServices) async throws -> Int {
         var ids: Set<UUID> = []
         for collection in try await services.listCollections() {
-            for detail in try await services.collectionItems(in: collection.id, sort: .manual) {
+            for detail in try await services.collectionItems(in: collection.id, sort: .manual, includeArchived: false) {
                 ids.insert(detail.asset.id)
             }
         }
@@ -265,6 +279,96 @@ struct LibraryArchiveRoundTripTests {
         #expect(summary.outcome == .succeeded)
         #expect(summary.newAssets == 2)
         #expect(try await rig.targetFavorites("Refs") == ["Starred": true, "Plain": false])
+    }
+
+    /// **The regression the `includeArchived: true` in the writer exists for
+    /// (023 · A).** A backup is a COPY of the library, not a view of it, so the
+    /// writer walks every collection including the shelf — and the moment it
+    /// does, `archived_at` has to ride the manifest or the restore puts the
+    /// user's whole shelf back in the middle of their collections.
+    ///
+    /// Both halves matter. Without the writer change the archived item is not in
+    /// the archive AT ALL (`newAssets` would be 1); without the manifest field
+    /// it is there but comes back un-archived. The negative half — that the
+    /// plain item does NOT arrive archived — is what catches an importer that
+    /// archives everything, the likelier bug in a replay layer.
+    @Test("Archived items survive a full export and re-import, still archived")
+    func archivedRoundTrip() async throws {
+        let rig = try RoundTripRig.make()
+        defer { rig.cleanup() }
+
+        let refs = try await rig.source.createCollection(name: "Refs")
+        try await rig.seedImage(
+            bytes: "shelved", into: refs.id, title: "Shelved",
+            url: "https://example.com/shelved", archived: true)
+        try await rig.seedImage(
+            bytes: "plain", into: refs.id, title: "Plain",
+            url: "https://example.com/plain")
+
+        try await rig.export()
+        // The manifest carries it — checked before the import, so a failure here
+        // names the WRITER rather than looking like an importer bug.
+        let manifest = try ArchiveManifest.read(
+            from: rig.archive.appendingPathComponent(ArchiveLayout.manifestFilename))
+        #expect(manifest.assets.count == 2)
+        #expect(manifest.assets.filter { $0.archivedAt != nil }.count == 1)
+
+        let summary = await rig.importIntoTarget()
+        #expect(summary.outcome == .succeeded)
+        // 2, not 1: the shelved item was exported rather than silently skipped.
+        #expect(summary.newAssets == 2)
+        #expect(try await rig.targetArchived("Refs") == ["Shelved": true, "Plain": false])
+        // …and it lands hidden from browsing, where an archived item belongs.
+        #expect(try await rig.targetItems("Refs").map { $0.source.title } == ["Plain"])
+    }
+
+    /// An archived multi-collection asset arrives as ONE shelved asset, not as a
+    /// shelf state that only stuck in the first folder the importer visited.
+    @Test("An archived multi-collection asset survives in every collection")
+    func archivedSurvivesMultiCollection() async throws {
+        let rig = try RoundTripRig.make()
+        defer { rig.cleanup() }
+
+        let alpha = try await rig.source.createCollection(name: "Alpha")
+        let beta = try await rig.source.createCollection(name: "Beta")
+        let asset = try await rig.seedImage(bytes: "shared", into: alpha.id, archived: true)
+        try await rig.source.addAssets([asset.id], to: beta.id)
+
+        try await rig.export()
+        #expect(await rig.importIntoTarget().outcome == .succeeded)
+
+        for name in ["Alpha", "Beta"] {
+            #expect(try await rig.targetArchived(name) == ["Hero": true])
+            #expect(try await rig.targetItems(name).isEmpty)
+        }
+    }
+
+    /// Rule 3 of the replay layer, for the shelf: applying it is ADDITIVE, so a
+    /// second import onto a deduplicated asset must not pull an item off a shelf
+    /// the user put it on HERE. An archive saying "not archived" is the absence
+    /// of a claim, not an instruction.
+    @Test("Re-importing a non-archived archive never unarchives what is here")
+    func importNeverUnarchives() async throws {
+        let rig = try RoundTripRig.make()
+        defer { rig.cleanup() }
+
+        let refs = try await rig.source.createCollection(name: "Refs")
+        try await rig.seedImage(
+            bytes: "later-shelved", into: refs.id, title: "Later",
+            url: "https://example.com/later")
+
+        try await rig.export()
+        #expect(await rig.importIntoTarget().outcome == .succeeded)
+
+        // Archive it HERE, in the destination library — an edit the archive
+        // knows nothing about.
+        let landed = try #require(try await rig.targetItems("Refs").first)
+        try await rig.target.archive([landed.asset.id])
+
+        // Import the same (un-archived) archive again: it dedups onto that asset.
+        let second = await rig.importIntoTarget()
+        #expect(second.newAssets == 0)
+        #expect(try await rig.targetArchived("Refs") == ["Later": true])
     }
 
     /// A multi-collection favorite arrives as ONE starred asset, not as a star that
@@ -520,7 +624,7 @@ struct ArchiveImportControllerTests {
         #expect(collections.count < 7)
         #expect(collections.count >= 2)
         for collection in collections {
-            for detail in try await rig.target.collectionItems(in: collection.id, sort: .manual) {
+            for detail in try await rig.target.collectionItems(in: collection.id, sort: .manual, includeArchived: false) {
                 #expect(detail.asset.sourceId == detail.source.id)
                 let hash = try #require(detail.asset.blobHash)
                 #expect(rig.targetStore.hasBlob(hash: hash, fileExtension: "png"))

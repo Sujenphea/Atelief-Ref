@@ -1626,7 +1626,7 @@ final class IngestionModel: ObservableObject {
     private func applyOrder(folder: UUID, desired: [UUID]) async {
         guard let services, !desired.isEmpty else { return }
         do {
-            let members = Set(try await services.collectionItems(in: folder).map { $0.asset.id })
+            let members = Set(try await services.collectionItems(in: folder, includeArchived: false).map { $0.asset.id })
             let filtered = desired.filter(members.contains)
             guard !filtered.isEmpty else { return }
             try await services.setGridOrder(collectionID: folder, orderedAssetIDs: filtered)
@@ -1831,7 +1831,7 @@ final class IngestionModel: ObservableObject {
             do {
                 // The two reads are independent — run them concurrently so the
                 // reload latency is the slowest ONE, not their sum (009 · 16A).
-                async let itemsRead = services.collectionItems(in: id, sort: sort)
+                async let itemsRead = services.collectionItems(in: id, sort: sort, includeArchived: false)
                 async let subfoldersRead = services.childCollections(of: id)
                 let loadedItems = try await itemsRead
                 let loadedSubfolders = try await subfoldersRead
@@ -2350,9 +2350,9 @@ final class IngestionModel: ObservableObject {
     ) async {
         guard let services else { return }
         do {
-            let before = Set(try await services.collectionItems(in: target).map(\.asset.id))
+            let before = Set(try await services.collectionItems(in: target, includeArchived: false).map(\.asset.id))
             try await services.addAssets(assetIDs, to: target)
-            let after = Set(try await services.collectionItems(in: target).map(\.asset.id))
+            let after = Set(try await services.collectionItems(in: target, includeArchived: false).map(\.asset.id))
             // In the given order, so the undo reads deterministically in a test.
             record.assetIDs = assetIDs.filter { after.contains($0) && !before.contains($0) }
             await refreshFolders()
@@ -2886,7 +2886,7 @@ final class IngestionModel: ObservableObject {
     /// collections while a space is open.
     func items(in collectionID: UUID) async throws -> [CollectionItemDetail] {
         guard let services else { return [] }
-        return try await services.collectionItems(in: collectionID)
+        return try await services.collectionItems(in: collectionID, includeArchived: false)
     }
 
     /// The on-disk 512-tier thumbnail URL for a blob hash (pure — no decode).
@@ -3134,7 +3134,7 @@ final class IngestionModel: ObservableObject {
     func newSpaceFromCollection(_ collectionID: UUID) async -> UUID? {
         guard let services else { return nil }
         do {
-            let sourceItems = try await services.collectionItems(in: collectionID)
+            let sourceItems = try await services.collectionItems(in: collectionID, includeArchived: false)
             guard !sourceItems.isEmpty else {
                 notify("That collection has no items to seed a space.")
                 return nil

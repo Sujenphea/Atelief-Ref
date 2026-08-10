@@ -121,7 +121,7 @@ struct ServicesReadTests {
         try await services.setGridOrder(
             collectionID: c.id, orderedAssetIDs: [r3.asset.id, r1.asset.id, r2.asset.id])
 
-        let details = try await services.collectionItems(in: c.id)
+        let details = try await services.collectionItems(in: c.id, includeArchived: false)
         try #require(details.count == 3)
         // manual_order ascending → r3, r1, r2.
         #expect(details.map(\.asset.id) == [r3.asset.id, r1.asset.id, r2.asset.id])
@@ -141,7 +141,7 @@ struct ServicesReadTests {
         let (services, temp) = try makeServices()
         defer { temp.cleanup() }
         let c = try await services.createCollection(name: "Empty")
-        #expect(try await services.collectionItems(in: c.id).isEmpty)
+        #expect(try await services.collectionItems(in: c.id, includeArchived: false).isEmpty)
     }
 
     @Test("collectionItems throws notFound for a missing collection")
@@ -150,7 +150,7 @@ struct ServicesReadTests {
         defer { temp.cleanup() }
         let ghost = UUID()
         await #expect(throws: AtelierError.notFound(entity: "collection", id: ghost)) {
-            try await services.collectionItems(in: ghost)
+            try await services.collectionItems(in: ghost, includeArchived: false)
         }
     }
 

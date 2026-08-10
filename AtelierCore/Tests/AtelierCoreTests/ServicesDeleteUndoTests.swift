@@ -31,7 +31,7 @@ struct ServicesDeleteUndoTests {
     }
 
     private func members(_ services: AppServices, _ c: UUID) async throws -> [UUID] {
-        try await services.collectionItems(in: c, sort: .manual).map { $0.asset.id }
+        try await services.collectionItems(in: c, sort: .manual, includeArchived: false).map { $0.asset.id }
     }
 
     private func exists(_ services: AppServices, asset id: UUID) async -> Bool {

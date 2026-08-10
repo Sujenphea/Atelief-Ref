@@ -105,10 +105,10 @@ struct ServicesSortTests {
         try await services.recordViews([a]); try await services.recordViews([a])
         try await services.recordViews([b])
 
-        let newest = try await services.collectionItems(in: c.id, sort: .newest).map(\.asset.id)
+        let newest = try await services.collectionItems(in: c.id, sort: .newest, includeArchived: false).map(\.asset.id)
         #expect(newest == [d, b, a])   // reverse ingest order
 
-        let mostViewed = try await services.collectionItems(in: c.id, sort: .mostViewed).map(\.asset.id)
+        let mostViewed = try await services.collectionItems(in: c.id, sort: .mostViewed, includeArchived: false).map(\.asset.id)
         #expect(mostViewed == [a, b, d])  // 2, 1, 0 views
     }
 
@@ -121,7 +121,7 @@ struct ServicesSortTests {
         let b = try await seed(services, into: c.id)
         let d = try await seed(services, into: c.id)
         // All zero views → the tie-break IS the whole order: created_at DESC.
-        let order = try await services.collectionItems(in: c.id, sort: .mostViewed).map(\.asset.id)
+        let order = try await services.collectionItems(in: c.id, sort: .mostViewed, includeArchived: false).map(\.asset.id)
         #expect(order == [d, b, a])
     }
 
@@ -138,7 +138,7 @@ struct ServicesSortTests {
         let d = try await seed(services, into: c.id)
 
         // Manual order is the insertion order (0,1,2), NOT a random NULL/id order.
-        let order = try await services.collectionItems(in: c.id, sort: .manual).map(\.asset.id)
+        let order = try await services.collectionItems(in: c.id, sort: .manual, includeArchived: false).map(\.asset.id)
         #expect(order == [a, b, d])
     }
 
@@ -154,7 +154,7 @@ struct ServicesSortTests {
         let d = try await seed(services, into: c.id)
 
         // The new item is appended to the end — the arrangement is preserved.
-        let order = try await services.collectionItems(in: c.id, sort: .manual).map(\.asset.id)
+        let order = try await services.collectionItems(in: c.id, sort: .manual, includeArchived: false).map(\.asset.id)
         #expect(order == [b, a, d])
     }
 
@@ -171,7 +171,7 @@ struct ServicesSortTests {
         // Add b, d to target (a is already a member and must not move / re-slot).
         try await services.addAssets([b, a, d], to: target.id)
 
-        let order = try await services.collectionItems(in: target.id, sort: .manual).map(\.asset.id)
+        let order = try await services.collectionItems(in: target.id, sort: .manual, includeArchived: false).map(\.asset.id)
         #expect(order == [a, b, d])
     }
 
@@ -188,17 +188,17 @@ struct ServicesSortTests {
 
         // Impose an explicit drag order d, a, b.
         try await services.setGridOrder(collectionID: c.id, orderedAssetIDs: [d, a, b])
-        let manual0 = try await services.collectionItems(in: c.id, sort: .manual).map(\.asset.id)
+        let manual0 = try await services.collectionItems(in: c.id, sort: .manual, includeArchived: false).map(\.asset.id)
         #expect(manual0 == [d, a, b])
 
         // Bump views and flip modes around.
         try await services.recordViews([b]); try await services.recordViews([b])
-        _ = try await services.collectionItems(in: c.id, sort: .mostViewed)
-        _ = try await services.collectionItems(in: c.id, sort: .newest)
+        _ = try await services.collectionItems(in: c.id, sort: .mostViewed, includeArchived: false)
+        _ = try await services.collectionItems(in: c.id, sort: .newest, includeArchived: false)
         try await services.setCollectionSortMode(.mostViewed, for: c.id)
 
         // Manual order is byte-for-byte the same as before.
-        let manual1 = try await services.collectionItems(in: c.id, sort: .manual).map(\.asset.id)
+        let manual1 = try await services.collectionItems(in: c.id, sort: .manual, includeArchived: false).map(\.asset.id)
         #expect(manual1 == [d, a, b])
     }
 }

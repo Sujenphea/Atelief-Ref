@@ -45,7 +45,7 @@ struct ServicesSnapshotTests {
         // Open the snapshot as its own library (migrations re-run idempotently)
         // and assert the seeded state survived verbatim.
         let restored = try AppServices(databasePath: snapshotURL.path)
-        let items = try await restored.collectionItems(in: collection)
+        let items = try await restored.collectionItems(in: collection, includeArchived: false)
         #expect(items.count == 1)
         #expect(items.first?.asset.id == asset)
         let tags = try await restored.tags(for: asset)

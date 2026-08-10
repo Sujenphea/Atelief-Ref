@@ -144,6 +144,7 @@ nonisolated enum LibraryArchiveReader {
                         name: asset.name,
                         note: asset.note,
                         isFavorite: asset.isFavorite,
+                        isArchived: asset.archivedAt != nil,
                         placement: CanvasPlacement(
                             x: membership.canvasX, y: membership.canvasY,
                             w: membership.canvasW, h: membership.canvasH,
