@@ -132,6 +132,12 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 6) {
             navRow(.home, "Home", "house")
             navRow(.capture, "Capture", "puzzlepiece.extension")
+            // The shelf (023 · A2). Beside Home and Capture rather than in the
+            // Collections tree, because it is not a collection — putting it
+            // there would invite a drag onto it, and dropping an item on the
+            // shelf is not how anything gets archived. "Archived" is the user's
+            // word for it; `Shelf` is only the code's.
+            navRow(.shelf, "Archived", "archivebox")
             #if DEBUG
             // The token specimen pane. A real row rather than a launch argument (the
             // `Debug/GridBakeoff*` precedent) because the point of the gallery is to

@@ -192,6 +192,13 @@ struct GridHostConfiguration {
     /// by default (the collection menu has no Reveal verb).
     var onReveal: (UUID) -> Void = { _ in }
 
+    // MARK: 023 · A2 — the archive shelf
+
+    /// Take assets off the archive shelf — offered only by the `.shelf` menu.
+    /// A no-op by default: every other surface shows items that are, by
+    /// construction, not archived, so there is nothing there to unarchive.
+    var onUnarchive: (_ assetIDs: [UUID]) -> Void = { _ in }
+
     // MARK: 222 — scroll-away header
 
     /// A header hosted INSIDE the grid's scroll region (222), so it scrolls away
@@ -281,6 +288,11 @@ final class MasonryHeaderContainer: NSView, NSCollectionViewElement {
 enum GridMenuStyle {
     case collection
     case looseAssets
+    /// The archive shelf (023 · A2): Unarchive and Delete, and nothing else. No
+    /// Move / Add / Set Cover / Remove — every one of those needs a membership
+    /// the shelf does not have, and an archive you can file into is just another
+    /// collection.
+    case shelf
 }
 
 // MARK: - The collection view subclass (A2 seam)
@@ -1333,6 +1345,28 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
                 self?.configuration.onCopyToCollection(targets, target)
             }
             menu.addItem(addItem)
+
+            if n == 1, let idx = idToIndex[itemID], items.indices.contains(idx),
+               configuration.blobURL(items[idx]) != nil {
+                menu.addItem(BlockMenuItem(title: "Reveal in Finder") { [weak self] in
+                    self?.configuration.onReveal(itemID)
+                })
+            }
+            menu.addItem(.separator())
+            menu.addItem(BlockMenuItem(title: "Delete\(Self.countSuffix(n))") { [weak self] in
+                self?.configuration.onDelete(targets)
+            })
+
+        case .shelf:
+            // Unarchive is the shelf's ONE verb, and it reads first because it
+            // is the reason anyone opens this pane. Delete stays because leaving
+            // the library means the same thing from every surface (022 · D5) —
+            // and it is the recoverable delete, with the same ⌘Z.
+            menu.addItem(BlockMenuItem(
+                title: "Unarchive\(Self.countSuffix(n))"
+            ) { [weak self] in
+                self?.configuration.onUnarchive(targets)
+            })
 
             if n == 1, let idx = idToIndex[itemID], items.indices.contains(idx),
                configuration.blobURL(items[idx]) != nil {
