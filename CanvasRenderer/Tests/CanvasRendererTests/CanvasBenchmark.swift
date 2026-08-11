@@ -199,6 +199,136 @@ final class CanvasBenchmark: XCTestCase {
         return elapsed.milliseconds / Double(passes)
     }
 
+    // MARK: - 018 · C7 / 086 gate: the pinch path
+
+    /// One pinch, as the trackpad delivers it: ~2 seconds of events at 120Hz,
+    /// zooming in and back out. 1.01 per event compounds to ~3.3x each way, which is
+    /// a realistic two-finger sweep rather than a nudge.
+    /// 1.02 rather than a gentler step because the sweep has to CROSS tier boundaries
+    /// to say anything: compounded over 120 events it is ~10x each way, which walks a
+    /// 5,000-tile board from `.low` through `.medium` into `.full` and back. A sweep
+    /// that stays inside one tier would report a saving of exactly zero and mean
+    /// nothing by it.
+    private static let pinchFactors: [CGFloat] =
+        Array(repeating: 1.02, count: 120) + Array(repeating: 1 / 1.02, count: 120)
+
+    /// The gap the existing cases leave (086 · H2): `testFrameUpdateWithinBudget` is
+    /// the image path but PANS with a pre-warmed cache, and
+    /// `testGlyphTextWithinBudgetAcrossZooms` zooms but is text-only. Decode churn
+    /// under zoom — the thing a pinch actually provokes — was measured nowhere.
+    ///
+    /// Here the cache starts COLD, so every tier the sweep asks for is a real
+    /// request, and the image source counts the distinct keys asked for. The
+    /// assertion is a comparison, not an absolute: the gesture arm must ask for
+    /// strictly fewer decodes than the per-event arm over an IDENTICAL camera
+    /// trajectory (the gesture commits every event, so the two paths differ in
+    /// exactly one thing — whether the tier is frozen).
+    @MainActor
+    func testPinchGestureCutsDecodeRequests() {
+        let anchor = CGPoint(x: Self.viewport.width / 2, y: Self.viewport.height / 2)
+
+        let (direct, directImages) = makePinchEngine()
+        direct.sync()
+        for factor in Self.pinchFactors { direct.zoom(by: factor, aroundScreenPoint: anchor) }
+
+        let (gestured, gesturedImages) = makePinchEngine()
+        gestured.sync()
+        gestured.beginZoomGesture(anchorScreenPoint: anchor)
+        for factor in Self.pinchFactors {
+            gestured.updateZoomGesture(by: factor)
+            gestured.commitZoomGesture()
+        }
+        gestured.endZoomGesture()
+
+        let before = directImages.requestedKeyCount
+        let after = gesturedImages.requestedKeyCount
+        print("[canvas-benchmark] pinch decode requests: per-event=\(before) "
+              + "gesture=\(after) saved=\(before - after) "
+              + "(\(String(format: "%.0f", 100 * Double(before - after) / Double(max(1, before))))%)")
+
+        XCTAssertGreaterThan(before, 0, "the sweep must actually request decodes")
+        XCTAssertLessThan(after, before, "the LOD freeze must reduce decode requests")
+        // Both arms end on the same camera, so the final tier set is the same — the
+        // saving is churn, not resolution. If this drifts, the freeze is dropping
+        // work it should only have been deferring.
+        XCTAssertEqual(gestured.transform.scale, direct.transform.scale, accuracy: 1e-9)
+    }
+
+    /// Is a pinch expensive *because it is a pinch*? That is the question C7's
+    /// smoothing would answer, and it is not the same question as "is this camera
+    /// expensive" — so it is asked as a COMPARISON against panning the same board,
+    /// not against an absolute budget.
+    ///
+    /// The absolute numbers are printed rather than asserted, deliberately. Measured
+    /// on this board (5,000 tiles, all visible at the zoomed-out end), a standstill
+    /// `sync()` costs ~11.9ms, a pan ~11.2ms and a zoom sweep ~10.3ms — the cost is
+    /// the per-sync work at that visible count, which a pan pays identically and a
+    /// zoom actually pays LESS of (zooming in shrinks the visible set). Asserting the
+    /// 120fps budget here would be asserting something about board density that this
+    /// repo has never claimed, under a name that says "pinch". See 086 · H3.
+    @MainActor
+    func testPinchCostsNoMoreThanPanning() {
+        let anchor = CGPoint(x: Self.viewport.width / 2, y: Self.viewport.height / 2)
+        let clock = ContinuousClock()
+
+        let (panEngine, _) = makePinchEngine()
+        panEngine.sync()
+        XCTAssertGreaterThan(panEngine.activeLayerCount, 100, "benchmark must run over real content")
+        let panElapsed = clock.measure {
+            for i in 0..<Self.pinchFactors.count {
+                panEngine.pan(byScreenDelta: CGSize(width: i % 2 == 0 ? -6 : 6, height: 3))
+            }
+        }
+
+        let (zoomEngine, _) = makePinchEngine()
+        zoomEngine.sync()
+        zoomEngine.beginZoomGesture(anchorScreenPoint: anchor)
+        let zoomElapsed = clock.measure {
+            for factor in Self.pinchFactors {
+                zoomEngine.updateZoomGesture(by: factor)
+                zoomEngine.commitZoomGesture()
+            }
+        }
+        zoomEngine.endZoomGesture()
+
+        let frames = Double(Self.pinchFactors.count)
+        let panMs = panElapsed.milliseconds / frames
+        let zoomMs = zoomElapsed.milliseconds / frames
+        print("[canvas-benchmark] pinch vs pan tiles=\(panEngine.activeLayerCount) "
+              + "pan=\(String(format: "%.3f", panMs))ms "
+              + "pinch=\(String(format: "%.3f", zoomMs))ms "
+              + "ratio=\(String(format: "%.2f", zoomMs / panMs))x "
+              + "budget=\(Self.frameBudgetMs)ms")
+
+        XCTAssertLessThan(zoomMs, panMs * 1.25,
+                          "a pinch frame must not cost materially more than a pan frame")
+    }
+
+    /// A cold board for the pinch cases: the P13 tile count, no warming, and an image
+    /// source that records what was asked of it.
+    @MainActor
+    private func makePinchEngine() -> (CanvasEngine, RequestCountingImages) {
+        // A DENSER world than the pan benchmark's (±4,000 instead of ±20,000). The
+        // sparse board is right for measuring a pan, but a 10x zoom into it lands the
+        // viewport in the empty space between clusters — measured: 1,887 tiles visible
+        // at the start, ZERO at peak zoom. A sweep that ends up looking at nothing
+        // reports no tier crossings and no churn, and would have quietly passed as
+        // "the freeze saves nothing".
+        let provider = DummyTileProvider(
+            seed: 0xCAFE,
+            config: DummyTileGenerator.Config(
+                count: Self.tileCount, clusterCount: 40, clusterSpread: 700,
+                worldExtent: 4_000))
+        let images = RequestCountingImages(FixtureImageSet(count: 24, seed: 9))
+        let engine = CanvasEngine(
+            provider: provider,
+            images: images,
+            transform: CanvasTransform(scale: 0.06, translation: CGPoint(x: 720, y: 450)),
+            viewportSize: Self.viewport)
+        engine.prefetchMarginScreen = 200
+        return (engine, images)
+    }
+
     /// Records clock + memory metrics for regression baselines; also asserts the
     /// cache stays within its ceiling (the bounded memory profile P13 requires).
     @MainActor
@@ -217,6 +347,36 @@ final class CanvasBenchmark: XCTestCase {
         // Cache ceiling default is 256 MB; the working set must stay well under.
         XCTAssertLessThan(engine.cacheResidentBytes, 256 * 1024 * 1024)
         print("[canvas-benchmark] resident cache = \(engine.cacheResidentBytes / (1024 * 1024)) MB")
+    }
+}
+
+/// Wraps a fixture set and records every DISTINCT `(image, tier)` the engine asked
+/// it for (086 · H2). Distinct rather than a raw call count: a key asked for twice
+/// while its decode is in flight is one piece of work, and counting it twice would
+/// flatter whichever arm happened to re-ask more often. What churn actually means is
+/// *how many different decodes this sweep set in motion*.
+///
+/// A class, and deliberately un-isolated: the protocol's requirements are
+/// `nonisolated` (``FixtureImageSet`` is a `Sendable` struct), and the engine only
+/// ever calls them from its own main-actor sync — so the mutation is single-threaded
+/// in fact, and annotating it would only fight the conformance.
+private final class RequestCountingImages: TileImageSource {
+    private let base: FixtureImageSet
+    private var requested: Set<ThumbnailCache.Key> = []
+
+    init(_ base: FixtureImageSet) { self.base = base }
+
+    var requestedKeyCount: Int { requested.count }
+
+    /// One image identity per TILE, unlike the fixture set's 24 shared ones. A real
+    /// board is 5,000 distinct assets, and sharing 24 of them lets the cache fill
+    /// after a few frames — which would hide the churn entirely, since a hit never
+    /// reaches this type at all. The bytes are still borrowed from the fixture.
+    func imageKey(for tile: Tile) -> Int { tile.id }
+
+    func imageData(for tile: Tile, tier: LODTier) -> Data? {
+        requested.insert(ThumbnailCache.Key(imageID: tile.id, tier: tier))
+        return base.imageData(for: tile, tier: tier)
     }
 }
 

@@ -42,6 +42,10 @@ final class GridBakeoffAppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 086 — the canvas pinch harness rides this same hook, because an app has one
+        // delegate and this one already holds the seat. It checks its OWN flag and
+        // returns immediately when absent, so the two spikes stay independent.
+        CanvasPinchBakeoffLauncher.shared.launchIfRequested()
         guard CommandLine.arguments.contains(Self.launchArgument) else { return }
 
         // Parse before building anything: a malformed automation payload must
