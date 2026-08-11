@@ -378,6 +378,17 @@ public final class CanvasHostView: NSView {
     /// (018 · Cluster C) — what the app persists.
     public var camera: CanvasCamera { engine.camera }
 
+    /// Look through `camera` now, rather than at the next board open.
+    ///
+    /// The peer of the ``restoreCamera`` property, which is consumed once by the
+    /// opening framing and ignored afterwards. This is for a caller that needs to move
+    /// the camera mid-session — the measurement harness returning to a known start
+    /// between sweeps, and any future "go here" affordance. Falls back to a fit for a
+    /// camera that would show nothing, exactly as the opening restore does.
+    public func setCamera(_ camera: CanvasCamera) {
+        engine.restoreCamera(camera)
+    }
+
     /// The on-screen frame a tile is drawn at (2B · 054 §5.1) — `nil` only when the id
     /// resolves to no tile. The inline editor positions its `NSTextView` from this on
     /// each ``onTransformChanged``.
@@ -461,6 +472,12 @@ public final class CanvasHostView: NSView {
     /// (an `NSView` can vend its own link); a minimal peer of the grid's
     /// `DisplayLinkPump`, inlined here to keep `CanvasRenderer` dependency-free.
     private var autoPanLink: CADisplayLink?
+
+    /// The display link that commits an in-flight pinch, at most once per vsync
+    /// (086 · Phase 1). Its own link rather than a shared one: the two gestures are
+    /// mutually exclusive in practice but not by construction, and a link that two
+    /// callers can start and stop is a link that one of them leaves running.
+    private var zoomLink: CADisplayLink?
 
     /// Screen-point edge band within which a marquee triggers auto-pan, and the
     /// pt/sec velocity ramp across it — mirrors the grid marquee's `edgeZone` /
@@ -611,7 +628,10 @@ public final class CanvasHostView: NSView {
     /// via `.id`), invalidate the auto-pan link so it can't retain a detached view.
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil { endMarquee() }
+        // A gesture left open would keep the LOD tiers frozen and the camera
+        // notification suppressed for good — `.cancelled` is not reliably delivered,
+        // and a view yanked out of its window will never see one at all.
+        if window == nil { endMarquee(); endZoomGesture() }
         // An edit that began before this view had a window can take focus now.
         editor?.hostDidMoveToWindow()
     }
@@ -743,9 +763,104 @@ public final class CanvasHostView: NSView {
         engine.pan(byScreenDelta: CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY))
     }
 
+    /// A pinch, bracketed as a gesture (018 · C7 · 086).
+    ///
+    /// It used to be one line — `engine.zoom(by:aroundScreenPoint:)` per event, with
+    /// `NSEvent.phase` never read anywhere in this file, so there was no gesture at
+    /// all: only a stream of independent zooms that happened to arrive together. Each
+    /// one paid a full relayout, an editor reposition, a SwiftUI publish and a
+    /// create-and-cancel camera debounce task.
+    ///
+    /// Now the phases open and close a gesture on the engine, events accumulate into
+    /// it, and a display link commits at most once per vsync — so the cost is bounded
+    /// by the display's refresh rate rather than by the trackpad's report rate, which
+    /// is the higher of the two.
     public override func magnify(with event: NSEvent) {
-        let anchor = convert(event.locationInWindow, from: nil)
-        engine.zoom(by: 1 + event.magnification, aroundScreenPoint: anchor)
+        let factor = 1 + event.magnification
+        switch event.phase {
+        case .began:
+            beginZoomGesture(anchorScreenPoint: convert(event.locationInWindow, from: nil))
+            updateZoomGesture(by: factor)
+        case .changed:
+            // An implicit begin: a gesture already in flight when this view is
+            // installed delivers `.changed` with no `.began` before it, and dropping
+            // those would make the first pinch after a board switch do nothing.
+            if !engine.isZoomGestureActive {
+                beginZoomGesture(anchorScreenPoint: convert(event.locationInWindow, from: nil))
+            }
+            updateZoomGesture(by: factor)
+        case .ended, .cancelled:
+            updateZoomGesture(by: factor)
+            endZoomGesture()
+        default:
+            // No phase at all — a synthetic event, or a device that does not report
+            // one. There is no gesture to bracket, so this keeps the original
+            // behaviour: apply it directly and notify immediately.
+            zoom(by: factor, aroundScreenPoint: convert(event.locationInWindow, from: nil))
+        }
+    }
+
+    /// Open a pinch: commit any in-progress edit, then bracket the engine and start
+    /// the commit link.
+    ///
+    /// The edit is COMMITTED, not abandoned — the same bargain clicking away strikes,
+    /// and for the same reason (losing typed text is the failure that actually
+    /// matters). It has to happen here because the editor is an `NSTextView` subview
+    /// positioned from the tile's screen frame, and it repositions off
+    /// `onTransformChanged`, which the gesture deliberately withholds until settle:
+    /// an editor left open would sit still while the board zoomed out from under it.
+    /// Public because a pinch cannot otherwise be scripted: there is no way to
+    /// synthesize a phased `magnify` `NSEvent`, so the measurement harness (086 ·
+    /// Phase 0) would have no way in. Same three calls the trackpad drives.
+    public func beginZoomGesture(anchorScreenPoint anchor: CGPoint) {
+        endEditingText(commit: true)
+        engine.beginZoomGesture(anchorScreenPoint: anchor)
+        startZoomLink()
+    }
+
+    /// Fold a factor into the running gesture, committing inline when no display
+    /// link is driving the commits.
+    public func updateZoomGesture(by factor: CGFloat) {
+        engine.updateZoomGesture(by: factor)
+        if zoomLink == nil { engine.commitZoomGesture() }
+    }
+
+    /// Close a pinch. Safe to call when none is running, so every teardown path can
+    /// call it unconditionally.
+    public func endZoomGesture() {
+        stopZoomLink()
+        engine.endZoomGesture()
+    }
+
+    /// Zoom immediately, with no gesture bracket — the pre-086 behaviour, kept as the
+    /// harness's control arm and for any caller that has a single discrete zoom to
+    /// apply (a menu command, a keyboard shortcut) rather than a gesture to track.
+    public func zoom(by factor: CGFloat, aroundScreenPoint anchor: CGPoint) {
+        engine.zoom(by: factor, aroundScreenPoint: anchor)
+    }
+
+    /// Pan by a screen-space delta, as a scroll would. The peer of ``zoom(by:aroundScreenPoint:)``,
+    /// and the measurement harness's CONTROL: "is a pinch expensive?" is only
+    /// answerable against "is a pan expensive?", on the same board and the same frame.
+    public func pan(byScreenDelta delta: CGSize) {
+        engine.pan(byScreenDelta: delta)
+    }
+
+    private func startZoomLink() {
+        guard zoomLink == nil, window != nil else { return }
+        let link = displayLink(target: self, selector: #selector(zoomCommitStep(_:)))
+        link.add(to: .main, forMode: .common)
+        zoomLink = link
+    }
+
+    private func stopZoomLink() {
+        zoomLink?.invalidate()
+        zoomLink = nil
+    }
+
+    /// The link fires on the main runloop; hop back into isolation to commit.
+    @objc nonisolated private func zoomCommitStep(_ link: CADisplayLink) {
+        MainActor.assumeIsolated { _ = self.engine.commitZoomGesture() }
     }
 
     /// A single click selects the tile under the cursor (or clears the selection
