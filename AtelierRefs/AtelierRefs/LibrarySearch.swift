@@ -783,12 +783,14 @@ private struct FavoritesFilterChip: View {
     var body: some View {
         Button { search.toggleFavoritesFilter() } label: {
             Image(systemName: search.favoritesOnly ? "star.fill" : "star")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 14))
                 .foregroundStyle(search.favoritesOnly
                     ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
         }
-        .buttonStyle(HoverButtonStyle(
-            cornerRadius: Theme.Radius.control, padding: Theme.Spacing.xs))
+        // The toolbar tier, shared with the color picker beside it. This used to be
+        // a 12pt glyph on a bare ``HoverButtonStyle``, whose fill overhung the glass
+        // pill's corners and whose width followed the `star` symbol's own.
+        .buttonStyle(ToolbarGlyphButtonStyle())
         .help(search.favoritesOnly ? "Show all items" : "Show favorites only")
         .accessibilityLabel("Favorites filter")
         .accessibilityAddTraits(search.favoritesOnly ? [.isSelected] : [])

@@ -39,12 +39,13 @@ struct ColorFilterPicker: View {
     var body: some View {
         Button { isPresented.toggle() } label: {
             Image(systemName: search.hasColorFilter ? "paintpalette.fill" : "paintpalette")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 14))
                 .foregroundStyle(search.hasColorFilter
                     ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
         }
-        .buttonStyle(HoverButtonStyle(
-            cornerRadius: Theme.Radius.control, padding: Theme.Spacing.xs))
+        // The toolbar tier, which owns the geometry — see the style for why a
+        // toolbar item cannot use the plain ``HoverButtonStyle``.
+        .buttonStyle(ToolbarGlyphButtonStyle())
         .help(helpText)
         .accessibilityLabel("Color filter")
         .accessibilityAddTraits(search.hasColorFilter ? [.isSelected] : [])
@@ -76,10 +77,26 @@ struct ColorFilterPicker: View {
 private struct ColorFilterPalette: View {
     @ObservedObject var search: LibrarySearchModel
 
-    /// Three columns × four rows. Fixed rather than adaptive — the popover sizes
-    /// itself to its content, so an adaptive grid would have nothing to adapt to.
+    /// Three columns × four rows. Fixed rather than adaptive — the popover is given
+    /// a width below, so an adaptive grid would have nothing to adapt to.
+    private static let columnCount = 3
     private static let columns = Array(
-        repeating: GridItem(.flexible(), spacing: Theme.Spacing.xs), count: 3)
+        repeating: GridItem(.flexible(), spacing: Theme.Spacing.xs), count: columnCount)
+
+    /// Wide enough for three chips at the app's standard chip metrics.
+    ///
+    /// The number is derived rather than guessed, because the guess was wrong once:
+    /// at 260 the chips only fit by shrinking their dot and padding below every
+    /// other chip in the app, which is the layout dictating the component instead of
+    /// the other way round. A chip is `sm` + dot + `sm` + text + `sm` ≈ 36pt of
+    /// chrome, and the longest bucket name ("Orange", "Yellow", "Purple") measures
+    /// about 47pt at ``Theme/Typography/label`` — call it 83pt each, plus the gaps
+    /// between columns and the popover's own padding.
+    private static let width: CGFloat = {
+        let chip: CGFloat = 83
+        let gaps = Theme.Spacing.xs * CGFloat(columnCount - 1)
+        return chip * CGFloat(columnCount) + gaps + Theme.Spacing.md * 2
+    }()
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
@@ -111,7 +128,7 @@ private struct ColorFilterPalette: View {
             }
         }
         .padding(Theme.Spacing.md)
-        .frame(width: 260)
+        .frame(width: Self.width)
     }
 }
 
@@ -120,7 +137,7 @@ private struct ColorFilterPalette: View {
 /// The swatch is the palette's ``ColorBucket/referenceHex``, NOT an image's color —
 /// the opposite of the detail row's chip (085 · C2), and deliberately. This chip
 /// says what the BUCKET means, because there is no picture in front of it to mean
-/// anything else.
+/// anything else. Everything else about the two is one ``ColorChipFace``.
 private struct ColorFilterChip: View {
     let bucket: ColorBucket
     let isSelected: Bool
@@ -130,29 +147,14 @@ private struct ColorFilterChip: View {
 
     var body: some View {
         Button(action: onToggle) {
-            HStack(spacing: Theme.Spacing.xs) {
-                ColorDot(hex: bucket.referenceHex, size: 10)
-                Text(bucket.displayName)
-                    .font(Theme.Typography.label)
-                    .foregroundStyle(isSelected
-                        ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, Theme.Spacing.sm)
-            .padding(.vertical, Theme.Spacing.xs)
-            .background {
-                let shape = RoundedRectangle(cornerRadius: Theme.Radius.chip)
-                ZStack {
-                    shape.fill(isSelected ? Theme.Colors.selection : Theme.Colors.field)
-                    if isHovering, !isSelected { shape.fill(Theme.Colors.hoverControl) }
-                }
-            }
-            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.chip)
-                .strokeBorder(Theme.Colors.hairline, lineWidth: 1))
-            // The whole chip is the target, not just the glyph and the word — a
-            // 10pt dot beside a short name is otherwise a very small thing to hit.
-            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.chip))
+            ColorChipFace(
+                hex: bucket.referenceHex,
+                name: bucket.displayName,
+                isSelected: isSelected,
+                isHovering: isHovering,
+                // Fills its grid column, so the three columns line up whatever the
+                // name's length — "Teal" and "Orange" must not be different widths.
+                fillsWidth: true)
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }

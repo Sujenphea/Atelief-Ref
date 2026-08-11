@@ -80,3 +80,58 @@ struct HoverButtonStyle: ButtonStyle {
                 cornerRadius: cornerRadius, fill: fill, padding: padding)
     }
 }
+
+// MARK: - Toolbar tier
+
+/// A glyph button living in a macOS 26 `ToolbarItem` — the window toolbar's own
+/// tier, distinct from the sidebar rail's bare glyphs.
+///
+/// The toolbar is different in a way that is easy to miss: the item's glass pill
+/// **hugs its content**, so the button's own padding IS the pill's margin, and a
+/// hover fill drawn at the content's bounds is the SAME RECTANGLE as the pill.
+/// ``HoverButtonStyle`` there produced two visible faults:
+///
+/// 1. **The fill overhung the pill.** Same rect, but ``Theme/Radius/control``'s 7pt
+///    corners against the far rounder capsule macOS draws — so the fill's corners
+///    poked out past the glass. Shrinking the padding could not fix it; that shrinks
+///    both rects together. The fill has to be INSET and capsule-cornered, so it
+///    cannot overhang whatever radius the system picks.
+/// 2. **Two buttons were two widths.** SF Symbols have different intrinsic widths —
+///    `paintpalette` is visibly wider than `star` — so content-hugging gave each
+///    toolbar button a differently-sized pill. Pinning the glyph to a square box
+///    makes every toolbar button one size regardless of its symbol.
+///
+/// The pill is **wider than it is tall**, which is what a toolbar button looks like
+/// on macOS and what ``Theme/Radius/control`` already assumes ("a 15pt icon in a
+/// 30×28 hit area"). A glyph box pinned to a single dimension gives a true square,
+/// and a square toolbar pill reads squat and cramped. 38×30 here — the proportion
+/// AppKit's own toolbar items carry, arrived at by widening until it stopped looking
+/// tight rather than by picking a ratio.
+struct ToolbarGlyphButtonStyle: ButtonStyle {
+    /// The box the glyph is centred in. Comfortably holds the 14pt symbols the
+    /// toolbar uses, and is what makes every toolbar pill the same size whatever its
+    /// symbol's intrinsic width. Wider than tall, per the note above.
+    private static let glyphWidth: CGFloat = 26
+    private static let glyphHeight: CGFloat = 18
+    /// Fill inset from the glyph box.
+    private static let hoverPad = Theme.Spacing.xs
+    /// Fill inset from the PILL — the gap that stops any overhang.
+    private static let pillInset: CGFloat = 2
+    /// Half the fill's SHORTER side, i.e. a capsule laid on its side. Derived rather
+    /// than written down, so it stays a capsule if the box or the padding is ever
+    /// retuned — and read off the height, because that is the shorter dimension and
+    /// a radius past half of it would be clamped anyway.
+    private static var fillRadius: CGFloat { (glyphHeight + hoverPad * 2) / 2 }
+
+    var fill: Color = Theme.Colors.hoverControl
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(width: Self.glyphWidth, height: Self.glyphHeight)
+            .opacity(configuration.isPressed ? 0.6 : 1)
+            .hoverHighlight(
+                cornerRadius: Self.fillRadius, fill: fill, padding: Self.hoverPad)
+            // OUTSIDE the fill: the pill hugs this, the fill does not reach it.
+            .padding(Self.pillInset)
+    }
+}
