@@ -10,7 +10,31 @@
 
 ## Status
 
-**Planned. Not started.**
+**C0, C1 and C2 shipped. C3 remains.**
+
+| | | |
+|---|---|---|
+| C0 | shipped | [375](../.change-log/375-the-color-palette.md) |
+| C1 | shipped | [376](../.change-log/376-the-color-index.md) |
+| C2 | shipped | [377](../.change-log/377-the-swatch-you-can-click.md) |
+| C3 | open | the palette chip picker + the `SearchRules` bump |
+
+**Three things below were superseded by the build**; the prose is left as the
+record of the thinking, and the changelogs own what actually shipped.
+
+1. **The v21 schema has no `rank` column** and is keyed `(asset_id, bucket)`.
+   Merging same-bucket swatches makes a bucket appear at most once per asset, so
+   the composite key IS the merge invariant and display order falls out of
+   `coverage DESC`. The index is `(bucket, coverage)`.
+2. **The derivation queue is a version stamp, not a row count.** "Has colors, no
+   `asset_color` rows" cannot mark work done: an unreadable palette derives zero
+   rows, which is indistinguishable from "not derived yet", so such an asset was
+   handed back forever. `asset_analysis.colors_palette_version` fixed it, and
+   storing a VERSION rather than a boolean turned "retune the palette" into a
+   WHERE clause instead of a migration — closing the first risk listed below.
+3. **The color TOKEN moved from C3 into C2**, because the swatch row needs
+   somewhere for its click to go. C3 is now the picker and the `SearchRules` bump
+   alone.
 
 ## What already exists
 

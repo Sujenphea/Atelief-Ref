@@ -51,6 +51,9 @@ struct SpaceView: View {
     /// Tags for the asset shown in the detail overlay (Space has no folder
     /// context, so it can't reuse `IngestionModel`'s selection-bound tags).
     @StateObject private var tagStore: AssetTagsStore
+    /// The pane's search, published by ``LibrarySearchable`` (085 · C2) — where a
+    /// clicked color swatch lands.
+    @Environment(\.librarySearch) private var librarySearch
     @State private var quickLook = QuickLookController()
     @State private var tool: CanvasTool = .select
     @State private var showEditor = false
@@ -1023,6 +1026,16 @@ struct SpaceView: View {
                 tags: tagStore.tags,
                 onAddTag: { tagStore.add($0) },
                 onRemoveTag: { tagStore.remove($0) },
+                // A board IS wrapped in `LibrarySearchable` like every other pane, so
+                // a color filters there too — and, exactly as typing in the field
+                // does, that replaces the board with the results (085 · C2).
+                // Searching leaves the board; it does not filter it.
+                colors: tagStore.colors,
+                onSelectColor: librarySearch?.colorFilterAction(dismissing: {
+                    model.flushViewBumps()
+                    detailItem = nil
+                    tagStore.bind(to: nil)
+                }),
                 collections: tagStore.collections,
                 allCollections: tagStore.allCollections,
                 onAddToCollection: { tagStore.addToCollection($0) },

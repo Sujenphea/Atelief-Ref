@@ -216,10 +216,20 @@ public enum ColorPalette {
         public let bucket: ColorBucket
         /// Summed coverage of every swatch that filed under `bucket`, `0...1`.
         public let coverage: Double
+        /// The hex of the **most dominant swatch** that filed under `bucket` — the
+        /// image's own color, not ``ColorBucket/referenceHex``.
+        ///
+        /// The detail swatch row paints with this so a chip shows the dusty rose
+        /// that is actually in the picture, while its click filters the whole
+        /// `pink` bucket. Storage never sees it: `asset_color` holds the integer
+        /// (085 — Core stores the bucket opaquely), and this rides along for the
+        /// one consumer that renders rather than matches.
+        public let representativeHex: String
 
-        public init(bucket: ColorBucket, coverage: Double) {
+        public init(bucket: ColorBucket, coverage: Double, representativeHex: String) {
             self.bucket = bucket
             self.coverage = coverage
+            self.representativeHex = representativeHex
         }
     }
 
@@ -234,22 +244,45 @@ public enum ColorPalette {
     ///
     /// Swatches whose hex does not parse are skipped rather than failing the
     /// list: one bad row should cost that row, not the asset's whole palette.
+    ///
+    /// Each result also carries the hex of its most dominant member
+    /// (``BucketCoverage/representativeHex``), so the two reds merge to one chip
+    /// painted with the 12% red rather than the 8% one.
     public static func bucketCoverages(for swatches: [ColorSwatch]) -> [BucketCoverage] {
         var totals: [ColorBucket: Double] = [:]
+        /// The dominant member per bucket, for the representative hex.
+        var leaders: [ColorBucket: ColorSwatch] = [:]
+
         for swatch in swatches {
             guard let bucket = bucket(forHex: swatch.hex) else { continue }
             totals[bucket, default: 0] += swatch.coverage
+            // `>=` keeps the FIRST swatch of a tied pair. `ColorExtractor` returns
+            // clusters most-dominant-first, so ties resolve by that order rather
+            // than by whichever the loop happened to reach second.
+            if let leader = leaders[bucket], leader.coverage >= swatch.coverage { continue }
+            leaders[bucket] = swatch
         }
-        return totals
-            .map { BucketCoverage(bucket: $0.key, coverage: $0.value) }
-            // Coverage first; the bucket's raw value breaks ties so the order is
-            // total rather than "whatever the dictionary iterated" — these rows
-            // get a persisted rank and must not shuffle between runs.
-            .sorted {
-                $0.coverage != $1.coverage
-                    ? $0.coverage > $1.coverage
-                    : $0.bucket.rawValue < $1.bucket.rawValue
-            }
+
+        var merged: [BucketCoverage] = []
+        merged.reserveCapacity(totals.count)
+        for (bucket, coverage) in totals {
+            // Present by construction: a bucket is only in `totals` because a
+            // swatch put it there, and that same swatch seeded `leaders`. The
+            // fallback is the palette's own color — wrong-looking, never a crash.
+            let hex: String = leaders[bucket]?.hex ?? bucket.referenceHex
+            merged.append(
+                BucketCoverage(bucket: bucket, coverage: coverage, representativeHex: hex))
+        }
+
+        // Coverage first; the bucket's raw value breaks ties so the order is total
+        // rather than "whatever the dictionary iterated" — this is the order the
+        // chips are drawn in and it must not shuffle between runs.
+        merged.sort {
+            $0.coverage != $1.coverage
+                ? $0.coverage > $1.coverage
+                : $0.bucket.rawValue < $1.bucket.rawValue
+        }
+        return merged
     }
 
     // MARK: - Hue math

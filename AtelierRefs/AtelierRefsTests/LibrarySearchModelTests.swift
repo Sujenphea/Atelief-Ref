@@ -9,6 +9,7 @@
 //
 
 import AtelierCore
+import AtelierIngestion
 import Foundation
 import Testing
 @testable import AtelierRefs
@@ -106,6 +107,8 @@ struct LibrarySearchModelTests {
         var queries: [LibrarySearchQuery] = []
         var semanticQueries: [LibrarySearchQuery] = []
         var suggestCalls: [(prefix: String, includeCollections: Bool)] = []
+        /// How many times a `colorFilterAction` closed the page (085 · C2).
+        var dismissals = 0
     }
 
     /// Poll a main-actor condition until true or a bounded timeout (the model's
@@ -377,5 +380,139 @@ struct LibrarySearchModelTests {
         #expect(SearchToken.favorites.displayName == "Favorites")
         // Distinct from every real entity id a tag / collection token could carry.
         #expect(SearchToken.favorites.id != token("wood").id)
+    }
+
+    // MARK: - The color token (085 · C2)
+
+    /// Every bucket needs its OWN id, and none may collide with the two synthetic
+    /// ids already in the reserved space. A collision would make `removeToken` drop
+    /// the wrong chip and the `selected` set treat two colors as one.
+    @Test("color token ids are distinct, and clear of the reserved ones")
+    func colorIDsAreDistinct() {
+        let ids = ColorBucket.allCases.map { SearchToken.color($0).id }
+        #expect(Set(ids).count == ColorBucket.allCases.count)
+        #expect(!ids.contains(SearchToken.favoritesID))
+        #expect(!ids.contains(Collection.unsortedID))
+        // The shape, pinned once: a `0c` marker byte then the raw value. This is
+        // what the first implementation got wrong — its formatted string was two
+        // digits short, so every bucket parsed to nil and fell back to ONE id.
+        #expect(SearchToken.color(.red).id
+            == UUID(uuidString: "00000000-0000-0000-0000-000000000c03"))
+    }
+
+    @Test("a color token names its bucket")
+    func colorTokenDisplayName() {
+        #expect(SearchToken.color(.red).displayName == "Red")
+        #expect(SearchToken.color(.teal).displayName == "Teal")
+    }
+
+    /// The swatch row is the same row before and after a click, so the second click
+    /// on a chip has to undo the first — otherwise the row is a one-way trip only
+    /// the field's `×` can reverse.
+    @Test("toggleColorFilter adds then removes")
+    func toggleColorFilter() {
+        let m = LibrarySearchModel()
+        #expect(m.selectedColorBuckets.isEmpty)
+
+        m.toggleColorFilter(.red)
+        #expect(m.selectedColorBuckets == [.red])
+        #expect(m.isActive)
+
+        m.toggleColorFilter(.red)
+        #expect(m.selectedColorBuckets.isEmpty)
+        #expect(!m.isActive)
+    }
+
+    @Test("colors accumulate — a second color widens rather than replacing")
+    func colorsAccumulate() {
+        let m = LibrarySearchModel()
+        m.toggleColorFilter(.red)
+        m.toggleColorFilter(.blue)
+        #expect(m.selectedColorBuckets == [.red, .blue])
+        // …and removing one leaves the other.
+        m.toggleColorFilter(.red)
+        #expect(m.selectedColorBuckets == [.blue])
+    }
+
+    /// The field's `×` clears colors like any other filter — the whole reason a
+    /// color is a TOKEN rather than a parallel piece of state.
+    @Test("clearQuery drops color tokens")
+    func clearQueryDropsColors() {
+        let m = LibrarySearchModel()
+        m.toggleColorFilter(.green)
+        m.clearQuery()
+        #expect(m.selectedColorBuckets.isEmpty)
+    }
+
+    @Test("removeToken drops the color chip it names, and only that one")
+    func removeColorToken() {
+        let m = LibrarySearchModel()
+        m.toggleColorFilter(.red)
+        m.toggleColorFilter(.blue)
+        m.removeToken(.color(.red))
+        #expect(m.selectedColorBuckets == [.blue])
+    }
+
+    @Test("the color token reaches the query as raw bucket values")
+    func colorTokenReachesQuery() async {
+        let recorder = Recorder()
+        let m = LibrarySearchModel()
+        m.runQuery = { q in recorder.queries.append(q); return [] }
+        let wood = token("wood")
+        m.tokens = [wood, .color(.red), .color(.blue)]
+        m.text = "brass"
+        m.textChanged()
+        await poll { !recorder.queries.isEmpty }
+
+        let q = recorder.queries.last
+        #expect(q?.colorBuckets == [ColorBucket.red.rawValue, ColorBucket.blue.rawValue])
+        // The synthetic color ids must NOT leak into the tag ids.
+        #expect(q?.tagIDs == [wood.id])
+    }
+
+    /// Same trap the favorites token was tested for: a filter still visible in the
+    /// field must not silently stop applying when the mode flips.
+    @Test("color buckets ride the SEMANTIC query too")
+    func colorTokenReachesSemanticQuery() async {
+        let recorder = Recorder()
+        let m = LibrarySearchModel()
+        m.runQuery = { q in recorder.queries.append(q); return [] }
+        m.runSemanticQuery = { q in recorder.semanticQueries.append(q); return [] }
+        m.mode = .meaning
+        m.tokens = [.color(.teal)]
+        m.text = "brass"
+        m.textChanged()
+        await poll { !recorder.semanticQueries.isEmpty }
+        #expect(recorder.semanticQueries.last?.colorBuckets == [ColorBucket.teal.rawValue])
+    }
+
+    @Test("no color token means no color filter, not an empty-set filter")
+    func noColorTokenIsInert() async {
+        let recorder = Recorder()
+        let m = LibrarySearchModel()
+        m.runQuery = { q in recorder.queries.append(q); return [] }
+        m.text = "brass"
+        m.textChanged()
+        await poll { !recorder.queries.isEmpty }
+        #expect(recorder.queries.last?.colorBuckets.isEmpty == true)
+    }
+
+    /// The swatch click applies the filter AND closes the page that raised it. The
+    /// dismiss is load-bearing: the results land in the pane BEHIND the overlay, so
+    /// filtering without closing looks like the click did nothing.
+    @Test("colorFilterAction applies the filter and dismisses")
+    func colorFilterActionDismisses() {
+        let m = LibrarySearchModel()
+        let recorder = Recorder()
+        let action = m.colorFilterAction(dismissing: { recorder.dismissals += 1 })
+
+        action(.red)
+        #expect(m.selectedColorBuckets == [.red])
+        #expect(recorder.dismissals == 1)
+
+        // And it is the same toggle, so a second click clears — still dismissing.
+        action(.red)
+        #expect(m.selectedColorBuckets.isEmpty)
+        #expect(recorder.dismissals == 2)
     }
 }

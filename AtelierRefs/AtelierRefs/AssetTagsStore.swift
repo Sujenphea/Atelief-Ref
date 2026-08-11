@@ -10,6 +10,7 @@
 //
 
 import AtelierCore
+import AtelierIngestion
 import Combine
 import Foundation
 
@@ -17,6 +18,18 @@ import Foundation
 final class AssetTagsStore: ObservableObject {
     /// The bound asset's tags (name-ordered), refreshed after every edit.
     @Published private(set) var tags: [Tag] = []
+    /// The bound asset's dominant colors, merged into palette buckets and ordered
+    /// most-dominant-first (085 · C2). Read-only — the analyzer derives them, so
+    /// nothing here writes them back.
+    ///
+    /// Loaded from `asset_analysis.colors` rather than the `asset_color` rows: the
+    /// JSON holds the image's REAL hexes (the rows hold only the bucket integer,
+    /// which would paint every red picture the identical red), and it is present
+    /// the moment analysis finishes rather than after the derivation pass catches
+    /// up. Clicking a chip still filters on the bucket, so a picture whose colors
+    /// are shown but not yet derived can briefly fail to match its own chip — a
+    /// window of one idle pass, and the alternative is a blank row for longer.
+    @Published private(set) var colors: [ColorPalette.BucketCoverage] = []
     /// The collections the bound asset belongs to (name-ordered), refreshed after
     /// every membership edit (041 · Details "Collections" chips).
     @Published private(set) var collections: [Collection] = []
@@ -53,6 +66,7 @@ final class AssetTagsStore: ObservableObject {
         self.assetID = assetID
         tags = []
         collections = []
+        colors = []
         guard let assetID else { return }
         refresh(assetID)
     }
@@ -157,13 +171,29 @@ final class AssetTagsStore: ObservableObject {
                 let loadedTags = try await services.tags(for: assetID)
                 let loadedCollections = try await services.collections(for: assetID)
                 let loadedAll = try await services.listCollections()
+                let loadedColors = try await Self.colors(from: services, assetID: assetID)
                 guard self.assetID == assetID else { return }
                 tags = loadedTags
                 collections = loadedCollections
                 allCollections = loadedAll
+                colors = loadedColors
             } catch {
                 lastError = "\(error)"
             }
         }
+    }
+
+    /// Read the asset's stored swatches and merge them into palette buckets.
+    ///
+    /// An asset with no analysis yet, an unreadable palette, or no colors at all
+    /// (a video, a color-kind asset) all yield an empty list — the swatch row hides
+    /// rather than reporting the difference. That distinction matters to the
+    /// derivation pass, not to someone looking at a picture.
+    private static func colors(
+        from services: AppServices, assetID: UUID
+    ) async throws -> [ColorPalette.BucketCoverage] {
+        guard let json = try await services.analysis(for: assetID)?.colors,
+              let swatches = ColorSwatch.decodeList(fromJSON: json) else { return [] }
+        return ColorPalette.bucketCoverages(for: swatches)
     }
 }

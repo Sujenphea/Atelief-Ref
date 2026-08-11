@@ -8,9 +8,12 @@
 //  sees fresh OCR:
 //
 //    1. AnalysisBackfill  — OCR / colors / perceptual hash (needs the blob bytes).
-//    2. EmbeddingBackfill — the semantic text vector (OCR is now part of its
+//    2. ColorBucketBackfill — files those colors into searchable buckets (085 · C1).
+//       Runs SECOND because it reads what step 1 just wrote; it decodes nothing,
+//       so an asset analyzed this pass is filterable by color in the same pass.
+//    3. EmbeddingBackfill — the semantic text vector (OCR is now part of its
 //       corpus, so embedding an asset AFTER its analysis captures the OCR text).
-//    3. a bounded embedding RE-VERIFY pass — catches name/note edits the
+//    4. a bounded embedding RE-VERIFY pass — catches name/note edits the
 //       timestamp-less `asset` can't signal (4A), oldest-embedded first.
 //
 //  Scheduling is deliberately the app's concern (the backfills own no cadence).
@@ -33,6 +36,7 @@ import OSLog
 /// cancels it on teardown.
 struct AnalysisCoordinator: Sendable {
     private let analysis: AnalysisBackfill
+    private let colors: ColorBucketBackfill
     private let embedding: EmbeddingBackfill
     /// Whether the on-device sentence-embedding model is installed. When false, the
     /// embedding + re-verify passes are skipped (analysis still runs).
@@ -43,10 +47,22 @@ struct AnalysisCoordinator: Sendable {
     /// so a pass stays cheap; the sweep covers the library over successive passes.
     private static let reverifyBatch = 50
 
+    /// The color pass's per-pass ceiling: 25 batches of 200 = up to 5,000 assets.
+    ///
+    /// Bounded rather than a plain `drain()`, even though the work itself is cheap
+    /// (no decode — it re-reads hexes already on disk). The cost that scales is the
+    /// WRITE: `replaceColors` is one transaction per asset, so a first launch over a
+    /// large library would be tens of thousands of commits competing with ingest.
+    /// A library past the ceiling catches up over successive idle passes, which
+    /// nobody sees — nothing shows a color until it is derived.
+    private static let colorBatch = 200
+    private static let colorBatchesPerPass = 25
+
     init(services: AppServices, store: MediaStore) {
         self.analysis = AnalysisBackfill(
             services: services, store: store,
             analyzer: AssetAnalyzer(textRecognizer: VisionTextRecognizer()))
+        self.colors = ColorBucketBackfill(services: services)
         let embedder = NLSentenceEmbedder()
         self.embeddingAvailable = embedder.isAvailable
         self.embedding = EmbeddingBackfill(services: services, embedder: embedder)
@@ -61,6 +77,10 @@ struct AnalysisCoordinator: Sendable {
         do {
             let analyzed = try await analysis.analyzeAll()
             didWork = didWork || analyzed.analyzed > 0
+
+            let filed = try await colors.drain(
+                batchSize: Self.colorBatch, maxBatches: Self.colorBatchesPerPass)
+            didWork = didWork || filed.filed > 0
 
             guard embeddingAvailable else { return didWork }
             let embedded = try await embedding.embedAll()

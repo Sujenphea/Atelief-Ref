@@ -1143,6 +1143,9 @@ private struct CollectionDetailHost: View {
     /// The detail page's tags, on the shared asset-scoped store (the Space board +
     /// search overlays' path). Observed here so a chip edit repaints the overlay.
     @StateObject private var tags: AssetTagsStore
+    /// The pane's search, published by ``LibrarySearchable`` (085 · C2) — where a
+    /// clicked color swatch lands.
+    @Environment(\.librarySearch) private var librarySearch
     /// Where the shown item sat in the run, and which collection that run was — kept
     /// current on every open and step (355). The `.close` branch needs it: by the time
     /// a reload says the item is gone, its position is unrecoverable, and that position
@@ -1373,6 +1376,12 @@ private struct CollectionDetailHost: View {
             tags: tags.tags,
             onAddTag: { tags.add($0) },
             onRemoveTag: { tags.remove($0) },
+            // A swatch filters the pane's own search (085 · C2), so on a collection
+            // screen — where the scope defaults to This-collection — it reads as
+            // "this color, in here". `nil` if this pane is somehow not searchable,
+            // which leaves the chips as readouts rather than dead buttons.
+            colors: tags.colors,
+            onSelectColor: librarySearch?.colorFilterAction(dismissing: close),
             collections: tags.collections,
             allCollections: tags.allCollections,
             onAddToCollection: { tags.addToCollection($0) },

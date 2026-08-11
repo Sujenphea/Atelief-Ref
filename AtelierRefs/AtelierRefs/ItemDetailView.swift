@@ -18,6 +18,7 @@
 import AVKit
 import AppKit
 import AtelierCore
+import AtelierIngestion
 import SwiftUI
 
 /// Force AVKit into the process before the first ``VideoPlayer`` is built.
@@ -268,6 +269,14 @@ struct ItemDetailView: View {
     let tags: [Tag]
     let onAddTag: (String) -> Void
     let onRemoveTag: (Tag) -> Void
+    /// The item's dominant colors, merged into palette buckets (085 · C2). Empty —
+    /// the default — hides the section entirely, which is the case for a video, a
+    /// color-kind asset, and anything the analyzer has not reached yet.
+    var colors: [ColorPalette.BucketCoverage] = []
+    /// Filter the library by a dominant color — the swatch's click. `nil` on a host
+    /// with no search field (a Space board), which leaves the chips as readouts:
+    /// there is nowhere for the results to go.
+    var onSelectColor: ((ColorBucket) -> Void)?
     /// The asset's collection memberships + the full library list for the "Add"
     /// picker, plus their editors (041 · Details "Collections" chips). A host with
     /// no collection context (none today — all three load them) passes `[]`.
@@ -432,6 +441,7 @@ struct ItemDetailView: View {
                 DetailSidebar(
                     asset: asset, source: source, post: post, tags: tags,
                     onAddTag: onAddTag, onRemoveTag: onRemoveTag,
+                    colors: colors, onSelectColor: onSelectColor,
                     collections: collections, allCollections: allCollections,
                     onAddToCollection: onAddToCollection,
                     onRemoveFromCollection: onRemoveFromCollection,
@@ -1594,6 +1604,8 @@ private struct DetailSidebar: View {
     let tags: [Tag]
     let onAddTag: (String) -> Void
     let onRemoveTag: (Tag) -> Void
+    let colors: [ColorPalette.BucketCoverage]
+    let onSelectColor: ((ColorBucket) -> Void)?
     let collections: [Collection]
     let allCollections: [Collection]
     let onAddToCollection: (Collection) -> Void
@@ -1610,6 +1622,9 @@ private struct DetailSidebar: View {
                 if let source {
                     SourceSection(source: source, post: post, onOpenSource: onOpenSource)
                 }
+                // Facts about the picture (Data, Source, Colors) before the things
+                // you can edit about it (Details). Colors is derived, not typed.
+                ColorsSection(colors: colors, onSelect: onSelectColor)
                 DetailsSection(
                     asset: asset, tags: tags, onAddTag: onAddTag, onRemoveTag: onRemoveTag,
                     collections: collections, allCollections: allCollections,
@@ -2032,7 +2047,7 @@ private struct DetailAddChip: View {
 
 /// A minimal left-to-right flow layout that wraps chips onto new rows when they
 /// exceed the available width (the sidebar's fixed 298pt column).
-private struct TagFlowLayout: Layout {
+struct TagFlowLayout: Layout {
     var spacing: CGFloat = 6
 
     func sizeThatFits(
@@ -2083,7 +2098,7 @@ private struct TagFlowLayout: Layout {
 // MARK: - Shared building blocks
 
 /// A titled group in the detail sidebar (041 · 20pt ink title over its rows).
-private struct DetailSection<Content: View>: View {
+struct DetailSection<Content: View>: View {
     let title: String
     let spacing: CGFloat
     @ViewBuilder let content: Content

@@ -116,4 +116,93 @@ struct ServicesSemanticSearchTests {
             queryVector: [1, 0, 0], modelVersion: 1, tagIDs: [tag.id])
         #expect(ids(hits) == [tagged])   // only the tagged one, despite being farther
     }
+
+    // MARK: - Color scope (085 · C2)
+
+    /// A color token stays selected in the search field when the user flips
+    /// keyword → meaning. If this arm were missing, the filter they can still SEE
+    /// would silently stop applying — the same trap `favoritesOnly` was added to
+    /// this query to avoid.
+    @Test("a color filter narrows semantic results too")
+    func colorScope() async throws {
+        let (services, temp) = try makeServices(); defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let red = try await seed(services, into: c.id)
+        let blue = try await seed(services, into: c.id)
+        try await embed(services, red, [0, 1, 0])    // far from the query
+        try await embed(services, blue, [1, 0, 0])   // near, but the wrong color
+        try await services.replaceColors(assetID: red, buckets: [3: 0.6], paletteVersion: 1)
+        try await services.replaceColors(assetID: blue, buckets: [9: 0.6], paletteVersion: 1)
+
+        let hits = try await services.semanticSearchAssets(
+            queryVector: [1, 0, 0], modelVersion: 1, colorBuckets: [3])
+        #expect(ids(hits) == [red])
+    }
+
+    /// The coverage floor is the same query-time judgement here as in keyword
+    /// search — a 5% smear of red is not a red picture in either mode.
+    @Test("the coverage floor applies to the semantic arm")
+    func colorCoverageFloor() async throws {
+        let (services, temp) = try makeServices(); defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let faint = try await seed(services, into: c.id)
+        try await embed(services, faint, [1, 0, 0])
+        try await services.replaceColors(assetID: faint, buckets: [3: 0.05], paletteVersion: 1)
+
+        #expect(try await services.semanticSearchAssets(
+            queryVector: [1, 0, 0], modelVersion: 1, colorBuckets: [3]).isEmpty)
+        // Below the DEFAULT floor, not below every floor — the row is really there.
+        let hits = try await services.semanticSearchAssets(
+            queryVector: [1, 0, 0], modelVersion: 1,
+            colorBuckets: [3], minimumColorCoverage: 0.01)
+        #expect(ids(hits) == [faint])
+    }
+
+    /// An asset holding BOTH requested colors must rank once. A JOIN here would
+    /// score it twice and hand the grid a duplicate card.
+    @Test("two requested colors return the asset once")
+    func colorAnyDoesNotDuplicate() async throws {
+        let (services, temp) = try makeServices(); defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let both = try await seed(services, into: c.id)
+        try await embed(services, both, [1, 0, 0])
+        try await services.replaceColors(
+            assetID: both, buckets: [3: 0.4, 9: 0.4], paletteVersion: 1)
+
+        let hits = try await services.semanticSearchAssets(
+            queryVector: [1, 0, 0], modelVersion: 1, colorBuckets: [3, 9])
+        #expect(ids(hits) == [both])
+    }
+
+    /// `.all` demands every requested color, exactly as it does for tags.
+    @Test("colorMatch .all requires every requested bucket")
+    func colorAllRequiresEvery() async throws {
+        let (services, temp) = try makeServices(); defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let both = try await seed(services, into: c.id)
+        let onlyRed = try await seed(services, into: c.id)
+        try await embed(services, both, [1, 0, 0])
+        try await embed(services, onlyRed, [1, 0, 0])
+        try await services.replaceColors(
+            assetID: both, buckets: [3: 0.4, 9: 0.4], paletteVersion: 1)
+        try await services.replaceColors(assetID: onlyRed, buckets: [3: 0.9], paletteVersion: 1)
+
+        let hits = try await services.semanticSearchAssets(
+            queryVector: [1, 0, 0], modelVersion: 1,
+            colorBuckets: [3, 9], colorMatch: .all)
+        #expect(ids(hits) == [both])
+    }
+
+    /// No color filter must not become "only assets that have derived colors" —
+    /// the pass is bounded per launch, so mid-backfill assets have no rows at all.
+    @Test("no color filter leaves un-derived assets rankable")
+    func noColorFilterIsInert() async throws {
+        let (services, temp) = try makeServices(); defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let bare = try await seed(services, into: c.id)
+        try await embed(services, bare, [1, 0, 0])
+
+        let hits = try await services.semanticSearchAssets(queryVector: [1, 0, 0], modelVersion: 1)
+        #expect(ids(hits) == [bare])
+    }
 }

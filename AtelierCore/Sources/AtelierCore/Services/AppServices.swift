@@ -481,12 +481,16 @@ public final class AppServices: Sendable {
         tagMatch: TagMatch = .all,
         collectionIDs: [UUID] = [],
         favoritesOnly: Bool = false,
+        colorBuckets: [Int] = [],
+        colorMatch: TagMatch = .any,
+        minimumColorCoverage: Double = AppServices.defaultColorCoverageFloor,
         limit: Int = 50
     ) async throws -> [AssetDetail] {
         guard !queryVector.isEmpty else { return [] }
         let clampedLimit = min(max(limit, 1), 500)
         let distinctTagIDs = Array(Set(tagIDs))
         let distinctCollectionIDs = Array(Set(collectionIDs))
+        let distinctColorBuckets = Array(Set(colorBuckets)).sorted()
 
         return try await read { db in
             // 1. In-scope candidates (8A). These structured predicates mirror the
@@ -532,6 +536,35 @@ public final class AppServices: Sendable {
             // user can still see selected in the field.
             if favoritesOnly {
                 conditions.append("a.is_favorite = 1")
+            }
+            // The color chips (085 · C2), for exactly that reason: a color token
+            // the user can still see in the field must not stop filtering because
+            // they switched to meaning mode. Same EXISTS shape and same `.any` /
+            // `.all` split as `searchAssets` — see the long note there.
+            if !distinctColorBuckets.isEmpty {
+                switch colorMatch {
+                case .any:
+                    let placeholders = databaseQuestionMarks(count: distinctColorBuckets.count)
+                    conditions.append("""
+                        EXISTS (SELECT 1 FROM asset_color c
+                                WHERE c.asset_id = a.id
+                                  AND c.bucket IN (\(placeholders))
+                                  AND c.coverage >= ?)
+                        """)
+                    args.append(contentsOf: distinctColorBuckets.map { $0 as DatabaseValueConvertible })
+                    args.append(minimumColorCoverage)
+                case .all:
+                    for bucket in distinctColorBuckets {
+                        conditions.append("""
+                            EXISTS (SELECT 1 FROM asset_color c
+                                    WHERE c.asset_id = a.id
+                                      AND c.bucket = ?
+                                      AND c.coverage >= ?)
+                            """)
+                        args.append(bucket)
+                        args.append(minimumColorCoverage)
+                    }
+                }
             }
             // The archive shelf (023 · A), for the same reason the favorites chip
             // is here: flipping keyword → meaning must not resurrect items the

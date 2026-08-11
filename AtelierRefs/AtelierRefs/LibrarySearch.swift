@@ -36,6 +36,12 @@ enum SearchToken: Identifiable, Hashable {
     /// and renders with every other filter: the field's `×` drops it, the chip row
     /// shows it, and `isActive` counts it without a second rule.
     case favorites
+    /// A dominant-color filter (085 · C2) — an AND conjunct like a tag, carried as
+    /// a token for the reason `.favorites` is: it lives, clears and renders with
+    /// every other filter instead of needing a second piece of state. Multiple
+    /// color tokens OR (`colorMatch: .any`), so picking red then blue widens to
+    /// "red or blue" rather than demanding both in one picture.
+    case color(ColorBucket)
 
     /// The favorites token's synthetic id. Tokens are `Identifiable` by a real
     /// entity id, and this one has no entity; a FIXED constant (not a fresh UUID)
@@ -44,11 +50,26 @@ enum SearchToken: Identifiable, Hashable {
     /// collide with a real tag or collection.
     static let favoritesID = UUID(uuidString: "00000000-0000-0000-0000-0000000000fa")!
 
+    /// A color token's synthetic id, from the same reserved all-zero space: a `0c`
+    /// marker byte and the bucket's raw value, so `.red` is `…000c03`. UI-only —
+    /// `SearchRules` persists real entity ids and (from C3) the bucket INTEGER,
+    /// never this.
+    ///
+    /// Built from BYTES rather than a formatted string. The string version was
+    /// written first and its last group was two digits short, so `UUID(uuidString:)`
+    /// returned nil for every bucket and all twelve collapsed onto one fallback id —
+    /// which made `removeToken` drop every color chip at once. This form has no
+    /// parse to get wrong; `colorIDsAreDistinct` still pins the result.
+    static func colorID(_ bucket: ColorBucket) -> UUID {
+        UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0c, UInt8(bucket.rawValue)))
+    }
+
     var id: UUID {
         switch self {
         case .tag(let tag): return tag.id
         case .collection(let collection): return collection.id
         case .favorites: return Self.favoritesID
+        case .color(let bucket): return Self.colorID(bucket)
         }
     }
 
@@ -57,6 +78,7 @@ enum SearchToken: Identifiable, Hashable {
         case .tag(let tag): return tag.name
         case .collection(let collection): return collection.name
         case .favorites: return "Favorites"
+        case .color(let bucket): return bucket.displayName
         }
     }
 }
@@ -78,8 +100,28 @@ struct LibrarySearchQuery: Equatable {
     /// The `.favorites` token (011 · U5) — an AND conjunct on `asset.is_favorite`,
     /// conjunct with the text / tag / collection arms above.
     var favoritesOnly: Bool = false
+    /// Raw ``ColorBucket`` values from `.color` tokens (085 · C2), ORed. Raw
+    /// integers rather than the enum because that is what the service takes —
+    /// AtelierCore filters the number and never learns what a color is.
+    var colorBuckets: [Int] = []
     /// `.relevance` when there's free text to rank, else `.newest`.
     var sort: SearchSort
+}
+
+// MARK: - Environment
+
+/// The pane's search model, published by ``LibrarySearchable`` so a descendant can
+/// add a filter without being handed the model explicitly (085 · C2). `nil` outside
+/// a searchable pane.
+private struct LibrarySearchKey: EnvironmentKey {
+    static let defaultValue: LibrarySearchModel? = nil
+}
+
+extension EnvironmentValues {
+    var librarySearch: LibrarySearchModel? {
+        get { self[LibrarySearchKey.self] }
+        set { self[LibrarySearchKey.self] = newValue }
+    }
 }
 
 /// The Collection-screen scope toggle. Ignored on the global gallery.
@@ -174,6 +216,11 @@ final class LibrarySearchModel: ObservableObject {
     /// presence, so there is exactly one source of truth for it.
     var favoritesOnly: Bool { tokens.contains(.favorites) }
 
+    /// The color buckets among the selected tokens (085 · C2), ORed.
+    var selectedColorBuckets: [ColorBucket] {
+        tokens.compactMap { if case .color(let bucket) = $0 { bucket } else { nil } }
+    }
+
     /// Turn the favorites filter on or off — the chip's click. Mutating `tokens`
     /// fires the same `onChange` re-run every other filter change does.
     func toggleFavoritesFilter() {
@@ -181,6 +228,36 @@ final class LibrarySearchModel: ObservableObject {
             tokens.removeAll { $0 == .favorites }
         } else {
             tokens.append(.favorites)
+        }
+    }
+
+    /// Turn one color filter on or off — the detail swatch's click (085 · C2).
+    ///
+    /// A TOGGLE, not an append: the swatch row is the same row before and after the
+    /// click, so clicking the chip you just clicked has to undo it. Anything else
+    /// makes the row a one-way trip that only the field's `×` can reverse.
+    func toggleColorFilter(_ bucket: ColorBucket) {
+        if tokens.contains(.color(bucket)) {
+            tokens.removeAll { $0 == .color(bucket) }
+        } else {
+            tokens.append(.color(bucket))
+        }
+    }
+
+    /// The detail swatch's click (085 · C2): apply the color filter, then close the
+    /// page that raised it.
+    ///
+    /// The dismiss is not a nicety. The results appear in the pane BEHIND the
+    /// detail overlay, so filtering without closing looks like the click did
+    /// nothing — the user is still staring at the same picture. Returned as a
+    /// closure so the one rule lives here and each host supplies only its own way
+    /// of closing.
+    func colorFilterAction(
+        dismissing dismiss: @escaping () -> Void
+    ) -> (ColorBucket) -> Void {
+        { [weak self] bucket in
+            self?.toggleColorFilter(bucket)
+            dismiss()
         }
     }
 
@@ -282,10 +359,12 @@ final class LibrarySearchModel: ObservableObject {
         // tokens-only query falls back to the keyword filter path.
         let query: LibrarySearchQuery
         let run: (LibrarySearchQuery) async throws -> [AssetDetail]
+        let colorBuckets = selectedColorBuckets.map(\.rawValue)
         if mode == .meaning, hasFTS {
             query = LibrarySearchQuery(
                 text: text, tagIDs: selectedTagIDs, tagNameContains: nil,
                 collectionIDs: scopeIDs, favoritesOnly: favoritesOnly,
+                colorBuckets: colorBuckets,
                 sort: .relevance)
             run = runSemanticQuery
         } else {
@@ -295,6 +374,7 @@ final class LibrarySearchModel: ObservableObject {
                 tagNameContains: tagNeedle,
                 collectionIDs: scopeIDs,
                 favoritesOnly: favoritesOnly,
+                colorBuckets: colorBuckets,
                 // Rank by relevance while there's text to rank; a tokens-only /
                 // `tag:`-only query has nothing to score, so keep the recency order.
                 sort: hasFTS ? .relevance : .newest)
@@ -369,6 +449,7 @@ final class LibrarySearchModel: ObservableObject {
             tagNameContains: query.tagNameContains,
             collectionIDs: query.collectionIDs,
             favoritesOnly: query.favoritesOnly,
+            colorBuckets: query.colorBuckets,
             sort: query.sort,
             limit: 500)
     }
@@ -390,6 +471,7 @@ final class LibrarySearchModel: ObservableObject {
             tagMatch: .all,
             collectionIDs: query.collectionIDs,
             favoritesOnly: query.favoritesOnly,
+            colorBuckets: query.colorBuckets,
             limit: 500)
     }
 
@@ -528,6 +610,18 @@ struct LibrarySearchable<Content: View>: View {
                     .transition(.opacity)
             }
         }
+        // Publish the pane's search to everything under it (085 · C2). The detail
+        // page's color swatches are built deep inside `content()` — a collection
+        // grid's overlay, a Space board's — and the model they need to filter
+        // through is a `@StateObject` here. Threading it through the content
+        // closure would change every `LibrarySearchable` call site and
+        // `CollectionView`'s own signature for one optional handler.
+        //
+        // Optional by design rather than an `@EnvironmentObject`: a pane that is
+        // NOT wrapped in this view (the Spaces board) reads `nil` and its swatches
+        // become readouts, which is exactly the intended behaviour there — no
+        // special case, and no crash-on-missing.
+        .environment(\.librarySearch, search)
         .toolbar {
             // A flexible spacer ahead of the field pushes it to the trailing edge —
             // a lone `.primaryAction` item otherwise sits at the leading edge, right
@@ -642,6 +736,9 @@ private struct SearchToolbarField: View {
         case .tag(let tag): return tag.source == .agent ? "sparkles" : "tag"
         case .collection: return "folder"
         case .favorites: return "star.fill"
+        // Only reached by the suggestion dropdown's row, which never lists colors
+        // (they have no text to prefix-match). The chip draws a ``ColorDot``.
+        case .color: return "circle.fill"
         }
     }
 }
@@ -705,8 +802,15 @@ private struct SearchTokenChip: View {
 
     var body: some View {
         HStack(spacing: Theme.Spacing.xs) {
-            Image(systemName: SearchToolbarField.icon(for: token))
-                .font(.system(size: 10, weight: .medium))
+            // A color token draws a real swatch rather than a tinted glyph — the
+            // shared ``ColorDot``, whose hairline ring is what keeps a white or
+            // black bucket visible against the chip's own fill.
+            if case .color(let bucket) = token {
+                ColorDot(hex: bucket.referenceHex, size: 10)
+            } else {
+                Image(systemName: SearchToolbarField.icon(for: token))
+                    .font(.system(size: 10, weight: .medium))
+            }
             Text(token.displayName)
                 .font(.system(size: 12))
                 .lineLimit(1)
@@ -1275,6 +1379,9 @@ struct LooseDetailOverlay: View {
     @Binding var current: AssetDetail?
 
     @StateObject private var tags: AssetTagsStore
+    /// The pane's search — the same one that produced these hits when this overlay
+    /// is showing a search result (085 · C2).
+    @Environment(\.librarySearch) private var librarySearch
 
     private var results: [AssetDetail] { context.run }
 
@@ -1302,6 +1409,14 @@ struct LooseDetailOverlay: View {
                     tags: tags.tags,
                     onAddTag: { tags.add($0) },
                     onRemoveTag: { tags.remove($0) },
+                    // Adds a color token to the very search this page is a result
+                    // of — so from the results grid a swatch NARROWS the query
+                    // rather than starting a new one (085 · C2).
+                    colors: tags.colors,
+                    onSelectColor: librarySearch?.colorFilterAction(dismissing: {
+                        model.flushViewBumps()
+                        current = nil
+                    }),
                     collections: tags.collections,
                     allCollections: tags.allCollections,
                     onAddToCollection: { tags.addToCollection($0) },

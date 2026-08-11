@@ -210,8 +210,8 @@ struct ColorPaletteTests {
         #expect(result.map(\.bucket) == [.green, .yellow, .blue])
     }
 
-    /// These rows get a PERSISTED rank, so equal coverages must not order by
-    /// whatever the dictionary happened to iterate.
+    /// This is the order the detail chips are drawn in, so equal coverages must
+    /// not order by whatever the dictionary happened to iterate.
     @Test("ties break deterministically by bucket, not by dictionary order")
     func tiesAreDeterministic() {
         let swatches = [
@@ -239,6 +239,87 @@ struct ColorPaletteTests {
     @Test("an empty extraction yields no buckets")
     func emptyIsEmpty() {
         #expect(ColorPalette.bucketCoverages(for: []).isEmpty)
+    }
+
+    // MARK: - The representative hex
+
+    /// The detail chip paints with the image's own color, so the merge has to name
+    /// WHICH of the merged swatches it shows — the dominant one, not the last one
+    /// the loop happened to see.
+    @Test("the representative hex is the bucket's most dominant swatch")
+    func representativeIsTheDominantSwatch() {
+        let merged = ColorPalette.bucketCoverages(for: [
+            ColorSwatch(hex: "#e02020", coverage: 0.08),
+            ColorSwatch(hex: "#ff0000", coverage: 0.12),
+            // Dark but SATURATED, so it stays red rather than falling to brown.
+            ColorSwatch(hex: "#d01010", coverage: 0.05),
+        ])
+        #expect(merged.count == 1)
+        #expect(merged.first?.representativeHex == "#ff0000")
+    }
+
+    /// Input order must not decide it — the same swatches reversed name the same
+    /// color, or the chip changes hue when the extractor's ordering shifts.
+    @Test("input order does not change the representative hex")
+    func representativeIgnoresInputOrder() {
+        let swatches = [
+            ColorSwatch(hex: "#ff0000", coverage: 0.12),
+            ColorSwatch(hex: "#e02020", coverage: 0.08),
+        ]
+        let forward = ColorPalette.bucketCoverages(for: swatches)
+        let reversed = ColorPalette.bucketCoverages(for: swatches.reversed())
+        #expect(forward == reversed)
+        #expect(forward.first?.representativeHex == "#ff0000")
+    }
+
+    /// Two swatches tied at the top resolve by input order, which `ColorExtractor`
+    /// defines as most-dominant-first. Deterministic beats arbitrary.
+    @Test("a tie takes the earlier swatch")
+    func representativeTieTakesTheFirst() {
+        let merged = ColorPalette.bucketCoverages(for: [
+            ColorSwatch(hex: "#ff0000", coverage: 0.10),
+            ColorSwatch(hex: "#e02020", coverage: 0.10),
+        ])
+        #expect(merged.first?.representativeHex == "#ff0000")
+    }
+
+    /// The hex reaches the chip UNCHANGED. It is the image's color, not the
+    /// palette's — a chip painted `ColorBucket.referenceHex` would make every red
+    /// picture in the library show the identical red.
+    @Test("the representative hex is the swatch's, not the palette anchor's")
+    func representativeIsNotTheAnchor() {
+        let merged = ColorPalette.bucketCoverages(for: [
+            ColorSwatch(hex: "#b76e79", coverage: 0.4)  // rose gold → pink
+        ])
+        #expect(merged.first?.bucket == .pink)
+        #expect(merged.first?.representativeHex == "#b76e79")
+        #expect(merged.first?.representativeHex != ColorBucket.pink.referenceHex)
+    }
+
+    /// A skipped swatch must not become a bucket's representative either — the
+    /// unparseable row costs itself, and the surviving green names the green chip.
+    @Test("an unparseable swatch never names a bucket")
+    func unparseableNeverRepresents() {
+        let merged = ColorPalette.bucketCoverages(for: [
+            ColorSwatch(hex: "not a color", coverage: 0.9),
+            ColorSwatch(hex: "#00ff00", coverage: 0.1),
+        ])
+        #expect(merged.map(\.representativeHex) == ["#00ff00"])
+    }
+
+    /// Every returned hex must render. The chip has no fallback beyond the palette
+    /// anchor, so a representative that cannot be parsed is a colorless chip.
+    @Test("every representative hex parses back to a color")
+    func representativesParse() {
+        let merged = ColorPalette.bucketCoverages(for: [
+            ColorSwatch(hex: "#FF0000", coverage: 0.3),  // uppercase, as tolerated
+            ColorSwatch(hex: "00ff00", coverage: 0.3),  // no leading #
+            ColorSwatch(hex: "#0000ff", coverage: 0.3),
+        ])
+        #expect(merged.count == 3)
+        for share in merged {
+            #expect(ColorPalette.bucket(forHex: share.representativeHex) == share.bucket)
+        }
     }
 
     // MARK: - Purity
