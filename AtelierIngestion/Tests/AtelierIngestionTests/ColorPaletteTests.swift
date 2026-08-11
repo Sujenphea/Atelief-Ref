@@ -71,6 +71,34 @@ struct ColorPaletteTests {
         #expect(ColorPalette.hueAnchors.count == 8)
     }
 
+    // MARK: - Filter order (085 · C3)
+
+    /// The picker draws `filterOrder`, so a bucket missing from it is a color the
+    /// library can be filed under but never filtered by — invisible, and invisible
+    /// in a way nothing else would catch. A duplicate is the same chip twice, both
+    /// toggling one token.
+    @Test("the filter order lists every bucket exactly once")
+    func filterOrderCoversEveryBucket() {
+        #expect(Set(ColorPalette.filterOrder) == Set(ColorBucket.allCases))
+        #expect(ColorPalette.filterOrder.count == ColorBucket.allCases.count)
+    }
+
+    /// Neutrals lead, then the wheel. Pinned because the ORDER is the reason this
+    /// array exists at all — sorting by raw value would read allocation order as a
+    /// sort key, which ``ColorBucket`` explicitly forbids.
+    @Test("neutrals lead the filter order, and it is not merely raw-value order")
+    func filterOrderIsDeliberate() {
+        let leading = ColorPalette.filterOrder.prefix(3).filter(\.isNeutral)
+        let laterNeutrals = ColorPalette.filterOrder.dropFirst(3).filter(\.isNeutral)
+        #expect(leading.count == 3)
+        #expect(laterNeutrals.isEmpty)
+        // Brown sits beside the orange it darkens, NOT between orange and yellow
+        // by accident of its raw value — it is 5, and yellow is 6.
+        let brownIndex = ColorPalette.filterOrder.firstIndex(of: .brown)
+        let orangeIndex = ColorPalette.filterOrder.firstIndex(of: .orange)
+        #expect(brownIndex == orangeIndex.map { $0 + 1 })
+    }
+
     // MARK: - Pure colors
 
     @Test("the sRGB primaries and secondaries file under their own name")

@@ -34,7 +34,10 @@ struct SearchRulesCodecTests {
             platform: .pinterest,
             tagIDs: [UUID(), UUID(), UUID()],
             tagMatch: .any,
-            collectionID: UUID())
+            collectionID: UUID(),
+            favoritesOnly: true,
+            colorBuckets: [3, 9, 11],
+            colorMatch: .all)
         try assertRoundTrips(rules)
     }
 
@@ -52,6 +55,17 @@ struct SearchRulesCodecTests {
         }
     }
 
+    /// The color dimension has its OWN combinator (085 · C3) — colors default to
+    /// `.any` where tags default to `.all`, so one of them round-tripping proves
+    /// nothing about the other.
+    @Test("each color-match mode round-trips independently of tagMatch")
+    func everyColorMatchRoundTrips() throws {
+        for match in TagMatch.allCases {
+            try assertRoundTrips(
+                SearchRules(colorBuckets: [3], colorMatch: match), "color match \(match)")
+        }
+    }
+
     @Test("each single filter dimension round-trips in isolation (the 1:1 matrix)")
     func eachDimensionRoundTrips() throws {
         try assertRoundTrips(SearchRules(text: "helvetica"))
@@ -59,6 +73,18 @@ struct SearchRulesCodecTests {
         try assertRoundTrips(SearchRules(tagIDs: [UUID()]))
         try assertRoundTrips(SearchRules(tagMatch: .any))
         try assertRoundTrips(SearchRules(collectionID: UUID()))
+        try assertRoundTrips(SearchRules(favoritesOnly: true))
+        try assertRoundTrips(SearchRules(colorBuckets: [0]))
+        try assertRoundTrips(SearchRules(colorMatch: .all))
+    }
+
+    /// A bucket is an opaque integer here — AtelierCore cannot see the palette
+    /// (085). So the codec must carry values it has no vocabulary for, including
+    /// ones no palette version defines, rather than validating a range it does not
+    /// own. Such a bucket matches nothing at query time, which IS the degrade.
+    @Test("a bucket integer this build has no meaning for still round-trips")
+    func unknownBucketRoundTrips() throws {
+        try assertRoundTrips(SearchRules(colorBuckets: [99, -1]))
     }
 
     // MARK: - Normalization (canonical blobs)
@@ -81,11 +107,19 @@ struct SearchRulesCodecTests {
         #expect(SearchRules(tagIDs: [a, b, a, b, a]).tagIDs == [a, b])
     }
 
+    /// The SAME normalization as tag ids, because both multi-valued dimensions go
+    /// through one `dedupe`. A color set that canonicalized differently from a tag
+    /// set would break `canonicalBlob`'s promise for one field only.
+    @Test("duplicate color buckets are removed, first-seen order preserved")
+    func colorBucketsDeduped() {
+        #expect(SearchRules(colorBuckets: [9, 3, 9, 3, 9]).colorBuckets == [9, 3])
+    }
+
     @Test("normalization makes equal-but-differently-written rules one canonical blob")
     func canonicalBlob() throws {
         let a = UUID(), b = UUID()
-        let x = try SearchRules(text: "  ui ", tagIDs: [a, b, a]).encoded()
-        let y = try SearchRules(text: "ui", tagIDs: [a, b]).encoded()
+        let x = try SearchRules(text: "  ui ", tagIDs: [a, b, a], colorBuckets: [3, 9, 3]).encoded()
+        let y = try SearchRules(text: "ui", tagIDs: [a, b], colorBuckets: [3, 9]).encoded()
         #expect(x == y)
     }
 
@@ -115,14 +149,20 @@ struct SearchRulesCodecTests {
         // A fully-populated rule so every representable key appears.
         let json = try SearchRules(
             text: "grid", platform: .pinterest, tagIDs: [UUID()],
-            tagMatch: .all, collectionID: UUID()).encoded()
+            tagMatch: .all, collectionID: UUID(), favoritesOnly: true,
+            colorBuckets: [3], colorMatch: .any).encoded()
         let keys = Set(try #require(
             try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
         ).keys)
         #expect(keys == ["version", "text", "platform", "tag_ids",
-                         "tag_match", "collection_id"])
+                         "tag_match", "collection_id", "favorites_only",
+                         "color_buckets", "color_match"])
         // The excluded live-search concepts have no on-disk token.
-        for excluded in ["sort", "tag_name_contains", "collection_ids"] {
+        // `minimum_color_coverage` joins them (085 · C3): the coverage floor is a
+        // tuning constant like the FTS ranking weights, not part of what a saved
+        // search MEANS, and storing it would make retuning it a data migration.
+        for excluded in ["sort", "tag_name_contains", "collection_ids",
+                         "minimum_color_coverage"] {
             #expect(!keys.contains(excluded), "unexpected rule key: \(excluded)")
         }
     }
@@ -149,16 +189,39 @@ struct SearchRulesCodecTests {
     func unknownFieldsIgnored() throws {
         let tag = UUID()
         let future = """
-        {"version":2,"text":"grid","platform":"pinterest","tag_ids":["\(tag.uuidString.lowercased())"],\
-        "tag_match":"any","collection_id":null,"favorite":true,"color":"#ff0000"}
+        {"version":3,"text":"grid","platform":"pinterest","tag_ids":["\(tag.uuidString.lowercased())"],\
+        "tag_match":"any","collection_id":null,"aspect":"tall","brightness":0.4}
         """
         let rules = try #require(SearchRules.decoded(fromJSON: future))
-        #expect(rules.version == 2)
+        #expect(rules.version == 3)
         #expect(rules.text == "grid")
         #expect(rules.platform == .pinterest)
         #expect(rules.tagIDs == [tag])
         #expect(rules.tagMatch == .any)
         #expect(rules.collectionID == nil)
+    }
+
+    /// **The v1 blob is what is actually on disk today** (085 · C3). A saved search
+    /// written before this bump has no `favorites_only` and no `color_buckets`, and
+    /// must keep meaning exactly what it meant — an absent key is NO filter, never
+    /// "favorites only" or "matches nothing". This is the one compatibility case
+    /// with real stored data behind it.
+    @Test("a v1 blob decodes with the new dimensions inert, its own version kept")
+    func version1BlobStaysInert() throws {
+        let tag = UUID()
+        let stored = """
+        {"version":1,"text":"grid","platform":"pinterest",\
+        "tag_ids":["\(tag.uuidString.lowercased())"],"tag_match":"all","collection_id":null}
+        """
+        let rules = try #require(SearchRules.decoded(fromJSON: stored))
+        #expect(rules.version == 1)  // preserved, not upgraded on read
+        #expect(rules.favoritesOnly == false)
+        #expect(rules.colorBuckets.isEmpty)
+        #expect(rules.colorMatch == .any)
+        // Everything it DID carry survives untouched.
+        #expect(rules.text == "grid")
+        #expect(rules.tagIDs == [tag])
+        #expect(rules.referencesUnknownVersion == false)
     }
 
     @Test("missing fields fall back to sane defaults (no filter / .all / current version)")
@@ -170,6 +233,9 @@ struct SearchRulesCodecTests {
         #expect(rules.tagIDs.isEmpty)
         #expect(rules.tagMatch == .all)
         #expect(rules.collectionID == nil)
+        #expect(rules.favoritesOnly == false)
+        #expect(rules.colorBuckets.isEmpty)
+        #expect(rules.colorMatch == .any)
     }
 
     @Test("an unknown platform token drops that dimension rather than failing the rule")
@@ -184,6 +250,27 @@ struct SearchRulesCodecTests {
         let blob = #"{"version":2,"tag_match":"most","tag_ids":[]}"#
         let rules = try #require(SearchRules.decoded(fromJSON: blob))
         #expect(rules.tagMatch == .all)
+    }
+
+    /// Colors default to `.any`, NOT to `.all` like tags — so the fallback has to
+    /// be read off the right field. Degrading to `.all` would silently narrow a
+    /// rule the writer meant to widen.
+    @Test("an unknown color-match token degrades to .any, not .all")
+    func unknownColorMatchDefaults() throws {
+        let blob = #"{"version":2,"color_buckets":[3],"color_match":"most"}"#
+        let rules = try #require(SearchRules.decoded(fromJSON: blob))
+        #expect(rules.colorMatch == .any)
+    }
+
+    /// A malformed bucket array drops the color dimension WHOLE. The writer meant
+    /// one set; salvaging the integers out of `[3,"red",9]` would run a filter
+    /// nobody asked for, and the rest of the rule is still perfectly usable.
+    @Test("a malformed color-bucket array drops that dimension, not the rule")
+    func malformedBucketsDropTheDimension() throws {
+        let blob = #"{"version":2,"text":"grid","color_buckets":[3,"red",9]}"#
+        let rules = try #require(SearchRules.decoded(fromJSON: blob))
+        #expect(rules.colorBuckets.isEmpty)
+        #expect(rules.text == "grid")  // the rule survives
     }
 
     @Test("a non-UUID tag id is skipped, not fatal")

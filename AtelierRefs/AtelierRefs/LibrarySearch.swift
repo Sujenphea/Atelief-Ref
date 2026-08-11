@@ -221,6 +221,26 @@ final class LibrarySearchModel: ObservableObject {
         tokens.compactMap { if case .color(let bucket) = $0 { bucket } else { nil } }
     }
 
+    /// Whether `bucket` is currently filtered on — the picker chip's on/off state
+    /// (085 · C3). Reads the TOKENS, like `favoritesOnly` does, so the picker, the
+    /// chip in the field and the query are three views of one piece of state and
+    /// cannot disagree.
+    func isColorSelected(_ bucket: ColorBucket) -> Bool {
+        tokens.contains(.color(bucket))
+    }
+
+    /// Whether any color filter is on — the picker button's active look.
+    var hasColorFilter: Bool { !selectedColorBuckets.isEmpty }
+
+    /// Drop every color filter, leaving tags / collections / favorites / text
+    /// alone (085 · C3). The field's `×` clears the whole query; this is the
+    /// picker's own "start the colors over", which is a different intent and the
+    /// only way to reach it in one click once several chips are on.
+    func clearColorFilters() {
+        guard hasColorFilter else { return }  // no pointless token-set churn
+        tokens.removeAll { if case .color = $0 { true } else { false } }
+    }
+
     /// Turn the favorites filter on or off — the chip's click. Mutating `tokens`
     /// fires the same `onChange` re-run every other filter change does.
     func toggleFavoritesFilter() {
@@ -639,6 +659,14 @@ struct LibrarySearchable<Content: View>: View {
                     FavoritesFilterChip(search: search)
                 }
             }
+            // The color palette (085 · C3), on EVERY pane — the asymmetry with the
+            // star above is deliberate. Favorites is hidden on the gallery because
+            // it has another way in; color has none. A swatch cannot be typed, so
+            // without this button the dimension only exists on screens where a
+            // picture already happens to show the color you wanted.
+            ToolbarItem(placement: .primaryAction) {
+                ColorFilterPicker(search: search)
+            }
             ToolbarItem(placement: .primaryAction) {
                 SearchToolbarField(search: search)
                     .frame(width: searchFieldWidth)
@@ -755,12 +783,14 @@ private struct FavoritesFilterChip: View {
     var body: some View {
         Button { search.toggleFavoritesFilter() } label: {
             Image(systemName: search.favoritesOnly ? "star.fill" : "star")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 14))
                 .foregroundStyle(search.favoritesOnly
                     ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
         }
-        .buttonStyle(HoverButtonStyle(
-            cornerRadius: Theme.Radius.control, padding: Theme.Spacing.xs))
+        // The toolbar tier, shared with the color picker beside it. This used to be
+        // a 12pt glyph on a bare ``HoverButtonStyle``, whose fill overhung the glass
+        // pill's corners and whose width followed the `star` symbol's own.
+        .buttonStyle(ToolbarGlyphButtonStyle())
         .help(search.favoritesOnly ? "Show all items" : "Show favorites only")
         .accessibilityLabel("Favorites filter")
         .accessibilityAddTraits(search.favoritesOnly ? [.isSelected] : [])
