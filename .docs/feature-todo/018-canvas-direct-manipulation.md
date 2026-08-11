@@ -14,9 +14,9 @@
 > ~2.5k lines of tests behind it. The value in Easel is the **interaction layer
 > layered on top**, which Spaces largely lacks. That layer is what this doc scopes.
 
-## Status (re-verified against the tree 2026-08-10)
+## Status (re-verified against the tree 2026-08-11)
 
-**Six of seven phases have shipped.** Everything below describing "no snapping of
+**All seven phases are closed** — six built, and C7 answered by measurement. Everything below describing "no snapping of
 any kind", "no resize on canvas at all", "no cursor feedback", "no camera
 persistence" and "schema is at v15" is **historical** — the reconnaissance
 snapshot of 2026-07-27, not the code as it stands.
@@ -29,11 +29,13 @@ snapshot of 2026-07-27, not the code as it stands.
 | C4 paste + duplicate | **shipped** | `SpaceView.pasteOntoBoard` (`:948`), `space.duplicateTiles` (`:389`, ⌥-drag), `PasteSeamTests`, `SpaceDuplicateTests` |
 | C5 format bubble | **shipped** | `SpaceFormatChrome.swift` + `SpaceFormatChromeTests`; see also `.change-log/352` (floating bars unified into one container) |
 | C6 cursor state machine | **shipped** | `CanvasHostView.swift:420` tracks the hovered **handle** rather than the cursor (`NSCursor.frameResize` vends a fresh instance per call), original art — no Arc assets taken |
-| C7 perf harness + pinch smoothing | **half** | `CanvasRenderer/Tests/CanvasBenchmark.swift` exists as the instrument. **Pinch smoothing is not built**: `magnify(with:)` (`CanvasHostView.swift:735`) is still a direct `engine.zoom(by:aroundScreenPoint:)` per event — no gesture-scoped GPU scale, no deferred re-raster |
+| C7 perf harness + pinch smoothing | **shipped / closed** | Harness: `CanvasPinchBakeoff.swift` (on-screen, `-canvas-pinch-bakeoff`) + `CanvasBenchmark` pinch cases. `magnify(with:)` is now phase-bracketed with vsync-coalesced commits and a frozen LOD tier (`CanvasZoomGesture` + `CanvasEngine.beginZoomGesture`). **The GPU-scale smoothing was measured and refused** — see [087](../087-canvas-pinch-results.md) |
 
-Live remainder: **C7's pinch smoothing only** — and this doc's own sequencing
-advice applies, which is to run the harness first and let it say whether the
-smoothing is needed at all. Schema is now at **v19**, not v15.
+**Nothing is left open.** C7 closed the way this doc asked it to: the harness ran
+first and said the smoothing was not needed. A pan of the same board hitches
+identically to a pinch, so the cost was never pinch-specific — it scales with the
+visible tile count, which is now [087](../087-canvas-pinch-results.md) §7's follow-up
+rather than this doc's. Schema is at **v19**, not v15.
 
 The licensing question (below) resolved in practice: Clusters A and B were
 implemented from the described behaviour into our own files with our own tests,
@@ -224,13 +226,17 @@ itself copyrightable.
 4. ~~**C4 (S–M) — paste + duplicate.**~~ **Shipped.**
 5. ~~**C5 (M) — format bubble.**~~ **Shipped** as `SpaceFormatChrome`.
 6. ~~**C6 (S) — cursor state machine.**~~ **Shipped**, original art.
-7. **C7 (M) — perf harness + pinch smoothing.** The only phase left. `CanvasBenchmark`
-   is the harness; **run it before building the smoothing**, because it is the
-   instrument that says whether the smoothing is needed at all. If it is, the two
-   traps this doc records — `zPosition` alone will not composite above AppKit's
-   subview-managed layers, and text must be laid out at a *reference* point size
-   so gesture-scaled and settled renders are pixel-identical — are the reason to
-   read Easel's comments even while writing our own.
+7. ~~**C7 (M) — perf harness + pinch smoothing.**~~ **Closed.** The harness was built
+   and run first, as this entry insisted, and it refused the smoothing: at ~500 tiles
+   the unsmoothed pinch already lands every frame on the vsync, and past ~1,200 tiles a
+   plain PAN of the same board hitches identically, so the cost was never in the pinch.
+   Both traps recorded here turned out not to apply to our tree — the engine's layers
+   live on one layer-hosting surface with the editor as a real subview above it, and
+   [060](../060-spaces-text-render-design.md)'s `TextRenderLayer` already shapes in
+   world units, so gesture-scaled and settled renders differ only in resolution. The
+   trap that DID apply is one this doc does not record: culling holds no layers for the
+   world a scale-down would reveal. See [086](../086-canvas-pinch-smoothing-plan.md) /
+   [087](../087-canvas-pinch-results.md).
 
 ## Test strategy
 
