@@ -29,6 +29,15 @@ final class AssetTagsStore: ObservableObject {
     /// up. Clicking a chip still filters on the bucket, so a picture whose colors
     /// are shown but not yet derived can briefly fail to match its own chip — a
     /// window of one idle pass, and the alternative is a blank row for longer.
+    ///
+    /// **Filtered by the SAME coverage floor the search uses.** Drawing every
+    /// bucket was wrong: the row had no floor and `searchAssets` defaults to 0.15,
+    /// so a chip below it could never return the picture it was drawn on. Measured
+    /// over a real 510-image library that was 56.6% of every chip drawn, and 94.3%
+    /// of assets showed at least one — a yellow accent at 8% was a chip that
+    /// looked identical to a working one and, scoped to a collection, returned
+    /// nothing at all. One constant, read from the service that enforces it, so
+    /// the two cannot drift apart again.
     @Published private(set) var colors: [ColorPalette.BucketCoverage] = []
     /// The collections the bound asset belongs to (name-ordered), refreshed after
     /// every membership edit (041 · Details "Collections" chips).
@@ -183,17 +192,20 @@ final class AssetTagsStore: ObservableObject {
         }
     }
 
-    /// Read the asset's stored swatches and merge them into palette buckets.
+    /// Read the asset's stored swatches, merge them into palette buckets, and drop
+    /// the ones too faint for the filter to match.
     ///
-    /// An asset with no analysis yet, an unreadable palette, or no colors at all
-    /// (a video, a color-kind asset) all yield an empty list — the swatch row hides
-    /// rather than reporting the difference. That distinction matters to the
-    /// derivation pass, not to someone looking at a picture.
+    /// An asset with no analysis yet, an unreadable palette, no colors at all (a
+    /// video, a color-kind asset), or nothing above the floor all yield an empty
+    /// list — the swatch row hides rather than reporting the difference. That
+    /// distinction matters to the derivation pass, not to someone looking at a
+    /// picture.
     private static func colors(
         from services: AppServices, assetID: UUID
     ) async throws -> [ColorPalette.BucketCoverage] {
         guard let json = try await services.analysis(for: assetID)?.colors,
               let swatches = ColorSwatch.decodeList(fromJSON: json) else { return [] }
         return ColorPalette.bucketCoverages(for: swatches)
+            .filter { $0.coverage >= AppServices.defaultColorCoverageFloor }
     }
 }

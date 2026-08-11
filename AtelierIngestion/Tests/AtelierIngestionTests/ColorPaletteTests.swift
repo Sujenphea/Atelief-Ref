@@ -115,6 +115,48 @@ struct ColorPaletteTests {
         #expect(ColorPalette.bucket(forHex: "#e8dcc0") == .white, "beige")
     }
 
+    /// The warm sector keeps the HIGH gate, because that is where the junk is.
+    /// These are the swatches that made the threshold 18 in the first place; every
+    /// one is real library data, and every one must stay neutral.
+    @Test("pale warm neutrals stay neutral — yellow is not the junk bucket")
+    func warmNearNeutralsStayNeutral() {
+        #expect(ColorPalette.bucket(forHex: "#e8e1cc") == .white, "cream, C≈11")
+        #expect(ColorPalette.bucket(forHex: "#f8e7cf") == .white, "warm cream, C≈14")
+        #expect(ColorPalette.bucket(forHex: "#c4a597") == .gray, "tan, C≈15")
+        #expect(ColorPalette.bucket(forHex: "#736250") == .gray, "taupe, C≈13")
+        #expect(ColorPalette.bucket(forHex: "#413e26") == .gray, "dark olive-drab, C≈16")
+    }
+
+    /// The bug this gate exists to fix: a plainly lilac swatch labelled "White" on
+    /// the detail chip, beside the picture it came from. Every hex here is real
+    /// library data that filed as a neutral under the flat gate of version 1.
+    @Test("cool tints are their color, not a neutral")
+    func coolTintsAreColored() {
+        #expect(ColorPalette.bucket(forHex: "#ddc9e6") == .purple, "lilac, C≈17")
+        #expect(ColorPalette.bucket(forHex: "#ccacc3") == .purple, "mauve, C≈17")
+        #expect(ColorPalette.bucket(forHex: "#d5d6f4") == .blue, "periwinkle, C≈16")
+        #expect(ColorPalette.bucket(forHex: "#b9c6e6") == .blue, "pale blue, C≈18")
+        #expect(ColorPalette.bucket(forHex: "#9fcfcb") == .teal, "seafoam, C≈17")
+        #expect(ColorPalette.bucket(forHex: "#465840") == .green, "sage, C≈17")
+    }
+
+    /// The two gates must stay apart, and in this order — equal values would make
+    /// the sector split pointless, and inverted would file beige as yellow while
+    /// calling lilac gray, which is both bugs at once.
+    @Test("the warm gate is strictly higher than the cool one")
+    func warmGateIsHigher() {
+        #expect(ColorPalette.warmNeutralChromaThreshold > ColorPalette.neutralChromaThreshold)
+    }
+
+    /// A tint just under the cool gate is still a neutral — the gate moved, it did
+    /// not disappear. Without this, "lower the gate" and "remove the gate" pass the
+    /// same tests.
+    @Test("a very faint cool tint is still neutral")
+    func faintCoolTintStaysNeutral() {
+        #expect(ColorPalette.bucket(forHex: "#f4d3da") == .white, "pale blush, C≈13")
+        #expect(ColorPalette.bucket(forHex: "#b8b5b0") == .gray, "concrete, C≈2")
+    }
+
     @Test("neutrals split by lightness")
     func neutralsSplitByLightness() {
         #expect(ColorPalette.bucket(forHex: "#000000") == .black)

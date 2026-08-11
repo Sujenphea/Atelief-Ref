@@ -7,14 +7,24 @@
 //  resumable backfills on a low-priority idle loop, ordered so the semantic corpus
 //  sees fresh OCR:
 //
-//    1. AnalysisBackfill  — OCR / colors / perceptual hash (needs the blob bytes).
-//    2. ColorBucketBackfill — files those colors into searchable buckets (085 · C1).
-//       Runs SECOND because it reads what step 1 just wrote; it decodes nothing,
-//       so an asset analyzed this pass is filterable by color in the same pass.
+//    1. ColorBucketBackfill — files stored swatches into searchable buckets
+//       (085 · C1). Runs FIRST, on whatever the PREVIOUS pass analyzed.
+//    2. AnalysisBackfill  — OCR / colors / perceptual hash (needs the blob bytes).
 //    3. EmbeddingBackfill — the semantic text vector (OCR is now part of its
 //       corpus, so embedding an asset AFTER its analysis captures the OCR text).
 //    4. a bounded embedding RE-VERIFY pass — catches name/note edits the
 //       timestamp-less `asset` can't signal (4A), oldest-embedded first.
+//
+//  The color pass reads what analysis writes, so second looks like the natural
+//  place for it — and it was, until the ordering was thought through. `analyzeAll`
+//  drains to COMPLETION and decodes every image it touches, so on a library with a
+//  real analysis backlog nothing downstream of it runs for a long time, and an
+//  analysis error skips the rest of the pass entirely. Colors would be starved by
+//  the one queue guaranteed to be slow, and the color filter silently returns
+//  nothing the whole time. Running it first costs a newly-ingested asset one 90s
+//  pass before its colors are filterable, and buys a cheap queue that can never be
+//  blocked by an expensive one.
+
 //
 //  Scheduling is deliberately the app's concern (the backfills own no cadence).
 //  This runs at `.background` priority so it never competes with ingest or the
@@ -48,6 +58,8 @@ struct AnalysisCoordinator: Sendable {
     private static let reverifyBatch = 50
 
     /// The color pass's per-pass ceiling: 25 batches of 200 = up to 5,000 assets.
+    /// Bounded even though it runs first, so a huge first catch-up cannot itself
+    /// become the thing that starves analysis.
     ///
     /// Bounded rather than a plain `drain()`, even though the work itself is cheap
     /// (no decode — it re-reads hexes already on disk). The cost that scales is the
@@ -75,12 +87,12 @@ struct AnalysisCoordinator: Sendable {
     func runPass() async -> Bool {
         var didWork = false
         do {
-            let analyzed = try await analysis.analyzeAll()
-            didWork = didWork || analyzed.analyzed > 0
-
             let filed = try await colors.drain(
                 batchSize: Self.colorBatch, maxBatches: Self.colorBatchesPerPass)
             didWork = didWork || filed.filed > 0
+
+            let analyzed = try await analysis.analyzeAll()
+            didWork = didWork || analyzed.analyzed > 0
 
             guard embeddingAvailable else { return didWork }
             let embedded = try await embedding.embedAll()

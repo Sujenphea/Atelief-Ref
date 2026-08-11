@@ -89,6 +89,88 @@ struct AssetTagsStoreColorsTests {
         #expect(store.colors.first?.representativeHex != ColorBucket.pink.referenceHex)
     }
 
+    // MARK: - The coverage floor
+
+    /// **The chip and the filter must agree.** A chip below the search's floor can
+    /// never return the picture it was drawn on — and inside a collection, where
+    /// the search scopes to This-collection, it returns nothing at all. Measured
+    /// over a real library, 56.6% of the chips drawn without this filter were dead.
+    @Test("a bucket below the search floor is not drawn")
+    func belowFloorIsNotDrawn() async throws {
+        let services = try makeServices()
+        let refs = try await services.createCollection(name: "Refs")
+        let asset = try await seedColor(into: refs.id, services)
+        // The exact shape that produced the bug: a dominant neutral and a small
+        // yellow accent that the filter would never match.
+        try await services.upsertAnalysis(assetID: asset, colors: ##"""
+            [{"hex":"#808080","coverage":0.6},
+             {"hex":"#f0d000","coverage":0.08}]
+            """##, analyzerVersion: 1)
+
+        let store = AssetTagsStore(services: services)
+        store.bind(to: asset)
+        try await waitUntil("colors load") { !store.colors.isEmpty }
+        #expect(store.colors.map(\.bucket) == [.gray])
+    }
+
+    /// The floor is the SERVICE's, not a second copy. If `searchAssets` ever
+    /// changes its default, the row has to move with it or the bug returns.
+    @Test("the row's floor is the search's own constant")
+    func floorIsTheServiceConstant() async throws {
+        let services = try makeServices()
+        let refs = try await services.createCollection(name: "Refs")
+        let asset = try await seedColor(into: refs.id, services)
+        let floor = AppServices.defaultColorCoverageFloor
+        // One swatch a hair above the floor, one a hair below.
+        try await services.upsertAnalysis(assetID: asset, colors: """
+            [{"hex":"#ff0000","coverage":\(floor + 0.01)},
+             {"hex":"#0000ff","coverage":\(floor - 0.01)}]
+            """, analyzerVersion: 1)
+
+        let store = AssetTagsStore(services: services)
+        store.bind(to: asset)
+        try await waitUntil("colors load") { !store.colors.isEmpty }
+        #expect(store.colors.map(\.bucket) == [.red])
+    }
+
+    /// Merging happens BEFORE the floor, which is the whole reason merging exists:
+    /// two reds at 8% each are a red picture at 16%, and flooring the swatches
+    /// first would drop both and show nothing.
+    @Test("swatches merge before the floor is applied")
+    func mergeThenFloor() async throws {
+        let services = try makeServices()
+        let refs = try await services.createCollection(name: "Refs")
+        let asset = try await seedColor(into: refs.id, services)
+        try await services.upsertAnalysis(assetID: asset, colors: ##"""
+            [{"hex":"#ff0000","coverage":0.08},
+             {"hex":"#e02020","coverage":0.08}]
+            """##, analyzerVersion: 1)
+
+        let store = AssetTagsStore(services: services)
+        store.bind(to: asset)
+        try await waitUntil("colors load") { !store.colors.isEmpty }
+        #expect(store.colors.map(\.bucket) == [.red])
+    }
+
+    /// An image with nothing dominant enough shows NO section rather than a row of
+    /// chips that do nothing.
+    @Test("an asset with only faint colors shows no chips at all")
+    func allFaintShowsNothing() async throws {
+        let services = try makeServices()
+        let refs = try await services.createCollection(name: "Refs")
+        let asset = try await seedColor(into: refs.id, services)
+        try await services.upsertAnalysis(assetID: asset, colors: ##"""
+            [{"hex":"#ff0000","coverage":0.05},
+             {"hex":"#0000ff","coverage":0.05},
+             {"hex":"#00ff00","coverage":0.04}]
+            """##, analyzerVersion: 1)
+
+        let store = AssetTagsStore(services: services)
+        store.bind(to: asset)
+        try await waitUntil("refresh ran") { !store.allCollections.isEmpty }
+        #expect(store.colors.isEmpty)
+    }
+
     // MARK: - The three ways to have no colors
 
     @Test("an un-analyzed asset has no colors")

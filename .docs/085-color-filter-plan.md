@@ -35,6 +35,13 @@ record of the thinking, and the changelogs own what actually shipped.
 3. **The color TOKEN moved from C3 into C2**, because the swatch row needs
    somewhere for its click to go. C3 is now the picker and the `SearchRules` bump
    alone.
+4. **The chroma gate is two numbers, not one**
+   ([378](../.change-log/378-the-gate-that-knew-which-way-was-warm.md)). 18 in the
+   orange/yellow sector, 14 everywhere else — the risk below ("the neutral gate is
+   a judgement call and the thing most likely to feel wrong in use") landed within
+   an hour of the row shipping, as pale lilacs labelled White. Palette version 2.
+5. **The detail row applies the search's coverage floor.** Drawing every bucket
+   made 56.6% of chips unable to return their own picture.
 
 ## What already exists
 

@@ -118,24 +118,52 @@ public enum ColorPalette {
     /// next backfill pass, from the hex already on disk, with nothing decoded.
     /// Leaving it stale after a retune is the one way this design goes wrong:
     /// old rows keep an assignment the current code would not make.
-    public static let version = 1
+    ///
+    /// - `1` — the original single chroma gate.
+    /// - `2` — the gate became hue-dependent (see ``neutralChromaThreshold``).
+    public static let version = 2
 
     // MARK: - Thresholds
 
-    /// Lab chroma below which a color is a NEUTRAL regardless of its hue angle.
+    /// Lab chroma below which a color is a NEUTRAL rather than its hue.
     ///
     /// **This gate is the load-bearing part of the whole palette.** Real
     /// photographic pixels are mostly near-neutral, and a near-neutral color
     /// still has *some* hue angle — an off-white wall at `#f5f2ec` computes a
-    /// perfectly confident "orange". Without the gate every photograph in the
+    /// perfectly confident "orange". Without a gate every photograph in the
     /// library matches the orange chip and the filter is worthless.
     ///
-    /// 18 sends walls, concrete, paper and beige to the neutrals while leaving
-    /// sky (C≈26), tan (C≈25) and navy (C≈31) colored. **This is the palette's
-    /// one real judgement call**, and it is a single number: pale warm neutrals
-    /// are the most common thing in a reference library, and at 12 they all
-    /// landed in yellow, which turned yellow into the junk bucket.
-    public static let neutralChromaThreshold = 18.0
+    /// **The gate is hue-dependent, and that is the whole point.** One number
+    /// cannot do this job, because "how much chroma reads as colored" is not
+    /// constant around the wheel: the eye discounts a warm cast as white balance
+    /// and notices a cool one. Measured over a real 510-image library, the band
+    /// from 12 to 18 is ~41% warm — beige, cream, tan, all correctly neutral —
+    /// and ~59% cool: lilac, pale blue, sage, seafoam, all of which a person
+    /// names by their color. A single threshold has to be wrong about one group
+    /// or the other. At 18 (version 1) `#ddc9e6` — a plainly lilac swatch — was
+    /// labelled White on the detail chip beside its own picture.
+    ///
+    /// So: 14 here, and ``warmNeutralChromaThreshold`` in the sector where the
+    /// junk actually lives. This reclassified 79 of 2550 stored swatches, every
+    /// one of them from a neutral to a real color, and moved no beige.
+    public static let neutralChromaThreshold = 14.0
+
+    /// The chroma gate in the warm (orange / yellow) sector — higher, because
+    /// that is where near-neutrals cluster and where a low gate does damage.
+    ///
+    /// Pale warm neutrals are the most common thing in a reference library. At a
+    /// flat 12 they all landed in yellow and turned it into the junk bucket, which
+    /// is what put this number at 18 to begin with. It stays 18; only the rest of
+    /// the wheel came down.
+    public static let warmNeutralChromaThreshold = 18.0
+
+    /// The families that take ``warmNeutralChromaThreshold``.
+    ///
+    /// Stated as BUCKETS rather than as an angle range so the sector is whatever
+    /// ``hueAnchors`` currently says it is — move the orange anchor and the warm
+    /// sector moves with it. A hard-coded `48°...116°` would be the same numbers
+    /// written down a second time, and would silently stop matching the anchors.
+    private static let warmNeutralFamilies: Set<ColorBucket> = [.orange, .yellow]
 
     /// Lab L at or below which a neutral is black rather than gray.
     public static let blackMaxLightness = 25.0
@@ -186,22 +214,30 @@ public enum ColorPalette {
 
     /// File an sRGB color into a bucket. The rule, in order:
     ///
-    /// 1. **Chroma gate** — low chroma is a neutral, split by lightness.
-    /// 2. **Hue angle** — nearest anchor by angle, which is lightness-independent
+    /// 1. **Hue angle** — nearest anchor by angle, which is lightness-independent
     ///    so a dark and a pale blue file together.
+    /// 2. **Chroma gate** — below the gate FOR THAT FAMILY, a neutral split by
+    ///    lightness. The family is resolved first because the gate depends on it
+    ///    (``neutralChromaThreshold`` explains why it must).
     /// 3. **Brown** — a red/orange/yellow family color that is both dark
     ///    (``brownMaxLightness``) and muted (``brownMaxChroma``).
     public static func bucket(for color: ColorExtractor.RGB) -> ColorBucket {
         let lab = ColorExtractor.srgbToLab(color)
         let chroma = (lab.a * lab.a + lab.b * lab.b).squareRoot()
+        let family = nearestHue(toAngle: hueAngle(a: lab.a, b: lab.b))
 
-        if chroma < neutralChromaThreshold {
+        // Resolving the family for a color that turns out to be neutral is wasted
+        // work, but it is a handful of angle comparisons and the alternative is
+        // duplicating the sector boundaries as raw degrees.
+        let gate = warmNeutralFamilies.contains(family)
+            ? warmNeutralChromaThreshold
+            : neutralChromaThreshold
+        if chroma < gate {
             if lab.L <= blackMaxLightness { return .black }
             if lab.L >= whiteMinLightness { return .white }
             return .gray
         }
 
-        let family = nearestHue(toAngle: hueAngle(a: lab.a, b: lab.b))
         if brownableFamilies.contains(family),
            lab.L < brownMaxLightness, chroma < brownMaxChroma {
             return .brown
