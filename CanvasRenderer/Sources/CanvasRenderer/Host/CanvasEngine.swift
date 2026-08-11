@@ -196,6 +196,11 @@ public final class CanvasEngine {
     /// Outstanding async decodes.
     public var inFlightDecodeCount: Int { scheduler.inFlightCount }
 
+    /// The cache key a tile is currently painted from — the LOD-freeze tests read the
+    /// tier out of it. Internal: which tier a tile drew at is a renderer detail, and
+    /// no app caller has ever needed it.
+    func cacheKey(forTileID id: Int) -> ThumbnailCache.Key? { keyByTile[id] }
+
     /// The on-screen frame a tile WOULD be drawn at — its stored world frame plus any
     /// live-drag / live-resize / editing-height adjustment, mapped through the
     /// transform. `nil` only when the id resolves to no tile at all.
@@ -276,6 +281,82 @@ public final class CanvasEngine {
 
     public func zoom(by factor: CGFloat, aroundScreenPoint anchor: CGPoint) {
         transform = transform.zoomed(by: factor, aroundScreenPoint: anchor)
+        sync()
+        onTransformChanged?()
+    }
+
+    // MARK: Zoom gesture (018 · C7 — pinch smoothing, 086)
+
+    /// The running pinch, or `nil` between gestures.
+    private var zoomGesture: CanvasZoomGesture?
+
+    /// Whether a pinch is in progress. Two things read it: the LOD tier is FROZEN
+    /// while it is true (see ``paintImage(tile:layer:neededKeys:)``), and the host
+    /// uses it to tell a gesture event from a stray one.
+    public var isZoomGestureActive: Bool { zoomGesture != nil }
+
+    /// The running gesture — introspection for the tests.
+    var currentZoomGesture: CanvasZoomGesture? { zoomGesture }
+
+    /// Begin a pinch anchored at `anchor` (a screen point).
+    ///
+    /// The three-call shape (`begin` / `update` / `end`) exists because a pinch is a
+    /// gesture and the old path had no concept of one: it answered each `magnify`
+    /// event with a full ``sync()`` plus an ``onTransformChanged`` fan-out, so a
+    /// two-second pinch cost ~240 relayouts, ~240 editor repositions and ~240
+    /// create-and-cancel camera debounce tasks. Bracketing lets the host gather the
+    /// events and commit them once per vsync, and lets everything downstream hear
+    /// about the camera ONCE, at the end.
+    ///
+    /// An unclosed gesture is ended first rather than replaced: `.cancelled` is not
+    /// reliably delivered, and a leaked gesture would leave the tiers frozen and the
+    /// notification suppressed for every pinch after it.
+    public func beginZoomGesture(anchorScreenPoint anchor: CGPoint) {
+        if zoomGesture != nil { endZoomGesture() }
+        zoomGesture = CanvasZoomGesture(anchor: anchor)
+    }
+
+    /// Fold one event's factor into the running gesture. Does NOT sync — that is
+    /// ``commitZoomGesture()``'s job, on the host's display link. Returns whether a
+    /// gesture was running and the factor was usable.
+    @discardableResult
+    public func updateZoomGesture(by factor: CGFloat) -> Bool {
+        guard zoomGesture != nil else { return false }
+        return zoomGesture?.accumulate(factor) ?? false
+    }
+
+    /// Apply everything accumulated since the last commit, and redraw.
+    ///
+    /// Returns whether anything was outstanding, so a vsync during a pause in the
+    /// gesture costs one comparison. Deliberately silent — no ``onTransformChanged``
+    /// — because the camera is still moving; listeners hear the final value from
+    /// ``endZoomGesture()``. The tiers stay frozen, so a commit re-lays existing
+    /// layers and requests no new decodes.
+    @discardableResult
+    public func commitZoomGesture() -> Bool {
+        guard let anchor = zoomGesture?.anchor, let factor = zoomGesture?.takePending()
+        else { return false }
+        transform = transform.zoomed(by: factor, aroundScreenPoint: anchor)
+        sync()
+        return true
+    }
+
+    /// Close the gesture: commit the remainder, un-freeze the tiers, and notify once.
+    ///
+    /// The second ``sync()`` is the re-tier — while the gesture ran, every tile kept
+    /// the tier it started with, so this is where a tile that grew across a boundary
+    /// finally asks for the sharper thumbnail. Doing it once at settle rather than
+    /// per event is the point: a pinch sweeping a boundary used to request decodes
+    /// and cancel them on the next event (``DecodeScheduler/retainOnly(_:)``), paying
+    /// for work whose result was thrown away.
+    ///
+    /// A gesture that never moved leaves NO trace — no sync, no notification, no
+    /// camera write. Resting two fingers on the trackpad is not a camera change.
+    public func endZoomGesture() {
+        guard let gesture = zoomGesture else { return }
+        commitZoomGesture()
+        zoomGesture = nil
+        guard gesture.hasMoved else { return }
         sync()
         onTransformChanged?()
     }
@@ -1039,7 +1120,19 @@ public final class CanvasEngine {
     /// key so ``applyDecoded(_:)`` can back-fill it and ``sync()`` can retain it.
     private func paintImage(tile: Tile, layer: CALayer, neededKeys: inout Set<ThumbnailCache.Key>) {
         let onScreenEdge = CGFloat(tile.longestWorldEdge) * transform.scale
-        let tier = lod.tier(forOnScreenLongestEdge: onScreenEdge, previous: keyByTile[tile.id]?.tier)
+        let previous = keyByTile[tile.id]?.tier
+        // Tiers are FROZEN for the duration of a pinch (086 · Phase 1). A zoom sweep
+        // crosses tier boundaries, and each crossing asks for a decode the next event
+        // may cancel — `LODPolicy`'s hysteresis narrows that band but cannot close it,
+        // because the zoom does not oscillate around a boundary, it travels through
+        // one. So a tile that already has a tier keeps it until the fingers lift, and
+        // ``endZoomGesture()`` re-tiers everything once.
+        //
+        // A tile that has NO tier yet is not frozen: it just entered the viewport and
+        // freezing it would mean freezing it blank.
+        let tier = isZoomGestureActive && previous != nil
+            ? previous!
+            : lod.tier(forOnScreenLongestEdge: onScreenEdge, previous: previous)
         let key = ThumbnailCache.Key(imageID: images.imageKey(for: tile), tier: tier)
         keyByTile[tile.id] = key
         neededKeys.insert(key)
