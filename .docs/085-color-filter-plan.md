@@ -10,14 +10,15 @@
 
 ## Status
 
-**C0, C1 and C2 shipped. C3 remains.**
+**Shipped, all four phases.**
 
 | | | |
 |---|---|---|
 | C0 | shipped | [375](../.change-log/375-the-color-palette.md) |
 | C1 | shipped | [376](../.change-log/376-the-color-index.md) |
 | C2 | shipped | [377](../.change-log/377-the-swatch-you-can-click.md) |
-| C3 | open | the palette chip picker + the `SearchRules` bump |
+| — | retune | [378](../.change-log/378-the-gate-that-knew-which-way-was-warm.md) |
+| C3 | shipped | [379](../.change-log/379-the-palette-you-can-open.md) |
 
 **Three things below were superseded by the build**; the prose is left as the
 record of the thinking, and the changelogs own what actually shipped.
@@ -42,6 +43,16 @@ record of the thinking, and the changelogs own what actually shipped.
    an hour of the row shipping, as pale lilacs labelled White. Palette version 2.
 5. **The detail row applies the search's coverage floor.** Drawing every bucket
    made 56.6% of chips unable to return their own picture.
+6. **C3's `SearchRules` bump carried `favoritesOnly` too**
+   ([379](../.change-log/379-the-palette-you-can-open.md)). The blob's own header
+   claims its fields map 1:1 onto `searchAssets`' filter arguments; favorites has
+   been such an argument since 011 and was never a rule field, so `evaluate`
+   dropped it silently. One version bump, not two.
+7. **The picker is on every pane**, unlike the favorites star it sits beside. That
+   star's collection-only placement is justified by a route ("reached by the token
+   like any other") that does not exist — `liveSuggestions` returns tags and
+   collections only. For color the point is settled anyway: a swatch has no text,
+   so there is no first home for a second one to compete with.
 
 ## What already exists
 
@@ -149,6 +160,13 @@ re-backfill to revisit it.
 Open for the build: whether selecting two chips means AND or OR. `tagMatch`
 already establishes the vocabulary for that choice and the answer should reuse
 it rather than invent a second one.
+
+**Answered: `.any`, and it does reuse `TagMatch`.** Picking red then blue reads as
+"red or blue"; demanding both in one picture is the rare case, not the obvious one.
+So `colorMatch` defaults opposite to `tagMatch` — which is why its unknown-token
+fallback in the [379](../.change-log/379-the-palette-you-can-open.md) codec had to
+be read off its own field rather than copied from the tag one. `.all` is reachable
+through the API and has tests; no UI offers it yet.
 
 ## Phases
 

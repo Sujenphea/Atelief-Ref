@@ -225,6 +225,109 @@ struct ServicesSavedSearchTests {
         #expect(hits == [inRefs.id])
     }
 
+    // MARK: - evaluate: favorites + color (085 · C3)
+
+    /// `searchAssets` has taken `favoritesOnly` since 011 and the rules blob never
+    /// carried it, so a saved search that meant "my favorite pins" returned every
+    /// pin. The bug was in the MAPPING, not the query — which is precisely the
+    /// drift 015 named and this suite exists to catch.
+    @Test("evaluate maps the favorites rule onto the favorites filter")
+    func evaluateFavorites() async throws {
+        let (services, _) = try makeServices()
+        let c = try await services.createCollection(name: "Refs")
+        let starred = try await ingest(services, into: c.id, hash: "a1")
+        _ = try await ingest(services, into: c.id, hash: "a2")
+        _ = try await services.setFavorite(true, for: starred.id)
+
+        #expect(try await services.evaluate(
+            rules: SearchRules(favoritesOnly: true)).map(\.asset.id) == [starred.id])
+        // ...and the default really is inert, so an old rule is unchanged by it.
+        #expect(try await services.evaluate(rules: SearchRules()).count == 2)
+    }
+
+    @Test("evaluate maps color rules onto the bucket filter, .any widening")
+    func evaluateColorAny() async throws {
+        let (services, _) = try makeServices()
+        let c = try await services.createCollection(name: "Refs")
+        let red = try await ingest(services, into: c.id, hash: "a1")
+        let blue = try await ingest(services, into: c.id, hash: "a2")
+        _ = try await ingest(services, into: c.id, hash: "a3")  // no colors at all
+        try await services.replaceColors(assetID: red.id, buckets: [3: 0.6], paletteVersion: 2)
+        try await services.replaceColors(assetID: blue.id, buckets: [9: 0.6], paletteVersion: 2)
+
+        let hits = try await services.evaluate(
+            rules: SearchRules(colorBuckets: [3, 9])).map(\.asset.id)
+        #expect(Set(hits) == [red.id, blue.id])
+        #expect(hits.count == 2)  // .any must not duplicate a two-bucket asset
+    }
+
+    @Test("evaluate honors colorMatch .all — every bucket in one asset")
+    func evaluateColorAll() async throws {
+        let (services, _) = try makeServices()
+        let c = try await services.createCollection(name: "Refs")
+        let both = try await ingest(services, into: c.id, hash: "a1")
+        let redOnly = try await ingest(services, into: c.id, hash: "a2")
+        try await services.replaceColors(
+            assetID: both.id, buckets: [3: 0.4, 9: 0.4], paletteVersion: 2)
+        try await services.replaceColors(
+            assetID: redOnly.id, buckets: [3: 0.9], paletteVersion: 2)
+
+        #expect(try await services.evaluate(
+            rules: SearchRules(colorBuckets: [3, 9], colorMatch: .all)
+        ).map(\.asset.id) == [both.id])
+    }
+
+    /// A bucket integer no palette version defines matches nothing rather than
+    /// throwing or matching everything — the degrade AtelierCore's opacity implies.
+    @Test("a rule naming an unknown bucket evaluates to no matches, not an error")
+    func evaluateUnknownBucket() async throws {
+        let (services, _) = try makeServices()
+        let c = try await services.createCollection(name: "Refs")
+        let red = try await ingest(services, into: c.id, hash: "a1")
+        try await services.replaceColors(assetID: red.id, buckets: [3: 0.9], paletteVersion: 2)
+
+        #expect(try await services.evaluate(rules: SearchRules(colorBuckets: [99])).isEmpty)
+    }
+
+    /// The coverage floor is a tuning constant, not a rule field — so a saved
+    /// search inherits whatever `searchAssets` currently enforces. A faint accent
+    /// is below it, and a rule naming that color finds nothing.
+    @Test("a saved color rule inherits the query's coverage floor")
+    func evaluateAppliesCoverageFloor() async throws {
+        let (services, _) = try makeServices()
+        let c = try await services.createCollection(name: "Refs")
+        let faint = try await ingest(services, into: c.id, hash: "a1")
+        try await services.replaceColors(
+            assetID: faint.id,
+            buckets: [6: AppServices.defaultColorCoverageFloor - 0.01],
+            paletteVersion: 2)
+
+        #expect(try await services.evaluate(rules: SearchRules(colorBuckets: [6])).isEmpty)
+    }
+
+    /// The whole point of the bump: a rule PERSISTED with the new dimensions has
+    /// to still carry them when it comes back off disk and runs. Round-tripping
+    /// the value in memory would not catch a key that fails to store.
+    @Test("a persisted rule still filters by favorites and color after a reload")
+    func savedFavoriteColorRuleSurvivesStorage() async throws {
+        let (services, _) = try makeServices()
+        let c = try await services.createCollection(name: "Refs")
+        let wanted = try await ingest(services, into: c.id, hash: "a1")
+        let redNotStarred = try await ingest(services, into: c.id, hash: "a2")
+        let starredNotRed = try await ingest(services, into: c.id, hash: "a3")
+        _ = try await services.setFavorite(true, for: wanted.id)
+        _ = try await services.setFavorite(true, for: starredNotRed.id)
+        try await services.replaceColors(assetID: wanted.id, buckets: [3: 0.6], paletteVersion: 2)
+        try await services.replaceColors(
+            assetID: redNotStarred.id, buckets: [3: 0.6], paletteVersion: 2)
+
+        let search = try await services.createSavedSearch(
+            name: "Favorite reds",
+            rules: SearchRules(favoritesOnly: true, colorBuckets: [3]))
+        #expect(try await services.evaluateSavedSearch(id: search.id)
+            .map(\.asset.id) == [wanted.id])
+    }
+
     @Test("an empty rule evaluates to the whole library")
     func evaluateEmptyIsEverything() async throws {
         let (services, _) = try makeServices()

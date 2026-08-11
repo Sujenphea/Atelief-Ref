@@ -745,6 +745,13 @@ public final class AppServices: Sendable {
             // `collectionIDs` search API takes it as a one-element list (044/045 ·
             // 16A — plural scope is a live-query affordance, not saved).
             collectionIDs: rules.collectionID.map { [$0] } ?? [],
+            favoritesOnly: rules.favoritesOnly,
+            colorBuckets: rules.colorBuckets,
+            colorMatch: rules.colorMatch,
+            // `minimumColorCoverage` is NOT a rule field: it is a tuning constant
+            // like the FTS ranking weights, not part of what a saved search means.
+            // Storing it would bake today's 0.15 into every blob and turn retuning
+            // the floor into a data migration.
             limit: limit,
             after: cursor)
     }

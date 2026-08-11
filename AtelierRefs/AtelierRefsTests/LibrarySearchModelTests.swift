@@ -10,6 +10,7 @@
 
 import AtelierCore
 import AtelierIngestion
+import Combine
 import Foundation
 import Testing
 @testable import AtelierRefs
@@ -514,5 +515,108 @@ struct LibrarySearchModelTests {
         action(.red)
         #expect(m.selectedColorBuckets.isEmpty)
         #expect(recorder.dismissals == 2)
+    }
+
+    // MARK: - The palette picker (085 · C3)
+
+    /// The chip's on/off look reads the TOKENS, so the picker cannot show a color
+    /// as off while the field shows its chip. One piece of state, two views.
+    @Test("isColorSelected tracks the token, per bucket")
+    func isColorSelectedTracksTokens() {
+        let m = LibrarySearchModel()
+        #expect(m.isColorSelected(.red) == false)
+
+        m.toggleColorFilter(.red)
+        #expect(m.isColorSelected(.red))
+        #expect(m.isColorSelected(.blue) == false)  // and only that one
+
+        m.toggleColorFilter(.red)
+        #expect(m.isColorSelected(.red) == false)
+    }
+
+    /// The picker BUTTON's filled state. Distinct from `isColorSelected` because
+    /// the button asks "any at all?" while a chip asks about itself.
+    @Test("hasColorFilter is true only while a color token is present")
+    func hasColorFilterFollowsAnyToken() {
+        let m = LibrarySearchModel()
+        #expect(m.hasColorFilter == false)
+
+        m.toggleColorFilter(.teal)
+        #expect(m.hasColorFilter)
+
+        m.toggleColorFilter(.teal)
+        #expect(m.hasColorFilter == false)
+    }
+
+    /// A tag token must NOT light the palette button — the two dimensions share a
+    /// token array, and `hasColorFilter` has to read only its own case out of it.
+    @Test("a non-color token leaves the palette button dark")
+    func otherTokensDoNotSetHasColorFilter() {
+        let m = LibrarySearchModel()
+        m.tokens = [.favorites, token("grid")]
+        #expect(m.hasColorFilter == false)
+        #expect(m.isColorSelected(.red) == false)
+    }
+
+    /// "Clear colors" is NOT the field's `×`. It drops the colors and leaves the
+    /// rest of the query standing — otherwise the picker would silently throw away
+    /// a tag filter someone spent longer building than the colors.
+    @Test("clearColorFilters drops every color and nothing else")
+    func clearColorsKeepsTheRestOfTheQuery() {
+        let m = LibrarySearchModel()
+        let tag = token("grid")
+        m.tokens = [tag, .favorites]
+        m.toggleColorFilter(.red)
+        m.toggleColorFilter(.blue)
+        m.text = "editorial"
+
+        m.clearColorFilters()
+
+        #expect(m.selectedColorBuckets.isEmpty)
+        #expect(m.tokens == [tag, .favorites])
+        #expect(m.text == "editorial")
+    }
+
+    /// Clearing nothing must not PUBLISH — `tokens` drives an `onChange` that
+    /// re-runs the query, and `removeAll` on a `@Published` array emits whether or
+    /// not it removed anything. Comparing the array before and after cannot see
+    /// that: the values are equal either way. So this counts the emissions, which
+    /// is the thing the guard actually exists to prevent.
+    @Test("clearColorFilters with no colors publishes nothing")
+    func clearColorsIsInertWhenEmpty() {
+        let m = LibrarySearchModel()
+        let tag = token("grid")
+        m.tokens = [tag]
+
+        var emissions = 0
+        let subscription = m.objectWillChange.sink { _ in emissions += 1 }
+        defer { subscription.cancel() }
+
+        m.clearColorFilters()
+        #expect(emissions == 0)
+        #expect(m.tokens == [tag])
+
+        // ...and it DOES publish when there is something to clear, so the guard is
+        // narrow rather than a way to skip the work.
+        m.toggleColorFilter(.red)
+        let afterToggle = emissions
+        m.clearColorFilters()
+        #expect(emissions > afterToggle)
+    }
+
+    /// The picker draws `ColorPalette.filterOrder`, so every bucket it offers must
+    /// be one the model can actually hold as a token. A bucket that toggled to an
+    /// id colliding with another's would make two chips one filter.
+    @Test("every bucket the picker offers toggles its own distinct token")
+    func everyPickerBucketTogglesIndependently() {
+        let m = LibrarySearchModel()
+        for bucket in ColorPalette.filterOrder {
+            m.toggleColorFilter(bucket)
+        }
+        #expect(m.selectedColorBuckets == ColorPalette.filterOrder)
+        #expect(Set(m.tokens.map(\.id)).count == ColorPalette.filterOrder.count)
+
+        m.clearColorFilters()
+        #expect(m.tokens.isEmpty)
     }
 }

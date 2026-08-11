@@ -198,6 +198,24 @@ public enum ColorPalette {
     public static let hueAnchors: [ColorBucket] =
         [.red, .orange, .yellow, .green, .teal, .blue, .purple, .pink]
 
+    // MARK: - Presentation
+
+    /// The order the filter chips are shown in (085 · C3): neutrals first, then
+    /// the wheel from red round to pink, with brown beside the orange it darkens.
+    ///
+    /// **Written out rather than taken from `allCases`.** ``ColorBucket``'s raw
+    /// values are allocation order and the enum says so — "never a sort key" —
+    /// because renumbering a case re-labels stored rows. A picker laid out by
+    /// `allCases` would be reading exactly that forbidden meaning into them, and
+    /// the next bucket added would land wherever its number fell rather than
+    /// where it belongs to the eye. ``filterOrderCoversEveryBucket`` fails if a
+    /// new case is not placed here, which is the point: adding a color should
+    /// make someone decide where it goes.
+    public static let filterOrder: [ColorBucket] = [
+        .black, .gray, .white,
+        .red, .orange, .brown, .yellow, .green, .teal, .blue, .purple, .pink,
+    ]
+
     // MARK: - Assignment
 
     /// File a stored `#rrggbb` swatch hex into a bucket, or `nil` if the string

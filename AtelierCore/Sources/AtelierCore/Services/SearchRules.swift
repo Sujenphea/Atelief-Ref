@@ -19,7 +19,11 @@
 //     (→ `tagIDs`, which IS saved) before a search is ever persisted;
 //   • plural collection scope — a saved search carries a SINGLE `collectionID`
 //     (below); the multi-collection `collectionIDs` search argument (044/045 ·
-//     16A) is a live-query affordance, collapsed to `[collectionID]` on evaluate.
+//     16A) is a live-query affordance, collapsed to `[collectionID]` on evaluate;
+//   • `minimumColorCoverage` (085 · C3) — the color filter's coverage floor is a
+//     TUNING constant, the same kind of thing as the FTS ranking weights, not part
+//     of what a saved search means. Storing it would bake today's 0.15 into every
+//     blob and turn retuning the floor into a data migration.
 //
 // Storage is the `saved_search.rules` opaque TEXT column: this codec serializes to
 // a stable, versioned JSON blob and back. The `version` field is forward-compatible
@@ -39,7 +43,13 @@ public struct SearchRules: Sendable, Equatable, Hashable, Codable {
 
     /// The rule-shape version this build writes. Bump when the shape grows (new
     /// filter dimensions); a stored blob keeps whatever version wrote it.
-    public static let currentVersion = 1
+    ///
+    /// - `1` — text, platform, tags, collection scope.
+    /// - `2` — favorites and dominant color (085 · C3). `favoritesOnly` was NOT a
+    ///   new capability: `searchAssets` has taken it since 011 and the rules blob
+    ///   never carried it, so every saved search silently dropped it. It rides
+    ///   this bump rather than earning a second one for a single boolean.
+    public static let currentVersion = 2
 
     /// The shape version that produced this rule (preserved on decode, so a
     /// consumer can detect a far-future blob and badge it). Fresh rules stamp
@@ -58,6 +68,23 @@ public struct SearchRules: Sendable, Equatable, Hashable, Codable {
     public var tagMatch: TagMatch
     /// Scope to a single collection's membership, or `nil` for the whole library.
     public var collectionID: UUID?
+    /// Restrict to favorited assets (011 · U5). `false` = no favorites filter —
+    /// the `searchAssets` default, and the only correct reading of an absent key.
+    public var favoritesOnly: Bool
+    /// Dominant-color buckets the asset must show, combined per ``colorMatch``
+    /// (085 · C3). De-duplicated, first-seen order preserved. Empty = no color
+    /// filter.
+    ///
+    /// **Raw integers, deliberately.** The palette lives in AtelierIngestion and
+    /// this package cannot see it (085 — Ingestion owns the shape, Core stores it
+    /// opaquely). A value no palette version defines simply matches nothing, which
+    /// is the same outcome as an unknown enum token elsewhere in this codec: the
+    /// dimension goes quiet rather than failing the rule.
+    public var colorBuckets: [Int]
+    /// How `colorBuckets` combine. `.any` (the `searchAssets` default) because
+    /// picking red then blue reads as "red or blue" — demanding both in one
+    /// picture is the rare case, not the obvious one.
+    public var colorMatch: TagMatch
 
     /// Explicit, stable JSON keys (the on-disk rule vocabulary).
     public enum CodingKeys: String, CodingKey {
@@ -67,6 +94,9 @@ public struct SearchRules: Sendable, Equatable, Hashable, Codable {
         case tagIDs = "tag_ids"
         case tagMatch = "tag_match"
         case collectionID = "collection_id"
+        case favoritesOnly = "favorites_only"
+        case colorBuckets = "color_buckets"
+        case colorMatch = "color_match"
     }
 
     public init(
@@ -75,6 +105,9 @@ public struct SearchRules: Sendable, Equatable, Hashable, Codable {
         tagIDs: [UUID] = [],
         tagMatch: TagMatch = .all,
         collectionID: UUID? = nil,
+        favoritesOnly: Bool = false,
+        colorBuckets: [Int] = [],
+        colorMatch: TagMatch = .any,
         version: Int = SearchRules.currentVersion
     ) {
         self.version = version
@@ -83,6 +116,9 @@ public struct SearchRules: Sendable, Equatable, Hashable, Codable {
         self.tagIDs = Self.dedupe(tagIDs)
         self.tagMatch = tagMatch
         self.collectionID = collectionID
+        self.favoritesOnly = favoritesOnly
+        self.colorBuckets = Self.dedupe(colorBuckets)
+        self.colorMatch = colorMatch
     }
 
     // MARK: - Normalization
@@ -95,12 +131,17 @@ public struct SearchRules: Sendable, Equatable, Hashable, Codable {
         return trimmed
     }
 
-    /// Distinct tag ids, first-seen order preserved (deterministic — `Set` would
+    /// Distinct values, first-seen order preserved (deterministic — `Set` would
     /// scramble the blob and break round-trip equality). `searchAssets` de-dupes
     /// anyway; canonicalizing here keeps the STORED rule canonical too.
-    private static func dedupe(_ ids: [UUID]) -> [UUID] {
-        var seen = Set<UUID>()
-        return ids.filter { seen.insert($0).inserted }
+    ///
+    /// Generic over the element so tag ids and color buckets share ONE
+    /// normalization rule. Two copies of this would be two rules free to diverge,
+    /// and a multi-valued dimension that canonicalized differently from its
+    /// neighbour would break `canonicalBlob`'s promise for one field only.
+    private static func dedupe<Element: Hashable>(_ values: [Element]) -> [Element] {
+        var seen = Set<Element>()
+        return values.filter { seen.insert($0).inserted }
     }
 
     // MARK: - Codec
@@ -160,6 +201,24 @@ public struct SearchRules: Sendable, Equatable, Hashable, Codable {
             self.collectionID = UUID(uuidString: rawCollection)  // non-UUID → nil
         } else {
             self.collectionID = nil
+        }
+
+        // Absent → no filter, matching every other dimension here: a rule that
+        // says nothing about favorites must not quietly become "favorites only".
+        self.favoritesOnly = try c.decodeIfPresent(Bool.self, forKey: .favoritesOnly) ?? false
+
+        // Buckets are opaque integers to this package, so there is no "unknown
+        // token" to drop — a value this build's palette doesn't define matches
+        // nothing, which IS the degrade. Decoded as `[Int]`; a blob whose array
+        // holds a non-integer fails the key and drops the dimension whole rather
+        // than half-applying a filter the writer meant as one set.
+        let rawBuckets = try? c.decodeIfPresent([Int].self, forKey: .colorBuckets)
+        self.colorBuckets = Self.dedupe(rawBuckets.flatMap { $0 } ?? [])
+
+        if let rawColorMatch = try c.decodeIfPresent(String.self, forKey: .colorMatch) {
+            self.colorMatch = TagMatch(rawValue: rawColorMatch) ?? .any  // unknown → .any
+        } else {
+            self.colorMatch = .any
         }
     }
 }
