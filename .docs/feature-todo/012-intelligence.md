@@ -7,26 +7,31 @@
 
 ## Status (re-verified against the tree 2026-08-10)
 
-**Four of six phases have shipped, including the one this doc deferred to v2.**
+**Five of six phases have shipped, including the one this doc deferred to v2.**
 
 | Phase | State | Where |
 |---|---|---|
 | I1 analyzer plumbing | **shipped** | schema **v7** `asset_analysis` (`ocr_text` / `colors` / `phash` / `analyzer_version` + its index), `AnalysisCoordinator.swift`, `AssetAnalysis.swift`, `ServicesAnalysisTests` |
 | I2 OCR into search | **shipped** | `analysis_fts`, external-content synchronized with `asset_analysis` via triggers (`Migrator.swift:803-811`); scored into the search union at `AppServices.swift:2722` |
 | I3 suggested tags | **rendering only** | agent tags render as a sparkle chip (`ItemDetailView.swift:1894`, `tag.source == .agent`). **No accept, no dismiss, no suppression memory exists** — the half that makes suggest-and-confirm real is unbuilt |
-| I4 color | **computed, never surfaced** | `colors` is populated by the backfill and decodes via `ColorSwatch.decodeList`, but nothing displays a swatch row and no color filter exists. The app's `ColorSwatchTile` / `ColorSwatchWell` are the *color-kind* UI (`AddColorForm`), a different feature |
+| I4 color | **shipped** | schema **v21** `asset_color` + the search conjunct, `ColorPalette.swift` (Ingestion), the detail swatch row and the toolbar palette picker, `SearchRules` v2. Planned in [085](../085-color-filter-plan.md); shipped across `.change-log/375`–`380` |
 | I5 duplicates review | **shipped** | `DuplicateReviewController.swift` + `DuplicateReviewSheet.swift`, `ServicesDuplicateHashesTests`, `DuplicateReviewControllerTests` |
 | I6 feature-print similarity | **shipped early** | `AssetEmbedding` + schema **v14** dense-vector search, `ServicesEmbeddingTests`, `ServicesSemanticSearchTests`. Marked "deliberately v2" below; it landed anyway |
 
-Live remainder: **I3's accept/dismiss/suppress semantics** and **I4's swatch row
-+ color filter**.
+Live remainder: **I3 alone** — the suggestion producer, then its
+accept/dismiss/suppress semantics.
 
-**I4 is UI on top of data that is already computed and stored** — `colors` is
-populated for every analyzed asset. Planned in
-[085](../085-color-filter-plan.md); it needs one additive table (v21) to make the
-data filterable in SQL, but no analyzer work.
+**I4 shipped 2026-08-11**, as planned in [085](../085-color-filter-plan.md): the
+palette and bucket rule in Ingestion, a v21 `asset_color` table with the filter as
+a WHERE conjunct, a resumable derivation pass keyed on a palette VERSION rather
+than a row count, the detail swatch row, and the toolbar palette picker. Two
+things the plan did not foresee, both found in use within the hour: the chroma
+gate had to become hue-dependent (`.change-log/378`), and the swatch row had to
+apply the search's own coverage floor or half its chips could not return the
+picture they were drawn on.
 
-**I3 is not** — that claim was wrong when written (corrected 2026-08-11).
+**I3 is not comparable** — that claim was wrong when written (corrected
+2026-08-11).
 *Nothing in the tree produces an agent tag.* The only `.agent` references are the
 two rendering sites that would draw a sparkle if one existed
 (`ItemDetailView.swift:1915`, `LibrarySearch.swift:642`). I3 needs the suggestion
