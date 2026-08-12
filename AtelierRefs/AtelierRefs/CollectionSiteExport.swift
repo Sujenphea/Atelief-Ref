@@ -73,14 +73,6 @@ enum CollectionSiteExport {
         var isEmpty: Bool { gallery.isEmpty }
     }
 
-    /// The rows an export considers: the selection when any are selected, else
-    /// the whole collection — the same rule the moodboard and contact sheet use.
-    static func rows(
-        items: [CollectionItemDetail], selectedIDs: Set<UUID>
-    ) -> [CollectionItemDetail] {
-        selectedIDs.isEmpty ? items : items.filter { selectedIDs.contains($0.item.id) }
-    }
-
     /// Map collection rows → a ``Plan``.
     ///
     /// - Parameters:
@@ -161,15 +153,4 @@ enum CollectionSiteExport {
             skipped: skipped)
     }
 
-    /// The folder name the save panel suggests for `collectionName`, run through
-    /// the shared sanitizer so a collection called `Refs / Q3` cannot propose a
-    /// path separator.
-    ///
-    /// A name that is nothing but whitespace short-circuits: `sanitize` falls
-    /// back to `"image"`, which is the right word for one file and the wrong one
-    /// for a folder of many.
-    static func folderName(for collectionName: String) -> String {
-        let trimmed = collectionName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "Refs" : AssetExport.sanitize(trimmed)
-    }
 }

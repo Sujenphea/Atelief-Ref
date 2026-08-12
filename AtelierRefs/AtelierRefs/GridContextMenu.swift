@@ -76,6 +76,49 @@ func masonryContextTargetIndex(at point: CGPoint?, frames: [CGRect], columns: In
     return hits.last
 }
 
+/// One row the out-flow group contributes to a cell menu (011 · A2/A3).
+///
+/// A description, not a widget: `MasonryGridCoordinator` turns these into
+/// `NSMenuItem`s. That split is this file's whole reason for existing — the
+/// decisions about WHICH rows a menu shows stay AppKit-free so they can be tested
+/// without a running view, exactly as ``gridActionTargets`` is.
+enum OutFlowMenuRow: Equatable {
+    /// The separator that opens the group. Only ever emitted when at least one verb
+    /// follows it — a menu that binds neither hook must not grow a stray divider.
+    case separator
+    /// The system `Share ▸` submenu.
+    case share
+    /// `Export Assets…`, with the `(N)` count suffix a multi-target verb carries.
+    case exportAssets(title: String)
+}
+
+/// The out-flow rows for a cell menu: `Share ▸` and `Export Assets…`, each present
+/// only when the surface binds it AND has something to offer.
+///
+/// They come as a group behind their own separator because they are the one part of
+/// this menu that sends refs OUT of the app rather than moving them around inside
+/// it — and they precede the destructive verbs, so a click reaching for Share cannot
+/// land near Delete.
+///
+/// - Parameters:
+///   - canShare: the surface binds sharing AND the targets yielded a shareable
+///     payload (a resolver that comes back empty yields no item — see
+///     `AssetShare.menuItem`).
+///   - canExport: the surface binds the originals export.
+///   - targetCount: how many assets the verbs would act on, for the count suffix.
+func outFlowMenuRows(
+    canShare: Bool, canExport: Bool, targetCount: Int
+) -> [OutFlowMenuRow] {
+    guard canShare || canExport else { return [] }
+    var rows: [OutFlowMenuRow] = [.separator]
+    if canShare { rows.append(.share) }
+    if canExport {
+        rows.append(.exportAssets(
+            title: "Export Assets\(targetCount > 1 ? " (\(targetCount))" : "")…"))
+    }
+    return rows
+}
+
 /// The asset ids a batch action acts on for a right-click on a cell (Finder
 /// scope, 009 · 7A): the WHOLE selection when the cell is part of it, else just
 /// that one cell — **the selection is left untouched either way**.

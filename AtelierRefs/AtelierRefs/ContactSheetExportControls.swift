@@ -41,7 +41,7 @@ struct ContactSheetExportPanel: View {
     /// The selection-or-whole-collection mapping for the current knobs.
     private var mapping: MoodboardExport.Mapping {
         ContactSheetExport.map(
-            details: ContactSheetExport.rows(items: model.items, selectedIDs: model.selection.ids),
+            details: ExportScope.rows(items: model.items, selectedIDs: model.selection.ids),
             config: sheet,
             imageURL: { model.previewImageURL(forAsset: $0) })
     }

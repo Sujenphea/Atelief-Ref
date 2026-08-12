@@ -93,12 +93,10 @@ public struct SiteGallery: Equatable, Sendable {
 
 /// One file to place in `assets/`: where it is now, and what it is called there.
 /// The name is `AssetExport`'s, already de-duplicated for the folder.
-public struct SiteAsset: Equatable, Sendable {
-    public var source: URL
-    public var filename: String
-
-    public init(source: URL, filename: String) {
-        self.source = source
-        self.filename = filename
-    }
-}
+///
+/// The originals writer (011 · A2) needs the identical pair, so the type moved to
+/// ``ExportFile`` and this is its site-flavoured name. Kept as an alias rather
+/// than renamed at every call site: `SiteAsset` is what `SiteGallery`'s
+/// neighbours and `SiteExportWriter`'s signature read as, and a folder of images
+/// is genuinely what a site asset is.
+public typealias SiteAsset = ExportFile

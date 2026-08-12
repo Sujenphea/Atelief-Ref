@@ -179,6 +179,10 @@ struct CollectionView: View {
         .focusedSceneValue(
             \.exportWebPage,
             model.items.isEmpty ? nil : ExportWebPageAction(run: runWebPageExport))
+        // …and its originals (011 · A2), on the same empty-collection rule.
+        .focusedSceneValue(
+            \.exportAssets,
+            model.items.isEmpty ? nil : ExportAssetsAction(run: runAssetExport))
         // Edit ▸ Remove from Collection / Delete (022 · D5). `canRemove` is false in
         // Unsorted, which disables the item rather than leaving it to explain itself:
         // a menu item you can click and that then tells you it did nothing is worse
@@ -425,7 +429,7 @@ struct CollectionView: View {
     /// selection bar is where format / columns change.
     private func runContactSheetExport() {
         let mapping = ContactSheetExport.map(
-            details: ContactSheetExport.rows(
+            details: ExportScope.rows(
                 items: model.items,
                 selectedIDs: model.itemIDsForAction(model.selection.ids)),
             config: ContactSheetConfig(),
@@ -441,14 +445,44 @@ struct CollectionView: View {
         let name = model.name(for: collectionID)
         let plan = CollectionSiteExport.plan(
             title: name,
-            details: CollectionSiteExport.rows(
+            details: ExportScope.rows(
                 items: model.items,
                 selectedIDs: model.itemIDsForAction(model.selection.ids)),
             config: SiteExportConfig(),
             blobURL: { model.blobURL(forAsset: $0) },
             posterURL: { model.previewImageURL(forAsset: $0) })
         exportController.requestSiteExport(
-            plan: plan, suggestedName: CollectionSiteExport.folderName(for: name))
+            plan: plan, suggestedName: ExportScope.folderName(for: name))
+    }
+
+    /// The originals export (011 · A2): selection-or-whole-collection, straight to
+    /// the save panel. The File-menu command and the selection popover's row share
+    /// it verbatim — unlike its three siblings there is no config popover for the
+    /// two paths to differ over, so both are literally this function.
+    private func runAssetExport() {
+        exportAssets(details: ExportScope.rows(
+            items: model.items,
+            selectedIDs: model.itemIDsForAction(model.selection.ids)))
+    }
+
+    /// The right-click's originals export, on the cell's FINDER-SCOPE targets
+    /// rather than the keyboard selection — so a right-click outside the selection
+    /// exports the one cell under the cursor, exactly as Move / Archive / Delete
+    /// behave from the same gesture. Asset ids (what the menu carries), so rows are
+    /// matched by `asset.id` and not by membership.
+    private func runAssetExport(assetIDs: [UUID]) {
+        exportAssets(details: ExportScope.rows(items: model.items, assetIDs: assetIDs))
+    }
+
+    /// Hand `details` to the shared assembly. This collection lends its name to the
+    /// folder; everything else about the export is decided once, in
+    /// ``AssetFolderExport/request(details:suggestedName:blobURL:on:)``.
+    private func exportAssets(details: [CollectionItemDetail]) {
+        AssetFolderExport.request(
+            details: details,
+            suggestedName: ExportScope.folderName(for: model.name(for: collectionID)),
+            blobURL: { model.blobURL(forAsset: $0) },
+            on: exportController)
     }
 
     /// The floating bottom "N selected" action bar (042), shown whenever the grid
@@ -560,6 +594,14 @@ struct CollectionView: View {
                              isEnabled: !exportController.isExporting && !model.items.isEmpty) {
                 showMoreActions = false
                 exportPanel = .webPage
+            }
+            // The originals (011 · A2) run STRAIGHT from here — no `exportPanel`
+            // hop, because there is no panel to raise. Same empty guard as the web
+            // page: nothing to copy is nothing to export.
+            SelectionMenuRow("Export Assets…", systemImage: "folder",
+                             isEnabled: !exportController.isExporting && !model.items.isEmpty) {
+                showMoreActions = false
+                runAssetExport()
             }
         }
         .selectionMenuChrome()
@@ -884,6 +926,16 @@ struct CollectionView: View {
             // but a selection can outlive the rows under it.
             onArchiveVerb: { Task { await model.toggleArchivedSelected() } },
             onArchive: { ids in Task { await model.toggleArchived(assetIDs: ids) } },
+
+            // 011 · A2/A3 — the out-flow pair, both on the cell's Finder-scope
+            // targets. `Share ▸` resolves its payload lazily, on the right-click,
+            // rather than per visible cell (036 §4's whole point).
+            onExportAssets: { ids in runAssetExport(assetIDs: ids) },
+            share: .init(
+                // Cheap enough to run while the menu is being built; the payload
+                // itself waits for the click (011 · A3).
+                canShareAny: { ids in model.canShareAny(from: model.items, assetIDs: ids) },
+                resolve: { ids in model.exportSelection(from: model.items, assetIDs: ids) }),
 
             // 222 — the title row scrolls away inside the grid's own scroll region,
             // its band sized to the row's measured natural height.

@@ -55,14 +55,6 @@ enum ContactSheetExport {
         static let captionColor = RGBA(hex: "#6B6B6B") ?? .black
     }
 
-    /// The rows an export considers: the selection when any are selected, else the
-    /// whole collection (mirrors the moodboard's selection-or-all rule, 052 · B3).
-    static func rows(
-        items: [CollectionItemDetail], selectedIDs: Set<UUID>
-    ) -> [CollectionItemDetail] {
-        selectedIDs.isEmpty ? items : items.filter { selectedIDs.contains($0.item.id) }
-    }
-
     /// Map collection rows → a contact-sheet ``MoodboardExport/Mapping``.
     ///
     /// Renderable rows keep their input order and are packed round-robin into

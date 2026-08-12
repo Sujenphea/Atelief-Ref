@@ -210,6 +210,33 @@ struct GridHostConfiguration {
     /// A no-op by default, so a surface that binds neither is unchanged.
     var onArchive: (_ assetIDs: [UUID]) -> Void = { _ in }
 
+    // MARK: 011 · A2/A3 — out-flow (originals folder + share sheet)
+
+    /// Export the cell's Finder-scope targets as a folder of ORIGINALS (011 · A2).
+    ///
+    /// `nil`-means-absent, the ``onArchiveVerb`` rule: a surface that does not bind
+    /// it gets no menu item rather than a dead one. Note this acts on the
+    /// RIGHT-CLICK's targets, not the keyboard selection — so a right-click outside
+    /// the selection exports the one cell under the cursor, which is what the same
+    /// gesture does for every other verb in this menu.
+    var onExportAssets: ((_ assetIDs: [UUID]) -> Void)?
+
+    /// The two halves of sharing (011 · A3), paired so a surface cannot bind the
+    /// expensive one without the cheap one. `nil` on a surface that does not offer
+    /// sharing at all.
+    ///
+    /// They are split because building the menu and performing the share ask
+    /// different questions at wildly different costs — see ``AssetShare`` for the
+    /// measurement that forced the split.
+    struct ShareHooks {
+        /// Cheap: is ANYTHING here shareable? Answered before the menu draws, so it
+        /// must not build URLs, stat files or sanitize names.
+        var canShareAny: (_ assetIDs: [UUID]) -> Bool
+        /// Expensive: the real payload, resolved only once the user picks Share.
+        var resolve: (_ assetIDs: [UUID]) -> ExportSelection
+    }
+    var share: ShareHooks?
+
     // MARK: 222 — scroll-away header
 
     /// A header hosted INSIDE the grid's scroll region (222), so it scrolls away
@@ -522,6 +549,14 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// Membership id → row, kept for the A2 coordinator's selection reconciliation
     /// (and unit-tested via ``gridIDToIndex(for:)``).
     private(set) var idToIndex: [UUID: Int] = [:]
+
+    /// Where the last context menu was raised, in CONTENT space — the share sheet's
+    /// anchor (011 · A3). The sheet is presented from a menu action, long after the
+    /// `NSEvent` that carried the location has gone.
+    private var lastMenuPoint: CGPoint?
+    /// The share sheet's picker, held while the sheet is up: `NSSharingServicePicker`
+    /// does not retain itself when shown, so a local would die on return.
+    private var sharePicker: NSSharingServicePicker?
 
     /// The feed bucketed by post (307 · carousel grouping), mirrored from the
     /// configuration on every `applyItems`. Feeds the per-cell carousel chip. The
@@ -1295,7 +1330,11 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         // query the marquee / C4 container menu ran). A gap → nil (no menu), parity
         // with right-clicking empty space. A non-pointer invocation (Menu key, no
         // location) falls back to the keyboard cursor (`lead`) cell, per 036 §4 C4.
-        var index = layout.hitTestIndex(at: contentPoint(for: event))
+        let point = contentPoint(for: event)
+        // Kept for the share sheet's anchor (011 · A3): the sheet is raised later,
+        // from a menu action, by which time the event is long gone.
+        lastMenuPoint = point
+        var index = layout.hitTestIndex(at: point)
         if index == nil {
             let isPointer = event.type == .rightMouseDown || event.type == .leftMouseDown
             if !isPointer, let lead = configuration.selectionStore.selection.lead {
@@ -1336,6 +1375,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
                     self?.configuration.onSetCover(targets[0])
                 })
             }
+            addOutFlowItems(to: menu, targets: targets)
             menu.addItem(.separator())
             addArchiveItem(to: menu, targets: targets)
             menu.addItem(BlockMenuItem(
@@ -1364,6 +1404,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
                     self?.configuration.onReveal(itemID)
                 })
             }
+            addOutFlowItems(to: menu, targets: targets)
             menu.addItem(.separator())
             addArchiveItem(to: menu, targets: targets)
             menu.addItem(BlockMenuItem(title: "Delete\(Self.countSuffix(n))") { [weak self] in
@@ -1416,6 +1457,70 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// " (N)" for a multi-item action, empty for a single — mirrors
     /// `CollectionView.countSuffix`.
     private static func countSuffix(_ n: Int) -> String { n > 1 ? " (\(n))" : "" }
+
+    /// The out-flow pair — `Share ▸` and `Export Assets…` (011 · A2/A3) — for a
+    /// BROWSING menu, each added only when the surface binds it and only when the
+    /// targets have something to give.
+    ///
+    /// They sit together, behind their own separator, because they are the one
+    /// group in this menu that sends refs OUT of the app rather than moving them
+    /// around inside it — and ahead of the destructive verbs, so the click that
+    /// reaches for Share cannot land near Delete.
+    ///
+    /// The archive shelf deliberately gets neither. Its menu is three verbs on
+    /// purpose (022 · D5 / 023 · A2): the shelf is where refs go to be out of the
+    /// way, and a share sheet is not what "put this away" asks for.
+    /// Transcribes ``outFlowMenuRows(canShare:canExport:targetCount:)`` — which owns
+    /// the decision, and is unit-tested — into `NSMenuItem`s.
+    ///
+    /// Nothing expensive happens here. The Share row is decided by the CHEAP
+    /// predicate and its payload is resolved in ``presentSharePicker(targets:)``,
+    /// on the click — see ``AssetShare`` for the 77 ms this arrangement removes from
+    /// a 1,000-ref right-click.
+    private func addOutFlowItems(to menu: NSMenu, targets: [UUID]) {
+        let canShare = configuration.share?.canShareAny(targets) ?? false
+        let export = configuration.onExportAssets
+
+        for row in outFlowMenuRows(
+            canShare: canShare, canExport: export != nil, targetCount: targets.count
+        ) {
+            switch row {
+            case .separator:
+                menu.addItem(.separator())
+            case .share:
+                menu.addItem(BlockMenuItem(title: "Share…") { [weak self] in
+                    self?.presentSharePicker(targets: targets)
+                })
+            case .exportAssets(let title):
+                if let export {
+                    menu.addItem(BlockMenuItem(title: title) { export(targets) })
+                }
+            }
+        }
+    }
+
+    /// Resolve the share payload and put the system sheet up, anchored where the
+    /// right-click landed.
+    ///
+    /// A click-to-sheet rather than an inline `Share ▸` submenu: the system submenu
+    /// comes from `NSSharingServicePicker.standardShareMenuItem`, which needs its
+    /// items AT INIT — so an inline submenu cannot be lazy without moving menu items
+    /// between menus behind the picker's back. The sheet keeps the deferral simple
+    /// and honest, and it is the same system UI either way.
+    ///
+    /// The picker is held in `sharePicker` for the sheet's lifetime: the class does
+    /// not retain itself while shown, and a locally-scoped one would be released the
+    /// moment this function returned.
+    private func presentSharePicker(targets: [UUID]) {
+        guard let hooks = configuration.share, let view = collectionView else { return }
+        // THE expensive call, now on an explicit user action rather than on the
+        // right-click that merely opened the menu.
+        guard let picker = AssetShare.picker(for: hooks.resolve(targets)) else { return }
+        sharePicker = picker
+        let anchor = lastMenuPoint.map { CGRect(origin: $0, size: CGSize(width: 1, height: 1)) }
+            ?? CGRect(origin: view.visibleRect.origin, size: CGSize(width: 1, height: 1))
+        picker.show(relativeTo: anchor, of: view, preferredEdge: .maxY)
+    }
 
     /// The Archive item for a BROWSING menu (collection / loose assets), added
     /// only when the surface binds the verb. Nothing a browsing surface can show

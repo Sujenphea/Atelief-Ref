@@ -13,7 +13,7 @@ this doc is still in the backlog:
 
 | Phase | State | Where |
 |---|---|---|
-| U1 out-flow | **shipped** | `AssetExport.swift` (+`AssetExportTests`), `AssetFilePromise.swift`, `AssetPasteboard.swift`; ⌘C in `4be6f88` |
+| U1 out-flow | **shipped, all three** | `AssetExport.swift` (+`AssetExportTests`), `AssetFilePromise.swift`, `AssetPasteboard.swift`; ⌘C in `4be6f88`. A2 batch export + A3 share sheet in `.change-log/385` — `AtelierExport/Assets/AssetFolderWriter.swift`, `AssetFolderExport.swift`, `AssetShare.swift` |
 | U2 justified grid + density | **shipped, as masonry** | `MasonryLayout/CollectionLayout/GridHost/GridItem/LayoutCache`, `GridDensity.swift`. Landed as a masonry layout rather than the justified-rows sketch below; marquee + keyboard nav consume its frames as planned (`MarqueeMath`, `GridNavigation`) |
 | U3 Quick Look + toasts | **shipped** | `QuickLookController.swift`, `ToastQueue.swift` (+`ToastQueueTests`) |
 | U4 ⌘K switcher + triage | **half shipped** | `M` / `A` triage landed (`.change-log/348`, `MoveAddShortcutTests`, `KeyMap`). **The ⌘K quick switcher does not exist** — no switcher type anywhere in the app target |
@@ -60,6 +60,25 @@ The `is_favorite` and `note` migration slots this doc speculated about are spent
    existing detail action).
 3. **Share sheet** (`ShareLink`/`NSSharingServicePicker`) on detail + context menu:
    cheap once file export exists. — *Effort: M total; zero schema.*
+
+**All three shipped** (`.change-log/385`), plus one this sketch did not name: a
+**batch folder export** (`File ▸ Export Assets…`, the selection popover, the
+right-click menu) writing the originals into a folder the user names. That is what
+`AssetExport.swift:6` meant by "the future ⌘C / 008 export all", and what
+`ExportNameAllocator` was written for — it is the caller that needs many names side
+by side in one destination, which no single drag ever did.
+
+Two decisions worth keeping, both departures from the sibling exports:
+
+- **Videos export as the video**, where the web page ([082](../082-sharing-out-plan.md))
+  copies only a poster frame. The originals are the product here.
+- **No config popover.** The other three exports each open one; this has nothing to
+  configure, so the click goes straight to the save dialog.
+
+Byte-less refs (a colour, an image-less link/tweet) are reported skips rather than
+invented sidecars — the text fallback stays a ⌘C affordance. The archive shelf is
+deliberately excluded from both verbs; Space boards still export moodboards rather
+than originals.
 
 ## Cluster B — Browsing feel
 
@@ -155,6 +174,8 @@ rebuild, not before; the UI slot in 006 can land earlier showing provenance only
 
 - File export: filename sanitization matrix (shared with 008 — one suite),
   multi-select export N files, missing-blob error path; pasteboard content types.
+  *(Covered: `AssetExportTests`, `AssetPasteboardTests`, plus `AssetFolderWriterTests`
+  / `AssetFolderExportTests` / `AssetShareTests` for the batch + share halves.)*
 - `JustifiedLayout`: pure — row fill/target height/last-row/single-item/degenerate
   (zero width, one giant image); frame-feed contract test with 009's marquee helper
   (same frames in → same selection out).

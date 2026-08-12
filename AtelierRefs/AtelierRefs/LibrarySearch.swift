@@ -976,6 +976,11 @@ private struct LibrarySearchResults: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var search: LibrarySearchModel
     @ObservedObject var gridPrefs: GridViewPreferences
+    /// The window's shared export orchestrator (011 · A2) — the same instance the
+    /// collection grid and the top-bar progress ring observe, so an originals
+    /// export started from search shows its progress and its toast in the one
+    /// place the other three exports do.
+    @EnvironmentObject private var exportController: ExportController
     /// Whether the detail page is up over these results (069) — the grid keeps first
     /// responder behind it, so it has to stop consuming keys the page needs.
     var isDetailPresented: Bool = false
@@ -1223,7 +1228,23 @@ private struct LibrarySearchResults: View {
                 guard !targets.isEmpty else { return }
                 Task { await model.toggleArchived(assetIDs: targets) }
             },
-            onArchive: { ids in Task { await model.toggleArchived(assetIDs: ids) } })
+            onArchive: { ids in Task { await model.toggleArchived(assetIDs: ids) } },
+
+            // 011 · A2/A3 — out-flow from search too: a hit is a ref like any
+            // other, and the results grid is often exactly where someone assembles
+            // "these twelve" to hand on. The folder is named after the QUERY (a
+            // membership-less surface has no collection name to borrow), falling
+            // back to "Refs" for an empty one.
+            onExportAssets: { ids in
+                AssetFolderExport.request(
+                    details: ExportScope.rows(items: displayItems, assetIDs: ids),
+                    suggestedName: ExportScope.folderName(for: search.text),
+                    blobURL: { model.blobURL(forAsset: $0) },
+                    on: exportController)
+            },
+            share: .init(
+                canShareAny: { ids in model.canShareAny(from: displayItems, assetIDs: ids) },
+                resolve: { ids in model.exportSelection(from: displayItems, assetIDs: ids) }))
     }
 
     // MARK: - Finder-scope target rules (whole selection when the cell is in it)

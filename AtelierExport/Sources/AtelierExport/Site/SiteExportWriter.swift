@@ -21,25 +21,10 @@
 
 import Foundation
 
-/// Why one ref did not make it into `assets/`.
-public struct SiteSkip: Equatable, Sendable {
-    public enum Reason: Equatable, Sendable {
-        /// The blob was gone from disk by the time the copy ran (reaped,
-        /// trashed, or on an unmounted volume).
-        case missingSource
-        /// The copy itself failed — permissions, a full destination disk.
-        case copyFailed(String)
-    }
-
-    /// The name the file would have had in `assets/`.
-    public var filename: String
-    public var reason: Reason
-
-    public init(filename: String, reason: Reason) {
-        self.filename = filename
-        self.reason = reason
-    }
-}
+/// Why one ref did not make it into `assets/` — ``ExportSkip`` under its
+/// site-flavoured name. A partial export reads the same whether this writer or
+/// the originals writer (011 · A2) produced it, because it is the same type.
+public typealias SiteSkip = ExportSkip
 
 /// What a finished folder export produced.
 public struct SiteWriteResult: Equatable, Sendable {
@@ -101,6 +86,16 @@ public enum SiteExportWriter {
 
         for (index, asset) in assets.enumerated() {
             if isCancelled() { throw CancellationError() }
+            // Refused before the name is joined to a directory (011 · A2) — see
+            // `ExportFile.hasSafeName` for why a writer checks this itself rather
+            // than trusting a sanitizer in another module. A rejected name is also
+            // never added to `written`, so its `<img>` cell is dropped from the
+            // page by the filter below, exactly like a failed copy.
+            guard asset.hasSafeName else {
+                skipped.append(SiteSkip(filename: asset.filename, reason: .unsafeName))
+                onProgress(fraction(index + 1, total))
+                continue
+            }
             // The same blob can back two rows; copy it once.
             guard !written.contains(asset.filename) else {
                 onProgress(fraction(index + 1, total))

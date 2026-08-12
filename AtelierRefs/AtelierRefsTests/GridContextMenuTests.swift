@@ -216,4 +216,55 @@ struct GridContextMenuTests {
             gridActionTargets(
                 isSelected: true, selectedAssetIDs: ordered, cellAssetIDs: [Self.assetA]) == ordered)
     }
+
+    // MARK: - The out-flow group (011 · A2/A3)
+
+    @Test("a surface that binds NEITHER verb gets no rows — and no stray separator")
+    func neitherVerbYieldsNothing() {
+        // The shelf's case. Its menu is three verbs on purpose (022 · D5 / 023 · A2),
+        // and the likeliest bug here is a divider appearing above them with nothing
+        // underneath it.
+        #expect(outFlowMenuRows(canShare: false, canExport: false, targetCount: 1) == [])
+        #expect(outFlowMenuRows(canShare: false, canExport: false, targetCount: 12) == [])
+    }
+
+    @Test("both verbs come as a group behind one separator, share first")
+    func bothVerbsOrdered() {
+        #expect(outFlowMenuRows(canShare: true, canExport: true, targetCount: 1)
+            == [.separator, .share, .exportAssets(title: "Export Assets…")])
+    }
+
+    @Test("either verb alone still opens the group with its separator")
+    func eitherVerbAloneKeepsTheSeparator() {
+        #expect(outFlowMenuRows(canShare: true, canExport: false, targetCount: 1)
+            == [.separator, .share])
+        #expect(outFlowMenuRows(canShare: false, canExport: true, targetCount: 1)
+            == [.separator, .exportAssets(title: "Export Assets…")])
+    }
+
+    @Test("the export title counts multiple targets and stays bare for one")
+    func exportTitleCountsTargets() {
+        func title(_ count: Int) -> String? {
+            outFlowMenuRows(canShare: false, canExport: true, targetCount: count)
+                .compactMap { if case .exportAssets(let t) = $0 { return t } else { return nil } }
+                .first
+        }
+        #expect(title(1) == "Export Assets…")
+        #expect(title(2) == "Export Assets (2)…")
+        #expect(title(40) == "Export Assets (40)…")
+        // Matches `countSuffix`: no "(1)", and the ellipsis stays last because the
+        // verb opens a save dialog.
+        #expect(title(0) == "Export Assets…")
+    }
+
+    @Test("share is present exactly when the payload resolved to something")
+    func sharePresenceFollowsThePayload() {
+        // `canShare` folds together "the surface binds it" and "the targets yielded
+        // a shareable payload" — a selection of nothing but media-less refs with no
+        // text produces no item, so no row.
+        #expect(outFlowMenuRows(canShare: false, canExport: true, targetCount: 3)
+            .contains(.share) == false)
+        #expect(outFlowMenuRows(canShare: true, canExport: true, targetCount: 3)
+            .contains(.share))
+    }
 }
