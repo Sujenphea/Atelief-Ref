@@ -24,7 +24,7 @@
 //
 // The parsing is pure and fixture-tested; only `fetchThread` touches the network.
 
-import { unwrapTweet, mapTweet } from "./bulk-twitter.js";
+import { unwrapTweet, mapTweet, stampGroup } from "./bulk-twitter.js";
 import { THREAD_PACING_MS, THREAD_PACING_JITTER_MS } from "./config.js";
 
 /** The GraphQL operation that returns a conversation. */
@@ -324,12 +324,15 @@ export function needsThreadExpansion(tweet, { probeRoots = false } = {}) {
  * Map a self-thread chain to `BulkItem`s: every tweet mapped as usual, then re-stamped
  * so the whole thread reads as ONE post.
  *
- * Two fields are overridden. `originalURL` becomes the thread's FIRST tweet's
- * permalink on every item — that shared permalink is the app's post-grouping key
- * (`PostGrouping.swift`), so a 5-tweet thread collapses to a single tile instead of
- * five loose ones. And `carouselIndex` runs CONTINUOUSLY across the thread rather than
- * restarting per tweet, so the tile opens 1→n in the order the thread was written
- * (a 2-image tweet 1 followed by a 1-image tweet 2 gives 0,1,2 — not 0,1,0).
+ * Two fields are overridden, both via `stampGroup` — the same helper `mapTweet` uses for
+ * a multi-media tweet, because a thread is that same grouping one level up ([090] 5A).
+ * `originalURL` becomes the thread's FIRST tweet's permalink on every item — that shared
+ * permalink is the app's post-grouping key (`PostGrouping.swift`), so a 5-tweet thread
+ * collapses to a single tile instead of five loose ones. And `carouselIndex` runs
+ * CONTINUOUSLY across the thread rather than restarting per tweet, so the tile opens 1→n
+ * in the order the thread was written (a 2-image tweet 1 followed by a 1-image tweet 2
+ * gives 0,1,2 — not 0,1,0); `startIndex` carries that running count from one tweet's
+ * group to the next, so the whole thread is stamped in ONE pass ([090] 16A).
  *
  * Each tweet keeps its own `rawMetadata.tweetId`, so an individual tweet is still
  * identifiable after the group permalink is applied, and gains `threadId` (the first
@@ -353,19 +356,15 @@ export function mapThread(tweets, { host = "x.com", cursor = null } = {}) {
 
   let index = 0;
   perTweet.forEach((items, threadIndex) => {
-    for (const item of items) {
-      item.provenance.originalURL = threadURL;
-      item.provenance.rawMetadata = {
-        ...item.provenance.rawMetadata,
-        threadId,
-        threadIndex,
-        carouselIndex: index,
-      };
-      // Strip the expansion hint: these items ARE the expansion, and leaving it on
-      // would let the expander walk them again (a request per tweet, every sweep).
-      delete item.threadHint;
-      index += 1;
-    }
+    stampGroup(items, {
+      permalink: threadURL,
+      startIndex: index,
+      extraMetadata: { threadId, threadIndex },
+    });
+    // Strip the expansion hint: these items ARE the expansion, and leaving it on
+    // would let the expander walk them again (a request per tweet, every sweep).
+    for (const item of items) delete item.threadHint;
+    index += items.length;
   });
 
   return flat;

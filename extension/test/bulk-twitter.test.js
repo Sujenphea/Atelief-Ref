@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 
 import {
   unwrapTweet, findInstructions, mapTweet, parseTimelinePage, matchesScope, graphqlOp,
-  combineQuoteText, tweetText,
+  combineQuoteText, tweetText, stampGroup,
 } from "../src/bulk-twitter.js";
 import {
   TIMELINE_MESSAGE_SOURCE as MSG_SRC, TIMELINE_REPLAY_SOURCE as REPLAY_SRC,
@@ -99,6 +99,43 @@ test("unwrapTweet: unwraps visibility-wrapped tweets, drops tombstones", () => {
   assert.equal(unwrapTweet({ __typename: "TweetWithVisibilityResults", tweet: inner }), inner);
   assert.equal(unwrapTweet({ __typename: "TweetTombstone" }), null);
   assert.equal(unwrapTweet(null), null);
+});
+
+// MARK: - stampGroup (the JS↔Swift post-grouping contract, [090] 5A/16A)
+
+/** A bare item in the shape stampGroup expects — just the provenance it rewrites. */
+const groupItem = (extra = {}) => ({
+  provenance: { originalURL: "https://x.com/a/status/1", rawMetadata: { kept: true, ...extra } },
+});
+
+test("stampGroup: writes one shared permalink and a 0-based running index", () => {
+  const items = stampGroup([groupItem(), groupItem(), groupItem()], {
+    permalink: "https://x.com/head/status/9",
+  });
+  assert.deepEqual([...new Set(items.map((i) => i.provenance.originalURL))],
+    ["https://x.com/head/status/9"]);
+  assert.deepEqual(items.map((i) => i.provenance.rawMetadata.carouselIndex), [0, 1, 2]);
+  // Everything else the caller put in rawMetadata survives the stamp.
+  for (const item of items) assert.equal(item.provenance.rawMetadata.kept, true);
+});
+
+test("stampGroup: startIndex continues a running sequence across groups (one pass)", () => {
+  // Exactly how mapThread stamps a thread: each tweet's items are a group, and the index
+  // carries forward, so a 2-media tweet followed by a 1-media tweet reads 0,1,2 — not
+  // 0,1,0. Doing it with startIndex is what avoids a second rewriting pass.
+  const first = stampGroup([groupItem(), groupItem()], { permalink: "P", startIndex: 0 });
+  const second = stampGroup([groupItem()], { permalink: "P", startIndex: first.length });
+  assert.deepEqual([...first, ...second].map((i) => i.provenance.rawMetadata.carouselIndex),
+    [0, 1, 2]);
+});
+
+test("stampGroup: extraMetadata merges into every item; no permalink leaves it alone", () => {
+  const items = stampGroup([groupItem(), groupItem()], { extraMetadata: { threadId: "7" } });
+  for (const item of items) {
+    assert.equal(item.provenance.rawMetadata.threadId, "7");
+    assert.equal(item.provenance.originalURL, "https://x.com/a/status/1"); // untouched
+  }
+  assert.deepEqual(stampGroup([], { permalink: "P" }), []);
 });
 
 // MARK: - mapTweet

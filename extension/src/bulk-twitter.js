@@ -179,6 +179,40 @@ function collectMedia(mediaList, { borrowedFrom = null } = {}) {
 }
 
 /**
+ * Re-stamp a run of items so the app reads them as ONE post: a shared `originalURL` and
+ * a CONTINUOUS `carouselIndex`.
+ *
+ * Both fields are a JS↔Swift contract — `PostGrouping.swift` groups on the permalink and
+ * opens the tile in `carouselIndex` order — which is exactly why they are written HERE
+ * and nowhere else ([090] 5A). Two callers need it and they need it identically: a
+ * multi-media tweet (`mapTweet`) and a whole thread (`mapThread`), where the second is
+ * just the first applied across several tweets at once.
+ *
+ * `startIndex` is what makes that possible in a single pass ([090] 16A): a caller
+ * stamping group after group carries the running index forward instead of mapping first
+ * and rewriting the indices afterwards. `extraMetadata` merges into every item's
+ * `rawMetadata` (the thread stamp's `threadId` / `threadIndex`), so a group's shared
+ * facts are written in the same pass as its indices.
+ *
+ * Mutates and returns `items` — these are freshly-built objects owned by the caller, and
+ * copying them here would only add garbage between two functions that always discard the
+ * original anyway.
+ */
+export function stampGroup(items, { permalink = null, startIndex = 0, extraMetadata = null } = {}) {
+  let index = startIndex;
+  for (const item of items) {
+    if (permalink) item.provenance.originalURL = permalink;
+    item.provenance.rawMetadata = {
+      ...item.provenance.rawMetadata,
+      ...(extraMetadata || {}),
+      carouselIndex: index,
+    };
+    index += 1;
+  }
+  return items;
+}
+
+/**
  * Map one timeline tweet result to its `BulkItem`s, or `[]` for a tombstone /
  * no-id / empty tweet (no text AND no media — the app would reject it). `host`
  * sets the `originalURL` origin; `cursor` is threaded in by the caller (the page's
@@ -267,7 +301,10 @@ export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
   };
 
   if (medias.length > 0) {
-    return medias.map((media, index) => ({
+    // The media all belong to one tweet, so they ARE a group: one permalink, indices
+    // 0…n-1 (quoter's media first, the quoted tweet's continuing from there). `stampGroup`
+    // writes both — the same helper `mapThread` uses to stamp a whole thread.
+    return stampGroup(medias.map((media, index) => ({
       sourceId: media.mediaId || `${tweetId}-${index}`,
       mediaUrl: media.mediaUrl,
       mediaUrlFallback: media.mediaUrlFallback,
@@ -277,15 +314,9 @@ export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
         ...shared,
         mediaUrl: media.mediaUrl,
         mediaUrlFallback: media.mediaUrlFallback,
-        // `carouselIndex` is read by the app's post grouping to open the tweet in
-        // ITS order rather than the feed's — the same field the IG driver writes.
-        // Quoter's media take 0…n-1, the quoted tweet's continue from there.
-        rawMetadata: {
-          ...sharedRaw,
-          tweetId, kind: media.kind, videoUrl: media.videoUrl, carouselIndex: index,
-        },
+        rawMetadata: { ...sharedRaw, tweetId, kind: media.kind, videoUrl: media.videoUrl },
       }),
-    }));
+    })), { permalink: originalURL });
   }
 
   // No usable media: a text-only tweet is still a first-class `tweet` card.
