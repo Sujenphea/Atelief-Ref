@@ -162,15 +162,42 @@ struct ContentView: View {
     fileprivate static func exportToastMessage(for report: ExportController.Report) -> String? {
         switch report.outcome {
         case .success:
+            return report.url.map { "Exported \($0.lastPathComponent)" } ?? "Export complete"
+        case .incomplete:
             let base = report.url.map { "Exported \($0.lastPathComponent)" } ?? "Export complete"
-            guard report.skipped > 0 else { return base }
-            let noun = report.skipped == 1 ? "ref" : "refs"
-            return "\(base) — \(report.skipped) \(noun) had no image"
+            return "\(base) — \(skipSummary(report.skipped))"
         case .failed(let message):
             return "Export failed — \(message)"
         case .cancelled:
             return nil
         }
+    }
+
+    /// The words for a partial export, worst bucket FIRST (011 · A2 review).
+    ///
+    /// These used to be one number and one phrase ("N refs had no image"), which
+    /// described a colour swatch correctly and a full disk not at all. The buckets
+    /// are ordered by how much the user needs to know: a refused write means the
+    /// folder is wrong, a missing blob means the library lost bytes, and a
+    /// byte-less ref is simply not exportable and never was.
+    fileprivate static func skipSummary(
+        _ skipped: ExportController.SkipBreakdown
+    ) -> String {
+        var parts: [String] = []
+        if skipped.writeFailed > 0 {
+            parts.append("\(skipped.writeFailed) couldn't be written")
+        }
+        if skipped.unsafeName > 0 {
+            parts.append("\(skipped.unsafeName) had an unusable name")
+        }
+        if skipped.missingSource > 0 {
+            parts.append("\(skipped.missingSource) missing from disk")
+        }
+        if skipped.notExportable > 0 {
+            let noun = skipped.notExportable == 1 ? "ref" : "refs"
+            parts.append("\(skipped.notExportable) \(noun) had no image")
+        }
+        return parts.joined(separator: ", ")
     }
 
     /// Bridges the model's optional ``PendingDeletion`` to the dialog's `Bool`

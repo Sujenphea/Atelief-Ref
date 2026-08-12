@@ -144,3 +144,10 @@ that run created it. Both rules are `SiteExportWriter`'s, and
 - **No sidecar manifest.** A folder of originals carries no titles, tags or
   sources. That is [081](../.docs/081-backup-plan.md)'s archive, which exists and
   is the honest answer for "keep the metadata too".
+- **`FileManager.copyItem` duplicates bytes where APFS could clone them.** On a
+  same-volume export — Desktop being the common destination — `clonefile(2)` would
+  be near-instant and cost zero extra space, since APFS shares blocks until one
+  side is written. A 40 GB export currently writes 40 GB. Not taken: it needs
+  `Darwin`'s `copyfile(3)` plus a cross-volume fallback, inside a package whose
+  whole boundary is "zero product dependencies, pure Foundation", and typical
+  exports are tens of files. Recorded as a known lever rather than a plan.

@@ -95,14 +95,14 @@ struct ContactSheetRowsTests {
     func emptySelectionIsWholeCollection() {
         let a = Fixture.detail(Fixture.asset())
         let b = Fixture.detail(Fixture.asset())
-        #expect(ContactSheetExport.rows(items: [a, b], selectedIDs: []).count == 2)
+        #expect(ExportScope.rows(items: [a, b], selectedIDs: []).count == 2)
     }
 
     @Test("A selection filters to the selected membership ids")
     func selectionFilters() {
         let a = Fixture.detail(Fixture.asset())
         let b = Fixture.detail(Fixture.asset())
-        let rows = ContactSheetExport.rows(items: [a, b], selectedIDs: [b.item.id])
+        let rows = ExportScope.rows(items: [a, b], selectedIDs: [b.item.id])
         #expect(rows.map(\.item.id) == [b.item.id])
     }
 }

@@ -82,21 +82,14 @@ struct AssetFolderExportTests {
     func rowsRule() {
         let a = detail()
         let b = detail()
-        #expect(AssetFolderExport.rows(items: [a, b], selectedIDs: []).count == 2)
-        #expect(AssetFolderExport.rows(items: [a, b], selectedIDs: [b.item.id])
+        #expect(ExportScope.rows(items: [a, b], selectedIDs: []).count == 2)
+        #expect(ExportScope.rows(items: [a, b], selectedIDs: [b.item.id])
             .map(\.item.id) == [b.item.id])
     }
 
-    @Test("The scope rule is the one the other exports use, not a fourth copy")
-    func rowsMatchSiblingExports() {
-        let a = detail()
-        let b = detail()
-        let selected: Set<UUID> = [b.item.id]
-        #expect(AssetFolderExport.rows(items: [a, b], selectedIDs: selected).map(\.item.id)
-            == ContactSheetExport.rows(items: [a, b], selectedIDs: selected).map(\.item.id))
-        #expect(AssetFolderExport.rows(items: [a, b], selectedIDs: selected).map(\.item.id)
-            == CollectionSiteExport.rows(items: [a, b], selectedIDs: selected).map(\.item.id))
-    }
+    // The old `rowsMatchSiblingExports` / `folderNameMatchesSibling` cases are gone
+    // on purpose: they asserted that three copies of one rule still agreed, and the
+    // three copies are now one `ExportScope`. `ExportScopeTests` owns the rule.
 
     // MARK: - Mapping
 
@@ -256,24 +249,5 @@ struct AssetFolderExportTests {
         }
     }
 
-    // MARK: - Folder name
-
-    @Test("The suggested folder name is the collection's, sanitized")
-    func folderNameSanitized() {
-        #expect(AssetFolderExport.folderName(for: "Refs / Q3") == "Refs Q3")
-    }
-
-    @Test("A blank collection name falls back to Refs, not to \"image\"")
-    func folderNameBlankFallback() {
-        #expect(AssetFolderExport.folderName(for: "   ") == "Refs")
-        #expect(AssetFolderExport.folderName(for: "") == "Refs")
-    }
-
-    @Test("The folder name matches the web page's for the same collection")
-    func folderNameMatchesSibling() {
-        for name in ["Studio", "Refs / Q3", "  ", "Ünïcode ✳️"] {
-            #expect(AssetFolderExport.folderName(for: name)
-                == CollectionSiteExport.folderName(for: name))
-        }
-    }
+    // Folder naming moved with the rule — see `ExportScopeTests`.
 }

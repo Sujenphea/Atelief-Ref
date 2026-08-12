@@ -239,9 +239,118 @@ struct AssetFolderWriterTests {
         }
     }
 
+    // MARK: - Copy failure (the other half of the error contract)
+
+    @Test("A copy the filesystem refuses is a reported skip, not a throw")
+    func copyFailureSkips() throws {
+        try withTempDirectory { temp in
+            let source = temp.appendingPathComponent("blob")
+            makeFile(source)
+            let out = temp.appendingPathComponent("out", isDirectory: true)
+            try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+            // Make the destination unwritable — the deterministic stand-in for a
+            // full disk or a permissions problem, which is the branch that
+            // otherwise never runs.
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o555], ofItemAtPath: out.path)
+            defer {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o755], ofItemAtPath: out.path)
+            }
+
+            let result = try AssetFolderWriter.write(
+                files: [ExportFile(source: source, filename: "a.png")], to: out)
+
+            #expect(result.copied == 0)
+            #expect(result.skipped.count == 1)
+            #expect(result.skipped.first?.filename == "a.png")
+            // The reason must be `copyFailed` and must carry the message — not
+            // `missingSource`, which would misdescribe a present-but-uncopyable file.
+            switch result.skipped.first?.reason {
+            case .copyFailed(let message): #expect(!message.isEmpty)
+            default: Issue.record("expected .copyFailed, got \(String(describing: result.skipped.first?.reason))")
+            }
+        }
+    }
+
+    // MARK: - Unsafe names (011 · A2 — the writer checks its own invariant)
+
+    @Test("A traversal name is refused and never written outside the destination")
+    func traversalNameRefused() throws {
+        try withTempDirectory { temp in
+            let source = temp.appendingPathComponent("blob")
+            makeFile(source)
+            let out = temp.appendingPathComponent("out", isDirectory: true)
+            let escapee = temp.appendingPathComponent("evil.png")
+
+            let result = try AssetFolderWriter.write(
+                files: [ExportFile(source: source, filename: "../evil.png")], to: out)
+
+            #expect(result.copied == 0)
+            #expect(result.skipped == [
+                ExportSkip(filename: "../evil.png", reason: .unsafeName)
+            ])
+            // The whole point: nothing landed in the parent directory.
+            #expect(!exists(escapee))
+        }
+    }
+
+    @Test("An absolute path as a filename is refused")
+    func absoluteNameRefused() throws {
+        try withTempDirectory { temp in
+            let source = temp.appendingPathComponent("blob")
+            makeFile(source)
+            let out = temp.appendingPathComponent("out", isDirectory: true)
+            let absolute = temp.appendingPathComponent("absolute.png")
+
+            let result = try AssetFolderWriter.write(
+                files: [ExportFile(source: source, filename: absolute.path)], to: out)
+
+            #expect(result.copied == 0)
+            #expect(result.skipped.first?.reason == .unsafeName)
+            #expect(!exists(absolute))
+        }
+    }
+
+    @Test("An unsafe name does not stop the files around it")
+    func unsafeNameDoesNotSinkTheExport() throws {
+        try withTempDirectory { temp in
+            let source = temp.appendingPathComponent("blob")
+            makeFile(source)
+            let out = temp.appendingPathComponent("out", isDirectory: true)
+
+            let result = try AssetFolderWriter.write(
+                files: [
+                    ExportFile(source: source, filename: "../escape.png"),
+                    ExportFile(source: source, filename: "fine.png"),
+                ],
+                to: out)
+
+            #expect(result.copied == 1)
+            #expect(result.skipped.count == 1)
+            #expect(exists(out.appendingPathComponent("fine.png")))
+        }
+    }
+
+    @Test("hasSafeName accepts ordinary export names and rejects every escape shape")
+    func safeNameMatrix() {
+        let file = { (name: String) in ExportFile(source: URL(fileURLWithPath: "/x"), filename: name) }
+
+        // What `AssetExport.filename` actually produces, including a backslash —
+        // an ordinary character on macOS, not a separator.
+        for good in ["hero-ab12cd34.png", "hero-ab12cd34-2.png", "a b c.mp4",
+                     "Ünïcode ✳️.png", "no-extension", "back\\slash.png", "...leading"] {
+            #expect(file(good).hasSafeName, "expected \(good) to be accepted")
+        }
+        for bad in ["", ".", "..", "/", "a/b.png", "../evil.png", "/abs/evil.png",
+                    "sub/dir/x.png", "trailing/", "nul\0byte.png"] {
+            #expect(!file(bad).hasSafeName, "expected \(bad) to be rejected")
+        }
+    }
+
     // MARK: - Progress
 
-    @Test("Progress rises monotonically to exactly 1")
+    @Test("Progress rises strictly, one tick per file plus a final 1")
     func progressReachesOne() throws {
         try withTempDirectory { temp in
             let source = temp.appendingPathComponent("blob")
@@ -253,8 +362,9 @@ struct AssetFolderWriterTests {
                 files: (0..<4).map { ExportFile(source: source, filename: "f-\($0).png") },
                 to: out, onProgress: { ticks.append($0) })
 
-            #expect(ticks.last == 1)
-            #expect(ticks == ticks.sorted())
+            // Pinned exactly rather than "sorted" — a non-strict sort check passes
+            // for an all-identical sequence, so it proved almost nothing.
+            #expect(ticks == [0.25, 0.5, 0.75, 1, 1])
             #expect(ticks.allSatisfy { $0 >= 0 && $0 <= 1 })
         }
     }
@@ -268,8 +378,9 @@ struct AssetFolderWriterTests {
                 files: [ExportFile(source: temp.appendingPathComponent("gone"), filename: "g.png")],
                 to: out, onProgress: { ticks.append($0) })
 
-            #expect(ticks.last == 1)
-            #expect(!ticks.isEmpty)
+            // One tick for the skipped file, one for the tail. (`ticks.last == 1`
+            // already implied non-emptiness, so that assertion is gone.)
+            #expect(ticks == [1, 1])
         }
     }
 }

@@ -2255,6 +2255,19 @@ final class IngestionModel: ObservableObject {
             assets: assets, blobURL: { self.blobURL(forAsset: $0) })
     }
 
+    /// Whether ANY of `assetIDs` has something shareable — the CHEAP question a
+    /// right-click asks (011 · A3 review).
+    ///
+    /// Deliberately not `!exportSelection(...).isEmpty`: that resolves every asset
+    /// and was measured at ~77 ms for 1,000 refs, paid before the menu could draw.
+    /// This stops at the FIRST shareable ref via `contains(where:)`, and
+    /// ``AssetShare/canShare(_:)`` touches no filesystem — so a 5,000-ref selection
+    /// normally answers after looking at one asset.
+    func canShareAny(from details: [CollectionItemDetail], assetIDs: [UUID]) -> Bool {
+        let wanted = Set(assetIDs)
+        return details.contains { wanted.contains($0.asset.id) && AssetShare.canShare($0.asset) }
+    }
+
     /// The on-disk URL of a folder item's 512-tier thumbnail (pure — no decode).
     /// The grid decodes + caches it off the main thread via ``ThumbnailPipeline``
     /// (at the cell's own pixel bucket), so the render path never blocks on disk

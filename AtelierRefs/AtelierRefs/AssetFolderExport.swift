@@ -56,14 +56,25 @@ enum AssetFolderExport {
         var isEmpty: Bool { files.isEmpty }
     }
 
-    /// The rows an export considers: the selection when any are selected, else the
-    /// whole collection. Delegated rather than re-implemented — this is the one
-    /// scope rule all four exports share (052 · B3), and a fourth copy of a
-    /// one-line filter is a fourth thing that can drift.
-    static func rows(
-        items: [CollectionItemDetail], selectedIDs: Set<UUID>
-    ) -> [CollectionItemDetail] {
-        ContactSheetExport.rows(items: items, selectedIDs: selectedIDs)
+    /// Plan `details` and hand them to `controller` — the ONE place a
+    /// folder-of-originals export is assembled.
+    ///
+    /// Every surface that offers this export used to repeat the same three steps
+    /// (resolve rows, plan, request), and the two that existed had already drifted
+    /// apart on the folder name. Now a surface supplies only what is genuinely its
+    /// own: which rows, what to call the folder, and how to resolve a blob. The
+    /// name stays a parameter rather than being derived here because it legitimately
+    /// differs — a collection lends its own name, while a membership-less surface
+    /// like search has only its query to offer.
+    static func request(
+        details: [CollectionItemDetail],
+        suggestedName: String,
+        blobURL: (Asset) -> URL?,
+        on controller: ExportController
+    ) {
+        controller.requestAssetExport(
+            plan: plan(details: details, blobURL: blobURL),
+            suggestedName: suggestedName)
     }
 
     /// Map collection rows → a ``Plan``.
@@ -107,11 +118,4 @@ enum AssetFolderExport {
         return Plan(files: files, skipped: skipped)
     }
 
-    /// The folder name the save panel suggests. The web page's rule verbatim —
-    /// the collection's name through the shared sanitizer, with a whitespace-only
-    /// name falling back to `"Refs"` rather than to `sanitize`'s `"image"` (which
-    /// is the right word for one file and the wrong one for a folder of many).
-    static func folderName(for collectionName: String) -> String {
-        CollectionSiteExport.folderName(for: collectionName)
-    }
 }

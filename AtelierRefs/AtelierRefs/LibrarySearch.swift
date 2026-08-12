@@ -1236,17 +1236,15 @@ private struct LibrarySearchResults: View {
             // membership-less surface has no collection name to borrow), falling
             // back to "Refs" for an empty one.
             onExportAssets: { ids in
-                let wanted = Set(ids)
-                let plan = AssetFolderExport.plan(
-                    details: displayItems.filter { wanted.contains($0.asset.id) },
-                    blobURL: { model.blobURL(forAsset: $0) })
-                exportController.requestAssetExport(
-                    plan: plan,
-                    suggestedName: AssetFolderExport.folderName(for: search.text))
+                AssetFolderExport.request(
+                    details: ExportScope.rows(items: displayItems, assetIDs: ids),
+                    suggestedName: ExportScope.folderName(for: search.text),
+                    blobURL: { model.blobURL(forAsset: $0) },
+                    on: exportController)
             },
-            shareSelection: { ids in
-                model.exportSelection(from: displayItems, assetIDs: ids)
-            })
+            share: .init(
+                canShareAny: { ids in model.canShareAny(from: displayItems, assetIDs: ids) },
+                resolve: { ids in model.exportSelection(from: displayItems, assetIDs: ids) }))
     }
 
     // MARK: - Finder-scope target rules (whole selection when the cell is in it)

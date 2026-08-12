@@ -167,7 +167,10 @@ struct ExportProgressRing: View {
             }
         }
         .onChange(of: controller.lastReport) { _, report in
-            guard let report, case .success = report.outcome else { return }
+            // `didWrite`, not `case .success`: a partial export (011 · A2 review's
+            // `.incomplete`) DID put a file on disk, so the checkmark is earned —
+            // what was left out is the toast's business, not this glyph's.
+            guard let report, report.didWrite else { return }
             showDone = true
             Task {
                 try? await Task.sleep(for: .seconds(1.5))

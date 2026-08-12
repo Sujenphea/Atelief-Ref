@@ -58,6 +58,28 @@ extension AssetExport {
             return .file(item)
         }
         // No copyable bytes → the kind's text fallback (or nothing).
+        return textFallback(for: asset)
+    }
+
+    /// The words that stand in for an asset with no exportable bytes:
+    /// - `.color` → the canonical `#rrggbb` hex.
+    /// - `.link` → the saved URL.
+    /// - `.tweet` → the tweet's permalink (no URL field is stored, so it is rebuilt
+    ///   from the handle + id, falling back to `/i/status/`).
+    /// - `.image` / `.video` / `.unknown` → `nil`; a picture is not text.
+    ///
+    /// Named and public rather than left inline inside
+    /// ``pasteboardEntry(asset:source:blobURL:)`` because a second caller wanted
+    /// exactly this and could only reach it by passing that function a nil `source`
+    /// AND a nil `blobURL` so it would fail through to here — which worked, but
+    /// asked for the fallback by arranging for everything else to fail rather than
+    /// by saying so. It also meant the same asset could be described differently
+    /// depending on which caller asked, since one passed a real `source` and the
+    /// other could not.
+    ///
+    /// Reads only `asset.content`: none of the three branches needs a `Source`,
+    /// which is what makes it safe to call where no source is at hand.
+    static func textFallback(for asset: Asset) -> AssetPasteboardEntry? {
         switch asset.content {
         case .color(let hex):
             return .text(hex)

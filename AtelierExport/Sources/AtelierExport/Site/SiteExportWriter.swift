@@ -86,6 +86,16 @@ public enum SiteExportWriter {
 
         for (index, asset) in assets.enumerated() {
             if isCancelled() { throw CancellationError() }
+            // Refused before the name is joined to a directory (011 · A2) — see
+            // `ExportFile.hasSafeName` for why a writer checks this itself rather
+            // than trusting a sanitizer in another module. A rejected name is also
+            // never added to `written`, so its `<img>` cell is dropped from the
+            // page by the filter below, exactly like a failed copy.
+            guard asset.hasSafeName else {
+                skipped.append(SiteSkip(filename: asset.filename, reason: .unsafeName))
+                onProgress(fraction(index + 1, total))
+                continue
+            }
             // The same blob can back two rows; copy it once.
             guard !written.contains(asset.filename) else {
                 onProgress(fraction(index + 1, total))

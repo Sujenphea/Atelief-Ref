@@ -587,14 +587,12 @@ struct ItemDetailView: View {
     /// when the ref has bytes, else the kind's text fallback — a colour's hex, a
     /// link's or tweet's URL, exactly what ⌘C would put on the board.
     ///
-    /// Reuses `exportItem` rather than re-resolving, so the menu costs no `stat`
-    /// during a zoom or pan; the fallback branch is pure (it reaches
-    /// ``AssetExport/pasteboardEntry(asset:source:blobURL:)`` with no URL, which is
-    /// how that function's text cases are selected) and needs no `source`, since
-    /// none of them read one.
+    /// Reuses `exportItem` rather than re-resolving, so opening the menu costs no
+    /// `stat` during a zoom or pan, and asks for the fallback BY NAME rather than by
+    /// nilling arguments until `pasteboardEntry` fell through to it.
     private var shareEntry: AssetPasteboardEntry? {
         if let exportItem { return .file(exportItem) }
-        return AssetExport.pasteboardEntry(asset: asset, source: nil, blobURL: nil)
+        return AssetExport.textFallback(for: asset)
     }
 
     /// The source / lifecycle actions the Figma panel drops, relocated to a

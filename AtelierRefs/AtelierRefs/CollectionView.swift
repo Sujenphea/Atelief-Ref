@@ -429,7 +429,7 @@ struct CollectionView: View {
     /// selection bar is where format / columns change.
     private func runContactSheetExport() {
         let mapping = ContactSheetExport.map(
-            details: ContactSheetExport.rows(
+            details: ExportScope.rows(
                 items: model.items,
                 selectedIDs: model.itemIDsForAction(model.selection.ids)),
             config: ContactSheetConfig(),
@@ -445,14 +445,14 @@ struct CollectionView: View {
         let name = model.name(for: collectionID)
         let plan = CollectionSiteExport.plan(
             title: name,
-            details: CollectionSiteExport.rows(
+            details: ExportScope.rows(
                 items: model.items,
                 selectedIDs: model.itemIDsForAction(model.selection.ids)),
             config: SiteExportConfig(),
             blobURL: { model.blobURL(forAsset: $0) },
             posterURL: { model.previewImageURL(forAsset: $0) })
         exportController.requestSiteExport(
-            plan: plan, suggestedName: CollectionSiteExport.folderName(for: name))
+            plan: plan, suggestedName: ExportScope.folderName(for: name))
     }
 
     /// The originals export (011 · A2): selection-or-whole-collection, straight to
@@ -460,7 +460,7 @@ struct CollectionView: View {
     /// it verbatim — unlike its three siblings there is no config popover for the
     /// two paths to differ over, so both are literally this function.
     private func runAssetExport() {
-        exportAssets(details: AssetFolderExport.rows(
+        exportAssets(details: ExportScope.rows(
             items: model.items,
             selectedIDs: model.itemIDsForAction(model.selection.ids)))
     }
@@ -471,18 +471,18 @@ struct CollectionView: View {
     /// behave from the same gesture. Asset ids (what the menu carries), so rows are
     /// matched by `asset.id` and not by membership.
     private func runAssetExport(assetIDs: [UUID]) {
-        let wanted = Set(assetIDs)
-        exportAssets(details: model.items.filter { wanted.contains($0.asset.id) })
+        exportAssets(details: ExportScope.rows(items: model.items, assetIDs: assetIDs))
     }
 
-    /// Plan `details` and hand them to the shared controller. The one place the
-    /// suggested folder name is decided, so every path proposes the same one.
+    /// Hand `details` to the shared assembly. This collection lends its name to the
+    /// folder; everything else about the export is decided once, in
+    /// ``AssetFolderExport/request(details:suggestedName:blobURL:on:)``.
     private func exportAssets(details: [CollectionItemDetail]) {
-        let plan = AssetFolderExport.plan(
-            details: details, blobURL: { model.blobURL(forAsset: $0) })
-        exportController.requestAssetExport(
-            plan: plan,
-            suggestedName: AssetFolderExport.folderName(for: model.name(for: collectionID)))
+        AssetFolderExport.request(
+            details: details,
+            suggestedName: ExportScope.folderName(for: model.name(for: collectionID)),
+            blobURL: { model.blobURL(forAsset: $0) },
+            on: exportController)
     }
 
     /// The floating bottom "N selected" action bar (042), shown whenever the grid
@@ -931,7 +931,11 @@ struct CollectionView: View {
             // targets. `Share ▸` resolves its payload lazily, on the right-click,
             // rather than per visible cell (036 §4's whole point).
             onExportAssets: { ids in runAssetExport(assetIDs: ids) },
-            shareSelection: { ids in model.exportSelection(from: model.items, assetIDs: ids) },
+            share: .init(
+                // Cheap enough to run while the menu is being built; the payload
+                // itself waits for the click (011 · A3).
+                canShareAny: { ids in model.canShareAny(from: model.items, assetIDs: ids) },
+                resolve: { ids in model.exportSelection(from: model.items, assetIDs: ids) }),
 
             // 222 — the title row scrolls away inside the grid's own scroll region,
             // its band sized to the row's measured natural height.

@@ -38,7 +38,7 @@ struct CollectionSiteExportPanel: View {
     private var plan: CollectionSiteExport.Plan {
         CollectionSiteExport.plan(
             title: model.name(for: collectionID),
-            details: CollectionSiteExport.rows(
+            details: ExportScope.rows(
                 items: model.items, selectedIDs: model.selection.ids),
             config: config,
             blobURL: { model.blobURL(forAsset: $0) },
@@ -70,7 +70,7 @@ struct CollectionSiteExportPanel: View {
                 onClose()
                 controller.requestSiteExport(
                     plan: export,
-                    suggestedName: CollectionSiteExport.folderName(
+                    suggestedName: ExportScope.folderName(
                         for: model.name(for: collectionID)))
             }
             .buttonStyle(DialogButtonStyle())

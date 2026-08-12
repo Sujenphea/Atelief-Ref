@@ -84,23 +84,67 @@ struct AssetShareTests {
         #expect(AssetShare.items(for: selection([])).isEmpty)
     }
 
-    // MARK: - Menu item
+    // MARK: - Picker
 
-    @Test("Nothing shareable yields NO menu item rather than a dead one")
+    @Test("Nothing shareable yields NO picker rather than an empty sheet")
     @MainActor
-    func emptyYieldsNoMenuItem() {
-        #expect(AssetShare.menuItem(for: selection([])) == nil)
+    func emptyYieldsNoPicker() {
+        #expect(AssetShare.picker(for: selection([])) == nil)
     }
 
-    @Test("A shareable selection yields an item that owns its picker")
+    @Test("A shareable selection yields a picker over the whole payload")
     @MainActor
-    func menuItemRetainsPicker() {
-        let item = AssetShare.menuItem(
-            for: selection([fileEntry("/tmp/hero.png", "hero.png")]))
+    func pickerCoversPayload() {
+        let picker = AssetShare.picker(for: selection([
+            fileEntry("/tmp/hero.png", "hero.png"),
+            .text("#112233"),
+        ]))
+        #expect(picker != nil)
+    }
 
-        #expect(item != nil)
-        // The picker populates the submenu lazily, so the item must keep it alive
-        // past the builder's return — see `AssetShare.menuItem`.
-        #expect(item?.representedObject is NSSharingServicePicker)
+    // MARK: - The cheap predicate (011 · A3 review)
+
+    /// A byte-backed asset — the overwhelmingly common case, and the one that must
+    /// be answered from `blobHash` alone.
+    private func asset(kind: AssetKind, blobHash: String?, payload: String? = nil) -> Asset {
+        Asset(
+            id: UUID(), kind: kind, blobHash: blobHash,
+            mimeType: "image/png", width: 10, height: 10, duration: nil,
+            fileSize: 10, downloadState: .downloaded, createdAt: Date(),
+            name: nil, sourceId: UUID(), payload: payload)
+    }
+
+    @Test("Anything with bytes is shareable, decided from blobHash alone")
+    func bytesAreShareable() {
+        #expect(AssetShare.canShare(asset(kind: .image, blobHash: "abcdef1234567890")))
+        #expect(AssetShare.canShare(asset(kind: .video, blobHash: "abcdef1234567890")))
+    }
+
+    @Test("A byte-less ref is shareable when its kind has text to offer")
+    func byteLessKindsFallBackToText() {
+        let colour = asset(
+            kind: .color, blobHash: nil,
+            payload: AssetPayload(color: ColorPayload(hex: "#112233")).jsonString())
+        #expect(AssetShare.canShare(colour))
+    }
+
+    @Test("A byte-less ref with no text at all is not shareable")
+    func nothingToShare() {
+        // An `.image` with no blob resolves to `AssetContent.unknown` — no bytes and
+        // no words. So does a media-less kind whose payload never arrived, which is
+        // the corrupt-row case rather than a legitimate one.
+        #expect(!AssetShare.canShare(asset(kind: .image, blobHash: nil)))
+        #expect(!AssetShare.canShare(asset(kind: .video, blobHash: nil)))
+        #expect(!AssetShare.canShare(asset(kind: .link, blobHash: nil, payload: nil)))
+        #expect(!AssetShare.canShare(asset(kind: .color, blobHash: nil, payload: nil)))
+    }
+
+    @Test("The cheap predicate never consults the filesystem")
+    func cheapPredicateIgnoresDisk() {
+        // A hash that could not possibly have a file on disk still answers `true`:
+        // the whole point is that the menu does not pay for a `stat` per asset. The
+        // documented consequence is that a fully-reaped selection can offer Share
+        // and then have nothing to hand over.
+        #expect(AssetShare.canShare(asset(kind: .image, blobHash: "0000000000000000")))
     }
 }

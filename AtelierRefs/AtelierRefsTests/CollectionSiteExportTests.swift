@@ -90,8 +90,8 @@ struct CollectionSiteExportTests {
     func rowsRule() {
         let a = detail()
         let b = detail()
-        #expect(CollectionSiteExport.rows(items: [a, b], selectedIDs: []).count == 2)
-        #expect(CollectionSiteExport.rows(items: [a, b], selectedIDs: [b.item.id])
+        #expect(ExportScope.rows(items: [a, b], selectedIDs: []).count == 2)
+        #expect(ExportScope.rows(items: [a, b], selectedIDs: [b.item.id])
             .map(\.item.id) == [b.item.id])
     }
 
@@ -324,9 +324,9 @@ struct CollectionSiteExportTests {
 
     @Test("The suggested folder name goes through the shared sanitizer")
     func folderNameSanitized() {
-        #expect(CollectionSiteExport.folderName(for: "Refs / Q3: 2026") == "Refs Q3 2026")
-        #expect(CollectionSiteExport.folderName(for: "  ") == "Refs")
-        #expect(CollectionSiteExport.folderName(for: "Interiors") == "Interiors")
+        #expect(ExportScope.folderName(for: "Refs / Q3: 2026") == "Refs Q3 2026")
+        #expect(ExportScope.folderName(for: "  ") == "Refs")
+        #expect(ExportScope.folderName(for: "Interiors") == "Interiors")
     }
 
     // MARK: - End to end
