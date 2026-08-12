@@ -250,8 +250,13 @@ function compareIds(a, b) {
  *
  * Returns `[]` when the focal tweet isn't in the body (a protected/withheld
  * conversation), which the caller reads as "don't expand".
+ *
+ * `log` is called when a fork is discarded ([090] 7A). The heuristic is fine — real
+ * self-threads almost never branch — but doing it SILENTLY is not: if a capture is ever
+ * missing an arm of a thread, the only way to know that's what happened is a line saying
+ * so at the moment it happened.
  */
-export function selfThreadChain(json, focalTweetId) {
+export function selfThreadChain(json, focalTweetId, { log = () => {} } = {}) {
   const tweets = collectConversationTweets(json);
   const byId = new Map();
   for (const tweet of tweets) {
@@ -263,6 +268,24 @@ export function selfThreadChain(json, focalTweetId) {
 
   const author = screenNameOf(focal);
   const sameAuthor = (tweet) => !!author && screenNameOf(tweet) === author;
+
+  // A parent → its children index, built ONCE ([090] 15A). The walk below asks "who
+  // replied to this?" at every step, and answering that by re-scanning every tweet each
+  // time is quadratic on a popular conversation — which is exactly the conversation most
+  // likely to be big. Buckets are pre-sorted so the walk's own choice is just "the first
+  // one still eligible", and only the author's own replies are indexed at all, since the
+  // spine is the only thing being walked.
+  const childrenOf = new Map();
+  for (const tweet of tweets) {
+    if (!sameAuthor(tweet)) continue;
+    const parentId = parentIdOf(tweet);
+    if (!parentId) continue;
+    if (!childrenOf.has(parentId)) childrenOf.set(parentId, []);
+    childrenOf.get(parentId).push(tweet);
+  }
+  for (const children of childrenOf.values()) {
+    children.sort((a, b) => compareIds(idOf(a), idOf(b)));
+  }
 
   // Up: follow the reply links to the first tweet the author wrote in this chain.
   const ancestors = [];
@@ -280,17 +303,18 @@ export function selfThreadChain(json, focalTweetId) {
 
   // Down: each step is the author's own reply to the current tweet. A branch (the
   // author posted two replies to the same tweet) resolves to the earliest, which is
-  // the continuation; the later one is an aside.
+  // the continuation; the later one is an aside — reported, not silently dropped.
   const descendants = [];
   cursor = focal;
   while (true) {
     const currentId = idOf(cursor);
-    const children = tweets
-      .filter((tweet) => sameAuthor(tweet) && parentIdOf(tweet) === currentId)
-      .filter((tweet) => !walked.has(idOf(tweet)))
-      .sort((a, b) => compareIds(idOf(a), idOf(b)));
+    const children = (childrenOf.get(currentId) || []).filter((tweet) => !walked.has(idOf(tweet)));
     const next = children[0];
     if (!next) break;
+    if (children.length > 1) {
+      log("thread forked under", currentId, "— keeping", idOf(next),
+        "and dropping", children.slice(1).map(idOf).join(","));
+    }
     walked.add(idOf(next));
     descendants.push(next);
     cursor = next;
@@ -517,7 +541,7 @@ export async function fetchThread(focalTweetId, {
       log("thread fetch: HTTP", status, "— saving the tweet unexpanded");
       return [];
     }
-    return selfThreadChain(body, focalTweetId);
+    return selfThreadChain(body, focalTweetId, { log });
   }
   return [];
 }

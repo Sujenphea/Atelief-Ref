@@ -195,6 +195,47 @@ test("selfThreadChain: a branch resolves to the earliest continuation", () => {
   assert.deepEqual(selfThreadChain(body, "1").map((t) => t.rest_id), ["1", "200"]);
 });
 
+test("selfThreadChain: a dropped fork is REPORTED, never silently discarded ([090] 7A)", () => {
+  const body = conversation([
+    tweet({ id: "1" }),
+    tweet({ id: "300", replyTo: "1" }),   // the aside that will be dropped
+    tweet({ id: "200", replyTo: "1" }),   // the continuation that wins
+  ]);
+  const lines = [];
+  const chain = selfThreadChain(body, "1", { log: (...parts) => lines.push(parts.join(" ")) });
+
+  assert.deepEqual(chain.map((t) => t.rest_id), ["1", "200"]);
+  assert.equal(lines.length, 1, "the discard is announced exactly once");
+  // The line has to name what was lost, or it isn't worth logging: a capture missing an
+  // arm of a thread is only diagnosable if the dropped id is in the log.
+  assert.match(lines[0], /forked under 1/);
+  assert.match(lines[0], /300/);
+});
+
+test("selfThreadChain: an unforked thread logs nothing", () => {
+  const body = conversation([tweet({ id: "1" }), tweet({ id: "2", replyTo: "1" })]);
+  const lines = [];
+  selfThreadChain(body, "1", { log: (...parts) => lines.push(parts.join(" ")) });
+  assert.deepEqual(lines, []);
+});
+
+test("selfThreadChain: a big conversation resolves without a per-step rescan ([090] 15A)", () => {
+  // The shape the parent→children index exists for: one author's long thread buried in a
+  // conversation full of other people's replies to the head. The old per-descendant
+  // filter re-scanned all of these at every step.
+  const chain = [tweet({ id: "1000", text: "head" })];
+  for (let i = 1; i < 60; i += 1) {
+    chain.push(tweet({ id: String(1000 + i), text: `part ${i}`, replyTo: String(999 + i) }));
+  }
+  for (let i = 0; i < 400; i += 1) {
+    chain.push(tweet({ id: `9${i}`, author: `stranger${i}`, text: "nice", replyTo: "1000" }));
+  }
+  const walked = selfThreadChain(conversation(chain), "1030");
+  assert.equal(walked.length, 60, "the author's whole spine, none of the audience");
+  assert.deepEqual(walked.map((t) => t.rest_id).slice(0, 3), ["1000", "1001", "1002"]);
+  assert.equal(walked.at(-1).rest_id, "1059");
+});
+
 test("selfThreadChain: a lone tweet is a chain of one; a missing focal tweet is empty", () => {
   assert.deepEqual(selfThreadChain(conversation([tweet({ id: "1" })]), "1").length, 1);
   // Protected / withheld conversation → the caller saves the tweet unexpanded.
