@@ -233,3 +233,12 @@ Answered by what shipped; see the Status block at the top of this file.
 [084](084-archive-shelf-plan.md)'s `archived_at` adds one
 optional field to the manifest — a restore that dropped it would silently
 un-archive the user's whole shelf. That is 023's A4, tracked there.
+
+**Done, and the same shape twice more.** `archived_at` landed; so did
+`suppressed_tags` (012 · I3, `.change-log/382`), the tag names an asset has
+refused as suggestions. Both are optional-on-decode so older archives read
+unchanged, and both are there for one reason: the manifest carries **user
+intent**, and the test for whether a field belongs is "can anything recompute
+it?" A refusal cannot — drop it and a restored library re-suggests every label
+the user ever dismissed. `suppressedTags` replays through `dismissSuggestion`,
+additively and idempotently, exactly as the star and the shelf do.

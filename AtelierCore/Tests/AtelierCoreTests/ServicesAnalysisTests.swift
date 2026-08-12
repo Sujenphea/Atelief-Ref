@@ -158,6 +158,32 @@ struct ServicesAnalysisTests {
         #expect(pending == [image.id])
     }
 
+    /// Video is IN the backfill set — it reads its poster frame, which ingest
+    /// already wrote (`AnalysisSource` in AtelierIngestion). The exclusion this
+    /// replaces is why a video's Colors section was permanently empty.
+    ///
+    /// The media-less half stays asserted alongside it: "video is in" must not be
+    /// read as "everything is in". A color kind has no bytes at all and would sit
+    /// pending forever.
+    @Test("videos are in the backfill set; media-less kinds still are not")
+    func videoIncludedMediaLessNot() async throws {
+        let (services, _) = try makeServices()
+        let c = try await services.createCollection(name: "Refs")
+        let image = try await ingestImage(services, into: c.id, hash: "ae1")
+
+        let videoDraft = AssetDraft(
+            kind: .video,
+            blobHash: "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+            mimeType: "video/mp4", width: 1920, height: 1080, duration: 8,
+            fileSize: 4096, downloadState: .downloaded)
+        let source = SourceDraft(platform: .localPaste, capturedAt: Date())
+        let video = try await services.ingest(videoDraft, from: source, into: c.id).asset
+        _ = try await services.ingestContent(.color(hex: "#ff0000"), from: source, into: c.id)
+
+        let pending = try await services.assetsNeedingAnalysis(analyzerVersion: 1, limit: 50)
+        #expect(Set(pending) == Set([image.id, video.id]))
+    }
+
     @Test("the limit is honored and clamped")
     func limitClamp() async throws {
         let (services, _) = try makeServices()

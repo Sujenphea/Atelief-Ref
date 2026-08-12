@@ -103,14 +103,7 @@ public struct AnalysisBackfill: Sendable {
     /// result. Throws on any step (caught + counted by the batch loop).
     private func analyze(assetID: UUID) async throws {
         let asset = try await services.getAsset(id: assetID).asset
-        // The backfill query only returns downloaded images, so these are present;
-        // guard defensively in case of a race with a delete/edit.
-        guard let hash = asset.blobHash, let mime = asset.mimeType else {
-            throw AnalysisBackfillError.missingBlob(assetID)
-        }
-
-        let fileExtension = ImageMetadata.fileExtension(forMIMEType: mime)
-        let data = try store.readBlob(hash: hash, fileExtension: fileExtension)
+        let data = try AnalysisSource.imageData(for: asset, in: store)
         let result = try analyzer.analyze(imageData: data)
 
         try await services.upsertAnalysis(
@@ -122,8 +115,3 @@ public struct AnalysisBackfill: Sendable {
     }
 }
 
-/// A backfill-side failure for an asset that unexpectedly lacks a blob (raced with
-/// a delete/edit). Caught and counted by the batch loop.
-enum AnalysisBackfillError: Error, Equatable {
-    case missingBlob(UUID)
-}

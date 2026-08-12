@@ -1026,6 +1026,7 @@ struct SpaceView: View {
                 tags: tagStore.tags,
                 onAddTag: { tagStore.add($0) },
                 onRemoveTag: { tagStore.remove($0) },
+                onAcceptTag: { tagStore.accept($0) },
                 // A board IS wrapped in `LibrarySearchable` like every other pane, so
                 // a color filters there too — and, exactly as typing in the field
                 // does, that replaces the board with the results (085 · C2).

@@ -19,6 +19,8 @@ import AVKit
 import AppKit
 import AtelierCore
 import AtelierIngestion
+// For `AVPlayerItem.publisher(for: \.status)` — the poster placeholder's gate.
+import Combine
 import SwiftUI
 
 /// Force AVKit into the process before the first ``VideoPlayer`` is built.
@@ -269,6 +271,8 @@ struct ItemDetailView: View {
     let tags: [Tag]
     let onAddTag: (String) -> Void
     let onRemoveTag: (Tag) -> Void
+    /// Accept a machine suggestion — the ✦ chip's body (012 · I3).
+    let onAcceptTag: (Tag) -> Void
     /// The item's dominant colors, merged into palette buckets (085 · C2). Empty —
     /// the default — hides the section entirely, which is the case for a video, a
     /// color-kind asset, and anything the analyzer has not reached yet.
@@ -357,6 +361,11 @@ struct ItemDetailView: View {
     /// two in a row must both arrive.
     @State private var keyFocusToken = 0
 
+    /// Whether the video player can show a frame yet — the gate on the poster
+    /// placeholder above (`.readyToPlay`, the transition the probe timed at ~92 ms).
+    /// False for every kind that is not a video, and reset per navigation.
+    @State private var videoReady = false
+
     /// The star's live state (011 · U5). Local, and seeded from `asset.isFavorite`
     /// whenever the shown asset changes, for the same reason the Name / Note fields
     /// keep a local draft: the hosts hand this view an `Asset` VALUE captured when
@@ -441,6 +450,7 @@ struct ItemDetailView: View {
                 DetailSidebar(
                     asset: asset, source: source, post: post, tags: tags,
                     onAddTag: onAddTag, onRemoveTag: onRemoveTag,
+                    onAcceptTag: onAcceptTag,
                     colors: colors, onSelectColor: onSelectColor,
                     collections: collections, allCollections: allCollections,
                     onAddToCollection: onAddToCollection,
@@ -855,10 +865,32 @@ struct ItemDetailView: View {
             // own view instead of waiting on a blob that will never load.
             switch asset.content {
             case .video:
-                if let player {
-                    VideoPlayer(player: player)
-                } else {
-                    ProgressView()
+                // The poster sits ON TOP of the player until a frame exists, and
+                // "on top" is the whole trick: `AVPlayerView` draws opaque black
+                // from the moment it is installed, so a poster BEHIND it would be
+                // invisible for exactly the window it is there to cover.
+                //
+                // Measured (`VideoOpenProbeTests`, 640×480 synthetic clip):
+                // constructing the player costs 1.1 ms, but the wait from there to
+                // `.readyToPlay` is 92.4 ms — and that 92 ms was a spinner and then
+                // black, while the 1280 poster sat DECODED in `previewImage`,
+                // fetched by `DetailSession` for every kind including this one.
+                // Drawing it costs nothing that was not already paid; a real
+                // 1080p file only widens the gap, since the wait grows and the
+                // construction does not.
+                ZStack {
+                    if let player {
+                        VideoPlayer(player: player)
+                    }
+                    if !videoReady {
+                        if let image = mediaImage {
+                            image.resizable().scaledToFit()
+                        } else {
+                            // No poster on disk (an older ingest, a reaped tier):
+                            // the spinner is still the honest answer there.
+                            ProgressView()
+                        }
+                    }
                 }
             case .image:
                 // Show the placeholder preview instantly, then swap to the
@@ -931,6 +963,8 @@ struct ItemDetailView: View {
         effectiveZoom = 1
         player?.pause()
         player = nil
+        // A new item has no frame yet, so the poster covers again from here.
+        videoReady = false
         // Drag-out export item (011 · Cluster A): the original blob + human name for
         // this asset. Computed once here, `nil` for a media-less kind / missing blob.
         exportItem = source.flatMap { AssetExport.exportItem(asset: asset, source: $0, blobURL: blobURL) }
@@ -940,7 +974,12 @@ struct ItemDetailView: View {
         case .video:
             // Before the media area builds its `VideoPlayer` — see `linkAVKit`.
             linkAVKit()
-            player = AVPlayer(url: url)
+            let player = AVPlayer(url: url)
+            self.player = player
+            // Then hold the poster up until the player can actually draw. Awaiting
+            // here rather than in a second `.task` keeps it on this navigation's
+            // cancellation: stepping away mid-load drops the wait with the load.
+            await awaitFirstFrame(of: player)
         case .image, .link, .tweet:
             // The loader owns the image on the collection detail path.
             guard !usesExternalImageLoader else { break }
@@ -955,6 +994,26 @@ struct ItemDetailView: View {
             if !Task.isCancelled { fullImage = decoded }
         case .color:
             break  // media-less: the media area draws this from content.
+        }
+    }
+
+    /// Flip ``videoReady`` once `player` leaves `.unknown` — i.e. once it either
+    /// has a frame to show or has failed trying.
+    ///
+    /// **`.failed` lifts the poster too, deliberately.** The alternative is a
+    /// poster left up forever over a player that will never draw, which looks
+    /// exactly like a working video that refuses to play — the player's own error
+    /// state is the more honest thing to show. A poster that stays would also hide
+    /// the one signal a person could report.
+    private func awaitFirstFrame(of player: AVPlayer) async {
+        guard let item = player.currentItem else {
+            videoReady = true
+            return
+        }
+        for await status in item.publisher(for: \.status).values {
+            guard status != .unknown else { continue }
+            videoReady = true
+            return
         }
     }
 }
@@ -1604,6 +1663,8 @@ private struct DetailSidebar: View {
     let tags: [Tag]
     let onAddTag: (String) -> Void
     let onRemoveTag: (Tag) -> Void
+    /// Accept a machine suggestion — the ✦ chip's body (012 · I3).
+    let onAcceptTag: (Tag) -> Void
     let colors: [ColorPalette.BucketCoverage]
     let onSelectColor: ((ColorBucket) -> Void)?
     let collections: [Collection]
@@ -1627,6 +1688,7 @@ private struct DetailSidebar: View {
                 ColorsSection(colors: colors, onSelect: onSelectColor)
                 DetailsSection(
                     asset: asset, tags: tags, onAddTag: onAddTag, onRemoveTag: onRemoveTag,
+                    onAcceptTag: onAcceptTag,
                     collections: collections, allCollections: allCollections,
                     onAddToCollection: onAddToCollection,
                     onRemoveFromCollection: onRemoveFromCollection,
@@ -1742,6 +1804,8 @@ private struct DetailsSection: View {
     let tags: [Tag]
     let onAddTag: (String) -> Void
     let onRemoveTag: (Tag) -> Void
+    /// Accept a machine suggestion — the ✦ chip's body (012 · I3).
+    let onAcceptTag: (Tag) -> Void
     let collections: [Collection]
     let allCollections: [Collection]
     let onAddToCollection: (Collection) -> Void
@@ -1763,7 +1827,8 @@ private struct DetailsSection: View {
                 collections: collections, allCollections: allCollections,
                 onAdd: onAddToCollection, onRemove: onRemoveFromCollection,
                 onMove: onMoveToCollection)
-            TagsField(tags: tags, onAddTag: onAddTag, onRemoveTag: onRemoveTag)
+            TagsField(tags: tags, onAddTag: onAddTag, onRemoveTag: onRemoveTag,
+                      onAcceptTag: onAcceptTag)
         }
     }
 }
@@ -1896,12 +1961,21 @@ private struct CollectionsField: View {
 }
 
 /// The item's tags as removable chips plus a manual add affordance (041 · the ✦
-/// icon and the "Add" chip both reveal an inline field — user-driven tagging, no
-/// auto-tag service). Agent-written tags keep a leading ✦ inside the chip.
+/// icon and the "Add" chip both reveal an inline field).
+///
+/// Two kinds of chip live in one flow (012 · I3). A `.user` tag is a label the
+/// person owns: the ✕ deletes it, and that is all a chip does. An `.agent` tag is
+/// an unconfirmed machine guess drawn with a leading ✦ — clicking its body keeps
+/// it, the ✕ refuses it for good. They share the row deliberately: a suggestion is
+/// an offer to complete the list you are already looking at, and moving it to its
+/// own section would ask the user to look in two places to see what an item is
+/// tagged. The ✦ and the accept-on-click are what keep the two legible apart.
 private struct TagsField: View {
     let tags: [Tag]
     let onAddTag: (String) -> Void
     let onRemoveTag: (Tag) -> Void
+    /// Accept a machine suggestion — the ✦ chip's body (012 · I3).
+    let onAcceptTag: (Tag) -> Void
 
     @State private var adding = false
     @State private var draft = ""
@@ -1927,8 +2001,14 @@ private struct TagsField: View {
                     .buttonStyle(.plain)
                     .help("Add a tag")
                 ForEach(tags) { tag in
-                    DetailChip(tag.name, sparkle: tag.source == .agent,
-                               trailing: .remove { onRemoveTag(tag) })
+                    if tag.source == .agent {
+                        SuggestionChip(
+                            tag: tag,
+                            onAccept: { onAcceptTag(tag) },
+                            onDismiss: { onRemoveTag(tag) })
+                    } else {
+                        DetailChip(tag.name, trailing: .remove { onRemoveTag(tag) })
+                    }
                 }
             }
             if adding {
@@ -1969,6 +2049,33 @@ private struct TagsField: View {
 
 /// A bordered rounded-6px pill (041 chip style) — the shared Collections / Tags
 /// chip. Optional leading ✦ (agent tags) and a trailing `+`/`×` affordance.
+/// One unconfirmed machine suggestion (012 · I3): ✦ chip, click the body to keep
+/// it, ✕ to refuse it.
+///
+/// The accept is an `.onTapGesture` rather than wrapping the chip in a `Button`,
+/// because the ✕ inside it is itself a Button — and a Button nested in another
+/// Button's *label* never receives the click. A tap gesture on the ancestor loses
+/// to a real Button child, which is exactly the precedence this needs: the ✕ takes
+/// its own hits, the rest of the chip accepts.
+private struct SuggestionChip: View {
+    let tag: Tag
+    let onAccept: () -> Void
+    let onDismiss: () -> Void
+
+    @State private var hovered = false
+
+    var body: some View {
+        DetailChip(
+            tag.name, sparkle: true, trailing: .remove(onDismiss),
+            hovered: hovered, removeHelp: "Dismiss — don't suggest this again")
+            .onHover { hovered = $0 }
+            .onTapGesture(perform: onAccept)
+            // The chip has no button chrome, so the hover wash above and this are
+            // the whole affordance for a click target that is otherwise invisible.
+            .help("Suggested tag — click to keep it")
+    }
+}
+
 private struct DetailChip: View {
     enum Trailing {
         case none
@@ -1979,18 +2086,22 @@ private struct DetailChip: View {
     let text: String
     let sparkle: Bool
     let trailing: Trailing
+    /// Tooltip for the ✕. Defaults to "Remove" — the suggestion chip overrides it,
+    /// since dismissing one is not a removal but a refusal that is remembered.
+    let removeHelp: String
     /// Lays the hover wash over the chip's opaque `field` fill — set by the chips that
     /// are themselves buttons (the Add affordances). See ``topBarPill(hovered:)``.
     let hovered: Bool
 
     init(
         _ text: String, sparkle: Bool = false, trailing: Trailing = .none,
-        hovered: Bool = false
+        hovered: Bool = false, removeHelp: String = "Remove"
     ) {
         self.text = text
         self.sparkle = sparkle
         self.trailing = trailing
         self.hovered = hovered
+        self.removeHelp = removeHelp
     }
 
     var body: some View {
@@ -2016,7 +2127,7 @@ private struct DetailChip: View {
                 // only hit-testable area is its opaque pixels, so `.help` had nothing
                 // to track. Matches the search token's remove `×`, the same control.
                 .buttonStyle(HoverButtonStyle(cornerRadius: 4, padding: 2))
-                .help("Remove")
+                .help(removeHelp)
             }
         }
         .padding(.horizontal, Theme.Spacing.sm)

@@ -95,11 +95,39 @@ final class AssetTagsStore: ObservableObject {
     }
 
     /// Remove `tag`, then refresh. Idempotent if the link is already gone.
+    ///
+    /// Branches on the source, because the ✕ means two different things (012 ·
+    /// I3). On a `.user` tag it is a deletion: the user is undoing their own
+    /// label, and nothing should stop them applying it again tomorrow. On an
+    /// `.agent` tag it is a REFUSAL of a suggestion, and a plain deletion would
+    /// be a lie — the pixels that produced the suggestion have not changed, so
+    /// the next suggester pass would re-apply it and the dismissal would appear
+    /// to undo itself. `dismissSuggestion` unlinks and remembers, in one
+    /// transaction.
     func remove(_ tag: Tag) {
         guard let assetID else { return }
         Task {
             do {
-                try await services.removeTag(tag.name, from: assetID, source: tag.source)
+                if tag.source == .agent {
+                    try await services.dismissSuggestion(tag.name, on: assetID)
+                } else {
+                    try await services.removeTag(tag.name, from: assetID, source: tag.source)
+                }
+                reloadIfCurrent(assetID)
+            } catch {
+                lastError = "\(error)"
+            }
+        }
+    }
+
+    /// Accept a suggested tag: the asset trades the `.agent` tag for a `.user`
+    /// one of the same name, then the chips refresh (012 · I3). A no-op for a tag
+    /// that is already the user's.
+    func accept(_ tag: Tag) {
+        guard let assetID, tag.source == .agent else { return }
+        Task {
+            do {
+                try await services.acceptSuggestion(tag.name, on: assetID)
                 reloadIfCurrent(assetID)
             } catch {
                 lastError = "\(error)"

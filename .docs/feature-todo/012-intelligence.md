@@ -5,21 +5,41 @@
 > machine tags **suggest, never self-apply** — the user confirms. OCR text and
 > color data are passive indexes and need no confirmation.
 
-## Status (re-verified against the tree 2026-08-10)
+## Status (re-verified against the tree 2026-08-12)
 
-**Five of six phases have shipped, including the one this doc deferred to v2.**
+**All six phases have shipped.** I3 landed 2026-08-12 (schema **v22**,
+`.change-log/382`) and this doc has no live remainder. The paragraphs below about
+I3 being "rendering only" are historical — kept because the correction they record
+(I3 was materially larger than an accept/dismiss UI) is the reason it was
+estimated properly.
 
 | Phase | State | Where |
 |---|---|---|
 | I1 analyzer plumbing | **shipped** | schema **v7** `asset_analysis` (`ocr_text` / `colors` / `phash` / `analyzer_version` + its index), `AnalysisCoordinator.swift`, `AssetAnalysis.swift`, `ServicesAnalysisTests` |
 | I2 OCR into search | **shipped** | `analysis_fts`, external-content synchronized with `asset_analysis` via triggers (`Migrator.swift:803-811`); scored into the search union at `AppServices.swift:2722` |
-| I3 suggested tags | **rendering only** | agent tags render as a sparkle chip (`ItemDetailView.swift:1894`, `tag.source == .agent`). **No accept, no dismiss, no suppression memory exists** — the half that makes suggest-and-confirm real is unbuilt |
+| I3 suggested tags | **shipped** | schema **v22** `tag_suppression` + `asset_analysis.suggest_version`; `TagSuggestion` / `VisionImageClassifier` / `SuggestionBackfill` (Ingestion), `acceptSuggestion` / `dismissSuggestion` / `recordSuggestions` (`AppServices`), `SuggestionChip` in the detail sidebar. `ServicesSuggestionsTests`, `MigrationV22Tests`, `TagSuggestionTests`, `SuggestionBackfillTests` |
 | I4 color | **shipped** | schema **v21** `asset_color` + the search conjunct, `ColorPalette.swift` (Ingestion), the detail swatch row and the toolbar palette picker, `SearchRules` v2. Planned in [085](../085-color-filter-plan.md); shipped across `.change-log/375`–`380` |
 | I5 duplicates review | **shipped** | `DuplicateReviewController.swift` + `DuplicateReviewSheet.swift`, `ServicesDuplicateHashesTests`, `DuplicateReviewControllerTests` |
 | I6 feature-print similarity | **shipped early** | `AssetEmbedding` + schema **v14** dense-vector search, `ServicesEmbeddingTests`, `ServicesSemanticSearchTests`. Marked "deliberately v2" below; it landed anyway |
 
-Live remainder: **I3 alone** — the suggestion producer, then its
-accept/dismiss/suppress semantics.
+Live remainder: **none.**
+
+I3 shipped as the producer plus its accept/dismiss/suppress semantics, and two of
+this doc's own statements did not survive contact with the schema:
+
+- **"one click accepts (source flips `.agent` → `.user`)" is not implementable as
+  written.** `tag.source` is a column on the shared `tag` ROW, so flipping it
+  would confirm the suggestion on every other asset carrying it. Accept is an
+  unlink-and-re-apply, per asset (`.change-log/382` §2).
+- **Suggestions could not ride `analyzer_version`.** That constant gates OCR,
+  colors and the phash together, so a tag-model change would have re-OCR'd the
+  library. `suggest_version` is its own column, and `upsertAnalysis` carries it
+  across a re-analysis (§3).
+
+The suppression memory — the piece this doc correctly identified as the only real
+design question — is `tag_suppression`, keyed on the tag NAME rather than a
+`tag.id`, because dismissing unlinks the tag and an unreferenced tag row is not
+kept alive to satisfy a foreign key.
 
 **I4 shipped 2026-08-11**, as planned in [085](../085-color-filter-plan.md): the
 palette and bucket rule in Ingestion, a v21 `asset_color` table with the filter as
@@ -108,11 +128,10 @@ tags reuse `asset_tag` unchanged.
 
 1. ~~**I1 (M)** — analyzer plumbing.~~ **Shipped** (v7).
 2. ~~**I2 (S–M)** — OCR into the search union.~~ **Shipped** (`analysis_fts`).
-3. **I3 (S–M now) — accept / dismiss / suppress.** The chips render already; what
-   is missing is the interaction: one click accepts (source flips `.agent` →
-   `.user`), ✕ dismisses (row deleted **plus** a suppression memory), and the
-   suppression must survive an `analyzer_version` bump or every re-analysis
-   resurrects what the user rejected. That last clause is the whole design.
+3. ~~**I3 (M)** — the producer, then accept / dismiss / suppress.~~ **Shipped**
+   (v22). The last clause — the suppression surviving a version bump — was indeed
+   the whole design, and it is pinned by
+   `ServicesSuggestionsTests.suppressionSurvivesVersionBump`.
 4. **I4 (S–M) — color swatches + color filter conjunct.** Data is already stored;
    this is a swatch row in detail plus one WHERE conjunct in the search builder.
    Note it must land as a **conjunct**, not a post-filter, for the same paging
@@ -141,6 +160,11 @@ tags reuse `asset_tag` unchanged.
 - Backfill on a huge library must be genuinely idle-priority (QoS + batch
   size + pause-on-user-activity) — never compete with ingest or the canvas.
 - OCR on video: poster frame only in v1 (frame sampling is v2 cost).
+  **Delivered 2026-08-12** (`.change-log/383`) — and cheaper than this line
+  assumed: the poster is rendered at ingest and already on disk, so video
+  analysis was a blob-selection change (`AnalysisSource`), not a pipeline.
+  The exclusion had been costing videos their colors and, for one day, their
+  suggested tags. Frame SAMPLING remains v2 and remains real.
 - Dismissed-suggestion memory must survive re-analysis (`analyzer_version` bump
   must not resurrect dismissed tags).
 - `asset_analysis` is derived data — excluded from [081](../081-backup-plan.md) export (recomputable),
@@ -152,9 +176,15 @@ tags reuse `asset_tag` unchanged.
   (OCR/color/phash) need no confirmation; near-dup is review-only; all inference
   on-device.
 
-## Open questions
+## Open questions — all closed
 
-1. Backfill trigger: automatic on launch (recommended, idle-priority) or a
-   Settings "Analyze library" button first run?
-2. Color filter UI: preset palette chips (recommended v1) vs full color wheel?
-3. Suggestion cap per item (recommend top 3 above threshold)?
+1. ~~Backfill trigger?~~ Automatic and idle-priority, as recommended —
+   `AnalysisCoordinator` drains every pass, suggestions last and bounded.
+2. ~~Color filter UI?~~ Answered by I4's toolbar palette picker.
+3. ~~Suggestion cap per item?~~ **Top 3**, as recommended, gated at
+   `hasMinimumRecall(0.01, forPrecision: 0.9)` (`TagSuggestion.maxSuggestions`).
+
+One thing this doc never asked, raised by building it: suppression is per
+(asset, name), so refusing a generic label like "text" is a per-item action. A
+library-wide never-suggest list would be a second, coarser table — deliberately
+not built, and not folded into `tag_suppression`.

@@ -1439,6 +1439,7 @@ struct LooseDetailOverlay: View {
                     tags: tags.tags,
                     onAddTag: { tags.add($0) },
                     onRemoveTag: { tags.remove($0) },
+                    onAcceptTag: { tags.accept($0) },
                     // Adds a color token to the very search this page is a result
                     // of — so from the results grid a swatch NARROWS the query
                     // rather than starting a new one (085 · C2).

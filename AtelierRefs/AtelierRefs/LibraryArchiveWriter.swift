@@ -132,7 +132,9 @@ nonisolated struct LibraryArchiveWriter: Sendable {
 
                 if assets[detail.asset.id] == nil {
                     let tags = try await services.tags(for: detail.asset.id)
-                    assets[detail.asset.id] = ArchiveManifest.AssetEntry(detail.asset, tags: tags)
+                    let refused = try await services.suppressedTagNames(for: detail.asset.id)
+                    assets[detail.asset.id] = ArchiveManifest.AssetEntry(
+                        detail.asset, tags: tags, suppressedTags: refused)
                     sources[detail.source.id] = ArchiveManifest.SourceEntry(detail.source)
                 }
 

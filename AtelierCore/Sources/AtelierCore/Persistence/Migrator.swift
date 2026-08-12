@@ -37,7 +37,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -188,6 +188,15 @@ enum Migrator {
         // fills it. SHIPPED once released: never edit this body.
         migrator.registerMigration("v21") { db in
             try createV21Schema(db)
+        }
+
+        // v22 — suggested tags (012 · I3). One additive `tag_suppression` table
+        // remembering which suggestions the user refused, plus an additive
+        // `asset_analysis.suggest_version` marker. Empty on upgrade: nothing has
+        // ever been suggested, so nothing has ever been refused. SHIPPED once
+        // released: never edit this body.
+        migrator.registerMigration("v22") { db in
+            try createV22Schema(db)
         }
 
         return migrator
@@ -1182,6 +1191,64 @@ enum Migrator {
         // already on disk, with no image decoded.
         try db.execute(sql: """
             ALTER TABLE asset_analysis ADD COLUMN colors_palette_version INTEGER;
+            """)
+    }
+
+    // MARK: - v22
+
+    /// Suggested tags (012 · I3). The suggest-and-confirm posture needs two
+    /// things the schema has never had: somewhere to remember a REFUSAL, and a
+    /// marker saying which suggester has already looked at an asset.
+    ///
+    /// **`tag_suppression` is the whole design.** A dismissed suggestion cannot
+    /// simply delete its `asset_tag` row, because the next suggester pass would
+    /// compute the same label from the same pixels and put it straight back —
+    /// and 012's own risk list names that resurrection as the failure mode. So a
+    /// refusal is recorded as its own durable fact, keyed on the NAME rather
+    /// than on a `tag.id`:
+    ///
+    /// - Keyed on `tag_name` because the tag row it refers to may not exist. The
+    ///   dismissal deletes the join row, and nothing keeps an orphaned `.agent`
+    ///   tag alive once no asset carries it; a `tag_id` FK would either resurrect
+    ///   the tag to hold the reference or CASCADE the suppression away, which is
+    ///   exactly the memory loss this table exists to prevent.
+    /// - The name stored is the NORMALIZED one (``Validation/tagName(_:)`` —
+    ///   trimmed, leading `#` stripped), so a suppression matches the name a
+    ///   suggester would apply, character for character.
+    /// - Per (asset, name), not global: refusing "poster" on one screenshot says
+    ///   nothing about the next one. A library-wide never-suggest list is a
+    ///   defensible later addition, and it would be a second table, not a
+    ///   widening of this one.
+    /// - `ON DELETE CASCADE` on `asset_id`, like every other per-asset derived
+    ///   table here (17A): the refusal dies with the thing it was about.
+    /// - No secondary index. Every read is "what has this asset refused",
+    ///   which the `(asset_id, tag_name)` primary key already serves as a
+    ///   prefix scan.
+    ///
+    /// `suggest_version` sits on `asset_analysis` beside `analyzer_version` and
+    /// `colors_palette_version`, and is deliberately SEPARATE from
+    /// `analyzer_version` rather than folded into it. Bumping the analyzer
+    /// version re-runs OCR, colors and the perceptual hash over every image in
+    /// the library — a full re-decode — so tying classification to it would mean
+    /// a tag-model change costs a complete re-OCR, and the two things change on
+    /// entirely different schedules. NULL means "no suggester has run here yet".
+    ///
+    /// Both are empty/NULL after this migration. Suggestions are produced by a
+    /// backfill pass, not by a migration: it decodes bytes and runs a Vision
+    /// model, which is not work a database upgrade may do.
+    private static func createV22Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE tag_suppression (
+                asset_id      TEXT NOT NULL
+                    REFERENCES asset(id) ON DELETE CASCADE,
+                tag_name      TEXT NOT NULL,
+                suppressed_at TEXT NOT NULL,
+                PRIMARY KEY (asset_id, tag_name)
+            );
+            """)
+
+        try db.execute(sql: """
+            ALTER TABLE asset_analysis ADD COLUMN suggest_version INTEGER;
             """)
     }
 }

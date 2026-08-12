@@ -9,7 +9,9 @@
 > result. Two of its guesses were wrong and are worth naming: H1 (glyph re-raster) is
 > small, and H3 — the hypothesis added almost as an afterthought — is the whole cost.
 >
-> The last live remainder of [018](./feature-todo/018-canvas-direct-manipulation.md).
+> The last live remainder of [018](./088-canvas-direct-manipulation.md) — which
+> closed with C7 and was renumbered to **088** on 2026-08-12 when it left the
+> backlog. Every "018" in this file, including the title, means that doc.
 > Six of its seven phases shipped; C7 is "perf harness + pinch smoothing", and 018's
 > own sequencing advice is to **run the harness first and let it say whether the
 > smoothing is needed at all**. This plan holds to that: Phase 0 is a measurement

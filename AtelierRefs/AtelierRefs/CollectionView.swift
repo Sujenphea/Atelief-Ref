@@ -1376,6 +1376,7 @@ private struct CollectionDetailHost: View {
             tags: tags.tags,
             onAddTag: { tags.add($0) },
             onRemoveTag: { tags.remove($0) },
+            onAcceptTag: { tags.accept($0) },
             // A swatch filters the pane's own search (085 · C2), so on a collection
             // screen — where the scope defaults to This-collection — it reads as
             // "this color, in here". `nil` if this pane is somehow not searchable,

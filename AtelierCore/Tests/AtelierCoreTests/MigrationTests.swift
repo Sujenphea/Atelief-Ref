@@ -25,6 +25,7 @@ private func makeMigratedQueue() throws -> DatabaseQueue {
 private let expectedTables = [
     "source", "asset", "collection", "collection_item", "tag", "asset_tag",
     "job", "job_item", "space", "space_item", "asset_analysis", "saved_search",
+    "tag_suppression",
 ]
 
 /// `PRAGMA table_info` → column name ⇒ notnull flag (1 = NOT NULL).
@@ -87,7 +88,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -2911,6 +2912,148 @@ struct MigrationV21Tests {
         #expect(after == before, "v21 must not alter the asset table")
         let count = try dbQueue.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_color")
+        }
+        #expect(count == 0)
+    }
+}
+
+// MARK: - v22 (012 · I3 — suggested tags)
+
+@Suite("Migration v22 — the suggestion memory")
+struct MigrationV22Tests {
+
+    @Test("a fresh install lands at v22 with an empty tag_suppression")
+    func freshInstallHasTable() throws {
+        let dbQueue = try makeMigratedQueue()
+        let applied = try dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations")
+        }
+        #expect(applied.contains("v22"))
+        // Empty is the only correct state: nothing has ever been suggested, so
+        // nothing can have been refused.
+        let count = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_suppression")
+        }
+        #expect(count == 0)
+    }
+
+    @Test("asset_analysis gains a nullable suggest_version")
+    func analysisGainsMarker() throws {
+        let dbQueue = try makeMigratedQueue()
+        let columns = try dbQueue.read { try columnNotNull($0, table: "asset_analysis") }
+        // Present, and NULLABLE: NULL means "no suggester has looked here yet",
+        // which every existing row is on upgrade.
+        #expect(columns["suggest_version"] == 0)
+    }
+
+    /// One refusal per (asset, name) — a second dismissal of the same name is an
+    /// upsert, not a second row, so the memory cannot accumulate duplicates.
+    @Test("(asset_id, tag_name) is the primary key")
+    func compositePrimaryKey() throws {
+        let dbQueue = try makeMigratedQueue()
+        let pk = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: "PRAGMA table_info(tag_suppression)")
+                .filter { ($0["pk"] as Int) > 0 }
+                .sorted { ($0["pk"] as Int) < ($1["pk"] as Int) }
+                .map { $0["name"] as String }
+        }
+        #expect(pk == ["asset_id", "tag_name"])
+    }
+
+    /// Asserted by DELETING an asset, not by reading the DDL — the FK is only
+    /// real if it is enforced.
+    @Test("refusals cascade away with their asset")
+    func cascadeOnAssetDelete() throws {
+        let dbQueue = try makeMigratedQueue()
+        let assetID = newID()
+        try dbQueue.write { db in
+            let sourceID = newID()
+            try db.execute(sql: """
+                INSERT INTO source (id, platform, original_url, author_handle,
+                    author_name, title, captured_at, raw_metadata)
+                VALUES (?, 'pinterest', NULL, NULL, NULL, NULL, ?, '{}');
+                """, arguments: [sourceID, ts])
+            try db.execute(sql: """
+                INSERT INTO asset (id, kind, blob_hash, mime_type, width, height,
+                    duration, file_size, download_state, created_at, source_id)
+                VALUES (?, 'image', 'abc123', 'image/png', 10, 10, NULL, 4,
+                    'downloaded', ?, ?);
+                """, arguments: [assetID, ts, sourceID])
+            try db.execute(sql: """
+                INSERT INTO tag_suppression (asset_id, tag_name, suppressed_at)
+                VALUES (?, 'poster', ?);
+                """, arguments: [assetID, ts])
+        }
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM asset WHERE id = ?", arguments: [assetID])
+        }
+        let remaining = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_suppression")
+        }
+        #expect(remaining == 0)
+    }
+
+    /// A suppression is deliberately NOT tied to a `tag` row: dismissing unlinks
+    /// the agent tag, and an unreferenced tag row is not kept alive to satisfy a
+    /// foreign key. Deleting every tag in the library must leave the refusals
+    /// standing, or a bump would resurrect them.
+    @Test("refusals survive the disappearance of the tag they name")
+    func survivesTagDeletion() throws {
+        let dbQueue = try makeMigratedQueue()
+        let assetID = newID()
+        let tagID = newID()
+        try dbQueue.write { db in
+            let sourceID = newID()
+            try db.execute(sql: """
+                INSERT INTO source (id, platform, original_url, author_handle,
+                    author_name, title, captured_at, raw_metadata)
+                VALUES (?, 'pinterest', NULL, NULL, NULL, NULL, ?, '{}');
+                """, arguments: [sourceID, ts])
+            try db.execute(sql: """
+                INSERT INTO asset (id, kind, blob_hash, mime_type, width, height,
+                    duration, file_size, download_state, created_at, source_id)
+                VALUES (?, 'image', 'abc123', 'image/png', 10, 10, NULL, 4,
+                    'downloaded', ?, ?);
+                """, arguments: [assetID, ts, sourceID])
+            try db.execute(sql: "INSERT INTO tag (id, name, source) VALUES (?, 'poster', 'agent');",
+                           arguments: [tagID])
+            try db.execute(sql: """
+                INSERT INTO tag_suppression (asset_id, tag_name, suppressed_at)
+                VALUES (?, 'poster', ?);
+                """, arguments: [assetID, ts])
+            try db.execute(sql: "DELETE FROM tag WHERE id = ?", arguments: [tagID])
+        }
+        let remaining = try dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT tag_name FROM tag_suppression")
+        }
+        #expect(remaining == ["poster"])
+    }
+
+    /// Additive and independent: an upgrade from v21 must neither touch `asset`
+    /// nor arrive holding rows.
+    @Test("upgrading from v21 is additive")
+    func upgradeFromV21IsAdditive() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v21")
+        let before = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: "PRAGMA table_info(asset)").map { $0["name"] as String }
+        }
+        let hadTable = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM sqlite_master
+                WHERE type = 'table' AND name = 'tag_suppression'
+                """)
+        }
+        #expect(hadTable == 0)
+
+        try Migrator.makeMigrator().migrate(dbQueue)   // apply v22
+
+        let after = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: "PRAGMA table_info(asset)").map { $0["name"] as String }
+        }
+        #expect(after == before, "v22 must not alter the asset table")
+        let count = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_suppression")
         }
         #expect(count == 0)
     }

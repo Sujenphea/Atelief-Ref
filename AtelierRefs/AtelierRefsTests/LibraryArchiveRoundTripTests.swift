@@ -281,6 +281,54 @@ struct LibraryArchiveRoundTripTests {
         #expect(try await rig.targetFavorites("Refs") == ["Starred": true, "Plain": false])
     }
 
+    /// **The regression the `suppressed_tags` manifest field exists for
+    /// (012 · I3).** A dismissed suggestion is user intent by the same test the
+    /// star passes — nothing can recompute which labels someone refused — and a
+    /// restore that dropped them would re-suggest every one of them on the first
+    /// idle pass after the import. That is the exact failure `tag_suppression`
+    /// was built to prevent, arrived at by a different road, and it would surface
+    /// days later as "the tags I deleted keep coming back".
+    ///
+    /// The NEGATIVE half is load-bearing, as with favorites: asserting only that
+    /// the refusal arrives would also pass if the importer suppressed every tag
+    /// it saw, which is the likelier bug in a replay layer that applies refusals
+    /// like tags.
+    @Test("Dismissed suggestions survive a full export and re-import")
+    func suppressionsRoundTrip() async throws {
+        let rig = try RoundTripRig.make()
+        defer { rig.cleanup() }
+
+        let refs = try await rig.source.createCollection(name: "Refs")
+        let refused = try await rig.seedImage(
+            bytes: "refused", into: refs.id, title: "Refused",
+            url: "https://example.com/refused")
+        let plain = try await rig.seedImage(
+            bytes: "plain", into: refs.id, title: "Plain",
+            url: "https://example.com/plain")
+        _ = try await rig.source.applyTag("poster", to: refused.id, source: .agent)
+        try await rig.source.dismissSuggestion("poster", on: refused.id)
+        _ = try await rig.source.applyTag("brutalist", to: plain.id, source: .user)
+
+        try await rig.export()
+        // The WRITER's half, checked before the import so a failure here names it.
+        let manifest = try ArchiveManifest.read(
+            from: rig.archive.appendingPathComponent(ArchiveLayout.manifestFilename))
+        #expect(manifest.assets.compactMap(\.suppressedTags) == [["poster"]])
+
+        let summary = await rig.importIntoTarget()
+        #expect(summary.outcome == .succeeded)
+        #expect(summary.newAssets == 2)
+
+        let items = try await rig.targetItems("Refs")
+        let restoredRefused = try #require(items.first { $0.source.title == "Refused" })
+        let restoredPlain = try #require(items.first { $0.source.title == "Plain" })
+        #expect(try await rig.target.suppressedTagNames(for: restoredRefused.asset.id) == ["poster"])
+        // The negative half: nothing else picked up a refusal.
+        #expect(try await rig.target.suppressedTagNames(for: restoredPlain.asset.id).isEmpty)
+        // And the user's own tag is untouched by any of it.
+        #expect(try await rig.target.tags(for: restoredPlain.asset.id).map(\.name) == ["brutalist"])
+    }
+
     /// **The regression the `includeArchived: true` in the writer exists for
     /// (023 · A).** A backup is a COPY of the library, not a view of it, so the
     /// writer walks every collection including the shelf — and the moment it

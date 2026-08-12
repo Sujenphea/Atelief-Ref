@@ -76,6 +76,45 @@ struct AnalysisBackfillTests {
         #expect(pendingAfter.isEmpty)
     }
 
+    /// **Video is analyzed, from its poster frame.** It was excluded from the
+    /// candidate query on the assumption that video analysis needed a
+    /// frame-sampling pipeline — but the poster is rendered at ingest and has been
+    /// on disk the whole time, so the exclusion was costing videos their OCR,
+    /// colors and hash for nothing. Until this changed, a video's Colors section in
+    /// the detail sidebar was permanently, invisibly empty.
+    @Test("a video is analyzed from its poster frame")
+    func analyzesVideoFromPoster() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+
+        let mp4 = try FixtureVideos.solidVideo(width: 320, height: 240)
+        let outcome = await env.pipeline.ingest(IngestInput(
+            source: .data(mp4),
+            provenance: SourceDraft(platform: .localPaste, capturedAt: Date()),
+            collectionID: env.collectionID))
+        guard case .ingested(let video, _) = outcome else {
+            Issue.record("expected .ingested, got \(outcome)")
+            return
+        }
+        #expect(video.kind == .video)
+
+        // It is a candidate at all — the half that was missing.
+        let pending = try await env.services.assetsNeedingAnalysis(
+            analyzerVersion: AssetAnalyzer.analyzerVersion, limit: 50)
+        #expect(pending.contains(video.id))
+
+        let run = try await backfill(env, ocr: "credits").analyzeNextBatch(limit: 50)
+        #expect(run.analyzed == 1)
+        #expect(run.failed == 0)
+
+        let analysis = try #require(try await env.services.analysis(for: video.id))
+        #expect(analysis.ocrText == "credits")
+        // Colors came out of the POSTER, which is what makes the swatch row appear.
+        let colors = try #require(analysis.colors.flatMap(ColorSwatch.decodeList(fromJSON:)))
+        #expect(!colors.isEmpty)
+        #expect(analysis.phash != nil)
+    }
+
     // MARK: - Resumable + idempotent
 
     @Test("the backfill is resumable batch-by-batch")

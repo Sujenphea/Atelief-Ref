@@ -227,6 +227,13 @@ nonisolated struct LibraryImporter: Sendable {
         if item.isArchived {
             try await services.archive([asset.id])
         }
+        // Refusals ride with the star and the shelf, and for the same reason: a
+        // dismissal is additive and idempotent. It runs AFTER the tags above, so
+        // an archive that (wrongly) carried both an agent tag and a refusal of
+        // the same name resolves the way the user left it — refused.
+        for name in item.suppressedTags {
+            try await services.dismissSuggestion(name, on: asset.id)
+        }
         if asset.isNew {
             if let name = item.name { try await services.setName(name, for: asset.id) }
             if let note = item.note { try await services.setNote(note, for: asset.id) }
