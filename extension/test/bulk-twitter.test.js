@@ -21,15 +21,20 @@ import {
 // twitter-hook.js ships as a CLASSIC MAIN-world content script (NO export — that would
 // SyntaxError on injection and silently kill the hook). Since [5A] the interception
 // MACHINERY lives in hook-core.js (tested in hook-core.test.js); this file is now a thin
-// config, so we lift out only what it still owns: the URL matcher + the message tags. A
-// fake `window` (no `.location`) skips the auto-install tail so the load is inert.
-const { isTimelineRequest, TIMELINE_MESSAGE_SOURCE, REPLAY_REQUEST_SOURCE } = (() => {
-  const src = readFileSync(new URL("../src/twitter-hook.js", import.meta.url), "utf8");
-  return new Function(
-    "window",
-    `${src}\nreturn { isTimelineRequest, TIMELINE_MESSAGE_SOURCE, REPLAY_REQUEST_SOURCE };`,
-  )({});
-})();
+// config, so we lift out only what it still owns: the two URL predicates + the message
+// tags. The fake `window` carries a real X origin (`isProxyableRequest` resolves urls
+// against it) and a no-op installer, so the auto-install tail runs inertly.
+const { isTimelineRequest, isProxyableRequest, TIMELINE_MESSAGE_SOURCE, REPLAY_REQUEST_SOURCE } =
+  (() => {
+    const src = readFileSync(new URL("../src/twitter-hook.js", import.meta.url), "utf8");
+    return new Function(
+      "window",
+      `${src}\nreturn { isTimelineRequest, isProxyableRequest, TIMELINE_MESSAGE_SOURCE, REPLAY_REQUEST_SOURCE };`,
+    )({
+      location: { hostname: "x.com", origin: "https://x.com" },
+      __atelierInstallResponseHook: () => {},
+    });
+  })();
 
 const bookmarks = JSON.parse(
   readFileSync(new URL("./fixtures/x-bookmarks.json", import.meta.url)));
@@ -53,6 +58,37 @@ test("isTimelineRequest: matches Bookmarks/BookmarkFolderTimeline/Likes ops, rej
   assert.equal(isTimelineRequest("https://x.com/i/api/graphql/AbC/CreateBookmark"), false);
   assert.equal(isTimelineRequest("https://pbs.twimg.com/media/x.jpg"), false);
   assert.equal(isTimelineRequest(null), false);
+});
+
+// MARK: - isProxyableRequest (the hook proxy's security boundary, [090] 3A/10A)
+
+test("isProxyableRequest: allows X's own TweetDetail read and nothing else", () => {
+  assert.equal(isProxyableRequest(
+    "https://x.com/i/api/graphql/QID/TweetDetail?variables=%7B%7D"), true);
+  assert.equal(isProxyableRequest("https://x.com/i/api/graphql/QID/TweetDetail"), true);
+});
+
+test("isProxyableRequest: refuses anything that would spend the token elsewhere", () => {
+  // Every one of these is a request a page script would love the hook to make for it.
+  const refused = [
+    "https://x.com/i/api/1.1/dm/inbox.json",                    // same origin, DMs
+    "https://x.com/i/api/graphql/QID/Bookmarks",                // another op entirely
+    "https://x.com/i/api/graphql/QID/CreateTweet",              // a mutation
+    "https://x.com/i/api/graphql/QID/TweetDetail/extra",        // path suffix past the op
+    "https://x.com/i/api/graphql/QID/TweetDetailPlus",          // op-name prefix match
+    "https://evil.example/i/api/graphql/QID/TweetDetail",       // right shape, wrong origin
+    "https://x.com.evil.example/i/api/graphql/Q/TweetDetail",   // suffix spoof
+    "http://x.com/i/api/graphql/QID/TweetDetail",               // downgraded
+    "//x.com/i/api/graphql/QID/TweetDetail",                    // protocol-relative
+    "/i/api/graphql/QID/TweetDetail",                           // origin-relative
+    "garbage",
+    null,
+    undefined,
+    42,
+  ];
+  for (const url of refused) {
+    assert.equal(isProxyableRequest(url), false, `${url} must not be proxyable`);
+  }
 });
 
 // MARK: - unwrapTweet

@@ -20,6 +20,11 @@ const TIMELINE_MESSAGE_SOURCE = "atelier-x-timeline";
  * SYNC with bulk-messages.js `TIMELINE_REPLAY_SOURCE`. */
 const REPLAY_REQUEST_SOURCE = "atelier-x-timeline-replay";
 
+/** The hook's request-proxy tag pair. KEEP IN SYNC with bulk-messages.js
+ * `HOOK_PROXY_REQUEST_SOURCE` / `HOOK_PROXY_REPLY_SOURCE`. */
+const PROXY_REQUEST_SOURCE = "atelier-x-proxy-request";
+const PROXY_REPLY_SOURCE = "atelier-x-proxy-reply";
+
 /** True for a timeline GraphQL request URL (`…/i/api/graphql/{queryId}/{Op}`,
  * Op ∈ Bookmarks | BookmarkFolderTimeline | Likes). A bookmark FOLDER loads via the
  * distinct `BookmarkFolderTimeline` op (verified live) — without it, folder sweeps see
@@ -36,8 +41,8 @@ function isTimelineRequest(url) {
  * auth is brittle and would break on every client change.
  *
  * Deliberately NOT here: `x-client-transaction-id`, which X derives PER REQUEST — a
- * replayed one is worse than none. Nothing on this list leaves the tab.
- * KEEP IN SYNC with bulk-controller.js's expectations.
+ * replayed one is worse than none. Nothing on this list leaves the MAIN world: hook-core
+ * keeps these in a closure and replays them itself for a proxied request ([090] 3A).
  */
 const FORWARDED_HEADERS = [
   "authorization",
@@ -46,6 +51,36 @@ const FORWARDED_HEADERS = [
   "x-twitter-active-user",
   "x-twitter-client-language",
 ];
+
+/**
+ * The ONLY url the hook will spend the page's credentials on: X's own `TweetDetail`
+ * GraphQL read, same-origin, over https.
+ *
+ * This is the security boundary of the whole proxy — the hook is a thing that makes an
+ * authenticated request on request, so what bounds the damage is how narrow this is. It
+ * is deliberately not "any x.com url" and not even "any graphql op": a conversation body
+ * is something any script on this page could already fetch with the session cookie it
+ * already has, so proxying THAT grants nothing new, while proxying (say) a DM or a
+ * settings-mutation endpoint would.
+ *
+ * GET-shaped by construction — hook-core only ever issues `method: "GET"` — so an op
+ * that writes can't be reached even if it were named here.
+ *
+ * The url must be ABSOLUTE https. A relative or protocol-relative form would resolve to
+ * the same place, but the only caller builds an absolute url, so accepting the other
+ * shapes buys nothing and widens what has to be reasoned about.
+ */
+function isProxyableRequest(url) {
+  if (typeof url !== "string" || url.slice(0, 8) !== "https://") return false;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (_error) {
+    return false;
+  }
+  if (parsed.origin !== window.location.origin) return false;
+  return /^\/i\/api\/graphql\/[^/]+\/TweetDetail$/.test(parsed.pathname);
+}
 
 // Auto-install when injected as a MAIN-world content script on X (guarded so a
 // `node --test` import — no `window` — does nothing). hook-core.js, loaded FIRST per the
@@ -62,6 +97,11 @@ if (typeof window !== "undefined" && window.location &&
       isMatch: isTimelineRequest,
       replaySource: REPLAY_REQUEST_SOURCE,
       headerAllowlist: FORWARDED_HEADERS,
+      proxy: {
+        requestSource: PROXY_REQUEST_SOURCE,
+        replySource: PROXY_REPLY_SOURCE,
+        isAllowed: isProxyableRequest,
+      },
       post: (message) =>
         window.postMessage({ source: TIMELINE_MESSAGE_SOURCE, ...message }, window.location.origin),
     });

@@ -214,7 +214,12 @@ test("registerBulkController: the X message listener is torn down when the sweep
   // the terminator page (the live hook would deliver this via postMessage).
   const entry = listeners.find((l) => l.type === "message");
   assert.ok(entry, "the X driver installs a message listener");
-  entry.fn({ source: win, data: { source: MSG_SRC, json: emptyPage, url: BOOKMARKS_URL } });
+  // Deliver to EVERY message listener, the way the window does — the X driver installs
+  // two (the timeline listener and the hook-proxy's reply listener) and which one is
+  // registered first is not a contract.
+  for (const listener of listeners.filter((l) => l.type === "message")) {
+    listener.fn({ source: win, data: { source: MSG_SRC, json: emptyPage, url: BOOKMARKS_URL } });
+  }
 
   const { reply } = await started;
   await new Promise((r) => setTimeout(r, 0)); // let the .finally dispose() run

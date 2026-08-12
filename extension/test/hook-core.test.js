@@ -208,50 +208,68 @@ test("installResponseHook: an unparseable XHR body is swallowed (page unaffected
   assert.doesNotThrow(() => xhr.send());           // load handler never throws into send
 });
 
-// MARK: - request-header forwarding (the credentials a follow-up request needs)
+// MARK: - credentials NEVER cross a message boundary ([090] 3A/10A)
+//
+// The load-bearing security property of the whole hook. `window.postMessage` is readable
+// by every script on the page, so the invariant is absolute and asserted the blunt way:
+// serialize what the hook emits and grep it for the secret. That catches a leak through
+// ANY field — a rename, a debug key, a nested echo — which a `deepEqual` on one expected
+// property would not.
 
 const ALLOWLIST = ["authorization", "x-csrf-token"];
+const SECRETS = ["Bearer super-secret", "csrf-secret", "session=cookie-secret", "txn-secret"];
 
-test("installResponseHook: forwards ONLY allowlisted fetch request headers", async () => {
+/** Every value the hook emitted, as one string — what a page script could read. */
+const emitted = (posted) => JSON.stringify(posted);
+
+/** The full header bag a live X client sends: two allowlisted, two that must never be
+ * touched at all (`cookie` is the session; `x-client-transaction-id` is per-request). */
+const LIVE_HEADERS = {
+  Authorization: SECRETS[0],                 // case-insensitive → lowercased internally
+  "x-csrf-token": SECRETS[1],
+  cookie: SECRETS[2],
+  "x-client-transaction-id": SECRETS[3],
+};
+
+test("installResponseHook: no request header value EVER appears in a forwarded payload", async () => {
   const scope = fakeScope({ ok: 1 });
   const posted = [];
   installResponseHook({
     target: scope, isMatch, post: (m) => posted.push(m), headerAllowlist: ALLOWLIST,
   });
 
-  await scope.fetch(MATCH_URL, { headers: {
-    Authorization: "Bearer abc",            // case-insensitive → lowercased
-    "x-csrf-token": "csrf123",
-    cookie: "secret=1",                     // NOT on the list — must never be read
-    "x-client-transaction-id": "per-request",
-  } });
+  await scope.fetch(MATCH_URL, { headers: LIVE_HEADERS });
   await tick();
-  assert.deepEqual(posted[0].headers, { authorization: "Bearer abc", "x-csrf-token": "csrf123" });
+
+  assert.equal(posted.length, 1);
+  for (const secret of SECRETS) {
+    assert.ok(!emitted(posted).includes(secret),
+      `"${secret}" crossed the message boundary — auth must stay in the MAIN world`);
+  }
+  assert.equal("headers" in posted[0], false, "no headers field survives on the envelope");
+  // What DOES cross is the one bit a listener needs: whether a follow-up is possible.
+  assert.equal(posted[0].hasAuth, true);
 });
 
-test("installResponseHook: reads fetch headers from a Headers object or a pair array", async () => {
-  for (const headers of [
-    new Map([["authorization", "Bearer h"]]),        // Headers-like: forEach + get
-    [["authorization", "Bearer h"], ["cookie", "no"]],
-  ]) {
-    const scope = fakeScope({ ok: 1 });
-    const posted = [];
-    installResponseHook({
-      target: scope, isMatch, post: (m) => posted.push(m), headerAllowlist: ALLOWLIST,
-    });
-    await scope.fetch(MATCH_URL, { headers });
-    await tick();
-    assert.deepEqual(posted[0].headers, { authorization: "Bearer h" });
-  }
+test("installResponseHook: hasAuth is false until an allowlisted header is actually seen", async () => {
+  const scope = fakeScope({ ok: 1 });
+  const posted = [];
+  installResponseHook({
+    target: scope, isMatch, post: (m) => posted.push(m), headerAllowlist: ALLOWLIST,
+  });
+  await scope.fetch(MATCH_URL, { headers: { cookie: SECRETS[2] } });  // nothing allowlisted
+  await tick();
+  assert.equal(posted[0].hasAuth, false);
 });
 
 test("installResponseHook: with NO allowlist, headers are never read at all", async () => {
   const scope = fakeScope({ ok: 1 });
   const posted = [];
   installResponseHook({ target: scope, isMatch, post: (m) => posted.push(m) });
-  await scope.fetch(MATCH_URL, { headers: { authorization: "Bearer abc" } });
+  await scope.fetch(MATCH_URL, { headers: LIVE_HEADERS });
   await tick();
-  assert.equal(posted[0].headers, null);   // opt-in only — no ambient header capture
+  assert.equal(posted[0].hasAuth, false);   // opt-in only — no ambient header capture
+  for (const secret of SECRETS) assert.ok(!emitted(posted).includes(secret));
 });
 
 /** A FakeXHR that also records setRequestHeader, which the live client uses. */
@@ -266,7 +284,7 @@ function fakeXHRScopeWithHeaders() {
   return { XMLHttpRequest: FakeXHR };
 }
 
-test("installResponseHook: forwards allowlisted XHR headers, scoped to a matched url", () => {
+test("installResponseHook: the XHR path leaks no header value either", () => {
   const scope = fakeXHRScopeWithHeaders();
   const posted = [];
   installResponseHook({
@@ -275,41 +293,173 @@ test("installResponseHook: forwards allowlisted XHR headers, scoped to a matched
 
   const xhr = new scope.XMLHttpRequest();
   xhr.open("GET", MATCH_URL);
-  xhr.setRequestHeader("authorization", "Bearer xhr");
-  xhr.setRequestHeader("cookie", "secret=1");        // unlisted → not captured
+  for (const [name, value] of Object.entries(LIVE_HEADERS)) xhr.setRequestHeader(name, value);
   xhr.responseText = JSON.stringify({ ok: 2 });
   xhr.send();
-  assert.deepEqual(posted[0].headers, { authorization: "Bearer xhr" });
 
-  // Headers set on a NON-matched request are not captured either.
-  const other = new scope.XMLHttpRequest();
-  other.open("GET", OTHER_URL);
-  other.setRequestHeader("authorization", "Bearer other");
-  other.responseText = JSON.stringify({ ok: 3 });
-  other.send();
   assert.equal(posted.length, 1);
+  assert.equal(posted[0].hasAuth, true);
+  for (const secret of SECRETS) assert.ok(!emitted(posted).includes(secret));
 });
 
-test("installResponseHook: a REUSED xhr does not leak the previous request's headers", () => {
+test("installResponseHook: headers on a NON-matched request are never remembered", () => {
   const scope = fakeXHRScopeWithHeaders();
   const posted = [];
   installResponseHook({
     target: scope, isMatch, post: (m) => posted.push(m), headerAllowlist: ALLOWLIST,
   });
 
-  const xhr = new scope.XMLHttpRequest();
-  xhr.open("GET", MATCH_URL);
-  xhr.setRequestHeader("authorization", "Bearer first");
-  xhr.responseText = JSON.stringify({ ok: 1 });
-  xhr.send();
+  const other = new scope.XMLHttpRequest();
+  other.open("GET", OTHER_URL);                      // outside the platform's matcher
+  other.setRequestHeader("authorization", SECRETS[0]);
+  other.responseText = JSON.stringify({ ok: 3 });
+  other.send();
+  assert.equal(posted.length, 0);                    // not forwarded at all
 
-  xhr.open("GET", MATCH_URL);                        // re-opened, no headers set this time
-  xhr.responseText = JSON.stringify({ ok: 2 });
-  xhr.send();
-  // `open()` clears the stash, so the second request forwards no headers rather than
-  // the first request's. (A re-sent xhr keeps its listeners — real XHR semantics too —
-  // so the earlier send's handler also refires; the LAST post is the new request's.)
-  assert.equal(posted.at(-1).headers, null);
+  const matched = new scope.XMLHttpRequest();
+  matched.open("GET", MATCH_URL);                    // no headers set on THIS one
+  matched.responseText = JSON.stringify({ ok: 4 });
+  matched.send();
+  // The unmatched request's authorization was never stored, so there is nothing to claim.
+  assert.equal(posted[0].hasAuth, false);
+});
+
+// MARK: - the request proxy (the credentialled follow-up, 3A)
+
+/** A scope that can run the proxy: a message sink to receive requests, a `postMessage`
+ * that records replies, a location for the target origin, and a recording fetch. */
+function fakeProxyScope({ status = 200, json = { conversation: true } } = {}) {
+  const listeners = [];
+  const scope = {
+    location: { origin: "https://host.example" },
+    fetchCalls: [],
+    replies: [],
+    failNext: null,                    // settable mid-test: fail the PROXIED call only
+    fetch: async (url, init) => {
+      scope.fetchCalls.push({ url, init });
+      if (scope.failNext) throw new Error(scope.failNext);
+      return { status, json: async () => json, clone: () => ({ json: async () => json }) };
+    },
+    addEventListener: (type, fn) => { if (type === "message") listeners.push(fn); },
+    postMessage: (data) => scope.replies.push(data),
+    dispatch: (data) => { for (const fn of listeners) fn({ data }); },
+  };
+  return scope;
+}
+
+const PROXY = { requestSource: "req", replySource: "rep" };
+const ALLOWED_URL = "https://host.example/i/api/graphql/QID/TweetDetail?x=1";
+const proxyWith = (scope, isAllowed = (url) => url === ALLOWED_URL, post = () => {}) =>
+  installResponseHook({
+    target: scope, isMatch, post, headerAllowlist: ALLOWLIST,
+    proxy: { ...PROXY, isAllowed },
+  });
+
+/** Prime the hook with the page's credentials the way a real timeline request would. */
+async function primeAuth(scope) {
+  await scope.fetch(MATCH_URL, { headers: LIVE_HEADERS });
+  await tick();
+}
+
+test("proxy: replays the stored auth onto the request and returns only the body", async () => {
+  const scope = fakeProxyScope();
+  proxyWith(scope);
+  await primeAuth(scope);
+  scope.fetchCalls.length = 0;
+
+  scope.dispatch({ source: "req", id: "c1", url: ALLOWED_URL });
+  await tick();
+
+  // The request the hook made DOES carry the credentials — that is the point of it.
+  assert.equal(scope.fetchCalls.length, 1);
+  const { url, init } = scope.fetchCalls[0];
+  assert.equal(url, ALLOWED_URL);
+  assert.equal(init.credentials, "include");
+  assert.equal(init.method, "GET");
+  assert.equal(init.headers.authorization, SECRETS[0]);
+  assert.equal(init.headers["x-csrf-token"], SECRETS[1]);
+  assert.equal(init.headers.cookie, undefined, "an unlisted header is not replayed either");
+
+  // The REPLY carries the body and the correlation id — and no credential.
+  assert.equal(scope.replies.length, 1);
+  assert.deepEqual(scope.replies[0], {
+    source: "rep", id: "c1", status: 200, json: { conversation: true },
+  });
+  for (const secret of SECRETS) assert.ok(!JSON.stringify(scope.replies).includes(secret));
+});
+
+test("proxy: refuses a url outside the platform's allowlist, without touching credentials", async () => {
+  const scope = fakeProxyScope();
+  proxyWith(scope);
+  await primeAuth(scope);
+  scope.fetchCalls.length = 0;
+
+  // The attack this gate exists for: a page script asking the hook to spend the user's
+  // token on an endpoint of its choosing and hand back the answer.
+  for (const url of [
+    "https://host.example/i/api/1.1/dm/inbox.json",       // same origin, wrong endpoint
+    "https://evil.example/i/api/graphql/Q/TweetDetail",   // right shape, wrong origin
+    null,
+    { toString: () => ALLOWED_URL },                      // not a string
+  ]) {
+    scope.dispatch({ source: "req", id: "x", url });
+  }
+  await tick();
+
+  assert.equal(scope.fetchCalls.length, 0, "no request was made at all");
+  assert.equal(scope.replies.length, 4);
+  for (const reply of scope.replies) assert.equal(reply.error, "url-not-allowed");
+});
+
+test("proxy: says so rather than guessing when it has no credentials yet", async () => {
+  const scope = fakeProxyScope();
+  proxyWith(scope);                                  // no timeline request seen → nothing stored
+  scope.dispatch({ source: "req", id: "c1", url: ALLOWED_URL });
+  await tick();
+  assert.equal(scope.fetchCalls.length, 0);
+  assert.equal(scope.replies[0].error, "no-credentials");
+});
+
+test("proxy: a fetch throw comes back as an error reply, never as a hang or a page throw", async () => {
+  const scope = fakeProxyScope();
+  proxyWith(scope);
+  await primeAuth(scope);
+  scope.failNext = "network down";           // the proxied call is the one that fails
+
+  assert.doesNotThrow(() => scope.dispatch({ source: "req", id: "c1", url: ALLOWED_URL }));
+  await tick();
+  assert.match(scope.replies.at(-1).error, /network down/);
+  assert.equal(scope.replies.at(-1).id, "c1", "an error still carries its correlation id");
+});
+
+test("proxy: a 4xx body still comes back (the caller reads the status to repair features)", async () => {
+  const scope = fakeProxyScope({
+    status: 400, json: { errors: [{ message: "The following features cannot be null: f" }] },
+  });
+  proxyWith(scope, () => true);
+  await primeAuth(scope);
+  scope.dispatch({ source: "req", id: "c1", url: ALLOWED_URL });
+  await tick();
+  assert.equal(scope.replies[0].status, 400);
+  assert.deepEqual(scope.replies[0].json.errors[0].message,
+    "The following features cannot be null: f");
+});
+
+test("proxy: an unrelated message is not a proxy request (and a replay is not either)", async () => {
+  const scope = fakeProxyScope();
+  installResponseHook({
+    target: scope, isMatch, post: () => {}, headerAllowlist: ALLOWLIST,
+    replaySource: REPLAY_SOURCE, proxy: { ...PROXY, isAllowed: () => true },
+  });
+  await primeAuth(scope);
+  scope.fetchCalls.length = 0;
+  scope.replies.length = 0;
+
+  scope.dispatch({ source: "something-else", url: ALLOWED_URL });
+  scope.dispatch({ source: REPLAY_SOURCE });
+  await tick();
+  assert.equal(scope.fetchCalls.length, 0);
+  assert.equal(scope.replies.length, 0);
 });
 
 // MARK: - load-order pairing (the manifest contract: hook-core BEFORE the site hook)

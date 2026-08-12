@@ -23,6 +23,7 @@ import {
 } from "./bulk-pinterest.js";
 import { createTwitterSource } from "./twitter-source.js";
 import { createThreadExpander, featuresFromURL, resolveQueryId } from "./twitter-thread.js";
+import { createHookProxyFetch } from "./hook-proxy.js";
 import { makeSavedFeedFetch, instagramSavedDriver } from "./bulk-instagram.js";
 import { browser } from "./browser.js";
 
@@ -222,11 +223,12 @@ function buildPinterestDriver({ doc, loc, fetchImpl }) {
  * live listener feeding a now-dead source, and a stale one could push pages into the
  * wrong sweep. The caller runs `dispose` when the sweep settles. */
 function buildTwitterDriver({ win, host, scope, transport, log = () => {} }) {
-  // Credentials for the follow-up TweetDetail call, harvested from the page's OWN
-  // timeline requests as they stream past: the `features` blob off the request URL and
-  // the allowlisted auth headers off the request. Nothing is forged and nothing is
-  // stored — they live in this closure for the sweep's lifetime and are used only for
-  // same-origin requests from this tab.
+  // What the follow-up TweetDetail call needs, harvested from the page's OWN timeline
+  // requests as they stream past: the `features` blob off the request URL, and the fact
+  // (`hasAuth`) that the MAIN-world hook has the matching auth headers. The header VALUES
+  // are deliberately not here and never will be — they stay in the hook's closure and
+  // only it replays them, so nothing that authorizes a request ever crosses the page's
+  // shared `postMessage` bus ([090] 3A).
   let harvested = null;
 
   const resolveCredentials = async () => {
@@ -241,13 +243,14 @@ function buildTwitterDriver({ win, host, scope, transport, log = () => {} }) {
       },
       log,
     });
-    return queryId ? { queryId, features: harvested.features, headers: harvested.headers } : null;
+    return queryId ? { queryId, features: harvested.features } : null;
   };
 
-  // The page's own `fetch`, so the TweetDetail call carries the tab's session. Absent
-  // on a bare test window — expansion is simply off then, which is the same graceful
-  // path a missing queryId takes.
-  const pageFetch = typeof win.fetch === "function" ? win.fetch.bind(win) : null;
+  // The TweetDetail call goes through the hook's proxy, so it carries the tab's session
+  // without the sweep ever holding the token. Absent on a bare test window (no
+  // `addEventListener`) — expansion is simply off then, the same graceful path a missing
+  // queryId takes.
+  const proxy = typeof win.addEventListener === "function" ? createHookProxyFetch({ win }) : null;
 
   const source = createTwitterSource({
     host,
@@ -258,16 +261,18 @@ function buildTwitterDriver({ win, host, scope, transport, log = () => {} }) {
     // whole thread" holds for the common case (bookmarking the first tweet) is to ask.
     // The cost is one TweetDetail per bookmarked tweet that has any replies; tweets
     // with none are screened out for free, and each conversation is fetched once.
-    expandItems: pageFetch
+    expandItems: proxy
       ? createThreadExpander({
-        resolveCredentials, probeRoots: true, host, fetchImpl: pageFetch, log,
+        resolveCredentials, probeRoots: true, host, fetchImpl: proxy.proxyFetch, log,
       })
       : null,
   });
   const onMessage = (event) => {
     if (event.source === win && event.data && event.data.source === TIMELINE_MESSAGE_SOURCE) {
       const features = featuresFromURL(event.data.url);
-      if (features) harvested = { features, headers: event.data.headers || {} };
+      // Both halves must be present: the features blob to build the request with, and the
+      // hook's word that it holds the credentials to send it with.
+      if (features && event.data.hasAuth) harvested = { features };
       source.onResponse(event.data.json, event.data.url);
     }
   };
@@ -279,7 +284,13 @@ function buildTwitterDriver({ win, host, scope, transport, log = () => {} }) {
   // document_start) buffers recent responses and re-posts them on this request; dedup
   // makes any overlap with the live pages idempotent.
   win.postMessage({ source: TIMELINE_REPLAY_SOURCE }, win.location.origin);
-  return { driver: source, dispose: () => win.removeEventListener("message", onMessage) };
+  return {
+    driver: source,
+    dispose: () => {
+      win.removeEventListener("message", onMessage);
+      if (proxy) proxy.dispose();              // and reject anything still in flight
+    },
+  };
 }
 
 /** Build the Instagram driver (002 · O2): a same-origin credentialled `fetch` to the

@@ -8,7 +8,9 @@
 //   · the `features` blob is INHERITED from a timeline request the page already made
 //     (the same discipline the drift baseline records — "never hardcoded"), because a
 //     features set that disagrees with the server is a 400, not a degraded response;
-//   · the auth headers are the ones the page sent on that same request;
+//   · the auth is the page's own, and it never comes near this module — the request
+//     goes through the MAIN-world hook's proxy, which holds the headers itself
+//     ([090] 3A, hook-proxy.js);
 //   · only the `queryId` can't be inherited (TweetDetail has its own, and they rotate
 //     every 2-4 weeks), so it is SCRAPED from X's own JS bundle at sweep time.
 // When any of those is unavailable the expansion FAILS SOFT: the bookmarked tweet is
@@ -479,9 +481,14 @@ export function createThreadExpander({
  *
  * `features` is inherited from an intercepted request; a 400 naming missing flags is
  * retried with them on, bounded by `MAX_FEATURE_RETRIES`.
+ *
+ * `fetchImpl` is handed a url and NOTHING ELSE — no headers, no `credentials`. In
+ * production it is the MAIN-world hook's proxy (hook-proxy.js), which owns the auth this
+ * request rides on; this side of the boundary never sees a token, and the shape of this
+ * call is what keeps that true rather than merely conventional.
  */
 export async function fetchThread(focalTweetId, {
-  queryId, features = {}, headers = {}, host = "x.com",
+  queryId, features = {}, host = "x.com",
   fetchImpl = fetch, log = () => {},
 } = {}) {
   if (!queryId || !focalTweetId) return [];
@@ -493,11 +500,7 @@ export async function fetchThread(focalTweetId, {
     let body = null;
     let status = 0;
     try {
-      const response = await fetchImpl(url, {
-        method: "GET",
-        headers: { ...headers, "content-type": "application/json" },
-        credentials: "include",
-      });
+      const response = await fetchImpl(url);
       status = response.status;
       body = await response.json();
     } catch (error) {
