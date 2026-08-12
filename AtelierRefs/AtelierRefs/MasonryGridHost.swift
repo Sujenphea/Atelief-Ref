@@ -210,6 +210,23 @@ struct GridHostConfiguration {
     /// A no-op by default, so a surface that binds neither is unchanged.
     var onArchive: (_ assetIDs: [UUID]) -> Void = { _ in }
 
+    // MARK: 011 · A2/A3 — out-flow (originals folder + share sheet)
+
+    /// Export the cell's Finder-scope targets as a folder of ORIGINALS (011 · A2).
+    ///
+    /// `nil`-means-absent, the ``onArchiveVerb`` rule: a surface that does not bind
+    /// it gets no menu item rather than a dead one. Note this acts on the
+    /// RIGHT-CLICK's targets, not the keyboard selection — so a right-click outside
+    /// the selection exports the one cell under the cursor, which is what the same
+    /// gesture does for every other verb in this menu.
+    var onExportAssets: ((_ assetIDs: [UUID]) -> Void)?
+
+    /// Resolve asset ids to their out-flow payload, so the menu can build a system
+    /// `Share ▸` submenu for them (011 · A3). `nil` on a surface that does not
+    /// offer sharing; a resolver that comes back with nothing shareable also yields
+    /// no item (see ``AssetShare/menuItem(for:)``).
+    var shareSelection: ((_ assetIDs: [UUID]) -> ExportSelection)?
+
     // MARK: 222 — scroll-away header
 
     /// A header hosted INSIDE the grid's scroll region (222), so it scrolls away
@@ -1336,6 +1353,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
                     self?.configuration.onSetCover(targets[0])
                 })
             }
+            addOutFlowItems(to: menu, targets: targets)
             menu.addItem(.separator())
             addArchiveItem(to: menu, targets: targets)
             menu.addItem(BlockMenuItem(
@@ -1364,6 +1382,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
                     self?.configuration.onReveal(itemID)
                 })
             }
+            addOutFlowItems(to: menu, targets: targets)
             menu.addItem(.separator())
             addArchiveItem(to: menu, targets: targets)
             menu.addItem(BlockMenuItem(title: "Delete\(Self.countSuffix(n))") { [weak self] in
@@ -1416,6 +1435,40 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// " (N)" for a multi-item action, empty for a single — mirrors
     /// `CollectionView.countSuffix`.
     private static func countSuffix(_ n: Int) -> String { n > 1 ? " (\(n))" : "" }
+
+    /// The out-flow pair — `Share ▸` and `Export Assets…` (011 · A2/A3) — for a
+    /// BROWSING menu, each added only when the surface binds it and only when the
+    /// targets have something to give.
+    ///
+    /// They sit together, behind their own separator, because they are the one
+    /// group in this menu that sends refs OUT of the app rather than moving them
+    /// around inside it — and ahead of the destructive verbs, so the click that
+    /// reaches for Share cannot land near Delete.
+    ///
+    /// The archive shelf deliberately gets neither. Its menu is three verbs on
+    /// purpose (022 · D5 / 023 · A2): the shelf is where refs go to be out of the
+    /// way, and a share sheet is not what "put this away" asks for.
+    private func addOutFlowItems(to menu: NSMenu, targets: [UUID]) {
+        let share = configuration.shareSelection.flatMap { resolve in
+            AssetShare.menuItem(for: resolve(targets))
+        }
+        let export = configuration.onExportAssets
+        guard share != nil || export != nil else { return }
+
+        menu.addItem(.separator())
+        if let share {
+            // The system item arrives titled "Share"; it is the whole submenu, so
+            // nothing here builds or counts its services.
+            menu.addItem(share)
+        }
+        if let export {
+            menu.addItem(BlockMenuItem(
+                title: "Export Assets\(Self.countSuffix(targets.count))…"
+            ) {
+                export(targets)
+            })
+        }
+    }
 
     /// The Archive item for a BROWSING menu (collection / loose assets), added
     /// only when the surface binds the verb. Nothing a browsing surface can show

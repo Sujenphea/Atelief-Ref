@@ -21,25 +21,10 @@
 
 import Foundation
 
-/// Why one ref did not make it into `assets/`.
-public struct SiteSkip: Equatable, Sendable {
-    public enum Reason: Equatable, Sendable {
-        /// The blob was gone from disk by the time the copy ran (reaped,
-        /// trashed, or on an unmounted volume).
-        case missingSource
-        /// The copy itself failed — permissions, a full destination disk.
-        case copyFailed(String)
-    }
-
-    /// The name the file would have had in `assets/`.
-    public var filename: String
-    public var reason: Reason
-
-    public init(filename: String, reason: Reason) {
-        self.filename = filename
-        self.reason = reason
-    }
-}
+/// Why one ref did not make it into `assets/` — ``ExportSkip`` under its
+/// site-flavoured name. A partial export reads the same whether this writer or
+/// the originals writer (011 · A2) produced it, because it is the same type.
+public typealias SiteSkip = ExportSkip
 
 /// What a finished folder export produced.
 public struct SiteWriteResult: Equatable, Sendable {

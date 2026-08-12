@@ -122,6 +122,48 @@ final class ExportController: ObservableObject {
         }
     }
 
+    /// Present the save panel for a folder of ORIGINALS (011 · A2), then copy
+    /// `plan`'s files into it. No-op while an export is already running, and
+    /// refused outright for an empty plan.
+    ///
+    /// The FOURTH entry point on the same controller, for the reason
+    /// ``requestSiteExport(plan:suggestedName:)`` gives: the progress ring, the
+    /// cancel popover and the completion toast all observe `isExporting` /
+    /// `progress` / `lastReport`, and an export that behaved differently from the
+    /// other three would be one more thing to learn for no benefit.
+    ///
+    /// There is no config popover ahead of this one — unlike the moodboard,
+    /// contact sheet and web page, an originals export has nothing to configure.
+    /// The files are the files, so the click goes straight to the save panel.
+    func requestAssetExport(plan: AssetFolderExport.Plan, suggestedName: String) {
+        guard !isExporting else { return }
+        guard !plan.isEmpty else {
+            publish(Report(
+                outcome: .failed("Nothing to export"), skipped: plan.skipped, url: nil, seq: 0))
+            return
+        }
+
+        // A save panel, not an open panel: the user is naming something new. The
+        // "file" it names is the folder this copies the originals into, so there
+        // is no content type and no extension — the web page's panel exactly.
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName
+        panel.canCreateDirectories = true
+        panel.prompt = "Export"
+        panel.message = "Choose where to write the folder of original files."
+
+        let handler: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            self?.startAssets(plan: plan, to: url)
+        }
+
+        if let window = NSApp.keyWindow {
+            panel.beginSheetModal(for: window, completionHandler: handler)
+        } else {
+            panel.begin(completionHandler: handler)
+        }
+    }
+
     /// Cancel a running export (from the top-bar popover). Sets the render's
     /// cancel flag and tears down the wrapping task.
     func cancel() {
@@ -217,6 +259,62 @@ final class ExportController: ObservableObject {
                         at: url, withIntermediateDirectories: true)
                     let result = try SiteExportWriter.write(
                         gallery: gallery, assets: assets, to: url,
+                        isCancelled: { flag.isCancelled }, onProgress: onProgress)
+                    return .done(skipped: result.skipped.count)
+                } catch {
+                    if !preexisting { try? FileManager.default.removeItem(at: url) }
+                    // Ask the FLAG first, never the error (301): work already in
+                    // flight throws on the way out of a cancel, and a user who
+                    // pressed Stop must not be told their export failed.
+                    if flag.isCancelled || error is CancellationError { return .cancelled }
+                    return .failed(error.localizedDescription)
+                }
+            }.value
+
+            await MainActor.run {
+                guard let self else { return }
+                switch outcome {
+                case .done(let writeSkips):
+                    self.publish(Report(
+                        outcome: .success, skipped: mappingSkips + writeSkips,
+                        url: url, seq: 0))
+                case .cancelled:
+                    self.publish(Report(outcome: .cancelled, skipped: 0, url: nil, seq: 0))
+                case .failed(let message):
+                    self.publish(Report(
+                        outcome: .failed(message), skipped: mappingSkips, url: nil, seq: 0))
+                }
+            }
+        }
+    }
+
+    // MARK: - Originals folder (011 · A2)
+
+    /// Copy the plan's originals into the folder off the main actor, streaming one
+    /// file at a time. `startSite`'s shape, minus the page: same detached hop, same
+    /// cancel flag, same "only clean up a folder this run created" rule.
+    private func startAssets(plan: AssetFolderExport.Plan, to url: URL) {
+        isExporting = true
+        progress = 0
+        let flag = CancelFlag()
+        cancelFlag = flag
+
+        let onProgress: @Sendable (Double) -> Void = { [weak self] fraction in
+            guard let self else { return }
+            Task { @MainActor in self.progress = fraction }
+        }
+
+        let files = plan.files
+        let mappingSkips = plan.skipped
+
+        task = Task { [weak self] in
+            let outcome = await Task.detached(priority: .userInitiated) { () -> RenderOutcome in
+                // Only clean up a folder this run created; a pre-existing one is
+                // the user's, and a cancelled export must not delete it.
+                let preexisting = FileManager.default.fileExists(atPath: url.path)
+                do {
+                    let result = try AssetFolderWriter.write(
+                        files: files, to: url,
                         isCancelled: { flag.isCancelled }, onProgress: onProgress)
                     return .done(skipped: result.skipped.count)
                 } catch {

@@ -2232,6 +2232,29 @@ final class IngestionModel: ObservableObject {
         copyToPasteboard(assets: assets, sourceCollectionID: sourceCollectionID)
     }
 
+    /// Resolve `assetIDs` out of `details` to an ``ExportSelection`` — ordered
+    /// entries plus the count that had nothing to export (011 · A2/A3).
+    ///
+    /// Selects by **asset** id, not membership id, because that is what the
+    /// right-click's Finder-scope targets are (`gridActionTargets`) and what the
+    /// detail page holds; ``copySelectedToPasteboard(from:selection:sourceCollectionID:)``
+    /// filters by `item.id` because ⌘C comes from a grid selection, which is
+    /// membership-shaped. Order is `details` order — the feed the user is looking
+    /// at — so an export and a share list the refs the same way the grid does.
+    ///
+    /// Shared by the originals folder export and the share sheet so neither
+    /// re-derives "what does this selection actually contain".
+    func exportSelection(
+        from details: [CollectionItemDetail], assetIDs: [UUID]
+    ) -> ExportSelection {
+        let wanted = Set(assetIDs)
+        let assets = details
+            .filter { wanted.contains($0.asset.id) }
+            .map { (asset: $0.asset, source: Optional($0.source)) }
+        return AssetExport.exportSelection(
+            assets: assets, blobURL: { self.blobURL(forAsset: $0) })
+    }
+
     /// The on-disk URL of a folder item's 512-tier thumbnail (pure — no decode).
     /// The grid decodes + caches it off the main thread via ``ThumbnailPipeline``
     /// (at the cell's own pixel bucket), so the render path never blocks on disk

@@ -88,6 +88,10 @@ struct AtelierRefsApp: App {
                 // collection as a self-contained index.html + assets folder;
                 // disabled elsewhere, and while the collection is empty.
                 ExportWebPageCommand()
+                // File ▸ Export Assets… (011 · A2) — exports the focused
+                // collection's ORIGINAL files into a folder; disabled elsewhere,
+                // and while the collection is empty.
+                ExportAssetsCommand()
             }
             // Help ▸ Keyboard Shortcuts (⌘/, 024 · K2) — the app's ~30 bindings had
             // no listing anywhere in the UI. AFTER the default Help item rather than

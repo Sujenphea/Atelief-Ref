@@ -583,6 +583,20 @@ struct ItemDetailView: View {
         .topBarPill()
     }
 
+    /// This item's share payload (011 · A3): the ALREADY-COMPUTED drag-out original
+    /// when the ref has bytes, else the kind's text fallback — a colour's hex, a
+    /// link's or tweet's URL, exactly what ⌘C would put on the board.
+    ///
+    /// Reuses `exportItem` rather than re-resolving, so the menu costs no `stat`
+    /// during a zoom or pan; the fallback branch is pure (it reaches
+    /// ``AssetExport/pasteboardEntry(asset:source:blobURL:)`` with no URL, which is
+    /// how that function's text cases are selected) and needs no `source`, since
+    /// none of them read one.
+    private var shareEntry: AssetPasteboardEntry? {
+        if let exportItem { return .file(exportItem) }
+        return AssetExport.pasteboardEntry(asset: asset, source: nil, blobURL: nil)
+    }
+
     /// The source / lifecycle actions the Figma panel drops, relocated to a
     /// trailing overflow menu so nothing (Delete, Reveal, …) is lost (041). Each
     /// item renders only when its closure was supplied.
@@ -596,6 +610,23 @@ struct ItemDetailView: View {
             }
             if let revealInFinder = actions.revealInFinder {
                 Button { revealInFinder() } label: { Label("Reveal in Finder", systemImage: "folder") }
+            }
+            // 011 · A3 — the share sheet, next to the other verbs that hand this
+            // ref to something outside the app. `ShareLink` rather than an
+            // `NSSharingServicePicker`: inside a SwiftUI `Menu` it becomes the
+            // system Share submenu on its own, with the user's own services and
+            // ordering, and it needs no anchor rect to present from.
+            if let shared = shareEntry {
+                switch shared {
+                case .file(let item):
+                    ShareLink(item: item.blobURL) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                case .text(let string):
+                    ShareLink(item: string) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                }
             }
             if let copySourceLink = actions.copySourceLink {
                 Button { copySourceLink() } label: { Label("Copy Source Link", systemImage: "link") }
