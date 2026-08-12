@@ -52,7 +52,7 @@ export class SourceStallError extends Error {
  *                           `onResponse`: expansion can be async and can fail, and the
  *                           push path must stay synchronous and unwedgeable. A throw
  *                           here degrades to the unexpanded page rather than killing
- *                           the sweep — see X's thread expansion (twitter-thread.js).
+ *                           the sweep — see X's thread expansion (twitter-detail-client.js).
  */
 export function createInterceptSource({
   parsePage,

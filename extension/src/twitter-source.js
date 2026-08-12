@@ -28,7 +28,7 @@ export function createTwitterSource({
   maxIdleRounds = 4,
   scope = null,
   // Optional `async (items) => items` that swaps a threaded tweet's items for its
-  // whole thread's (twitter-thread.js). Omitted → tweets save exactly as swept.
+  // whole thread's (twitter-detail-client.js). Omitted → tweets save exactly as swept.
   expandItems = null,
 } = {}) {
   return createInterceptSource({

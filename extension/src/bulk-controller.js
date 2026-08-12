@@ -22,7 +22,7 @@ import {
   pinterestBoardDriver, makeResourceFetch, scrapePinterestAppVersionFromDoc, readCookie,
 } from "./bulk-pinterest.js";
 import { createTwitterSource } from "./twitter-source.js";
-import { createThreadExpander, featuresFromURL, resolveQueryId } from "./twitter-thread.js";
+import { createThreadExpander, featuresFromURL, resolveQueryId } from "./twitter-detail-client.js";
 import { createHookProxyFetch } from "./hook-proxy.js";
 import { makeSavedFeedFetch, instagramSavedDriver } from "./bulk-instagram.js";
 import { browser } from "./browser.js";
