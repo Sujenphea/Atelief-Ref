@@ -25,7 +25,10 @@ test("checkTimeline passes on the committed X fixture with real signals", () => 
   assert.equal(result.ok, true);
   assert.equal(result.problems.length, 0);
   assert.equal(result.signals.tweetCount, 3);
-  assert.equal(result.signals.mediaItems, 5); // incl. the bare-quote tweet's quoted video
+  // 8 = the video tweet (1) + the photo tweet's own 3 AND the 3 it quotes + the
+  // bare quote's borrowed video (1). Quoted media are merged in, not just borrowed
+  // as a fallback, so this count moved from 5 when that rule changed.
+  assert.equal(result.signals.mediaItems, 8);
   assert.equal(result.signals.hasCursor, true);
 });
 

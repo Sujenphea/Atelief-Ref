@@ -21,9 +21,13 @@
 // source (`title` / `authorHandle` / `authorName`). A tweet with no usable media is
 // still a single media-less `tweet` card, which is the case that kind exists for.
 // A REPOST (retweet) is unwrapped to the ORIGINAL tweet, whose text + media are the
-// real substance. A QUOTE tweet keeps its OWN text/identity, and normally its own
-// media — but a BARE quote (no own media) falls back to the QUOTED tweet's media,
-// since that quoted video/image is the substance the user bookmarked.
+// real substance; the reposter's handle survives as `rawMetadata.repostedBy`, since
+// that identity is the only thing a plain repost actually adds (its `full_text` is
+// just the "RT @user: …" wrapper). A QUOTE tweet carries BOTH halves: its title is
+// the quoter's words followed by the quoted byline + text, and its media are the
+// quoter's own followed by the quoted tweet's, all filed under the quoter's
+// permalink so they group as one post. Borrowed media are namespaced by the quoting
+// tweet's id so their dedup key can't collide with a direct save of the quoted tweet.
 
 import { makeProvenance, toOrigName } from "./extractors/base.js";
 import { buildTweetPayload } from "./endpoint.js";
@@ -53,10 +57,10 @@ export function underlyingTweet(tweet) {
   return unwrapTweet(reposted) || tweet;
 }
 
-/** The QUOTED tweet a tweet embeds (`quoted_status_result`), unwrapped, or null. A
- * quote's media is normally the quoted AUTHOR's asset, so it's read ONLY as a
- * fallback when the quoting tweet has NO media of its own — a BARE quote whose
- * substance IS the quoted video/image (the thing the user actually bookmarked). */
+/** The QUOTED tweet a tweet embeds (`quoted_status_result`), unwrapped, or null.
+ * Its text and media are BOTH read (appended after the quoter's own, never
+ * replacing them) — a quote is only half a thought without the thing it quotes,
+ * and for a BARE quote the quoted video/image is the entire substance. */
 export function quotedTweet(tweet) {
   const quoted =
     tweet?.legacy?.quoted_status_result?.result ||
@@ -116,6 +120,64 @@ function tweetAuthor(tweet) {
   };
 }
 
+/** The tweet's text: the `note_tweet` long-form body when present (a >280-char
+ * tweet's `legacy.full_text` is TRUNCATED), else `legacy.full_text`. */
+export function tweetText(tweet) {
+  return tweet?.note_tweet?.note_tweet_results?.result?.text || tweet?.legacy?.full_text || null;
+}
+
+/**
+ * The title for a QUOTE tweet: the quoter's own words first, then the quoted
+ * tweet's byline + text below (the reader's order — you see the comment, then what
+ * it is commenting on). One combined string rather than a second field, so both
+ * halves land in the ONE place the app's provenance UI and FTS already read
+ * (`source.title`) with no schema change.
+ *
+ * Returns the quoter's text unchanged when there is nothing quoted, and the quoted
+ * block alone for a BARE quote (no words of its own) — the case where the quoted
+ * tweet IS the whole substance.
+ */
+export function combineQuoteText(text, quotedByline, quotedText) {
+  if (!quotedText) return text || null;
+  const block = quotedByline ? `↩ ${quotedByline}: ${quotedText}` : `↩ ${quotedText}`;
+  return text ? `${text}\n\n${block}` : block;
+}
+
+/**
+ * Walk a tweet's media entries into the fan-out descriptors `mapTweet` emits, in
+ * the tweet's own order. An entry with no poster is unusable (nothing to fetch,
+ * nothing to show) and is dropped rather than emitted as an item the SW would fail on.
+ *
+ * `borrowedFrom` is the QUOTING tweet's id when these media belong to a quoted
+ * tweet. It NAMESPACES the dedup key: the engine's skip set ([P14]) is keyed on
+ * `sourceId`, so a borrowed `media_key` reused verbatim would collide with a direct
+ * save of the quoted tweet and silently strand whichever was swept second. Scoping
+ * the borrowed copy to its quoter keeps BOTH bookmarks complete; the app is
+ * content-addressed (`blob_hash`), so the two assets share one blob on disk.
+ */
+function collectMedia(mediaList, { borrowedFrom = null } = {}) {
+  const out = [];
+  for (const media of mediaList) {
+    const poster = media.media_url_https || null;
+    if (!poster) continue;
+    const mediaUrl = toOrigName(poster, { addIfAbsent: true });
+    const isVideo = media.type === "video" || media.type === "animated_gif";
+    // The media's own stable id — the engine's dedup + skip key ([P14]), which must
+    // be per-ASSET since one tweet yields several. `media_key` is the modern field,
+    // `id_str` the legacy one; the caller falls back to the index when both are absent.
+    const mediaId = media.media_key || media.id_str || null;
+    out.push({
+      mediaUrl,
+      mediaUrlFallback: mediaUrl !== poster ? poster : null,
+      kind: media.type || "photo",
+      videoUrl: isVideo && media.video_info ? selectBestVideo({ video: media.video_info }) : null,
+      mediaId: mediaId && borrowedFrom ? `${borrowedFrom}:${mediaId}` : mediaId,
+      borrowed: !!borrowedFrom,
+    });
+  }
+  return out;
+}
+
 /**
  * Map one timeline tweet result to its `BulkItem`s, or `[]` for a tombstone /
  * no-id / empty tweet (no text AND no media — the app would reject it). `host`
@@ -146,6 +208,12 @@ function tweetAuthor(tweet) {
  * OWN best progressive MP4 in `rawMetadata.videoUrl` (already in the response — no
  * syndication call), so a tweet with two videos resolves both under the opt-in
  * instead of just the first. With the opt-in OFF (default) each lands as its poster.
+ *
+ * Every item also carries `threadHint` — the underlying tweet, so the thread expander
+ * can decide whether this tweet is worth a `TweetDetail` call without re-parsing the
+ * page. It is a LOCAL field (like `cursor`): the relay sends only `sourceId` /
+ * `provenance` / `content`, so it never reaches the wire, and `mapThread` strips it
+ * from the items it produces so an expanded thread can't be expanded again.
  */
 export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
   const outer = unwrapTweet(result);
@@ -153,50 +221,43 @@ export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
   // A repost carries its content on the original — read media/text/author/id from it,
   // so a reposted tweet saves the original's media (not an empty "RT @user…").
   const tweet = underlyingTweet(outer);
+  // …but WHO reposted it is provenance the original doesn't carry, and unwrapping used
+  // to drop it entirely. A plain repost has no words of its own (`full_text` is only
+  // the "RT @user: …" wrapper, which is why it isn't kept as text) — the reposter's
+  // handle is the whole of what the repost adds, so it rides `rawMetadata.repostedBy`.
+  const repostedBy = tweet !== outer ? tweetAuthor(outer).handle : null;
 
   const tweetId = tweet.rest_id || (tweet.legacy && tweet.legacy.id_str) || null;
   if (!tweetId) return [];
 
   const author = tweetAuthor(tweet);
-  const legacy = tweet.legacy || {};
-  const noteText = tweet.note_tweet?.note_tweet_results?.result?.text;
-  const title = noteText || legacy.full_text || null;
   const originalURL = author.screenName
     ? `https://${host}/${author.screenName}/status/${tweetId}`
     : `https://${host}/i/status/${tweetId}`;
 
-  // Media source: the tweet's OWN media, or — for a BARE quote (no own media) — the
-  // QUOTED tweet's media, so a quote whose substance is the quoted video/image captures
-  // it (a quote WITH its own media keeps using that). Retweets are already unwrapped above.
-  let mediaList = tweetMedia(tweet);
-  if (mediaList.length === 0) {
-    const quoted = quotedTweet(tweet);
-    if (quoted) mediaList = tweetMedia(quoted);
-  }
+  // A QUOTE's substance is BOTH halves. Its text is the quoter's words followed by the
+  // quoted byline + text (`combineQuoteText`), and its media is the quoter's own
+  // followed by the quoted tweet's — all under the QUOTER's permalink, which is what
+  // was bookmarked, so the two sets group into one tile the way a carousel does.
+  // Borrowed media are namespaced by this tweet's id so their dedup key can't collide
+  // with a direct save of the quoted tweet (see `collectMedia`). Retweets are already
+  // unwrapped above, so a repost OF a quote reads the original's quote correctly.
+  const quoted = quotedTweet(tweet);
+  const quotedAuthor = quoted ? tweetAuthor(quoted) : null;
+  const title = combineQuoteText(
+    tweetText(tweet),
+    quotedAuthor ? quotedAuthor.handle || quotedAuthor.name : null,
+    quoted ? tweetText(quoted) : null,
+  );
 
-  // Walk the media once into the fan-out list. An entry with no poster is unusable
-  // (nothing to fetch, nothing to show) and is dropped rather than emitted as an
-  // item the SW would fail on.
-  const medias = [];
-  for (const media of mediaList) {
-    const poster = media.media_url_https || null;
-    if (!poster) continue;
-    const mediaUrl = toOrigName(poster, { addIfAbsent: true });
-    const isVideo = media.type === "video" || media.type === "animated_gif";
-    medias.push({
-      mediaUrl,
-      mediaUrlFallback: mediaUrl !== poster ? poster : null,
-      kind: media.type || "photo",
-      videoUrl: isVideo && media.video_info ? selectBestVideo({ video: media.video_info }) : null,
-      // The media's own stable id — the engine's dedup + skip key ([P14]), which
-      // must be per-ASSET now that one tweet yields several. `media_key` is the
-      // modern field, `id_str` the legacy one; the index is a last resort so a
-      // response missing both still dedups within the tweet instead of collapsing
-      // every child onto one key.
-      mediaId: media.media_key || media.id_str || null,
-    });
-  }
+  const medias = [
+    ...collectMedia(tweetMedia(tweet)),
+    ...(quoted ? collectMedia(tweetMedia(quoted), { borrowedFrom: tweetId }) : []),
+  ];
 
+  // `repostedBy` is written only when there IS one — a plain tweet's stored metadata
+  // stays exactly as it was rather than gaining a null key.
+  const sharedRaw = repostedBy ? { repostedBy } : {};
   const shared = {
     platform: "twitter",
     originalURL,
@@ -211,13 +272,16 @@ export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
       mediaUrl: media.mediaUrl,
       mediaUrlFallback: media.mediaUrlFallback,
       cursor,
+      threadHint: tweet,
       provenance: makeProvenance({
         ...shared,
         mediaUrl: media.mediaUrl,
         mediaUrlFallback: media.mediaUrlFallback,
         // `carouselIndex` is read by the app's post grouping to open the tweet in
         // ITS order rather than the feed's — the same field the IG driver writes.
+        // Quoter's media take 0…n-1, the quoted tweet's continue from there.
         rawMetadata: {
+          ...sharedRaw,
           tweetId, kind: media.kind, videoUrl: media.videoUrl, carouselIndex: index,
         },
       }),
@@ -239,10 +303,11 @@ export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
     mediaUrl: null,
     mediaUrlFallback: null,
     cursor,
+    threadHint: tweet,
     content,
     provenance: makeProvenance({
       ...shared,
-      rawMetadata: { tweetId, kind: "text", videoUrl: null },
+      rawMetadata: { ...sharedRaw, tweetId, kind: "text", videoUrl: null },
     }),
   }];
 }
