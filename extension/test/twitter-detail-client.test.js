@@ -20,7 +20,7 @@ import { tweet, conversation } from "./fixtures/x-conversation.js";
 
 // MARK: - queryId discovery
 
-test("apiBundleURLs: finds X's api bundle among the page's scripts, in order, deduped", () => {
+test("apiBundleURLs: collects X's own bundles, ranked, deduped; ignores other hosts", () => {
   const doc = { querySelectorAll: () => [
     { getAttribute: (a) => (a === "src" ? "https://abs.twimg.com/responsive-web/client-web/main.abc.js" : null) },
     { getAttribute: (a) => (a === "src" ? "https://abs.twimg.com/responsive-web/client-web/api.def123.js" : null) },
@@ -28,9 +28,51 @@ test("apiBundleURLs: finds X's api bundle among the page's scripts, in order, de
     { getAttribute: (a) => (a === "src" ? "https://abs.twimg.com/responsive-web/client-web/api.def123.js" : null) },
     { getAttribute: () => "https://example.com/api.other.js" },   // not an X bundle
   ] };
+  // The api.* pair rank first (and keep document order between them); main.* follows
+  // rather than being discarded — it is where X actually keeps the table now.
   assert.deepEqual(apiBundleURLs(doc), [
     "https://abs.twimg.com/responsive-web/client-web/api.def123.js",
     "https://abs.twimg.com/responsive-web/client-web-legacy/api.ghi.js",
+    "https://abs.twimg.com/responsive-web/client-web/main.abc.js",
+  ]);
+});
+
+test("apiBundleURLs: finds the table's CURRENT home — X stopped shipping api.*.js", () => {
+  // The exact script tags x.com served on 2026-08-13, verbatim. There is no api.*.js at
+  // all any more, and the operation→queryId table is in main.*.js — so the old
+  // api-only match returned [], resolveQueryId returned null, and thread expansion was
+  // silently off on every sweep. This pins the real page against that regression.
+  const live = [
+    "https://abs.twimg.com/responsive-web/client-web/Chirp-Bold.ebb56aba.woff2",
+    "https://abs.twimg.com/responsive-web/client-web/vendor.85e3918a.js",
+    "https://abs.twimg.com/responsive-web/client-web/i18n/en.a0d1faaa.js",
+    "https://abs.twimg.com/responsive-web/client-web/main.6ad8b08a.js",
+    "https://abs.twimg.com/responsive-web/client-web/icon-svg.ea5ff4aa.svg",
+  ];
+  const doc = { querySelectorAll: () => live.map((src) => ({ getAttribute: (a) => (a === "src" ? src : null) })) };
+  const urls = apiBundleURLs(doc);
+
+  assert.ok(urls.includes("https://abs.twimg.com/responsive-web/client-web/main.6ad8b08a.js"),
+    "main.*.js carries the table today and must be reachable");
+  // main.* outranks the other bundles, so the common case is still one fetch.
+  assert.equal(urls[0], "https://abs.twimg.com/responsive-web/client-web/main.6ad8b08a.js");
+  // Non-JS assets are still excluded.
+  assert.ok(urls.every((url) => url.endsWith(".js")));
+});
+
+test("apiBundleURLs: ranks api.* first, then main.*, then any other bundle", () => {
+  // Ranking is what keeps the net wide without paying for it: resolveQueryId stops at the
+  // first hit, so the likely carrier is fetched first and the tail is only a fallback.
+  const order = [
+    "https://abs.twimg.com/responsive-web/client-web/vendor.1.js",
+    "https://abs.twimg.com/responsive-web/client-web/main.2.js",
+    "https://abs.twimg.com/responsive-web/client-web-legacy/api.3.js",
+  ];
+  const doc = { querySelectorAll: () => order.map((src) => ({ getAttribute: (a) => (a === "src" ? src : null) })) };
+  assert.deepEqual(apiBundleURLs(doc), [
+    "https://abs.twimg.com/responsive-web/client-web-legacy/api.3.js",
+    "https://abs.twimg.com/responsive-web/client-web/main.2.js",
+    "https://abs.twimg.com/responsive-web/client-web/vendor.1.js",
   ]);
 });
 

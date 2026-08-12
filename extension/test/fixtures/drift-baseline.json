@@ -6,6 +6,18 @@
       "likesQueryId": "tl9f_I0xyREhFd5KMzuO7w",
       "note": "queryIds rotate ~2-4 weeks; Bookmarks has its own. features blob is inherited via MAIN-world interception, never hardcoded."
     },
+    "xThread": {
+      "capturedAt": "2026-08-13",
+      "staleAfterDays": 30,
+      "op": "TweetDetail",
+      "queryId": "XMOz5h24KAZ86qKffKTLdQ",
+      "queryIdBundle": "main.*.js",
+      "queryIdSource": "scraped from abs.twimg.com/responsive-web/**/*.js at sweep time (never hardcoded \u2014 TweetDetail has its own id and it rotates with the rest)",
+      "replyLink": "legacy.in_reply_to_status_id_str",
+      "authorPath": "core.user_results.result.core.screen_name (legacy.screen_name fallback)",
+      "entryShapes": "focal tweet as a bare TimelineTimelineItem; continuations nested inside a conversationthread MODULE \u2014 collectConversationTweets walks generically so either can move alone",
+      "note": "Live-validated 2026-08-13 against a real 29-tweet conversation: a 5-tweet self-thread, 12 author-replies-to-commenters, 13 authors. The capture ALSO caught a live break \u2014 X no longer ships api.*.js and the operation->queryId table now lives in main.*.js, so the old api-only bundle match found nothing and expansion was silently off. features={} was accepted with no repair round on this date. Fixture is sanitized: handles, display names, bios, ids, node ids, media/profile/t.co urls and post text are all synthetic; keys, nesting and reply structure are verbatim."
+    },
     "pinterest": {
       "appVersion": "1df0da9",
       "pwsHandler": "www/[username]/[slug].js",
@@ -15,8 +27,12 @@
       "capturedAt": "2026-07-15",
       "staleAfterDays": 14,
       "route": "/api/v1/feed/saved/posts/",
-      "mediaTypes": { "image": 1, "video": 2, "carousel": 8 },
-      "note": "Saved feed is REST api/v1 (not GraphQL), verified 2026-07-15. Fan-out (002 · 1A) keys on per-media `pk`; carousel children under carousel_media[]. Poster at image_versions2.candidates[0], reel video at video_versions[]. Pagination REQUEST param ?max_id= confirmed live (page-2 capture); the response cursor next_max_id is corroborated by IG convention but not yet seen populated in a non-terminal body (account returns everything in <=2 fetches). Parser live-validated against a real 11-post/25-item page, no drift. IG drifts fast — 14d window (vs X/Pinterest 30d)."
+      "mediaTypes": {
+        "image": 1,
+        "video": 2,
+        "carousel": 8
+      },
+      "note": "Saved feed is REST api/v1 (not GraphQL), verified 2026-07-15. Fan-out (002 \u00b7 1A) keys on per-media `pk`; carousel children under carousel_media[]. Poster at image_versions2.candidates[0], reel video at video_versions[]. Pagination REQUEST param ?max_id= confirmed live (page-2 capture); the response cursor next_max_id is corroborated by IG convention but not yet seen populated in a non-terminal body (account returns everything in <=2 fetches). Parser live-validated against a real 11-post/25-item page, no drift. IG drifts fast \u2014 14d window (vs X/Pinterest 30d)."
     }
   }
 }

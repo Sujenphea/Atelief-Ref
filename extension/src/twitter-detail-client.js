@@ -57,13 +57,27 @@ export const TWEET_DETAIL_VARIABLES = Object.freeze({
 
 // MARK: - queryId discovery
 
-/** Script/link URLs on the page that could be X's API bundle — the file that carries
- * the operation→queryId table. Matched loosely (the path shape has moved before:
- * `client-web`, `client-web-legacy`, hashed filenames) and returned in document order. */
+/**
+ * Bundle URLs on the page that could carry the operation→queryId table, best candidate
+ * first.
+ *
+ * This used to match `api.*.js` ALONE, and X has since stopped shipping that file: as of
+ * 2026-08-13 the table lives in `main.*.js`, so the narrow match found nothing,
+ * `resolveQueryId` returned null, and thread expansion was silently off for every sweep.
+ * A single filename was never a safe thing to depend on — the path shape has moved
+ * before (`client-web`, `client-web-legacy`, hashed names), and the failure is invisible
+ * because "no queryId" degrades to "this tweet wasn't a thread".
+ *
+ * So the net is now ANY `responsive-web` script bundle, RANKED rather than filtered:
+ * historically-correct names first (`api.*`, then `main.*`), everything else after.
+ * `resolveQueryId` stops at the first bundle that yields an id, so ranking is what keeps
+ * the common case at one fetch while the tail keeps it working when X moves the table
+ * again — which is the part that actually matters.
+ */
 export function apiBundleURLs(doc) {
   const urls = [];
   const push = (url) => {
-    if (typeof url === "string" && /abs\.twimg\.com\/responsive-web\/.*\/api\.[^/]*\.js$/.test(url)) {
+    if (typeof url === "string" && /abs\.twimg\.com\/responsive-web\/.*\.js$/.test(url)) {
       if (!urls.includes(url)) urls.push(url);
     }
   };
@@ -73,7 +87,16 @@ export function apiBundleURLs(doc) {
     push(node.getAttribute ? node.getAttribute("src") : null);
     push(node.getAttribute ? node.getAttribute("href") : null);
   }
-  return urls;
+  // Rank, preserving document order inside each tier.
+  const tier = (url) => {
+    if (/\/api\.[^/]*\.js$/.test(url)) return 0;
+    if (/\/main\.[^/]*\.js$/.test(url)) return 1;
+    return 2;
+  };
+  return urls
+    .map((url, index) => ({ url, index, tier: tier(url) }))
+    .sort((a, b) => a.tier - b.tier || a.index - b.index)
+    .map((entry) => entry.url);
 }
 
 /**

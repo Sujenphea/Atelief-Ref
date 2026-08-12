@@ -5,17 +5,102 @@
 // the re-stamping that makes a thread group as one post. No network, no browser. The
 // request side lives in twitter-detail-client.test.js.
 //
-// The bodies are synthetic (test/fixtures/x-conversation.js) — deliberately, for the
-// branch shapes a real capture won't contain. What proves the parser against the LIVE
-// endpoint is the committed capture + `checkThreadDetail` ([090] 1A), not these.
+// Two kinds of body are used here, and the split is the point ([090] 1A/9A):
+//
+//   · x-thread-detail.json — a REAL sanitized TweetDetail capture (29 tweets, 13
+//     authors, a 5-tweet self-thread with 12 of the author's own replies to commenters
+//     mixed in). This is what proves the walk against the live endpoint. Every rule that
+//     a real conversation can exercise is asserted against it.
+//   · x-conversation.js — synthetic builders, kept ONLY for the shapes a capture won't
+//     reliably contain: a self-branching fork, a chain rooted under another author, a
+//     protected conversation. Deliberately minimal, and not a substitute for the above.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   collectConversationTweets, selfThreadChain, needsThreadExpansion, mapThread,
 } from "../src/twitter-thread.js";
 import { tweet, photo, conversation } from "./fixtures/x-conversation.js";
+
+/** The live capture. Sanitized: identities, ids, urls and post text are synthetic; keys,
+ * nesting and every reply relationship are exactly as X served them. */
+const live = JSON.parse(readFileSync(new URL("./fixtures/x-thread-detail.json", import.meta.url)));
+/** The head of the author's thread in that capture. */
+const LIVE_HEAD = "1900000000000040001";
+const LIVE_SPINE = [
+  "1900000000000040001", "1900000000000041001", "1900000000000042001",
+  "1900000000000043001", "1900000000000044001",
+];
+
+// MARK: - against the LIVE capture (the shapes X actually serves)
+
+test("live: the conversation walk finds every tweet, across both entry shapes", () => {
+  const tweets = collectConversationTweets(live);
+  // The focal tweet arrives as a bare TimelineTimelineItem and the continuations inside a
+  // conversationthread MODULE; a generic walk is what survives either moving alone.
+  assert.equal(tweets.length, 29);
+  assert.equal(new Set(tweets.map((t) => t.rest_id)).size, 29, "no tweet counted twice");
+});
+
+test("live: from the HEAD, the chain is the author's own thread and stops there", () => {
+  assert.deepEqual(selfThreadChain(live, LIVE_HEAD).map((t) => t.rest_id), LIVE_SPINE);
+});
+
+test("live: from a MID-thread tweet, the chain walks up to the head and back down", () => {
+  // Bookmarking part 3 must still save all five, in reading order — the case the whole
+  // feature exists for.
+  assert.deepEqual(selfThreadChain(live, LIVE_SPINE[2]).map((t) => t.rest_id), LIVE_SPINE);
+});
+
+test("live: the author's 12 replies TO COMMENTERS stay out of the thread", () => {
+  // The trap that an author+conversation filter would fall into, now proven on real data:
+  // this capture has twelve tweets by the thread's author that are NOT part of it.
+  const chain = selfThreadChain(live, LIVE_HEAD);
+  const screenNameOf = (t) => t?.core?.user_results?.result?.core?.screen_name || null;
+  const author = screenNameOf(chain[0]);
+  const allByAuthor = collectConversationTweets(live).filter((t) => screenNameOf(t) === author);
+
+  assert.equal(author, "threadauthor");
+  assert.equal(allByAuthor.length, 17, "the author appears 17 times in this conversation");
+  assert.equal(chain.length, 5, "only five of them are the thread");
+  // Each excluded one replies to somebody else's tweet — that is what disqualifies it.
+  const inChain = new Set(chain.map((t) => t.rest_id));
+  const chainIds = new Set(LIVE_SPINE);
+  for (const t of allByAuthor.filter((x) => !inChain.has(x.rest_id))) {
+    assert.equal(chainIds.has(t.legacy.in_reply_to_status_id_str), false,
+      `${t.rest_id} replies into the thread's spine and should not have been dropped`);
+  }
+});
+
+test("live: the thread maps to ONE post — shared permalink, contiguous open order", () => {
+  const items = mapThread(selfThreadChain(live, LIVE_HEAD), { host: "x.com" });
+  // The head carries 4 photos, the four continuations one each.
+  assert.equal(items.length, 8);
+  assert.deepEqual([...new Set(items.map((i) => i.provenance.originalURL))],
+    [`https://x.com/threadauthor/status/${LIVE_HEAD}`]);
+  assert.deepEqual(items.map((i) => i.provenance.rawMetadata.carouselIndex), [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(items.map((i) => i.provenance.rawMetadata.threadIndex), [0, 0, 0, 0, 1, 2, 3, 4]);
+  for (const item of items) assert.equal(item.provenance.rawMetadata.threadId, LIVE_HEAD);
+  // Per-media dedup keys must stay distinct or the engine skips siblings as already-seen.
+  assert.equal(new Set(items.map((i) => i.sourceId)).size, 8);
+  // These items ARE the expansion; a surviving hint would re-expand them every sweep.
+  for (const item of items) assert.equal("threadHint" in item, false);
+});
+
+test("live: a swept tweet from this thread is recognised as worth expanding", () => {
+  const tweets = collectConversationTweets(live);
+  const part2 = tweets.find((t) => t.rest_id === LIVE_SPINE[1]);
+  const head = tweets.find((t) => t.rest_id === LIVE_HEAD);
+  assert.equal(needsThreadExpansion(part2), true, "a reply is mid-thread by construction");
+  // The head names no parent, so it is only reachable by probing — which is why
+  // probeRoots is on in production.
+  assert.equal(needsThreadExpansion(head), false);
+  assert.equal(needsThreadExpansion(head, { probeRoots: true }), true);
+});
+
+// MARK: - against synthetic bodies (the shapes a capture won't contain)
 
 // MARK: - the conversation walk
 
@@ -53,6 +138,23 @@ test("selfThreadChain: excludes the author's replies TO COMMENTERS", () => {
     tweet({ id: "99", text: "thanks!", replyTo: "50" }),
   ]);
   assert.deepEqual(selfThreadChain(body, "1").map((t) => t.rest_id), ["1", "2"]);
+});
+
+test("selfThreadChain: a FAST stranger reply never becomes the continuation", () => {
+  // Ids are chronological, so a stranger who replies to the head within seconds gets a
+  // LOWER id than the author's own part 2 — posted a minute later. "Earliest child wins"
+  // would then follow the stranger straight out of the thread and file their words under
+  // the author's post. Only the author's own replies are ever candidates.
+  //
+  // The live capture cannot prove this: there, every continuation was posted before any
+  // reply arrived, so the ordering alone happens to give the right answer.
+  const body = conversation([
+    tweet({ id: "100", text: "head" }),
+    tweet({ id: "150", author: "stranger", text: "first!", replyTo: "100" }),
+    tweet({ id: "200", text: "part two", replyTo: "100" }),
+    tweet({ id: "300", text: "part three", replyTo: "200" }),
+  ]);
+  assert.deepEqual(selfThreadChain(body, "100").map((t) => t.rest_id), ["100", "200", "300"]);
 });
 
 test("selfThreadChain: stops walking UP at another author's tweet", () => {
