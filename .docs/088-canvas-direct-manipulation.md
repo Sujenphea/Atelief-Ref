@@ -1,5 +1,12 @@
-# 018 — Canvas Direct Manipulation: Snapping, Resize Handles, Camera, Clipboard
+# 088 — Canvas Direct Manipulation: Snapping, Resize Handles, Camera, Clipboard
 
+> **Renumbered 2026-08-12.** This doc lived at `feature-todo/018` until every one
+> of its phases closed; it moved into the flat set as 088 rather than keeping a
+> number the flat set had already spent on `018-bulk-import-plan.md`. Prose
+> written before that date — `.change-log/365`, `.change-log/381` — calls it
+> **018**, and those are records of what was true when written, so they were left
+> alone. Same doc.
+>
 > Sourced from a reconnaissance pass over `ref/Nook` (2026-07-27) — a macOS
 > browser whose **Easel** feature (`ref/Nook/Components/Easel/`, ~4.3k lines) is a
 > near-complete infinite canvas and a direct analogue to Spaces. This doc captures
@@ -29,12 +36,12 @@ snapshot of 2026-07-27, not the code as it stands.
 | C4 paste + duplicate | **shipped** | `SpaceView.pasteOntoBoard` (`:948`), `space.duplicateTiles` (`:389`, ⌥-drag), `PasteSeamTests`, `SpaceDuplicateTests` |
 | C5 format bubble | **shipped** | `SpaceFormatChrome.swift` + `SpaceFormatChromeTests`; see also `.change-log/352` (floating bars unified into one container) |
 | C6 cursor state machine | **shipped** | `CanvasHostView.swift:420` tracks the hovered **handle** rather than the cursor (`NSCursor.frameResize` vends a fresh instance per call), original art — no Arc assets taken |
-| C7 perf harness + pinch smoothing | **shipped / closed** | Harness: `CanvasPinchBakeoff.swift` (on-screen, `-canvas-pinch-bakeoff`) + `CanvasBenchmark` pinch cases. `magnify(with:)` is now phase-bracketed with vsync-coalesced commits and a frozen LOD tier (`CanvasZoomGesture` + `CanvasEngine.beginZoomGesture`). **The GPU-scale smoothing was measured and refused** — see [087](../087-canvas-pinch-results.md) |
+| C7 perf harness + pinch smoothing | **shipped / closed** | Harness: `CanvasPinchBakeoff.swift` (on-screen, `-canvas-pinch-bakeoff`) + `CanvasBenchmark` pinch cases. `magnify(with:)` is now phase-bracketed with vsync-coalesced commits and a frozen LOD tier (`CanvasZoomGesture` + `CanvasEngine.beginZoomGesture`). **The GPU-scale smoothing was measured and refused** — see [087](./087-canvas-pinch-results.md) |
 
 **Nothing is left open.** C7 closed the way this doc asked it to: the harness ran
 first and said the smoothing was not needed. A pan of the same board hitches
 identically to a pinch, so the cost was never pinch-specific — it scales with the
-visible tile count, which is now [087](../087-canvas-pinch-results.md) §7's follow-up
+visible tile count, which is now [087](./087-canvas-pinch-results.md) §7's follow-up
 rather than this doc's. Schema is at **v19**, not v15.
 
 The licensing question (below) resolved in practice: Clusters A and B were
@@ -232,11 +239,11 @@ itself copyrightable.
    plain PAN of the same board hitches identically, so the cost was never in the pinch.
    Both traps recorded here turned out not to apply to our tree — the engine's layers
    live on one layer-hosting surface with the editor as a real subview above it, and
-   [060](../060-spaces-text-render-design.md)'s `TextRenderLayer` already shapes in
+   [060](./060-spaces-text-render-design.md)'s `TextRenderLayer` already shapes in
    world units, so gesture-scaled and settled renders differ only in resolution. The
    trap that DID apply is one this doc does not record: culling holds no layers for the
-   world a scale-down would reveal. See [086](../086-canvas-pinch-smoothing-plan.md) /
-   [087](../087-canvas-pinch-results.md).
+   world a scale-down would reveal. See [086](./086-canvas-pinch-smoothing-plan.md) /
+   [087](./087-canvas-pinch-results.md).
 
 ## Test strategy
 
