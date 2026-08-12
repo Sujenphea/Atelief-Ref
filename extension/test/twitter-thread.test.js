@@ -309,8 +309,9 @@ function fakeFetch(responses) {
 test("fetchThread: returns the chain on a clean response", async () => {
   const body = conversation([tweet({ id: "1" }), tweet({ id: "2", replyTo: "1" })]);
   const { impl, calls } = fakeFetch([{ status: 200, body }]);
-  const chain = await fetchThread("1", { queryId: "QID", features: { f: true }, fetchImpl: impl });
-  assert.deepEqual(chain.map((t) => t.rest_id), ["1", "2"]);
+  const result = await fetchThread("1", { queryId: "QID", features: { f: true }, fetchImpl: impl });
+  assert.deepEqual(result.tweets.map((t) => t.rest_id), ["1", "2"]);
+  assert.equal(result.status, 200);
   assert.equal(calls.length, 1);
   assert.match(calls[0], /\/graphql\/QID\/TweetDetail\?/);
 });
@@ -322,34 +323,52 @@ test("fetchThread: repairs a features 400 from the error message and retries", a
       "The following features cannot be null: new_flag" }] } },
     { status: 200, body },
   ]);
-  const chain = await fetchThread("1", { queryId: "QID", features: {}, fetchImpl: impl });
-  assert.equal(chain.length, 1);
+  const result = await fetchThread("1", { queryId: "QID", features: {}, fetchImpl: impl });
+  assert.equal(result.tweets.length, 1);
   assert.equal(calls.length, 2);
   // The retry carries the flag the server named — this is what keeps a features
   // drift from needing a code change.
   assert.deepEqual(JSON.parse(new URL(calls[1]).searchParams.get("features")), { new_flag: true });
 });
 
-test("fetchThread: gives up (bounded) if the server keeps naming features", async () => {
+test("fetchThread: gives up at EXACTLY MAX_FEATURE_RETRIES if the server keeps naming features", async () => {
   const featuresError = { status: 400, body: { errors: [{ message:
     "The following features cannot be null: a" }] } };
-  const { impl, calls } = fakeFetch([featuresError, featuresError, featuresError, featuresError]);
-  assert.deepEqual(await fetchThread("1", { queryId: "QID", fetchImpl: impl }), []);
-  assert.equal(calls.length, MAX_FEATURE_RETRIES + 1);       // bounded, not a loop
+  // More responses queued than the bound allows — the bound, not the queue, must stop it.
+  const { impl, calls } = fakeFetch(Array.from({ length: 10 }, () => featuresError));
+  const result = await fetchThread("1", { queryId: "QID", fetchImpl: impl });
+  assert.deepEqual(result.tweets, []);
+  // One initial attempt + MAX_FEATURE_RETRIES repairs. Asserted exactly (not `<=`): the
+  // whole point of the bound is that a server stuck in this state can't be a loop.
+  assert.equal(calls.length, MAX_FEATURE_RETRIES + 1);
+  assert.equal(result.status, 400, "the last status is reported, not masked as a throw");
 });
 
 test("fetchThread: a rate-limit / throw / missing queryId all degrade to no expansion", async () => {
   // Every failure here must mean "save the one tweet we already have" — never a halt.
+  // The STATUS still comes back, because the caller's breaker acts on it ([090] 4A).
   const rateLimited = fakeFetch([{ status: 429, body: { errors: [{ message: "Rate limit exceeded" }] } }]);
-  assert.deepEqual(await fetchThread("1", { queryId: "QID", fetchImpl: rateLimited.impl }), []);
+  assert.deepEqual(await fetchThread("1", { queryId: "QID", fetchImpl: rateLimited.impl }),
+    { tweets: [], status: 429 });
 
   const thrower = async () => { throw new Error("network down"); };
-  assert.deepEqual(await fetchThread("1", { queryId: "QID", fetchImpl: thrower }), []);
+  assert.deepEqual(await fetchThread("1", { queryId: "QID", fetchImpl: thrower }),
+    { tweets: [], status: 0 });          // 0 = never reached the server
 
   // No queryId (the scrape failed / X moved its bundle) → not even a request.
   const unused = fakeFetch([]);
-  assert.deepEqual(await fetchThread("1", { queryId: null, fetchImpl: unused.impl }), []);
+  assert.deepEqual(await fetchThread("1", { queryId: null, fetchImpl: unused.impl }),
+    { tweets: [], status: 0 });
   assert.equal(unused.calls.length, 0);
+});
+
+test("fetchThread: a 200 conversation with nothing to expand is NOT a failure", async () => {
+  // The distinction the breaker leans on: a protected/withheld conversation answers 200
+  // with no focal tweet. Zero tweets, but the request worked — counting it as a failure
+  // would trip expansion off on three private bookmarks in a row.
+  const { impl } = fakeFetch([{ status: 200, body: conversation([tweet({ id: "999" })]) }]);
+  assert.deepEqual(await fetchThread("1", { queryId: "QID", fetchImpl: impl }),
+    { tweets: [], status: 200 });
 });
 
 // MARK: - credential inheritance
@@ -410,20 +429,29 @@ test("isAllowedBundleHost: only X's asset CDN, only https, no suffix spoof", () 
 /** Items as the sweep sees them: `mapTweet` output, hint attached. */
 const itemsFor = (t) => mapTweet(t, { host: "x.com" });
 
-function expanderFor(chainBody, { probeRoots = false, credentials = { queryId: "QID", features: {} } } = {}) {
+function expanderFor(chainBody, {
+  probeRoots = false, credentials = { queryId: "QID", features: {} },
+  status = 200, respond = null, ...options
+} = {}) {
   const calls = [];
   const paces = [];
+  const logs = [];
   const expand = createThreadExpander({
     resolveCredentials: async () => credentials,
     probeRoots,
     sleep: async (ms) => { paces.push(ms); },       // injected: no real waiting in tests
     random: () => 0.5,
+    log: (...parts) => logs.push(parts.join(" ")),
     fetchImpl: async (url) => {
       calls.push(url);
-      return { status: 200, json: async () => chainBody };
+      // `respond` lets a test vary the answer per call (a 429 partway through a sweep).
+      const answer = respond ? respond(calls.length - 1, url) : { status, body: chainBody };
+      if (answer.throws) throw new Error(answer.throws);
+      return { status: answer.status, json: async () => answer.body };
     },
+    ...options,
   });
-  return { expand, calls, paces };
+  return { expand, calls, paces, logs };
 }
 
 test("createThreadExpander: swaps a threaded tweet's items for the whole thread's", async () => {
@@ -518,4 +546,104 @@ test("createThreadExpander: paces each conversation read, and a cache hit costs 
   assert.equal(calls.length, 1);
   assert.equal(paces.length, 1);
   assert.ok(paces[0] >= 1200, `expected a paced gap, got ${paces[0]}ms`);
+});
+
+// MARK: - the circuit breaker ([090] 4A)
+
+/** A page of N distinct threaded tweets, each its own conversation — so an expander that
+ * keeps going spends one request per tweet. */
+function threadedPage(count, from = 0) {
+  const items = [];
+  for (let i = 0; i < count; i += 1) {
+    const id = String(2000 + from + i);
+    const t = tweet({ id, text: `t${id}`, replyTo: String(1000 + from + i) });
+    t.legacy.conversation_id_str = `conv-${id}`;    // distinct conversations → no cache hits
+    items.push(...mapTweet(t, { host: "x.com" }));
+  }
+  return items;
+}
+
+test("createThreadExpander: a 429 trips the breaker — no further requests all sweep", async () => {
+  const chain = conversation([tweet({ id: "1" }), tweet({ id: "2", replyTo: "1" })]);
+  const { expand, calls, logs } = expanderFor(chain, {
+    // First read is fine, second is rate-limited, and any read after that would be the bug.
+    respond: (n) => (n === 1
+      ? { status: 429, body: { errors: [{ message: "Rate limit exceeded" }] } }
+      : { status: 200, body: chain }),
+  });
+
+  const page = threadedPage(10);
+  const out = await expand(page);
+  assert.equal(calls.length, 2, "stopped at the rate-limit instead of asking 8 more times");
+  // The sweep still yields every tweet on the page — expansion is a bonus, never a blocker.
+  assert.equal(new Set(out.map((i) => i.provenance.rawMetadata.tweetId)).size >= 10, true);
+
+  // And it stays off for the REST of the sweep, not just the rest of the page.
+  await expand(threadedPage(5, 100));
+  assert.equal(calls.length, 2);
+  assert.equal(logs.filter((line) => /expansion OFF/.test(line)).length, 1, "logged once");
+});
+
+test("createThreadExpander: N consecutive failures trip the breaker; a good read clears the run", async () => {
+  const chain = conversation([tweet({ id: "1" }), tweet({ id: "2", replyTo: "1" })]);
+  // fail, fail, SUCCEED (run reset), then fail three in a row → trips on the 6th read.
+  const script = [
+    { status: 500, body: {} },
+    { throws: "network down" },
+    { status: 200, body: chain },
+    { status: 500, body: {} },
+    { status: 500, body: {} },
+    { status: 500, body: {} },
+  ];
+  const { expand, calls, logs } = expanderFor(chain, {
+    respond: (n) => script[n] || { status: 200, body: chain },
+  });
+
+  await expand(threadedPage(12));
+  assert.equal(calls.length, 6, "two failures then a success did NOT trip it; three in a row did");
+  assert.equal(logs.filter((line) => /expansion OFF/.test(line)).length, 1);
+});
+
+test("createThreadExpander: an empty-but-successful conversation never trips the breaker", async () => {
+  // A protected/withheld conversation answers 200 with no focal tweet. Common enough that
+  // treating it as a failure would switch expansion off on a run of private bookmarks.
+  const empty = conversation([tweet({ id: "999" })]);
+  const { expand, calls, logs } = expanderFor(empty);
+  await expand(threadedPage(6));
+  assert.equal(calls.length, 6, "kept trying — nothing here is broken");
+  assert.deepEqual(logs.filter((line) => /expansion OFF/.test(line)), []);
+});
+
+// MARK: - the bounded chain cache ([090] 13A)
+
+test("createThreadExpander: the chain cache is LRU-bounded, keeping the recent ones", async () => {
+  const chain = conversation([tweet({ id: "1" }), tweet({ id: "2", replyTo: "1" })]);
+  const { expand, calls } = expanderFor(chain, { cacheLimit: 3 });
+
+  await expand(threadedPage(4));                 // conversations 2000..2003 → 4 reads
+  assert.equal(calls.length, 4);
+
+  // The three most recent are still cached; the oldest was evicted and must re-fetch.
+  await expand(threadedPage(3, 1));              // 2001, 2002, 2003 — all hits
+  assert.equal(calls.length, 4, "recent conversations still answer from the cache");
+
+  await expand(threadedPage(1, 0));              // 2000 — evicted, so one more read
+  assert.equal(calls.length, 5);
+});
+
+test("createThreadExpander: a cache hit re-dates its entry (LRU, not first-in-first-out)", async () => {
+  const chain = conversation([tweet({ id: "1" }), tweet({ id: "2", replyTo: "1" })]);
+  const { expand, calls } = expanderFor(chain, { cacheLimit: 2 });
+
+  await expand(threadedPage(2));                 // cache: 2000, 2001
+  assert.equal(calls.length, 2);
+  await expand(threadedPage(1, 0));              // touch 2000 → it becomes the newest
+  assert.equal(calls.length, 2);
+  await expand(threadedPage(1, 2));              // insert 2002 → evicts 2001, not 2000
+  assert.equal(calls.length, 3);
+
+  await expand(threadedPage(1, 0));              // 2000 survived the eviction
+  assert.equal(calls.length, 3);
+  await expand(threadedPage(1, 1));              // 2001 did not
+  assert.equal(calls.length, 4);
 });

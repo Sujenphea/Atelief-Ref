@@ -413,6 +413,17 @@ function groupByTweet(items) {
   return groups;
 }
 
+/** Consecutive failed conversation reads before expansion gives up for the sweep. Three
+ * is past coincidence — one slow request or one protected conversation is normal, three
+ * in a row means something systemic (a rotation, a block, the network). */
+export const MAX_CONSECUTIVE_THREAD_FAILURES = 3;
+
+/** How many conversations to remember per sweep ([090] 13A). Same bounded-buffer
+ * discipline as hook-core's replay buffer: an unbounded map on a long sweep is a slow
+ * leak of whole conversation bodies. Small is enough — bookmarks from one thread arrive
+ * ADJACENT in the feed, so nearly all the dedup value is in the most recent handful. */
+export const CHAIN_CACHE_LIMIT = 50;
+
 /**
  * Build the `expandItems` hook the X source runs over each page: swap a threaded
  * tweet's items for the whole thread's.
@@ -424,10 +435,18 @@ function groupByTweet(items) {
  * A conversation is fetched ONCE per sweep: bookmarking three tweets of the same
  * thread is common, and without the cache each would re-fetch the identical
  * conversation. The later ones reuse the chain, and the engine's dedup then skips the
- * items it has already ingested.
+ * items it has already ingested. The cache is LRU-bounded (`CHAIN_CACHE_LIMIT`).
  *
  * Failure is always "leave the items as they were" — the sweep's job is to save what
  * you bookmarked, and an unexpanded thread still does that.
+ *
+ * A CIRCUIT BREAKER bounds how long that stays true ([090] 4A). Failing soft per item is
+ * right for one bad conversation and wrong for a rate-limit: swallowed individually, a
+ * 429 would let the sweep keep firing TweetDetail at X for every remaining bookmark —
+ * hundreds of refused requests, silently, which is both useless and the behaviour most
+ * likely to escalate a rate-limit into a block. So the first 429, or
+ * `MAX_CONSECUTIVE_THREAD_FAILURES` failures in a row, trips expansion off for the rest
+ * of the sweep, logged ONCE. The sweep itself carries on and saves everything unexpanded.
  */
 export function createThreadExpander({
   resolveCredentials, probeRoots = false, host = "x.com",
@@ -436,8 +455,12 @@ export function createThreadExpander({
   random = Math.random,
   pacingMs = THREAD_PACING_MS,
   pacingJitterMs = THREAD_PACING_JITTER_MS,
+  maxConsecutiveFailures = MAX_CONSECUTIVE_THREAD_FAILURES,
+  cacheLimit = CHAIN_CACHE_LIMIT,
 } = {}) {
   let credentials;                       // undefined = not yet resolved; null = unavailable
+  let tripped = false;                   // the breaker — one-way, for the sweep's lifetime
+  let consecutiveFailures = 0;
   const chainCache = new Map();          // conversation id → chain (or [] when it didn't expand)
 
   /** Gap before each conversation read. These are a SECOND request stream the engine's
@@ -446,8 +469,42 @@ export function createThreadExpander({
    * real fetch waits — a cache hit costs nothing. */
   const pace = () => sleep(pacingMs + Math.floor(random() * pacingJitterMs));
 
+  /** LRU read/write over `chainCache`. A `Map` iterates in insertion order, so
+   * re-inserting on a hit keeps the oldest key first and eviction is just "drop it". */
+  const cacheGet = (key) => {
+    if (!chainCache.has(key)) return undefined;
+    const chain = chainCache.get(key);
+    chainCache.delete(key);
+    chainCache.set(key, chain);
+    return chain;
+  };
+  const cacheSet = (key, chain) => {
+    chainCache.delete(key);
+    chainCache.set(key, chain);
+    if (chainCache.size > cacheLimit) chainCache.delete(chainCache.keys().next().value);
+  };
+
+  /** Record one conversation read's outcome; returns true once the breaker has tripped. */
+  const noteOutcome = (status) => {
+    if (status === 429) {
+      tripped = true;
+      log("thread expansion OFF for this sweep: X rate-limited the conversation read");
+    } else if (status === 0 || status >= 400) {
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= maxConsecutiveFailures) {
+        tripped = true;
+        log("thread expansion OFF for this sweep:", consecutiveFailures,
+          "conversation reads failed in a row");
+      }
+    } else {
+      consecutiveFailures = 0;           // a good read clears the run
+    }
+    return tripped;
+  };
+
   return async function expandItems(items) {
     if (!Array.isArray(items) || items.length === 0) return items;
+    if (tripped) return items;           // breaker open — not one more request this sweep
     const groups = groupByTweet(items);
     if (!groups.some((group) => group.hint && needsThreadExpansion(group.hint, { probeRoots }))) {
       return items;                      // nothing on this page is threaded — no work, no request
@@ -469,16 +526,19 @@ export function createThreadExpander({
 
     const out = [];
     for (const group of groups) {
-      if (!group.tweetId || !group.hint || !needsThreadExpansion(group.hint, { probeRoots })) {
+      if (tripped || !group.tweetId || !group.hint ||
+          !needsThreadExpansion(group.hint, { probeRoots })) {
         out.push(...group.items);
         continue;
       }
       const conversationId = group.hint?.legacy?.conversation_id_str || group.tweetId;
-      let chain = chainCache.get(conversationId);
+      let chain = cacheGet(conversationId);
       if (chain === undefined) {
         await pace();
-        chain = await fetchThread(group.tweetId, { ...credentials, host, fetchImpl, log });
-        chainCache.set(conversationId, chain);
+        const result = await fetchThread(group.tweetId, { ...credentials, host, fetchImpl, log });
+        chain = result.tweets;
+        cacheSet(conversationId, chain);
+        noteOutcome(result.status);
       }
       // A chain of one is just the tweet we already have — keep the original items
       // rather than re-mapping them to an identical set.
@@ -497,10 +557,16 @@ export function createThreadExpander({
 // MARK: - the fetch
 
 /**
- * Fetch `focalTweetId`'s conversation and return its tweet results (the raw shapes
- * `mapTweet` consumes), or `[]` when it can't be had. Never throws: every failure
- * mode here (rotation, rate-limit, a protected conversation) must degrade to "save
- * the one tweet we already have" rather than halt a sweep.
+ * Fetch `focalTweetId`'s conversation and return `{ tweets, status }` — the raw shapes
+ * `mapTweet` consumes, plus what the server said. Never throws: every failure mode here
+ * (rotation, rate-limit, a protected conversation) must degrade to "save the one tweet we
+ * already have" rather than halt a sweep.
+ *
+ * `status` is reported rather than swallowed because the CALLER has to tell three
+ * outcomes apart that all yield no tweets: a conversation that legitimately has none
+ * (200), a request X refused (4xx/5xx), and one that never reached it at all (0). Only
+ * the caller can act on that difference — a 429 means stop asking ([090] 4A), a 200 with
+ * one tweet means this simply wasn't a thread.
  *
  * `features` is inherited from an intercepted request; a 400 naming missing flags is
  * retried with them on, bounded by `MAX_FEATURE_RETRIES`.
@@ -514,21 +580,22 @@ export async function fetchThread(focalTweetId, {
   queryId, features = {}, host = "x.com",
   fetchImpl = fetch, log = () => {},
 } = {}) {
-  if (!queryId || !focalTweetId) return [];
+  const nothing = (status = 0) => ({ tweets: [], status });
+  if (!queryId || !focalTweetId) return nothing();
   let currentFeatures = features;
+  let status = 0;
 
   for (let attempt = 0; attempt <= MAX_FEATURE_RETRIES; attempt += 1) {
     const url = buildTweetDetailURL({ queryId, focalTweetId, features: currentFeatures, host });
-    if (!url) return [];
+    if (!url) return nothing();
     let body = null;
-    let status = 0;
     try {
       const response = await fetchImpl(url);
       status = response.status;
       body = await response.json();
     } catch (error) {
       log("thread fetch failed:", String(error));
-      return [];
+      return nothing();
     }
 
     const missing = missingFeatures(body);
@@ -539,9 +606,11 @@ export async function fetchThread(focalTweetId, {
     }
     if (status >= 400) {
       log("thread fetch: HTTP", status, "— saving the tweet unexpanded");
-      return [];
+      return nothing(status);
     }
-    return selfThreadChain(body, focalTweetId, { log });
+    return { tweets: selfThreadChain(body, focalTweetId, { log }), status };
   }
-  return [];
+  // Out of retries with the server still naming features: the last status is the useful
+  // one (a 400 here is a real break, not a rate-limit).
+  return nothing(status);
 }
