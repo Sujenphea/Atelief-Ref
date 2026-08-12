@@ -12,6 +12,10 @@ export const BULK = Object.freeze({
   known: "atelier-bulk-known",     // → string[] (sourceIds)
   relay: "atelier-bulk-relay",     // → an ingestOne result (classified content-side)
   complete: "atelier-bulk-complete", // → true
+  // → { text } — a platform JS bundle, fetched BY THE SW. Not a localhost op: it is
+  // here because a content script's cross-origin fetch is bound by the page's CORS,
+  // while the SW's is covered by `host_permissions`. Host-allowlisted SW-side.
+  bundle: "atelier-bulk-bundle",
 });
 
 /** The runtime-message type that launches a sweep on a tab's content-script

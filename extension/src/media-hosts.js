@@ -33,3 +33,24 @@ export function isAllowedMediaHost(platform, url) {
   const allow = ALLOWED[platform];
   return allow ? allow(host) : false;
 }
+
+/** Static-asset CDNs a platform's JS BUNDLE may be fetched from (the SW route the
+ * content script uses to read X's operation→queryId table). Separate from the media
+ * allowlist because it grants a different thing — script text, not image bytes — and
+ * should stay as small as the one platform that needs it. Deny-by-default, and the
+ * same `hostIs` suffix-spoof safety as above. */
+const ALLOWED_BUNDLE_HOSTS = ["abs.twimg.com"];
+
+/** True if `url` is a platform JS bundle the SW may fetch on the content script's
+ * behalf. Requires https — a bundle is code we regex for a request parameter, so it
+ * must not be readable off a downgraded connection. */
+export function isAllowedBundleHost(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  return ALLOWED_BUNDLE_HOSTS.some((allowed) => hostIs(parsed.hostname, allowed));
+}

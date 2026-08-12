@@ -9,7 +9,7 @@
 // sw.js.
 
 import { BULK } from "./bulk-messages.js";
-import { isAllowedMediaHost } from "./media-hosts.js";
+import { isAllowedMediaHost, isAllowedBundleHost } from "./media-hosts.js";
 
 /**
  * Dispatch one bulk message to its app-side effect and return the reply payload.
@@ -60,6 +60,24 @@ export async function handleBulkMessage(message, {
 
     case BULK.complete:
       return await completeJob(message.jobId, message.status || "complete", { token, fetchImpl });
+
+    case BULK.bundle: {
+      // Same SSRF discipline as `relay`: the URL is scraped from page-supplied markup
+      // and the SW fetches it with host_permissions, so the host is allowlisted BEFORE
+      // the call. Only the platforms' static-asset CDNs — never an arbitrary host, and
+      // never the app's own loopback. A refusal returns null text: the caller (X's
+      // thread expansion) treats "no bundle" as "don't expand", not as an error.
+      if (!isAllowedBundleHost(message.url)) {
+        return { text: null, error: `refused non-CDN bundle host: ${message.url}` };
+      }
+      try {
+        const response = await fetchImpl(message.url, { credentials: "omit" });
+        if (!response.ok) return { text: null, error: `bundle HTTP ${response.status}` };
+        return { text: await response.text() };
+      } catch (error) {
+        return { text: null, error: String(error) };
+      }
+    }
 
     default:
       throw new Error(`unknown bulk message: ${message.type}`);
