@@ -40,11 +40,20 @@ var RESPONSE_HOOK_REPLAY_LIMIT = 25;
  * fire-and-forget and fully guarded — the page's own request is returned untouched, on
  * its original timing, and a parse failure is swallowed.
  *
- * @param opts.target       the scope to patch (production: `window`).
- * @param opts.post         `({ url, json }) => void` — receives each matched response.
- * @param opts.isMatch      `(url) => boolean` — the per-platform request-URL predicate.
- * @param opts.replaySource envelope `source` tag the controller posts to request a replay.
- * @param opts.bufferLimit  replay-buffer cap (default `RESPONSE_HOOK_REPLAY_LIMIT`).
+ * When `headerAllowlist` is set, the REQUEST headers whose (lowercased) names it
+ * contains ride along as `headers` — the credentials a platform needs to ask a
+ * FOLLOW-UP question in the user's own session (X's thread expansion re-uses the
+ * `authorization` / csrf pair the page just sent). Strictly an allowlist: an
+ * unlisted header is never read, so this can't become an ambient header exfiltrator.
+ * The values stay inside the tab — the controller uses them for same-origin requests
+ * and they are never relayed to the service worker or the app.
+ *
+ * @param opts.target          the scope to patch (production: `window`).
+ * @param opts.post            `({ url, json, headers }) => void` — each matched response.
+ * @param opts.isMatch         `(url) => boolean` — the per-platform request-URL predicate.
+ * @param opts.replaySource    envelope `source` tag the controller posts to request a replay.
+ * @param opts.bufferLimit     replay-buffer cap (default `RESPONSE_HOOK_REPLAY_LIMIT`).
+ * @param opts.headerAllowlist array of lowercase request-header names to forward, or null.
  */
 function installResponseHook(opts) {
   var options = opts || {};
@@ -53,6 +62,44 @@ function installResponseHook(opts) {
   var isMatch = options.isMatch;
   var replaySource = options.replaySource;
   var bufferLimit = options.bufferLimit == null ? RESPONSE_HOOK_REPLAY_LIMIT : options.bufferLimit;
+  var headerAllowlist = options.headerAllowlist || null;
+
+  /** Lowercased allowlist membership. */
+  var isAllowedHeader = function (name) {
+    if (!headerAllowlist || !name) return false;
+    var lower = String(name).toLowerCase();
+    for (var i = 0; i < headerAllowlist.length; i += 1) {
+      if (headerAllowlist[i] === lower) return true;
+    }
+    return false;
+  };
+
+  /** Pull the allowlisted headers out of a fetch init / Request (a `Headers`, a plain
+   * object, or an array of pairs — all three are legal and the client uses more than
+   * one). Returns null when nothing matched, so `headers` is absent rather than `{}`. */
+  var readHeaders = function (source) {
+    if (!headerAllowlist || !source) return null;
+    var out = null;
+    var take = function (name, value) {
+      if (!isAllowedHeader(name) || value == null) return;
+      if (!out) out = {};
+      out[String(name).toLowerCase()] = String(value);
+    };
+    try {
+      if (typeof source.forEach === "function" && typeof source.get === "function") {
+        source.forEach(function (value, name) { take(name, value); });   // Headers
+      } else if (Array.isArray(source)) {
+        for (var i = 0; i < source.length; i += 1) take(source[i][0], source[i][1]);
+      } else if (typeof source === "object") {
+        for (var key in source) {
+          if (Object.prototype.hasOwnProperty.call(source, key)) take(key, source[key]);
+        }
+      }
+    } catch (_error) {
+      /* never break the page */
+    }
+    return out;
+  };
 
   if (!scope) return false;
   if (typeof post !== "function" || typeof isMatch !== "function") return false;
@@ -95,8 +142,11 @@ function installResponseHook(opts) {
           var input = args[0];
           var url = typeof input === "string" ? input : (input && input.url) || "";
           if (isMatch(url) && response && typeof response.clone === "function") {
+            // Headers can be on the init OR on a Request object — read both, init wins.
+            var headers = readHeaders(args[1] && args[1].headers)
+              || readHeaders(input && input.headers);
             response.clone().json().then(function (json) {
-              forward({ url: url, json: json });
+              forward({ url: url, json: json, headers: headers });
             }).catch(function () {});
           }
         } catch (_error) {
@@ -115,21 +165,39 @@ function installResponseHook(opts) {
   if (XHR && XHR.prototype && typeof XHR.prototype.open === "function") {
     var originalOpen = XHR.prototype.open;
     var originalSend = XHR.prototype.send;
+    var originalSetHeader = XHR.prototype.setRequestHeader;
     XHR.prototype.open = function (method, url) {
-      try { this.__atelierResponseHookUrl = url; } catch (_error) { /* ignore */ }
+      try {
+        this.__atelierResponseHookUrl = url;
+        this.__atelierRequestHeaders = null;                  // a reused xhr starts clean
+      } catch (_error) { /* ignore */ }
       return originalOpen.apply(this, arguments);
     };
+    // The live web client sets its auth headers here, one call at a time — the only
+    // place they are observable on the XHR path. Allowlisted names only.
+    if (typeof originalSetHeader === "function") {
+      XHR.prototype.setRequestHeader = function (name, value) {
+        try {
+          if (isAllowedHeader(name) && isMatch(this.__atelierResponseHookUrl)) {
+            if (!this.__atelierRequestHeaders) this.__atelierRequestHeaders = {};
+            this.__atelierRequestHeaders[String(name).toLowerCase()] = String(value);
+          }
+        } catch (_error) { /* never break the page */ }
+        return originalSetHeader.apply(this, arguments);
+      };
+    }
     XHR.prototype.send = function () {
       try {
         var url = this.__atelierResponseHookUrl;
         if (isMatch(url)) {
+          var requestHeaders = this.__atelierRequestHeaders || null;
           this.addEventListener("load", function () {
             try {
               var type = this.responseType;
               var json = null;
               if (type === "" || type === "text") json = JSON.parse(this.responseText);
               else if (type === "json") json = this.response;
-              if (json) forward({ url: url, json: json });
+              if (json) forward({ url: url, json: json, headers: requestHeaders });
             } catch (_error) {
               /* ignore a non-JSON / unreadable body */
             }

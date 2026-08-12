@@ -208,6 +208,110 @@ test("installResponseHook: an unparseable XHR body is swallowed (page unaffected
   assert.doesNotThrow(() => xhr.send());           // load handler never throws into send
 });
 
+// MARK: - request-header forwarding (the credentials a follow-up request needs)
+
+const ALLOWLIST = ["authorization", "x-csrf-token"];
+
+test("installResponseHook: forwards ONLY allowlisted fetch request headers", async () => {
+  const scope = fakeScope({ ok: 1 });
+  const posted = [];
+  installResponseHook({
+    target: scope, isMatch, post: (m) => posted.push(m), headerAllowlist: ALLOWLIST,
+  });
+
+  await scope.fetch(MATCH_URL, { headers: {
+    Authorization: "Bearer abc",            // case-insensitive → lowercased
+    "x-csrf-token": "csrf123",
+    cookie: "secret=1",                     // NOT on the list — must never be read
+    "x-client-transaction-id": "per-request",
+  } });
+  await tick();
+  assert.deepEqual(posted[0].headers, { authorization: "Bearer abc", "x-csrf-token": "csrf123" });
+});
+
+test("installResponseHook: reads fetch headers from a Headers object or a pair array", async () => {
+  for (const headers of [
+    new Map([["authorization", "Bearer h"]]),        // Headers-like: forEach + get
+    [["authorization", "Bearer h"], ["cookie", "no"]],
+  ]) {
+    const scope = fakeScope({ ok: 1 });
+    const posted = [];
+    installResponseHook({
+      target: scope, isMatch, post: (m) => posted.push(m), headerAllowlist: ALLOWLIST,
+    });
+    await scope.fetch(MATCH_URL, { headers });
+    await tick();
+    assert.deepEqual(posted[0].headers, { authorization: "Bearer h" });
+  }
+});
+
+test("installResponseHook: with NO allowlist, headers are never read at all", async () => {
+  const scope = fakeScope({ ok: 1 });
+  const posted = [];
+  installResponseHook({ target: scope, isMatch, post: (m) => posted.push(m) });
+  await scope.fetch(MATCH_URL, { headers: { authorization: "Bearer abc" } });
+  await tick();
+  assert.equal(posted[0].headers, null);   // opt-in only — no ambient header capture
+});
+
+/** A FakeXHR that also records setRequestHeader, which the live client uses. */
+function fakeXHRScopeWithHeaders() {
+  class FakeXHR {
+    constructor() { this._load = []; this.responseType = ""; }
+    open(method, url) { this._method = method; this._url = url; }
+    setRequestHeader() {}
+    addEventListener(type, fn) { if (type === "load") this._load.push(fn); }
+    send() { for (const fn of this._load) fn.call(this); }
+  }
+  return { XMLHttpRequest: FakeXHR };
+}
+
+test("installResponseHook: forwards allowlisted XHR headers, scoped to a matched url", () => {
+  const scope = fakeXHRScopeWithHeaders();
+  const posted = [];
+  installResponseHook({
+    target: scope, isMatch, post: (m) => posted.push(m), headerAllowlist: ALLOWLIST,
+  });
+
+  const xhr = new scope.XMLHttpRequest();
+  xhr.open("GET", MATCH_URL);
+  xhr.setRequestHeader("authorization", "Bearer xhr");
+  xhr.setRequestHeader("cookie", "secret=1");        // unlisted → not captured
+  xhr.responseText = JSON.stringify({ ok: 2 });
+  xhr.send();
+  assert.deepEqual(posted[0].headers, { authorization: "Bearer xhr" });
+
+  // Headers set on a NON-matched request are not captured either.
+  const other = new scope.XMLHttpRequest();
+  other.open("GET", OTHER_URL);
+  other.setRequestHeader("authorization", "Bearer other");
+  other.responseText = JSON.stringify({ ok: 3 });
+  other.send();
+  assert.equal(posted.length, 1);
+});
+
+test("installResponseHook: a REUSED xhr does not leak the previous request's headers", () => {
+  const scope = fakeXHRScopeWithHeaders();
+  const posted = [];
+  installResponseHook({
+    target: scope, isMatch, post: (m) => posted.push(m), headerAllowlist: ALLOWLIST,
+  });
+
+  const xhr = new scope.XMLHttpRequest();
+  xhr.open("GET", MATCH_URL);
+  xhr.setRequestHeader("authorization", "Bearer first");
+  xhr.responseText = JSON.stringify({ ok: 1 });
+  xhr.send();
+
+  xhr.open("GET", MATCH_URL);                        // re-opened, no headers set this time
+  xhr.responseText = JSON.stringify({ ok: 2 });
+  xhr.send();
+  // `open()` clears the stash, so the second request forwards no headers rather than
+  // the first request's. (A re-sent xhr keeps its listeners — real XHR semantics too —
+  // so the earlier send's handler also refires; the LAST post is the new request's.)
+  assert.equal(posted.at(-1).headers, null);
+});
+
 // MARK: - load-order pairing (the manifest contract: hook-core BEFORE the site hook)
 
 /** A fake window a site hook auto-installs onto: a matching hostname + a cloneable fetch

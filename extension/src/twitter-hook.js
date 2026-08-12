@@ -29,6 +29,24 @@ function isTimelineRequest(url) {
     /\/i\/api\/graphql\/[^/]+\/(Bookmarks|BookmarkFolderTimeline|Likes)(?:$|[/?])/.test(url);
 }
 
+/**
+ * Request headers the sweep re-uses to ask X a FOLLOW-UP question in the user's own
+ * session — the `TweetDetail` call that expands a bookmarked tweet into its thread.
+ * Inheriting them is the same discipline as inheriting the `features` blob: forging
+ * auth is brittle and would break on every client change.
+ *
+ * Deliberately NOT here: `x-client-transaction-id`, which X derives PER REQUEST — a
+ * replayed one is worse than none. Nothing on this list leaves the tab.
+ * KEEP IN SYNC with bulk-controller.js's expectations.
+ */
+const FORWARDED_HEADERS = [
+  "authorization",
+  "x-csrf-token",
+  "x-twitter-auth-type",
+  "x-twitter-active-user",
+  "x-twitter-client-language",
+];
+
 // Auto-install when injected as a MAIN-world content script on X (guarded so a
 // `node --test` import — no `window` — does nothing). hook-core.js, loaded FIRST per the
 // manifest order, published `window.__atelierInstallResponseHook`; if it's missing the
@@ -43,6 +61,7 @@ if (typeof window !== "undefined" && window.location &&
       target: window,
       isMatch: isTimelineRequest,
       replaySource: REPLAY_REQUEST_SOURCE,
+      headerAllowlist: FORWARDED_HEADERS,
       post: (message) =>
         window.postMessage({ source: TIMELINE_MESSAGE_SOURCE, ...message }, window.location.origin),
     });
