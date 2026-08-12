@@ -56,6 +56,52 @@ test("scrapeQueryId: will not pair one operation's name with another's id", () =
   assert.equal(scrapeQueryId(null), null);
 });
 
+test("scrapeQueryId: non-bundle input yields null rather than a bogus id ([090] 12A)", () => {
+  // Every one of these is something the SW can plausibly hand back INSTEAD of a bundle:
+  // X serving an error/consent page, a rate-limited empty body, a truncated download.
+  // Each must read as "no id", because a wrong id 404s and looks exactly like a rotation
+  // — the failure that would send someone hunting for a queryId change that never happened.
+  const notBundles = [
+    "<!DOCTYPE html><html><head><title>Error</title></head><body>Try again</body></html>",
+    "",
+    "   \n\t  ",
+    `{"errors":[{"message":"Rate limit exceeded"}]}`,
+    `{queryId:"AbC-123",operationName:"TweetDe`,          // truncated mid-token
+    `{queryId:"AbC-123",operationName:`,                  // truncated before the name
+    `queryId:"AbC-123"`,                                  // an id with no operation at all
+    `operationName:"TweetDetail"`,                        // an operation with no id
+    null,
+    undefined,
+    12345,
+    {},
+  ];
+  for (const source of notBundles) {
+    assert.equal(scrapeQueryId(source), null, `${JSON.stringify(source)} must not yield an id`);
+  }
+});
+
+test("scrapeQueryId: tolerates the whitespace a build's formatting can introduce", () => {
+  assert.equal(scrapeQueryId(`{ queryId : "SPACED" , operationName : "TweetDetail" }`), "SPACED");
+  assert.equal(scrapeQueryId(`{operationName:  "TweetDetail",\n  queryId:  "WRAPPED"}`), "WRAPPED");
+});
+
+test("resolveQueryId: an error page from every bundle turns expansion off, quietly", async () => {
+  // The composed failure: bundle discovery works, the fetches succeed, and what comes
+  // back is X's error page. The caller must get null — not a throw, and not an id.
+  const doc = { querySelectorAll: () => [
+    { getAttribute: (a) => (a === "src" ? "https://abs.twimg.com/responsive-web/client-web/api.1.js" : null) },
+    { getAttribute: (a) => (a === "src" ? "https://abs.twimg.com/responsive-web/client-web/api.2.js" : null) },
+  ] };
+  const lines = [];
+  const queryId = await resolveQueryId({
+    doc,
+    fetchBundle: async () => "<html><body>Something went wrong</body></html>",
+    log: (...parts) => lines.push(parts.join(" ")),
+  });
+  assert.equal(queryId, null);
+  assert.match(lines.join(" "), /queryId/, "the operator is told why expansion is off");
+});
+
 // MARK: - request building
 
 test("buildTweetDetailURL: carries the queryId, focal id, inherited features and toggles", () => {
