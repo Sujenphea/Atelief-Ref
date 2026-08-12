@@ -71,6 +71,8 @@ struct AssetReadSurfaceTests {
             "library stats (016). Same as assetCountsByKind.",
         "assetsNeedingAnalysis":
             "the analysis queue. Archived items are still analyzed — unarchiving must not reveal an item with no OCR, colors or hash.",
+        "assetsNeedingSuggestions":
+            "the suggested-tag queue (012 · I3). Same line as assetsNeedingAnalysis: archived items are still classified, so unarchiving one does not show a bare item whose chips arrive an idle pass later. The queue is bounded per pass, so the shelf cannot starve the visible library.",
         "assetsNeedingEmbedding":
             "the embedding queue. Same as assetsNeedingAnalysis.",
         "embeddingsToReverify":

@@ -47,6 +47,15 @@ public struct AssetAnalysis: Sendable, Equatable, Hashable, Codable, Identifiabl
     /// a usable marker, because an unreadable palette derives zero rows and would
     /// otherwise be re-queued forever.
     public var colorsPaletteVersion: Int?
+    /// The suggester version that last proposed tags for this asset, or `nil`
+    /// when none ever has (012 · I3).
+    ///
+    /// Separate from ``analyzerVersion`` on purpose. That one gates OCR, colors
+    /// and the perceptual hash together, so bumping it re-decodes every image in
+    /// the library; a tag-model change has no business costing a full re-OCR, and
+    /// the two version on different schedules. Same WHERE-clause trick, its own
+    /// counter.
+    public var suggestVersion: Int?
 
     public var id: UUID { assetID }
 
@@ -59,6 +68,7 @@ public struct AssetAnalysis: Sendable, Equatable, Hashable, Codable, Identifiabl
         case analyzedAt = "analyzed_at"
         case analyzerVersion = "analyzer_version"
         case colorsPaletteVersion = "colors_palette_version"
+        case suggestVersion = "suggest_version"
     }
 
     public init(
@@ -68,7 +78,8 @@ public struct AssetAnalysis: Sendable, Equatable, Hashable, Codable, Identifiabl
         phash: Int64? = nil,
         analyzedAt: Date,
         analyzerVersion: Int,
-        colorsPaletteVersion: Int? = nil
+        colorsPaletteVersion: Int? = nil,
+        suggestVersion: Int? = nil
     ) {
         self.assetID = assetID
         self.ocrText = ocrText
@@ -77,5 +88,6 @@ public struct AssetAnalysis: Sendable, Equatable, Hashable, Codable, Identifiabl
         self.analyzedAt = analyzedAt
         self.analyzerVersion = analyzerVersion
         self.colorsPaletteVersion = colorsPaletteVersion
+        self.suggestVersion = suggestVersion
     }
 }

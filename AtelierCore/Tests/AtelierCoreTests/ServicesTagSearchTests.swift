@@ -3,7 +3,9 @@
 // The structured tag filter added to `searchAssets` (S1): AND vs OR set
 // semantics over 0/1/2/3 tags, dup-join safety, unknown ids, user-vs-agent
 // distinctness, composition with text/platform/collection scope, keyset paging
-// WITH a tag filter, and the token vocabulary (prefix + limit + both sources).
+// WITH a tag filter, and the token vocabulary (prefix + limit + USER tags only —
+// 012 · I3 removed agent tags from it, so an unconfirmed guess is never a filter
+// token).
 
 import Foundation
 import Testing
@@ -269,7 +271,7 @@ struct ServicesTagSearchTests {
 
     // MARK: vocabulary
 
-    @Test("tagVocabulary prefix-matches case-insensitively, includes both sources")
+    @Test("tagVocabulary prefix-matches case-insensitively, user tags only")
     func vocabularyPrefix() async throws {
         let (services, temp) = try makeServices()
         defer { temp.cleanup() }
@@ -280,9 +282,26 @@ struct ServicesTagSearchTests {
         _ = try await services.applyTag("Oak", to: a, source: .user)
 
         let hits = try await services.tagVocabulary(prefix: "bras")
-        #expect(Set(hits.map(\.name)) == ["Brass", "brassica"])
-        // Agent + user sources both present.
-        #expect(Set(hits.map(\.source)) == [.user, .agent])
+        // "brassica" matches the prefix and is deliberately absent: an unconfirmed
+        // machine guess is not part of the search vocabulary (012 · I3). This
+        // assertion used to read `== [.user, .agent]`.
+        #expect(hits.map(\.name) == ["Brass"])
+        #expect(Set(hits.map(\.source)) == [.user])
+    }
+
+    @Test("an accepted suggestion enters the vocabulary; the agent tag never does")
+    func vocabularyGainsAcceptedSuggestion() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let a = try await seed(services, into: c.id)
+        _ = try await services.applyTag("poster", to: a, source: .agent)
+        #expect(try await services.tagVocabulary(prefix: "post").isEmpty)
+
+        _ = try await services.acceptSuggestion("poster", on: a)
+        let hits = try await services.tagVocabulary(prefix: "post")
+        #expect(hits.map(\.name) == ["poster"])
+        #expect(hits.map(\.source) == [.user])
     }
 
     @Test("tagVocabulary blank prefix lists all, honoring the limit")

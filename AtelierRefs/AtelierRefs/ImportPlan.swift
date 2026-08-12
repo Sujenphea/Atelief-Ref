@@ -102,6 +102,13 @@ nonisolated struct ImportItem: Sendable, Equatable {
     /// already is on this path. A restored shelf keeps its membership, not its
     /// original ordering.
     var isArchived: Bool
+    /// Tag names the source recorded this asset as having REFUSED as suggestions
+    /// (012 · I3). Replayed like the star and the shelf — additively, through
+    /// `dismissSuggestion` — because a refusal only ever ADDS information, so
+    /// applying it to a deduplicated asset cannot discard a decision made here.
+    /// The absence of a name is the absence of a claim, never an instruction to
+    /// un-refuse something refused in this library.
+    var suppressedTags: [String]
     /// This membership's canvas placement, when it had one.
     var placement: CanvasPlacement?
 
@@ -109,7 +116,7 @@ nonisolated struct ImportItem: Sendable, Equatable {
         key: String, body: ImportBody, source: SourceDraft,
         tags: [ImportTag] = [], name: String? = nil, note: String? = nil,
         isFavorite: Bool = false, isArchived: Bool = false,
-        placement: CanvasPlacement? = nil
+        suppressedTags: [String] = [], placement: CanvasPlacement? = nil
     ) {
         self.key = key
         self.body = body
@@ -119,6 +126,7 @@ nonisolated struct ImportItem: Sendable, Equatable {
         self.note = note
         self.isFavorite = isFavorite
         self.isArchived = isArchived
+        self.suppressedTags = suppressedTags
         self.placement = placement
     }
 }

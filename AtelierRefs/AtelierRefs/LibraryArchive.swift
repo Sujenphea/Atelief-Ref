@@ -317,8 +317,21 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
         var searchText: String?
         /// This asset's tags, in the stable `(name, id)` order Core returns.
         var tags: [TagEntry]
+        /// The tag names this asset has REFUSED as suggestions (012 · I3),
+        /// oldest refusal first — usually empty.
+        ///
+        /// Carried for exactly the reason the star is: it is user intent, and
+        /// nothing can recompute it. A restore that dropped these would re-suggest
+        /// every label the user has ever dismissed on the first idle pass after
+        /// the import — the precise failure `tag_suppression` exists to prevent,
+        /// reached by a different road. Only the names travel; the timestamps do
+        /// not, because a refusal's identity is the name and the replay stamps its
+        /// own `suppressed_at` like every other write it makes.
+        ///
+        /// Optional on the way in, so archives written before v22 decode unchanged.
+        var suppressedTags: [String]?
 
-        init(_ asset: Asset, tags: [Tag]) {
+        init(_ asset: Asset, tags: [Tag], suppressedTags: [String] = []) {
             self.id = asset.id
             self.sourceID = asset.sourceId
             self.kind = asset.kind
@@ -340,6 +353,9 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
             self.dedupKey = asset.dedupKey
             self.searchText = asset.searchText
             self.tags = tags.map(TagEntry.init)
+            // Omitted entirely when empty, which is the overwhelming majority —
+            // an empty array in every asset entry is bytes that say nothing.
+            self.suppressedTags = suppressedTags.isEmpty ? nil : suppressedTags
         }
 
         enum CodingKeys: String, CodingKey {
@@ -356,9 +372,11 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
             case lastViewedAt = "last_viewed_at"
             case dedupKey = "dedup_key"
             case searchText = "search_text"
+            case suppressedTags = "suppressed_tags"
         }
 
-        /// Hand-written ONLY to make `is_favorite` optional on the way in.
+        /// Hand-written ONLY to make `is_favorite` optional on the way in (and,
+        /// since, to keep `archived_at` / `suppressed_tags` optional the same way).
         ///
         /// Swift's synthesized `Decodable` calls `decode`, not `decodeIfPresent`,
         /// for a non-optional property — a default value on the declaration does
@@ -393,6 +411,9 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
             dedupKey = try container.decodeIfPresent(String.self, forKey: .dedupKey)
             searchText = try container.decodeIfPresent(String.self, forKey: .searchText)
             tags = try container.decode([TagEntry].self, forKey: .tags)
+            // Absent = written before suggestions existed, or nothing refused.
+            // The property is already optional, so this needs no `?? default`.
+            suppressedTags = try container.decodeIfPresent([String].self, forKey: .suppressedTags)
         }
     }
 

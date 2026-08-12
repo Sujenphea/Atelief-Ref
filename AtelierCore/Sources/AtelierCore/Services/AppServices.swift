@@ -131,17 +131,32 @@ public final class AppServices: Sendable {
         phash: Int64? = nil,
         analyzerVersion: Int
     ) async throws -> AssetAnalysis {
-        let row = AssetAnalysis(
-            assetID: assetID, ocrText: ocrText, colors: colors, phash: phash,
-            analyzedAt: Date(), analyzerVersion: analyzerVersion)
+        let analyzedAt = Date()
         return try await write { db in
             guard try Asset.exists(db, key: Self.key(assetID)) else {
                 throw AtelierError.notFound(entity: "asset", id: assetID)
             }
-            let exists = try AssetAnalysis
+            var row = AssetAnalysis(
+                assetID: assetID, ocrText: ocrText, colors: colors, phash: phash,
+                analyzedAt: analyzedAt, analyzerVersion: analyzerVersion)
+            let existing = try AssetAnalysis
                 .filter(Column("asset_id") == Self.key(assetID))
-                .fetchCount(db) > 0
-            if exists { try row.update(db) } else { try row.insert(db) }
+                .fetchOne(db)
+            if let existing {
+                // `suggest_version` SURVIVES a re-analysis; `colors_palette_version`
+                // deliberately does not (012 · I3). The difference is whether this
+                // write invalidates the derived thing: new `colors` make the filed
+                // buckets stale by definition, so clearing that marker re-derives
+                // them. Classification reads the same pixels as before and knows
+                // nothing about OCR, so carrying its marker over is what keeps the
+                // two versions independent — otherwise every analyzer bump silently
+                // becomes a suggester bump too, which is exactly the coupling v22
+                // split them to avoid.
+                row.suggestVersion = existing.suggestVersion
+                try row.update(db)
+            } else {
+                try row.insert(db)
+            }
             return row
         }
     }
@@ -263,12 +278,20 @@ public final class AppServices: Sendable {
     /// whose analysis is either MISSING or was produced by an OLDER analyzer,
     /// newest-first, capped at `limit` (clamped to `1...1000`).
     ///
-    /// Media-less kinds (they have no bytes to analyze) and video (whose analysis
-    /// needs a poster-frame path, deferred) are excluded, so they never linger as
-    /// perpetually-pending — the batch drains to empty and stays there until new
-    /// images arrive or the analyzer version bumps. No ledger needed: "still
-    /// needs analysis" is expressible as this one LEFT JOIN, so a killed backfill
-    /// resumes simply by re-running it.
+    /// Media-less kinds are excluded (they have no bytes to analyze), so they never
+    /// linger as perpetually-pending — the batch drains to empty and stays there
+    /// until new media arrives or the analyzer version bumps. No ledger needed:
+    /// "still needs analysis" is expressible as this one LEFT JOIN, so a killed
+    /// backfill resumes simply by re-running it.
+    ///
+    /// **Video is IN**, and the exclusion this used to carry ("whose analysis needs
+    /// a poster-frame path, deferred") was more pessimistic than the tree: the
+    /// poster frame is generated at INGEST and has been sitting on disk as a JPEG
+    /// tier ever since. The backfill reads that instead of the movie
+    /// (`AnalysisBackfill.imageData(for:)`), so video gains OCR, colors and a hash
+    /// without the frame-sampling project 012 assumed it would cost. Until this
+    /// changed, a video's Colors section was permanently empty and no suggestion
+    /// could ever reach it.
     public func assetsNeedingAnalysis(analyzerVersion: Int, limit: Int) async throws -> [UUID] {
         let clampedLimit = min(max(limit, 1), 1000)
         return try await read { db in
@@ -276,7 +299,7 @@ public final class AppServices: Sendable {
                 SELECT a.id
                 FROM asset a
                 LEFT JOIN asset_analysis an ON an.asset_id = a.id
-                WHERE a.kind = ?
+                WHERE a.kind IN (?, ?)
                   AND a.blob_hash IS NOT NULL
                   AND a.download_state = ?
                   AND (an.asset_id IS NULL OR an.analyzer_version < ?)
@@ -284,6 +307,7 @@ public final class AppServices: Sendable {
                 LIMIT ?
                 """, arguments: [
                     AssetKind.image.rawValue,
+                    AssetKind.video.rawValue,
                     DownloadState.downloaded.rawValue,
                     analyzerVersion,
                     clampedLimit,
@@ -3132,27 +3156,9 @@ public final class AppServices: Sendable {
             guard try Asset.exists(db, key: Self.key(assetID)) else {
                 throw AtelierError.notFound(entity: "asset", id: assetID)
             }
-            // Find-or-create by (name, source): user vs agent tags are distinct.
-            let tag: Tag
-            if let existing = try Tag
-                .filter(Column("name") == trimmed)
-                .filter(Column("source") == source.rawValue)
-                .fetchOne(db) {
-                tag = existing
-            } else {
-                let created = Tag(id: UUID(), name: trimmed, source: source)
-                try created.insert(db)
-                tag = created
-            }
-            // Idempotent link — skip if the join row already exists.
-            let linked = try AssetTag
-                .filter(Column("asset_id") == Self.key(assetID))
-                .filter(Column("tag_id") == Self.key(tag.id))
-                .fetchCount(db) > 0
-            if !linked {
-                try AssetTag(assetID: assetID, tagID: tag.id).insert(db)
-            }
-            return tag
+            // Find-or-create by (name, source) — user vs agent tags are distinct
+            // — then link idempotently. Shared with the suggestion writers.
+            return try Self.linkTag(db, name: trimmed, source: source, to: assetID)
         }
     }
 
@@ -3164,14 +3170,7 @@ public final class AppServices: Sendable {
         // stored "sf" (chips already pass the normalized name; this is robustness).
         let trimmed = Validation.normalizedTagName(name)
         try await write { db in
-            guard let tag = try Tag
-                .filter(Column("name") == trimmed)
-                .filter(Column("source") == source.rawValue)
-                .fetchOne(db) else { return }
-            try AssetTag
-                .filter(Column("asset_id") == Self.key(assetID))
-                .filter(Column("tag_id") == Self.key(tag.id))
-                .deleteAll(db)
+            try Self.unlinkTag(db, name: trimmed, source: source, from: assetID)
         }
     }
 
@@ -3197,14 +3196,26 @@ public final class AppServices: Sendable {
 
     /// The search token vocabulary (007 · S3): tags whose `name` case-insensitively
     /// begins with `prefix`, ordered `name, source, id` and limited. A blank
-    /// prefix returns the first `limit` tags overall (initial suggestions). Both
-    /// sources are included so agent tags remain filterable (distinguished by the
-    /// caller). `limit` is clamped to `1...200`.
+    /// prefix returns the first `limit` tags overall (initial suggestions).
+    /// `limit` is clamped to `1...200`.
+    ///
+    /// **`.user` tags only** (012 · I3). An unconfirmed machine guess is not part
+    /// of the library's vocabulary — 012's settled posture is that the curated
+    /// library never contains one, and a filter token is the most load-bearing
+    /// place a tag can appear: searching `poster` and getting back what Vision
+    /// merely thought was a poster is a different, worse product than searching
+    /// what you actually labelled. Accepting a suggestion writes a real `.user`
+    /// tag (``acceptSuggestion(_:on:)``), and it becomes searchable at that
+    /// moment. Agent tags remain readable per asset via ``tags(for:)``, which is
+    /// what draws the ✦ chips in the detail sidebar.
+    ///
+    /// This filter shipped before any suggester existed, so it changed no
+    /// behaviour when it landed — it closes the seam ahead of the producer.
     public func tagVocabulary(prefix: String, limit: Int = 50) async throws -> [Tag] {
         let clampedLimit = min(max(limit, 1), 200)
         let trimmed = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
         return try await read { db in
-            var request = Tag.all()
+            var request = Tag.filter(Column("source") == TagSource.user.rawValue)
             if !trimmed.isEmpty {
                 // LIKE is case-insensitive for ASCII by default; escape the LIKE
                 // wildcards in the user's prefix so `%`/`_` match literally.
@@ -3216,6 +3227,235 @@ public final class AppServices: Sendable {
                 .limit(clampedLimit)
                 .fetchAll(db)
         }
+    }
+
+    // MARK: - Suggested tags (012 · I3)
+
+    /// The next batch of asset ids a suggester has not yet looked at, at
+    /// `suggestVersion` — the resumable pass, in the shape
+    /// ``assetsNeedingAnalysis(analyzerVersion:limit:)`` established. Newest
+    /// first, `limit` clamped to `1...1000`.
+    ///
+    /// An INNER join to `asset_analysis`, not a LEFT one, and that is the load-
+    /// bearing difference from the analysis query. The marker being updated lives
+    /// on the analysis row, so an asset without one cannot be marked; a LEFT join
+    /// would hand back assets whose "done" write silently no-ops, and they would
+    /// be re-classified — a full Vision decode each — on every pass forever. An
+    /// asset that has no analysis row has failed to decode, and classification
+    /// would fail on the same bytes, so nothing suggestable is lost by waiting
+    /// for the analysis pass that runs ahead of this one.
+    ///
+    /// **Video is IN**, on the same poster-frame footing as the analysis queue —
+    /// the classifier sees the poster JPEG, not the movie. It was excluded when I3
+    /// shipped only because this query was written by mirroring the analysis one,
+    /// and inherited a deferral the poster tier had already made unnecessary.
+    public func assetsNeedingSuggestions(suggestVersion: Int, limit: Int) async throws -> [UUID] {
+        let clampedLimit = min(max(limit, 1), 1000)
+        return try await read { db in
+            let ids = try String.fetchAll(db, sql: """
+                SELECT a.id
+                FROM asset a
+                JOIN asset_analysis an ON an.asset_id = a.id
+                WHERE a.kind IN (?, ?)
+                  AND a.blob_hash IS NOT NULL
+                  AND a.download_state = ?
+                  AND (an.suggest_version IS NULL OR an.suggest_version < ?)
+                ORDER BY a.created_at DESC
+                LIMIT ?
+                """, arguments: [
+                    AssetKind.image.rawValue,
+                    AssetKind.video.rawValue,
+                    DownloadState.downloaded.rawValue,
+                    suggestVersion,
+                    clampedLimit,
+                ])
+            return ids.compactMap { UUID(uuidString: $0) }
+        }
+    }
+
+    /// Record one asset's machine suggestions and mark it done, in ONE
+    /// transaction (P15). Returns the `.agent` tags actually written — which is
+    /// the input minus everything the filters below drop, so an empty return is
+    /// an ordinary outcome, not a failure.
+    ///
+    /// Three things are refused, and all three are refused HERE rather than at
+    /// the call site, so no future producer can forget one:
+    ///
+    /// 1. **Suppressed names** — the user dismissed this exact name on this exact
+    ///    asset. This is the clause that makes a suggester-version bump safe: the
+    ///    model may change its mind, the refusal does not expire.
+    /// 2. **Names the asset already carries as a `.user` tag** — suggesting what
+    ///    has already been confirmed (or typed by hand) puts a chip asking to
+    ///    accept something already accepted.
+    /// 3. **Empty / whitespace-only names**, dropped rather than thrown on. A
+    ///    machine producing one junk label must not cost the other four their
+    ///    write, and it is nobody's typo to report (the 004 batch-outcome
+    ///    discipline, applied inside a single asset).
+    ///
+    /// The marker is written whether or not anything survived: "this suggester
+    /// looked here and had nothing to say" is a completed pass, and recording it
+    /// is what stops the asset coming back on the next drain.
+    @discardableResult
+    public func recordSuggestions(
+        _ names: [String], for assetID: UUID, suggestVersion: Int
+    ) async throws -> [Tag] {
+        // Normalize outside the transaction (pure string work), preserving the
+        // producer's confidence order and dropping exact repeats within one batch.
+        var seen = Set<String>()
+        let normalized = names
+            .map(Validation.normalizedTagName)
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+
+        return try await write { db in
+            guard try Asset.exists(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            let key = Self.key(assetID)
+
+            let suppressed = Set(try String.fetchAll(
+                db, sql: "SELECT tag_name FROM tag_suppression WHERE asset_id = ?",
+                arguments: [key]))
+            let confirmed = Set(try String.fetchAll(db, sql: """
+                SELECT t.name FROM tag t
+                JOIN asset_tag at ON at.tag_id = t.id
+                WHERE at.asset_id = ? AND t.source = ?
+                """, arguments: [key, TagSource.user.rawValue]))
+
+            var written: [Tag] = []
+            for name in normalized where !suppressed.contains(name) && !confirmed.contains(name) {
+                written.append(try Self.linkTag(db, name: name, source: .agent, to: assetID))
+            }
+
+            try db.execute(sql: """
+                UPDATE asset_analysis SET suggest_version = ? WHERE asset_id = ?
+                """, arguments: [suggestVersion, key])
+            return written
+        }
+    }
+
+    /// Accept a suggestion: the asset drops the `.agent` tag and gains a `.user`
+    /// one of the same name, in ONE transaction. Idempotent — accepting twice, or
+    /// accepting a name the asset never had suggested, still leaves exactly one
+    /// `.user` tag. `.notFound` if the asset is absent.
+    ///
+    /// **Not a flip of `tag.source`.** A tag row is shared by every asset that
+    /// carries it (``applyTag(_:to:source:)`` finds-or-creates by `(name,
+    /// source)`), so editing the row in place would promote the suggestion on
+    /// every OTHER asset it was suggested for — a one-click accept silently
+    /// confirming guesses the user has never seen. The unlink-and-re-apply below
+    /// is per-asset, which is the granularity a confirmation actually has. 012's
+    /// wording — "source flips → user" — describes the visible effect, not the
+    /// write; the write cannot be a flip.
+    ///
+    /// The cost of doing it this way is that the accepted tag no longer records
+    /// that a machine proposed it first. That provenance would need a column on
+    /// `asset_tag`, and it buys nothing the user can act on: once confirmed, it is
+    /// their tag.
+    ///
+    /// The orphaned `.agent` tag row is deliberately left behind when no asset
+    /// links it any more, exactly as ``removeTag(_:from:source:)`` leaves its
+    /// own. Reaping empty tag rows is a library-wide sweep, not a per-click
+    /// concern.
+    @discardableResult
+    public func acceptSuggestion(_ name: String, on assetID: UUID) async throws -> Tag {
+        let trimmed = try Validation.tagName(name)
+        return try await write { db in
+            guard try Asset.exists(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            try Self.unlinkTag(db, name: trimmed, source: .agent, from: assetID)
+            return try Self.linkTag(db, name: trimmed, source: .user, to: assetID)
+        }
+    }
+
+    /// Dismiss a suggestion: unlink the `.agent` tag AND remember the refusal, in
+    /// ONE transaction. Idempotent (the suppression upserts, refreshing its
+    /// timestamp). `.notFound` if the asset is absent.
+    ///
+    /// The two halves are inseparable, which is why this is one method and not a
+    /// removal the caller is trusted to follow with a suppression. Unlinking
+    /// alone deletes a row the next pass recomputes from unchanged pixels, so a
+    /// dismissal that forgot to suppress would look like it worked and quietly
+    /// undo itself on the next idle drain — 012's named failure mode, and the
+    /// kind that surfaces days later.
+    public func dismissSuggestion(_ name: String, on assetID: UUID) async throws {
+        let trimmed = try Validation.tagName(name)
+        try await write { db in
+            guard try Asset.exists(db, key: Self.key(assetID)) else {
+                throw AtelierError.notFound(entity: "asset", id: assetID)
+            }
+            try Self.unlinkTag(db, name: trimmed, source: .agent, from: assetID)
+            try TagSuppression(assetID: assetID, tagName: trimmed, suppressedAt: Date())
+                .upsert(db)
+        }
+    }
+
+    /// Forget a refusal, so the name may be suggested again. The undo seam for
+    /// ``dismissSuggestion(_:on:)``; idempotent, and a no-op when nothing was
+    /// suppressed. It does not re-apply the tag — the next suggester pass decides
+    /// that, which is the point.
+    public func unsuppressTag(_ name: String, on assetID: UUID) async throws {
+        let trimmed = Validation.normalizedTagName(name)
+        try await write { db in
+            try db.execute(
+                sql: "DELETE FROM tag_suppression WHERE asset_id = ? AND tag_name = ?",
+                arguments: [Self.key(assetID), trimmed])
+        }
+    }
+
+    /// The names this asset has refused, oldest refusal first. Read.
+    public func suppressedTagNames(for assetID: UUID) async throws -> [String] {
+        try await read { db in
+            try String.fetchAll(db, sql: """
+                SELECT tag_name FROM tag_suppression
+                WHERE asset_id = ?
+                ORDER BY suppressed_at, tag_name
+                """, arguments: [Self.key(assetID)])
+        }
+    }
+
+    /// Find-or-create the `(name, source)` tag and link it to the asset
+    /// idempotently. The shared body of ``applyTag(_:to:source:)`` and the
+    /// suggestion writers — one place where "a tag is identified by name AND
+    /// source" is expressed, so accept/suggest can never drift from apply.
+    /// Caller has already validated the name and checked the asset exists.
+    private static func linkTag(
+        _ db: Database, name: String, source: TagSource, to assetID: UUID
+    ) throws -> Tag {
+        let tag: Tag
+        if let existing = try Tag
+            .filter(Column("name") == name)
+            .filter(Column("source") == source.rawValue)
+            .fetchOne(db) {
+            tag = existing
+        } else {
+            let created = Tag(id: UUID(), name: name, source: source)
+            try created.insert(db)
+            tag = created
+        }
+        let linked = try AssetTag
+            .filter(Column("asset_id") == key(assetID))
+            .filter(Column("tag_id") == key(tag.id))
+            .fetchCount(db) > 0
+        if !linked {
+            try AssetTag(assetID: assetID, tagID: tag.id).insert(db)
+        }
+        return tag
+    }
+
+    /// Drop the asset's link to the `(name, source)` tag, leaving the tag row
+    /// itself intact for other assets. No-op when either is absent.
+    private static func unlinkTag(
+        _ db: Database, name: String, source: TagSource, from assetID: UUID
+    ) throws {
+        guard let tag = try Tag
+            .filter(Column("name") == name)
+            .filter(Column("source") == source.rawValue)
+            .fetchOne(db) else { return }
+        try AssetTag
+            .filter(Column("asset_id") == key(assetID))
+            .filter(Column("tag_id") == key(tag.id))
+            .deleteAll(db)
     }
 
     // MARK: - Bulk-import jobs (015 · decision 3A ledger)

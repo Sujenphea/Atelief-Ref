@@ -14,6 +14,10 @@
 //       corpus, so embedding an asset AFTER its analysis captures the OCR text).
 //    4. a bounded embedding RE-VERIFY pass — catches name/note edits the
 //       timestamp-less `asset` can't signal (4A), oldest-embedded first.
+//    5. SuggestionBackfill — the `.agent` tag chips awaiting confirmation
+//       (012 · I3). Last and bounded: it is the second expensive queue, it feeds
+//       nothing downstream (the semantic corpus is text, not tags), and it needs
+//       the analysis row pass 2 writes before it can mark an asset done.
 //
 //  The color pass reads what analysis writes, so second looks like the natural
 //  place for it — and it was, until the ordering was thought through. `analyzeAll`
@@ -48,6 +52,7 @@ struct AnalysisCoordinator: Sendable {
     private let analysis: AnalysisBackfill
     private let colors: ColorBucketBackfill
     private let embedding: EmbeddingBackfill
+    private let suggestions: SuggestionBackfill
     /// Whether the on-device sentence-embedding model is installed. When false, the
     /// embedding + re-verify passes are skipped (analysis still runs).
     private let embeddingAvailable: Bool
@@ -70,6 +75,17 @@ struct AnalysisCoordinator: Sendable {
     private static let colorBatch = 200
     private static let colorBatchesPerPass = 25
 
+    /// The suggestion pass's per-pass ceiling: 5 batches of 20 = up to 100 assets.
+    ///
+    /// Bounded far more tightly than the color pass because the unit of work is
+    /// the expensive kind — a decode plus a Vision model per asset, the same
+    /// shape as analysis. It runs LAST for that reason, and it is capped so that
+    /// a first launch over a large library cannot turn one idle pass into a
+    /// minutes-long GPU session. Nothing downstream waits on it: the semantic
+    /// corpus is title / name / note / OCR, so suggestions feed no other queue.
+    private static let suggestBatch = 20
+    private static let suggestBatchesPerPass = 5
+
     init(services: AppServices, store: MediaStore) {
         self.analysis = AnalysisBackfill(
             services: services, store: store,
@@ -78,6 +94,8 @@ struct AnalysisCoordinator: Sendable {
         let embedder = NLSentenceEmbedder()
         self.embeddingAvailable = embedder.isAvailable
         self.embedding = EmbeddingBackfill(services: services, embedder: embedder)
+        self.suggestions = SuggestionBackfill(
+            services: services, store: store, classifier: VisionImageClassifier())
     }
 
     /// One ordered drain pass. Returns whether it did any new work (so the loop can
@@ -94,12 +112,31 @@ struct AnalysisCoordinator: Sendable {
             let analyzed = try await analysis.analyzeAll()
             didWork = didWork || analyzed.analyzed > 0
 
-            guard embeddingAvailable else { return didWork }
-            let embedded = try await embedding.embedAll()
-            didWork = didWork || embedded.embedded > 0
+            // An `if` rather than the `guard … return` this used to be: the
+            // suggestion pass below must still run on a machine where the
+            // sentence-embedding model is not installed. The two are unrelated
+            // models answering unrelated questions.
+            if embeddingAvailable {
+                let embedded = try await embedding.embedAll()
+                didWork = didWork || embedded.embedded > 0
 
-            let reverified = try await embedding.reverifyNextBatch(limit: Self.reverifyBatch)
-            didWork = didWork || reverified.embedded > 0
+                let reverified = try await embedding.reverifyNextBatch(limit: Self.reverifyBatch)
+                didWork = didWork || reverified.embedded > 0
+            }
+
+            // Last, and bounded. Every earlier queue either feeds another one or
+            // is cheap; this one feeds nothing and costs a decode plus a Vision
+            // pass per asset, so it is the only place in the ordering where a
+            // backlog can be made to wait without anything else silently
+            // returning nothing meanwhile (the failure the color pass was moved
+            // first to avoid).
+            for _ in 0..<Self.suggestBatchesPerPass {
+                let outcome = try await suggestions.suggestNextBatch(limit: Self.suggestBatch)
+                didWork = didWork || outcome.suggested > 0
+                // Empty backlog, or only persistently-failing assets left: stop
+                // rather than spin the remaining batches over the same rows.
+                if outcome.attempted == 0 || outcome.suggested == 0 { break }
+            }
         } catch is CancellationError {
             // Coordinator torn down mid-pass — silent.
         } catch {
