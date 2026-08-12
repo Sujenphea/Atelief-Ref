@@ -27,9 +27,12 @@ export function createTwitterSource({
   settleMs = 2000,
   maxIdleRounds = 4,
   scope = null,
+  // Optional `async (items) => items` that swaps a threaded tweet's items for its
+  // whole thread's (twitter-thread.js). Omitted → tweets save exactly as swept.
+  expandItems = null,
 } = {}) {
   return createInterceptSource({
-    scroll, sleep, host, settleMs, maxIdleRounds, scope,
+    scroll, sleep, host, settleMs, maxIdleRounds, scope, expandItems,
     matchesScope,
     StallError: TimelineStallError,
     // A tweet page ends the timeline when it carries ZERO tweet entries (X has no `-end-`

@@ -40,6 +40,16 @@ export const BACKOFF_BASE_MS = 1000;
 /** Backoff ceiling — a single item never waits longer than this between retries. */
 export const BACKOFF_MAX_MS = 30_000;
 
+/** Base gap before each X `TweetDetail` thread-expansion request, plus its jitter
+ * (the same shape as `PACING_MS` / `PACING_JITTER_MS`). Thread expansion is a SECOND
+ * request stream that the engine's item pacing doesn't cover — the engine paces
+ * relays to the local app, while these go to X — so without its own gap a page of
+ * bookmarks would fire a burst of conversation reads, which is precisely the shape
+ * the item pacing exists to avoid. Slightly gentler than the item pace because these
+ * hit the origin rather than loopback. */
+export const THREAD_PACING_MS = 1200;
+export const THREAD_PACING_JITTER_MS = 900;
+
 /** Per-item retry budget for a `retryableFailed` outcome. On exhaustion the item
  * is recorded `retryableFailed` (a later sweep re-attempts it) and the sweep moves
  * on — one bad item NEVER aborts the sweep `[C7]`. Distinct from a `halt` signal

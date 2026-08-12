@@ -22,6 +22,7 @@ import {
   pinterestBoardDriver, makeResourceFetch, scrapePinterestAppVersionFromDoc, readCookie,
 } from "./bulk-pinterest.js";
 import { createTwitterSource } from "./twitter-source.js";
+import { createThreadExpander, featuresFromURL, resolveQueryId } from "./twitter-thread.js";
 import { makeSavedFeedFetch, instagramSavedDriver } from "./bulk-instagram.js";
 import { browser } from "./browser.js";
 
@@ -220,14 +221,53 @@ function buildPinterestDriver({ doc, loc, fetchImpl }) {
  * — `dispose` REMOVES the `message` listener (1A): without it every launch leaks another
  * live listener feeding a now-dead source, and a stale one could push pages into the
  * wrong sweep. The caller runs `dispose` when the sweep settles. */
-function buildTwitterDriver({ win, host, scope }) {
+function buildTwitterDriver({ win, host, scope, transport, log = () => {} }) {
+  // Credentials for the follow-up TweetDetail call, harvested from the page's OWN
+  // timeline requests as they stream past: the `features` blob off the request URL and
+  // the allowlisted auth headers off the request. Nothing is forged and nothing is
+  // stored — they live in this closure for the sweep's lifetime and are used only for
+  // same-origin requests from this tab.
+  let harvested = null;
+
+  const resolveCredentials = async () => {
+    if (!harvested) return null;               // no timeline request seen yet → no expansion
+    const queryId = await resolveQueryId({
+      doc: win.document,
+      // The SW fetches the bundle: a content script's cross-origin fetch is bound by
+      // the page's CORS, the SW's by host_permissions.
+      fetchBundle: async (url) => {
+        const reply = await transport({ type: BULK.bundle, url });
+        return reply && reply.text ? reply.text : null;
+      },
+      log,
+    });
+    return queryId ? { queryId, features: harvested.features, headers: harvested.headers } : null;
+  };
+
+  // The page's own `fetch`, so the TweetDetail call carries the tab's session. Absent
+  // on a bare test window — expansion is simply off then, which is the same graceful
+  // path a missing queryId takes.
+  const pageFetch = typeof win.fetch === "function" ? win.fetch.bind(win) : null;
+
   const source = createTwitterSource({
     host,
     scope,
     scroll: () => win.scrollTo(0, win.document.body.scrollHeight),
+    // `probeRoots` is on with no toggle: a bookmarked tweet that STARTS a thread is
+    // indistinguishable from a lone tweet in the timeline, so the only way "save the
+    // whole thread" holds for the common case (bookmarking the first tweet) is to ask.
+    // The cost is one TweetDetail per bookmarked tweet that has any replies; tweets
+    // with none are screened out for free, and each conversation is fetched once.
+    expandItems: pageFetch
+      ? createThreadExpander({
+        resolveCredentials, probeRoots: true, host, fetchImpl: pageFetch, log,
+      })
+      : null,
   });
   const onMessage = (event) => {
     if (event.source === win && event.data && event.data.source === TIMELINE_MESSAGE_SOURCE) {
+      const features = featuresFromURL(event.data.url);
+      if (features) harvested = { features, headers: event.data.headers || {} };
       source.onResponse(event.data.json, event.data.url);
     }
   };
@@ -297,7 +337,7 @@ export function registerBulkController(win, browserApi) {
     const pacing = PLATFORM_PACING[spec.platform] || {};
     let built;
     if (spec.platform === "twitter") {
-      built = buildTwitterDriver({ win, host, scope: spec.scope });
+      built = buildTwitterDriver({ win, host, scope: spec.scope, transport, log });
     } else if (spec.platform === "instagram") {
       built = buildInstagramDriver({ loc: win.location, fetchImpl: win.fetch.bind(win), log });
     } else {
