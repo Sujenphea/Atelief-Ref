@@ -108,7 +108,7 @@ struct SuggestionBackfillTests {
         let env = try await makeTempPipeline()
         defer { env.cleanup() }
 
-        let mp4 = try FixtureVideos.solidVideo(width: 320, height: 240)
+        let mp4 = try await FixtureVideos.solidVideo(width: 320, height: 240)
         let outcome = await env.pipeline.ingest(IngestInput(
             source: .data(mp4),
             provenance: SourceDraft(platform: .localPaste, capturedAt: Date()),

@@ -5,9 +5,26 @@
 // opaque blob in the repo) and exercise the true AVFoundation metadata/poster
 // paths — the whole point, since `CGImageSource` can't open a movie.
 //
-// Synchronous by design: `finishWriting` is awaited with a semaphore, which is
-// fine (and simplest) in a test helper — it avoids threading a non-Sendable
-// writer through an async continuation.
+// ASYNC by necessity. This helper used to be synchronous, waiting on
+// `finishWriting` with a `DispatchSemaphore` and spinning on `Thread.sleep`,
+// on the reasoning that blocking is "fine (and simplest) in a test helper".
+// That reasoning held under XCTest, which gave each test its own thread. It does
+// not hold under swift-testing, which runs async tests on the SWIFT CONCURRENCY
+// COOPERATIVE POOL — a pool with one thread per core, and no capacity to grow.
+//
+// Nine call sites across five suites make this video. Under `--parallel`, once
+// enough of them are in flight, every cooperative thread is parked in
+// `semaphore.wait()` and NO thread is left to run the `finishWriting` completion
+// handler that would signal them. The whole test process deadlocks — not slowly,
+// permanently: observed hanging for over an hour with 365 tests open, taking the
+// entire `verify.sh` gate with it. Vision requests elsewhere in the suite blocked
+// behind the same exhausted pool, which made this look like a Vision bug for as
+// long as anyone looked at a sample instead of at the pool.
+//
+// So nothing here may block a thread. `finishWriting` is awaited, and the
+// readiness spin yields with `Task.sleep` instead of sleeping the thread. The
+// writer never crosses an isolation boundary — it is created, used and finished
+// inside this one function — so being non-Sendable costs nothing.
 
 import AVFoundation
 import CoreVideo
@@ -20,7 +37,7 @@ enum FixtureVideos {
     /// Default ≈ 1s of 320×240 — enough for a decodable video track + poster.
     static func solidVideo(
         width: Int = 320, height: Int = 240, frames: Int = 12, fps: Int = 12
-    ) throws -> Data {
+    ) async throws -> Data {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("AtelierVideoFixtures", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -48,7 +65,8 @@ enum FixtureVideos {
         writer.startSession(atSourceTime: .zero)
 
         for frame in 0 ..< frames {
-            while !input.isReadyForMoreMediaData { Thread.sleep(forTimeInterval: 0.001) }
+            // YIELD, never sleep the thread — see the file header.
+            while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(1)) }
             let buffer = try makePixelBuffer(
                 width: width, height: height, seed: frame, pool: adaptor.pixelBufferPool)
             let time = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(fps))
@@ -58,9 +76,7 @@ enum FixtureVideos {
         }
         input.markAsFinished()
 
-        let semaphore = DispatchSemaphore(value: 0)
-        writer.finishWriting { semaphore.signal() }
-        semaphore.wait()
+        await writer.finishWriting()
         guard writer.status == .completed else { throw FixtureError.writeFailed }
 
         return try Data(contentsOf: url)
