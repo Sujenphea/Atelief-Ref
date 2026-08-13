@@ -187,7 +187,22 @@ test("makeResourceFetch: sends the pws-handler + derived source-url for a BoardF
   assert.equal(sent["X-APP-VERSION"], "1df0da9");
 });
 
-test("makeResourceFetch: no pws-handler for an unmapped resource (boards deferred)", async () => {
+// BoardsResource used to be the unmapped resource here. It gained a handler on
+// 2026-08-14 once a live probe showed the header is presence-checked rather than
+// route-matched, so this points at a resource that genuinely has no entry — the
+// behaviour under test is "unmapped sends nothing", not "boards are deferred".
+test("makeResourceFetch: no pws-handler for a resource with no PWS_HANDLERS entry", async () => {
+  let sent = null;
+  const fetchImpl = async (_url, opts) => {
+    sent = opts.headers;
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  const fetchJson = makeResourceFetch({ appVersion: "v", csrfToken: "T", fetchImpl });
+  await fetchJson("https://REDACTED/resource/PinResource/get/?source_url=/pin/1/&data=%7B%7D");
+  assert.ok(!("x-pinterest-pws-handler" in sent));
+});
+
+test("makeResourceFetch: BoardsResource now sends its own handler", async () => {
   let sent = null;
   const fetchImpl = async (_url, opts) => {
     sent = opts.headers;
@@ -195,7 +210,7 @@ test("makeResourceFetch: no pws-handler for an unmapped resource (boards deferre
   };
   const fetchJson = makeResourceFetch({ appVersion: "v", csrfToken: "T", fetchImpl });
   await fetchJson(buildBoardsURL({ host: "REDACTED", username: "u" }));
-  assert.ok(!("x-pinterest-pws-handler" in sent));   // BoardsResource not yet mapped
+  assert.equal(sent["x-pinterest-pws-handler"], "www/[username].js");
 });
 
 // MARK: - enumerateBoardFeed (paginator)
