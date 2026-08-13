@@ -247,7 +247,11 @@ export const CHAIN_CACHE_LIMIT = 50;
  *
  * `resolveCredentials` is async and called at most once per sweep (its result is
  * cached, including a failure — a bundle that won't yield a queryId won't yield one
- * on the next item either, and re-scraping per tweet would be a request storm).
+ * on the next item either, and re-scraping per tweet would be a request storm). It
+ * resolves to `{ queryId, features }`, or to `{ reason }` naming WHY it can't — the
+ * reason is logged verbatim, because the two ways this fails (the hook holds no auth /
+ * the bundle holds no queryId) point at opposite ends of the system and a single
+ * message for both once sent a live investigation to the wrong one.
  *
  * A conversation is fetched ONCE per sweep: bookmarking three tweets of the same
  * thread is common, and without the cache each would re-fetch the identical
@@ -328,15 +332,17 @@ export function createThreadExpander({
     }
 
     if (credentials === undefined) {
+      let resolved;
       try {
-        credentials = (await resolveCredentials()) || null;
+        resolved = await resolveCredentials();
       } catch (error) {
-        log("thread expansion unavailable:", String(error));
-        credentials = null;
+        resolved = { reason: `resolving credentials threw: ${String(error)}` };
       }
-      if (!credentials || !credentials.queryId) {
-        log("thread expansion off: no TweetDetail queryId (X bundle moved?)");
-        credentials = null;
+      credentials = resolved && resolved.queryId ? resolved : null;
+      if (!credentials) {
+        // The resolver names its own failure when it can (see bulk-controller); a bare
+        // null still logs, just without the specifics.
+        log("thread expansion off:", (resolved && resolved.reason) || "no credentials");
       }
     }
     if (!credentials) return items;

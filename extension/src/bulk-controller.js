@@ -231,8 +231,20 @@ function buildTwitterDriver({ win, host, scope, transport, log = () => {} }) {
   // shared `postMessage` bus ([090] 3A).
   let harvested = null;
 
+  // Two unrelated things can leave expansion without credentials, and they point
+  // somewhere completely different: no harvest means the MAIN-world hook never handed us
+  // an auth-bearing timeline response (none seen yet — or, as happened live, a STALE hook
+  // build whose envelope predates `hasAuth` and so can never set it); no queryId means
+  // X moved the operation table. Collapsing both into `null` is what let a stale hook
+  // read as "the bundle moved" and sent the search to the one place that was fine, so
+  // the unavailable case names ITSELF via `reason` rather than leaving the caller to guess.
   const resolveCredentials = async () => {
-    if (!harvested) return null;               // no timeline request seen yet → no expansion
+    if (!harvested) {
+      return {
+        reason: "the hook has not handed over X's auth headers — no timeline response seen "
+          + "yet, or the MAIN-world hook is an older build (reload the extension)",
+      };
+    }
     const queryId = await resolveQueryId({
       doc: win.document,
       // The SW fetches the bundle: a content script's cross-origin fetch is bound by
@@ -243,7 +255,10 @@ function buildTwitterDriver({ win, host, scope, transport, log = () => {} }) {
       },
       log,
     });
-    return queryId ? { queryId, features: harvested.features } : null;
+    if (!queryId) {
+      return { reason: "no TweetDetail queryId in any X bundle (the operation table moved?)" };
+    }
+    return { queryId, features: harvested.features };
   };
 
   // The TweetDetail call goes through the hook's proxy, so it carries the tab's session

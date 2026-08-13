@@ -417,6 +417,35 @@ test("createThreadExpander: resolveCredentials is called at most once per sweep"
   assert.equal(resolved, 1, "a failed resolve is cached — no per-page bundle re-scrape");
 });
 
+test("createThreadExpander: an unavailable resolve is logged with ITS OWN reason", async () => {
+  // A stale MAIN-world hook turned expansion off for every sweep, and the single
+  // catch-all message blamed the X bundle — the one part that was working. Whatever the
+  // resolver says about itself has to reach the log verbatim, or the next silent
+  // expansion-off is just as unreadable as this one was.
+  const logFor = async (resolveCredentials) => {
+    const lines = [];
+    const expand = createThreadExpander({
+      resolveCredentials,
+      log: (...parts) => lines.push(parts.join(" ")),
+      fetchImpl: async () => { throw new Error("should not be reached"); },
+    });
+    const swept = itemsFor(tweet({ id: "2", replyTo: "1" }));
+    assert.deepEqual(await expand(swept), swept, "unavailable credentials leave items alone");
+    return lines.join("\n");
+  };
+
+  const noAuth = await logFor(async () => ({ reason: "the hook has not handed over auth" }));
+  assert.match(noAuth, /has not handed over auth/);
+  assert.doesNotMatch(noAuth, /queryId/, "the auth failure must not be blamed on the bundle");
+
+  const noQueryId = await logFor(async () => ({ reason: "no TweetDetail queryId in any bundle" }));
+  assert.match(noQueryId, /no TweetDetail queryId/);
+
+  // A resolver that throws, and a bare `null` from one that names nothing, both still log.
+  assert.match(await logFor(async () => { throw new Error("boom"); }), /threw: Error: boom/);
+  assert.match(await logFor(async () => null), /thread expansion off/);
+});
+
 test("createThreadExpander: paces each conversation read, and a cache hit costs nothing", async () => {
   const chain = [
     tweet({ id: "1" }), tweet({ id: "2", replyTo: "1" }), tweet({ id: "3", replyTo: "2" }),
