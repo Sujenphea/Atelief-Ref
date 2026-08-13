@@ -68,7 +68,25 @@ under a single `postGroupKey`.
 
 ## Not done
 
-`isRepresentative(_:)` has zero production callers — the real check is written inline as
-`members.first == id` in four places (`PostGrouping.swift:305`, `IngestionModel.swift:515`,
-`ShelfView.swift:354`, and the search path). Untouched here, but the tested API and the
-shipped path have drifted apart and that is worth its own look.
+`isRepresentative(_:)` has zero production callers.
+
+**Corrected:** this entry first claimed the check was inlined in FOUR places
+(`PostGrouping.swift:305`, `IngestionModel.swift:515`, `ShelfView.swift:354`, "the search
+path"). That was wrong, and the conclusion drawn from it — that there was duplication to
+unify — was wrong with it. What is actually there:
+
+- **One** equivalent site, `PostGrouping.swift:352` in `collapsed()`, in the same file.
+  It sits after the guard on line 346 that has already resolved `key` and `members`, so
+  routing it through the helper would add two dictionary lookups per feed item to the
+  path this file documents as the reason collapsing is cheap.
+- `IngestionModel.itemsRepresented(by:)` is close but not a drop-in: it needs `lead`
+  itself for the `expandedPosts` check, and it diverges on ungrouped items —
+  `members(forItem:)` returns `[]` so its guard fails, where `isRepresentative` returns
+  `true`.
+- `ShelfView.swift` is a DIFFERENT predicate. It has no equality check at all; it widens
+  any member to its whole post.
+- There is no search-path site.
+
+So the helper is unused and its three test assertions guard nothing that ships, but there
+is no duplication to collapse and the one equivalent site inlines the check deliberately.
+Left exactly as it is.

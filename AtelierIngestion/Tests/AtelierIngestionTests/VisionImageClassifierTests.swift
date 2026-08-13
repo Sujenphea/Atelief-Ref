@@ -8,33 +8,30 @@
 // a test that fails on an OS update for no defect.
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// OPT-IN, and this is the interesting part. Run it with:
+// This suite used to be OPT-IN behind `ATELIER_VISION_CLASSIFY_TESTS=1`, because a
+// synchronous `VNClassifyImageRequest.perform` appeared to DEADLOCK the parallel
+// bundle: with the suite in, the whole process wedged after ~1.3 s; without it,
+// 418 tests in 2.1 s; the suite alone, green; `.serialized`, still wedged.
 //
-//     ATELIER_VISION_CLASSIFY_TESTS=1 swift test --filter VisionImageClassifier
+// That diagnosis was right about the symptom and wrong about the culprit. The
+// bundle was already one blocked thread away from a COOPERATIVE-POOL deadlock:
+// `FixtureVideos.solidVideo` blocked a pool thread per call (`DispatchSemaphore`
+// + `Thread.sleep`) and nine call sites raced for eight threads. This suite's
+// `perform` blocks a pool thread too, so adding it tipped an already-marginal
+// bundle over — which is exactly why `.serialized` did not help: the contention
+// was never between these two tests.
 //
-// **A synchronous `VNClassifyImageRequest.perform` DEADLOCKS this package's
-// parallel test bundle.** Measured, not guessed:
+// The gate came off once the fixture stopped blocking (see changelog 391). With
+// that fixed, the bundle runs this suite in parallel with everything else:
+// 427 tests, 45 suites, green — verified three consecutive runs. The suite stays
+// `.serialized` since these two calls have no reason to overlap each other, but
+// nothing about it is opt-in any more, so CI runs it like everything else.
 //
-//   • the bundle without this suite: 418 tests, 2.1 s, green
-//   • the bundle with it: the whole PROCESS wedges after ~1.3 s — every suite
-//     frozen mid-flight, CPU time flat, no progress, no timeout
-//   • this suite alone: 2 tests, 0.15 s, green
-//   • marking the suite `.serialized`: still wedges (so it is not these two
-//     tests racing each other — it is this call against the rest of the run)
-//
-// `VisionTextRecognizer` performs synchronously in the same bundle and has never
-// done this, so it is specific to the classification request, not to Vision or to
-// the sync seam in general. The production path is unaffected and is what the
-// seam was shaped for: `SuggestionBackfill` calls this from an app process, one
-// asset at a time, on the coordinator's `.background` task — never from a bundle
-// running forty suites concurrently on the cooperative pool. The app target's own
-// test run is green.
-//
-// So the choice is between a green suite that cannot be run with its siblings and
-// a bundle that hangs. Opt-in keeps the coverage runnable and honest about which
-// it is; the fake-seam suites cover everything that is our logic rather than
-// Apple's. If this is ever revisited, the thing to try is hosting the call off the
-// cooperative pool entirely (a dedicated thread), not another `.serialized`.
+// The lasting lesson is the general one: this seam performs SYNCHRONOUSLY, so it
+// costs a cooperative thread for the duration. That is fine in production —
+// `SuggestionBackfill` calls it one asset at a time on the coordinator's
+// `.background` task — and it is fine here, but a future caller that fans this
+// out across a task group would be re-arming the same trap.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import CoreGraphics
@@ -42,11 +39,7 @@ import Foundation
 import Testing
 @testable import AtelierIngestion
 
-/// Whether the live-Vision classification tests are enabled — see the file header.
-private let liveVisionEnabled =
-    ProcessInfo.processInfo.environment["ATELIER_VISION_CLASSIFY_TESTS"] == "1"
-
-@Suite("VisionImageClassifier", .serialized, .enabled(if: liveVisionEnabled))
+@Suite("VisionImageClassifier", .serialized)
 struct VisionImageClassifierTests {
 
     private func flatImage(gray: Double = 0.5) throws -> CGImage {

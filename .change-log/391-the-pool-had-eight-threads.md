@@ -42,8 +42,21 @@ no thread remains to run the `finishWriting` completion handler that would signa
 them. Nothing can make progress, ever. It is load-dependent, which is why it
 presented as intermittent.
 
-This likely also explains `VisionImageClassifierTests` carrying `.serialized` —
-papering over the same deadlock from the victim's side.
+This also explains `VisionImageClassifierTests` — **confirmed, not guessed.** That
+suite's header documents the same wedge measured from the victim's side (bundle without
+it: 418 tests, 2.1s; with it: frozen after ~1.3s; `.serialized`: still frozen) and
+concluded that a synchronous `VNClassifyImageRequest.perform` was the culprit. It was
+not. The bundle was already one blocked thread from the edge, and that `perform` blocks
+a pool thread too, so adding it tipped an already-marginal bundle — which is precisely
+why `.serialized` did nothing: the contention was never between those two tests. Note
+the bundle was 418 tests then and 427 now; it crossed the threshold as tests were added,
+which is what made the failure look like it appeared out of nowhere.
+
+So the `ATELIER_VISION_CLASSIFY_TESTS` gate is REMOVED here. With the fixture fixed, the
+suite runs in parallel with everything else — 427 tests, 45 suites, green, three
+consecutive runs — and CI runs it like any other suite instead of skipping it. Nothing
+in `scripts/` or `.github/` ever set that variable, so the live classification adapter
+had no live verification anywhere; the suite passed by skipping.
 
 ## The fix
 
