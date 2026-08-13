@@ -59,7 +59,18 @@ the canary asks — *does a response X sent today still parse* — and can be re
 wholesale with a newer capture without touching a single test. `checkTimeline` still runs
 over the composed fixture in `drift.test.js`, so both stay covered.
 
-Refresh it by capturing a Bookmarks response, sanitizing it, and overwriting the file +
+### Refreshing a live fixture
+```
+node scripts/sanitize-capture.js ../resources/<raw>.json ../resources/<clean>.json
+node scripts/audit-capture.js    ../resources/<raw>.json ../resources/<clean>.json   # must print LEAKED: 0
+```
+`sanitize-capture.js` is the sweep described below; `audit-capture.js` is the check that
+keeps it honest, and it **exits non-zero on any leak**. Read the `structuralSurvivors` list
+every time rather than trusting the count — handles and enums are the same shape, so the
+split between "leaked" and "structural" is a triage aid, not a verdict. Then overwrite the
+fixture and bump that platform's `capturedAt` in `drift-baseline.json`.
+
+Refresh X by capturing a Bookmarks response, sanitizing it, and overwriting the file +
 `markers.xTimeline.capturedAt` in `drift-baseline.json`. Sanitizing must be a
 **key-independent sweep on value shape**, not a list of field names: the capture that
 produced this file leaked profile-image urls through `avatar.image_url` when the rule was

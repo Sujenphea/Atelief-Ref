@@ -121,3 +121,15 @@ disk, because Chrome set *Automatic downloads: Block* for pinterest.com partway 
 a real user gesture does not override it. `pinterest-board` still runs the composed fixture
 until that lands; the marker records the pending state rather than implying coverage that
 does not exist.
+
+## Addendum — the sweep is now committed tooling
+
+`extension/scripts/sanitize-capture.js` and `audit-capture.js` were throwaway scratch files
+for this refresh; they are now in the repo, with the fixtures README giving the two-command
+recipe. They encode leak rules that took three separate rounds to find across two captures,
+and the README had been telling people to sanitize this way without giving them anything to
+run. `audit-capture.js` exits non-zero on any leak, so it can gate a future refresh.
+
+The README says outright that the leaked/structural split is a **triage aid, not a
+verdict**, and that the survivor list must be read every time — because handles and enums
+are the same shape, which is the one thing the tooling cannot decide for you.
