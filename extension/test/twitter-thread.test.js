@@ -89,6 +89,37 @@ test("live: the thread maps to ONE post — shared permalink, contiguous open or
   for (const item of items) assert.equal("threadHint" in item, false);
 });
 
+test("live: each tweet stays a TWEET, and the thread still forms one carousel", () => {
+  // The shape the app needs, on the real capture: every tweet keeps its own identity
+  // (its own id, its own text) so nothing dedups away, while all eight items still
+  // group as a single post.
+  const items = mapThread(selfThreadChain(live, LIVE_HEAD), { host: "x.com" });
+
+  // One descriptor per TWEET — five, not eight. A tweet capture dedups on
+  // `(kind, tweetID)`, so two items claiming one tweet id would collapse and the
+  // second's photo would be deleted as an orphan blob.
+  const described = items.filter((item) => item.content);
+  assert.deepEqual(described.map((item) => item.content.payload.tweet.tweetID), LIVE_SPINE);
+  assert.equal(new Set(described.map((i) => i.content.payload.tweet.tweetID)).size, 5,
+    "every descriptor claims a DIFFERENT tweet id");
+
+  // Each descriptor carries that tweet's own words, not the head's.
+  const texts = described.map((item) => item.content.payload.tweet.text);
+  assert.equal(new Set(texts).size, 5, "each tweet keeps its own text");
+  assert.match(texts[0], /thread part 1/);
+  assert.match(texts[4], /thread part 5/);
+
+  // The head's four photos: one descriptor listing all four, three plain images.
+  assert.equal(items[0].content.payload.tweet.media.length, 4);
+  assert.deepEqual(items.slice(1, 4).map((i) => i.content), [undefined, undefined, undefined]);
+
+  // …and every one of the eight still groups as ONE post, under the thread's permalink,
+  // regardless of what ingest does to each tweet's originalURL for identity.
+  const groupKeys = new Set(items.map((i) => i.provenance.rawMetadata.postGroupKey));
+  assert.deepEqual([...groupKeys], [`https://x.com/threadauthor/status/${LIVE_HEAD}`]);
+  assert.equal(items.length, 8);
+});
+
 test("live: a swept tweet from this thread is recognised as worth expanding", () => {
   const tweets = collectConversationTweets(live);
   const part2 = tweets.find((t) => t.rest_id === LIVE_SPINE[1]);

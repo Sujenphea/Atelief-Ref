@@ -154,8 +154,13 @@ test("mapTweet: a video tweet → one item keyed by the MEDIA, poster + best MP4
   // highest-bitrate progressive MP4 from the response (no syndication call needed).
   assert.equal(item.provenance.rawMetadata.videoUrl,
     "https://video.twimg.com/amplify_video/1031/vid/720x1280/SAMPLE31.mp4?tag=12");
-  // A tweet WITH media ingests down the plain image/video path — no tweet card.
-  assert.equal(item.content, undefined);
+  // A tweet's FIRST item carries its tweet identity: the descriptor names THIS tweet,
+  // its text and its whole media list, so the app stores it as a tweet (dedup on the
+  // tweet id, text into search_text) while still downloading the picture.
+  assert.equal(item.content.kind, "tweet");
+  assert.equal(item.content.payload.tweet.tweetID, "1000000000000000034");
+  assert.equal(item.content.payload.tweet.text, "Sample text");
+  assert.equal(item.content.payload.tweet.authorHandle, "@sampleuser");
   assert.equal(item.provenance.title, "Sample text");            // the text survives on the source
   assert.equal(item.provenance.authorHandle, "@sampleuser");
   assert.equal(item.provenance.originalURL, "https://x.com/sampleuser/status/1000000000000000034");
@@ -177,11 +182,23 @@ test("mapTweet: a multi-photo tweet → ONE ITEM PER PHOTO, all sharing the perm
     assert.equal(item.provenance.rawMetadata.tweetId, "1000000000000000171");
     // The post-grouping index — what opens the tweet in ITS order, not the feed's.
     assert.equal(item.provenance.rawMetadata.carouselIndex, index);
-    assert.equal(item.content, undefined);
   }
+  // EXACTLY ONE descriptor, on the first item. A tweet capture dedups on
+  // `(kind, tweetID)`, so a second item claiming the same tweet id would be deduped
+  // away server-side and its photo deleted as an orphan blob — the six-photo fan-out
+  // would silently become one.
+  assert.equal(items.filter((i) => i.content).length, 1);
+  assert.equal(items[0].content.payload.tweet.tweetID, "1000000000000000171");
+  // …and that descriptor lists the tweet's WHOLE media set, not just its own picture.
+  assert.equal(items[0].content.payload.tweet.media.length, 6);
   // The SHARED permalink is the grouping key: all six collapse to one tile.
   const permalinks = new Set(items.map((i) => i.provenance.originalURL));
   assert.equal(permalinks.size, 1);
+  // The grouping key is stated separately from the permalink, because the app rewrites
+  // a tweet capture's originalURL to its canonical form and would otherwise split the
+  // first item out of its own post.
+  const groupKeys = new Set(items.map((i) => i.provenance.rawMetadata.postGroupKey));
+  assert.deepEqual([...groupKeys], ["https://x.com/sampleuser/status/1000000000000000171"]);
   // Distinct media, not the same photo repeated.
   assert.equal(new Set(items.map((i) => i.mediaUrl)).size, 6);
 });

@@ -201,7 +201,19 @@ function collectMedia(mediaList, { borrowedFrom = null } = {}) {
 export function stampGroup(items, { permalink = null, startIndex = 0, extraMetadata = null } = {}) {
   let index = startIndex;
   for (const item of items) {
-    if (permalink) item.provenance.originalURL = permalink;
+    if (permalink) {
+      item.provenance.originalURL = permalink;
+      // …and state it as the GROUPING key too, which is not the same claim. The app
+      // rewrites a `kind: "tweet"` capture's `originalURL` to that tweet's canonical
+      // permalink so the tweet dedups as one identity — correct, and fatal for a
+      // thread, whose tweets each get their own canonical url and would shatter into
+      // one post apiece. `PostGrouping.explicitPostGroupKey` reads this instead, so
+      // identity and grouping can disagree without the carousel coming apart.
+      item.provenance.rawMetadata = {
+        ...item.provenance.rawMetadata,
+        postGroupKey: permalink,
+      };
+    }
     item.provenance.rawMetadata = {
       ...item.provenance.rawMetadata,
       ...(extraMetadata || {}),
@@ -304,7 +316,7 @@ export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
     // The media all belong to one tweet, so they ARE a group: one permalink, indices
     // 0…n-1 (quoter's media first, the quoted tweet's continuing from there). `stampGroup`
     // writes both — the same helper `mapThread` uses to stamp a whole thread.
-    return stampGroup(medias.map((media, index) => ({
+    const items = stampGroup(medias.map((media, index) => ({
       sourceId: media.mediaId || `${tweetId}-${index}`,
       mediaUrl: media.mediaUrl,
       mediaUrlFallback: media.mediaUrlFallback,
@@ -317,6 +329,26 @@ export function mapTweet(result, { host = "x.com", cursor = null } = {}) {
         rawMetadata: { ...sharedRaw, tweetId, kind: media.kind, videoUrl: media.videoUrl },
       }),
     })), { permalink: originalURL });
+
+    // The tweet is still a TWEET, not just the pictures it happened to contain: its
+    // FIRST item carries the `tweet` content descriptor (this tweet's own id, its text,
+    // its author, its whole media list) so the app stores it with a tweet's identity —
+    // dedup on the tweet id, text in `asset.search_text` — while the remaining items
+    // stay plain images.
+    //
+    // Only the first, and keyed on THIS tweet's id, because a tweet capture dedups on
+    // `(kind, tweetID)`: give two items of one tweet the same id and the second is
+    // deduped away and its picture deleted as an orphan blob. One descriptor per tweet
+    // id is the rule that keeps every image ([090] · 310 fan-out intact).
+    const content = buildTweetPayload({
+      tweetID: tweetId,
+      mediaUrls: medias.map((media) => media.mediaUrl),
+      text: title,
+      authorHandle: author.handle,
+      authorName: author.name,
+    });
+    if (content) items[0].content = content;
+    return items;
   }
 
   // No usable media: a text-only tweet is still a first-class `tweet` card.
