@@ -22,19 +22,24 @@ import { CHECKS, fixtureStaleReminder } from "../src/drift.js";
 // committed fixture yet and can only run against a `--flag <path>` live capture — it is
 // reported as AWAITING that capture rather than quietly passing, which is the whole point
 // (a check nobody has ever run against a real response proves nothing). See [090] 1A.
-// `x` points at the LIVE capture, not the hand-composed `x-bookmarks.json` the unit
-// tests pin against. The two fixtures answer different questions and had been
-// answering only one: the composed one is trimmed to exercise specific mapper rules
-// (quote-merge, a bare quote, a text-only tweet) and its synthetic ids are asserted
-// literally in three test files, so re-capturing it means rewriting those assertions —
-// which is exactly why it went 41 days without being refreshed. The canary's question
-// is "does a response X sent TODAY still parse", so it gets its own fixture on its own
-// clock. `checkTimeline` still runs over the composed one in drift.test.js.
+// `x`, `instagram` and the two `pinterest-*` entries point at LIVE captures, not at the
+// hand-composed fixtures the unit tests pin against. The two kinds answer different
+// questions and had been answering only one: the composed ones are trimmed to exercise
+// specific mapper rules (quote-merge, a bare quote, a text-only tweet) and their
+// synthetic ids are asserted literally, so re-capturing them means rewriting those
+// assertions — which is exactly why they went 41 days without being refreshed. The
+// canary's question is "does a response the platform sent TODAY still parse", so each
+// gets its own fixture on its own clock, replaceable wholesale without touching a test.
+// The composed fixtures are still exercised by the checks in drift.test.js.
+//
+// Instagram's composed fixture was the starkest case: it carries 11-13 keys per media
+// where the live API sends 108-128, so running the canary over it proved only that our
+// own reduction still parsed.
 const FIXTURE = {
   x: "../test/fixtures/x-bookmarks-live.json",
   "pinterest-board": "../test/fixtures/pinterest-boardfeed.json",
-  "pinterest-boards": "../test/fixtures/pinterest-boards.json",
-  instagram: "../test/fixtures/instagram-saved.json",
+  "pinterest-boards": "../test/fixtures/pinterest-boards-live.json",
+  instagram: "../test/fixtures/instagram-saved-live.json",
   "x-thread": "../test/fixtures/x-thread-detail.json",
 };
 
@@ -57,7 +62,10 @@ function parseArgs(argv) {
  * Workflow script, and the pure checks it calls are Date-free). */
 function ageInDays(capturedAt) {
   const then = new Date(capturedAt).getTime();
-  return Math.floor((Date.now() - then) / 86_400_000);
+  // Clamped at 0: `capturedAt` is a bare YYYY-MM-DD, which parses as UTC midnight, while
+  // a capture taken today from a UTC+12 machine is stamped with a local date that UTC has
+  // not reached yet. Unclamped, a fixture captured minutes ago reports "-1d ago".
+  return Math.max(0, Math.floor((Date.now() - then) / 86_400_000));
 }
 
 function main() {
@@ -65,20 +73,26 @@ function main() {
   const baseline = JSON.parse(readFileSync(here("../test/fixtures/drift-baseline.json")));
 
   console.log("Atelier drift canary\n====================");
-  const age = ageInDays(baseline.capturedAt);
-  const reminder = fixtureStaleReminder(baseline);
-  console.log(`Fixtures captured ${baseline.capturedAt} (${age}d ago)`
-    + (reminder ? `  ⚠️  STALE` : ""));
-  if (reminder) console.log(`  ${reminder}`);
+  // The top-level date is DESCRIPTIVE — the day the composed fixtures were first built —
+  // and deliberately does NOT set the exit code. Those fixtures are trimmed by hand and
+  // pinned literally by the unit tests; they are never re-captured on purpose, so a
+  // staleness window over them could only ever be a permanently red gate with no action
+  // behind it. Freshness is a per-fixture property now, and every fixture the canary
+  // actually runs carries its own `capturedAt` + window below.
+  console.log(`Composed fixtures authored ${baseline.capturedAt}`
+    + ` (${ageInDays(baseline.capturedAt)}d ago — not a staleness signal)`);
   // A platform whose fixture was captured on its OWN day carries its own date and
   // window (IG drifts faster than X/Pinterest, 12A — 14d vs 30d). Reported generically
   // rather than per-platform: `xThread` already had a date that nothing printed and
   // nothing enforced, so it could have rotted silently, which is the one failure mode
-  // this whole file exists to prevent. Any dated marker now sets the exit code.
+  // this whole file exists to prevent. Any dated marker now sets the exit code — and an
+  // UNDATED marker is reported too, because "no date" used to mean "inherits the
+  // top-level date" and now means nothing at all.
   const igMarker = baseline.markers.instagram;
   let markerStale = false;
   for (const [name, marker] of Object.entries(baseline.markers)) {
-    if (!marker || !marker.capturedAt) continue;      // undated → covered by the baseline date
+    if (!marker) continue;
+    if (!marker.capturedAt) { console.log(`${name} marker carries no capture date`); continue; }
     const markerReminder = fixtureStaleReminder(marker);
     if (markerReminder) markerStale = true;
     console.log(`${name} fixture captured ${marker.capturedAt} (${ageInDays(marker.capturedAt)}d ago,`
@@ -130,7 +144,7 @@ function main() {
     console.log(`\n⊘ Awaiting a live capture: ${awaiting.join(", ")}.`);
     console.log("  Until then, treat that parser as UNVERIFIED against production.");
   }
-  const stale = reminder || markerStale;
+  const stale = markerStale;
   if (stale && !failed) {
     console.log("\nReminder: a fixture is past its staleAfterDays — re-capture before relying on live sweeps.");
   }
