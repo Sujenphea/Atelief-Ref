@@ -6,6 +6,14 @@
       "likesQueryId": "tl9f_I0xyREhFd5KMzuO7w",
       "note": "queryIds rotate ~2-4 weeks; Bookmarks has its own. features blob is inherited via MAIN-world interception, never hardcoded."
     },
+    "xTimeline": {
+      "capturedAt": "2026-08-13",
+      "staleAfterDays": 30,
+      "op": "Bookmarks",
+      "queryId": "iblrFnKr6PZUR-dWpfXG6g",
+      "fixture": "x-bookmarks-live.json",
+      "note": "The canary's OWN X capture, separate from the hand-composed x-bookmarks.json the unit tests pin against (see scripts/drift-check.js FIXTURE.x). Captured live 2026-08-13 from a real bookmarks timeline: 3 tweets (1 video, 1 four-photo, 1 text-only) + Top/Bottom cursors, parsing to tweetCount=3 mediaItems=7. Sanitized by a key-INDEPENDENT value sweep (profile/media/video/t.co urls, every >=15-digit snowflake, every *_count, view counts, handles, names, bios, texts, cursors, node ids), then audited by checking every leaf string of the original against the output — what survives is schema constants plus video bitrates, which are load-bearing (the mapper picks the highest-bitrate MP4)."
+    },
     "xThread": {
       "capturedAt": "2026-08-13",
       "staleAfterDays": 30,

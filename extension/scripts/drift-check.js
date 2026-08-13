@@ -22,8 +22,16 @@ import { CHECKS, fixtureStaleReminder } from "../src/drift.js";
 // committed fixture yet and can only run against a `--flag <path>` live capture — it is
 // reported as AWAITING that capture rather than quietly passing, which is the whole point
 // (a check nobody has ever run against a real response proves nothing). See [090] 1A.
+// `x` points at the LIVE capture, not the hand-composed `x-bookmarks.json` the unit
+// tests pin against. The two fixtures answer different questions and had been
+// answering only one: the composed one is trimmed to exercise specific mapper rules
+// (quote-merge, a bare quote, a text-only tweet) and its synthetic ids are asserted
+// literally in three test files, so re-capturing it means rewriting those assertions —
+// which is exactly why it went 41 days without being refreshed. The canary's question
+// is "does a response X sent TODAY still parse", so it gets its own fixture on its own
+// clock. `checkTimeline` still runs over the composed one in drift.test.js.
 const FIXTURE = {
-  x: "../test/fixtures/x-bookmarks.json",
+  x: "../test/fixtures/x-bookmarks-live.json",
   "pinterest-board": "../test/fixtures/pinterest-boardfeed.json",
   "pinterest-boards": "../test/fixtures/pinterest-boards.json",
   instagram: "../test/fixtures/instagram-saved.json",
@@ -62,14 +70,20 @@ function main() {
   console.log(`Fixtures captured ${baseline.capturedAt} (${age}d ago)`
     + (reminder ? `  ⚠️  STALE` : ""));
   if (reminder) console.log(`  ${reminder}`);
-  // Instagram carries its OWN capture date + a shorter stale window (14d — IG drifts
-  // faster than X/Pinterest, 12A), read from its per-platform marker.
+  // A platform whose fixture was captured on its OWN day carries its own date and
+  // window (IG drifts faster than X/Pinterest, 12A — 14d vs 30d). Reported generically
+  // rather than per-platform: `xThread` already had a date that nothing printed and
+  // nothing enforced, so it could have rotted silently, which is the one failure mode
+  // this whole file exists to prevent. Any dated marker now sets the exit code.
   const igMarker = baseline.markers.instagram;
-  const igReminder = igMarker ? fixtureStaleReminder(igMarker) : null;
-  if (igMarker) {
-    console.log(`Instagram fixture captured ${igMarker.capturedAt} (${ageInDays(igMarker.capturedAt)}d ago,`
-      + ` ${igMarker.staleAfterDays}d window)` + (igReminder ? `  ⚠️  STALE` : ""));
-    if (igReminder) console.log(`  ${igReminder}`);
+  let markerStale = false;
+  for (const [name, marker] of Object.entries(baseline.markers)) {
+    if (!marker || !marker.capturedAt) continue;      // undated → covered by the baseline date
+    const markerReminder = fixtureStaleReminder(marker);
+    if (markerReminder) markerStale = true;
+    console.log(`${name} fixture captured ${marker.capturedAt} (${ageInDays(marker.capturedAt)}d ago,`
+      + ` ${marker.staleAfterDays}d window)` + (markerReminder ? `  ⚠️  STALE` : ""));
+    if (markerReminder) console.log(`  ${markerReminder}`);
   }
   console.log(`Drift markers to re-verify live:`);
   console.log(`  X app queryId (Likes ${baseline.markers.x.likesQueryId}) — rotates ~2-4 weeks`);
@@ -116,7 +130,7 @@ function main() {
     console.log(`\n⊘ Awaiting a live capture: ${awaiting.join(", ")}.`);
     console.log("  Until then, treat that parser as UNVERIFIED against production.");
   }
-  const stale = reminder || igReminder;
+  const stale = reminder || markerStale;
   if (stale && !failed) {
     console.log("\nReminder: a fixture is past its staleAfterDays — re-capture before relying on live sweeps.");
   }

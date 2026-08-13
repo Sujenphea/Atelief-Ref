@@ -16,10 +16,32 @@ size segment for the `/originals/` rewrite). Raw captures live in the gitignored
 | File | Endpoint | Shape captured |
 |------|----------|----------------|
 | `x-bookmarks.json` | `GET x.com/i/api/graphql/{queryId}/Bookmarks` | `data.bookmark_timeline_v2.timeline.instructions[TimelineAddEntries].entries[]` — trimmed to **3 tweets (1 video, 1 multi-photo, 1 text-only) + Top/Bottom cursor entries**. Media at `…result.legacy.extended_entities.media[]` (`type`, `media_url_https`, `video_info.variants[]`). |
+| `x-bookmarks-live.json` (captured 2026-08-13) | same | The **canary's** X capture — see "Two X timeline fixtures" below. 3 tweets (1 video, 1 four-photo, 1 text-only) + Top/Bottom cursors; `tweetCount=3 mediaItems=7`. |
 | `pinterest-boards.json` | `GET /resource/BoardsResource/get/` | `resource_response.data[]` boards (`id`, `name`, `url`) + `resource_response.bookmark` cursor. |
 | `pinterest-boardfeed.json` | `GET /resource/BoardFeedResource/get/` | `resource_response.data[]` pins (`id`, `images.{size}.url`, `board`, `videos`) + `bookmark` cursor. |
 | `instagram-saved.json` (captured 2026-07-15) | `GET instagram.com/api/v1/feed/saved/posts/` | `items[].media` — trimmed to **3 posts (1 image `media_type:1`, 1 reel `media_type:2`, 1 carousel `media_type:8`)**. Per-media `pk` (the fan-out dedup key, 002 · 1A), `image_versions2.candidates[]` (poster), `video_versions[]` (reel), `carousel_media[]` (child media, each its own `pk`). |
 | `instagram-saved-page2.json` (captured 2026-07-15) | `GET instagram.com/api/v1/feed/saved/posts/?max_id=…` | A second, richer page: **11 posts → 25 fanned-out items** (an 11-child carousel + 2- and 4-child carousels + 7 reels + 1 image). Stresses large-carousel fan-out; the `?max_id=` request URL **confirms the pagination param**. |
+
+### Two X timeline fixtures, on purpose
+`x-bookmarks.json` is **hand-composed**: trimmed to the tweets that exercise specific
+mapper rules (quote-merge, a bare quote of a video, a text-only tweet), and its synthetic
+ids/urls are asserted **literally** in `bulk-twitter.test.js`,
+`bulk-twitter-integration.test.js` and `drift.test.js`. Re-capturing it means rewriting
+those assertions — which is why it sat 41 days stale.
+
+`x-bookmarks-live.json` is a **straight live capture**, sanitized and otherwise
+untouched, and it is what the canary runs (`FIXTURE.x`). It answers the only question
+the canary asks — *does a response X sent today still parse* — and can be replaced
+wholesale with a newer capture without touching a single test. `checkTimeline` still runs
+over the composed fixture in `drift.test.js`, so both stay covered.
+
+Refresh it by capturing a Bookmarks response, sanitizing it, and overwriting the file +
+`markers.xTimeline.capturedAt` in `drift-baseline.json`. Sanitizing must be a
+**key-independent sweep on value shape**, not a list of field names: the capture that
+produced this file leaked profile-image urls through `avatar.image_url` when the rule was
+keyed on `profile_image_url_https`. Audit by checking every leaf string of the original
+against the output — what may legitimately survive is schema constants and video
+`bitrate`s (load-bearing: the mapper picks the highest-bitrate MP4).
 
 ### Drift canary (`npm run drift-check`)
 The opt-in canary (`scripts/drift-check.js`, invariants in `src/drift.js`) runs these
@@ -34,7 +56,12 @@ fixtures are stale (> 30d) and exits non-zero on any drift.
 
 ### Drift markers (verify live before trusting — see T12 drift canary)
 - **X `Likes` queryId** observed `tl9f_I0xyREhFd5KMzuO7w` (2026-07-03); `Bookmarks`
-  has its own queryId. **queryIds rotate every ~2–4 weeks.**
+  observed `iblrFnKr6PZUR-dWpfXG6g` (2026-08-13) — each op has its own.
+  **queryIds rotate every ~2–4 weeks.**
+- **X `TweetDetail` queryId is never hardcoded** — it is scraped from X's own bundle at
+  sweep time. Verified live 2026-08-13: `api.*.js` **no longer exists**, the
+  operation→queryId table now ships in `main.*.js`, and the scrape found it in the first
+  bundle fetched.
 - **X `features`** — a ~40-key boolean blob in the request; volatile. Inherited via
   MAIN-world interception, never hardcoded.
 - **Pinterest `X-APP-VERSION`** observed `1df0da9` (2026-07-03); required (bogus →
