@@ -50,8 +50,13 @@ import Foundation
 /// `nil` for a source with no `originalURL` — a pasted image, a dragged file, an
 /// imported folder. Those must NOT collapse into one giant "group of everything
 /// local", which is exactly what keying on the empty string would do.
+///
+/// A producer may override the URL with an explicit ``explicitPostGroupKey(for:)``;
+/// whichever string is chosen goes through the identical normalization below, so an
+/// explicit key behaves exactly as if it had arrived as the `originalURL`.
 func postGroupKey(for source: Source) -> String? {
-    guard let raw = source.originalURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+    guard let raw = (explicitPostGroupKey(for: source) ?? source.originalURL)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
           !raw.isEmpty else { return nil }
 
     // Strip the fragment and query by hand rather than via `URLComponents`, so an
@@ -81,18 +86,49 @@ func postGroupKey(for source: Source) -> String? {
     return key.isEmpty ? nil : key
 }
 
+/// The grouping key a producer stated OUTRIGHT in `raw_metadata`, or `nil`.
+///
+/// This exists because `original_url` does two jobs at once and they have started to
+/// disagree. For a `kind: "tweet"` capture, ``AppServices`` REWRITES the source's
+/// `original_url` to `TweetPayload.canonicalTweetURL(id:)` so that `x.com` /
+/// `twitter.com` / tracking-param variants of one tweet dedup to a single source. That
+/// is right for identity and fatal for grouping: an X THREAD is several tweets that
+/// belong in one carousel, and each of them would be rewritten to its own canonical
+/// url — so a five-tweet thread shatters into five single-item posts. Identity and
+/// grouping simply are not the same question, and the tweet path proves it.
+///
+/// So a producer that knows better says so. `bulk-twitter.js` stamps the thread's
+/// permalink here on every item of the thread; the carousel then survives whatever
+/// ingest does to `original_url` for identity's sake.
+///
+/// The same `raw_metadata` escape hatch ``carouselIndex(for:)`` reads just above, for
+/// the same reason: it round-trips losslessly and needs no migration.
+///
+/// TRUST: this is producer-supplied and bypasses the URL normalization's guards, so a
+/// wrong key fuses unrelated posts — the invisible failure the doc above warns about.
+/// It is deliberately narrow: a non-empty STRING only (a number or object is ignored),
+/// and the one producer derives it from tweet ids it already trusted enough to fetch,
+/// not from free page text.
+func explicitPostGroupKey(for source: Source) -> String? {
+    guard case let .object(fields) = source.rawMetadata,
+          case let .string(key)? = fields["postGroupKey"],
+          !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    return key
+}
+
 /// The item's position within its original carousel, or `nil` when the capture
 /// didn't record one.
 ///
 /// `bulk-instagram.js` stamps `rawMetadata.carouselIndex` on every child as it
 /// walks `carousel_media[]`, and `raw_metadata` round-trips losslessly through
 /// persistence — so the post's OWN sequence survives ingest even though nothing
-/// read it until 309. It is the only producer that writes one, which is less of a
-/// gap than it sounds: `bulk-twitter` and `bulk-pinterest` emit ONE item per
-/// tweet/pin (a multi-image tweet becomes a single card asset carrying its media
-/// in the payload), and the live-page extractors capture one image per capture.
-/// A multi-asset post group is therefore a bulk-Instagram carousel in all but the
-/// odd hand-captured case.
+/// read it until 309.
+///
+/// It is no longer the only producer. Since 310 `bulk-twitter.js` fans a tweet out
+/// to ONE ITEM PER MEDIA (it used to emit a single card asset carrying its media in
+/// the payload) and stamps the index the same way, and an expanded X THREAD carries
+/// one running index across all of its tweets. `bulk-pinterest` still emits one item
+/// per pin, and the live-page extractors capture one image per capture.
 ///
 /// Tolerant of a quoted number: `raw_metadata` is a JSON escape hatch written by
 /// JavaScript, and a producer that serialises `"0"` should not silently drop a
