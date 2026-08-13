@@ -87,13 +87,18 @@ artifacts of serializing a suite that was never written to be serialized.
 asserts a concurrency PEAK, so forcing serial execution is expected to change what
 it measures — it passes both ways now.
 
-One does still fail under `--no-parallel` only:
+One does still fail:
 
 - `EmbeddingBackfillTests` — "OCR re-run with the SAME text is a touch, not a
   re-embed (4A guard)", 3 expectations at `EmbeddingBackfillTests.swift:77/83/84`.
 
-Order-or-state dependent rather than deadlock-related. Left alone here: this
-change is about the pool, and `--no-parallel` is not how the suite runs. Worth its
+**Corrected:** this said the failure was `--no-parallel`-only and therefore an artifact
+of forcing serial execution. It is not. It fails in BOTH modes — 2 of 3 serial runs, 1 of
+2 parallel — and the full-bundle runs above that passed did so by luck. Dismissing it as
+a serialization artifact was wrong twice over, because it was not flakiness at all: it
+was a real defect in `assetsNeedingEmbedding`, where a re-analysis landing in the same
+millisecond as an embedding compared EQUAL and so never re-qualified the asset. Fixed by
+a monotonic marker in schema v23 — see changelog 392. Worth its
 own look if the suite is ever run serially on purpose.
 
 ## Files changed

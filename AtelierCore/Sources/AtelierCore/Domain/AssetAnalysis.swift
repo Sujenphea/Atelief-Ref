@@ -57,6 +57,13 @@ public struct AssetAnalysis: Sendable, Equatable, Hashable, Codable, Identifiabl
     /// counter.
     public var suggestVersion: Int?
 
+    /// Monotonic write counter (v23): greater than any value issued before, bumped on
+    /// every ``AppServices/upsertAnalysis(assetID:ocrText:colors:phash:analyzerVersion:)``.
+    /// It answers "has the analysis moved since the embedding was made" without asking
+    /// wall-clock time, which ties at millisecond resolution. NULL only for a row that
+    /// predates v23 and has not been re-analyzed since.
+    public var analysisSeq: Int?
+
     public var id: UUID { assetID }
 
     /// Explicit snake_case column/coding names (exact acronym mapping).
@@ -69,6 +76,7 @@ public struct AssetAnalysis: Sendable, Equatable, Hashable, Codable, Identifiabl
         case analyzerVersion = "analyzer_version"
         case colorsPaletteVersion = "colors_palette_version"
         case suggestVersion = "suggest_version"
+        case analysisSeq = "analysis_seq"
     }
 
     public init(
@@ -79,7 +87,8 @@ public struct AssetAnalysis: Sendable, Equatable, Hashable, Codable, Identifiabl
         analyzedAt: Date,
         analyzerVersion: Int,
         colorsPaletteVersion: Int? = nil,
-        suggestVersion: Int? = nil
+        suggestVersion: Int? = nil,
+        analysisSeq: Int? = nil
     ) {
         self.assetID = assetID
         self.ocrText = ocrText
@@ -87,6 +96,7 @@ public struct AssetAnalysis: Sendable, Equatable, Hashable, Codable, Identifiabl
         self.phash = phash
         self.analyzedAt = analyzedAt
         self.analyzerVersion = analyzerVersion
+        self.analysisSeq = analysisSeq
         self.colorsPaletteVersion = colorsPaletteVersion
         self.suggestVersion = suggestVersion
     }

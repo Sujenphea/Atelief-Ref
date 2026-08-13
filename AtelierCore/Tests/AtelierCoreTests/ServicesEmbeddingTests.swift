@@ -34,6 +34,89 @@ struct ServicesEmbeddingTests {
 
     private let vec: [Float] = [0.6, 0.8] + Array(repeating: 0, count: 510)
 
+    // MARK: the analysis marker (v23)
+
+    /// THE REGRESSION. Staleness used to be `analyzed_at > embedded_at`, and both are
+    /// stored at millisecond resolution, so a re-analysis landing in the same
+    /// millisecond as the embedding compared EQUAL — not "newer" — and the asset never
+    /// re-qualified. Its new OCR text stayed out of the search index permanently. That
+    /// is what made the EmbeddingBackfill suite fail roughly half its runs.
+    ///
+    /// The tie is CONSTRUCTED here rather than raced for. Writing the two rows back to
+    /// back does not reliably collide — measured: reverting the query to the old
+    /// predicate still passed five times out of five, so a race-based version of this
+    /// test guards nothing. Forcing `analyzed_at == embedded_at` states the invariant
+    /// directly: an analysis written after an embedding is newer than it, and equal
+    /// timestamps must not be read as "not newer". Under the old predicate this fails
+    /// every time; under the monotonic marker it cannot, because integers do not tie.
+    @Test("an analysis whose timestamp TIES the embedding still re-qualifies")
+    func tiedTimestampReanalysisIsStale() async throws {
+        let (services, temp) = try makeServices(); defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let a = try await seed(services, into: c.id, title: "one")
+
+        try await services.upsertAnalysis(assetID: a, ocrText: "grid", analyzerVersion: 1)
+        try await services.upsertEmbedding(
+            assetID: a, modelVersion: 1, contentHash: "h1", vector: vec)
+        let afterEmbed = try await services.assetsNeedingEmbedding(modelVersion: 1, limit: 10)
+        #expect(afterEmbed.isEmpty, "just embedded — nothing to do")
+
+        // A re-analysis, then collapse the clock: exactly the state a same-millisecond
+        // write produces.
+        try await services.upsertAnalysis(assetID: a, ocrText: "grid system", analyzerVersion: 1)
+        try temp.database.write { db in
+            try db.execute(sql: """
+                UPDATE asset_analysis
+                SET analyzed_at = (SELECT embedded_at FROM asset_embedding
+                                   WHERE asset_id = asset_analysis.asset_id)
+                WHERE asset_id = ?
+                """, arguments: [a.uuidString.lowercased()])
+        }
+
+        let pending = try await services.assetsNeedingEmbedding(modelVersion: 1, limit: 10)
+        #expect(pending.map(\.assetID) == [a],
+                "an analysis written after the embedding is newer, however close in time")
+    }
+
+    @Test("each analysis write draws a strictly greater marker")
+    func markersAreMonotonic() async throws {
+        let (services, temp) = try makeServices(); defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let a = try await seed(services, into: c.id, title: "one")
+        let b = try await seed(services, into: c.id, title: "two")
+
+        let first = try await services.upsertAnalysis(assetID: a, ocrText: "x", analyzerVersion: 1)
+        let second = try await services.upsertAnalysis(assetID: b, ocrText: "y", analyzerVersion: 1)
+        let third = try await services.upsertAnalysis(assetID: a, ocrText: "z", analyzerVersion: 1)
+
+        #expect(first.analysisSeq != nil)
+        #expect(second.analysisSeq! > first.analysisSeq!)
+        // A RE-analysis of the same asset must advance too — that is the write the
+        // backfill has to notice.
+        #expect(third.analysisSeq! > second.analysisSeq!)
+    }
+
+    /// A touch is the acknowledgement that an analysis was looked at and its text was
+    /// unchanged. If it bumped only `embedded_at`, the asset would re-qualify forever
+    /// once an analysis had drawn a higher marker.
+    @Test("a verify-touch adopts the current marker, so the asset settles")
+    func touchAdoptsTheMarker() async throws {
+        let (services, temp) = try makeServices(); defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "Refs")
+        let a = try await seed(services, into: c.id, title: "one")
+
+        try await services.upsertEmbedding(
+            assetID: a, modelVersion: 1, contentHash: "h1", vector: vec)
+        try await services.upsertAnalysis(assetID: a, ocrText: "grid", analyzerVersion: 1)
+        let beforeTouch = try await services.assetsNeedingEmbedding(modelVersion: 1, limit: 10)
+        #expect(beforeTouch.count == 1)
+
+        try await services.markEmbeddingVerified(assetID: a)
+        let afterTouch = try await services.assetsNeedingEmbedding(modelVersion: 1, limit: 10)
+        #expect(afterTouch.isEmpty,
+                "the touch accounted for that analysis — it must not re-qualify")
+    }
+
     // MARK: upsert / read
 
     @Test("upsert then read round-trips vector, model version, and content hash")

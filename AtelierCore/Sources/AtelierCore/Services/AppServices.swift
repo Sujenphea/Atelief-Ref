@@ -138,7 +138,12 @@ public final class AppServices: Sendable {
             }
             var row = AssetAnalysis(
                 assetID: assetID, ocrText: ocrText, colors: colors, phash: phash,
-                analyzedAt: analyzedAt, analyzerVersion: analyzerVersion)
+                analyzedAt: analyzedAt, analyzerVersion: analyzerVersion,
+                // v23: the monotonic marker the embedding backfill compares on. Taken
+                // inside this write, and `write` is serialized, so two analyses cannot
+                // draw the same number — which is the whole point, since the timestamps
+                // they used to be compared by tie at millisecond resolution.
+                analysisSeq: try Self.nextAnalysisSeq(db))
             let existing = try AssetAnalysis
                 .filter(Column("asset_id") == Self.key(assetID))
                 .fetchOne(db)
@@ -379,19 +384,41 @@ public final class AppServices: Sendable {
         contentHash: String,
         vector: [Float]
     ) async throws -> AssetEmbedding {
-        let row = AssetEmbedding(
-            assetID: assetID, modelVersion: modelVersion, contentHash: contentHash,
-            vector: AssetEmbedding.encode(vector), embeddedAt: Date())
+        let encoded = AssetEmbedding.encode(vector)
+        let embeddedAt = Date()
         return try await write { db in
             guard try Asset.exists(db, key: Self.key(assetID)) else {
                 throw AtelierError.notFound(entity: "asset", id: assetID)
             }
+            // Built INSIDE the write so the analysis marker can be read in the same
+            // serialized transaction (and because a `var` cannot cross into a sendable
+            // closure). Recording WHICH analysis this embedding accounted for (v23) is
+            // what lets an analysis landing a moment later still re-qualify the asset.
+            let row = AssetEmbedding(
+                assetID: assetID, modelVersion: modelVersion, contentHash: contentHash,
+                vector: encoded, embeddedAt: embeddedAt,
+                analysisSeq: try Self.currentAnalysisSeq(db, assetID: assetID))
             let exists = try AssetEmbedding
                 .filter(Column("asset_id") == Self.key(assetID))
                 .fetchCount(db) > 0
             if exists { try row.update(db) } else { try row.insert(db) }
             return row
         }
+    }
+
+    /// The next analysis marker: greater than any issued before. Read inside the
+    /// caller's write so it is serialized with every other analysis write.
+    private static func nextAnalysisSeq(_ db: Database) throws -> Int {
+        try Int.fetchOne(db, sql: """
+            SELECT COALESCE(MAX(analysis_seq), 0) + 1 FROM asset_analysis
+            """) ?? 1
+    }
+
+    /// The marker on `assetID`'s current analysis, or nil when it has none.
+    private static func currentAnalysisSeq(_ db: Database, assetID: UUID) throws -> Int? {
+        try Int.fetchOne(db, sql: """
+            SELECT analysis_seq FROM asset_analysis WHERE asset_id = ?
+            """, arguments: [Self.key(assetID)])
     }
 
     /// The embedding row for `assetID`, or `nil` when not yet embedded.
@@ -431,7 +458,8 @@ public final class AppServices: Sendable {
                        || COALESCE(a.note,'') || COALESCE(an.ocr_text,'')) <> ''
                   AND (e.asset_id IS NULL
                        OR e.model_version < ?
-                       OR (an.analyzed_at IS NOT NULL AND an.analyzed_at > e.embedded_at))
+                       OR (an.analysis_seq IS NOT NULL
+                           AND (e.analysis_seq IS NULL OR an.analysis_seq > e.analysis_seq)))
                 ORDER BY a.created_at DESC
                 LIMIT ?
                 """, arguments: [modelVersion, clampedLimit])
@@ -472,9 +500,17 @@ public final class AppServices: Sendable {
     /// oldest-first re-verify window so the sweep advances. No-op if absent.
     public func markEmbeddingVerified(assetID: UUID) async throws {
         try await write { db in
+            // Also adopt the current analysis marker (v23). Bumping only `embedded_at`
+            // would leave the asset re-qualifying forever once an analysis had drawn a
+            // higher number: the touch is the acknowledgement that this analysis was
+            // looked at and its text was unchanged, so it has to be recorded as such.
             try db.execute(sql: """
-                UPDATE asset_embedding SET embedded_at = ? WHERE asset_id = ?
-                """, arguments: [Date(), Self.key(assetID)])
+                UPDATE asset_embedding SET embedded_at = ?, analysis_seq = ?
+                WHERE asset_id = ?
+                """, arguments: [
+                    Date(), try Self.currentAnalysisSeq(db, assetID: assetID),
+                    Self.key(assetID),
+                ])
         }
     }
 

@@ -34,6 +34,12 @@ public struct AssetEmbedding: Sendable, Equatable, Hashable, Codable, Identifiab
     /// When this embedding was produced.
     public var embeddedAt: Date
 
+    /// The ``AssetAnalysis/analysisSeq`` this embedding accounted for (v23). Staleness
+    /// is `analysis.analysisSeq > embedding.analysisSeq` — an integer comparison, so it
+    /// cannot tie the way the old `analyzed_at > embedded_at` did. NULL means the
+    /// embedding has not accounted for any analysis yet, which is stale-making.
+    public var analysisSeq: Int?
+
     public var id: UUID { assetID }
 
     /// Explicit snake_case column/coding names (exact acronym mapping).
@@ -43,6 +49,7 @@ public struct AssetEmbedding: Sendable, Equatable, Hashable, Codable, Identifiab
         case contentHash = "content_hash"
         case vector
         case embeddedAt = "embedded_at"
+        case analysisSeq = "analysis_seq"
     }
 
     public init(
@@ -50,13 +57,15 @@ public struct AssetEmbedding: Sendable, Equatable, Hashable, Codable, Identifiab
         modelVersion: Int,
         contentHash: String,
         vector: Data,
-        embeddedAt: Date
+        embeddedAt: Date,
+        analysisSeq: Int? = nil
     ) {
         self.assetID = assetID
         self.modelVersion = modelVersion
         self.contentHash = contentHash
         self.vector = vector
         self.embeddedAt = embeddedAt
+        self.analysisSeq = analysisSeq
     }
 }
 

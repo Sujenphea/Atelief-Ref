@@ -37,7 +37,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -197,6 +197,17 @@ enum Migrator {
         // released: never edit this body.
         migrator.registerMigration("v22") { db in
             try createV22Schema(db)
+        }
+
+        // v23 — a MONOTONIC counter for "has the analysis moved since we embedded".
+        // That question was asked of wall-clock time (`analyzed_at > embedded_at`),
+        // and both columns store milliseconds, so a re-analysis landing in the same
+        // millisecond as the embedding compared EQUAL and the asset never re-qualified:
+        // new OCR text, silently absent from search, forever. Additive columns + a
+        // backfill that reproduces the old verdict exactly. SHIPPED once released:
+        // never edit this body.
+        migrator.registerMigration("v23") { db in
+            try createV23Schema(db)
         }
 
         return migrator
@@ -1249,6 +1260,68 @@ enum Migrator {
 
         try db.execute(sql: """
             ALTER TABLE asset_analysis ADD COLUMN suggest_version INTEGER;
+            """)
+    }
+
+    // MARK: - v23
+
+    /// `analysis_seq` on both `asset_analysis` and `asset_embedding` — a monotonic
+    /// stand-in for the comparison that used to be made on wall-clock time.
+    ///
+    /// `asset_analysis.analysis_seq` is bumped on every write to a value greater than
+    /// any previously issued. `asset_embedding.analysis_seq` records WHICH analysis a
+    /// given embedding accounted for. "Stale" is then
+    /// `analysis.analysis_seq > embedding.analysis_seq`, an integer comparison that
+    /// cannot tie — where `analyzed_at > embedded_at` ties whenever both land in the
+    /// same millisecond, and a tie meant NOT stale, so the re-embed was skipped and the
+    /// asset kept a search vector that no longer matched its text.
+    ///
+    /// The backfill reproduces the OLD verdict exactly, so an upgrade changes nothing
+    /// about which rows are pending:
+    ///
+    /// - every existing analysis is numbered in `analyzed_at` order (ties broken by
+    ///   `asset_id`, so the numbering is total and deterministic);
+    /// - an embedding adopts its asset's number only when the analysis was NOT newer
+    ///   than it (`analyzed_at <= embedded_at`) — i.e. exactly when the old predicate
+    ///   said "not stale". Otherwise it stays NULL and the asset re-qualifies, which is
+    ///   what the old predicate said too.
+    ///
+    /// A NULL on the analysis side means "never analyzed" and is not stale-making; a
+    /// NULL on the embedding side means "has not accounted for any analysis yet".
+    private static func createV23Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            ALTER TABLE asset_analysis ADD COLUMN analysis_seq INTEGER;
+            """)
+        try db.execute(sql: """
+            ALTER TABLE asset_embedding ADD COLUMN analysis_seq INTEGER;
+            """)
+
+        // Number the existing analyses. Correlated COUNT rather than a window
+        // function: one row per asset, and this runs once per library.
+        try db.execute(sql: """
+            UPDATE asset_analysis SET analysis_seq = (
+                SELECT COUNT(*) FROM asset_analysis older
+                WHERE older.analyzed_at < asset_analysis.analyzed_at
+                   OR (older.analyzed_at = asset_analysis.analyzed_at
+                       AND older.asset_id <= asset_analysis.asset_id)
+            );
+            """)
+
+        // An embedding that already covered its analysis carries that number; one
+        // that did not stays NULL and so re-qualifies, matching `analyzed_at >
+        // embedded_at` on the data as it stands right now.
+        try db.execute(sql: """
+            UPDATE asset_embedding SET analysis_seq = (
+                SELECT an.analysis_seq FROM asset_analysis an
+                WHERE an.asset_id = asset_embedding.asset_id
+                  AND an.analyzed_at <= asset_embedding.embedded_at
+            );
+            """)
+
+        // The backfill query filters on it, and it is read per candidate row.
+        try db.execute(sql: """
+            CREATE INDEX index_asset_analysis_on_analysis_seq
+                ON asset_analysis(analysis_seq);
             """)
     }
 }
