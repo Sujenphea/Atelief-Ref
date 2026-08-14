@@ -163,7 +163,13 @@ and not without a decision recorded separately.
 
 ## Follow-on docs
 
-- `092-ios-companion-design` — the inbox record format, the App Group layout, the
-  extension↔host handoff, and the tier-1/tier-2 capture contract.
-- `093-ios-companion-plan` — implementation slices against the sizing table.
+- [092-ios-companion-plan](092-ios-companion-plan.md) — the build order, S0–S6.
+  The separately-planned `design` doc was folded into it: the two contracts that
+  needed designing (the shared capture DTO, the inbox record) are each half a page
+  and belong beside the slice that builds them.
 - A Safari-extension research doc, only after open question 1 is answered.
+
+**Settled since this doc was written.** Open question 2 (which collection a share
+lands in) is answered in 092 · S3: `Collection.unsortedID`, the same default the
+capture endpoint already uses — no new Inbox-collection concept, and nothing about
+the collection tree crosses the process boundary.
