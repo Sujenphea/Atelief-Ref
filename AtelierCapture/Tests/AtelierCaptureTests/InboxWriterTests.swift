@@ -157,6 +157,35 @@ struct InboxWriterTests {
         }
     }
 
+    // MARK: - Re-committing a record in place (092 · S3)
+
+    @Test("a rewrite replaces the record, keeps the payload, and stages nothing")
+    func rewriteReplacesInPlace() throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+        let writer = InboxWriter(libraryRoot: root)
+        let id = UUID()
+        let bytes = CaptureFixtures.png()
+
+        var record = try writer.write(
+            .sample(), payload: bytes, id: id, capturedAt: Self.capturedAt)
+
+        // The drain's one write: an attempt count, and nothing else (092 · S3).
+        record.attempts = 2
+        try writer.rewrite(record)
+
+        #expect(try readRecord(at: layout.recordURL(for: id)) == record)
+        // The capture itself is untouched — only the counter beside it moved.
+        #expect(try Data(contentsOf: layout.payloadURL(for: id)) == bytes)
+        // Exactly one record, not a second one alongside the old.
+        #expect(try layout.pendingRecordURLs().count == 1)
+        // Same staging discipline as a first write: a torn re-commit would turn a
+        // retryable failure into a record the drain reads as corrupt.
+        let staged = try FileManager.default.contentsOfDirectory(
+            at: layout.staging, includingPropertiesForKeys: nil)
+        #expect(staged.isEmpty)
+    }
+
     @Test("a payload that fails to land leaves no record behind")
     func aFailedPayloadNeverProducesARecord() throws {
         let root = try makeRoot()

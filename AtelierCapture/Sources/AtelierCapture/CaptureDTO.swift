@@ -129,9 +129,14 @@ public struct DecodedCapture: Equatable, Sendable {
     public let sourceID: String?
 }
 
-/// A validated **video** capture: its provenance (from the header) + target
-/// collection. The bytes are NOT here — they were streamed to a temp file whose
-/// URL the route pairs with this (``CaptureRoutes/handleIngestVideo``).
+/// A validated capture whose BYTES ARE ELSEWHERE — everything but the media
+/// itself, for a producer that hands the pipeline a file URL.
+///
+/// Named for the video route that needed it first (``CaptureRoutes/handleIngestVideo``
+/// streams the body to a temp file and pairs its URL with this), but the shape is
+/// about transport, not media type: 092 · S3's inbox drain has exactly the same
+/// problem — the bytes are already a `.bin` sidecar on disk — and reuses it rather
+/// than declaring a fourth near-identical struct.
 public struct DecodedVideoCapture: Equatable, Sendable {
     public let provenance: SourceDraft
     public let collectionID: UUID?
@@ -172,6 +177,29 @@ public enum DecodedInput: Equatable, Sendable {
     case image(DecodedCapture)
     case content(DecodedContentCapture)
     case contentWithImage(DecodedContentImageCapture)
+}
+
+/// What a capture decoded to when its BYTES ARE A FILE the caller already holds
+/// (092 · S3) — the inbox drain's shape, and the reason it is a separate result
+/// type rather than a flag on ``DecodedInput``.
+///
+/// ``DecodedInput`` carries `Data` in two of its three cases, because the HTTP
+/// producer's bytes arrive base64 inside the JSON. The inbox producer's bytes are
+/// already a `.bin` sidecar next to the record, and reading them into memory to
+/// hand them to a pipeline that will write them back out is the one mistake the
+/// whole handoff design exists to avoid — so this enum carries the SAME validated
+/// provenance / target / ledger tags with no bytes in it at all, and the caller
+/// pairs each case with the file URL it already has.
+///
+/// The routing is identical to ``CaptureDecoder/decodeInput(_:now:)``: a
+/// media-less `kind` is a content capture (here always WITH a card image, since
+/// there is a file), anything else is byte-backed.
+public enum DecodedFileInput: Equatable, Sendable {
+    /// A byte-backed capture — the file IS the asset.
+    case bytes(DecodedVideoCapture)
+    /// A media-less capture that also carries a card image (003 · C3, Option 3),
+    /// where the card image is the file.
+    case contentWithFile(DecodedContentCapture)
 }
 
 /// Why a raw capture body could not be turned into a `DecodedCapture`. Each maps
@@ -227,23 +255,70 @@ public enum CaptureDecoder {
     /// the single content authority; this only rejects what is structurally
     /// unusable (unknown kind, no payload, malformed image base64).
     public static func decodeInput(body: Data, now: Date) throws -> DecodedInput {
-        let request = try decodeRequest(body)
-        if let rawKind = request.kind {
-            guard let kind = AssetKind(rawValue: rawKind) else {
-                throw CaptureDecodeError.unknownKind(rawKind)
+        try decodeInput(decodeRequest(body), now: now)
+    }
+
+    /// The same funnel over a request that has ALREADY been decoded from JSON
+    /// (092 · S3).
+    ///
+    /// The inbox producer's capture arrives as a `CaptureRequest` nested inside an
+    /// `InboxRecord`, not as a loose body — so the body-taking entry point above is
+    /// now *decode the JSON, then run this*, and the two producers share every line
+    /// of validation and routing that follows. Re-encoding a record's request back
+    /// to JSON just to re-parse it would be the alternative, and a funnel that can
+    /// only be entered through a serializer is a funnel with a second copy waiting
+    /// to be written.
+    public static func decodeInput(_ request: CaptureRequest, now: Date) throws -> DecodedInput {
+        if let kind = try mediaLessKind(request.kind) {
+            // A media-less kind carrying image bytes → the hybrid card-image
+            // path (Option 3); otherwise a pure text-card content item.
+            if request.image != nil {
+                return .contentWithImage(
+                    try decodeContentWithImage(request, kind: kind, now: now))
             }
-            if !kind.isByteBacked {
-                // A media-less kind carrying image bytes → the hybrid card-image
-                // path (Option 3); otherwise a pure text-card content item.
-                if request.image != nil {
-                    return .contentWithImage(
-                        try decodeContentWithImage(request, kind: kind, now: now))
-                }
-                return .content(try decodeContent(request, kind: kind, now: now))
-            }
-            // A byte kind (image/video) still needs its bytes — image path.
+            return .content(try decodeContent(request, kind: kind, now: now))
         }
         return .image(try decodeImage(request, now: now))
+    }
+
+    /// The funnel for a capture whose bytes are a FILE the caller already holds —
+    /// the inbox drain (092 · S3).
+    ///
+    /// Same kind validation, same provenance validation, same routing as
+    /// ``decodeInput(_:now:)``; the only difference is that nothing here looks at
+    /// the base64 `image` field, because on this path the bytes never were a
+    /// string. The caller pairs the result with its file URL.
+    ///
+    /// Note what is NOT rejected: a byte-backed capture is valid by virtue of the
+    /// file existing, which the caller established before asking (the record is the
+    /// commit marker — see `InboxLayout.isComplete(_:)`), so there is no
+    /// `.emptyImage` case to reach.
+    public static func decodeFileInput(
+        _ request: CaptureRequest, now: Date
+    ) throws -> DecodedFileInput {
+        if let kind = try mediaLessKind(request.kind) {
+            return .contentWithFile(try decodeContent(request, kind: kind, now: now))
+        }
+        return .bytes(
+            DecodedVideoCapture(
+                provenance: try makeSourceDraft(request.provenance, now: now),
+                collectionID: request.collectionId,
+                jobID: request.jobId,
+                sourceID: request.sourceId))
+    }
+
+    /// Validate a raw `kind` and answer *is this a media-less capture* — the one
+    /// routing decision both funnels above make, spelled once.
+    ///
+    /// `nil` means "take the byte path": either no `kind` at all, or a byte kind
+    /// (`image` / `video`), which still needs its bytes from wherever they live. An
+    /// unrecognized string is structurally unusable and throws.
+    private static func mediaLessKind(_ rawKind: String?) throws -> AssetKind? {
+        guard let rawKind else { return nil }
+        guard let kind = AssetKind(rawValue: rawKind) else {
+            throw CaptureDecodeError.unknownKind(rawKind)
+        }
+        return kind.isByteBacked ? nil : kind
     }
 
     /// Turn a raw JSON request body into a validated ``DecodedCapture`` (the

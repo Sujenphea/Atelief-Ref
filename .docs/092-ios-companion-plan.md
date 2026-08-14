@@ -277,6 +277,59 @@ a scratch library — the whole path is provable before an iOS target exists.
 
 **~4 days.**
 
+> **As built** (2026-08-14, changelog
+> [396](../.change-log/396-the-drain-owns-nothing.md)) — shipped, with three
+> departures from the wording above and one shape this section did not specify:
+>
+> 1. **`InboxDrain` exposes a single pass, not a running thing.**
+>    `drainOnce() async -> DrainSummary` — no timer, no `DispatchSource`, no
+>    `start()`/`stop()`, no state between calls. The caller owns cadence, so S4 can
+>    drive it at launch, on foreground, or from a watcher without this package having
+>    an opinion; and every test is deterministic with nothing to wait on. The summary
+>    is `Equatable` and counts the four terminal fates of a record (ingested /
+>    skipped-incomplete / quarantined / retrying), so a pass is asserted as a value
+>    rather than reconstructed from side effects.
+> 2. **"Run it on macOS first" happened in tests, not in the app. No app-target
+>    changes at all.** This section said to wire the drain into the Mac app behind the
+>    `-library-root` override; that moves to **S4**. There is no producer until the
+>    share extension exists, so the call site's only possible input would be a
+>    directory nothing writes to — dead code, plus a UI-refresh hook with nothing to
+>    refresh from. The path is proven instead by a fixture inbox written with the real
+>    `InboxWriter` draining into a real migrated library through the real coordinator,
+>    under `swift test`. `IngestionModel.swift` was read as the model for the
+>    coordinator seam and left untouched; `project.pbxproj` again needed no change.
+> 3. **A malformed `payloadFile` quarantines on the first pass, `attempts`
+>    untouched.** The three-attempt budget is for transient failures — disk, decode,
+>    coordinator pressure. A name `InboxLayout.payloadURL(named:)` refuses is
+>    malformed and will never become valid, so retrying it is waste. The same applies,
+>    forced rather than chosen, to a `.json` that will not decode: there is nowhere to
+>    stamp an attempt on a record that will not parse, and an atomically-moved record
+>    is whole or absent, so undecodable means malformed rather than early.
+>
+> Also settled here: the target collection is `collectionId ?? Collection.unsortedID`
+> as specified, closing 091's open question 2; deletion after a successful ingest
+> removes the **record first** (a payload with no record is a leak nothing enumerates,
+> while a record whose payload is gone is permanently incomplete and would be skipped
+> forever); and the attempt stamp re-commits through a new `InboxWriter.rewrite(_:)`
+> sharing the writer's phase 2, rather than a second commit path in `AtelierIngestion`.
+> `inbox/failed/` is a plain subdirectory, not a dot-directory — a quarantined capture
+> is meant to be found — and both it and `.staging/` are now *tested* as invisible to
+> `pendingRecordURLs()` rather than assumed to be.
+>
+> Two seams were added to `CaptureDecoder` so the second producer reuses the funnel
+> instead of re-deriving it: `decodeInput(_ request:now:)` (the body-taking entry point
+> is now *decode, then this*; a funnel reachable only through a deserializer would grow
+> a second copy) and `decodeFileInput(_:now:)` → `DecodedFileInput`, the same routing
+> for a capture whose bytes are a file, reusing `DecodedVideoCapture` /
+> `DecodedContentCapture` rather than declaring a fourth near-identical struct.
+> `DirectInputReader` gained `remoteFile` and `remoteContentWithFile`.
+>
+> Verification: `AtelierIngestion` 445 tests in 47 suites → 461 in 48; `AtelierCapture`
+> 38 in 2 → 43 in 2; `AtelierServer` 62 in 6 unchanged; app `xcodebuild build`
+> succeeds. The changed `AtelierCapture` sources were type-checked against the iPhoneOS
+> SDK again (`swiftc -typecheck -target arm64-apple-ios26.0 -swift-version 6`, contract
+> stubbed), including `replaceItemAt`.
+
 ## S4 — the iOS app target + share extension
 
 The first slice that needs provisioning and a simulator.
@@ -341,6 +394,46 @@ Deliberately not a sync service — 091 · D4.
 **~1–1.5 weeks.**
 
 ---
+
+## Where this stands (2026-08-14)
+
+**S0–S3 are done** — [389](../.change-log/389-one-contract-two-producers.md),
+[394](../.change-log/394-only-the-base-differs.md),
+[395](../.change-log/395-the-record-is-the-commit-marker.md),
+[396](../.change-log/396-the-drain-owns-nothing.md). That is the whole
+no-provisioning run: the capture contract has one funnel and two producers, the
+library root has an App Group seam, the extension's write and the host's drain both
+exist, and the capture-to-library path is provable end to end under `swift test` on
+macOS with no iOS target and no device.
+
+What S4 inherits, all of it recorded rather than discovered later:
+
+- **The platform-pin blocker, with its first symptom already reproduced.**
+  `swift build --triple arm64-apple-ios26.0` fails with *"`AtelierCore` requires ios
+  12.0, but depends on `GRDB` which requires ios 13.0"* — no package declares an
+  `.iOS(...)` platform, so they all default to iOS 12. Risk 4's audit is the first
+  thing to do in S4, and deliberately was not pulled forward: adding platform lines to
+  satisfy a verification step would have meant doing the audit without an iOS target
+  to compile against. Everything shipped so far was type-checked against the iPhoneOS
+  SDK directly as the stopgap.
+- **A measurement, not an assertion, for the extension's footprint.** 395 corrected
+  389: GRDB is on the extension's link line transitively through `AtelierCore` and no
+  reachable change removes it. The gate is profiling actual dirty memory against the
+  ~120 MB ceiling with a large share; the invariant that still holds is behavioural —
+  the extension opens no database and decodes no image.
+- **The App Group entitlement paperwork is now overdue.** Gate 1 says start it when S1
+  lands. S1 landed, and S1 built only the read side: the Info.plist key
+  `AtelierAppGroupIdentifier`, the `$(ATELIER_APP_GROUP)` per-configuration build
+  setting, and the entitlement that actually grants the container are all S4's, and
+  the profiles cannot be regenerated in an afternoon.
+- **No `project.pbxproj` change has been needed yet** — four slices, zero
+  package-graph surgery in Xcode, because path dependencies resolved transitively each
+  time. S4 is where that stops: two new targets is a project-file change however it is
+  approached.
+- **Two app-side seams were deliberately deferred into S4** rather than shipped
+  without callers: wiring `InboxDrain.drainOnce()` into the app behind the
+  `-library-root` override, and giving it the equivalent of `CaptureRoutes`'
+  `onCapture` hook so a drained share refreshes the live UI.
 
 ## Gates and risks
 

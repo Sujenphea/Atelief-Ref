@@ -48,6 +48,14 @@ public struct InboxLayout: Sendable {
     /// rename, not a copy) and skipped by ``pendingRecordURLs()``.
     public static let stagingDirectoryName = ".staging"
 
+    /// Where the drain puts a capture it has stopped retrying (092 · S3). A plain
+    /// subdirectory rather than a dot-directory: `.staging/` hides because an
+    /// in-flight write must be invisible, but a quarantined capture is something a
+    /// human is meant to find. It is skipped by ``pendingRecordURLs()`` for a
+    /// different reason — the enumeration takes only top-level `*.json`, and a
+    /// directory has no extension.
+    public static let failedDirectoryName = "failed"
+
     /// The record's extension. The drain's enumeration filter, so it is a constant.
     public static let recordExtension = "json"
 
@@ -77,6 +85,13 @@ public struct InboxLayout: Sendable {
     public var staging: URL {
         directory.appendingPathComponent(
             InboxLayout.stagingDirectoryName, isDirectory: true)
+    }
+
+    /// `<inbox>/failed/` — where 092 · S3 quarantines a capture that has failed its
+    /// three attempts, or that is malformed in a way no retry can fix.
+    public var failed: URL {
+        directory.appendingPathComponent(
+            InboxLayout.failedDirectoryName, isDirectory: true)
     }
 
     /// `<uuid>.json` — the record's file name.
@@ -124,10 +139,24 @@ public struct InboxLayout: Sendable {
     /// treat it as a failure, not as a not-yet-complete write, since no amount of
     /// waiting will make it resolve.
     public func payloadURL(named name: String) -> URL? {
-        guard !name.isEmpty, name != ".", name != "..",
-            !name.contains("/"), !name.contains("\\")
-        else { return nil }
+        guard InboxLayout.isPlainComponent(name) else { return nil }
         return directory.appendingPathComponent(name, isDirectory: false)
+    }
+
+    /// The quarantined location of a file currently sitting in the inbox, under the
+    /// same guard as ``payloadURL(named:)`` — a name too dangerous to read from is
+    /// equally too dangerous to move.
+    public func failedURL(named name: String) -> URL? {
+        guard InboxLayout.isPlainComponent(name) else { return nil }
+        return failed.appendingPathComponent(name, isDirectory: false)
+    }
+
+    /// Whether a file name written by another process may be appended to a
+    /// directory URL at all: one plain component, nothing relative, no separator.
+    /// The single authority both `named:` resolvers ask, so they cannot drift.
+    private static func isPlainComponent(_ name: String) -> Bool {
+        !name.isEmpty && name != "." && name != ".."
+            && !name.contains("/") && !name.contains("\\")
     }
 
     /// The payload a record refers to, or `nil` for a media-less record (and for a
@@ -142,7 +171,9 @@ public struct InboxLayout: Sendable {
     /// Every committed record in the inbox, oldest-name-first, and nothing else.
     ///
     /// Touches the filesystem. The top level only, `*.json` only — which is what makes
-    /// `.staging/` invisible and therefore what makes the two-phase write safe. An
+    /// `.staging/` invisible and therefore what makes the two-phase write safe, and
+    /// what keeps ``failed/`` out too: both are directories, and a directory has no
+    /// `json` extension, so neither they nor anything under them can be returned. An
     /// absent inbox is an empty inbox, not an error: nothing has ever been shared.
     public func pendingRecordURLs() throws -> [URL] {
         let fileManager = FileManager.default

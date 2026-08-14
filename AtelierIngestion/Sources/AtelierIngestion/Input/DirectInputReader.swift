@@ -145,6 +145,22 @@ public enum DirectInputReader {
     public static func remoteVideo(
         fileURL: URL, provenance: SourceDraft, into collectionID: UUID
     ) -> IngestInput {
+        remoteFile(fileURL: fileURL, provenance: provenance, into: collectionID)
+    }
+
+    /// A REMOTE capture whose bytes are ALREADY A FILE — the inbox drain
+    /// (092 · S3), and, under its older name, the streamed video upload above.
+    ///
+    /// The distinction the two names draw is media type, and media type is not what
+    /// this factory decides: the pipeline sniffs the bytes and classifies the asset
+    /// itself. What it decides is that the bytes stay on disk. The share extension
+    /// wrote them to a `.bin` sidecar precisely so no process would hold them in
+    /// memory; reading them into a `Data` here to build a `.data` source would undo
+    /// that at the last step, for a pipeline that is only going to write them back
+    /// out to a blob.
+    public static func remoteFile(
+        fileURL: URL, provenance: SourceDraft, into collectionID: UUID
+    ) -> IngestInput {
         IngestInput(
             source: .fileURL(fileURL),
             provenance: provenance,
@@ -178,6 +194,26 @@ public enum DirectInputReader {
         IngestInput(
             content: draft,
             image: .data(imageData),
+            provenance: provenance,
+            collectionID: collectionID)
+    }
+
+    /// The same hybrid content-plus-card-image shape as
+    /// ``remoteContentWithImage(draft:imageData:provenance:into:)``, but with the
+    /// card image ALREADY A FILE — a tweet shared from the phone, whose picture the
+    /// share extension wrote to the inbox sidecar (092 · S3).
+    ///
+    /// Separate from its sibling rather than sharing it, because the difference is
+    /// the whole point: the two factories differ only in which ``ByteSource`` they
+    /// hand over, and that choice is the one thing the inbox path must not get
+    /// wrong.
+    public static func remoteContentWithFile(
+        draft: AssetContentDraft, fileURL: URL,
+        provenance: SourceDraft, into collectionID: UUID
+    ) -> IngestInput {
+        IngestInput(
+            content: draft,
+            image: .fileURL(fileURL),
             provenance: provenance,
             collectionID: collectionID)
     }

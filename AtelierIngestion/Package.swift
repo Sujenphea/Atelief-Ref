@@ -45,7 +45,14 @@ let package = Package(
         .testTarget(
             name: "AtelierIngestionTests",
             dependencies: [
-                "AtelierIngestion"
+                "AtelierIngestion",
+                // The inbox drain's tests (092 · S3) build fixture inboxes with the
+                // real `InboxWriter` — the producer half of the handoff — rather than
+                // hand-rolling the on-disk shape, which would let the two sides of a
+                // contract drift while both suites stayed green. The fixtures come
+                // from the shared test-only product for the same reason (092 · S0).
+                .product(name: "AtelierCapture", package: "AtelierCapture"),
+                .product(name: "AtelierCaptureTestSupport", package: "AtelierCapture"),
             ]
         )
     ],

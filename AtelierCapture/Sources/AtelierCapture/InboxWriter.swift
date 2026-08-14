@@ -135,26 +135,68 @@ public struct InboxWriter: Sendable {
         // Phase 2 — the record, which is the commit marker. Anything that fails from
         // here on takes the payload back down with it, so the inbox is never left
         // holding bytes that will never be claimed.
+        do {
+            try commitRecord(record, replacingExisting: false)
+        } catch {
+            discardPayload(for: record)
+            throw error
+        }
+
+        return record
+    }
+
+    /// Re-commit a record that is ALREADY in the inbox, replacing it in place —
+    /// the drain stamping ``InboxRecord/attempts`` after a transient failure
+    /// (092 · S3).
+    ///
+    /// It exists so the drain does not grow a second, subtly different writer. A
+    /// record rewritten in place is exactly the torn-write hazard the two phases
+    /// above were built for: a drain that crashed between `open` and the last byte
+    /// of a re-encoded record would leave truncated JSON where a valid capture had
+    /// been, turning a retryable failure into a lost share. So this stages and moves
+    /// like everything else here, and the payload is not touched — the capture is
+    /// still perfectly good, it is only the counter beside it that changed.
+    public func rewrite(_ record: InboxRecord) throws {
+        try commitRecord(record, replacingExisting: true)
+    }
+
+    /// Encode a record, stage it, and move it into place — phase 2, shared by the
+    /// first write and by a rewrite so the two cannot diverge.
+    ///
+    /// `replacingExisting` picks the commit call rather than the discipline: a fresh
+    /// write moves onto empty space, while a rewrite has a file sitting at the
+    /// destination by definition and `moveItem` refuses that, so it goes through
+    /// `replaceItemAt`. Both are a rename within one volume; neither can leave a
+    /// half-written record where a whole one was.
+    private func commitRecord(_ record: InboxRecord, replacingExisting: Bool) throws {
+        let fileManager = FileManager.default
+        do {
+            try fileManager.createDirectory(
+                at: layout.staging, withIntermediateDirectories: true)
+        } catch {
+            throw InboxWriteError.inboxUnavailable(path: layout.directory.path)
+        }
+
         let encoded: Data
         do {
             encoded = try InboxRecord.makeEncoder().encode(record)
         } catch {
-            discardPayload(for: record)
-            throw InboxWriteError.recordEncodingFailed(id: id)
+            throw InboxWriteError.recordEncodingFailed(id: record.id)
         }
 
-        let staged = layout.stagedRecordURL(for: id)
-        let destination = layout.recordURL(for: id)
+        let staged = layout.stagedRecordURL(for: record.id)
+        let destination = layout.recordURL(for: record.id)
         do {
             try encoded.write(to: staged, options: .atomic)
-            try fileManager.moveItem(at: staged, to: destination)
+            if replacingExisting {
+                _ = try fileManager.replaceItemAt(destination, withItemAt: staged)
+            } else {
+                try fileManager.moveItem(at: staged, to: destination)
+            }
         } catch {
             try? fileManager.removeItem(at: staged)
-            discardPayload(for: record)
             throw InboxWriteError.recordWriteFailed(path: destination.path)
         }
-
-        return record
     }
 
     /// Drop the base64 `image` when the same bytes just went to a file.

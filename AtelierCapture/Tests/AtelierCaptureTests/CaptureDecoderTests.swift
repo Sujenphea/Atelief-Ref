@@ -323,4 +323,76 @@ struct CaptureDecoderTests {
             try CaptureDecoder.decodeInput(body: request.jsonData(), now: Self.now)
         }
     }
+
+    // MARK: - The already-decoded + file-backed entry points (092 · S3)
+
+    @Test("decoding a request directly gives the same result as decoding its body")
+    func requestOverloadMatchesTheBodyEntryPoint() throws {
+        // The inbox drain enters the funnel here, holding a `CaptureRequest` it
+        // never serialized. If the two entry points could disagree, the two
+        // producers would be back to two decoders — which is what 092 · S0 undid.
+        for request in [
+            CaptureRequest.sample(collectionId: Self.collectionID),
+            CaptureRequest.sampleContent(kind: "link", collectionId: Self.collectionID),
+        ] {
+            let viaBody = try CaptureDecoder.decodeInput(body: request.jsonData(), now: Self.now)
+            let viaValue = try CaptureDecoder.decodeInput(request, now: Self.now)
+            #expect(viaBody == viaValue)
+        }
+    }
+
+    @Test("decodeFileInput routes an absent or byte kind → .bytes, with no image needed")
+    func fileInputRoutesBytes() throws {
+        // The record's bytes are a sidecar, so `image` is nil — the very shape the
+        // base64 path rejects as `.emptyImage`. This entry point must not ask.
+        let request = CaptureRequest(
+            provenance: ProvenanceDTO(platform: "twitter", originalURL: "https://x.com/a/status/7"),
+            collectionId: Self.collectionID)
+        guard case .bytes(let decoded) = try CaptureDecoder.decodeFileInput(request, now: Self.now)
+        else {
+            Issue.record("expected .bytes")
+            return
+        }
+        #expect(decoded.provenance.platform == .twitter)
+        #expect(decoded.provenance.capturedAt == Self.now)
+        #expect(decoded.collectionID == Self.collectionID)
+    }
+
+    @Test("decodeFileInput routes a media-less kind → .contentWithFile carrying the draft")
+    func fileInputRoutesContent() throws {
+        let request = CaptureRequest(
+            provenance: ProvenanceDTO(platform: "twitter", originalURL: "https://x.com/a/status/9"),
+            kind: "tweet",
+            payload: AssetPayload(tweet: TweetPayload(tweetID: "9", text: "hi")))
+        guard case .contentWithFile(let decoded) = try CaptureDecoder.decodeFileInput(
+            request, now: Self.now)
+        else {
+            Issue.record("expected .contentWithFile")
+            return
+        }
+        #expect(decoded.draft.kind == .tweet)
+        #expect(decoded.draft.payload.tweet?.tweetID == "9")
+        #expect(decoded.collectionID == nil)
+    }
+
+    @Test("decodeFileInput rejects the same malformed captures the base64 path does")
+    func fileInputSharesTheRejections() {
+        let unknownKind = CaptureRequest(
+            provenance: ProvenanceDTO(platform: "web", originalURL: "https://e.com"),
+            kind: "sticker", payload: AssetPayload())
+        #expect(throws: CaptureDecodeError.unknownKind("sticker")) {
+            try CaptureDecoder.decodeFileInput(unknownKind, now: Self.now)
+        }
+
+        let noPayload = CaptureRequest(
+            provenance: ProvenanceDTO(platform: "local_paste"), kind: "color")
+        #expect(throws: CaptureDecodeError.missingContentPayload) {
+            try CaptureDecoder.decodeFileInput(noPayload, now: Self.now)
+        }
+
+        let badPlatform = CaptureRequest(provenance: ProvenanceDTO(platform: "myspace"))
+        #expect(throws: CaptureDecodeError.unknownPlatform("myspace")) {
+            try CaptureDecoder.decodeFileInput(badPlatform, now: Self.now)
+        }
+    }
 }
