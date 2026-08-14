@@ -2,6 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!--
+	  092 · S1 (decision 2) — the App Group whose container holds the Library, read by
+	  `LibraryLocation.appGroupIdentifier()`. Fed by the same $(ATELIER_APP_GROUP)
+	  build setting as `AtelierRefsShare.entitlements`, so the identifier this process
+	  ASKS for and the identifier it is GRANTED cannot disagree.
+	  The host app carries the identical key in its own (generated) Info.plist. That
+	  is not redundancy: `Bundle.main` inside an app extension is the extension's own
+	  bundle — an extension gets no reading of its container app's plist — so this
+	  copy is the only one this process can see (092 · S4b, changelog 398).
+	-->
+	<key>AtelierAppGroupIdentifier</key>
+	<string>$(ATELIER_APP_GROUP)</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>

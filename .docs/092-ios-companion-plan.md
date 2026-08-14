@@ -475,6 +475,56 @@ can review.
 > was. Nothing links a Swift package into either target yet either — that is the next
 > slice, and it is the seam the bullets below describe.
 
+> **As built — S4b-i, the App Group wiring** (2026-08-14, changelog
+> [401](../.change-log/401-one-variable-eight-places.md)). S4b is split in two, and
+> this is the first half: the seam resolves on iOS, and the extension's behaviour is
+> S4b-ii. The user added App Groups through Signing & Capabilities — the half that
+> registers the group against the App ID — and everything from the literal identifier
+> onward is this slice.
+>
+> 1. **One variable, eight places.** `ATELIER_APP_GROUP` is a user-defined build
+>    setting defined four times (two targets × two configurations) per decision 1's
+>    values, and read by four consumers per configuration: both `.entitlements` files
+>    and both Info.plists, none of which contains a literal identifier. The entitlement
+>    is what the system *grants*; the plist key is what the process *asks for*. A build
+>    where they disagree compiles, signs and launches, and then hands the app and its
+>    extension different containers — feeding both from one variable is the only
+>    arrangement in which that cannot happen.
+> 2. **`INFOPLIST_KEY_<arbitrary>` does not reach a generated plist.**
+>    `INFOPLIST_KEY_AtelierAppGroupIdentifier` on `AtelierRefsMobile` was accepted with
+>    no warning and dropped from the built Info.plist. The setting covers only keys
+>    Xcode knows. The target now has a real `AtelierRefsMobile/Info.plist` carrying that
+>    one key, with `GENERATE_INFOPLIST_FILE` still `YES` so the generated keys merge
+>    over it — the arrangement the macOS app and `AtelierRefsShare` were already using —
+>    plus a `PBXFileSystemSynchronizedBuildFileExceptionSet` so the file is not also
+>    copied in as a resource. Verified by reading the key back out of the built product,
+>    which is the only check that distinguishes this from a green build.
+> 3. **`AtelierCapture` is on both iOS link lines**, the first package linked into
+>    either target: a sixth `XCLocalSwiftPackageReference`, a product dependency and a
+>    frameworks build file per target. `AtelierCore` and GRDB come transitively.
+>    `AtelierIngestion`, `AtelierServer`, `AtelierExport` and `CanvasRenderer` are not
+>    linked and do not build for iOS.
+> 4. **`ContentView.swift` is a temporary diagnostic**, not UI — it resolves
+>    `defaultRoot()` and shows the path or the typed error, marked as such in its first
+>    line. [093](093-ios-visual-design.md) replaces the file in S5.
+>
+> Verification: macOS `build` and `build-for-testing` both succeed; iOS builds succeed
+> on Debug *and* Release, which is the point of the split; the whole package matrix is
+> unchanged at AtelierCore 760/105 · CanvasRenderer 437/52 · AtelierExport 84/7 ·
+> AtelierIngestion 447/47 · AtelierCapture 57/3 · AtelierServer 62/6. All eight
+> extracted identifiers agree — `group.sujenphea.AtelierRefs.dev` in the app plist, the
+> appex plist and both entitlements on Debug, `group.sujenphea.AtelierRefs` in all four
+> on Release. Launched on a simulator the app prints a real shared-container path and
+> `ref-atelier/` exists under it afterwards, so S1's `#if os(iOS)` branch has now
+> executed rather than merely compiled.
+>
+> **What S4b-ii still owns:** everything below this note except the first bullet — the
+> extension's actual capture behaviour (tiers 1 and 2, the platform mapping,
+> `InboxWriter` on the extension's side), the footprint measurement against the ~120 MB
+> ceiling, the share-sheet UI per [093](093-ios-visual-design.md), and the two app-side
+> seams S3 deferred (`InboxDrain.drainOnce()` behind the `-library-root` override and
+> its `onCapture` equivalent).
+
 - **`LibraryLocation` is reachable from iOS — done, not pending.** The seam moved to
   `AtelierCapture/Sources/AtelierCapture/LibraryLocation.swift` on 2026-08-14
   (changelog [398](../.change-log/398-a-seam-ios-could-not-reach.md), amendment under
@@ -562,6 +612,13 @@ capture-to-library path is provable end to end under `swift test` on macOS with 
 iOS target and no device — and the two packages the extension links now compile for
 iOS 26 and are held there by CI.
 
+**S4b-i is done too** ([401](../.change-log/401-one-variable-eight-places.md)) — the
+targets exist, both are in the App Group, both link `AtelierCapture`, and
+`LibraryLocation.defaultRoot()` resolves a real shared container on a simulator. The
+seam S1 built for iOS has now run on iOS. **S4b-ii is the open slice**: the extension's
+capture behaviour, the footprint measurement, the share-sheet UI from
+[093](093-ios-visual-design.md), and the two app-side seams S3 deferred.
+
 What S4b inherits, all of it recorded rather than discovered later:
 
 - **The platform-pin blocker is gone, and it was only a declaration.** `.iOS("26.0")`
@@ -581,19 +638,24 @@ What S4b inherits, all of it recorded rather than discovered later:
   reachable change removes it. The gate is profiling actual dirty memory against the
   ~120 MB ceiling with a large share; the invariant that still holds is behavioural —
   the extension opens no database and decodes no image.
-- **The App Group entitlement paperwork is now overdue.** Gate 1 says start it when S1
-  lands. S1 landed, and S1 built only the read side: the Info.plist key
-  `AtelierAppGroupIdentifier`, the `$(ATELIER_APP_GROUP)` per-configuration build
-  setting, and the entitlement that actually grants the container are all S4b's, and
-  the profiles cannot be regenerated in an afternoon.
+- **The App Group entitlement paperwork is closed** ([401](../.change-log/401-one-variable-eight-places.md)).
+  Gate 1 is discharged: the capability is registered against the App ID, both targets
+  carry an entitlements file, and the write side S1 deferred — the
+  `$(ATELIER_APP_GROUP)` per-configuration build setting and the
+  `AtelierAppGroupIdentifier` key in *both* plists — is wired and read back out of the
+  built products on both configurations. The trap it cost: `INFOPLIST_KEY_<arbitrary>`
+  is silently dropped from a generated Info.plist, so a green build proves nothing here
+  and `AtelierRefsMobile` needed a real plist file.
 - **The `project.pbxproj` streak is over, and it ended badly** — five slices plus the
   S4a correction went by with no diff at all, because path dependencies resolved
   transitively every time and the link line never moved. S4b stopped it, as predicted.
   What was not predicted is who held the pen: Xcode's target sheet produced a separate
   `AtelierRefsMobile.xcodeproj` on three attempts, so the reconciliation into one
   four-target project was written by hand by the agent
-  ([400](../.change-log/400-the-pen-changed-hands.md), amendment under S4b). Still
-  zero package-graph surgery — no package is linked into either iOS target yet.
+  ([400](../.change-log/400-the-pen-changed-hands.md), amendment under S4b). The
+  package graph moved next: S4b-i put `AtelierCapture` on both iOS link lines as the
+  project's sixth local package reference, so the pbxproj is now a file this work
+  touches routinely rather than one it has never opened.
 - **Two app-side seams were deliberately deferred into S4b** rather than shipped
   without callers: wiring `InboxDrain.drainOnce()` into the app behind the
   `-library-root` override, and giving it the equivalent of `CaptureRoutes`'
@@ -601,10 +663,11 @@ What S4b inherits, all of it recorded rather than discovered later:
 
 ## Gates and risks
 
-1. **App Group entitlement provisioning** blocks S4b, not S0–S4a. The Developer ID
-   account already exists (052 · A3 / Sparkle), but the App ID needs the App Group
-   capability added and profiles regenerated. Start this paperwork when S1 lands,
-   not when S4b starts.
+1. ~~**App Group entitlement provisioning**~~ **Discharged in S4b-i**
+   ([401](../.change-log/401-one-variable-eight-places.md)). The capability is
+   registered against the App ID, both iOS targets carry an entitlements file fed by
+   `$(ATELIER_APP_GROUP)`, and the container resolves on a simulator on both
+   configurations. It blocked S4b, not S0–S4a, and it no longer blocks anything.
 2. **Extension memory ceiling is not contractual.** ~120 MB is observed, not
    documented. S2's design (write bytes, decode nothing) is what makes the number
    irrelevant; do not let a "small optimization" pull decoding back into the

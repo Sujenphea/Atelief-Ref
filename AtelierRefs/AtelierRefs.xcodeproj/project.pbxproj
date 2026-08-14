@@ -7,13 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B1000000000000000000000D /* AtelierRefsShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 99205373302EE7DC00992742 /* AtelierRefsShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		CA0000000000000000000003 /* CanvasRenderer in Frameworks */ = {isa = PBXBuildFile; productRef = CA0000000000000000000002 /* CanvasRenderer */; };
 		DA0000000000000000000003 /* AtelierCore in Frameworks */ = {isa = PBXBuildFile; productRef = DA0000000000000000000002 /* AtelierCore */; };
 		EA0000000000000000000003 /* AtelierIngestion in Frameworks */ = {isa = PBXBuildFile; productRef = EA0000000000000000000002 /* AtelierIngestion */; };
 		FA0000000000000000000003 /* AtelierServer in Frameworks */ = {isa = PBXBuildFile; productRef = FA0000000000000000000002 /* AtelierServer */; };
 		GA0000000000000000000003 /* AtelierExport in Frameworks */ = {isa = PBXBuildFile; productRef = GA0000000000000000000002 /* AtelierExport */; };
 		HA0000000000000000000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = HA0000000000000000000002 /* Sparkle */; };
-		B1000000000000000000000D /* AtelierRefsShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 99205373302EE7DC00992742 /* AtelierRefsShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		IA0000000000000000000003 /* AtelierCapture in Frameworks */ = {isa = PBXBuildFile; productRef = IA0000000000000000000002 /* AtelierCapture */; };
+		IA0000000000000000000005 /* AtelierCapture in Frameworks */ = {isa = PBXBuildFile; productRef = IA0000000000000000000004 /* AtelierCapture */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -63,6 +65,13 @@
 			);
 			target = 99205372302EE7DC00992742 /* AtelierRefsShare */;
 		};
+		IA0000000000000000000006 /* Exceptions for "AtelierRefsMobile" folder in "AtelierRefsMobile" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = B10000000000000000000003 /* AtelierRefsMobile */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -86,6 +95,9 @@
 		};
 		B10000000000000000000002 /* AtelierRefsMobile */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				IA0000000000000000000006 /* Exceptions for "AtelierRefsMobile" folder in "AtelierRefsMobile" target */,
+			);
 			path = AtelierRefsMobile;
 			sourceTree = "<group>";
 		};
@@ -116,6 +128,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				IA0000000000000000000005 /* AtelierCapture in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -123,6 +136,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				IA0000000000000000000003 /* AtelierCapture in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -223,6 +237,7 @@
 			);
 			name = AtelierRefsShare;
 			packageProductDependencies = (
+				IA0000000000000000000004 /* AtelierCapture */,
 			);
 			productName = AtelierRefsShare;
 			productReference = 99205373302EE7DC00992742 /* AtelierRefsShare.appex */;
@@ -247,6 +262,7 @@
 			);
 			name = AtelierRefsMobile;
 			packageProductDependencies = (
+				IA0000000000000000000002 /* AtelierCapture */,
 			);
 			productName = AtelierRefsMobile;
 			productReference = B10000000000000000000001 /* AtelierRefsMobile.app */;
@@ -293,6 +309,7 @@
 				FA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierServer" */,
 				GA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierExport" */,
 				HA0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				IA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierCapture" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9907786F2FF364EF00718815 /* Products */;
@@ -621,6 +638,8 @@
 		9920537B302EE7DD00992742 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ATELIER_APP_GROUP = group.sujenphea.AtelierRefs.dev;
+				CODE_SIGN_ENTITLEMENTS = AtelierRefsShare/AtelierRefsShare.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = L25247V6JG;
@@ -651,6 +670,8 @@
 		9920537C302EE7DD00992742 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ATELIER_APP_GROUP = group.sujenphea.AtelierRefs;
+				CODE_SIGN_ENTITLEMENTS = AtelierRefsShare/AtelierRefsShare.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = L25247V6JG;
@@ -684,11 +705,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ATELIER_APP_GROUP = group.sujenphea.AtelierRefs.dev;
+				CODE_SIGN_ENTITLEMENTS = AtelierRefsMobile/AtelierRefsMobile.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = L25247V6JG;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AtelierRefsMobile/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -717,11 +741,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ATELIER_APP_GROUP = group.sujenphea.AtelierRefs;
+				CODE_SIGN_ENTITLEMENTS = AtelierRefsMobile/AtelierRefsMobile.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = L25247V6JG;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AtelierRefsMobile/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -817,6 +844,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../AtelierExport;
 		};
+		IA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierCapture" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierCapture;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -855,6 +886,14 @@
 			isa = XCSwiftPackageProductDependency;
 			package = HA0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		IA0000000000000000000002 /* AtelierCapture */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierCapture;
+		};
+		IA0000000000000000000004 /* AtelierCapture */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierCapture;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

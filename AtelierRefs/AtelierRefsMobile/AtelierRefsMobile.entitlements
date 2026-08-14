@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  092 · S1 (decision 1) — the App Group container that holds the Library, shared
+	  with `AtelierRefsShare`. $(ATELIER_APP_GROUP) is a per-configuration user-defined
+	  build setting: Debug `group.sujenphea.AtelierRefs.dev`, Release
+	  `group.sujenphea.AtelierRefs`, mirroring the bundle-ID split. One identifier
+	  across both would put a dev build and a release build into the SAME library.
+	  The same variable feeds `AtelierAppGroupIdentifier` in this target's Info.plist,
+	  which is what `LibraryLocation.defaultRoot()` reads — the entitlement grants the
+	  container and the plist names it, so they must be fed from one place or they
+	  drift. A drift is `appGroupContainerUnavailable`, loudly, by design.
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(ATELIER_APP_GROUP)</string>
+	</array>
+</dict>
+</plist>
