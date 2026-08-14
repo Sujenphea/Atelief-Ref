@@ -1,14 +1,17 @@
 name: CI
 
 # 010 · Phase 1 — compile + test gate on every push / PR. Runs the six Swift
-# package suites, the extension's node tests + drift check, and an xcodebuild
+# package suites, an iOS cross-build of the two packages the share extension
+# links, the extension's node tests + drift check, and an xcodebuild
 # build-and-test of the app target (the SwiftUI layer isn't SPM-tested, so the
 # build is its compile-proof and AtelierRefsTests carries its unit coverage).
 #
 # Toolchain: the app targets macOS 26 / Xcode 26 (deployment target 26.5), so the
-# app job needs a runner with that SDK. Swift packages + the extension build on any
+# app job needs a runner with that SDK. The `ios-packages` job needs the same
+# Xcode for its iPhoneOS 26 SDK. Swift packages + the extension build on any
 # recent macOS runner. If GitHub-hosted images don't yet ship Xcode 26, point the
-# `app` job at a self-hosted macOS 26 runner (change `runs-on`).
+# `app` and `ios-packages` jobs at a self-hosted macOS 26 runner (change
+# `runs-on`).
 
 on:
   push:
@@ -33,6 +36,38 @@ jobs:
       - name: Test ${{ matrix.package }}
         working-directory: ${{ matrix.package }}
         run: swift test --parallel
+
+  ios-packages:
+    name: iOS packages (swift build, arm64-apple-ios26.0)
+    # 092 · S4a. Build-only, and only the two packages the iOS share extension
+    # links. There is no `swift test` row because SwiftPM cannot run a test
+    # bundle without a simulator host; the compile IS the gate, and it is the one
+    # that catches a macOS-only API sneaking into AtelierCore — the packages have
+    # none today, and this job is what keeps that true.
+    #
+    # The other four packages are host-side by design and deliberately declare no
+    # `.iOS(...)` platform: AtelierIngestion imports AppKit (NSPasteboard, in
+    # Input/DirectInputReader.swift), and AtelierServer / CanvasRenderer /
+    # AtelierExport are things the phone never does. Porting any of them is a
+    # separately-costed decision, not a CI row.
+    #
+    # `--sdk` is not optional: `--triple` alone leaves SwiftPM on the host's macOS
+    # SDK and every target fails with "unable to load standard library".
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [AtelierCore, AtelierCapture]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: swift --version && xcrun --sdk iphoneos --show-sdk-path
+      - name: Build ${{ matrix.package }} for iOS
+        working-directory: ${{ matrix.package }}
+        run: |
+          swift build \
+            --triple arm64-apple-ios26.0 \
+            --sdk "$(xcrun --sdk iphoneos --show-sdk-path)"
 
   extension:
     name: Extension (node --test + drift check)

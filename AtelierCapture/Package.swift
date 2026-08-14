@@ -29,7 +29,11 @@ import PackageDescription
 let package = Package(
     name: "AtelierCapture",
     platforms: [
-        .macOS("26.0")
+        .macOS("26.0"),
+        // 092 · S4a. Matches AtelierCore's floor — see the note there. This is
+        // the package the share extension links directly, so the pin is what
+        // makes an iOS build of the handoff possible at all.
+        .iOS("26.0")
     ],
     products: [
         .library(name: "AtelierCapture", targets: ["AtelierCapture"]),

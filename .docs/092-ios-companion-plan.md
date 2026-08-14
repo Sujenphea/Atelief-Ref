@@ -16,7 +16,9 @@
 **S0–S3 are pure Swift that lands on the Mac app and needs no iOS target, no
 device, and no provisioning.** They are testable with `swift test` under the
 existing CI matrix, and each one improves the macOS build on its own terms. Only
-S4 onward needs an Apple Developer provisioning change and a simulator.
+S4b onward needs an Apple Developer provisioning change and a simulator — S4a,
+split out of S4 once it was clear the package audit had none of those needs, is
+pure Swift too.
 
 So the plan front-loads everything that can be verified today, and reaches the
 "needs an iOS target" cliff with the contract already proven. If the companion is
@@ -330,12 +332,86 @@ a scratch library — the whole path is provable before an iOS target exists.
 > SDK again (`swiftc -typecheck -target arm64-apple-ios26.0 -swift-version 6`, contract
 > stubbed), including `replaceItemAt`.
 
-## S4 — the iOS app target + share extension
+## S4 — split into S4a and S4b
+
+S4 as written above bundled two jobs with nothing in common: making the *packages*
+compile for iOS, and creating the *Xcode targets* that link them. The first is pure
+Swift, needs no provisioning, no simulator and no project-file change, and gates the
+second completely — nothing can link `AtelierCapture` on iOS until `AtelierCapture`
+builds on iOS. The second is where the entitlements, the plists and two hand-made
+targets live.
+
+They are split so the package audit could land on its own terms, the way S0–S3 did,
+and so the provisioning work is not blocked on an unknown-size port.
+
+### S4a — the package-level iOS audit
+
+Discharge risk 4: declare the iOS floor on the two packages the share extension
+links, cross-build them, and guard or port whatever the compiler rejects. Scope is
+`AtelierCore` + `AtelierCapture` **only** — `AtelierIngestion` imports AppKit
+(`NSPasteboard` in `Input/DirectInputReader.swift`) and is host-side by design;
+`AtelierServer`, `CanvasRenderer` and `AtelierExport` are things the phone never
+does. Porting any of them is a later, separately-costed decision, not a side effect
+of this slice.
+
+**~1 day.**
+
+> **As built** (2026-08-14, changelog
+> [397](../.change-log/397-nothing-to-guard.md)) — shipped, and it was two lines.
+>
+> 1. **The blocker was purely declarative.** With `.iOS("26.0")` added beside the
+>    existing `.macOS("26.0")` in both manifests, `AtelierCore` (218 compile tasks,
+>    GRDB included) and `AtelierCapture` both build clean for
+>    `arm64-apple-ios26.0` with **zero source changes, zero `#if os(macOS)` guards
+>    and zero `@available` annotations**. The public surface is byte-identical on
+>    both platforms, so S5 inherits no divergence.
+> 2. **The floor is 26.0, mirroring macOS**, not derived downward from the APIs
+>    used. Both packages ship inside the companion app and its extension, built
+>    from the same sources by the same toolchain; a lower floor would only buy
+>    `@available` guards for versions nothing installs.
+> 3. **`--triple` alone is not enough.** The command this doc recorded,
+>    `swift build --triple arm64-apple-ios26.0`, gets past dependency resolution
+>    and then fails every target with *"unable to load standard library for target
+>    arm64-apple-ios13.0"* — SwiftPM stays on the host's macOS SDK. The working
+>    invocation adds `--sdk "$(xcrun --sdk iphoneos --show-sdk-path)"`, and that
+>    is what CI runs. (The `ios13.0` in the message is GRDB compiling at its own
+>    declared minimum; it is not a constraint on us.)
+> 4. **One thing S4b will hit immediately, discovered here:** `LibraryLocation`
+>    — the App Group seam S1 built *for iOS* — lives in `AtelierIngestion`, which
+>    does not build for iOS. The extension therefore cannot yet call
+>    `defaultRoot()` to find the library root it is supposed to write into. See
+>    S4b's first bullet.
+>
+> Verification: both iOS builds succeed and emit genuine iOS objects
+> (`LC_BUILD_VERSION` platform 2, minos 26.0, sdk 26.5); the entire macOS matrix
+> is unchanged at AtelierCore 760/105 · CanvasRenderer 437/52 · AtelierExport 84/7
+> · AtelierIngestion 461/48 · AtelierCapture 43/2 · AtelierServer 62/6 · 524 node
+> tests + drift check; app `xcodebuild build` succeeds. No `project.pbxproj`
+> change, for the fifth slice running.
+
+### S4b — the iOS app target + share extension
 
 The first slice that needs provisioning and a simulator.
 
-- New `AtelierRefsMobile` app target + `AtelierRefsShare` share-extension target in
-  the existing `AtelierRefs.xcodeproj`, both in the App Group.
+**Division of labour, decided by the user:** the two Xcode targets are created **by
+hand, by the user, in Xcode** — a new `AtelierRefsMobile` app target and an
+`AtelierRefsShare` share-extension target in the existing `AtelierRefs.xcodeproj`,
+both in the App Group. Everything else is written by the agent: all sources, the
+Info.plist keys (including S1's `AtelierAppGroupIdentifier` = `$(ATELIER_APP_GROUP)`
+on both targets), the entitlements files, and the `ATELIER_APP_GROUP`
+per-configuration build setting (Debug `group.sujenphea.AtelierRefs.dev`, Release
+`group.sujenphea.AtelierRefs`, per S1 · decision 1). A hand-made target avoids the
+one thing five slices have so far avoided: a generated `project.pbxproj` diff nobody
+can review.
+
+- **`LibraryLocation` must become reachable from iOS first.** It is in
+  `AtelierIngestion` (`Media/LibraryLocation.swift`), which cannot build for iOS
+  because `Input/DirectInputReader.swift` imports AppKit — so S1's App Group branch,
+  though written and type-checked, has no iOS caller. The cheapest fix is to move
+  the location seam into `AtelierCapture` (transport-free, already iOS, already
+  linked by the extension, and already the home of `InboxLayout` for exactly this
+  reason — S2 · decision 1), with `AtelierIngestion` re-exporting or delegating.
+  Decide this before writing extension code, not during.
 - Extension links `AtelierCapture` + the S2 writer **only** — not `AtelierIngestion`,
   and nothing that opens a database. It does link `AtelierCore`, and therefore GRDB:
   `AtelierCapture` needs `SourceDraft` / `Platform` / `AssetContentDraft`, and
@@ -348,11 +424,6 @@ The first slice that needs provisioning and a simulator.
   is about dirty memory and linked code pages are not dirty. Removing GRDB from the
   link line would mean splitting the domain types out of `AtelierCore`, which is a
   much larger refactor than the number justifies.
-- **Platform pins block the iOS build before anything else does.** `swift build
-  --triple arm64-apple-ios26.0` on `AtelierCapture` fails today with *"`AtelierCore`
-  requires ios 12.0, but depends on `GRDB` which requires ios 13.0"* — none of the
-  packages declare an `.iOS(...)` platform, so they default to iOS 12. That is the
-  deployment-target audit in risk 4, and it is the first thing to do in this slice.
 - Tier 1 (share from a native app): `NSExtensionItem` yields a URL →
   `CaptureRequest(kind: "link", …)`, and the host resolves og-tags at drain time
   via the existing `PageResolver` (cookie-less by design,
@@ -368,6 +439,9 @@ The first slice that needs provisioning and a simulator.
   touches the migrator, every filter, and the archive contract. `clipboard` /
   `localPaste` / `localDrag` are the existing exceptions and they are not a
   precedent worth extending for this.
+- Plus the two app-side seams S3 deferred: wiring `InboxDrain.drainOnce()` into the
+  Mac app behind the `-library-root` override, and giving it the equivalent of
+  `CaptureRoutes`' `onCapture` hook so a drained share refreshes the live UI.
 
 **~2 weeks.**
 
@@ -397,25 +471,29 @@ Deliberately not a sync service — 091 · D4.
 
 ## Where this stands (2026-08-14)
 
-**S0–S3 are done** — [389](../.change-log/389-one-contract-two-producers.md),
+**S0–S3 and S4a are done** — [389](../.change-log/389-one-contract-two-producers.md),
 [394](../.change-log/394-only-the-base-differs.md),
 [395](../.change-log/395-the-record-is-the-commit-marker.md),
-[396](../.change-log/396-the-drain-owns-nothing.md). That is the whole
-no-provisioning run: the capture contract has one funnel and two producers, the
-library root has an App Group seam, the extension's write and the host's drain both
-exist, and the capture-to-library path is provable end to end under `swift test` on
-macOS with no iOS target and no device.
+[396](../.change-log/396-the-drain-owns-nothing.md),
+[397](../.change-log/397-nothing-to-guard.md). That is the whole no-provisioning
+run: the capture contract has one funnel and two producers, the library root has an
+App Group seam, the extension's write and the host's drain both exist, the
+capture-to-library path is provable end to end under `swift test` on macOS with no
+iOS target and no device — and the two packages the extension links now compile for
+iOS 26 and are held there by CI.
 
-What S4 inherits, all of it recorded rather than discovered later:
+What S4b inherits, all of it recorded rather than discovered later:
 
-- **The platform-pin blocker, with its first symptom already reproduced.**
-  `swift build --triple arm64-apple-ios26.0` fails with *"`AtelierCore` requires ios
-  12.0, but depends on `GRDB` which requires ios 13.0"* — no package declares an
-  `.iOS(...)` platform, so they all default to iOS 12. Risk 4's audit is the first
-  thing to do in S4, and deliberately was not pulled forward: adding platform lines to
-  satisfy a verification step would have meant doing the audit without an iOS target
-  to compile against. Everything shipped so far was type-checked against the iPhoneOS
-  SDK directly as the stopgap.
+- **The platform-pin blocker is gone, and it was only a declaration.** `.iOS("26.0")`
+  on `AtelierCore` and `AtelierCapture` was the entire fix: no guards, no ports, no
+  `@available`, no public-surface divergence between platforms. The real invocation
+  is `swift build --triple arm64-apple-ios26.0 --sdk "$(xcrun --sdk iphoneos
+  --show-sdk-path)"` — `--triple` alone leaves SwiftPM on the host macOS SDK — and it
+  runs in CI as the `ios-packages` job so the cleanliness cannot silently regress.
+- **S1's App Group seam has no iOS caller yet.** `LibraryLocation` lives in
+  `AtelierIngestion`, which imports AppKit and does not build for iOS. Moving the
+  location seam into `AtelierCapture` is S4b's first task; it is a small move, but it
+  is on the critical path for the extension knowing where to write.
 - **A measurement, not an assertion, for the extension's footprint.** 395 corrected
   389: GRDB is on the extension's link line transitively through `AtelierCore` and no
   reachable change removes it. The gate is profiling actual dirty memory against the
@@ -424,23 +502,23 @@ What S4 inherits, all of it recorded rather than discovered later:
 - **The App Group entitlement paperwork is now overdue.** Gate 1 says start it when S1
   lands. S1 landed, and S1 built only the read side: the Info.plist key
   `AtelierAppGroupIdentifier`, the `$(ATELIER_APP_GROUP)` per-configuration build
-  setting, and the entitlement that actually grants the container are all S4's, and
+  setting, and the entitlement that actually grants the container are all S4b's, and
   the profiles cannot be regenerated in an afternoon.
-- **No `project.pbxproj` change has been needed yet** — four slices, zero
+- **No `project.pbxproj` change has been needed yet** — five slices, zero
   package-graph surgery in Xcode, because path dependencies resolved transitively each
-  time. S4 is where that stops: two new targets is a project-file change however it is
-  approached.
-- **Two app-side seams were deliberately deferred into S4** rather than shipped
+  time. S4b is where that stops, and the user is making the two targets by hand rather
+  than letting a tool generate a diff nobody can review.
+- **Two app-side seams were deliberately deferred into S4b** rather than shipped
   without callers: wiring `InboxDrain.drainOnce()` into the app behind the
   `-library-root` override, and giving it the equivalent of `CaptureRoutes`'
   `onCapture` hook so a drained share refreshes the live UI.
 
 ## Gates and risks
 
-1. **App Group entitlement provisioning** blocks S4, not S0–S3. The Developer ID
+1. **App Group entitlement provisioning** blocks S4b, not S0–S4a. The Developer ID
    account already exists (052 · A3 / Sparkle), but the App ID needs the App Group
    capability added and profiles regenerated. Start this paperwork when S1 lands,
-   not when S4 starts.
+   not when S4b starts.
 2. **Extension memory ceiling is not contractual.** ~120 MB is observed, not
    documented. S2's design (write bytes, decode nothing) is what makes the number
    irrelevant; do not let a "small optimization" pull decoding back into the
@@ -448,9 +526,14 @@ What S4 inherits, all of it recorded rather than discovered later:
 3. **091 open question 1 — MAIN-world content scripts in iOS Safari — is not on
    this path.** It gates the tier-3 Safari Web Extension only. S0–S6 do not depend
    on the answer, which is why the plan does not wait for it.
-4. **Deployment target.** The packages pin `.macOS("26.0")`; the iOS floor must be
-   audited from the APIs actually used, not assumed. Do it during S4, when there
-   is something to compile.
+4. ~~**Deployment target.**~~ **Discharged in S4a**
+   ([397](../.change-log/397-nothing-to-guard.md)). `AtelierCore` and
+   `AtelierCapture` pin `.iOS("26.0")` beside `.macOS("26.0")` and cross-build
+   clean with no guards and no API divergence; the `ios-packages` CI job holds it.
+   The floor was set to match macOS rather than derived from the APIs used — both
+   packages only ever ship inside a macOS 26 / iOS 26 app, so a lower floor buys
+   `@available` guards for versions nothing installs. The other four packages
+   still declare macOS only, on purpose.
 
 ## Test strategy
 
@@ -463,17 +546,20 @@ file is not a precedent). Per slice:
 | S1 | override-branch parity on both platforms; a macOS root that is byte-identical to today's |
 | S2 | writer matrix incl. partial write / missing payload / unreadable bytes |
 | S3 | drain over a fixture inbox into a scratch library: dedup on retry, quarantine after 3, `.fileURL` not `.data` |
-| S4 | first slice with XCUITest surface; keep it to a share-sheet smoke test |
+| S4a | `swift build --triple arm64-apple-ios26.0 --sdk …` on both packages, in CI |
+| S4b | first slice with XCUITest surface; keep it to a share-sheet smoke test |
 
-CI: add `AtelierCapture` to the package matrix (`ci.yml:28`); add an iOS
-simulator build job at S4.
+CI: `AtelierCapture` is in the package matrix (`ci.yml`), and the `ios-packages`
+job cross-builds `AtelierCore` + `AtelierCapture` for `arm64-apple-ios26.0`. It is
+build-only — a test bundle needs a simulator host, so the compile is the gate. An
+iOS simulator *test* job arrives with S4b's XCUITest.
 
 ## Sizing
 
 | | |
 |---|---:|
-| S0–S3 (no iOS target, lands on the Mac) | **~2 weeks** |
-| S4–S6 (needs provisioning + simulator) | **~5–6 weeks** |
+| S0–S4a (no iOS target, lands on the Mac) | **~2 weeks** |
+| S4b–S6 (needs provisioning + simulator) | **~5–6 weeks** |
 | **Total to v1 companion** | **7–8 weeks** |
 
 Slightly above 091's 5–7 week estimate: S0 was not costed there, and it is the
