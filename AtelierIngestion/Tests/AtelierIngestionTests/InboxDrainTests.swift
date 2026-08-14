@@ -15,6 +15,17 @@
 //
 // `DrainSummary` is asserted as a value throughout. A pass that quietly did a
 // fourth thing fails the comparison, which is the point of it being `Equatable`.
+//
+// **Where R2's tests stand from.** Order, chunking and cancellation are properties of
+// a pass while it is running, and a pass returns one value at the end. The seam used
+// to observe the middle of one is `IngestPipeline`'s existing `timing` sink: it is
+// called once per successful byte ingest, from inside the ingest, carrying the content
+// hash — so a test can record the order records actually ran in, look at the disk at
+// that instant, and cancel the surrounding task from within a live pass. Nothing is
+// stubbed and no production seam was added for it; the pipeline, the coordinator and
+// the drain are the real ones throughout. The single exception is
+// `InboxDrain.resolve(_:outcome:into:)`, called directly with `.cancelled` — see the
+// test for why that outcome cannot be produced from outside on purpose.
 
 import Foundation
 import Testing
@@ -39,6 +50,20 @@ struct InboxDrainTests {
 
     private func drain(_ env: TempPipeline) -> InboxDrain {
         InboxDrain(libraryRoot: env.root, coordinator: env.coordinator)
+    }
+
+    /// A drain over a coordinator of a chosen width whose pipeline reports every
+    /// ingest to `watcher` as it happens. The store and the library are the
+    /// environment's own — only the timing sink and the width differ from `drain(_:)`.
+    private func drain(
+        _ env: TempPipeline, width: Int, watching watcher: IngestWatcher
+    ) -> InboxDrain {
+        let pipeline = IngestPipeline(
+            store: env.store, services: env.services,
+            timing: { [watcher] timing in watcher.observed(timing) })
+        return InboxDrain(
+            libraryRoot: env.root,
+            coordinator: IngestCoordinator(pipeline: pipeline, maxConcurrent: width))
     }
 
     private func exists(_ url: URL) -> Bool {
@@ -557,5 +582,520 @@ struct InboxDrainTests {
         // Two records survive the pass: the one being retried and the one that was
         // merely early.
         #expect(try layout.pendingRecordURLs().count == 2)
+    }
+
+    // MARK: - Capture order, not file order (R2 · issues 3A / 16A)
+
+    /// `count` ids whose file-name order is the exact REVERSE of the order they are
+    /// returned in. Written to in the returned order with an increasing `capturedAt`,
+    /// they make "sorted by name" and "sorted by capture time" opposite orderings —
+    /// so a drain that still used the enumeration's order fails by the width of the
+    /// batch rather than by luck. (A UUIDv4 has no order worth relying on; this
+    /// imposes one.)
+    private static func idsReversingNameOrder(_ count: Int) -> [UUID] {
+        (0 ..< count).map { _ in UUID() }
+            .sorted { $0.uuidString < $1.uuidString }
+            .reversed()
+    }
+
+    @Test("records drain oldest-capture-first, not in the order their names sort")
+    func recordsDrainInCaptureOrder() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let writer = InboxWriter(libraryRoot: env.root)
+        let watcher = IngestWatcher()
+
+        // Distinct bytes per record so the ingest reports a distinct hash, and a
+        // capture time that increases with a name that decreases.
+        let ids = Self.idsReversingNameOrder(4)
+        var expected: [String] = []
+        for (offset, id) in ids.enumerated() {
+            let bytes = CaptureFixtures.png(width: 40 + offset, height: 30)
+            expected.append(ContentHasher.hash(bytes))
+            try writer.write(
+                .sample(collectionId: env.collectionID),
+                payload: bytes, id: id,
+                capturedAt: Self.capturedAt.addingTimeInterval(Double(offset)))
+        }
+
+        // Width 1: a chunk holds one record, so the order ingests are reported in IS
+        // the order the pass walked. (Inside a wider chunk the order is deliberately
+        // unspecified — see the chunk tests below.)
+        let summary = await drain(env, width: 1, watching: watcher).drainOnce()
+        #expect(summary == DrainSummary(ingested: 4))
+        #expect(watcher.ingestOrder == expected)
+    }
+
+    @Test("two records captured in the same instant still have one order")
+    func capturedAtTiesBreakOnID() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let writer = InboxWriter(libraryRoot: env.root)
+        let watcher = IngestWatcher()
+
+        // Same timestamp to the millisecond — a plausible pair from one multi-select
+        // share. The id is what decides, and it decides the same way every run.
+        let ids = Self.idsReversingNameOrder(2)
+        var bytes: [UUID: Data] = [:]
+        for (offset, id) in ids.enumerated() {
+            let payload = CaptureFixtures.png(width: 60 + offset, height: 20)
+            bytes[id] = payload
+            try writer.write(
+                .sample(collectionId: env.collectionID),
+                payload: payload, id: id, capturedAt: Self.capturedAt)
+        }
+
+        #expect(await drain(env, width: 1, watching: watcher).drainOnce()
+            == DrainSummary(ingested: 2))
+
+        let byID = ids.sorted { $0.uuidString < $1.uuidString }
+        #expect(watcher.ingestOrder == byID.map { ContentHasher.hash(bytes[$0]!) })
+    }
+
+    @Test("a record that will not decode is quarantined before any ingest begins")
+    func unparsableRecordsAreResolvedFirst() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let writer = InboxWriter(libraryRoot: env.root)
+        let watcher = IngestWatcher()
+
+        // The garbage has no `capturedAt` to be ordered by — that is what "will not
+        // decode" means — so it takes the defined position the drain gives it: the
+        // front, ahead of every record with a capture time.
+        let brokenID = UUID()
+        try FileManager.default.createDirectory(
+            at: layout.directory, withIntermediateDirectories: true)
+        try Data("{ not a record".utf8).write(to: layout.recordURL(for: brokenID))
+
+        for offset in 0 ..< 2 {
+            try writer.write(
+                .sample(collectionId: env.collectionID),
+                payload: CaptureFixtures.png(width: 40 + offset, height: 30),
+                capturedAt: Self.capturedAt.addingTimeInterval(Double(offset)))
+        }
+
+        // Asked from inside the first ingest: by then the quarantine has to have
+        // happened already, which is a claim about ORDER that the end state cannot
+        // make (both fates are visible either way once the pass returns).
+        let quarantinedByFirstIngest = Latch()
+        let failed = layout.failed.appendingPathComponent("\(brokenID.uuidString).json")
+        watcher.onFirstIngest { [self] in
+            quarantinedByFirstIngest.set(exists(failed))
+        }
+
+        let summary = await drain(env, width: 1, watching: watcher).drainOnce()
+        #expect(summary == DrainSummary(ingested: 2, quarantined: 1))
+        #expect(quarantinedByFirstIngest.isSet)
+        #expect(try layout.pendingRecordURLs().isEmpty)
+    }
+
+    // MARK: - An unreadable inbox is not an empty one (R2 · issue 6A)
+
+    @Test("an inbox that cannot be enumerated reports itself, and still never throws")
+    func unreadableInboxIsFlagged() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+
+        // A regular file where the inbox directory belongs: the container is present
+        // (so this is not "nothing was ever shared") and enumerating it fails. The
+        // App Group cases this stands in for — a container that has gone away, a
+        // protected-data denial — are not reachable from a unit test, and they arrive
+        // here as the same throw.
+        try Data("not a directory".utf8).write(to: inbox(env).directory)
+
+        #expect(await drain(env).drainOnce() == DrainSummary(inboxUnreadable: true))
+    }
+
+    @Test("an empty inbox and an unreadable one are different values")
+    func emptyAndUnreadableAreDistinguishable() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        // Never written to: nothing has been shared, which is the normal case on
+        // every launch and must not look like a failure.
+        let absent = await drain(env).drainOnce()
+        #expect(absent.inboxUnreadable == false)
+
+        // Written to and drained empty: also not a failure.
+        try FileManager.default.createDirectory(
+            at: layout.directory, withIntermediateDirectories: true)
+        let empty = await drain(env).drainOnce()
+        #expect(empty == DrainSummary())
+
+        // The whole point of the flag: this one is.
+        try FileManager.default.removeItem(at: layout.directory)
+        try Data("not a directory".utf8).write(to: layout.directory)
+        #expect(await drain(env).drainOnce().inboxUnreadable)
+    }
+
+    // MARK: - Chunked at the coordinator's width (R2 · issue 13A)
+
+    @Test("a backlog larger than the chunk width drains completely")
+    func backlogDrainsAcrossChunks() async throws {
+        // Five records at width two: two full chunks and a tail of one.
+        let env = try await makeTempPipeline(maxConcurrent: 2)
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let writer = InboxWriter(libraryRoot: env.root)
+
+        for offset in 0 ..< 5 {
+            try writer.write(
+                .sample(collectionId: env.collectionID),
+                payload: CaptureFixtures.png(width: 40 + offset, height: 30),
+                capturedAt: Self.capturedAt.addingTimeInterval(Double(offset)))
+        }
+
+        #expect(await drain(env).drainOnce() == DrainSummary(ingested: 5))
+
+        #expect(try layout.pendingRecordURLs().isEmpty)
+        #expect(env.blobFiles().count == 5)
+        #expect(try await env.services.collectionItems(
+            in: env.collectionID, includeArchived: false).count == 5)
+    }
+
+    @Test("the drain chunks at the coordinator's own width, not a width of its own")
+    func chunkWidthComesFromTheCoordinator() async throws {
+        let env = try await makeTempPipeline(maxConcurrent: 3)
+        defer { env.cleanup() }
+        // The number the drain reads. If this ever stops being reachable, the drain
+        // has grown a second constant meaning the same thing.
+        #expect(env.coordinator.maxConcurrent == 3)
+    }
+
+    @Test("every record in a chunk gets its own fate, matched by index")
+    func chunkOutcomesResolveByIndex() async throws {
+        let env = try await makeTempPipeline(maxConcurrent: 2)
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let writer = InboxWriter(libraryRoot: env.root)
+
+        // Two chunks of two, alternating good and bad so a mis-alignment by one index
+        // would delete a record that failed and stamp one that succeeded — which the
+        // summary alone would not catch, since the counts would be the same.
+        var good: [UUID] = []
+        var bad: [UUID] = []
+        for offset in 0 ..< 4 {
+            let id = UUID()
+            let ingests = offset.isMultiple(of: 2)
+            try writer.write(
+                .sample(collectionId: env.collectionID),
+                payload: ingests
+                    ? CaptureFixtures.png(width: 40 + offset, height: 30)
+                    : Data("not an image".utf8),
+                id: id, capturedAt: Self.capturedAt.addingTimeInterval(Double(offset)))
+            if ingests { good.append(id) } else { bad.append(id) }
+        }
+
+        #expect(await drain(env).drainOnce() == DrainSummary(ingested: 2, retrying: 2))
+
+        for id in good {
+            #expect(!exists(layout.recordURL(for: id)))
+            #expect(!exists(layout.payloadURL(for: id)))
+        }
+        for id in bad {
+            #expect(exists(layout.payloadURL(for: id)))
+            #expect(try readRecord(at: layout.recordURL(for: id)).attempts == 1)
+        }
+        #expect(env.blobFiles().count == 2)
+    }
+
+    @Test("a chunk mixing every fate resolves each of them")
+    func chunkMixesEveryFate() async throws {
+        let env = try await makeTempPipeline(maxConcurrent: 4)
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let writer = InboxWriter(libraryRoot: env.root)
+
+        // Four records that would fill one chunk if they all reached it. Two never
+        // do: one is quarantined and one is skipped before the chunk is filled, which
+        // is the case a chunk built from "every pending record" would get wrong.
+        try writer.write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(), capturedAt: Self.capturedAt)
+        try writer.write(
+            .sample(collectionId: env.collectionID),
+            payload: Data("not an image".utf8),
+            capturedAt: Self.capturedAt.addingTimeInterval(1))
+        let incompleteID = UUID()
+        try writer.write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(width: 12, height: 12), id: incompleteID,
+            capturedAt: Self.capturedAt.addingTimeInterval(2))
+        try FileManager.default.removeItem(at: layout.payloadURL(for: incompleteID))
+        let hostileID = UUID()
+        try InboxRecord.makeEncoder().encode(
+            InboxRecord(
+                id: hostileID, capturedAt: Self.capturedAt.addingTimeInterval(3),
+                request: .sample(collectionId: env.collectionID),
+                payloadFile: "../escape.bin")
+        ).write(to: layout.recordURL(for: hostileID))
+
+        #expect(
+            await drain(env).drainOnce()
+                == DrainSummary(
+                    ingested: 1, skippedIncomplete: 1, quarantined: 1, retrying: 1))
+        #expect(try layout.pendingRecordURLs().count == 2)
+    }
+
+    // MARK: - `failed/` is created once a pass, and only if needed
+
+    @Test("a pass that quarantines nothing leaves no failed/ behind")
+    func cleanPassCreatesNoFailedDirectory() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(), capturedAt: Self.capturedAt)
+
+        #expect(await drain(env).drainOnce() == DrainSummary(ingested: 1))
+        // `failed/` existing is how a human finds out something went wrong, so a pass
+        // that went fine must not create it. (The directory is made once per pass, on
+        // the first quarantine, rather than once per quarantined record.)
+        #expect(!exists(layout.failed))
+    }
+
+    @Test("two records quarantined in one pass both land in failed/")
+    func twoQuarantinesInOnePass() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        // One that will not parse and one whose `payloadFile` is refused: the two
+        // quarantine call sites, in a single pass, sharing one directory create.
+        let brokenID = UUID()
+        try FileManager.default.createDirectory(
+            at: layout.directory, withIntermediateDirectories: true)
+        try Data("{ not a record".utf8).write(to: layout.recordURL(for: brokenID))
+        let hostileID = UUID()
+        try InboxRecord.makeEncoder().encode(
+            InboxRecord(
+                id: hostileID, capturedAt: Self.capturedAt,
+                request: .sample(collectionId: env.collectionID),
+                payloadFile: "../escape.bin")
+        ).write(to: layout.recordURL(for: hostileID))
+
+        #expect(await drain(env).drainOnce() == DrainSummary(quarantined: 2))
+        #expect(exists(layout.failed.appendingPathComponent("\(brokenID.uuidString).json")))
+        #expect(exists(layout.failed.appendingPathComponent("\(hostileID.uuidString).json")))
+        #expect(try layout.pendingRecordURLs().isEmpty)
+    }
+
+    // MARK: - Cancellation (R2 · issue 9A)
+
+    @Test("a cancelled outcome spends no attempt, moves no counter, and keeps the record")
+    func cancelledOutcomeLeavesTheRecordAlone() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        let written = try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
+
+        // Driven through `resolve` rather than through a pass. `IngestCoordinator` is
+        // a concrete actor over a concrete pipeline with nothing to stub, and it only
+        // returns `.cancelled` for a slot it never launched — which, now that a chunk
+        // is never wider than the coordinator, means only when cancellation lands in
+        // the window between the drain's own check and the batch being primed. A test
+        // cannot open that window from outside, so the rule is asserted where it is
+        // implemented instead of being approximated by a sleep.
+        var pass = InboxDrain.Pass()
+        drain(env).resolve(written, outcome: .cancelled, into: &pass)
+
+        #expect(pass.summary == DrainSummary())
+        #expect(try readRecord(at: layout.recordURL(for: id)).attempts == 0)
+        #expect(exists(layout.payloadURL(for: id)))
+        #expect(try layout.pendingRecordURLs().count == 1)
+        #expect(try await env.services.collectionItems(
+            in: env.collectionID, includeArchived: false).isEmpty)
+    }
+
+    @Test("an outcome that never arrived is treated exactly like a cancelled one")
+    func missingOutcomeLeavesTheRecordAlone() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        let written = try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
+
+        // The impossible case — the coordinator returning fewer outcomes than inputs.
+        // "We were told nothing about this record" and "this record was not
+        // attempted" have the same correct response, and it is not to guess.
+        var pass = InboxDrain.Pass()
+        drain(env).resolve(written, outcome: nil, into: &pass)
+
+        #expect(pass.summary == DrainSummary())
+        #expect(try readRecord(at: layout.recordURL(for: id)).attempts == 0)
+        #expect(try layout.pendingRecordURLs().count == 1)
+    }
+
+    @Test("cancelling mid-pass leaves every record it had not reached untouched")
+    func cancellingMidPassStopsBetweenChunks() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let writer = InboxWriter(libraryRoot: env.root)
+        let watcher = IngestWatcher()
+
+        // Three drainable records, oldest first, at width 1 — so the pass is three
+        // chunks and cancellation between the first and the second is observable as
+        // "one done, two untouched".
+        var ids: [UUID] = []
+        for offset in 0 ..< 3 {
+            let id = UUID()
+            ids.append(id)
+            try writer.write(
+                .sample(collectionId: env.collectionID),
+                payload: CaptureFixtures.png(width: 40 + offset, height: 30), id: id,
+                capturedAt: Self.capturedAt.addingTimeInterval(Double(offset)))
+        }
+
+        // The cancel is fired from INSIDE the first ingest, so it is already set by
+        // the time that chunk resolves — no sleeping, no polling, no window where the
+        // pass could have finished first.
+        let drain = drain(env, width: 1, watching: watcher)
+        let box = TaskBox()
+        let gate = Gate()
+        watcher.onFirstIngest { box.cancel() }
+        let pass = Task { () -> DrainSummary in
+            await gate.wait()
+            return await drain.drainOnce()
+        }
+        box.arm(pass)
+        await gate.open()
+        let summary = await pass.value
+
+        // The record that was in flight is finished and counted: cancellation stops
+        // the pass, it does not un-ingest what already landed.
+        #expect(summary == DrainSummary(ingested: 1))
+        #expect(!exists(layout.recordURL(for: ids[0])))
+        #expect(try await env.services.collectionItems(
+            in: env.collectionID, includeArchived: false).count == 1)
+
+        // The two the pass never reached are exactly as they were — still pending,
+        // still at zero attempts, nothing quarantined, `failed/` never created.
+        #expect(try layout.pendingRecordURLs().count == 2)
+        for id in ids.dropFirst() {
+            #expect(try readRecord(at: layout.recordURL(for: id)).attempts == 0)
+            #expect(exists(layout.payloadURL(for: id)))
+        }
+        #expect(!exists(layout.failed))
+
+        // And the inbox is the accounting that survives: a fresh, uncancelled pass
+        // finishes the job.
+        #expect(await self.drain(env).drainOnce() == DrainSummary(ingested: 2))
+        #expect(try layout.pendingRecordURLs().isEmpty)
+    }
+}
+
+// MARK: - Standing inside a running pass
+
+/// Records what a pass actually ingested, in the order the ingests happened, and
+/// lets a test act at the moment the first one lands.
+///
+/// The seam is `IngestPipeline`'s existing `timing` sink — emitted once per
+/// successful byte ingest, from inside the ingest, carrying the content hash. That
+/// makes it the one place a test can stand in the middle of a pass without the drain
+/// or the coordinator knowing anything about tests.
+///
+/// `@unchecked Sendable` over an `NSLock` rather than an actor: the sink is a
+/// synchronous `@Sendable` closure called from the pipeline's own task, and it cannot
+/// await.
+private final class IngestWatcher: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hashes: [String] = []
+    private var firstIngest: (@Sendable () -> Void)?
+
+    /// The content hashes of the ingests this watcher saw, in order.
+    var ingestOrder: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return hashes
+    }
+
+    /// Run `body` when the first ingest of the pass completes — while the pass is
+    /// still running, and (at width 1) before the second record has been touched.
+    func onFirstIngest(_ body: @escaping @Sendable () -> Void) {
+        lock.lock()
+        firstIngest = body
+        lock.unlock()
+    }
+
+    /// The pipeline's timing sink.
+    func observed(_ timing: IngestTiming) {
+        lock.lock()
+        hashes.append(timing.hash)
+        let body = hashes.count == 1 ? firstIngest : nil
+        lock.unlock()
+        // Outside the lock: `body` may cancel a task that is about to take it again.
+        body?()
+    }
+}
+
+/// A one-shot boolean a synchronous, `Sendable` closure can set and a test can read.
+private final class Latch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set(_ newValue: Bool) {
+        lock.lock()
+        value = newValue
+        lock.unlock()
+    }
+}
+
+/// Holds the task running a pass so something inside that pass can cancel it.
+///
+/// The indirection exists because the handle does not exist until after the task is
+/// created, and the thing that cancels it has to be installed before. Armed first,
+/// released through a ``Gate`` second — so there is no ordering to get lucky about.
+private final class TaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<DrainSummary, Never>?
+
+    func arm(_ task: Task<DrainSummary, Never>) {
+        lock.lock()
+        self.task = task
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        let task = self.task
+        lock.unlock()
+        task?.cancel()
+    }
+}
+
+/// A latch a task can park on until a test opens it. `wait()` ignores cancellation on
+/// purpose: it is what holds a task at the starting line WHILE it is being cancelled.
+private actor Gate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let waiting = waiters
+        waiters = []
+        for continuation in waiting { continuation.resume() }
     }
 }

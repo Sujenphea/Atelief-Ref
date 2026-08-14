@@ -201,7 +201,13 @@ public struct InboxLayout: Sendable {
 
     // MARK: - The two questions that need the disk
 
-    /// Every committed record in the inbox, oldest-name-first, and nothing else.
+    /// Every committed record in the inbox, in file-name order, and nothing else.
+    ///
+    /// **That order carries no meaning.** A record's name is its UUIDv4, so sorting by
+    /// it is a shuffle that happens to be stable — worth having so an enumeration is
+    /// reproducible, worth nobody reading as chronological. The one ordering the inbox
+    /// actually has is `InboxRecord.capturedAt`, which is inside the records and so
+    /// cannot be applied here; 092 · S3's drain reads them and sorts by it.
     ///
     /// Touches the filesystem. The top level only, `*.json` only — which is what makes
     /// `.staging/` invisible and therefore what makes the two-phase write safe, and

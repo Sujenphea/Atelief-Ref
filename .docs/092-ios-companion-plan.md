@@ -364,6 +364,50 @@ a scratch library — the whole path is provable before an iOS target exists.
 > SDK again (`swiftc -typecheck -target arm64-apple-ios26.0 -swift-version 6`, contract
 > stubbed), including `replaceItemAt`.
 
+> **Reviewed 2026-08-15 — R2** (changelog
+> [405](../.change-log/405-the-order-a-uuid-sorts-in.md)). Six findings, five of them in
+> `drainOnce()` itself, which is why they landed as one slice:
+>
+> 1. **A pass is ordered by `InboxRecord.capturedAt`, not by file name.** The names are
+>    UUIDv4s, so the previous order was a shuffle. This is not cosmetic: nothing in the
+>    library orders by `source.captured_at` — a collection sorts by `manual_order`
+>    (`MAX + 1`, per insert) or `asset.created_at DESC` (`Date()`, stamped in the insert
+>    transaction) — so drain order *is* grid order, and an afternoon of shares arrived
+>    shuffled. Every pending record is now read and decoded ONCE, up front, which is
+>    also what made ordering affordable; the old loop read each record twice. Records
+>    that will not decode have no capture time and are given a defined position — first,
+>    in name order — rather than an accidental one.
+> 2. **Records run in chunks of `IngestCoordinator.maxConcurrent`, not one at a time.**
+>    `ingest([input])` per record pinned a four-way runner to concurrency 1. The width is
+>    read from the coordinator (now `public nonisolated let`) rather than restated here.
+>    Each chunk is fully resolved, by index, before the next starts, so the crash window
+>    is one chunk wide — affordable for the reason it always was, 18A dedup. **The
+>    tradeoff, stated because it is real:** a chunk's records commit in arbitrary order
+>    relative to each other, so capture order is now exact to within the chunk width
+>    rather than absolutely. The durable fix is ordering the library by
+>    `source.captured_at`, which is not this package's to make.
+> 3. **`DrainSummary.inboxUnreadable`** — a vanished container, a permissions failure and
+>    "nothing has ever been shared" used to be the same value. The never-throws contract
+>    that S4's launch wiring depends on is unchanged, and no logging was added.
+> 4. `inbox/failed/` is created at most once per pass instead of once per quarantined
+>    record, lazily — a clean pass still leaves no `failed/` behind, which is how a human
+>    finds out something went wrong.
+> 5. The `?? Collection.unsortedID` default was written at five sites in `makeInput` and
+>    is now written once. The two switches around it are deliberately left separate: they
+>    differ in argument type, and unifying two call sites behind a generic costs more
+>    than the four lines it saves.
+> 6. **Both cancellation paths are tested now**, which they never were. A pass cancelled
+>    mid-flight is driven through `IngestPipeline`'s existing `timing` sink — a test can
+>    cancel the task from inside a live ingest, with no sleeping — and asserts the
+>    unreached records are untouched. The `.cancelled` outcome itself is asserted through
+>    `resolve(_:outcome:into:)` directly: with a chunk never wider than the coordinator,
+>    that outcome only arises in a window a test cannot open from outside, and
+>    approximating it with timing would be the flaky kind of test.
+>
+> 462 tests in 47 suites, up from 448, with all 17 existing drain tests unchanged; the
+> suite was run three times because this changes concurrency, and was identical each
+> time. Both app targets still build.
+
 ## S4 — split into S4a and S4b
 
 S4 as written above bundled two jobs with nothing in common: making the *packages*
@@ -702,7 +746,13 @@ that could be tested outside the extension is in `AtelierCapture` and is (73/4, 
 where a malformed record could delete or quarantine a healthy neighbouring capture;
 every `InboxWriteError` case carries the error it caught, since the extension's one log
 line was all a failure had; and `failed/` destinations are composed only by
-`InboxLayout`. Later slices add their own notes here.
+`InboxLayout`. **R2** has landed too
+([405](../.change-log/405-the-order-a-uuid-sorts-in.md)), rewriting
+`InboxDrain.drainOnce()` around six findings: a pass is ordered by `capturedAt` rather
+than by a random UUID (which decides grid position, since nothing in the library orders
+by `captured_at`), records run in chunks at the coordinator's width instead of one at a
+time, an unreadable inbox is now distinguishable from an empty one, and both cancellation
+paths are tested. Later slices add their own notes here.
 
 **What is left of S4b** is three things, and none of them blocks S5: **tier 2** (the
 Safari `NSExtensionJavaScriptPreprocessingFile` path and the smallest useful subset of
