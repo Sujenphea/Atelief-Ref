@@ -88,5 +88,25 @@ extension CaptureRequest {
             collectionId: collectionId)
     }
 
+    /// A well-formed MEDIA-LESS capture (003 · C3) — a `tweet` / `link` / `color` with
+    /// no bytes anywhere. The inbox path's other half (092 · S2): these produce a
+    /// record with no payload sidecar, so the writer matrix needs one per kind.
+    public static func sampleContent(
+        kind: String = "link",
+        payload: AssetPayload = AssetPayload(
+            link: LinkPayload(url: "https://ex.com/p", title: "P")),
+        platform: String = "web",
+        collectionId: UUID? = nil
+    ) -> CaptureRequest {
+        CaptureRequest(
+            provenance: ProvenanceDTO(
+                platform: platform,
+                originalURL: "https://ex.com/p",
+                title: "P"),
+            collectionId: collectionId,
+            kind: kind,
+            payload: payload)
+    }
+
     public func jsonData() -> Data { try! JSONEncoder().encode(self) }
 }

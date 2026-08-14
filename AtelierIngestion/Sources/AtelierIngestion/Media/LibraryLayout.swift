@@ -5,8 +5,15 @@
 // originals), `thumbnails/` (derived, regenerable), and `cache/` (transient,
 // purgeable, and where atomic writes stage their temp files). It creates
 // nothing on disk; directory creation is the media store's job, on demand.
+//
+// `inbox/` (092 · S2) is the one subdirectory whose name is NOT spelled here: it is
+// written by the iOS share extension, which cannot link this package (it imports
+// AppKit via `Input/DirectInputReader.swift` and does not build for iOS), so the name
+// lives in `AtelierCapture.InboxLayout` where both processes can reach it and this
+// property delegates. One authority, reached from both sides.
 
 import Foundation
+import AtelierCapture
 
 /// The on-disk layout of a single Library directory (003 storage layout).
 ///
@@ -40,6 +47,13 @@ public struct LibraryLayout: Sendable {
     /// files here so the move into `blobs`/`thumbnails` stays on the same volume.
     public var cache: URL {
         root.appendingPathComponent("cache", isDirectory: true)
+    }
+
+    /// The capture handoff directory (092 · S2): what the iOS share extension appends
+    /// records to and the host app drains. Named by ``InboxLayout/directoryName`` so
+    /// the writer and the reader cannot disagree about where it is.
+    public var inbox: URL {
+        root.appendingPathComponent(InboxLayout.directoryName, isDirectory: true)
     }
 
     /// Recovery snapshots (008): self-contained `.sqlite` copies of the database.

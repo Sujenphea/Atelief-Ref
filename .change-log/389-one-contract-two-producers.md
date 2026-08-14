@@ -1,5 +1,19 @@
 # 389 — one contract, two producers
 
+> **Correction (2026-08-14, from [395](395-the-record-is-the-commit-marker.md)).** The
+> paragraph below ending "*without dragging GRDB along*" is wrong as built. `AtelierCore`
+> depends on GRDB (`AtelierCore/Package.swift:31`) and `AtelierCapture` depends on
+> `AtelierCore` for `SourceDraft` / `Platform` / `AssetContentDraft`, so GRDB is on the
+> share extension's link line transitively. `AtelierCapture` is free of FlyingFox,
+> sockets, AppKit and the filesystem — everything else that paragraph claims holds — but
+> it is not GRDB-free, and no reachable change to this package would make it so.
+>
+> This is accepted rather than fixed. GRDB is linked and never instantiated: the
+> extension opens no `DatabasePool` and no connection, and the ~120 MB extension ceiling
+> is about dirty memory, not linked code pages. The invariant worth defending is that the
+> extension never *opens* a database and never decodes an image — which is a behaviour,
+> and is measurable. 092 · S4's review check was reworded accordingly.
+
 The first slice of the iOS companion ([092](../.docs/092-ios-companion-plan.md) ·
 S0). No behaviour changed and no feature landed; what moved is a boundary.
 

@@ -201,6 +201,50 @@ runs under `swift test` on macOS today.
 
 **~3 days.**
 
+> **As built** (2026-08-14, changelog
+> [395](../.change-log/395-the-record-is-the-commit-marker.md)) — shipped, with four
+> departures from the wording above:
+>
+> 1. **The code landed in `AtelierCapture`, not `AtelierIngestion`.** This section put
+>    the layout in `LibraryLayout` and by implication the record and writer beside it,
+>    but `AtelierIngestion` imports AppKit (`Input/DirectInputReader.swift`) and cannot
+>    build for iOS at all — the share extension could never link it. `InboxRecord`,
+>    `InboxWriter` and a new `InboxLayout` live in `AtelierCapture`, which is
+>    transport-free and which the extension already links. `InboxLayout` owns
+>    `directoryName`, `AtelierIngestion` gained a dependency on `AtelierCapture`, and
+>    `LibraryLayout.inbox` delegates — so there is still exactly one authority on where
+>    the handoff lives; the arrow just points the other way. No cycle: AtelierCapture →
+>    AtelierCore, AtelierIngestion → AtelierCore + AtelierCapture.
+> 2. **Staging is `inbox/.staging/`, not `cache/`.** `cache` is a name `LibraryLayout`
+>    owns, and a package that must not learn the library's directory structure should
+>    not learn a second directory name in order to write one file. Same volume, so the
+>    move is still a rename; and the drain's top-level `*.json` enumeration cannot see
+>    a dot-directory, which is the property that makes staged files invisible.
+> 3. **`InboxRecord` carries `attempts` from the start**, defaulted to 0 and written by
+>    S3's drain, rather than being added when quarantine lands. This is an on-disk
+>    format written by a possibly-older shipped extension and read by a newer host;
+>    adding the field in S3 would mean tolerating records that predate it forever. The
+>    decode tolerates a missing `attempts` anyway — one line, and the format is on disk.
+> 4. **The GRDB claim in S4 was wrong and is corrected.** `AtelierCapture` depends on
+>    `AtelierCore`, which depends on GRDB, so GRDB is on the extension's link line
+>    today. Accepted: linked is not opened, and the ceiling is about dirty memory. The
+>    S4 bullet now asks for a measurement rather than an assertion, and
+>    [389](../.change-log/389-one-contract-two-producers.md) carries a dated correction
+>    note.
+>
+> Also settled here: `InboxLayout.payloadURL(named:)` refuses any `payloadFile` that is
+> not a single plain path component, because that string arrives from a file written by
+> another process; and the writer drops `CaptureRequest.image` when it has just written
+> the same bytes to a sidecar, but leaves it alone when there is no sidecar, so a
+> base64-only capture is shrunk rather than lost.
+>
+> Verification: `AtelierCapture` 23 tests in 1 suite → 38 in 2; `AtelierIngestion` 441
+> in 46 → 445 in 47; `AtelierServer` 62 in 6 unchanged; app `xcodebuild build`
+> succeeds. The new sources were type-checked against the iPhoneOS SDK
+> (`swiftc -typecheck -target arm64-apple-ios26.0 -swift-version 6`) with the capture
+> contract stubbed — a full `swift build --triple arm64-apple-ios26.0` cannot run until
+> S4 adds the `.iOS(...)` platform lines (see the note in S4).
+
 ## S3 — `InboxDrain`: the host side
 
 Modelled on `startCaptureEndpoint` (`IngestionModel.swift:885`), which is the
@@ -239,9 +283,23 @@ The first slice that needs provisioning and a simulator.
 
 - New `AtelierRefsMobile` app target + `AtelierRefsShare` share-extension target in
   the existing `AtelierRefs.xcodeproj`, both in the App Group.
-- Extension links `AtelierCapture` + the S2 writer **only** — not `AtelierCore`,
-  not `AtelierIngestion`, not GRDB. If the extension's link line ever grows GRDB,
-  D2 has been violated; make that a review check, not a hope.
+- Extension links `AtelierCapture` + the S2 writer **only** — not `AtelierIngestion`,
+  and nothing that opens a database. It does link `AtelierCore`, and therefore GRDB:
+  `AtelierCapture` needs `SourceDraft` / `Platform` / `AssetContentDraft`, and
+  `AtelierCore` depends on GRDB (`AtelierCore/Package.swift:31`). That was mis-stated
+  in [389](../.change-log/389-one-contract-two-producers.md) and corrected there.
+  Linked is not opened: D2's invariant is that the extension never *instantiates* a
+  `DatabasePool` and never decodes an image, both of which are behaviours. **The gate
+  is a measurement, not an assertion about the link line** — profile the extension's
+  actual footprint against the ~120 MB ceiling with a large share, since that ceiling
+  is about dirty memory and linked code pages are not dirty. Removing GRDB from the
+  link line would mean splitting the domain types out of `AtelierCore`, which is a
+  much larger refactor than the number justifies.
+- **Platform pins block the iOS build before anything else does.** `swift build
+  --triple arm64-apple-ios26.0` on `AtelierCapture` fails today with *"`AtelierCore`
+  requires ios 12.0, but depends on `GRDB` which requires ios 13.0"* — none of the
+  packages declare an `.iOS(...)` platform, so they default to iOS 12. That is the
+  deployment-target audit in risk 4, and it is the first thing to do in this slice.
 - Tier 1 (share from a native app): `NSExtensionItem` yields a URL →
   `CaptureRequest(kind: "link", …)`, and the host resolves og-tags at drain time
   via the existing `PageResolver` (cookie-less by design,
