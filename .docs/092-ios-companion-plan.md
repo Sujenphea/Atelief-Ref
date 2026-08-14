@@ -118,6 +118,50 @@ which is a bug that only reproduces on a real locked phone.
 
 **~2 days**, plus the App Group entitlement provisioning (see Gates).
 
+> **As built** (2026-08-14, changelog
+> [394](../.change-log/394-only-the-base-differs.md)) — shipped as specified, with
+> four decisions this section left open and one departure from the test row:
+>
+> 1. **The App Group is split by configuration**, matching the bundle IDs at
+>    `project.pbxproj:377,413`: Debug `group.sujenphea.AtelierRefs.dev`, Release
+>    `group.sujenphea.AtelierRefs`. One identifier would have put a dev build and a
+>    release build into the same library.
+> 2. **The identifier arrives via Info.plist**, key `AtelierAppGroupIdentifier`, whose
+>    value is `$(ATELIER_APP_GROUP)` — a per-configuration build setting. Not a package
+>    constant (it would have to be a pair, and know which build it is in) and not a
+>    caller parameter (every call site would inherit the question). The plist sits next
+>    to the entitlement that grants the container, and app and extension each read their
+>    own. **The plist / build-setting / entitlement wiring is S4**; S1 built only the
+>    read side.
+> 3. **A nil container is a typed error, never a fallback.** `LibraryLocationError`
+>    carries `appGroupIdentifierMissing(key:)` and
+>    `appGroupContainerUnavailable(identifier:)`. `container ?? applicationSupport`
+>    would let both processes open *different* libraries and succeed; what the user
+>    sees then is shares that vanish, with nothing logged. A provisioning bug should
+>    fail where it is fixable.
+> 4. **The seam is a platform-free function, not a `#if` around the whole body.**
+>    `defaultRoot()` is now *resolve a base, then `libraryRoot(under:)`*, and
+>    `libraryRoot(under:)` — append `ref-atelier`, create, return — is shared by both
+>    platforms so the naming and creation behaviour cannot drift. `#if os(iOS)` covers
+>    the four-line container lookup and the `.protectionKey` call, nothing else. The
+>    package stays `.macOS("26.0")`; the deployment-target audit is still S4's.
+>
+> **Departure:** the test row above asked for "override-branch parity on both
+> platforms". That was met on macOS only — by construction rather than by an iOS build.
+> Both platforms route through the same platform-free `libraryRoot(under:)`, and the
+> Info.plist read takes its raw value as a parameter (defaulted to the `Bundle.main`
+> lookup) so absent / blank both have tests. Building the iOS half would have meant
+> adding `.iOS(...)` to a package that still contains
+> `Input/DirectInputReader.swift`'s AppKit — i.e. doing S4's audit early to satisfy a
+> test row. What remains unproven by `swift test` is the container lookup itself; it was
+> type-checked against the iPhoneOS SDK directly (`swiftc -typecheck -target
+> arm64-apple-ios18.0`) as a stopgap.
+>
+> Verification: 427 ingestion tests in 45 suites → 441 in 46 (14 new: macOS root
+> identity, `libraryRoot(under:)` creation + idempotency, the three identifier failure
+> paths, and the six override-branch cases); `AtelierServer` 62 and `AtelierCapture` 23
+> unchanged; app `xcodebuild build` succeeds.
+
 ## S2 — `InboxRecord` + `InboxWriter`: what the extension writes
 
 The share extension does the smallest durable thing and returns
