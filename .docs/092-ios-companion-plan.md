@@ -10,6 +10,13 @@
 > are each half a page and belong beside the slice that builds them, the way
 > [068](068-backup-portability-plan.md) carries F1–F3 inside the plan that
 > consumes them. One doc, not two.
+>
+> **Amended 2026-08-14:** one design *did* earn its own doc —
+> [093](093-ios-visual-design.md), the phone's visual surfaces. The contracts
+> above are data shapes a slice either satisfies or doesn't; the share sheet,
+> the navigation model and the grid rhythm are decisions with alternatives that
+> have to be argued, and they span S4b and S5 rather than sitting inside either.
+> Read 093 before writing any UI.
 
 ## The property that shapes the order
 
@@ -474,10 +481,19 @@ can review.
 
 ## S5 — read-only browse
 
-Minimal SwiftUI: a `LazyVGrid` over the same `AppServices` reads the Mac grid
-uses, plus item detail. **No `UICollectionView` bridge** — that is the iOS
-re-run of the 037–039 bake-off, and it is not v1's problem. No Spaces, no canvas,
-no reorder, no multiselect.
+Minimal SwiftUI over the same `AppServices` reads the Mac grid uses, plus item
+detail. **No `UICollectionView` bridge** — that is the iOS re-run of the 037–039
+bake-off, and it is not v1's problem. No Spaces, no canvas, no reorder, no
+multiselect.
+
+> **Superseded 2026-08-14** — this section said "a `LazyVGrid`", which quietly
+> decided the library's *rhythm*: the Mac grid is masonry, and `LazyVGrid` is
+> uniform. [093](093-ios-visual-design.md) makes that a decision instead of an
+> accident, and lands on masonry via `C` lazy column stacks — `MasonryLayout` is
+> round-robin fixed-column (`MasonryLayout.swift:96`), so column membership is a
+> function of the index and the layout decomposes per column with no solver
+> ported and laziness intact. Uniform `LazyVGrid` remains the stated fallback.
+> The exclusions above are unchanged, and 093 does not reopen the bake-off.
 
 **~2–3 weeks.**
 
