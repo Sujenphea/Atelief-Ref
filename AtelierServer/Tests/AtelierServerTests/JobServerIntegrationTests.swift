@@ -9,6 +9,8 @@
 import Foundation
 import Testing
 
+import AtelierCapture
+import AtelierCaptureTestSupport
 import AtelierCore
 @testable import AtelierServer
 
@@ -62,7 +64,7 @@ struct JobServerIntegrationTests {
     /// so each is a distinct landed item.
     private func taggedCapture(_ collectionID: UUID, jobID: UUID, sourceID: String) -> Data {
         CaptureRequest(
-            image: ServerFixtures.pngBase64(),
+            image: CaptureFixtures.pngBase64(),
             provenance: ProvenanceDTO(
                 platform: "pinterest",
                 originalURL: "https://pinterest.com/pin/\(sourceID)/"),

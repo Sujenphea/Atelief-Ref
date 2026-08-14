@@ -12,6 +12,8 @@ import FlyingFox
 import FlyingSocks
 import os
 
+import AtelierCapture
+
 /// A random URL-safe secret the app hands to the extension (A2).
 public enum CaptureToken {
     /// 32 bytes of system randomness, hex-encoded (256-bit secret).

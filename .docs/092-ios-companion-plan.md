@@ -63,6 +63,36 @@ CI matrix in `.github/workflows/ci.yml:28`.
 
 **~2 days.** Pure refactor, no behaviour change.
 
+> **As built** (2026-08-14, changelog
+> [389](../.change-log/389-one-contract-two-producers.md)) — shipped, with three
+> departures worth recording:
+>
+> 1. **The split line is finer than "move the file."** `CaptureResponse` stayed in
+>    `AtelierServer` (new `CaptureResponse.swift`). The test is *does a producer of
+>    captures need this?* — the request shape and its decode funnel have two
+>    producers, but a reply is something only a server has, since a capture written
+>    to the inbox has nobody to answer. Everything else moved, including
+>    `VideoCaptureHeader` / `decodeVideoHeader` / `provenanceHeaderName`: they are
+>    HTTP-shaped, but `CaptureDecodeError` carries their cases and an error enum
+>    cannot be split across packages.
+> 2. **An unplanned fourth target: `AtelierCaptureTestSupport`.** The decoder tests
+>    moved with their code and immediately failed on `CaptureRequest.sample()` /
+>    `jsonData()`, which lived in `AtelierServer`'s TestSupport — and SPM test
+>    targets are not products, so the other package cannot reach them. Duplicating
+>    the builder is precisely the drift S0 exists to prevent, so the image fixtures
+>    and request builders became a shared test-only product both suites depend on.
+>    The synthesized MP4 stayed behind: a video body is streamed over HTTP and has
+>    no inbox counterpart.
+> 3. **No `project.pbxproj` change was needed** — Xcode resolved `AtelierCapture`
+>    transitively through `AtelierServer`'s path dependency, and the app target
+>    built untouched. Good news for S4, which assumed package-graph surgery.
+>
+> Verification: 85 server tests before → 23 (`AtelierCapture`) + 62
+> (`AtelierServer`) after, same total, all passing; app `xcodebuild build`
+> succeeds; extension's 524 node tests + drift check unaffected (the
+> cross-language `capture-contract.json` fixture is loaded by `#filePath` walk,
+> and the moved suite sits at the same depth).
+
 ## S1 — `LibraryLocation`: the App Group seam
 
 `defaultRoot()` (`LibraryLocation.swift:20`) resolves Application Support. On iOS

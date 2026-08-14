@@ -24,6 +24,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../AtelierCore"),
+        .package(path: "../AtelierCapture"),
         .package(path: "../AtelierIngestion"),
         .package(url: "https://github.com/swhitty/FlyingFox.git", from: "0.20.0"),
     ],
@@ -32,6 +33,7 @@ let package = Package(
             name: "AtelierServer",
             dependencies: [
                 .product(name: "AtelierCore", package: "AtelierCore"),
+                .product(name: "AtelierCapture", package: "AtelierCapture"),
                 .product(name: "AtelierIngestion", package: "AtelierIngestion"),
                 .product(name: "FlyingFox", package: "FlyingFox"),
             ]
@@ -39,7 +41,11 @@ let package = Package(
         .testTarget(
             name: "AtelierServerTests",
             dependencies: [
-                "AtelierServer"
+                "AtelierServer",
+                // The canonical capture fixtures (092 · S0). Shared rather than
+                // duplicated: two `CaptureRequest.sample()` builders would drift
+                // the first time a field is added on one side only.
+                .product(name: "AtelierCaptureTestSupport", package: "AtelierCapture"),
             ]
         ),
     ],

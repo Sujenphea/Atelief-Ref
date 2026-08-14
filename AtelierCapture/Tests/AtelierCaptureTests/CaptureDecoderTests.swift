@@ -1,14 +1,18 @@
-// AtelierServer — pure decode tests (build-order #6, decision T3).
+// AtelierCapture — pure decode tests (build-order #6, decision T3; moved here
+// with the code they cover by 092 · S0).
 //
-// A network boundary receives garbage by definition, so the DTO→SourceDraft
+// A capture boundary receives garbage by definition, so the DTO→SourceDraft
 // decode is asserted across the whole malformed-input matrix, plus the happy
-// path's full field mapping. No socket, no pipeline.
+// path's full field mapping. No socket, no pipeline — and now no server either:
+// the suite ran unchanged on both sides of the extraction, which is what proved
+// the move behaviour-preserving.
 
 import Foundation
 import Testing
 
+import AtelierCapture
+import AtelierCaptureTestSupport
 import AtelierCore
-@testable import AtelierServer
 
 @Suite("CaptureDecoder")
 struct CaptureDecoderTests {
@@ -109,7 +113,7 @@ struct CaptureDecoderTests {
     @Test("valid provenance header → SourceDraft + collectionId, server-owned time")
     func videoHeaderValid() throws {
         let collection = UUID()
-        let header = ServerFixtures.provenanceHeader(collectionId: collection)
+        let header = CaptureFixtures.provenanceHeader(collectionId: collection)
         let decoded = try CaptureDecoder.decodeVideoHeader(header, now: Self.now)
 
         #expect(decoded.collectionID == collection)
@@ -146,7 +150,7 @@ struct CaptureDecoderTests {
 
     @Test("unknown platform in header → unknownPlatform")
     func videoHeaderUnknownPlatform() {
-        let header = ServerFixtures.provenanceHeader(platform: "myspace")
+        let header = CaptureFixtures.provenanceHeader(platform: "myspace")
         #expect(throws: CaptureDecodeError.unknownPlatform("myspace")) {
             try CaptureDecoder.decodeVideoHeader(header, now: Self.now)
         }
@@ -155,7 +159,7 @@ struct CaptureDecoderTests {
     @Test("absent optional fields → nil author/title, rawMetadata defaults to {}")
     func minimalMapping() throws {
         let request = CaptureRequest(
-            image: ServerFixtures.pngBase64(),
+            image: CaptureFixtures.pngBase64(),
             provenance: ProvenanceDTO(platform: "pinterest"),
             collectionId: nil)
         let decoded = try CaptureDecoder.decode(body: request.jsonData(), now: Self.now)
@@ -262,7 +266,7 @@ struct CaptureDecoderTests {
         }
         // An explicit byte kind still takes the image path (it needs its bytes).
         let explicit = CaptureRequest(
-            image: ServerFixtures.pngBase64(),
+            image: CaptureFixtures.pngBase64(),
             provenance: ProvenanceDTO(platform: "twitter", originalURL: "https://x.com/a/status/1"),
             kind: "image")
         guard case .image = try CaptureDecoder.decodeInput(
@@ -274,7 +278,7 @@ struct CaptureDecoderTests {
     @Test("decodeInput routes a media-less kind WITH an image → .contentWithImage")
     func decodesContentWithImage() throws {
         let request = CaptureRequest(
-            image: ServerFixtures.pngBase64(),
+            image: CaptureFixtures.pngBase64(),
             provenance: ProvenanceDTO(platform: "twitter", originalURL: "https://x.com/a/status/9"),
             collectionId: Self.collectionID,
             kind: "tweet",
