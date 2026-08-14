@@ -525,6 +525,78 @@ can review.
 > seams S3 deferred (`InboxDrain.drainOnce()` behind the `-library-root` override and
 > its `onCapture` equivalent).
 
+> **As built — S4b-ii, the capture behaviour** (2026-08-14, changelog
+> [402](../.change-log/402-a-share-becomes-a-record.md)). A share on the phone is now a
+> record in the inbox. Tier 1 only, per the bullets below; tier 2 and the footprint
+> measurement are what remain of S4b.
+>
+> 1. **`NSExtensionItem` → `CaptureRequest` → `InboxWriter`, and nothing else in the
+>    process.** No SQLite, no image decode, no `AtelierIngestion`. A URL becomes a
+>    media-less `link` capture with no sidecar; image bytes go straight from
+>    `loadDataRepresentation` to the `.bin` file with `CaptureRequest.image` left nil
+>    (S2 · the base64 field is the HTTP producer's path).
+> 2. **The activation rule is the gate**, replacing `TRUEPREDICATE`:
+>    `SupportsWebURLWithMaxCount` + `SupportsImageWithMaxCount`, both 1, everything else
+>    absent. Deliberately NOT `SupportsWebPageWithMaxCount` — that key is what makes
+>    Safari run an `NSExtensionJavaScriptPreprocessingFile`, and turning it on is the
+>    first half of tier 2.
+> 3. **The platform mapping landed as specified**, with the host table mirroring
+>    `extension/src/extractors/` domain for domain and matching on `hostIs` (equal or a
+>    subdomain), the CDN hosts included, `.web` as the fallback, and
+>    `rawMetadata.capturedVia = "ios_share"` on every share. No `Platform` case was
+>    added. One trap found: `LinkPayload.canonicalURL` treats `mailto:a@x.com` as
+>    scheme-less and canonicalises it to `https://mailto:a@x.com`, whose host parses as
+>    `x.com` — so the mapping rejects a foreign scheme before canonicalising. The same
+>    trap is live in `AddLinkForm` on the Mac and is not fixed here.
+> 4. **The extension has no test host and none was created**, so the bargain is that it
+>    holds no decisions: the `SharedItem` seam, the host table, the `capturedVia` stamp
+>    and the whole draft construction live in `AtelierCapture/ShareCapture.swift` and are
+>    tested under `swift test` on macOS (AtelierCapture 57/3 → **73/4**). What is left in
+>    `ShareViewController` is item-provider loading, the App Group root, the view host and
+>    `completeRequest`, and its header says so.
+> 5. **The storyboard is gone.** `NSExtensionPrincipalClass` =
+>    `$(PRODUCT_MODULE_NAME).ShareViewController` hosting a SwiftUI card;
+>    `Base.lproj/MainInterface.storyboard` and its `SLComposeServiceViewController` are
+>    deleted — the compose sheet is a form, and 093 § 1 decides post-and-dismiss with no
+>    form. It was the repo's only storyboard. No pbxproj change was needed: both new
+>    files arrive through the target's `PBXFileSystemSynchronizedRootGroup`.
+>
+> **Where [093](093-ios-visual-design.md) was optimistic or silent** — stated here rather
+> than diverged from quietly:
+>
+> - **§ 1's clear backdrop is not reachable from the extension.** The view and its
+>   hosting controller are both `.clear` and the host app still does not show through:
+>   the system presents a share extension inside its own opaque container, which slides
+>   up as a dark sheet. The card still reads as a receipt; the specific visual does not
+>   survive. Changing it means going after the extension host's presentation, which is
+>   not a share-sheet decision.
+> - **A share carrying neither a web URL nor image bytes** is a case 093 does not
+>   enumerate. It is folded into the same failure card on 093's own grounds — a lost
+>   capture, nothing partial — and the activation rule should make it unreachable.
+> - **`LibraryLocationError` renders on that card too**, which closes the hole 093 § 7
+>   flagged as worth closing early: S1 · decision 3 made a missing App Group container a
+>   typed fatal error so a provisioning bug fails where it is fixable, and nothing drew
+>   it. Six typed errors, one card.
+> - **093's open question 2 stays open.** `successDismissDelay` is 0.8 s plus a 0.15 s
+>   removal animation, a defensible point in 093's "under a second" range and nothing
+>   more. One named constant, and the user's to settle on a device.
+>
+> Verification: macOS, iOS Debug and iOS Release all build; the package matrix is
+> unchanged except AtelierCapture's growth (AtelierCore 760/105 · AtelierCapture 73/4 ·
+> AtelierIngestion 447/47 · AtelierServer 62/6 · CanvasRenderer 437/52 · AtelierExport
+> 84/7). Then the part that matters: **both cases were driven through the real share
+> sheet** on a booted iPhone 17 Pro. Safari → Share → Atelier on `pinterest.com` wrote a
+> record with `platform: "pinterest"`, `kind: "link"` and `capturedVia: "ios_share"`;
+> Photos → Share → Atelier wrote a record plus a `.bin` sidecar whose bytes are
+> md5-identical to the source PNG, which is the proof that nothing in the extension
+> decoded or re-encoded a bitmap. Not exercised: the failure card (it needs a broken
+> container, which a simulator does not offer on demand), the `title` pass-through
+> (neither host supplied an `attributedTitle`), and the ~120 MB footprint measurement,
+> which is a gate of its own. Driving the share sheet without an XCUITest host was
+> genuinely flaky — the Simulator's accessibility window vanishes every few minutes and
+> only a `CoreSimulatorService` restart brings input back — and both records were captured
+> inside the working window that follows one.
+
 - **`LibraryLocation` is reachable from iOS — done, not pending.** The seam moved to
   `AtelierCapture/Sources/AtelierCapture/LibraryLocation.swift` on 2026-08-14
   (changelog [398](../.change-log/398-a-seam-ios-could-not-reach.md), amendment under
@@ -615,9 +687,23 @@ iOS 26 and are held there by CI.
 **S4b-i is done too** ([401](../.change-log/401-one-variable-eight-places.md)) — the
 targets exist, both are in the App Group, both link `AtelierCapture`, and
 `LibraryLocation.defaultRoot()` resolves a real shared container on a simulator. The
-seam S1 built for iOS has now run on iOS. **S4b-ii is the open slice**: the extension's
-capture behaviour, the footprint measurement, the share-sheet UI from
-[093](093-ios-visual-design.md), and the two app-side seams S3 deferred.
+seam S1 built for iOS has now run on iOS.
+
+**S4b-ii is done** ([402](../.change-log/402-a-share-becomes-a-record.md)) — **the
+phone captures.** Sharing a page or a photo into the extension writes a real record into
+the App Group inbox, tier 1, drawn to [093](093-ios-visual-design.md) § 1, proven
+through the real share sheet on a simulator rather than only built. Every piece of logic
+that could be tested outside the extension is in `AtelierCapture` and is (73/4, up from
+57/3); the extension itself holds only what needs `UIKit` and `NSExtensionContext`.
+
+**What is left of S4b** is three things, and none of them blocks S5: **tier 2** (the
+Safari `NSExtensionJavaScriptPreprocessingFile` path and the smallest useful subset of
+`extension/src/extractors/`), **the ~120 MB footprint measurement** with Instruments and
+a large share — gate 2, still a measurement and not an assertion — and **the two
+app-side seams S3 deferred** (`InboxDrain.drainOnce()` behind the `-library-root`
+override, and its `onCapture` equivalent so a drained share refreshes the live UI).
+Until that last pair exists, a shared capture reaches the inbox and stops there: nothing
+on the Mac drains it yet outside a test.
 
 What S4b inherits, all of it recorded rather than discovered later:
 

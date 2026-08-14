@@ -14,15 +14,56 @@
 	-->
 	<key>AtelierAppGroupIdentifier</key>
 	<string>$(ATELIER_APP_GROUP)</string>
+	<!--
+	  093 § 6 — the phone is dark only, and an app extension inherits NOTHING from its
+	  host app's appearance. `ShareViewController` also sets `overrideUserInterfaceStyle`;
+	  this is the half that governs the system chrome around it, and a light frame
+	  around a dark confirmation card is the worst of both.
+	-->
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>
 		<dict>
+			<!--
+			  092 · S4b-ii · D-b — URLs and images, nothing else.
+
+			  This replaces `TRUEPREDICATE`, under which Atelier offered itself for
+			  every share on the phone including plain text, a contact and a PDF, and
+			  then had nothing to do with them. The rule is the gate: what the extension
+			  refuses here it does not have to fail politely at later, which is why
+			  `harvest` has exactly one "nothing capturable" path and no per-type
+			  branching.
+
+			  `SupportsWebURLWithMaxCount` rather than `SupportsWebPage`: the web-page
+			  key is the tier-2 trigger — it is what makes Safari run an
+			  `NSExtensionJavaScriptPreprocessingFile` — and tier 2 is a later slice
+			  (092 · S4b). Omitted keys default to zero/false, so `SupportsText`,
+			  `SupportsMovie`, `SupportsFile` and the rest are off by not being here.
+			-->
 			<key>NSExtensionActivationRule</key>
-			<string>TRUEPREDICATE</string>
+			<dict>
+				<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
+				<integer>1</integer>
+				<key>NSExtensionActivationSupportsImageWithMaxCount</key>
+				<integer>1</integer>
+			</dict>
 		</dict>
-		<key>NSExtensionMainStoryboard</key>
-		<string>MainInterface</string>
+		<!--
+		  093 · D-c — a principal class, not a storyboard. `Base.lproj/MainInterface.storyboard`
+		  and the `SLComposeServiceViewController` it instantiated are gone: the compose
+		  sheet is a form with a text field and a Post button, and 093 § 1 decides
+		  post-and-dismiss with no form at all. It was also the only storyboard in a
+		  repo that is SwiftUI throughout.
+
+		  Module-qualified because the class is a plain Swift `UIViewController`
+		  subclass with no `@objc` name: the runtime symbol is mangled, and
+		  `$(PRODUCT_MODULE_NAME)` resolves it without an ObjC-visibility attribute
+		  existing only to satisfy a plist.
+		-->
+		<key>NSExtensionPrincipalClass</key>
+		<string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.share-services</string>
 	</dict>
