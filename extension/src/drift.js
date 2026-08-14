@@ -47,6 +47,17 @@ export function checkTimeline(json, { host = "x.com" } = {}) {
   if (page.items.length > 0 && mediaItems < 1) {
     problems.push("no media extracted from any tweet (media_url_https shape moved?)");
   }
+  // Same weakness the board feed had: `items.length >= 1` passes while most tweets are
+  // silently dropped. A tweet fans out to one item per media, so the per-TWEET key is the
+  // status id in `originalURL`, not `sourceId` (which is per-media by design). Every
+  // tweet entry must survive to at least one item.
+  const tweetIds = new Set(page.items
+    .map((item) => (String((item.provenance || {}).originalURL || "").match(/status\/(\d+)/) || [])[1])
+    .filter(Boolean));
+  if (page.tweetCount > 0 && tweetIds.size < page.tweetCount) {
+    problems.push(`${page.tweetCount - tweetIds.size} of ${page.tweetCount} tweet entries`
+      + ` mapped to no item (entry/legacy shape moved?)`);
+  }
   // The fan-out key must stay per-MEDIA: a collision means the engine's skip set
   // ([P14]) would drop every sibling of a multi-image tweet as already-seen.
   const ids = new Set(page.items.map((item) => item.sourceId));
@@ -56,6 +67,7 @@ export function checkTimeline(json, { host = "x.com" } = {}) {
   if (!page.bottomCursor) problems.push("no Bottom cursor (pagination would stall)");
   return verdict(problems, {
     tweetCount: page.tweetCount,
+    mappedTweets: tweetIds.size,
     mediaItems,
     hasCursor: !!page.bottomCursor,
   });
@@ -177,13 +189,30 @@ export function checkBoardFeed(json, { host = "www.pinterest.com" } = {}) {
   }
   const problems = [];
   if (page.pins.length < 1) problems.push("no pins in the board feed");
-  const mapped = page.pins.map((pin) => mapPinterestPin(pin, { host })).filter(Boolean);
-  if (page.pins.length > 0 && mapped.length < 1) {
-    problems.push("no pin mapped to a BulkItem (id/images shape moved?)");
+  // The bound used to be `mapped >= 1`, which could not tell "24 of 25 mapped, the 25th
+  // is an injected story card" from "3 of 25 mapped, the parser is broken" — the second
+  // reads as a small board rather than as drift, which is the silent degradation this
+  // file exists to catch. Pinterest interleaves NON-PIN modules into `data[]`
+  // (`type: "story"`, e.g. `related_interests_module`), so they are excluded from the
+  // denominator rather than tolerated in the numerator: every entry that CLAIMS to be a
+  // pin must map. An entry with no `type` counts as a pin — if we cannot tell what it
+  // is, it has to map or we hear about it.
+  const isPinEntry = (pin) => !pin || pin.type == null || pin.type === "pin";
+  const pinEntries = page.pins.filter(isPinEntry);
+  const modules = page.pins.length - pinEntries.length;
+  const mapped = pinEntries.map((pin) => mapPinterestPin(pin, { host })).filter(Boolean);
+  if (page.pins.length > 0 && pinEntries.length < 1) {
+    problems.push(`every one of ${page.pins.length} entries is a non-pin module (type shape moved?)`);
+  }
+  if (mapped.length < pinEntries.length) {
+    problems.push(`${pinEntries.length - mapped.length} of ${pinEntries.length} pin entries`
+      + ` failed to map (id/images shape moved?)`);
   }
   if (!page.bookmark) problems.push("no bookmark cursor (pagination would stall)");
   return verdict(problems, {
     pins: page.pins.length,
+    pinEntries: pinEntries.length,
+    modules,
     mapped: mapped.length,
     hasBookmark: !!page.bookmark,
   });

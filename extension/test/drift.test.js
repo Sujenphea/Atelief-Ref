@@ -83,7 +83,62 @@ test("checkBoardFeed flags pins that no longer map (images shape moved)", () => 
   for (const pin of drifted.resource_response.data) delete pin.images; // image shape gone
   const result = checkBoardFeed(drifted);
   assert.equal(result.ok, false);
-  assert.ok(result.problems.some((p) => /no pin mapped/.test(p)));
+  assert.ok(result.problems.some((p) => /failed to map/.test(p)));
+});
+
+// The invariant that matters: PARTIAL breakage. The old bound was `mapped >= 1`, so a
+// page where all but one pin stopped mapping still passed — reading as a small board
+// rather than as drift. Nine of ten here, which the old rule called healthy.
+test("checkBoardFeed flags a PARTIAL mapping failure, not just a total one", () => {
+  const drifted = JSON.parse(JSON.stringify(boardFeed));
+  const pin = drifted.resource_response.data[0];
+  const healthy = JSON.parse(JSON.stringify(pin));
+  const broken = JSON.parse(JSON.stringify(pin));
+  delete broken.images;
+  drifted.resource_response.data = [healthy, ...Array.from({ length: 9 }, (_, i) => ({
+    ...JSON.parse(JSON.stringify(broken)), id: `900000000000000${i}`,
+  }))];
+  const result = checkBoardFeed(drifted);
+  assert.equal(result.signals.mapped, 1, "exactly one pin still maps");
+  assert.equal(result.ok, false, "9 of 10 pins failing must be drift, not a small board");
+  assert.ok(result.problems.some((p) => /9 of 10 pin entries/.test(p)));
+});
+
+// ...but a non-pin module is NOT a mapping failure. Pinterest interleaves them into
+// data[], so they leave the denominator rather than counting against it.
+test("checkBoardFeed does not count interleaved non-pin modules as failures", () => {
+  const withModule = JSON.parse(JSON.stringify(boardFeed));
+  withModule.resource_response.data.push({
+    id: "w5gBtXUx", type: "story", story_type: "related_interests_module", title: "More ideas",
+  });
+  const result = checkBoardFeed(withModule);
+  assert.equal(result.ok, true, "a story card is not a broken pin");
+  assert.equal(result.signals.modules, 1);
+  assert.equal(result.signals.pinEntries, result.signals.mapped);
+});
+
+test("checkTimeline flags tweets that map to no item at all", () => {
+  const drifted = JSON.parse(JSON.stringify(bookmarks));
+  const entries = drifted.data.bookmark_timeline_v2.timeline.instructions
+    .find((i) => i.type === "TimelineAddEntries").entries;
+  // Strip the id from every tweet but the first. `unwrapTweet` still succeeds, so the
+  // entry COUNTS as a tweet — but `mapTweet` bails at `if (!tweetId) return []`, so it
+  // yields nothing. That asymmetry is the whole point: deleting `tweet_results` instead
+  // would drop the entry from `tweetCount` too, and the ratio would stay equal.
+  // Old rule: items.length >= 1, so this passed.
+  let seen = 0;
+  for (const entry of entries) {
+    const result = entry.content?.itemContent?.tweet_results?.result;
+    if (!result) continue;
+    if (seen++ === 0) continue;
+    const tweet = result.tweet || result;
+    delete tweet.rest_id;
+    if (tweet.legacy) delete tweet.legacy.id_str;
+  }
+  const result = checkTimeline(drifted);
+  assert.ok(result.signals.mappedTweets < result.signals.tweetCount);
+  assert.equal(result.ok, false, "tweets silently dropped must be drift");
+  assert.ok(result.problems.some((p) => /mapped to no item/.test(p)));
 });
 
 test("checkBoardFeed flags a missing bookmark cursor", () => {

@@ -171,3 +171,34 @@ the marker is a sample, not a constant, which is the strongest possible argument
 scraping it at runtime.
 
 Gate: **7/7 green**, 520 extension tests.
+
+## Addendum 3 — the canary could not see partial breakage
+
+`checkBoardFeed` asserted `mapped >= 1`. One pin mapping out of twenty-five satisfied it.
+So if Pinterest reshuffled the image ladder and only the pins with a legacy shape kept
+mapping, the canary printed `✔ pins=25 mapped=3` and exited 0 — while a live sweep imported
+three pins instead of twenty-four. The number was right there in the output and wired to
+nothing. `checkTimeline` had the same bound on `items.length`.
+
+It was written loose for a real reason: `mapped < pins` is LEGITIMATE, because Pinterest
+interleaves non-pin cards into `data[]`. A naive `mapped === pins` would fail on a healthy
+response. What made a tight bound possible was the live capture showing `type` separates
+them cleanly — 24 of 24 `type: "pin"` map, the one `type: "story"` does not.
+
+So non-pin modules leave the DENOMINATOR rather than being tolerated in the numerator:
+every entry that claims to be a pin must map, and an entry with no `type` at all counts as
+a pin, because if we cannot tell what it is, it has to map or we hear about it. X gets the
+equivalent, keyed on the status id in `originalURL` — `sourceId` is per-MEDIA by design, so
+it cannot count tweets. New signals `pinEntries` / `modules` / `mappedTweets` make the split
+visible rather than implied.
+
+Instagram already worked this way, asserting an exact fan-out count against IG's own
+declared `carousel_media_count`. This brings the other two up to that standard.
+
+**Mutation-checked.** Reverting both bounds to the old `>= 1` fails the two new tests (2 of
+26); with the new bounds, 26 of 26. The third new test — that an interleaved story card is
+NOT counted as a failure — passes either way by construction: it guards against
+over-strictness, not under-strictness, and is recorded here as such rather than being
+counted as evidence the bound bites.
+
+Extension suite: **523 tests**, gate 7/7.
