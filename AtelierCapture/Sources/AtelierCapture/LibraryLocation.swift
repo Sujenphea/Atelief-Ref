@@ -1,8 +1,20 @@
-// AtelierIngestion — the default on-disk Library location (chunk 5; 092 · S1)
+// AtelierCapture — the default on-disk Library location (chunk 5; 092 · S1, moved S4a)
 //
 // Resolves the app's single Library root and ensures it exists, so the app hook has
 // one place to build its `LibraryLayout` + `MediaStore` + `AppServices`. The root is
 // always `<base>/ref-atelier/`; what differs per platform is only the BASE.
+//
+// **Why this is in AtelierCapture and not AtelierIngestion**, where S1 built it: this
+// seam exists so the iOS share extension can find the library root, and in
+// `AtelierIngestion` it could not. That package imports AppKit
+// (`Input/DirectInputReader.swift`) and does not build for iOS at all, so the one
+// caller the App Group branch below was written for had no way to reach
+// ``LibraryLocation/defaultRoot()``. Nothing was broken by that — the seam simply had
+// no caller on its own platform. This package is transport-free and platform-free by
+// construction, already builds for iOS 26, and is already on the extension's link
+// line; it is where ``InboxLayout`` went in S2 for the same reason, and the AppKit
+// boundary has now pulled a type out of AtelierIngestion twice. The macOS callers
+// import AtelierCapture and resolve exactly the root they always did.
 //
 // On macOS the base is Application Support. In a sandboxed app `FileManager` returns
 // the per-app container's Application Support
@@ -33,8 +45,9 @@ import Foundation
 /// class of bug — the App Group is not wired up — and both are fatal by design: see
 /// ``LibraryLocation/defaultRoot()``. `Equatable` so tests assert the exact case.
 public enum LibraryLocationError: Error, Equatable {
-    /// The host bundle carries no ``LibraryLocation/appGroupIdentifierKey`` value, or
-    /// carries a blank one. Payload: the key that was looked up.
+    /// The calling process's own bundle carries no
+    /// ``LibraryLocation/appGroupIdentifierKey`` value, or carries a blank one.
+    /// Payload: the key that was looked up.
     case appGroupIdentifierMissing(key: String)
     /// `containerURL(forSecurityApplicationGroupIdentifier:)` returned nil — the
     /// identifier is spelled right but the entitlement doesn't grant it. Payload: the
@@ -53,10 +66,15 @@ public enum LibraryLocation {
     /// A key rather than a constant here or a caller parameter: the identifier has to
     /// agree with the entitlement file that grants it and with the extension that
     /// shares it, and an Info.plist value fed by a build setting is the one place all
-    /// three can read from. (The plist and build-setting wiring is 092 · S4.)
+    /// three can read from. (The plist and build-setting wiring is 092 · S4b.)
     public static let appGroupIdentifierKey = "AtelierAppGroupIdentifier"
 
-    /// The App Group identifier from the host bundle's Info.plist.
+    /// The App Group identifier from `Bundle.main`'s Info.plist.
+    ///
+    /// `Bundle.main` in an app extension is the EXTENSION's bundle, not the host app's
+    /// — an extension gets no reading of its container app's plist — so the share
+    /// extension needs its own copy of ``appGroupIdentifierKey``, fed by the same build
+    /// setting. Two plists, one build setting, one identifier (092 · S4b).
     ///
     /// Takes the raw value as a parameter — defaulted to the real `Bundle.main` read —
     /// so the failure paths are exercisable on macOS, where there is no App Group to

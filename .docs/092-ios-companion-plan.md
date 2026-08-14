@@ -164,6 +164,31 @@ which is a bug that only reproduces on a real locked phone.
 > paths, and the six override-branch cases); `AtelierServer` 62 and `AtelierCapture` 23
 > unchanged; app `xcodebuild build` succeeds.
 
+> **Amended** (2026-08-14, changelog
+> [398](../.change-log/398-a-seam-ios-could-not-reach.md)) — S1 built the right seam
+> in the wrong package, and S4a's cross-build audit is what exposed it. This section
+> and the "As built" note above both describe `LibraryLocation` as living in
+> `AtelierIngestion`; it now lives in `AtelierCapture`
+> (`Sources/AtelierCapture/LibraryLocation.swift`), and its 14 tests moved with it.
+>
+> The defect was reachability, not behaviour. The `#if os(iOS)` branch decision 4
+> describes exists so the **share extension** can find the library root — and
+> `AtelierIngestion` imports AppKit in `Input/DirectInputReader.swift` and is
+> deliberately not iOS-buildable, so the extension could never call `defaultRoot()`.
+> A root-finder the extension cannot link is not a seam. `AtelierCapture` is
+> transport-free, builds for iOS 26 since S4a, is already on the extension's link
+> line, and is already where `InboxLayout` went in S2 for the identical reason: this
+> is the second time the AppKit boundary has pulled a type out of `AtelierIngestion`.
+>
+> Nothing in decisions 1–4 changes, and the macOS root still resolves byte for byte —
+> the moved suite's assertions were not touched, which is what makes that claim
+> checkable. The macOS callers (`IngestionModel.swift`, `BakeoffSeedTests.swift`) each
+> gained one `import AtelierCapture`; no re-export, since two imports is less churn
+> and less indirection than an `@_exported` that would hide where the type lives from
+> the extension that is about to link it directly. No `project.pbxproj` change was
+> needed — `AtelierCapture` was already on the app's link line transitively through
+> `AtelierIngestion`, so the streak below holds.
+
 ## S2 — `InboxRecord` + `InboxWriter`: what the extension writes
 
 The share extension does the smallest durable thing and returns
@@ -376,11 +401,13 @@ of this slice.
 >    invocation adds `--sdk "$(xcrun --sdk iphoneos --show-sdk-path)"`, and that
 >    is what CI runs. (The `ios13.0` in the message is GRDB compiling at its own
 >    declared minimum; it is not a constraint on us.)
-> 4. **One thing S4b will hit immediately, discovered here:** `LibraryLocation`
->    — the App Group seam S1 built *for iOS* — lives in `AtelierIngestion`, which
->    does not build for iOS. The extension therefore cannot yet call
->    `defaultRoot()` to find the library root it is supposed to write into. See
->    S4b's first bullet.
+> 4. **One thing S4b would have hit immediately, discovered here:** `LibraryLocation`
+>    — the App Group seam S1 built *for iOS* — lived in `AtelierIngestion`, which
+>    does not build for iOS. The extension therefore could not call `defaultRoot()`
+>    to find the library root it is supposed to write into. **Fixed the same day**
+>    by moving the seam into `AtelierCapture` — see the amendment under S1
+>    (changelog [398](../.change-log/398-a-seam-ios-could-not-reach.md)). S4b starts
+>    with a reachable root-finder.
 >
 > Verification: both iOS builds succeed and emit genuine iOS objects
 > (`LC_BUILD_VERSION` platform 2, minos 26.0, sdk 26.5); the entire macOS matrix
@@ -404,14 +431,14 @@ per-configuration build setting (Debug `group.sujenphea.AtelierRefs.dev`, Releas
 one thing five slices have so far avoided: a generated `project.pbxproj` diff nobody
 can review.
 
-- **`LibraryLocation` must become reachable from iOS first.** It is in
-  `AtelierIngestion` (`Media/LibraryLocation.swift`), which cannot build for iOS
-  because `Input/DirectInputReader.swift` imports AppKit — so S1's App Group branch,
-  though written and type-checked, has no iOS caller. The cheapest fix is to move
-  the location seam into `AtelierCapture` (transport-free, already iOS, already
-  linked by the extension, and already the home of `InboxLayout` for exactly this
-  reason — S2 · decision 1), with `AtelierIngestion` re-exporting or delegating.
-  Decide this before writing extension code, not during.
+- **`LibraryLocation` is reachable from iOS — done, not pending.** The seam moved to
+  `AtelierCapture/Sources/AtelierCapture/LibraryLocation.swift` on 2026-08-14
+  (changelog [398](../.change-log/398-a-seam-ios-could-not-reach.md), amendment under
+  S1), so the extension can call `defaultRoot()` on its own link line. What is left
+  for this slice is the wiring the seam *reads*: `Bundle.main` in an app extension is
+  the **extension's** bundle, not the host app's, so the share extension needs its own
+  `AtelierAppGroupIdentifier` key fed by the same `$(ATELIER_APP_GROUP)` build
+  setting. Two plists, one setting, one identifier.
 - Extension links `AtelierCapture` + the S2 writer **only** — not `AtelierIngestion`,
   and nothing that opens a database. It does link `AtelierCore`, and therefore GRDB:
   `AtelierCapture` needs `SourceDraft` / `Platform` / `AssetContentDraft`, and
@@ -490,10 +517,12 @@ What S4b inherits, all of it recorded rather than discovered later:
   is `swift build --triple arm64-apple-ios26.0 --sdk "$(xcrun --sdk iphoneos
   --show-sdk-path)"` — `--triple` alone leaves SwiftPM on the host macOS SDK — and it
   runs in CI as the `ios-packages` job so the cleanliness cannot silently regress.
-- **S1's App Group seam has no iOS caller yet.** `LibraryLocation` lives in
-  `AtelierIngestion`, which imports AppKit and does not build for iOS. Moving the
-  location seam into `AtelierCapture` is S4b's first task; it is a small move, but it
-  is on the critical path for the extension knowing where to write.
+- **S1's App Group seam is now reachable from iOS.** `LibraryLocation` moved out of
+  `AtelierIngestion` — which imports AppKit and does not build for iOS — into
+  `AtelierCapture`, tests and all, on 2026-08-14
+  ([398](../.change-log/398-a-seam-ios-could-not-reach.md)). It was S4b's first task
+  and it is off the critical path. The second time the AppKit boundary has relocated
+  a type; if a third one appears, the boundary is the finding, not the type.
 - **A measurement, not an assertion, for the extension's footprint.** 395 corrected
   389: GRDB is on the extension's link line transitively through `AtelierCore` and no
   reachable change removes it. The gate is profiling actual dirty memory against the
@@ -504,10 +533,13 @@ What S4b inherits, all of it recorded rather than discovered later:
   `AtelierAppGroupIdentifier`, the `$(ATELIER_APP_GROUP)` per-configuration build
   setting, and the entitlement that actually grants the container are all S4b's, and
   the profiles cannot be regenerated in an afternoon.
-- **No `project.pbxproj` change has been needed yet** — five slices, zero
-  package-graph surgery in Xcode, because path dependencies resolved transitively each
-  time. S4b is where that stops, and the user is making the two targets by hand rather
-  than letting a tool generate a diff nobody can review.
+- **No `project.pbxproj` change has been needed yet** — five slices plus the S4a
+  correction, zero package-graph surgery in Xcode, because path dependencies resolved
+  transitively each time. The `LibraryLocation` move tested that again: the app now
+  imports `AtelierCapture` directly and still links it through `AtelierIngestion`, so
+  the link line did not move. S4b is where the streak stops, and the user is making
+  the two targets by hand rather than letting a tool generate a diff nobody can
+  review.
 - **Two app-side seams were deliberately deferred into S4b** rather than shipped
   without callers: wiring `InboxDrain.drainOnce()` into the app behind the
   `-library-root` override, and giving it the equivalent of `CaptureRoutes`'

@@ -1,4 +1,8 @@
-// AtelierIngestion tests — where the Library root comes from (092 · S1).
+// AtelierCapture tests — where the Library root comes from (092 · S1, moved S4a).
+//
+// These moved here with the type, unchanged apart from the module they import: the
+// seam is the same seam, and an assertion that had to change would have meant the
+// move was not clean.
 //
 // Two jobs. The first is a regression fence: the App Group seam must not have moved
 // the macOS root by a byte, and it must not have touched the `-library-root` /
@@ -13,7 +17,8 @@
 
 import Foundation
 import Testing
-@testable import AtelierIngestion
+
+import AtelierCapture
 
 @Suite("LibraryLocation (092 S1)")
 struct LibraryLocationTests {

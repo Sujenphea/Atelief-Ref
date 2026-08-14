@@ -39,6 +39,10 @@ let package = Package(
                 // cannot link THIS package — `Input/DirectInputReader.swift` imports
                 // AppKit. So the arrow points this way and `LibraryLayout.inbox`
                 // delegates, rather than the name being spelled twice.
+                //
+                // `LibraryLocation` moved there for the same reason (092 · S4a): it is
+                // how the extension finds the library root, and a root-finder the
+                // extension cannot link is no seam at all.
                 .product(name: "AtelierCapture", package: "AtelierCapture"),
             ]
         ),
