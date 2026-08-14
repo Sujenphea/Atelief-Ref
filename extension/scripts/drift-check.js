@@ -1,7 +1,8 @@
 // Atelier Capture — the opt-in drift canary CLI (Phase 8, [T12][12A]).
 //
-// OUTSIDE CI (it needs a real, freshly-captured response — which needs your logged-in
-// session). Run it periodically, or when a live sweep suddenly yields nothing:
+// The CAPTURE checks below are opt-in and run OUTSIDE CI (they need a real, freshly-
+// captured response — which needs your logged-in session). Run them periodically, or when
+// a live sweep suddenly yields nothing:
 //
 //   node scripts/drift-check.js                       # check the committed fixtures
 //   node scripts/drift-check.js --x ../resources/live-bookmarks.json
@@ -13,10 +14,17 @@
 // LIVE shape. Exits non-zero on any drift, so it doubles as a manual gate. The
 // invariant logic lives in src/drift.js (unit-tested); this is just file loading, the
 // capture-age warning, and reporting.
+//
+// The PRODUCER-CONTRACT check is the exception and needs no capture at all: it compares
+// this extension's host tables against the iOS share sheet's, both of which are files in
+// this repo. It therefore runs unconditionally, including in CI, and is the reason this
+// script is a gate and not only a canary (review issue 4 — see src/host-table.js for the
+// invariant and the asymmetry it permits).
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { CHECKS, fixtureStaleReminder } from "../src/drift.js";
+import { checkHostTableAgreement } from "../src/host-table.js";
 
 // The committed capture each check falls back to. A check with NO entry here has no
 // committed fixture yet and can only run against a `--flag <path>` live capture — it is
@@ -48,6 +56,29 @@ const FIXTURE = {
  * parser added here starts life unverified, and should say so rather than pass silently. */
 const CAPTURE_HINT = {};
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url));
+
+// The two producers' host tables. Resolved relative to THIS SCRIPT rather than to the
+// cwd, so `working-directory: extension` in CI and a run from the repo root both find the
+// same files. The Swift path leaves the extension directory, which is fine: the workflow
+// checks out the whole repo, and the Swift package is a sibling of `extension/`.
+const SWIFT_HOST_TABLE = "../../AtelierCapture/Sources/AtelierCapture/ShareCapture.swift";
+const EXTRACTORS_DIR = "../src/extractors";
+const MEDIA_HOSTS = "../src/media-hosts.js";
+
+/** Read both producers' sources for the host-table check. A missing file THROWS rather
+ * than degrading to a skip: "the Swift package isn't here" and "the tables agree" must
+ * not print the same thing, which is the failure this whole check exists to prevent. */
+function readHostTableSources() {
+  const dir = here(EXTRACTORS_DIR);
+  return {
+    swift: readFileSync(here(SWIFT_HOST_TABLE), "utf8"),
+    mediaHosts: readFileSync(here(MEDIA_HOSTS), "utf8"),
+    extractors: readdirSync(dir)
+      .filter((filename) => filename.endsWith(".js"))
+      .sort()
+      .map((filename) => ({ filename, source: readFileSync(`${dir}/${filename}`, "utf8") })),
+  };
+}
 
 /** Parse `--flag value` pairs into `{ flag: path }`. */
 function parseArgs(argv) {
@@ -108,6 +139,32 @@ function main() {
 
   let failed = false;
   const awaiting = [];
+
+  // First, and always: the one check that needs no capture. Reported in the same
+  // ✔/✘ + signals form as the capture checks so there is a single reading of this output.
+  const hostLabel = "Producer host tables (extension ↔ iOS share sheet)";
+  let hostTable;
+  try {
+    hostTable = checkHostTableAgreement(readHostTableSources());
+  } catch (error) {
+    hostTable = { ok: false, problems: [`could not read a host table: ${error.message}`],
+      signals: {}, swiftOnly: [] };
+  }
+  const hostSignals = Object.entries(hostTable.signals).map(([k, v]) => `${k}=${v}`).join(" ");
+  if (hostTable.ok) {
+    console.log(`✔ ${hostLabel} (repo sources) — ${hostSignals}`);
+  } else {
+    failed = true;
+    console.log(`✘ ${hostLabel} (repo sources) — DRIFT:`);
+    for (const problem of hostTable.problems) console.log(`    · ${problem}`);
+  }
+  // Printed pass or fail. A host only the phone can ever see is legitimate (`t.co` is
+  // resolved by the browser long before a content script runs), but a NEW one should be
+  // visible to whoever reads this output rather than absorbed silently.
+  // Parenthesised and unbulleted so it never reads as one more problem in a DRIFT block.
+  if (hostTable.swiftOnly && hostTable.swiftOnly.length) {
+    console.log(`    (phone-only, no extractor can observe these: ${hostTable.swiftOnly.join(", ")})`);
+  }
   for (const [flag, { label, run }] of Object.entries(CHECKS)) {
     if (!args[flag] && !FIXTURE[flag]) {
       console.log(`⊘ ${label} — NEVER VERIFIED against a real response`);
@@ -136,7 +193,10 @@ function main() {
     }
   }
 
-  console.log(failed ? "\nDrift detected — update the parsers + re-capture fixtures."
+  // The remediation names both kinds now that a source-vs-source check shares this line:
+  // re-capturing a fixture is no help at all against two host tables that disagree.
+  console.log(failed ? "\nDrift detected — update the parsers + re-capture fixtures,"
+    + " or reconcile the host tables."
     : "\nNo drift — every check that COULD run satisfied its invariants.");
   if (awaiting.length) {
     // Not a failure — there is nothing to fail against. Said plainly so "no drift" is

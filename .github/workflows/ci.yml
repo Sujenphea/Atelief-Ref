@@ -2,9 +2,11 @@ name: CI
 
 # 010 · Phase 1 — compile + test gate on every push / PR. Runs the six Swift
 # package suites, an iOS cross-build of the two packages the share extension
-# links, the extension's node tests + drift check, and an xcodebuild
-# build-and-test of the app target (the SwiftUI layer isn't SPM-tested, so the
-# build is its compile-proof and AtelierRefsTests carries its unit coverage).
+# links, the extension's node tests + drift check (which since review issue 4
+# also gates the SWIFT share extension's host table — see the `extension` job),
+# and an xcodebuild build-and-test of the app target (the SwiftUI layer isn't
+# SPM-tested, so the build is its compile-proof and AtelierRefsTests carries its
+# unit coverage).
 #
 # Toolchain: the app targets macOS 26 / Xcode 26 (deployment target 26.5), so the
 # app job needs a runner with that SDK. The `ios-packages` job needs the same
@@ -71,6 +73,18 @@ jobs:
 
   extension:
     name: Extension (node --test + drift check)
+    # This job is no longer only about the extension. `npm run drift-check` now
+    # also runs the producer host-table check (review issue 4), which compares
+    # `src/extractors/` + `src/media-hosts.js` against the iOS share sheet's
+    # `AtelierCapture/.../ShareCapture.swift` table — so a domain added on one
+    # side and not the other fails HERE, in the cheapest job, rather than
+    # shipping as forked provenance and surfacing as duplicate assets.
+    #
+    # It reads a file OUTSIDE `extension/`, which works because the checkout is
+    # the whole repo and the script resolves that path relative to itself rather
+    # than to the cwd — so `working-directory: extension` below is unaffected.
+    # The capture-shape checks in the same command still run against committed
+    # fixtures only; they need a logged-in session for anything more.
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
