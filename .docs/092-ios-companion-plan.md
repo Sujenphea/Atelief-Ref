@@ -438,6 +438,43 @@ per-configuration build setting (Debug `group.sujenphea.AtelierRefs.dev`, Releas
 one thing five slices have so far avoided: a generated `project.pbxproj` diff nobody
 can review.
 
+> **Amended 2026-08-14 — the targets exist, and the division of labour above did not
+> survive contact** (changelog [400](../.change-log/400-the-pen-changed-hands.md)).
+> Xcode's target sheet was driven three times and produced a **separate**
+> `AtelierRefsMobile.xcodeproj` each time, alongside a correctly-placed
+> `AtelierRefsShare` in the main project. The pbxproj was therefore reconciled by
+> hand, by the agent — the diff nobody wanted to review is the diff that exists, and
+> the compensation is that it is small, hand-written rather than generated, and
+> gated (see the changelog's verification table). The `AtelierRefs` and
+> `AtelierRefsTests` targets, their build settings, and `Config/Release.xcconfig`
+> were not touched.
+>
+> **As built** — one project, `AtelierRefs/AtelierRefs.xcodeproj`, four targets:
+> `AtelierRefs` (macOS), `AtelierRefsTests`, `AtelierRefsMobile` (iOS app),
+> `AtelierRefsShare` (iOS share extension, embedded in `AtelierRefsMobile` through a
+> `PBXCopyFilesBuildPhase` with `dstSubfolderSpec = 13` and a target dependency —
+> that phase is what makes the share sheet appear on device). Sources sit beside the
+> macOS ones, `AtelierRefsMobile/` and `AtelierRefsShare/`, both as
+> `PBXFileSystemSynchronizedRootGroup`s like the two targets that were already there.
+>
+> Both iOS targets carry `SDKROOT = iphoneos`, `IPHONEOS_DEPLOYMENT_TARGET = 26.0`
+> (matching the packages' `.iOS("26.0")` floor from S4a), `SWIFT_VERSION = 6.0`,
+> `TARGETED_DEVICE_FAMILY = 1`, `DEVELOPMENT_TEAM = L25247V6JG`,
+> `GENERATE_INFOPLIST_FILE = YES`, `PRODUCT_NAME = $(TARGET_NAME)` and
+> `CODE_SIGN_STYLE = Automatic` on **both** configurations — the macOS app's Release
+> `Manual` is for Developer ID and there is no iOS distribution profile to be manual
+> about yet. Bundle identifiers are `sujenphea.AtelierRefsMobile` and
+> `sujenphea.AtelierRefsMobile.Share`; the sheet had produced the non-nesting
+> `sujenphea.AtelierRefsShare`, which an App Group grant would have had to work
+> around. The extension keeps `INFOPLIST_FILE = AtelierRefsShare/Info.plist`.
+>
+> **App Groups is still the user's step, on purpose.** No `CODE_SIGN_ENTITLEMENTS` is
+> set on either new target and no `.entitlements` file was written: Signing &
+> Capabilities generates the correctly-shaped file *and* registers the group with the
+> App ID, which no pbxproj edit can do. Gate 1's paperwork is the blocker it always
+> was. Nothing links a Swift package into either target yet either — that is the next
+> slice, and it is the seam the bullets below describe.
+
 - **`LibraryLocation` is reachable from iOS — done, not pending.** The seam moved to
   `AtelierCapture/Sources/AtelierCapture/LibraryLocation.swift` on 2026-08-14
   (changelog [398](../.change-log/398-a-seam-ios-could-not-reach.md), amendment under
@@ -549,13 +586,14 @@ What S4b inherits, all of it recorded rather than discovered later:
   `AtelierAppGroupIdentifier`, the `$(ATELIER_APP_GROUP)` per-configuration build
   setting, and the entitlement that actually grants the container are all S4b's, and
   the profiles cannot be regenerated in an afternoon.
-- **No `project.pbxproj` change has been needed yet** — five slices plus the S4a
-  correction, zero package-graph surgery in Xcode, because path dependencies resolved
-  transitively each time. The `LibraryLocation` move tested that again: the app now
-  imports `AtelierCapture` directly and still links it through `AtelierIngestion`, so
-  the link line did not move. S4b is where the streak stops, and the user is making
-  the two targets by hand rather than letting a tool generate a diff nobody can
-  review.
+- **The `project.pbxproj` streak is over, and it ended badly** — five slices plus the
+  S4a correction went by with no diff at all, because path dependencies resolved
+  transitively every time and the link line never moved. S4b stopped it, as predicted.
+  What was not predicted is who held the pen: Xcode's target sheet produced a separate
+  `AtelierRefsMobile.xcodeproj` on three attempts, so the reconciliation into one
+  four-target project was written by hand by the agent
+  ([400](../.change-log/400-the-pen-changed-hands.md), amendment under S4b). Still
+  zero package-graph surgery — no package is linked into either iOS target yet.
 - **Two app-side seams were deliberately deferred into S4b** rather than shipped
   without callers: wiring `InboxDrain.drainOnce()` into the app behind the
   `-library-root` override, and giving it the equivalent of `CaptureRoutes`'
