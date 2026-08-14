@@ -45,20 +45,51 @@ import Foundation
 ///
 /// Every case is a failed capture, and every case leaves the inbox drainable — the
 /// writer either commits a record or leaves nothing a drain will act on.
+///
+/// **Every case also carries `underlying`, and that is not decoration.** The typed
+/// case says WHICH step failed; `underlying` is the only thing that says why. This
+/// code runs in a share extension: no debugger, no test host, one error card that
+/// deliberately collapses all six typed failures into "that one didn't save"
+/// (093 § 1), and a single `logger.error` line. Without the caught error's own words,
+/// a full disk, a data-protection denial on a locked device and a missing App Group
+/// container are one indistinguishable `payloadWriteFailed(path:)` — the same string
+/// for three problems with three different fixes.
+///
+/// It is a `String` rather than a boxed `any Error` so the enum stays `Equatable`, and
+/// it is rendered once by ``InboxWriteError/describing(_:)`` so the four sites cannot
+/// each invent a format. Being a system-supplied message, it is a thing to READ and
+/// never a thing to branch on or to assert equal — the tests pin the case and its
+/// path, and only that this field is populated.
 public enum InboxWriteError: Error, Equatable {
     /// The inbox (or its staging directory) could not be created — no App Group
     /// container, a read-only volume, or something non-directory already sitting at
-    /// the path. Payload: the inbox directory.
-    case inboxUnavailable(path: String)
+    /// the path. Payload: the inbox directory, and what `FileManager` said.
+    case inboxUnavailable(path: String, underlying: String)
     /// The payload bytes could not be staged or moved into place. Payload: the
-    /// destination the bytes were headed for.
-    case payloadWriteFailed(path: String)
+    /// destination the bytes were headed for, and what the write or move said.
+    case payloadWriteFailed(path: String, underlying: String)
     /// The record could not be turned into JSON — a `rawMetadata` value that is not
-    /// representable, in practice. Payload: the record's id, since it has no path yet.
-    case recordEncodingFailed(id: UUID)
-    /// The record could not be staged or moved into place. Payload: the destination.
-    /// The capture is lost, but nothing partial survives: the payload is cleaned up.
-    case recordWriteFailed(path: String)
+    /// representable, in practice. Payload: the record's id, since it has no path yet,
+    /// and what the encoder said.
+    case recordEncodingFailed(id: UUID, underlying: String)
+    /// The record could not be staged or moved into place. Payload: the destination,
+    /// and what the write or move said. The capture is lost, but nothing partial
+    /// survives: the payload is cleaned up.
+    case recordWriteFailed(path: String, underlying: String)
+
+    /// Render a caught error into the `underlying` text, the same way at all four
+    /// sites.
+    ///
+    /// `localizedDescription` is the sentence a human reads ("The file couldn't be
+    /// saved because the volume is out of space."); the bridged domain and code are
+    /// what a search engine and `errno` understand (`NSCocoaErrorDomain 640`,
+    /// `NSPOSIXErrorDomain 28`). The log line is read by whoever is holding the phone
+    /// that failed, and they may need either, so it carries both. Every Swift error
+    /// bridges, so a non-Cocoa error still yields a usable pair rather than nothing.
+    static func describing(_ error: any Error) -> String {
+        let bridged = error as NSError
+        return "\(error.localizedDescription) [\(bridged.domain) \(bridged.code)]"
+    }
 }
 
 /// Puts captures in the inbox for the host app to drain (092 · S2).
@@ -107,7 +138,9 @@ public struct InboxWriter: Sendable {
             try fileManager.createDirectory(
                 at: layout.staging, withIntermediateDirectories: true)
         } catch {
-            throw InboxWriteError.inboxUnavailable(path: layout.directory.path)
+            throw InboxWriteError.inboxUnavailable(
+                path: layout.directory.path,
+                underlying: InboxWriteError.describing(error))
         }
 
         // Phase 1 — the payload, committed BEFORE the record that names it.
@@ -120,7 +153,9 @@ public struct InboxWriter: Sendable {
                 try fileManager.moveItem(at: staged, to: destination)
             } catch {
                 try? fileManager.removeItem(at: staged)
-                throw InboxWriteError.payloadWriteFailed(path: destination.path)
+                throw InboxWriteError.payloadWriteFailed(
+                    path: destination.path,
+                    underlying: InboxWriteError.describing(error))
             }
             payloadFile = InboxLayout.payloadFileName(for: id)
         }
@@ -174,14 +209,17 @@ public struct InboxWriter: Sendable {
             try fileManager.createDirectory(
                 at: layout.staging, withIntermediateDirectories: true)
         } catch {
-            throw InboxWriteError.inboxUnavailable(path: layout.directory.path)
+            throw InboxWriteError.inboxUnavailable(
+                path: layout.directory.path,
+                underlying: InboxWriteError.describing(error))
         }
 
         let encoded: Data
         do {
             encoded = try InboxRecord.makeEncoder().encode(record)
         } catch {
-            throw InboxWriteError.recordEncodingFailed(id: record.id)
+            throw InboxWriteError.recordEncodingFailed(
+                id: record.id, underlying: InboxWriteError.describing(error))
         }
 
         let staged = layout.stagedRecordURL(for: record.id)
@@ -195,7 +233,8 @@ public struct InboxWriter: Sendable {
             }
         } catch {
             try? fileManager.removeItem(at: staged)
-            throw InboxWriteError.recordWriteFailed(path: destination.path)
+            throw InboxWriteError.recordWriteFailed(
+                path: destination.path, underlying: InboxWriteError.describing(error))
         }
     }
 

@@ -129,15 +129,31 @@ public struct InboxLayout: Sendable {
             InboxLayout.payloadFileName(for: id), isDirectory: false)
     }
 
-    /// Resolve a ``InboxRecord/payloadFile`` value against this inbox, or `nil` when
-    /// the name could not have been written by ``InboxWriter``.
+    /// Where a quarantined record lands: `<inbox>/failed/<uuid>.json`.
+    ///
+    /// The `failed/` mirror of ``recordURL(for:)``, and it exists for the same reason
+    /// that one does: the drain quarantines from two places and hand-built both
+    /// destinations, so a reader of either could reasonably conclude that composing a
+    /// path into `failed/` by hand is fine — next to a line that carefully asks
+    /// ``failedURL(named:)`` for permission. Composition lives here or it drifts.
+    public func failedRecordURL(for id: UUID) -> URL {
+        failed.appendingPathComponent(
+            InboxLayout.recordFileName(for: id), isDirectory: false)
+    }
+
+    /// Resolve a file name that has no record to check it against — the sidecar the
+    /// drain GUESSES for a `.json` that would not parse — or `nil` when the name could
+    /// not be appended to this directory at all.
     ///
     /// The name arrives from a file that crossed a process boundary, so it is treated
     /// as data rather than as a path: anything that is not a single, non-relative path
     /// component is refused instead of being resolved into a URL that escapes the
-    /// inbox. A record naming such a payload is unreadable by construction — S3 should
-    /// treat it as a failure, not as a not-yet-complete write, since no amount of
-    /// waiting will make it resolve.
+    /// inbox.
+    ///
+    /// **This is not the accessor for a record's `payloadFile`** — see
+    /// `payloadURL(for record:)`, which holds that name to a much stricter standard.
+    /// Being a plain component only proves a name cannot escape the inbox; it says
+    /// nothing about the name belonging to the record that supplied it.
     public func payloadURL(named name: String) -> URL? {
         guard InboxLayout.isPlainComponent(name) else { return nil }
         return directory.appendingPathComponent(name, isDirectory: false)
@@ -159,11 +175,28 @@ public struct InboxLayout: Sendable {
             && !name.contains("/") && !name.contains("\\")
     }
 
-    /// The payload a record refers to, or `nil` for a media-less record (and for a
-    /// record whose `payloadFile` is refused by ``payloadURL(named:)``).
+    /// The payload a record refers to, or `nil` for a media-less record and for any
+    /// record whose `payloadFile` is not the one name ``InboxWriter`` would have
+    /// written for it.
+    ///
+    /// **A record may only name its own sidecar.** `payloadFile` crossed a process
+    /// boundary, and a name that is merely a plain component can still be another
+    /// capture's `<uuid>.json`, or `failed`, or `.staging`. Such a record used to pass
+    /// ``isComplete(_:)`` and reach the pipeline as media — and then the drain, having
+    /// resolved that name for reading, resolved it again for DELETING (on the success
+    /// path) or for moving into `failed/` (on the failure path). One malformed record
+    /// took a healthy neighbouring capture with it.
+    ///
+    /// So the test is not "could this name be appended to a directory" but "is this
+    /// the exact name the writer produces for this id", asked through
+    /// ``payloadFileName(for:)`` so the check and the writer cannot drift. Everything
+    /// else is malformed, resolves to nothing here, and — since no amount of waiting
+    /// makes a wrong name right — is a failure for S3 rather than a not-yet-complete
+    /// write.
     public func payloadURL(for record: InboxRecord) -> URL? {
         guard let name = record.payloadFile else { return nil }
-        return payloadURL(named: name)
+        guard name == InboxLayout.payloadFileName(for: record.id) else { return nil }
+        return payloadURL(for: record.id)
     }
 
     // MARK: - The two questions that need the disk
@@ -194,9 +227,13 @@ public struct InboxLayout: Sendable {
     /// the payload BEFORE the record (see ``InboxWriter``), so a false here on a record
     /// the writer produced means the answer changes shortly — skip the item this pass
     /// rather than failing it.
+    ///
+    /// A refused name is false, and the caller must not read that as "early": the drain
+    /// checks the name itself before it gets here, precisely so the two answers do not
+    /// look alike (see `payloadURL(for record:)`).
     public func isComplete(_ record: InboxRecord) -> Bool {
-        guard let name = record.payloadFile else { return true }
-        guard let url = payloadURL(named: name) else { return false }
+        guard record.payloadFile != nil else { return true }
+        guard let url = payloadURL(for: record) else { return false }
         return FileManager.default.fileExists(atPath: url.path)
     }
 }

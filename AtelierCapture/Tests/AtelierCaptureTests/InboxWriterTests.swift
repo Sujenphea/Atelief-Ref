@@ -41,6 +41,26 @@ struct InboxWriterTests {
         try InboxRecord.makeDecoder().decode(InboxRecord.self, from: Data(contentsOf: url))
     }
 
+    /// The write that had to fail, as the error it threw.
+    ///
+    /// The four typed failures are asserted through this rather than by comparing whole
+    /// `InboxWriteError` values, because every case now carries an `underlying` built
+    /// from `localizedDescription` — a system string that varies with locale and OS
+    /// version and is nobody's contract. What a test may pin is the case and its path
+    /// (``InboxWriteError/shape``); what it may only pin the PRESENCE of is the reason
+    /// (``InboxWriteError/underlying``).
+    private func failure(
+        of operation: () throws -> Void,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) throws -> InboxWriteError {
+        try #require(
+            #expect(
+                throws: InboxWriteError.self,
+                sourceLocation: sourceLocation,
+                performing: operation),
+            sourceLocation: sourceLocation)
+    }
+
     // MARK: - Round trip
 
     @Test("a capture with bytes lands as a record plus its sidecar, and decodes back equal")
@@ -196,10 +216,12 @@ struct InboxWriterTests {
             at: layout.directory, withIntermediateDirectories: true)
         try Data("squatter".utf8).write(to: layout.payloadURL(for: id))
 
-        #expect(throws: InboxWriteError.payloadWriteFailed(path: layout.payloadURL(for: id).path)) {
+        let error = try failure {
             try InboxWriter(libraryRoot: root).write(
                 .sample(), payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
         }
+        #expect(error.shape == .payloadWriteFailed(path: layout.payloadURL(for: id).path))
+        #expect(!error.underlying.isEmpty)
 
         // The proof that `.bin` precedes `.json`: had the record been written first,
         // it would be sitting here now, naming a payload that is not the capture's.
@@ -249,6 +271,92 @@ struct InboxWriterTests {
         #expect(layout.isComplete(record))
     }
 
+    // MARK: - A record may only name its own sidecar (403)
+    //
+    // "Cannot escape the inbox" is a weaker property than it sounds: `<other>.json` is
+    // a plain component sitting right there beside the record. A record naming one used
+    // to resolve, ingest as media, and then be DELETED by the success path or moved to
+    // `failed/` by the failure path — a malformed capture destroying a healthy one. The
+    // name is now checked against the id that supplied it.
+
+    @Test("a payloadFile naming another record's files resolves to nothing")
+    func aRecordCannotNameASiblingsFiles() throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+
+        // A real, healthy capture: both its `.json` and its `.bin` are on disk, so the
+        // refusals below are refusals of names that DO resolve to something.
+        let sibling = try InboxWriter(libraryRoot: root).write(
+            .sample(), payload: CaptureFixtures.png(), capturedAt: Self.capturedAt)
+        #expect(exists(layout.recordURL(for: sibling.id)))
+        #expect(exists(layout.payloadURL(for: sibling.id)))
+
+        let id = UUID()
+        var record = InboxRecord(
+            id: id, capturedAt: Self.capturedAt, request: .sampleContent(),
+            payloadFile: InboxLayout.recordFileName(for: sibling.id))
+        #expect(layout.payloadURL(for: record) == nil)
+        // Not "early" either — the file is right there. It is refused, and the drain
+        // reads that as malformed rather than as not-yet-written.
+        #expect(!layout.isComplete(record))
+
+        record.payloadFile = InboxLayout.payloadFileName(for: sibling.id)
+        #expect(layout.payloadURL(for: record) == nil)
+        #expect(!layout.isComplete(record))
+
+        // Its own name, which is the only one that ever resolves.
+        record.payloadFile = InboxLayout.payloadFileName(for: id)
+        #expect(layout.payloadURL(for: record) == layout.payloadURL(for: id))
+    }
+
+    @Test(
+        "a payloadFile naming one of the inbox's own directories resolves to nothing",
+        arguments: [InboxLayout.stagingDirectoryName, InboxLayout.failedDirectoryName])
+    func aRecordCannotNameTheInboxsDirectories(name: String) throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+        // Both directories exist, and both are plain components — the old guard let
+        // them through, and a drain that resolved one would have moved or deleted a
+        // DIRECTORY of captures.
+        try FileManager.default.createDirectory(at: layout.staging, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: layout.failed, withIntermediateDirectories: true)
+
+        let record = InboxRecord(
+            capturedAt: Self.capturedAt, request: .sampleContent(), payloadFile: name)
+        #expect(layout.payloadURL(for: record) == nil)
+        #expect(!layout.isComplete(record))
+    }
+
+    @Test("a record written by the writer resolves and is complete, as it always was")
+    func theCanonicalNameStillResolves() throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+        let id = UUID()
+        let record = try InboxWriter(libraryRoot: root).write(
+            .sample(), payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
+
+        #expect(record.payloadFile == InboxLayout.payloadFileName(for: id))
+        #expect(layout.payloadURL(for: record) == layout.payloadURL(for: id))
+        #expect(layout.isComplete(record))
+    }
+
+    // MARK: - Quarantine destinations
+
+    @Test("failedRecordURL composes into failed/, beside the payload's destination")
+    func failedRecordURLComposes() {
+        let layout = InboxLayout(libraryRoot: URL(fileURLWithPath: "/tmp/library"))
+        let id = UUID()
+
+        #expect(
+            layout.failedRecordURL(for: id).path
+                == "/tmp/library/inbox/failed/\(id.uuidString).json")
+        // The same stem the guarded `failedURL(named:)` produces for the sidecar: the
+        // two halves of a quarantined capture land together, composed in one place.
+        #expect(
+            layout.failedURL(named: InboxLayout.payloadFileName(for: id))?.path
+                == "/tmp/library/inbox/failed/\(id.uuidString).bin")
+    }
+
     // MARK: - attempts
 
     @Test("attempts starts at zero")
@@ -279,7 +387,13 @@ struct InboxWriterTests {
         #expect(decoded == record)
     }
 
-    // MARK: - Typed failures
+    // MARK: - Typed failures, and why each one happened
+    //
+    // Each of the four asserts the same two things: the case and its path, which are
+    // the contract, and that `underlying` is populated, which is all a test can say
+    // about a message the system wrote. In the extension that field is the whole
+    // difference between "a share was lost" and "a share was lost because the volume
+    // is full" — there is no debugger behind the share sheet (403).
 
     @Test("the inbox directory cannot be created")
     func inboxCannotBeCreated() throws {
@@ -289,10 +403,12 @@ struct InboxWriterTests {
         // that a test can actually produce.
         try Data("not a directory".utf8).write(to: layout.directory)
 
-        #expect(throws: InboxWriteError.inboxUnavailable(path: layout.directory.path)) {
+        let error = try failure {
             try InboxWriter(libraryRoot: root).write(
                 .sampleContent(), capturedAt: Self.capturedAt)
         }
+        #expect(error.shape == .inboxUnavailable(path: layout.directory.path))
+        #expect(!error.underlying.isEmpty)
     }
 
     @Test("the payload cannot be staged")
@@ -306,10 +422,12 @@ struct InboxWriterTests {
         try FileManager.default.createDirectory(
             at: layout.stagedPayloadURL(for: id), withIntermediateDirectories: true)
 
-        #expect(throws: InboxWriteError.payloadWriteFailed(path: layout.payloadURL(for: id).path)) {
+        let error = try failure {
             try InboxWriter(libraryRoot: root).write(
                 .sample(), payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
         }
+        #expect(error.shape == .payloadWriteFailed(path: layout.payloadURL(for: id).path))
+        #expect(!error.underlying.isEmpty)
         #expect(!exists(layout.recordURL(for: id)))
     }
 
@@ -324,10 +442,12 @@ struct InboxWriterTests {
             provenance: ProvenanceDTO(
                 platform: "twitter", rawMetadata: .object(["ratio": .number(.infinity)])))
 
-        #expect(throws: InboxWriteError.recordEncodingFailed(id: id)) {
+        let error = try failure {
             try InboxWriter(libraryRoot: root).write(
                 request, payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
         }
+        #expect(error.shape == .recordEncodingFailed(id: id))
+        #expect(!error.underlying.isEmpty)
         // The payload committed in phase 1 is taken back down: no orphan bytes, and
         // certainly no record.
         #expect(!exists(layout.payloadURL(for: id)))
@@ -344,13 +464,46 @@ struct InboxWriterTests {
         // Occupy the record's destination so the commit move fails.
         try Data("squatter".utf8).write(to: layout.recordURL(for: id))
 
-        #expect(throws: InboxWriteError.recordWriteFailed(path: layout.recordURL(for: id).path)) {
+        let error = try failure {
             try InboxWriter(libraryRoot: root).write(
                 .sample(), payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
         }
+        #expect(error.shape == .recordWriteFailed(path: layout.recordURL(for: id).path))
+        #expect(!error.underlying.isEmpty)
         #expect(!exists(layout.payloadURL(for: id)))
         let staged = try FileManager.default.contentsOfDirectory(
             at: layout.staging, includingPropertiesForKeys: nil)
         #expect(staged.isEmpty)
+    }
+}
+
+/// An `InboxWriteError` split into the half a test may pin and the half it may not
+/// (403).
+extension InboxWriteError {
+    /// The case and the payload that IS a contract — everything but `underlying`.
+    enum Shape: Equatable {
+        case inboxUnavailable(path: String)
+        case payloadWriteFailed(path: String)
+        case recordEncodingFailed(id: UUID)
+        case recordWriteFailed(path: String)
+    }
+
+    var shape: Shape {
+        switch self {
+        case .inboxUnavailable(let path, _): .inboxUnavailable(path: path)
+        case .payloadWriteFailed(let path, _): .payloadWriteFailed(path: path)
+        case .recordEncodingFailed(let id, _): .recordEncodingFailed(id: id)
+        case .recordWriteFailed(let path, _): .recordWriteFailed(path: path)
+        }
+    }
+
+    /// What the writer caught, from whichever case is carrying it. Asserted non-empty
+    /// and never asserted equal: the text is `localizedDescription`'s, not ours.
+    var underlying: String {
+        switch self {
+        case .inboxUnavailable(_, let underlying), .payloadWriteFailed(_, let underlying),
+            .recordEncodingFailed(_, let underlying), .recordWriteFailed(_, let underlying):
+            underlying
+        }
     }
 }

@@ -156,13 +156,16 @@ public struct InboxDrain: Sendable {
                 continue
             }
 
-            // A `payloadFile` the layout refuses (anything that is not one plain
-            // path component) is quarantined on sight, with `attempts` untouched. A
-            // rejected name is malformed, not transient: it will never become valid,
-            // so spending three passes on it is waste. The attempts budget is for
-            // failures that might not happen again — disk, decode, coordinator
-            // pressure.
-            if let name = record.payloadFile, layout.payloadURL(named: name) == nil {
+            // A `payloadFile` the layout refuses — anything that is not the exact
+            // name the writer produces for this record's id — is quarantined on
+            // sight, with `attempts` untouched. A rejected name is malformed, not
+            // transient: it will never become valid, so spending three passes on it
+            // is waste. The attempts budget is for failures that might not happen
+            // again — disk, decode, coordinator pressure. Note what this guard is
+            // protecting: everything downstream (ingest, discard, quarantine) resolves
+            // that name into a file it will read, DELETE or move, so a record naming a
+            // sibling capture is a record that destroys one.
+            if record.payloadFile != nil, layout.payloadURL(for: record) == nil {
                 quarantine(record)
                 summary.quarantined += 1
                 continue
@@ -333,15 +336,16 @@ public struct InboxDrain: Sendable {
 
         // The payload moves first, mirroring the writer: whatever is in `failed/`
         // should be a whole capture, not a record whose bytes are still elsewhere.
-        if let name = record.payloadFile,
-            let from = layout.payloadURL(named: name),
-            let to = layout.failedURL(named: name) {
+        // Resolved through the record, not through the bare name: a record quarantined
+        // BECAUSE its `payloadFile` was refused must not have that name honoured on the
+        // way out, or quarantine becomes the thing that carries off a sibling capture.
+        if let from = layout.payloadURL(for: record),
+            let to = layout.failedURL(named: InboxLayout.payloadFileName(for: record.id)) {
             move(from, to: to)
         }
 
         let origin = layout.recordURL(for: record.id)
-        let destination = layout.failed.appendingPathComponent(
-            InboxLayout.recordFileName(for: record.id), isDirectory: false)
+        let destination = layout.failedRecordURL(for: record.id)
         if let encoded = try? InboxRecord.makeEncoder().encode(record),
             (try? encoded.write(to: destination, options: .atomic)) != nil {
             try? fileManager.removeItem(at: origin)
@@ -369,10 +373,14 @@ public struct InboxDrain: Sendable {
             move(from, to: to)
         }
 
-        move(
-            url,
-            to: layout.failed.appendingPathComponent(
-                url.lastPathComponent, isDirectory: false))
+        // `failedURL(named:)` and not ``InboxLayout/failedRecordURL(for:)``: there is
+        // no record here to take an id from, and the file keeps the name it was
+        // enumerated under rather than being renamed into a shape it may never have
+        // had. The guard cannot refuse an enumerated name — asking it anyway is what
+        // keeps `failed/` composed in one place instead of two.
+        if let destination = layout.failedURL(named: url.lastPathComponent) {
+            move(url, to: destination)
+        }
     }
 
     // MARK: - Filesystem odds and ends

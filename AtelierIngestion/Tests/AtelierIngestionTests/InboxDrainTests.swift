@@ -304,6 +304,55 @@ struct InboxDrainTests {
         #expect(try readRecord(at: quarantined).attempts == 0)
     }
 
+    @Test("a record naming a sibling's file quarantines, and the sibling survives")
+    func aRecordCannotTakeASiblingWithIt() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        // The victim: a real capture whose payload has not landed yet, so it is merely
+        // EARLY and survives this pass untouched no matter which order the two records
+        // are enumerated in.
+        let victimID = UUID()
+        try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(), id: victimID, capturedAt: Self.capturedAt)
+        try FileManager.default.removeItem(at: layout.payloadURL(for: victimID))
+
+        // The hostile record: a `payloadFile` that is a perfectly plain component,
+        // inside the inbox, and is the victim's record. Resolving it would hand the
+        // pipeline someone else's `.json` as media and then — on either the success or
+        // the quarantine path — delete or carry off the capture it belongs to.
+        let hostileID = UUID()
+        let hostile = InboxRecord(
+            id: hostileID, capturedAt: Self.capturedAt,
+            request: .sample(collectionId: env.collectionID),
+            payloadFile: InboxLayout.recordFileName(for: victimID))
+        try InboxRecord.makeEncoder().encode(hostile)
+            .write(to: layout.recordURL(for: hostileID))
+
+        #expect(
+            await drain(env).drainOnce()
+                == DrainSummary(skippedIncomplete: 1, quarantined: 1))
+
+        // The whole point: the victim is still in the inbox, still enumerable, and
+        // still has its attempts.
+        #expect(exists(layout.recordURL(for: victimID)))
+        #expect(try readRecord(at: layout.recordURL(for: victimID)).attempts == 0)
+        #expect(try layout.pendingRecordURLs().map(\.lastPathComponent)
+            == ["\(victimID.uuidString).json"])
+        // And it was not carried into `failed/` either — quarantining the hostile
+        // record must move the hostile record and nothing else.
+        #expect(!exists(layout.failed.appendingPathComponent("\(victimID.uuidString).json")))
+
+        // The hostile record is out of the way on the first pass, attempts unspent.
+        let quarantined = layout.failed.appendingPathComponent("\(hostileID.uuidString).json")
+        #expect(exists(quarantined))
+        #expect(try readRecord(at: quarantined).attempts == 0)
+        #expect(try await env.services.collectionItems(
+            in: env.collectionID, includeArchived: false).isEmpty)
+    }
+
     @Test("a record that will not parse is quarantined with its bytes")
     func unparsableRecordIsQuarantined() async throws {
         let env = try await makeTempPipeline()

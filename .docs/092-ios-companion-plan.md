@@ -696,6 +696,14 @@ through the real share sheet on a simulator rather than only built. Every piece 
 that could be tested outside the extension is in `AtelierCapture` and is (73/4, up from
 57/3); the extension itself holds only what needs `UIKit` and `NSExtensionContext`.
 
+**A review pass over S2/S3 is underway (2026-08-15).** Its first slice, R1, has landed
+([403](../.change-log/403-a-record-that-named-its-neighbour.md)): a record's
+`payloadFile` must now be the writer's own name for that record's id, closing a case
+where a malformed record could delete or quarantine a healthy neighbouring capture;
+every `InboxWriteError` case carries the error it caught, since the extension's one log
+line was all a failure had; and `failed/` destinations are composed only by
+`InboxLayout`. Later slices add their own notes here.
+
 **What is left of S4b** is three things, and none of them blocks S5: **tier 2** (the
 Safari `NSExtensionJavaScriptPreprocessingFile` path and the smallest useful subset of
 `extension/src/extractors/`), **the ~120 MB footprint measurement** with Instruments and

@@ -117,10 +117,13 @@ final class ShareViewController: UIViewController {
             await confirmAndDismiss()
         } catch {
             // One card for every typed failure: `InboxWriteError`'s four
-            // (`InboxWriter.swift:46`–`:62`) and `LibraryLocationError`'s two, which
+            // (`InboxWriter.swift:64`–`:78`) and `LibraryLocationError`'s two, which
             // 093 § 7 flags as the one hole worth closing early — a provisioning bug
             // has to render somewhere, and this is the only surface that exists. The
-            // payloads stay in the log, where the vocabulary belongs.
+            // payloads stay in the log, where the vocabulary belongs — and this is the
+            // ONLY place they land, which is why each `InboxWriteError` case carries an
+            // `underlying` describing the error it caught (403). The card says a share
+            // was lost; this line is the only thing that can say a disk was full.
             logger.error("capture failed: \(String(describing: error), privacy: .public)")
             model.card = .failed
         }
