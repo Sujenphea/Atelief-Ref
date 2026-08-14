@@ -47,6 +47,12 @@ export class SourceStallError extends Error {
  * @param opts.maxIdleRounds consecutive empty scrolls before a `StallError`.
  * @param opts.scope         the sweep's scope token (or null → accept all).
  * @param opts.StallError    the stall error class to throw (per-platform subclass).
+ * @param opts.expandItems   optional `async (items) => items` applied to a page's items
+ *                           just before they're yielded. Runs on the PULL side, not in
+ *                           `onResponse`: expansion can be async and can fail, and the
+ *                           push path must stay synchronous and unwedgeable. A throw
+ *                           here degrades to the unexpanded page rather than killing
+ *                           the sweep — see X's thread expansion (twitter-detail-client.js).
  */
 export function createInterceptSource({
   parsePage,
@@ -58,6 +64,7 @@ export function createInterceptSource({
   maxIdleRounds = 4,
   scope = null,
   StallError = SourceStallError,
+  expandItems = null,
 } = {}) {
   if (typeof parsePage !== "function") throw new Error("createInterceptSource requires parsePage");
 
@@ -98,7 +105,15 @@ export function createInterceptSource({
       }
       idleRounds = 0;
       const page = queue.shift();
-      for (const item of page.items) yield item;
+      let items = page.items;
+      if (expandItems && items.length > 0) {
+        try {
+          items = (await expandItems(items)) || page.items;
+        } catch {
+          items = page.items;                     // expansion is a bonus, never a blocker
+        }
+      }
+      for (const item of items) yield item;
       if (page.endOfFeed) return;                 // exhausted feed → done
     }
   }

@@ -29,8 +29,8 @@ struct VideoIngestTests {
     // MARK: - Sniffing
 
     @Test("MediaProbe: an MP4 sniffs as a movie; images / junk do not")
-    func sniff() throws {
-        let mp4 = try FixtureVideos.solidVideo()
+    func sniff() async throws {
+        let mp4 = try await FixtureVideos.solidVideo()
         #expect(MediaProbe.looksLikeMovie(mp4))
         #expect(MediaProbe.movieContainer(mp4).mime == "video/mp4")
 
@@ -48,7 +48,7 @@ struct VideoIngestTests {
 
     @Test("videoMetadata → .video, display dims, duration from the container")
     func metadata() async throws {
-        let mp4 = try FixtureVideos.solidVideo(width: 320, height: 240, frames: 12, fps: 12)
+        let mp4 = try await FixtureVideos.solidVideo(width: 320, height: 240, frames: 12, fps: 12)
         let meta = try await ImageMetadata.videoMetadata(from: mp4)
 
         #expect(meta.kind == .video)
@@ -65,7 +65,7 @@ struct VideoIngestTests {
 
     @Test("makeVideoPoster → a decodable JPEG bounded to the requested size")
     func poster() async throws {
-        let mp4 = try FixtureVideos.solidVideo(width: 320, height: 240)
+        let mp4 = try await FixtureVideos.solidVideo(width: 320, height: 240)
         let jpeg = try await ThumbnailGenerator.makeVideoPoster(from: mp4, maxPixelSize: 128)
 
         let source = try #require(CGImageSourceCreateWithData(jpeg as CFData, nil))
@@ -86,7 +86,7 @@ struct VideoIngestTests {
         let env = try await makeTempPipeline()
         defer { env.cleanup() }
 
-        let mp4 = try FixtureVideos.solidVideo(width: 320, height: 240)
+        let mp4 = try await FixtureVideos.solidVideo(width: 320, height: 240)
         let input = IngestInput(
             source: .data(mp4), provenance: Self.provenance(), collectionID: env.collectionID)
         let outcome = await env.pipeline.ingest(input)
@@ -123,7 +123,7 @@ struct VideoIngestTests {
         let env = try await makeTempPipeline()
         defer { env.cleanup() }
 
-        let mp4 = try FixtureVideos.solidVideo(width: 240, height: 240)
+        let mp4 = try await FixtureVideos.solidVideo(width: 240, height: 240)
         let input = IngestInput(
             source: .data(mp4), provenance: Self.provenance(), collectionID: env.collectionID)
 

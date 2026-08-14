@@ -22,6 +22,8 @@ import {
   pinterestBoardDriver, makeResourceFetch, scrapePinterestAppVersionFromDoc, readCookie,
 } from "./bulk-pinterest.js";
 import { createTwitterSource } from "./twitter-source.js";
+import { createThreadExpander, featuresFromURL, resolveQueryId } from "./twitter-detail-client.js";
+import { createHookProxyFetch } from "./hook-proxy.js";
 import { makeSavedFeedFetch, instagramSavedDriver } from "./bulk-instagram.js";
 import { browser } from "./browser.js";
 
@@ -220,14 +222,72 @@ function buildPinterestDriver({ doc, loc, fetchImpl }) {
  * — `dispose` REMOVES the `message` listener (1A): without it every launch leaks another
  * live listener feeding a now-dead source, and a stale one could push pages into the
  * wrong sweep. The caller runs `dispose` when the sweep settles. */
-function buildTwitterDriver({ win, host, scope }) {
+function buildTwitterDriver({ win, host, scope, transport, log = () => {} }) {
+  // What the follow-up TweetDetail call needs, harvested from the page's OWN timeline
+  // requests as they stream past: the `features` blob off the request URL, and the fact
+  // (`hasAuth`) that the MAIN-world hook has the matching auth headers. The header VALUES
+  // are deliberately not here and never will be — they stay in the hook's closure and
+  // only it replays them, so nothing that authorizes a request ever crosses the page's
+  // shared `postMessage` bus ([090] 3A).
+  let harvested = null;
+
+  // Two unrelated things can leave expansion without credentials, and they point
+  // somewhere completely different: no harvest means the MAIN-world hook never handed us
+  // an auth-bearing timeline response (none seen yet — or, as happened live, a STALE hook
+  // build whose envelope predates `hasAuth` and so can never set it); no queryId means
+  // X moved the operation table. Collapsing both into `null` is what let a stale hook
+  // read as "the bundle moved" and sent the search to the one place that was fine, so
+  // the unavailable case names ITSELF via `reason` rather than leaving the caller to guess.
+  const resolveCredentials = async () => {
+    if (!harvested) {
+      return {
+        reason: "the hook has not handed over X's auth headers — no timeline response seen "
+          + "yet, or the MAIN-world hook is an older build (reload the extension)",
+      };
+    }
+    const queryId = await resolveQueryId({
+      doc: win.document,
+      // The SW fetches the bundle: a content script's cross-origin fetch is bound by
+      // the page's CORS, the SW's by host_permissions.
+      fetchBundle: async (url) => {
+        const reply = await transport({ type: BULK.bundle, url });
+        return reply && reply.text ? reply.text : null;
+      },
+      log,
+    });
+    if (!queryId) {
+      return { reason: "no TweetDetail queryId in any X bundle (the operation table moved?)" };
+    }
+    return { queryId, features: harvested.features };
+  };
+
+  // The TweetDetail call goes through the hook's proxy, so it carries the tab's session
+  // without the sweep ever holding the token. Absent on a bare test window (no
+  // `addEventListener`) — expansion is simply off then, the same graceful path a missing
+  // queryId takes.
+  const proxy = typeof win.addEventListener === "function" ? createHookProxyFetch({ win }) : null;
+
   const source = createTwitterSource({
     host,
     scope,
     scroll: () => win.scrollTo(0, win.document.body.scrollHeight),
+    // `probeRoots` is on with no toggle: a bookmarked tweet that STARTS a thread is
+    // indistinguishable from a lone tweet in the timeline, so the only way "save the
+    // whole thread" holds for the common case (bookmarking the first tweet) is to ask.
+    // The cost is one TweetDetail per bookmarked tweet that has any replies; tweets
+    // with none are screened out for free, and each conversation is fetched once.
+    expandItems: proxy
+      ? createThreadExpander({
+        resolveCredentials, probeRoots: true, host, fetchImpl: proxy.proxyFetch, log,
+      })
+      : null,
   });
   const onMessage = (event) => {
     if (event.source === win && event.data && event.data.source === TIMELINE_MESSAGE_SOURCE) {
+      const features = featuresFromURL(event.data.url);
+      // Both halves must be present: the features blob to build the request with, and the
+      // hook's word that it holds the credentials to send it with.
+      if (features && event.data.hasAuth) harvested = { features };
       source.onResponse(event.data.json, event.data.url);
     }
   };
@@ -239,7 +299,13 @@ function buildTwitterDriver({ win, host, scope }) {
   // document_start) buffers recent responses and re-posts them on this request; dedup
   // makes any overlap with the live pages idempotent.
   win.postMessage({ source: TIMELINE_REPLAY_SOURCE }, win.location.origin);
-  return { driver: source, dispose: () => win.removeEventListener("message", onMessage) };
+  return {
+    driver: source,
+    dispose: () => {
+      win.removeEventListener("message", onMessage);
+      if (proxy) proxy.dispose();              // and reject anything still in flight
+    },
+  };
 }
 
 /** Build the Instagram driver (002 · O2): a same-origin credentialled `fetch` to the
@@ -297,7 +363,7 @@ export function registerBulkController(win, browserApi) {
     const pacing = PLATFORM_PACING[spec.platform] || {};
     let built;
     if (spec.platform === "twitter") {
-      built = buildTwitterDriver({ win, host, scope: spec.scope });
+      built = buildTwitterDriver({ win, host, scope: spec.scope, transport, log });
     } else if (spec.platform === "instagram") {
       built = buildInstagramDriver({ loc: win.location, fetchImpl: win.fetch.bind(win), log });
     } else {

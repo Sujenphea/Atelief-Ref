@@ -229,12 +229,20 @@ export function buildBoardsURL({ host, username, sourceUrl, pageSize = 25, curso
  * endpoint checks: without it the request 403s; with it, 200 — `x-app-version`,
  * `x-pinterest-appstate`, `x-pinterest-source-url`, and `accept` are all irrelevant to
  * the 403. The bracketed segments are LITERAL route placeholders, NOT interpolated
- * (`www/[username]/[slug].js` is sent verbatim for every board). Only `BoardFeed` is
- * verified live; add other resources here as real requests are captured. A resource
- * with no entry sends no handler and will 403 — acceptable while that path is deferred.
+ * (`www/[username]/[slug].js` is sent verbatim for every board).
+ *
+ * Re-probed live 2026-08-14, and the check is WEAKER than first documented: the header
+ * is presence-checked, not route-matched. `BoardsResource` returned 200 for BOTH
+ * `www/[username].js` and `www/[username]/[slug].js`, and 403 only with no header at
+ * all. So an entry here does not have to be the resource's true route to work — but it
+ * is written as the true route anyway, because relying on a server-side check being lax
+ * is exactly the kind of assumption the canary exists to catch when it tightens.
+ *
+ * A resource with no entry sends no handler and will 403.
  */
 export const PWS_HANDLERS = {
   BoardFeedResource: "www/[username]/[slug].js",
+  BoardsResource: "www/[username].js",
 };
 
 /** The `/resource/{Name}/get/` name embedded in a resource URL, or null. */

@@ -90,6 +90,78 @@ struct PostGroupKeyTests {
     }
 }
 
+// MARK: - An explicitly stated key
+
+/// A source whose producer stated the grouping key outright, the way `bulk-twitter.js`
+/// does for an expanded thread.
+private func keyed(_ groupKey: JSONValue?, url: String?) -> Source {
+    Source(
+        id: UUID(), platform: .twitter, originalURL: url, capturedAt: Date(),
+        rawMetadata: groupKey.map { .object(["postGroupKey": $0]) } ?? .object([:]))
+}
+
+@Suite("Post grouping: an explicitly stated key")
+struct ExplicitPostGroupKeyTests {
+
+    @Test("a stated key wins over the URL — a thread survives the tweet-id rewrite")
+    func statedKeyWins() {
+        // The case this exists for. Ingest rewrites a `kind: "tweet"` capture's
+        // `original_url` to that tweet's canonical permalink so the tweet dedups as one
+        // identity — which would give every tweet of a thread its own group and shatter
+        // the carousel. The producer states the thread's permalink instead.
+        let head = keyed(.string("https://x.com/author/status/100"),
+                         url: "https://x.com/i/status/100")
+        let part = keyed(.string("https://x.com/author/status/100"),
+                         url: "https://x.com/i/status/101")
+        #expect(postGroupKey(for: head) == postGroupKey(for: part))
+        #expect(postGroupKey(for: head) == "https://x.com/author/status/100")
+    }
+
+    @Test("a stated key is normalized exactly like a URL")
+    func statedKeyIsNormalized() {
+        // Otherwise a producer's trailing slash or `www.` would split a post that the
+        // same string arriving as an originalURL would have grouped.
+        #expect(postGroupKey(for: keyed(.string("https://www.x.com/a/status/1/"), url: nil)) ==
+            postGroupKey(for: source("https://x.com/a/status/1")))
+    }
+
+    @Test("no stated key falls back to the URL — every existing capture is unaffected")
+    func fallsBackToURL() {
+        #expect(postGroupKey(for: keyed(nil, url: "https://x.com/a/status/1")) ==
+            "https://x.com/a/status/1")
+        // An empty or blank key is not a key; it must not swallow the URL.
+        #expect(postGroupKey(for: keyed(.string(""), url: "https://x.com/a/status/1")) ==
+            "https://x.com/a/status/1")
+        #expect(postGroupKey(for: keyed(.string("  "), url: "https://x.com/a/status/1")) ==
+            "https://x.com/a/status/1")
+    }
+
+    @Test("a non-string key is ignored — raw_metadata is JavaScript-written")
+    func nonStringIgnored() {
+        // Narrow on purpose: a wrong key FUSES unrelated posts, the invisible failure.
+        #expect(postGroupKey(for: keyed(.number(5), url: "https://x.com/a/status/1")) ==
+            "https://x.com/a/status/1")
+        #expect(postGroupKey(for: keyed(.object([:]), url: "https://x.com/a/status/1")) ==
+            "https://x.com/a/status/1")
+        #expect(postGroupKey(for: keyed(.null, url: "https://x.com/a/status/1")) ==
+            "https://x.com/a/status/1")
+    }
+
+    @Test("a stated key with no URL still groups — identity and grouping are separate")
+    func statedKeyWithoutURL() {
+        #expect(postGroupKey(for: keyed(.string("https://x.com/a/status/1"), url: nil)) ==
+            "https://x.com/a/status/1")
+    }
+
+    @Test("GUARD: different stated keys never fuse")
+    func differentKeysNeverFuse() {
+        // Two threads by the same author, captured in one sweep.
+        let a = keyed(.string("https://x.com/author/status/100"), url: "https://x.com/i/status/100")
+        let b = keyed(.string("https://x.com/author/status/900"), url: "https://x.com/i/status/900")
+        #expect(postGroupKey(for: a) != postGroupKey(for: b))
+    }
+}
+
 // MARK: - The index
 
 @Suite("Post grouping: the index")

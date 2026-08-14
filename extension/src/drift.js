@@ -10,6 +10,7 @@
 // so they're deterministically testable.
 
 import { parseTimelinePage } from "./bulk-twitter.js";
+import { collectConversationTweets, selfThreadChain, mapThread } from "./twitter-thread.js";
 import { parseBoardFeedPage, parseBoardsPage, mapPinterestPin } from "./bulk-pinterest.js";
 import {
   parseSavedFeedPage, detectChallenge, isSavedFeedRequest, isCollectionFeedRequest, IG_MEDIA_TYPE,
@@ -46,6 +47,17 @@ export function checkTimeline(json, { host = "x.com" } = {}) {
   if (page.items.length > 0 && mediaItems < 1) {
     problems.push("no media extracted from any tweet (media_url_https shape moved?)");
   }
+  // Same weakness the board feed had: `items.length >= 1` passes while most tweets are
+  // silently dropped. A tweet fans out to one item per media, so the per-TWEET key is the
+  // status id in `originalURL`, not `sourceId` (which is per-media by design). Every
+  // tweet entry must survive to at least one item.
+  const tweetIds = new Set(page.items
+    .map((item) => (String((item.provenance || {}).originalURL || "").match(/status\/(\d+)/) || [])[1])
+    .filter(Boolean));
+  if (page.tweetCount > 0 && tweetIds.size < page.tweetCount) {
+    problems.push(`${page.tweetCount - tweetIds.size} of ${page.tweetCount} tweet entries`
+      + ` mapped to no item (entry/legacy shape moved?)`);
+  }
   // The fan-out key must stay per-MEDIA: a collision means the engine's skip set
   // ([P14]) would drop every sibling of a multi-image tweet as already-seen.
   const ids = new Set(page.items.map((item) => item.sourceId));
@@ -55,8 +67,114 @@ export function checkTimeline(json, { host = "x.com" } = {}) {
   if (!page.bottomCursor) problems.push("no Bottom cursor (pagination would stall)");
   return verdict(problems, {
     tweetCount: page.tweetCount,
+    mappedTweets: tweetIds.size,
     mediaItems,
     hasCursor: !!page.bottomCursor,
+  });
+}
+
+/**
+ * X `TweetDetail`: a real conversation must still walk down to the author's own thread
+ * and map to one grouped post ([090] 1A).
+ *
+ * This is the check the thread feature was missing. Every other X parser is pinned
+ * against a real captured response; the conversation walk was pinned only against an
+ * INVENTED body, so a shape change at X — a renamed reply link, a moved author, entries
+ * nested one level deeper — would fail exactly the way this whole file exists to catch:
+ * silently, yielding an unexpanded tweet that looks like a tweet that simply wasn't
+ * threaded. Run it against a live capture of a conversation you know is a thread.
+ *
+ * `focalTweetId` is optional. Without one the check walks from EVERY tweet in the body
+ * and keeps the longest chain, which is what a threaded conversation's spine is — so an
+ * operator can save a response out of DevTools and check it without also having to dig
+ * the focal id out of the request.
+ */
+export function checkThreadDetail(json, { host = "x.com", focalTweetId = null } = {}) {
+  let tweets;
+  try {
+    tweets = collectConversationTweets(json);
+  } catch (error) {
+    return verdict([`collectConversationTweets threw: ${String(error)}`], {});
+  }
+  const problems = [];
+  const idOf = (tweet) => tweet?.rest_id || tweet?.legacy?.id_str || null;
+
+  if (tweets.length < 1) {
+    return verdict(["no tweets in the conversation (tweet_results shape moved?)"], { tweets: 0 });
+  }
+  if (tweets.some((tweet) => !idOf(tweet))) problems.push("a conversation tweet has no id");
+
+  // The reply link IS the walk. If nothing in a whole conversation carries one, the field
+  // was renamed and every chain would silently collapse to a single tweet.
+  const withParent = tweets.filter((tweet) => tweet?.legacy?.in_reply_to_status_id_str).length;
+  if (withParent < 1) {
+    problems.push("no tweet carries in_reply_to_status_id_str (the reply link moved?)");
+  }
+
+  // The author is the OTHER half of the walk — it's what separates the thread from the
+  // strangers replying to it. Named explicitly (rather than inferred from a short chain)
+  // because the two failures look identical from the outside and have different fixes:
+  // a moved author path collapses every chain to one tweet, exactly like a tweet that
+  // simply wasn't threaded.
+  const authorOf = (tweet) => {
+    const user = tweet?.core?.user_results?.result || null;
+    return user?.core?.screen_name || user?.legacy?.screen_name || null;
+  };
+  const withAuthor = tweets.filter(authorOf).length;
+  if (withAuthor < 1) {
+    problems.push("no tweet yields an author (core.user_results.result.core.screen_name moved?)");
+  }
+
+  // The longest self-chain in the body — the thread, whichever tweet was bookmarked.
+  let chain = [];
+  const candidates = focalTweetId ? [String(focalTweetId)] : tweets.map(idOf).filter(Boolean);
+  for (const id of candidates) {
+    const walked = selfThreadChain(json, id);
+    if (walked.length > chain.length) chain = walked;
+  }
+  if (chain.length < 2) {
+    problems.push(focalTweetId
+      ? `no self-thread chain from ${focalTweetId} (capture a THREADED conversation?)`
+      : "no self-thread chain of 2+ tweets found (capture a THREADED conversation?)");
+    return verdict(problems, {
+      tweets: tweets.length, withParent, withAuthor, chain: chain.length,
+    });
+  }
+
+  // The chain must still map to the grouped shape the app reads: one permalink across the
+  // whole thread (the grouping key) and a contiguous index (the open order).
+  let items = [];
+  try {
+    items = mapThread(chain, { host });
+  } catch (error) {
+    problems.push(`mapThread threw: ${String(error)}`);
+    return verdict(problems, { tweets: tweets.length, chain: chain.length });
+  }
+  if (items.length < 1) problems.push("the chain mapped to no items (mapTweet shape moved?)");
+  const permalinks = new Set(items.map((item) => item.provenance.originalURL));
+  if (permalinks.size > 1) {
+    problems.push(`${permalinks.size} permalinks across one thread (grouping key broken)`);
+  }
+  const indices = items.map((item) => item.provenance.rawMetadata.carouselIndex);
+  if (indices.some((index, position) => index !== position)) {
+    problems.push("carouselIndex is not 0…n-1 across the thread (open order broken)");
+  }
+  if (items.some((item) => !item.provenance.rawMetadata.threadId)) {
+    problems.push("an item is missing threadId");
+  }
+  const ids = new Set(items.map((item) => item.sourceId));
+  if (ids.size !== items.length) problems.push("duplicate sourceIds across the thread (dedup collision)");
+  if (items.some((item) => "threadHint" in item)) {
+    problems.push("an expanded item kept its threadHint (it would re-expand every sweep)");
+  }
+  if (!items[0].provenance.authorHandle) problems.push("no authorHandle (the author shape moved?)");
+
+  return verdict(problems, {
+    tweets: tweets.length,
+    withParent,
+    withAuthor,
+    chain: chain.length,
+    items: items.length,
   });
 }
 
@@ -71,13 +189,30 @@ export function checkBoardFeed(json, { host = "www.pinterest.com" } = {}) {
   }
   const problems = [];
   if (page.pins.length < 1) problems.push("no pins in the board feed");
-  const mapped = page.pins.map((pin) => mapPinterestPin(pin, { host })).filter(Boolean);
-  if (page.pins.length > 0 && mapped.length < 1) {
-    problems.push("no pin mapped to a BulkItem (id/images shape moved?)");
+  // The bound used to be `mapped >= 1`, which could not tell "24 of 25 mapped, the 25th
+  // is an injected story card" from "3 of 25 mapped, the parser is broken" — the second
+  // reads as a small board rather than as drift, which is the silent degradation this
+  // file exists to catch. Pinterest interleaves NON-PIN modules into `data[]`
+  // (`type: "story"`, e.g. `related_interests_module`), so they are excluded from the
+  // denominator rather than tolerated in the numerator: every entry that CLAIMS to be a
+  // pin must map. An entry with no `type` counts as a pin — if we cannot tell what it
+  // is, it has to map or we hear about it.
+  const isPinEntry = (pin) => !pin || pin.type == null || pin.type === "pin";
+  const pinEntries = page.pins.filter(isPinEntry);
+  const modules = page.pins.length - pinEntries.length;
+  const mapped = pinEntries.map((pin) => mapPinterestPin(pin, { host })).filter(Boolean);
+  if (page.pins.length > 0 && pinEntries.length < 1) {
+    problems.push(`every one of ${page.pins.length} entries is a non-pin module (type shape moved?)`);
+  }
+  if (mapped.length < pinEntries.length) {
+    problems.push(`${pinEntries.length - mapped.length} of ${pinEntries.length} pin entries`
+      + ` failed to map (id/images shape moved?)`);
   }
   if (!page.bookmark) problems.push("no bookmark cursor (pagination would stall)");
   return verdict(problems, {
     pins: page.pins.length,
+    pinEntries: pinEntries.length,
+    modules,
     mapped: mapped.length,
     hasBookmark: !!page.bookmark,
   });
@@ -171,6 +306,7 @@ export function checkInstagramSaved(json, { host = "www.instagram.com" } = {}) {
 /** The registered checks, by the `--<name>` flag the CLI accepts. */
 export const CHECKS = {
   x: { label: "X timeline (Bookmarks/Likes)", run: checkTimeline },
+  "x-thread": { label: "X thread (TweetDetail)", run: checkThreadDetail },
   "pinterest-board": { label: "Pinterest board feed", run: checkBoardFeed },
   "pinterest-boards": { label: "Pinterest boards list", run: checkBoards },
   instagram: { label: "Instagram saved feed", run: checkInstagramSaved },

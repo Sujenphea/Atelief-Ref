@@ -16,7 +16,7 @@ struct AnalysisSourceTests {
     /// Ingest a real video through the pipeline (blob + poster tiers on disk) and
     /// return its asset.
     private func ingestVideo(_ env: TempPipeline) async throws -> Asset {
-        let mp4 = try FixtureVideos.solidVideo(width: 320, height: 240)
+        let mp4 = try await FixtureVideos.solidVideo(width: 320, height: 240)
         let outcome = await env.pipeline.ingest(IngestInput(
             source: .data(mp4),
             provenance: SourceDraft(platform: .localPaste, capturedAt: Date()),

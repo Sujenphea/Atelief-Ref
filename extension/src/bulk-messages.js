@@ -12,6 +12,10 @@ export const BULK = Object.freeze({
   known: "atelier-bulk-known",     // → string[] (sourceIds)
   relay: "atelier-bulk-relay",     // → an ingestOne result (classified content-side)
   complete: "atelier-bulk-complete", // → true
+  // → { text } — a platform JS bundle, fetched BY THE SW. Not a localhost op: it is
+  // here because a content script's cross-origin fetch is bound by the page's CORS,
+  // while the SW's is covered by `host_permissions`. Host-allowlisted SW-side.
+  bundle: "atelier-bulk-bundle",
 });
 
 /** The runtime-message type that launches a sweep on a tab's content-script
@@ -53,6 +57,15 @@ export const TIMELINE_MESSAGE_SOURCE = "atelier-x-timeline";
  * items all fit on page 1 — captures nothing (the auto-scroll only hits the empty tail).
  * Duplicated as a literal in twitter-hook.js — KEEP IN SYNC. */
 export const TIMELINE_REPLAY_SOURCE = "atelier-x-timeline-replay";
+
+/** The request/reply tag pair for the hook's REQUEST PROXY ([090] 3A). The controller
+ * posts `{ source: HOOK_PROXY_REQUEST_SOURCE, id, url }`; the MAIN-world hook replays its
+ * stored auth headers onto that url and posts back `{ source: HOOK_PROXY_REPLY_SOURCE,
+ * id, status, json }`. This pair exists so the credentials never have to: the hook holds
+ * them, the controller holds a correlation id, and only the BODY crosses. Duplicated as
+ * literals in twitter-hook.js (a MAIN-world classic script can't import) — KEEP IN SYNC. */
+export const HOOK_PROXY_REQUEST_SOURCE = "atelier-x-proxy-request";
+export const HOOK_PROXY_REPLY_SOURCE = "atelier-x-proxy-reply";
 // (Instagram uses NO MAIN-world hook — its saved feed is replayed directly from the
 // content script via a credentialled fetch, 002 · O2 — so it needs no message tags.)
 

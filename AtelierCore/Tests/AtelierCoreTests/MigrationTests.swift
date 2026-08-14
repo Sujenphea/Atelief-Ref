@@ -88,7 +88,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -3056,5 +3056,122 @@ struct MigrationV22Tests {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_suppression")
         }
         #expect(count == 0)
+    }
+}
+
+// MARK: - v23 (047 — the analysis marker)
+
+/// The v23 backfill has one job: after upgrading, exactly the same assets are
+/// pending as before. "Pending" used to mean `analyzed_at > embedded_at`, so each
+/// case below pins one side of that comparison — including the EQUAL case, which is
+/// the one the old predicate got wrong in practice (it said "not stale", and two
+/// writes in the same millisecond compare equal).
+@Suite("Migration v23 — the analysis marker")
+struct MigrationV23Tests {
+
+    private static let base = "2026-01-01 00:00:00.000"
+
+    /// Seed source + asset + analysis + (optional) embedding directly, at chosen times.
+    private func seed(
+        _ db: Database, analyzedAt: String, embeddedAt: String?
+    ) throws -> String {
+        let sourceID = UUID().uuidString, assetID = UUID().uuidString
+        try db.execute(sql: """
+            INSERT INTO source (id, platform, captured_at, raw_metadata)
+            VALUES (?, 'web', ?, '{}');
+            """, arguments: [sourceID, Self.base])
+        try db.execute(sql: """
+            INSERT INTO asset (id, kind, download_state, created_at, source_id)
+            VALUES (?, 'image', 'downloaded', ?, ?);
+            """, arguments: [assetID, Self.base, sourceID])
+        try db.execute(sql: """
+            INSERT INTO asset_analysis (asset_id, ocr_text, analyzed_at, analyzer_version)
+            VALUES (?, 'grid system', ?, 1);
+            """, arguments: [assetID, analyzedAt])
+        if let embeddedAt {
+            try db.execute(sql: """
+                INSERT INTO asset_embedding
+                    (asset_id, model_version, content_hash, vector, embedded_at)
+                VALUES (?, 1, 'hash', X'00', ?);
+                """, arguments: [assetID, embeddedAt])
+        }
+        return assetID
+    }
+
+    private func seq(_ db: Database, table: String, assetID: String) throws -> Int? {
+        try Int.fetchOne(
+            db, sql: "SELECT analysis_seq FROM \(table) WHERE asset_id = ?",
+            arguments: [assetID])
+    }
+
+    @Test("the backfill reproduces the old analyzed_at > embedded_at verdict exactly")
+    func backfillMatchesTheOldPredicate() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v22")
+
+        let ids = try dbQueue.write { db -> (stale: String, fresh: String, tied: String) in
+            (stale: try seed(db, analyzedAt: "2026-01-02 00:00:00.000",
+                             embeddedAt: "2026-01-01 00:00:00.000"),
+             fresh: try seed(db, analyzedAt: "2026-01-01 00:00:00.000",
+                             embeddedAt: "2026-01-02 00:00:00.000"),
+             tied: try seed(db, analyzedAt: "2026-01-03 00:00:00.000",
+                            embeddedAt: "2026-01-03 00:00:00.000"))
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)   // apply v23
+
+        try dbQueue.read { db in
+            // Every analysis is numbered, and the numbering is total.
+            let analysisNumbers = try [ids.stale, ids.fresh, ids.tied]
+                .map { try seq(db, table: "asset_analysis", assetID: $0) }
+            #expect(analysisNumbers.allSatisfy { $0 != nil })
+            #expect(Set(analysisNumbers.compactMap { $0 }).count == 3,
+                    "numbering must be total, not colliding")
+
+            // The analysis arrived AFTER the embedding → was stale → stays stale.
+            let staleSeq = try seq(db, table: "asset_embedding", assetID: ids.stale)
+            #expect(staleSeq == nil)
+            // The embedding already covered its analysis → was not stale → adopts it.
+            let freshEmbedding = try seq(db, table: "asset_embedding", assetID: ids.fresh)
+            #expect(freshEmbedding == analysisNumbers[1])
+            // EQUAL timestamps: the old predicate said "not stale", so the upgrade must
+            // agree — otherwise every tied row in an existing library re-embeds on
+            // upgrade, which is a migration doing model work.
+            let tiedEmbedding = try seq(db, table: "asset_embedding", assetID: ids.tied)
+            #expect(tiedEmbedding == analysisNumbers[2])
+        }
+    }
+
+    @Test("an asset never analyzed is not made stale by the upgrade")
+    func neverAnalyzedStaysNull() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v22")
+        let assetID = try dbQueue.write { db -> String in
+            let sourceID = UUID().uuidString, assetID = UUID().uuidString
+            try db.execute(sql: """
+                INSERT INTO source (id, platform, captured_at, raw_metadata)
+                VALUES (?, 'web', ?, '{}');
+                """, arguments: [sourceID, Self.base])
+            try db.execute(sql: """
+                INSERT INTO asset (id, kind, download_state, created_at, source_id)
+                VALUES (?, 'image', 'downloaded', ?, ?);
+                """, arguments: [assetID, Self.base, sourceID])
+            try db.execute(sql: """
+                INSERT INTO asset_embedding
+                    (asset_id, model_version, content_hash, vector, embedded_at)
+                VALUES (?, 1, 'hash', X'00', ?);
+                """, arguments: [assetID, Self.base])
+            return assetID
+        }
+
+        try Migrator.makeMigrator().migrate(dbQueue)
+
+        try dbQueue.read { db in
+            // No analysis row at all → nothing to be newer than the embedding. The
+            // backfill query requires a non-null analysis marker, so this asset is not
+            // pending, which is what the old predicate said too.
+            let embeddingSeq = try seq(db, table: "asset_embedding", assetID: assetID)
+            #expect(embeddingSeq == nil)
+        }
     }
 }

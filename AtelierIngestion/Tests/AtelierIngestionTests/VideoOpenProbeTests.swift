@@ -54,11 +54,11 @@ struct VideoOpenProbeTests {
     }
 
     /// The clip to measure: `ATELIER_VIDEO_PROBE_PATH`, else a written fixture.
-    private func probeVideoURL() throws -> (url: URL, isReal: Bool) {
+    private func probeVideoURL() async throws -> (url: URL, isReal: Bool) {
         if let path = ProcessInfo.processInfo.environment["ATELIER_VIDEO_PROBE_PATH"] {
             return (URL(fileURLWithPath: path), true)
         }
-        let data = try FixtureVideos.solidVideo(width: 640, height: 480, frames: 30, fps: 30)
+        let data = try await FixtureVideos.solidVideo(width: 640, height: 480, frames: 30, fps: 30)
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("AtelierVideoProbe", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -81,7 +81,7 @@ struct VideoOpenProbeTests {
 
     @Test("time the four costs on the video-open path")
     func measure() async throws {
-        let (videoURL, isReal) = try probeVideoURL()
+        let (videoURL, isReal) = try await probeVideoURL()
         let posterURL = try await posterJPEG(for: videoURL)
         let bytes = (try? FileManager.default
             .attributesOfItem(atPath: videoURL.path)[.size] as? Int) ?? 0
