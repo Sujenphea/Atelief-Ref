@@ -27,11 +27,16 @@ const isLongDigits = (s) => /^\d{8,}[A-Za-z]?$/.test(s);
 // Values that are part of the response FORMAT, not its content. Kept verbatim so the
 // fixture still looks like the thing it is a fixture of. Everything here is eyeballed —
 // the list is short on purpose, and the audit re-reports whatever survives regardless.
+// NOTE the lowercase rule is deliberately NOT `^[a-z][a-z0-9_]*$`. That shape also
+// matches user content — `testing2` is a pin description, `mariosworld343` is an author
+// name — and shielding it here stopped `isOpaqueId` from ever firing on it. A real
+// snake_case enum has an underscore; a bare lowercase word has no digits.
 const SCHEMA_CONSTANT = [
-  /^XDT[A-Za-z]+$/,          // GraphQL typenames: XDTFeedMedia, XDTCarouselContainerMedia
-  /^[a-z][a-z0-9_]*$/,       // snake_case enums: carousel_container, licensed_music
-  /^[A-Z][A-Z0-9_]*$/,       // UPPER_SNAKE enums: NONE, USER_NOT_IN_TEST_GROUP, DEFAULT
-  /^[A-Z][a-z]+$/,           // single capitalised words: Active
+  /^XDT[A-Za-z]+$/,               // GraphQL typenames: XDTFeedMedia
+  /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/, // snake_case enums: carousel_container, react_grid_pin
+  /^[a-z]+$/,                     // bare lowercase words: clips, board, pin
+  /^[A-Z][A-Z0-9_]*$/,            // UPPER_SNAKE enums: NONE, DEFAULT, NZD
+  /^[A-Z][a-z]+$/,                // single capitalised words: Active
 ];
 const isSchemaConstant = (s) => SCHEMA_CONSTANT.some((re) => re.test(s));
 
@@ -57,6 +62,9 @@ const isPhone = (s) => /^\+?[\d\s()-]{7,}$/.test(s) && (s.match(/\d/g) || []).le
 // `/sujenphea0843/test2/` names both a person and a board, and the Pinterest mapper
 // reads exactly this field.
 const isPath = (s) => /^\/[^\s?#]*\/?$/.test(s) && s.length > 1;
+// Money. `NZ$76.00` is the price of a pinned product — content, and it matched nothing:
+// no whitespace, under the free-text length, and `$` is outside every id/token class.
+const isMoney = (s) => /[$\u20ac\u00a3\u00a5]/.test(s) && /\d/.test(s);
 
 // ---------------------------------------------------------------------------
 // Identity strings, collected STRUCTURALLY then replaced GLOBALLY by value
@@ -67,7 +75,10 @@ const isPath = (s) => /^\/[^\s?#]*\/?$/.test(s) && s.length > 1;
 // the document — including keys the collector never looked at. Collection is key-
 // assisted; replacement is not.
 
-const IDENTITY_KEY = /username|full_name|biography|^name$|nickname|profile_grid|owner_name/i;
+// `author_name` was missing and leaked `mariosworld343`; `site_name` names the source
+// brand of a pin. Collection is broad on purpose — a false positive costs one synthetic
+// string, a false negative is a leak.
+const IDENTITY_KEY = /username|full_name|biography|^name$|nickname|profile_grid|owner_name|author_name|site_name|creator|pinner/i;
 const identity = new Set();
 
 function collectIdentity(node, key = "") {
@@ -104,14 +115,28 @@ collectViewer(raw);
 // ---------------------------------------------------------------------------
 
 const memo = new Map();
-const counters = { url: 0, id: 0, token: 0, text: 0, handle: 0, code: 0, path: 0, contact: 0, forced: 0, num: 0 };
+const counters = { url: 0, id: 0, token: 0, text: 0, handle: 0, code: 0, path: 0, contact: 0, forced: 0, host: 0, money: 0, num: 0 };
 
-// Hosts are KEPT — the mappers branch on them (i.pinimg.com's size segment, the
-// pbs/video.twimg split), so replacing them would break the very signal the fixture
-// exists to prove. A locale subdomain is the exception: `REDACTED` says where
-// the capture was taken from and the driver targets `www` anyway.
-const normaliseHost = (h) => h.replace(/^[a-z]{2}\.pinterest\.com$/, "www.pinterest.com");
-const isBareHost = (s) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(s) && /[a-z]{2}$/.test(s);
+// PLATFORM hosts are kept — the mappers branch on them (i.pinimg.com's size segment, the
+// pbs/video.twimg split), so replacing them would break the very signal the fixture exists
+// to prove. Everything else is content: a board feed carries the SOURCE domain of every
+// pin, and keeping those both reveals what was pinned and smuggles handles through
+// wholesale (`mightyape` survived inside `mightyape.co.nz`, `creativebysanchez` inside its
+// own domain) because the audit matches substrings.
+const PLATFORM_HOST = /^(www\.)?(pinterest\.com|pinimg\.com|instagram\.com|cdninstagram\.com|fbcdn\.net|twimg\.com|x\.com|twitter\.com)$|\.(pinimg\.com|cdninstagram\.com|fbcdn\.net|twimg\.com)$/;
+const isBareHost = (s) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(s) && /\.[a-z]{2,}$/.test(s);
+
+function normaliseHost(h) {
+  // A locale subdomain says where the capture was taken; the driver targets `www`.
+  const local = h.replace(/^[a-z]{2}\.pinterest\.com$/, "www.pinterest.com");
+  if (PLATFORM_HOST.test(local)) return local;
+  if (memoHost.has(h)) return memoHost.get(h);
+  const tld = (h.match(/\.([a-z]{2,})$/) || [, "com"])[1];
+  const out = `sample${++counters.host}.example.${tld}`;
+  memoHost.set(h, out);
+  return out;
+}
+const memoHost = new Map();
 
 function syntheticUrl(s) {
   let u;
@@ -141,6 +166,7 @@ function replaceString(s) {
   let out = s;
   if (identity.has(s)) out = `sampleuser${++counters.handle}`;
   else if (isEmail(s)) out = `sample${++counters.contact}@example.invalid`;
+  else if (isMoney(s)) out = `$${++counters.money}.00`;
   else if (isPhone(s)) out = `+10000000${counters.contact++}`;
   else if (isUrl(s)) out = syntheticUrl(s);
   else if (isBareHost(s)) out = normaliseHost(s);

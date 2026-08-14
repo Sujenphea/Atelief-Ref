@@ -37,7 +37,7 @@ import { CHECKS, fixtureStaleReminder } from "../src/drift.js";
 // own reduction still parsed.
 const FIXTURE = {
   x: "../test/fixtures/x-bookmarks-live.json",
-  "pinterest-board": "../test/fixtures/pinterest-boardfeed.json",
+  "pinterest-board": "../test/fixtures/pinterest-boardfeed-live.json",
   "pinterest-boards": "../test/fixtures/pinterest-boards-live.json",
   instagram: "../test/fixtures/instagram-saved-live.json",
   "x-thread": "../test/fixtures/x-thread-detail.json",

@@ -133,3 +133,41 @@ run. `audit-capture.js` exits non-zero on any leak, so it can gate a future refr
 The README says outright that the leaked/structural split is a **triage aid, not a
 verdict**, and that the survivor list must be read every time — because handles and enums
 are the same shape, which is the one thing the tooling cannot decide for you.
+
+## Addendum 2 — the board feed, and four more leak classes
+
+The Pinterest board-feed capture landed once automatic downloads were unblocked for the
+site. It is a far richer document than the boards list — 695 distinct leaf strings against
+90 — and it broke the sweep in four new ways, all caught by the audit:
+
+- **Third-party hosts were being kept.** The rule kept *every* host, on the reasoning that
+  the mappers branch on them. True for `i.pinimg.com`; false for the SOURCE domain of each
+  pin, which is content. Worse, keeping them smuggled handles through wholesale, because
+  the audit matches substrings: `mightyape` survived inside `mightyape.co.nz`,
+  `creativebysanchez` inside its own domain. Only PLATFORM hosts are kept now.
+- **`attribution.author_name`** was not in the identity key set — `mariosworld343`, `daito`.
+- **`NZ$76.00`** — a product price. No whitespace, under the free-text length, and `$` is
+  outside every id and token character class, so nothing matched it.
+- **`^[a-z][a-z0-9_]*$` was shielding user content.** It was meant to spare snake_case
+  enums, but it also matches `testing2` (a pin description) — and, being consulted by
+  `isOpaqueId`, it actively *stopped* the opaque-id rule from firing. The rule is now
+  "an enum has an underscore; a bare word has no digits", mirrored in the audit.
+
+That last one is the same failure as the shortcodes, one level down: a rule written to
+protect schema was quietly protecting content, because the two are the same shape and the
+permissive reading was the convenient one.
+
+Final audit across all three captures: **0 leaked**, 19 / 10 / 54 survivors, each read.
+All three fixtures were regenerated under the tightened rules, not just the new one.
+
+**`pins=25 mapped=24` is not drift.** Pinterest interleaves `type: "story"` modules into
+`data[]` — the 15th entry is a `related_interests_module` "More ideas" card with an 8-char
+id and no `images` — and `mapPinterestPin` correctly returns null. Recorded in the README
+so the next reader does not go hunting for a mapper bug.
+
+**X-APP-VERSION drifts intraday.** `194583e` at 08:40 and `be501f2` at 12:51 the same day,
+against `1df0da9` 42 days earlier. The "drifted in 42 days" framing above is too generous:
+the marker is a sample, not a constant, which is the strongest possible argument for
+scraping it at runtime.
+
+Gate: **7/7 green**, 520 extension tests.

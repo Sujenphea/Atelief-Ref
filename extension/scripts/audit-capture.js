@@ -33,16 +33,22 @@ const leaves = new Set();
 // what opaque identifiers do and schema constants do not.
 const STRUCTURAL = [
   /^XDT[A-Za-z]+$/,
-  /^[a-z][a-z0-9_]*$/,
+  // Mirrors the sanitizer: an enum has an underscore, a bare word has no digits. The
+  // permissive `^[a-z][a-z0-9_]*$` this replaced excused `testing2` (a pin description)
+  // and `mariosworld343` (an author name) as though they were schema.
+  /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/,
+  /^[a-z]+$/,
   /^[A-Z][A-Z0-9_]*$/,
   /^[A-Z][a-z]+$/,
   /^[a-z]+\/[a-z0-9.+-]+$/,   // mime types: application/json
   /^\d{1,7}$/,                // short numeric literals ("0") — too short to be an id
+  /^#[0-9a-fA-F]{3,8}$/,      // dominant_color hex — derived from pixels, names nobody
+  /^\s+$/,                    // whitespace-only leaves
   /^-end-$/,                  // Pinterest's end-of-feed cursor sentinel — load-bearing
   // Hosts survive by design (see normaliseHost in the sanitizer). Listed explicitly so
   // that a host is a DECISION recorded here, not something the shape rules waved through.
-  /^(www\.pinterest\.com|i\.pinimg\.com|www\.instagram\.com|[a-z0-9-]+\.cdninstagram\.com|[a-z0-9-]+\.fbcdn\.net|x\.com|pbs\.twimg\.com|video\.twimg\.com)$/,
-  /^https:\/\/(www\.pinterest\.com|www\.instagram\.com|x\.com)\/?$/,
+  /^(www\.pinterest\.com|i\.pinimg\.com|instagram\.com|www\.instagram\.com|[a-z0-9-]+\.cdninstagram\.com|[a-z0-9-]+\.fbcdn\.net|x\.com|pbs\.twimg\.com|video\.twimg\.com)$/,
+  /^https:\/\/(www\.pinterest\.com|instagram\.com|www\.instagram\.com|x\.com)\/?$/,
 ];
 const looksStructural = (s) => s.length <= 40 && STRUCTURAL.some((re) => re.test(s));
 

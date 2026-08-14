@@ -29,13 +29,12 @@
     "pinterest": {
       "capturedAt": "2026-08-14",
       "staleAfterDays": 30,
-      "appVersion": "194583e",
-      "previousAppVersion": "1df0da9",
+      "appVersion": "be501f2",
+      "appVersionsSeen": ["1df0da9 (2026-07-03)", "194583e (2026-08-14 08:40)", "be501f2 (2026-08-14 12:51)"],
       "pwsHandler": "www/[username]/[slug].js",
       "boardsPwsHandler": "www/[username].js",
-      "fixtures": ["pinterest-boards-live.json"],
-      "boardFeedLiveFixture": "PENDING — the board-feed capture exists but Chrome has automatic downloads blocked for pinterest.com, so it could not be written to disk. `pinterest-board` still runs the composed pinterest-boardfeed.json until it lands.",
-      "note": "Re-verified live 2026-08-14. X-APP-VERSION DRIFTED 1df0da9 -> 194583e in 42 days, which is why it is scraped at runtime and never sent from here. The SOLE 403 gatekeeper on /resource/ is still x-pinterest-pws-handler (019 T10, reconfirmed): omit it -> 403, send it -> 200. NEW: the value is presence-checked, NOT route-matched — BoardsResource returned 200 for BOTH 'www/[username].js' and 'www/[username]/[slug].js', so the boards path is no longer blocked on discovering its own handler. Bracketed segments stay literal (never interpolated). Capture host was REDACTED, normalised to www.pinterest.com in the fixture."
+      "fixtures": ["pinterest-boards-live.json", "pinterest-boardfeed-live.json"],
+      "note": "Re-verified live 2026-08-14. X-APP-VERSION DRIFTS INTRADAY, not on a release cadence: 194583e and be501f2 were observed FOUR HOURS APART on the same day (and 1df0da9 42 days before). Treat the value here as a sample, never a constant — it is scraped at runtime and never sent from here. The SOLE 403 gatekeeper on /resource/ is still x-pinterest-pws-handler (019 T10, reconfirmed): omit it -> 403, send it -> 200. NEW: the value is presence-checked, NOT route-matched — BoardsResource returned 200 for BOTH 'www/[username].js' and 'www/[username]/[slug].js', so the boards path is no longer blocked on discovering its own handler. Bracketed segments stay literal (never interpolated). Capture host was REDACTED, normalised to www.pinterest.com in the fixture."
     },
     "instagram": {
       "capturedAt": "2026-08-14",
