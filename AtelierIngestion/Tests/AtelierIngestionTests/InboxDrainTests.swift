@@ -26,6 +26,14 @@
 // the drain are the real ones throughout. The single exception is
 // `InboxDrain.resolve(_:outcome:into:)`, called directly with `.cancelled` — see the
 // test for why that outcome cannot be produced from outside on purpose.
+//
+// **And where R6's race test stands from.** Everything above proves the drain's
+// REACTION to a torn inbox by hand-building one: a record whose payload has been
+// deleted, a `.json` that was never valid. That is the right way to pin a reaction,
+// and it never once ran the writer that the two-phase design says can only produce
+// states the drain survives. The last test in this file does: a real `InboxWriter`
+// committing captures while a real `InboxDrain` passes over the same directory, with
+// the assertions written so that no interleaving can change any of them.
 
 import Foundation
 import Testing
@@ -994,6 +1002,304 @@ struct InboxDrainTests {
         #expect(await self.drain(env).drainOnce() == DrainSummary(ingested: 2))
         #expect(try layout.pendingRecordURLs().isEmpty)
     }
+
+    // MARK: - The writer and the drain, actually running at once (R6 · issue 10)
+
+    /// The shapes one round of the race writes, cycled so all three are in flight
+    /// throughout rather than grouped.
+    ///
+    /// Twenty-four of them: enough that the writer is still committing captures
+    /// while the drain is enumerating — which is the entire window this test exists
+    /// to open — and few enough that four rounds of it stay cheap. Nothing below
+    /// spells the number again; the plan built from this is what every count is
+    /// taken from.
+    private static let raceShapes: [RaceShape] = (0 ..< 24).map {
+        RaceShape.allCases[$0 % RaceShape.allCases.count]
+    }
+
+    /// The captures one round will write, in order — identities and shapes only.
+    ///
+    /// **What is NOT here is the point.** The bytes and the provider's temporary file
+    /// are produced inside the write loop rather than hoisted into this plan, and the
+    /// difference is not stylistic: hoisted, the writer commits twenty-four captures
+    /// in a few milliseconds and finishes before the drain has completed a single
+    /// pass, so the two never overlap and the race is a race in name only (measured:
+    /// one drain pass per round, against seven hundred with the work left in place).
+    /// A share extension does not commit captures back to back either — it encodes an
+    /// image between them — and it is that gap that puts the two tasks in the same
+    /// time domain.
+    ///
+    /// **Every capture is distinct in every way identity is decided**, because a test
+    /// about duplication cannot afford captures that legitimately collapse: the bytes
+    /// differ by index (18A dedups a byte asset on its blob hash), the link URLs
+    /// differ (a content asset dedups on `(kind, dedupKey)`, and a link's key is its
+    /// canonical URL), and the capture times differ by a whole second each — the last
+    /// being what identifies a capture on the library side once its id has been left
+    /// behind.
+    private static func racePlan() -> [RaceCapture] {
+        raceShapes.enumerated().map { index, shape in
+            RaceCapture(
+                id: UUID(),
+                capturedAt: capturedAt.addingTimeInterval(Double(index)),
+                index: index,
+                shape: shape)
+        }
+    }
+
+    /// The bytes and the request for one planned capture, produced at the moment the
+    /// writer is about to commit it — the share extension's own order of work.
+    private static func raceRequest(
+        for capture: RaceCapture, collectionID: UUID, scratch: URL
+    ) throws -> (CaptureRequest, PayloadSource?) {
+        switch capture.shape {
+        case .inlineBytes:
+            return (
+                .sample(collectionId: collectionID),
+                .data(CaptureFixtures.png(width: 40 + capture.index, height: 30))
+            )
+        case .fileBytes:
+            // A provider's temporary file, which the writer COPIES into `.staging/`
+            // rather than loading — the second of its two staging paths, sharing one
+            // ordering and therefore owing the same guarantee.
+            let file = scratch.appendingPathComponent(
+                "\(capture.index).png", isDirectory: false)
+            try CaptureFixtures.png(width: 40 + capture.index, height: 30).write(to: file)
+            return (.sample(collectionId: collectionID), .fileURL(file))
+        case .mediaLess:
+            return (
+                .sampleContent(
+                    kind: "link",
+                    payload: AssetPayload(
+                        link: LinkPayload(
+                            url: "https://ex.com/race/\(capture.index)",
+                            title: "R\(capture.index)")),
+                    collectionId: collectionID),
+                nil
+            )
+        }
+    }
+
+    /// The claim `InboxWriter`'s header makes, run rather than argued: a writer and a
+    /// drain with no lock between them, going at the same inbox at the same time,
+    /// cannot between them lose a capture, ingest one twice, or turn one into a
+    /// quarantined file.
+    ///
+    /// **Every assertion is an invariant, never a sequence and never a schedule.**
+    /// How many captures a given pass ingested, how many passes ran, which task got
+    /// there first — none of that is asserted anywhere, because all of it is a fact
+    /// about one machine on one afternoon. What is asserted holds at every possible
+    /// interleaving: the counts that must be zero are zero, the total that must be
+    /// `plan.count` is, and the set of captures in the library is the set that was
+    /// written. There is no `sleep`, no deadline, no wall clock and no retry-until-
+    /// green anywhere in it; the writer finishing is what ends the race, and the
+    /// final accounting happens when nothing is running.
+    ///
+    /// **`round` is read by nothing.** It exists so the race runs four times in one
+    /// execution with four different interleavings, which is the only way a test of
+    /// this shape gets any coverage of the schedule space at all.
+    ///
+    /// **What this does NOT prove**, and the distance matters. It is two tasks in one
+    /// process against one filesystem — not an extension and an app, which is what
+    /// ships. There is no jetsam here, no data-protection class, no App Group
+    /// container, and no second address space; what is genuinely exercised is that
+    /// `rename(2)` within a volume publishes a file whole and in order, and that the
+    /// drain's reaction to what that produces is correct. iOS's own ordering
+    /// guarantees are not what this runs.
+    @Test(
+        "a live writer and a live drain never lose, duplicate or corrupt a capture",
+        arguments: 1 ... 4)
+    func writerAndDrainRaceHoldsTheInvariant(round: Int) async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let racingDrain = drain(env)
+
+        // The provider's temporary files for the `.fileURL` shape. Outside the
+        // library root, because a scratch file inside it is a thing a later reader
+        // has to rule out of every count below.
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("InboxRace-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        let plan = Self.racePlan()
+        let log = RaceLog()
+
+        async let writing: Void = Self.runRaceWriter(
+            plan, libraryRoot: env.root, collectionID: env.collectionID,
+            scratch: scratch, log: log)
+        async let observing: RaceObservations = Self.runRaceDrain(
+            racingDrain, services: env.services, collectionID: env.collectionID,
+            layout: layout, log: log)
+
+        try await writing
+        let observed = await observing
+
+        // Nothing is running now — the writer returned and the drain loop saw it
+        // finish — so one last pass takes whatever the race left in the inbox, and
+        // from here the accounting is arithmetic rather than a race.
+        let final = await drain(env).drainOnce()
+
+        // 1. Nothing is corrupt. A quarantine would mean the drain read a
+        //    half-written record as MALFORMED; a retry would mean it read one as
+        //    FAILED rather than as early. The atomic moves exist to make both
+        //    unreachable, so neither is a matter of timing: there is no interleaving
+        //    of these two tasks that is allowed to produce either.
+        #expect(observed.quarantined == 0)
+        #expect(observed.retrying == 0)
+        #expect(observed.unreadable == 0)
+        #expect(final.quarantined == 0 && final.retrying == 0)
+        #expect(!exists(layout.failed))
+
+        // 2. Nothing was ever seen HALF-COMMITTED, which is the ordering claim
+        //    itself. `skippedIncomplete` counts records the drain found without their
+        //    payload — the state the writer's phase order says it cannot leave behind
+        //    except by dying between the two, which nothing here does. Hundreds of
+        //    enumerations per round land inside a live write and not one of them may
+        //    see it. It is also the assertion that bites: reversing the writer's two
+        //    phases fails this line, in all four rounds, and nothing else in the test
+        //    notices.
+        #expect(observed.skippedIncomplete == 0)
+
+        // 3. Nothing was lost at any moment DURING the race: every capture the
+        //    writer had committed was in the inbox or in the library each time the
+        //    question was asked, mid-flight.
+        #expect(
+            observed.violations.isEmpty,
+            "captures in neither place: \(observed.violations)")
+
+        // 4. Nothing was lost or duplicated in the end. How many captures any ONE
+        //    pass ingested is timing-dependent and is asserted nowhere; the sum over
+        //    every pass is not, because each capture ingests exactly once. Anything
+        //    but `plan.count` is a capture the race dropped or one it ran twice.
+        #expect(observed.ingested + final.ingested == plan.count)
+
+        // And the library agrees, by identity rather than by count: `capturedAt` is
+        // distinct per capture and survives into `source.capturedAt`, so this is the
+        // set of captures that arrived, not merely how many did.
+        let items = try await env.services.collectionItems(
+            in: env.collectionID, includeArchived: false)
+        #expect(items.count == plan.count)
+        #expect(Set(items.map(\.source.capturedAt)) == Set(plan.map(\.capturedAt)))
+        #expect(env.blobFiles().count == plan.filter { $0.shape != .mediaLess }.count)
+
+        // 5. And the inbox is empty of everything the race put in it: no record, no
+        //    orphaned sidecar, nothing left behind in `.staging/`.
+        #expect(try layout.pendingRecordURLs().isEmpty)
+        #expect(
+            try FileManager.default.contentsOfDirectory(
+                at: layout.directory, includingPropertiesForKeys: nil)
+                .map(\.lastPathComponent) == [InboxLayout.stagingDirectoryName])
+        #expect(
+            try FileManager.default.contentsOfDirectory(
+                at: layout.staging, includingPropertiesForKeys: nil).isEmpty)
+    }
+
+    /// The producer half: every capture in `plan` through the real ``InboxWriter``,
+    /// into an inbox a real ``InboxDrain`` is passing over the whole time.
+    ///
+    /// `Task.yield()` between captures is not a delay and nothing is asserted about
+    /// what it achieves. It is the one line that gives the drain task a chance at the
+    /// CPU between two writes on a machine that would otherwise run them back to
+    /// back; the test is correct with or without it, and interleaves far more with.
+    private static func runRaceWriter(
+        _ plan: [RaceCapture], libraryRoot: URL, collectionID: UUID,
+        scratch: URL, log: RaceLog
+    ) async throws {
+        // The drain loop ends when the log says the producer has stopped producing,
+        // so that has to happen on EVERY exit from here — a throw included, which
+        // would otherwise hang the race instead of failing it.
+        defer { log.finish() }
+
+        let writer = InboxWriter(libraryRoot: libraryRoot)
+        for capture in plan {
+            let (request, payload) = try raceRequest(
+                for: capture, collectionID: collectionID, scratch: scratch)
+            try writer.write(
+                request, payload: payload,
+                id: capture.id, capturedAt: capture.capturedAt)
+            // Logged only after the write RETURNS, so the log never claims a record
+            // the writer has not committed: a capture still between its two phases is
+            // legitimately in neither the inbox nor the library, and asking the
+            // invariant of it would be asking the wrong question.
+            log.commit(capture)
+            await Task.yield()
+        }
+    }
+
+    /// The consumer half: pass after pass over the same inbox for as long as the
+    /// writer is writing, with the mid-flight invariant asked after every pass that
+    /// actually ingested something.
+    ///
+    /// **What ends this loop is the producer stopping, and nothing else** — no
+    /// timeout, no deadline, no clock, and no expected number of passes. The writer
+    /// always reaches ``RaceLog/finish()`` (it is a `defer`), so the loop always
+    /// terminates; how many times it goes round is whatever the two tasks happen to
+    /// do to each other on the day, which is exactly the quantity nothing here is
+    /// allowed to assert.
+    ///
+    /// It is a tight loop on purpose. The window the two-phase write exists to close
+    /// is the microseconds between a payload landing and its record landing, and the
+    /// only way a test opens that window is by enumerating the inbox far more often
+    /// than the writer commits to it. Each turn does the real ``InboxDrain/drainOnce()``
+    /// — a directory read and, when there is anything there, a real ingest — so a turn
+    /// that finds nothing costs one `contentsOfDirectory` and yields.
+    private static func runRaceDrain(
+        _ drain: InboxDrain, services: AppServices, collectionID: UUID,
+        layout: InboxLayout, log: RaceLog
+    ) async -> RaceObservations {
+        var observed = RaceObservations()
+        while !log.isFinished {
+            observed.record(await drain.drainOnce())
+            // Only after a pass that moved something. A pass that ingested nothing
+            // changed nothing the invariant could have broken, and the check is two
+            // real reads of a real library rather than a cheap assertion.
+            if observed.lastPassIngested {
+                observed.violations += await Self.unaccountedFor(
+                    log: log, layout: layout,
+                    services: services, collectionID: collectionID)
+            }
+            await Task.yield()
+        }
+        return observed
+    }
+
+    /// The captures that are in NEITHER the inbox nor the library — empty whenever
+    /// the handoff is holding.
+    ///
+    /// **The two reads are ordered, and the order is what makes the answer sound.**
+    /// The drain deletes a record only AFTER the ingest transaction has committed, so
+    /// a record found missing at the first read had its asset in the library before
+    /// that read, and the second read is therefore guaranteed to see it. Reading the
+    /// library first would invert exactly that and manufacture a failure out of a
+    /// capture that ingested between the two — a timing dependence, in the one place
+    /// this test could plausibly have acquired one.
+    ///
+    /// Identity is `capturedAt` on the library side because that is the only field
+    /// that survives the crossing: the record's id is not the asset's id, and the
+    /// asset's provenance is shared by every byte-backed capture here. Each capture
+    /// is written with its own whole-second timestamp, so the match is exact and
+    /// cannot alias.
+    private static func unaccountedFor(
+        log: RaceLog, layout: InboxLayout, services: AppServices, collectionID: UUID
+    ) async -> [String] {
+        let committed = log.snapshot
+        guard let pending = try? layout.pendingRecordURLs() else {
+            return ["the inbox could not be enumerated mid-race"]
+        }
+        let inInbox = Set(pending.map(\.lastPathComponent))
+        let items = try? await services.collectionItems(
+            in: collectionID, includeArchived: false)
+        let inLibrary = Set((items ?? []).map(\.source.capturedAt))
+
+        return committed
+            .filter {
+                !inInbox.contains(InboxLayout.recordFileName(for: $0.id))
+                    && !inLibrary.contains($0.capturedAt)
+            }
+            .map { "\($0.id) (captured \($0.capturedAt))" }
+    }
 }
 
 // MARK: - Standing inside a running pass
@@ -1078,6 +1384,128 @@ private final class TaskBox: @unchecked Sendable {
         let task = self.task
         lock.unlock()
         task?.cancel()
+    }
+}
+
+// MARK: - Running the writer against the drain
+
+/// The three shapes a race capture takes, so that all of them are being committed
+/// while the drain is running: bytes handed over in memory, bytes handed over as a
+/// file the writer copies, and no bytes at all.
+///
+/// The three are not decoration. The first two are the writer's two staging paths —
+/// `Data.write` and `copyItem` — which share one ordering and must therefore share
+/// its guarantee; the third has no first phase at all, so its record is the only
+/// file it ever writes.
+private enum RaceShape: CaseIterable {
+    case inlineBytes
+    case fileBytes
+    case mediaLess
+}
+
+/// One capture in the race: what the writer will commit, and the two identities it
+/// is looked up by afterwards.
+///
+/// It is one type rather than a plan item and a separate log entry because those
+/// would be the same fields twice. The two identities are both needed and neither is
+/// redundant: the capture has two legitimate homes and no single field spans them —
+/// the record's `id` does not become the asset's, and `capturedAt` does not survive
+/// into a file name.
+private struct RaceCapture: Sendable {
+    /// Finds the capture in the inbox: `<id>.json`.
+    let id: UUID
+    /// Finds it in the library: it is written through to `source.capturedAt`, and is
+    /// distinct per capture so the match cannot alias.
+    let capturedAt: Date
+    /// Its position in the plan — what makes its bytes, its link and its scratch
+    /// file name distinct from every other capture's.
+    let index: Int
+    let shape: RaceShape
+}
+
+/// The one thing the two racing tasks share: what the writer has committed so far,
+/// and whether it has stopped committing.
+///
+/// Both halves are read by the drain's task while the writer's task is still going,
+/// and the second half is the drain loop's whole termination condition — which is why
+/// it lives here beside the captures rather than as a second synchronisation object
+/// with its own lock and its own ordering to reason about.
+///
+/// `@unchecked Sendable` over an `NSLock` for the same reason ``IngestWatcher`` is:
+/// the writer is synchronous file I/O in one task and the reader is another, and an
+/// actor would put an `await` in the middle of a write loop that has no use for one.
+private final class RaceLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var committed: [RaceCapture] = []
+    private var finished = false
+
+    /// Append a capture whose record is already on disk.
+    func commit(_ capture: RaceCapture) {
+        lock.lock()
+        committed.append(capture)
+        lock.unlock()
+    }
+
+    /// The producer has stopped, whether it got through the whole plan or threw.
+    func finish() {
+        lock.lock()
+        finished = true
+        lock.unlock()
+    }
+
+    /// Whether the producer has stopped. One-way, so a reader that sees `true` is
+    /// never going to see `false` again and the drain loop cannot fail to end.
+    var isFinished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return finished
+    }
+
+    /// What has been committed at this instant. Only ever grows, so a snapshot taken
+    /// before the reads it is checked against is one that under-claims — which is the
+    /// safe direction: a capture the log has not heard of yet is simply not asked
+    /// about.
+    var snapshot: [RaceCapture] {
+        lock.lock()
+        defer { lock.unlock() }
+        return committed
+    }
+}
+
+/// What one round of the race saw, tallied rather than kept: a round runs however
+/// many passes it runs — tens of thousands of them, most finding an empty inbox — and
+/// the array of those would be a large answer to a question with four numbers in it.
+///
+/// Carried out of the drain task as a value and asserted in the test body rather than
+/// asserted in place, so a failure is reported against the test rather than against
+/// whichever task happened to notice it.
+private struct RaceObservations: Sendable {
+    /// How many passes ran. Reported by nothing and asserted by nothing — see
+    /// `runRaceDrain` — but a `0` here would say the race never happened.
+    var passes = 0
+    var ingested = 0
+    var skippedIncomplete = 0
+    var quarantined = 0
+    var retrying = 0
+    /// Passes that could not enumerate the inbox at all.
+    var unreadable = 0
+    /// Captures found in neither the inbox nor the library, mid-race. Empty is the
+    /// only passing value.
+    var violations: [String] = []
+
+    /// Whether the pass just recorded put anything in the library — the trigger for
+    /// the mid-flight accounting, which is too expensive to run on a pass that
+    /// changed nothing.
+    private(set) var lastPassIngested = false
+
+    mutating func record(_ summary: DrainSummary) {
+        passes += 1
+        ingested += summary.ingested
+        skippedIncomplete += summary.skippedIncomplete
+        quarantined += summary.quarantined
+        retrying += summary.retrying
+        if summary.inboxUnreadable { unreadable += 1 }
+        lastPassIngested = summary.ingested > 0
     }
 }
 

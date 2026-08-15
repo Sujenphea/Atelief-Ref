@@ -38,6 +38,35 @@
 // `libraryRoot(under:)` and `appGroupIdentifier(rawValue:)` are platform-free and both
 // platforms route through them, leaving only the container lookup and the
 // data-protection call inside `#if os(iOS)`.
+//
+// **And that residue is untested, deliberately** (R6 · issue 12). Three things have
+// run exactly once each, by hand, on a simulator during S4b-i and never since: the
+// `containerURL(forSecurityApplicationGroupIdentifier:)` lookup in `defaultBase()`,
+// the ``LibraryLocationError/appGroupContainerUnavailable(identifier:)`` it throws
+// when that returns nil, and the `completeUntilFirstUserAuthentication` attribute
+// `protectAtRest(_:)` sets. There is no iOS test target in this package and none was
+// added for them.
+//
+// The position is considered rather than deferred, and the reason is that a test of
+// this residue would assert nothing about this code. What is left inside the `#if` is
+// three Apple API calls and a `guard`: a unit test around them would stand up a fake
+// `FileManager` and then assert that `FileManager` does what `FileManager` does —
+// which is a test of Foundation, kept green by this package, and it would keep passing
+// through exactly the failures that matter. The two that matter are a container the
+// entitlement does not actually grant and a file the phone will not open, and neither
+// is reachable from a process that is not a real, provisioned, LOCKED device. The
+// protection class in particular means nothing anywhere else: the whole point of
+// `completeUntilFirstUserAuthentication` over the inherited default is what happens to
+// an open() before the first unlock after a boot, and a simulator, a Mac and a unit
+// test all answer that question the same wrong way.
+//
+// What is tested is everything the residue is wrapped in, and that is not an
+// accident — it is why the platform-specific part was made this small. The identifier
+// parse, its blank and whitespace cases, the root's name and creation, the override
+// argument and environment variable and their precedence all have tests, and all of
+// them are the same code on both platforms. What remains is a call and a `guard`, and
+// the honest coverage claim for it is one manual run on a simulator, recorded here
+// rather than implied by silence.
 
 import Foundation
 

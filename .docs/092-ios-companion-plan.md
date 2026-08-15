@@ -863,7 +863,30 @@ line was all a failure had; and `failed/` destinations are composed only by
 than by a random UUID (which decides grid position, since nothing in the library orders
 by `captured_at`), records run in chunks at the coordinator's width instead of one at a
 time, an unreadable inbox is now distinguishable from an empty one, and both cancellation
-paths are tested. Later slices add their own notes here.
+paths are tested.
+
+**The review pass is complete (2026-08-15).** Six slices, all landed:
+
+| Slice | Closed | Change log |
+|---|---|---|
+| R1 | a `payloadFile` may only be the writer's own name for that record's id; every `InboxWriteError` carries the error it caught; `failed/` paths composed only by `InboxLayout` | [403](../.change-log/403-a-record-that-named-its-neighbour.md) |
+| — | review issue 4 — the Swift host table's claim to mirror the JS extractors is now a CI gate (`npm run drift-check`) rather than a comment | [404](../.change-log/404-the-mirror-nobody-checked.md) |
+| R2 | issues 3A / 16A (capture-time order, not UUID order), 13A (chunked at the coordinator's width), 6A (an unreadable inbox ≠ an empty one), 9A (both cancellation paths) | [405](../.change-log/405-the-order-a-uuid-sorts-in.md) |
+| R3 | `InboxDrain.drainOnce()` had no caller anywhere in the app; launch + activation cadence, and `created_at` from `capturedAt` | [407](../.change-log/407-the-drain-nobody-called.md) |
+| R4 | the extension held whole images in memory with no cap; bytes are a file now, 64 MiB refused before a byte is copied | [406](../.change-log/406-the-image-the-extension-never-held.md) |
+| R6 | issue 10 — the writer had never once run beside the drain; issue 12 — the untested iOS residue is now named in `LibraryLocation` | [408](../.change-log/408-the-race-nobody-ran.md) |
+
+R6's race test is worth one line of caution here, because it is easy to read as more
+than it is: it runs two **tasks in one process** against one filesystem, so what it
+exercises is `rename(2)`'s ordering within a volume and the drain's reaction to it —
+not an app and an extension, not jetsam, and not iOS's guarantees. It closes the gap
+between "the two-phase design is argued" and "the two-phase design has been run"; the
+device half of that claim is still unrun.
+
+**One item from the pass is outstanding, and it is not an agent's to close**: the share
+extension's memory and launch measurement (gate 2 below). It needs Instruments attached
+to a **physical device** with a large share, which no simulator, no CI job and no unit
+test substitutes for. It is the user's to run.
 
 **What is left of S4b** is two things, and neither blocks S5: **tier 2** (the
 Safari `NSExtensionJavaScriptPreprocessingFile` path and the smallest useful subset of
