@@ -95,6 +95,134 @@ struct ShareCaptureTests {
         #expect(ShareCapture.platform(forURLString: nil) == .web)
     }
 
+    // MARK: - The web-URL filter (406, issue 11)
+    //
+    // This filter used to live in `ShareViewController.loadWebURL`, where nothing could
+    // reach it. It is the reason a photo shared out of Files does not acquire a
+    // `file:///private/var/mobile/Containers/…` as its provenance: `public.file-url`
+    // conforms to `public.url`, so the attachment arrives on the same code path a web
+    // URL does.
+
+    @Test(
+        "an http(s) URL survives the filter verbatim",
+        arguments: [
+            "https://www.pinterest.com/pin/12345/",
+            "http://example.com/a",
+            "HTTPS://X.COM/User/Status/1",
+            "https://x.com/user/status/1?utm_source=share#top",
+        ])
+    func webURLsSurvive(urlString: String) {
+        #expect(ShareCapture.webURLString(urlString) == urlString)
+    }
+
+    @Test(
+        "anything that is not a web URL is dropped rather than stored as provenance",
+        arguments: [
+            // The one this filter exists for: an image shared out of Files.
+            "file:///private/var/mobile/Containers/Data/tmp/photo.jpg",
+            "file:///Users/someone/photo.jpg",
+            "mailto:someone@x.com",
+            "javascript:alert(1)",
+            "data:image/png;base64,AAAA",
+            "ftp://example.com/a.jpg",
+            // No scheme at all. A `URL` out of an item provider always has one, so this
+            // is the shape a malformed or hand-built string takes.
+            "example.com/a",
+            "/private/var/tmp/photo.jpg",
+            "",
+            "   ",
+            "not a url at all",
+            "ht tp://example.com",
+        ])
+    func nonWebURLsAreDropped(urlString: String) {
+        #expect(ShareCapture.webURLString(urlString) == nil)
+    }
+
+    @Test("no URL at all is no URL — an image shared out of Photos")
+    func absentURLIsDropped() {
+        #expect(ShareCapture.webURLString(nil) == nil)
+    }
+
+    // MARK: - What a share amounts to (406, issue 11)
+    //
+    // `harvest`'s four decisions, lifted out of the extension where no test could reach
+    // them. The controller now loads three optionals and asks this.
+
+    @Test("image bytes win over a URL, and the URL becomes the image's sourceURL")
+    func imageWinsOverURL() throws {
+        let bytes = CaptureFixtures.png()
+        let item = try #require(
+            ShareCapture.sharedItem(
+                image: .data(bytes), urlString: "https://x.com/user/status/1",
+                title: "A post"))
+
+        #expect(item == .image(
+            bytes: .data(bytes), sourceURL: "https://x.com/user/status/1", title: "A post"))
+        // …and it is genuinely a byte-backed capture, not a link that kept its bytes.
+        let draft = ShareCapture.draft(for: item)
+        #expect(draft.payload == .data(bytes))
+        #expect(draft.request.kind == nil)
+        #expect(draft.request.provenance.platform == "twitter")
+        #expect(draft.request.provenance.originalURL == "https://x.com/user/status/1")
+    }
+
+    @Test("a file source wins over a URL exactly as bytes do — the two paths decide alike")
+    func fileImageWinsOverURL() throws {
+        let url = URL(fileURLWithPath: "/private/var/tmp/shared.heic")
+        #expect(
+            ShareCapture.sharedItem(
+                image: .fileURL(url), urlString: "https://cosmos.so/e/1")
+                == .image(bytes: .fileURL(url), sourceURL: "https://cosmos.so/e/1"))
+    }
+
+    @Test("a URL with no image becomes a link")
+    func urlAloneBecomesALink() {
+        #expect(
+            ShareCapture.sharedItem(image: nil, urlString: "https://cosmos.so/e/1")
+                == .link(url: "https://cosmos.so/e/1"))
+    }
+
+    @Test("a file:// URL is not provenance, on either branch")
+    func fileURLsAreNotProvenance() {
+        let shared = "file:///private/var/mobile/Containers/Data/tmp/photo.jpg"
+        // With an image: the capture survives, without a bogus originalURL.
+        #expect(
+            ShareCapture.sharedItem(image: .data(CaptureFixtures.png()), urlString: shared)
+                == .image(bytes: .data(CaptureFixtures.png()), sourceURL: nil))
+        // Without one: there is nothing left to capture, which is the honest answer.
+        #expect(ShareCapture.sharedItem(image: nil, urlString: shared) == nil)
+    }
+
+    @Test("neither image nor web URL is nil — the lost-capture card, decided where it is testable")
+    func nothingCapturableIsNil() {
+        #expect(ShareCapture.sharedItem(image: nil, urlString: nil, title: nil) == nil)
+        #expect(ShareCapture.sharedItem(image: nil, urlString: nil, title: "A page") == nil)
+        #expect(ShareCapture.sharedItem(image: nil, urlString: "mailto:a@x.com") == nil)
+    }
+
+    @Test("a title rides onto whichever item results, and an empty one is no title")
+    func titleNormalization() {
+        #expect(
+            ShareCapture.sharedItem(image: nil, urlString: "https://example.com/a", title: "A page")
+                == .link(url: "https://example.com/a", title: "A page"))
+        #expect(
+            ShareCapture.sharedItem(
+                image: .data(CaptureFixtures.png()), urlString: nil, title: "A photo")
+                == .image(bytes: .data(CaptureFixtures.png()), sourceURL: nil, title: "A photo"))
+
+        // Empty, whitespace-only, and surrounded by whitespace: the first two are no
+        // title at all, the third is the same title without the noise.
+        for blank in ["", "   ", "\n\t "] {
+            #expect(
+                ShareCapture.sharedItem(image: nil, urlString: "https://example.com/a", title: blank)
+                    == .link(url: "https://example.com/a", title: nil))
+        }
+        #expect(
+            ShareCapture.sharedItem(
+                image: nil, urlString: "https://example.com/a", title: "  A page\n")
+                == .link(url: "https://example.com/a", title: "A page"))
+    }
+
     // MARK: - The capturedVia stamp
 
     @Test("every share stamps rawMetadata.capturedVia = ios_share, URL or no URL")
@@ -104,7 +232,7 @@ struct ShareCaptureTests {
         let link = ShareCapture.draft(for: .link(url: "https://x.com/user/status/1"))
         #expect(link.request.provenance.rawMetadata == stamp)
 
-        let image = ShareCapture.draft(for: .image(bytes: CaptureFixtures.png()))
+        let image = ShareCapture.draft(for: .image(bytes: .data(CaptureFixtures.png())))
         #expect(image.request.provenance.rawMetadata == stamp)
 
         // The constants are the contract the Mac reads back; assert the strings, not
@@ -154,9 +282,9 @@ struct ShareCaptureTests {
     func imageDraft() {
         let bytes = CaptureFixtures.png()
         let draft = ShareCapture.draft(
-            for: .image(bytes: bytes, sourceURL: "https://pbs.twimg.com/media/Ab1.jpg"))
+            for: .image(bytes: .data(bytes), sourceURL: "https://pbs.twimg.com/media/Ab1.jpg"))
 
-        #expect(draft.payload == bytes)
+        #expect(draft.payload == .data(bytes))
         #expect(draft.request.image == nil)
         #expect(draft.request.kind == nil)
         #expect(draft.request.payload == nil)
@@ -165,7 +293,7 @@ struct ShareCaptureTests {
 
     @Test("an image with no source URL still captures, as .web with no originalURL")
     func imageWithoutSourceURL() {
-        let draft = ShareCapture.draft(for: .image(bytes: CaptureFixtures.png()))
+        let draft = ShareCapture.draft(for: .image(bytes: .data(CaptureFixtures.png())))
         #expect(draft.request.provenance.platform == "web")
         #expect(draft.request.provenance.originalURL == nil)
         #expect(draft.payload != nil)
@@ -214,7 +342,7 @@ struct ShareCaptureTests {
 
         // The byte-backed path: a sidecar exists, so the drain uses `decodeFileInput`.
         let image = ShareCapture.draft(
-            for: .image(bytes: CaptureFixtures.png(), sourceURL: "https://x.com/i/1"))
+            for: .image(bytes: .data(CaptureFixtures.png()), sourceURL: "https://x.com/i/1"))
         guard case .bytes(let decodedImage) = try CaptureDecoder.decodeFileInput(
             image.request, now: now) else {
             Issue.record("a shared image should decode as a byte-backed capture")
@@ -240,7 +368,7 @@ struct ShareCaptureTests {
         #expect(layout.isComplete(linkRecord))
 
         let bytes = CaptureFixtures.png()
-        let image = ShareCapture.draft(for: .image(bytes: bytes))
+        let image = ShareCapture.draft(for: .image(bytes: .data(bytes)))
         let imageRecord = try writer.write(image.request, payload: image.payload)
         #expect(imageRecord.payloadFile == "\(imageRecord.id.uuidString).bin")
         #expect(layout.isComplete(imageRecord))

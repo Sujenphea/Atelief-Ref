@@ -32,10 +32,50 @@
 // see one anyway (a torn write on a crash), ``InboxLayout/isComplete(_:)`` says so,
 // and S3 skips the item this pass rather than failing it.
 //
+// **Bytes reach `.staging/` two ways, and the write is otherwise one path** (406). A
+// ``PayloadSource`` is either a `Data` a caller is already holding or a file on disk;
+// the file case copies rather than loading, so the extension can hand over a 40 MB
+// share without the 40 MB ever being resident in a process with a ~120 MB ceiling. That
+// difference is one method, `stage(_:at:)`. Everything above and below it — the cap,
+// the ordering, the record encode, the commit, the cleanup — is shared, because a
+// two-phase discipline that held on one path and not the other would be worse than not
+// having one.
+//
+// **And there is a cap**, ``InboxWriter/maximumPayloadBytes``, checked before a byte is
+// copied. Refusing an absurd share is not tidiness: an extension jetsammed mid-write is
+// a share sheet that silently did nothing, which is the one failure mode 091 · D2 says
+// must not happen, because the user cannot tell it from success.
+//
 // Foundation only. No AppKit, no UIKit, no GRDB use, and no knowledge of the Library
 // beyond the inbox directory it was handed.
 
 import Foundation
+
+/// Where a capture's bytes are, when the writer is handed them (406).
+///
+/// The whole point of the enum is that the second case never becomes the first. An
+/// item provider hands a share extension either a `Data` — the entire image resident
+/// in a process with an observed ~120 MB ceiling — or a temporary file, and the file
+/// is what this package's own thesis asks for: `AtelierIngestion.ByteSource` chose
+/// `.fileURL` over `.data` for exactly this reason at the other end of the pipe, and
+/// the extension was the one place still contradicting it.
+///
+/// The case names deliberately mirror `ByteSource`'s. They are two types because the
+/// packages are two link lines — `AtelierIngestion` imports AppKit and cannot build for
+/// iOS at all — and a shared name across both would need qualifying in the Mac app that
+/// imports each. What travels between them is the sidecar on disk, which a
+/// ``fileURL(_:)`` write produces and a `ByteSource.fileURL` read consumes, so the
+/// bytes are never in anybody's memory on either side.
+public enum PayloadSource: Equatable, Sendable {
+    /// Bytes already in memory. Correct, and still the fallback, for a provider that
+    /// offers no file representation — but it is the shape that has to be capped after
+    /// the fact, because by the time it exists it is already resident.
+    case data(Data)
+    /// A file on disk. The bytes reach `.staging/` by `copyItem`, which streams through
+    /// the kernel (and clones outright on APFS), so no part of this process ever holds
+    /// the image.
+    case fileURL(URL)
+}
 
 /// Why a capture could not be put in the inbox.
 ///
@@ -76,6 +116,17 @@ public enum InboxWriteError: Error, Equatable {
     /// and what the write or move said. The capture is lost, but nothing partial
     /// survives: the payload is cleaned up.
     case recordWriteFailed(path: String, underlying: String)
+    /// The payload is larger than ``InboxWriter/maximumPayloadBytes`` and was refused
+    /// before a byte of it was copied (406). Payload: the size measured and the limit
+    /// it exceeded.
+    ///
+    /// **The one case with no `underlying`, and that is the point.** The other four
+    /// carry a caught error because the typed case alone cannot say whether a disk was
+    /// full or a container was missing. Nothing was caught here — the writer decided
+    /// this, and `bytes` and `limit` say everything there is to say about why. A field
+    /// holding a sentence this enum invented would be the opposite of what R1 added it
+    /// for.
+    case payloadTooLarge(bytes: Int, limit: Int)
 
     /// Render a caught error into the `underlying` text, the same way at all four
     /// sites.
@@ -97,6 +148,51 @@ public enum InboxWriteError: Error, Equatable {
 /// `Sendable` — it stores paths and nothing else, so it crosses concurrency domains
 /// as freely as the `URL` inside it.
 public struct InboxWriter: Sendable {
+    /// The largest payload the inbox will accept, in bytes — **64 MiB** (406).
+    ///
+    /// **A tunable, not a contract**, and the single place it is spelled: the share
+    /// extension asks this before it copies a provider's temporary file, and
+    /// ``write(_:payload:id:capturedAt:)-(_,PayloadSource?,_,_)`` asks it again before
+    /// it copies anything into `.staging/`, so an over-cap share is refused twice and
+    /// duplicated nowhere.
+    ///
+    /// Why a cap exists at all: without one, a very large share gets the extension
+    /// jetsammed mid-write and the user sees a share sheet that silently did nothing —
+    /// 091 · D2's named failure, and the worst possible outcome because it is
+    /// indistinguishable from success. A refusal is a card that says so.
+    ///
+    /// Why this number. It has to sit above every share a person actually takes and
+    /// below the point where the in-memory fallback path threatens the extension's
+    /// observed ~120 MB ceiling. A phone photo is 2–5 MB of HEIC, a full-screen PNG
+    /// screenshot around 10 MB, a 48 MP ProRAW DNG roughly 25 MB, and a stitched
+    /// panorama the largest thing Photos will hand over at some tens of MB. 64 MiB
+    /// clears all of those with room to spare and is still barely half the ceiling, so
+    /// even a `.data` payload at the limit cannot be what kills the process. It is one
+    /// `static let` precisely so raising it is one edit once somebody hits it with a
+    /// real share.
+    public static let maximumPayloadBytes = 64 * 1024 * 1024
+
+    /// How big a payload is, without reading it — `count` for bytes already in memory,
+    /// a stat for a file. `nil` when the size cannot be determined.
+    ///
+    /// **`nil` is deliberately not a refusal.** A file whose size cannot be read is
+    /// almost certainly a file that cannot be copied either, and the copy's own failure
+    /// is the better-typed answer (``InboxWriteError/payloadWriteFailed(path:underlying:)``
+    /// carries what the filesystem said). Refusing here would report a size problem for
+    /// a file that has none.
+    ///
+    /// Public because the extension asks it of a provider's temporary file *before*
+    /// copying, which is the only place the check can prevent work rather than merely
+    /// undo it.
+    public static func payloadSize(of payload: PayloadSource) -> Int? {
+        switch payload {
+        case .data(let data):
+            return data.count
+        case .fileURL(let url):
+            return (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+        }
+    }
+
     /// The inbox being written to.
     public let layout: InboxLayout
 
@@ -112,10 +208,15 @@ public struct InboxWriter: Sendable {
 
     /// Write one capture into the inbox and return the record that landed.
     ///
-    /// `payload` is the media bytes, when there are any: a `Data` the extension
-    /// already holds from the item provider, written straight through to a file and
-    /// never base64-encoded. Media-less captures (`kind` = `tweet` / `link` / `color`)
-    /// pass nil and get a record with no ``InboxRecord/payloadFile``.
+    /// `payload` is the media bytes, when there are any: a `Data` a caller already
+    /// holds, written straight through to a file and never base64-encoded. Media-less
+    /// captures (`kind` = `tweet` / `link` / `color`) pass nil and get a record with no
+    /// ``InboxRecord/payloadFile``.
+    ///
+    /// A caller that has a FILE rather than a `Data` — the share extension, since 406 —
+    /// should take the ``PayloadSource`` overload instead and never load the file to get
+    /// here. This one exists unchanged because a provider offering no file
+    /// representation still hands over bytes, and those bytes are still a valid capture.
     ///
     /// `id` and `capturedAt` are parameters with real defaults rather than being
     /// generated inside, so the failure matrix is exercisable and the caller can log
@@ -130,7 +231,43 @@ public struct InboxWriter: Sendable {
         id: UUID = UUID(),
         capturedAt: Date = Date()
     ) throws -> InboxRecord {
+        try write(
+            request, payload: payload.map(PayloadSource.data), id: id, capturedAt: capturedAt)
+    }
+
+    /// The same write, for a capture whose bytes are a FILE rather than a `Data` (406).
+    ///
+    /// This is the path the share extension takes: `NSItemProvider.loadFileRepresentation`
+    /// yields a temporary file, and the bytes travel disk-to-disk into the sidecar
+    /// without any process holding the image. `.data` remains correct — and remains the
+    /// extension's fallback — for a provider that offers no file representation.
+    ///
+    /// **The two entry points differ in one line**, ``stage(_:at:)``, and nothing else.
+    /// Everything that makes the write safe — the cap, the two phases, the ordering,
+    /// the record encode, the commit, the cleanup on failure — is the same code for
+    /// both, because an ordering that held on one path and not the other is precisely
+    /// the bug the ordering exists to prevent.
+    ///
+    /// No default for `payload` here, unlike the `Data` overload: omitting the argument
+    /// has to keep meaning exactly one thing, and "no payload" is already spelled by
+    /// calling `write(request)`.
+    @discardableResult
+    public func write(
+        _ request: CaptureRequest,
+        payload: PayloadSource?,
+        id: UUID = UUID(),
+        capturedAt: Date = Date()
+    ) throws -> InboxRecord {
         let fileManager = FileManager.default
+
+        // Before anything is created. An over-cap share is a fact about what was
+        // handed over, not about the container it was headed for, and refusing it
+        // first means a doomed write never brings an inbox into existence.
+        if let payload, let size = InboxWriter.payloadSize(of: payload),
+           size > InboxWriter.maximumPayloadBytes {
+            throw InboxWriteError.payloadTooLarge(
+                bytes: size, limit: InboxWriter.maximumPayloadBytes)
+        }
 
         do {
             try fileManager.createDirectory(
@@ -149,7 +286,7 @@ public struct InboxWriter: Sendable {
             let staged = layout.stagedPayloadURL(for: id)
             let destination = layout.payloadURL(for: id)
             do {
-                try payload.write(to: staged, options: .atomic)
+                try stage(payload, at: staged)
                 try fileManager.moveItem(at: staged, to: destination)
             } catch {
                 try? fileManager.removeItem(at: staged)
@@ -193,6 +330,28 @@ public struct InboxWriter: Sendable {
     /// still perfectly good, it is only the counter beside it that changed.
     public func rewrite(_ record: InboxRecord) throws {
         try commitRecord(record, replacingExisting: true)
+    }
+
+    /// Get a payload's bytes into `.staging/` — **the only thing the two write entry
+    /// points do differently** (406).
+    ///
+    /// `.data` writes what it is holding. `.fileURL` copies, and copying is the whole
+    /// reason the case exists: `copyItem` moves bytes through the kernel a buffer at a
+    /// time (and on APFS within a volume, clones the extent map instead of moving
+    /// anything at all), so a 40 MB share costs this process no more memory than a 40 KB
+    /// one. Loading the file into a `Data` here would have made the file case an
+    /// elaborate way to arrive at the problem it was added to avoid.
+    ///
+    /// Deliberately a copy and never a move: the URL a provider hands over may be the
+    /// user's own asset rather than a scratch file, and a mover would be reaching into
+    /// another process's storage. The extra copy is on disk and is nobody's memory.
+    private func stage(_ payload: PayloadSource, at staged: URL) throws {
+        switch payload {
+        case .data(let data):
+            try data.write(to: staged, options: .atomic)
+        case .fileURL(let url):
+            try FileManager.default.copyItem(at: url, to: staged)
+        }
     }
 
     /// Encode a record, stage it, and move it into place — phase 2, shared by the

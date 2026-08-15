@@ -641,6 +641,57 @@ can review.
 > only a `CoreSimulatorService` restart brings input back — and both records were captured
 > inside the working window that follows one.
 
+> **Review outcome — S4b-ii, the byte path** (2026-08-15, changelog
+> [406](../.change-log/406-the-image-the-extension-never-held.md)). Two findings from the
+> review pass over the slice above, both in how bytes reach the sidecar.
+>
+> 1. **The extension held whole images, with no cap anywhere.** `loadDataRepresentation`
+>    returns the entire file as a `Data`, and it stayed resident all the way through
+>    `SharedItem` → `ShareCaptureDraft` → `InboxWriter` — peak footprint one whole image
+>    in a process with an observed ~120 MB ceiling, which is exactly the jetsam that
+>    091 · D2 says must not happen, and the one place contradicting S3's own preference
+>    for `ByteSource.fileURL` over `.data`. The extension now prefers
+>    `loadFileRepresentation` and the bytes travel disk-to-disk by `copyItem` into
+>    `.staging/`. **The provider's temporary file dies when its completion handler
+>    returns**, so the copy is taken *inside* the handler, synchronously, before the
+>    continuation resumes; a handler that copied later would work on a small file and
+>    race on a large one. `.data` remains the fallback for a provider that offers no
+>    file representation.
+> 2. **A cap, because an absurd share must fail loudly rather than vanish.**
+>    `InboxWriter.maximumPayloadBytes` is **64 MiB** — a tunable, one `static let`, above
+>    every real phone share (HEIC 2–5 MB, screenshot ~10 MB, 48 MP ProRAW ~25 MB) and
+>    barely half the ceiling, so even a `.data` payload at the limit cannot be what kills
+>    the process. Checked before a byte is copied, in the extension and again in the
+>    writer, against one `payloadSize(of:)`. An over-cap share is a fifth
+>    `InboxWriteError`, `payloadTooLarge(bytes:limit:)` — the only case with no
+>    `underlying`, because nothing was caught — and it renders on 093's existing failure
+>    card.
+> 3. **`harvest` no longer holds decisions.** Image-beats-URL, URL-becomes-`sourceURL`,
+>    the `file://` filter (`public.file-url` conforms to `public.url`) and the empty-title
+>    rule moved to `ShareCapture.sharedItem(image:urlString:title:)` and
+>    `ShareCapture.webURLString(_:)`, pure and tested on macOS. This is the split S4b-ii
+>    already chose, applied to what had leaked past it — no new mechanism, and **no iOS
+>    test target**, which stays deferred. The `UTType` conformance check needs UIKit and
+>    stayed. `SharedItem.image` and `ShareCaptureDraft.payload` carry a `PayloadSource`
+>    (`.data` / `.fileURL`) rather than a `Data`; `InboxWriter` gained an overload for it
+>    and the two paths differ in one method, `stage(_:at:)`.
+>
+> Verification: AtelierCapture **77/4 → 93/4**, every other package unchanged (AtelierCore
+> 760/105 · AtelierIngestion 462/47 · AtelierServer 62/6 · CanvasRenderer 437/52 ·
+> AtelierExport 84/7 · extension 535 + drift-check clean); macOS and iOS Debug both build.
+> Then, on a booted iPhone 17 Pro through the **real share sheet**: a 1,099,126-byte PNG
+> from Photos landed as a record plus a sidecar **md5-identical to the source** with
+> `.staging/` empty — and the sidecar carries Photos' own `com.apple.assetsd.*` xattrs,
+> which only `copyItem` can produce, so the file path is observed and not assumed; a
+> Safari link landed as a media-less `platform: "pinterest"` record, exercising the moved
+> filter in the extension's process; and an 86,933,173-byte PNG was refused on the failure
+> card with `payloadTooLarge(bytes: 86933173, limit: 67108864)` logged *before* the copy.
+> Note the container needs a **signed** build — `CODE_SIGNING_ALLOWED=NO` yields empty
+> entitlements and no App Group at all. Still not exercised: the `.data` fallback on a
+> device (every provider offered a file), the other five typed failures, and **the ~120 MB
+> footprint measurement**, which is a gate of its own — this removes the largest known
+> contributor to it without measuring the result.
+
 - **`LibraryLocation` is reachable from iOS — done, not pending.** The seam moved to
   `AtelierCapture/Sources/AtelierCapture/LibraryLocation.swift` on 2026-08-14
   (changelog [398](../.change-log/398-a-seam-ios-could-not-reach.md), amendment under

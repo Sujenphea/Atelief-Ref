@@ -123,6 +123,198 @@ struct InboxWriterTests {
         #expect(layout.payloadURL(for: record) == nil)
     }
 
+    // MARK: - A payload that is a file (406)
+    //
+    // The entry point the share extension takes. A provider's temporary file reaches
+    // `.staging/` by `copyItem` and is never loaded, so the extension's peak footprint
+    // stops being "one whole image" — which was the finding. What these assert is that
+    // the file path lands EXACTLY where the `Data` path does: the same two files, the
+    // same empty staging, the same bytes.
+
+    /// A file of `count` bytes on disk. Written, not sparse — these are the payloads
+    /// that are meant to succeed, so their bytes have to be real and comparable.
+    private func makeFile(_ root: URL, named name: String, bytes: Data) throws -> URL {
+        let url = root.appendingPathComponent(name, isDirectory: false)
+        try bytes.write(to: url)
+        return url
+    }
+
+    @Test("a file payload lands as the same two files the Data path produces")
+    func fileSourceRoundTrip() throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+        let id = UUID()
+        let bytes = CaptureFixtures.png()
+        let source = try makeFile(root, named: "shared.png", bytes: bytes)
+
+        let record = try InboxWriter(libraryRoot: root).write(
+            .sample(), payload: .fileURL(source), id: id, capturedAt: Self.capturedAt)
+
+        #expect(record.payloadFile == "\(id.uuidString).bin")
+        #expect(exists(layout.payloadURL(for: id)))
+        #expect(exists(layout.recordURL(for: id)))
+        #expect(try readRecord(at: layout.recordURL(for: id)) == record)
+        // Byte-identical to the source, which is the whole claim: nothing decoded,
+        // re-encoded or truncated on the way through.
+        #expect(try Data(contentsOf: layout.payloadURL(for: id)) == bytes)
+        // A copy, never a move — the provider's file may be storage another process
+        // owns, and moving it would be reaching into it.
+        #expect(exists(source))
+        #expect(try Data(contentsOf: source) == bytes)
+        // The same ordering discipline, and the same clean staging.
+        #expect(layout.isComplete(record))
+        #expect(record.request.image == nil)
+        let staged = try FileManager.default.contentsOfDirectory(
+            at: layout.staging, includingPropertiesForKeys: nil)
+        #expect(staged.isEmpty)
+    }
+
+    @Test("the two payload shapes are interchangeable — same bytes in, same sidecar out")
+    func fileAndDataPathsAgree() throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+        let bytes = CaptureFixtures.png()
+        let writer = InboxWriter(libraryRoot: root)
+        let source = try makeFile(root, named: "shared.png", bytes: bytes)
+
+        let fromData = try writer.write(.sample(), payload: bytes, capturedAt: Self.capturedAt)
+        let fromFile = try writer.write(
+            .sample(), payload: .fileURL(source), capturedAt: Self.capturedAt)
+
+        let a = try Data(contentsOf: #require(layout.payloadURL(for: fromData)))
+        let b = try Data(contentsOf: #require(layout.payloadURL(for: fromFile)))
+        #expect(a == b)
+        #expect(a == bytes)
+        #expect(try layout.pendingRecordURLs().count == 2)
+    }
+
+    @Test("a file payload that is not there fails as a write, not as a size problem")
+    func missingFileSourceFails() throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+        let id = UUID()
+        let missing = root.appendingPathComponent("gone.png", isDirectory: false)
+
+        let error = try failure {
+            try InboxWriter(libraryRoot: root).write(
+                .sample(), payload: .fileURL(missing), id: id, capturedAt: Self.capturedAt)
+        }
+        // `payloadSize` cannot stat it, and that is deliberately not a refusal: the
+        // copy's own failure carries what the filesystem actually said.
+        #expect(error.shape == .payloadWriteFailed(path: layout.payloadURL(for: id).path))
+        #expect(!error.underlying.isEmpty)
+        #expect(try layout.pendingRecordURLs().isEmpty)
+        let staged = try FileManager.default.contentsOfDirectory(
+            at: layout.staging, includingPropertiesForKeys: nil)
+        #expect(staged.isEmpty)
+    }
+
+    // MARK: - The cap (406)
+    //
+    // Without one, a very large share gets the extension jetsammed mid-write and the
+    // user sees a share sheet that silently did nothing — 091 · D2's named failure, and
+    // the worst one because it is indistinguishable from success. These assert the
+    // refusal is typed, is checked BEFORE anything is copied, and leaves nothing behind.
+
+    /// A file that *reports* `count` bytes without occupying them. `truncate` makes it
+    /// sparse on APFS, so a 64 MiB refusal costs the test suite no disk and no wait.
+    private func makeSparseFile(_ root: URL, named name: String, count: Int) throws -> URL {
+        let url = root.appendingPathComponent(name, isDirectory: false)
+        #expect(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: UInt64(count))
+        try handle.close()
+        return url
+    }
+
+    @Test("a file one byte over the cap is refused, and nothing is copied")
+    func overCapFileIsRefused() throws {
+        let root = try makeRoot()
+        // A sparse 64 MiB file costs no disk, but a copy of one may materialise; this
+        // is the only place in the suite that leaves anything worth removing.
+        defer { try? FileManager.default.removeItem(at: root) }
+        let layout = InboxLayout(libraryRoot: root)
+        let id = UUID()
+        let limit = InboxWriter.maximumPayloadBytes
+        let source = try makeSparseFile(root, named: "huge.bin", count: limit + 1)
+        #expect(InboxWriter.payloadSize(of: .fileURL(source)) == limit + 1)
+
+        let error = try failure {
+            try InboxWriter(libraryRoot: root).write(
+                .sample(), payload: .fileURL(source), id: id, capturedAt: Self.capturedAt)
+        }
+        #expect(error.shape == .payloadTooLarge(bytes: limit + 1, limit: limit))
+        // The one case with nothing caught, so nothing to quote.
+        #expect(error.underlying.isEmpty)
+
+        // Nothing in the inbox, nothing staged, and the source untouched.
+        #expect(try layout.pendingRecordURLs().isEmpty)
+        #expect(!exists(layout.payloadURL(for: id)))
+        #expect(!exists(layout.recordURL(for: id)))
+        #expect(!exists(layout.staging.appendingPathComponent("\(id.uuidString).bin")))
+        #expect(exists(source))
+    }
+
+    @Test("a file exactly at the cap is accepted — the boundary is inclusive")
+    func atCapFileIsAccepted() throws {
+        let root = try makeRoot()
+        // A sparse 64 MiB file costs no disk, but a copy of one may materialise; this
+        // is the only place in the suite that leaves anything worth removing.
+        defer { try? FileManager.default.removeItem(at: root) }
+        let layout = InboxLayout(libraryRoot: root)
+        let id = UUID()
+        // Sparse, so this writes a 64 MiB sidecar without occupying 64 MiB: what is
+        // under test is the comparison, not the copy.
+        let source = try makeSparseFile(
+            root, named: "exact.bin", count: InboxWriter.maximumPayloadBytes)
+
+        let record = try InboxWriter(libraryRoot: root).write(
+            .sample(), payload: .fileURL(source), id: id, capturedAt: Self.capturedAt)
+
+        #expect(record.payloadFile == "\(id.uuidString).bin")
+        #expect(layout.isComplete(record))
+        #expect(
+            InboxWriter.payloadSize(of: .fileURL(layout.payloadURL(for: id)))
+                == InboxWriter.maximumPayloadBytes)
+    }
+
+    @Test("the Data fallback is capped too, by the same constant")
+    func overCapDataIsRefused() throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+        let id = UUID()
+        let limit = InboxWriter.maximumPayloadBytes
+        // The honest limitation of this path, stated in the assertion: by the time a
+        // `Data` exists the bytes are already resident, so the cap can only refuse to
+        // WRITE them. That is why the extension prefers a file representation.
+        let payload = Data(count: limit + 1)
+
+        let error = try failure {
+            try InboxWriter(libraryRoot: root).write(
+                .sample(), payload: payload, id: id, capturedAt: Self.capturedAt)
+        }
+        #expect(error.shape == .payloadTooLarge(bytes: limit + 1, limit: limit))
+        #expect(try layout.pendingRecordURLs().isEmpty)
+        #expect(!exists(layout.payloadURL(for: id)))
+    }
+
+    @Test("the cap is a size, measured the same way for both shapes")
+    func payloadSizeIsMeasuredNotGuessed() throws {
+        let root = try makeRoot()
+        let bytes = CaptureFixtures.png()
+        let source = try makeFile(root, named: "shared.png", bytes: bytes)
+
+        #expect(InboxWriter.payloadSize(of: .data(bytes)) == bytes.count)
+        #expect(InboxWriter.payloadSize(of: .fileURL(source)) == bytes.count)
+        #expect(InboxWriter.payloadSize(of: .data(Data())) == 0)
+        // Unknowable rather than zero: a file that cannot be stat'd is not an empty
+        // file, and reporting zero would sail it straight past the cap.
+        #expect(
+            InboxWriter.payloadSize(of: .fileURL(root.appendingPathComponent("gone"))) == nil)
+        // The constant itself is the tunable, and it is one number.
+        #expect(InboxWriter.maximumPayloadBytes == 64 * 1024 * 1024)
+    }
+
     // MARK: - The ordering invariant
 
     @Test("a successful write leaves nothing staged")
@@ -486,6 +678,9 @@ extension InboxWriteError {
         case payloadWriteFailed(path: String)
         case recordEncodingFailed(id: UUID)
         case recordWriteFailed(path: String)
+        /// The whole case is a contract — nothing in it is a system string — so this
+        /// one is its own shape rather than a shape minus something (406).
+        case payloadTooLarge(bytes: Int, limit: Int)
     }
 
     var shape: Shape {
@@ -494,16 +689,22 @@ extension InboxWriteError {
         case .payloadWriteFailed(let path, _): .payloadWriteFailed(path: path)
         case .recordEncodingFailed(let id, _): .recordEncodingFailed(id: id)
         case .recordWriteFailed(let path, _): .recordWriteFailed(path: path)
+        case .payloadTooLarge(let bytes, let limit): .payloadTooLarge(bytes: bytes, limit: limit)
         }
     }
 
     /// What the writer caught, from whichever case is carrying it. Asserted non-empty
     /// and never asserted equal: the text is `localizedDescription`'s, not ours.
+    ///
+    /// `payloadTooLarge` caught nothing — the writer decided it — so it has no
+    /// `underlying` to expose and yields `""`. A test asserting non-empty on that case
+    /// would be asserting that the writer invented a sentence.
     var underlying: String {
         switch self {
         case .inboxUnavailable(_, let underlying), .payloadWriteFailed(_, let underlying),
             .recordEncodingFailed(_, let underlying), .recordWriteFailed(_, let underlying):
             underlying
+        case .payloadTooLarge: ""
         }
     }
 }

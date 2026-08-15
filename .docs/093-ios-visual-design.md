@@ -132,6 +132,25 @@ the failure. Rejected because the wording would not be ours, and a
 system-presented extension failure reads as a crash rather than as "that one
 didn't save."
 
+> **A fifth case, and the one sentence that does not fit it** (2026-08-15, changelog
+> [406](../.change-log/406-the-image-the-extension-never-held.md)). `InboxWriteError`
+> now has five cases: `payloadTooLarge(bytes:limit:)` refuses a share above
+> `InboxWriter.maximumPayloadBytes` (64 MiB) before a byte of it is copied, so that an
+> absurd share fails *here* rather than by getting the extension jetsammed and leaving a
+> share sheet that silently did nothing (091 · D2). It renders on this card, unchanged
+> and un-argued-with: it is a lost capture, it leaves nothing partial, and one card was
+> always the right answer to that.
+>
+> What it does not fit is **"Try sharing again."** For the other four, re-sharing is a
+> legitimate retry — a full disk empties, a locked device unlocks. For this one, sharing
+> the same photo again is guaranteed to fail identically, and the card is telling the
+> user to do a thing that cannot work. Raised here rather than reworded on a hunch,
+> because the fix is a judgement call between three bad options: a second message (which
+> gives up the one-card property this section argues for), a vaguer sentence for all
+> five (which makes the common cases less useful to serve the rare one), or leaving it.
+> Verified on a simulator with an 82 MiB share: the card appears, stays, and says the
+> retry line. It is the user's call on a device, like the dismiss delay.
+
 ### Sharing the same thing twice says nothing, on purpose
 
 18A blob-hash dedup makes the second share a no-op:

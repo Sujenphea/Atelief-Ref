@@ -12,6 +12,16 @@
 // names, whether the capture is media-less, what goes in `rawMetadata` — is
 // arithmetic over strings and bytes, and none of it needs a device.
 //
+// **406 moved the seam one step earlier.** `harvest` used to decide four things inside
+// the extension where nothing could test them: that image bytes beat a URL, that the
+// URL then becomes the image's `sourceURL`, that a `file://` attachment is not
+// provenance, and that an empty title is no title. All four are now
+// ``ShareCapture/sharedItem(image:urlString:title:)`` and ``ShareCapture/webURLString(_:)``,
+// pure over three optionals, and the extension calls them. What stayed behind is the
+// `UTType` conformance check, which needs UIKit, and the item-provider loading itself,
+// which is asynchronous and Cocoa. This is the split S4b-ii chose, applied to the
+// decisions that had leaked past it — not a new mechanism.
+//
 // **The platform mapping is the load-bearing decision** (092 · S4b). `platform`
 // records which SITE the content came from, and it persists as a string in SQLite,
 // so there is no `iosShare` case and there must not be one: a new case touches the
@@ -38,16 +48,20 @@ import AtelierCore
 /// case here for them — an item shape this enum cannot express is one the share
 /// sheet should never have offered Atelier for.
 ///
-/// The image case keeps its bytes as `Data` and never as an image object: the
-/// extension writes them straight through to the sidecar, and decoding them to learn
-/// anything (dimensions, format) is the memory mistake 092 · S2 exists to prevent.
+/// The image case names its bytes by a ``PayloadSource`` and never by an image object:
+/// the extension writes them straight through to the sidecar, and decoding them to
+/// learn anything (dimensions, format) is the memory mistake 092 · S2 exists to
+/// prevent. Since 406 the source is usually a FILE — the bytes are on disk and stay
+/// there until `InboxWriter` copies them into the inbox, so the extension holds an
+/// image's worth of nothing.
 public enum SharedItem: Equatable, Sendable {
     /// A web URL — a media-less `link` capture. The Mac resolves og-tags at drain
     /// time through the existing `PageResolver`, so nothing is fetched here.
     case link(url: String, title: String? = nil)
-    /// Image bytes, with the page or media URL they came from when the share carried
-    /// one (a photo shared out of Photos carries none).
-    case image(bytes: Data, sourceURL: String? = nil, title: String? = nil)
+    /// Image bytes — on disk or, when a provider offered no file representation, in
+    /// memory — with the page or media URL they came from when the share carried one
+    /// (a photo shared out of Photos carries none).
+    case image(bytes: PayloadSource, sourceURL: String? = nil, title: String? = nil)
 }
 
 /// A capture ready for ``InboxWriter/write(_:payload:id:capturedAt:)`` — the request
@@ -59,10 +73,12 @@ public enum SharedItem: Equatable, Sendable {
 /// crossed.
 public struct ShareCaptureDraft: Equatable, Sendable {
     public let request: CaptureRequest
-    /// The media bytes, or nil for a media-less capture.
-    public let payload: Data?
+    /// Where the media bytes are, or nil for a media-less capture. It is a
+    /// ``PayloadSource`` rather than a `Data` so the file the extension was handed
+    /// stays a file all the way to ``InboxWriter``.
+    public let payload: PayloadSource?
 
-    public init(request: CaptureRequest, payload: Data?) {
+    public init(request: CaptureRequest, payload: PayloadSource?) {
         self.request = request
         self.payload = payload
     }
@@ -126,8 +142,7 @@ public enum ShareCapture {
     /// the one nobody notices going wrong.
     public static func platform(forURLString raw: String?) -> Platform {
         guard let raw else { return .web }
-        if let scheme = URLComponents(string: raw)?.scheme?.lowercased(),
-           scheme != "http", scheme != "https" {
+        if let scheme = URLComponents(string: raw)?.scheme, !isWebScheme(scheme) {
             return .web
         }
         guard let canonical = LinkPayload.canonicalURL(raw),
@@ -139,6 +154,81 @@ public enum ShareCapture {
             return entry.platform
         }
         return .web
+    }
+
+    /// Whether a URL scheme is one a capture may be built from — the single authority
+    /// both the harvest filter and the platform mapping ask (406).
+    ///
+    /// The two ask it differently and that difference is not an accident.
+    /// ``webURLString(_:)`` demands a scheme AND that it pass this; ``platform(forURLString:)``
+    /// only refuses a scheme that fails it, because a scheme-less `x.com/i/1` is
+    /// something `LinkPayload.canonicalURL` is expected to repair and a shared `URL`
+    /// always arrives with a scheme.
+    static func isWebScheme(_ scheme: String?) -> Bool {
+        guard let scheme = scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
+    /// A shared URL string, if it is a WEB URL — otherwise nil (406, issue 11).
+    ///
+    /// **This filter exists because `public.file-url` conforms to `public.url`.** An
+    /// image shared out of Files arrives with a `file://` attachment beside it, and
+    /// storing that as `originalURL` would put a path from a container that no longer
+    /// exists into a capture's provenance. A share with no web URL is not a broken
+    /// share — it is a photo.
+    ///
+    /// It lived in the extension until 406, where nothing could test it. It is a
+    /// predicate over a string, so it belongs here; the `UTType` conformance check it
+    /// sits beside genuinely needs UIKit and stayed.
+    public static func webURLString(_ raw: String?) -> String? {
+        guard let raw,
+              let scheme = URLComponents(string: raw)?.scheme,
+              isWebScheme(scheme)
+        else { return nil }
+        return raw
+    }
+
+    /// A title worth recording, or nil — the one place emptiness is decided.
+    ///
+    /// A sharing app that supplies `""`, or a line of spaces, has supplied no title;
+    /// storing one would put a blank string where the Mac expects either a title or
+    /// nothing. Trimming rather than merely testing, because a title arriving with a
+    /// trailing newline is the same title.
+    static func normalizedTitle(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else { return nil }
+        return trimmed
+    }
+
+    /// What a share amounts to, given what the extension managed to pull out of its
+    /// item providers — or nil when there is nothing capturable (406, issue 11).
+    ///
+    /// This is `harvest`'s decision, with the asynchronous Cocoa loading lifted off it
+    /// so what remains is a function over three optionals that tests on macOS today:
+    ///
+    ///   • **Image bytes win over a URL**, and the URL then becomes the image's
+    ///     `sourceURL` — an image shared out of a browser carries the media URL beside
+    ///     the bytes, and that is where its provenance comes from. Preferring the link
+    ///     would throw away the actual picture.
+    ///   • **The URL must be a web URL**, per ``webURLString(_:)``. A `file://` is
+    ///     dropped rather than becoming provenance, on both branches.
+    ///   • **An empty title is no title**, per ``normalizedTitle(_:)``.
+    ///   • **Neither one means nil**, which the caller renders as a lost capture. The
+    ///     extension's activation rule should make it unreachable, which is exactly why
+    ///     it is decided somewhere a test can reach.
+    public static func sharedItem(
+        image: PayloadSource?, urlString: String?, title: String? = nil
+    ) -> SharedItem? {
+        let webURL = webURLString(urlString)
+        let title = normalizedTitle(title)
+        if let image {
+            return .image(bytes: image, sourceURL: webURL, title: title)
+        }
+        if let webURL {
+            return .link(url: webURL, title: title)
+        }
+        return nil
     }
 
     /// The provenance a share carries: the site the content came from, the URL
@@ -153,7 +243,7 @@ public enum ShareCapture {
         ProvenanceDTO(
             platform: platform(forURLString: urlString).rawValue,
             originalURL: urlString,
-            title: title.flatMap { $0.isEmpty ? nil : $0 },
+            title: normalizedTitle(title),
             rawMetadata: .object([capturedViaKey: .string(capturedViaValue)]))
     }
 
