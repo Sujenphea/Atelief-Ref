@@ -66,7 +66,8 @@ private struct RoundTripRig {
         bytes: String, into collectionID: UUID, title: String? = "Hero",
         url: String? = nil, platform: Platform = .pinterest,
         name: String? = nil, note: String? = nil, favorite: Bool = false,
-        archived: Bool = false
+        archived: Bool = false,
+        capturedAt: Date = Date(timeIntervalSince1970: 1_700_000_000)
     ) async throws -> Asset {
         let data = Data(bytes.utf8)
         let hash = ContentHasher.hash(data)
@@ -80,7 +81,7 @@ private struct RoundTripRig {
         let source = SourceDraft(
             platform: platform, originalURL: url ?? "https://example.com/\(bytes)",
             authorHandle: "@designer", authorName: "A Designer", title: title,
-            capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            capturedAt: capturedAt,
             rawMetadata: .object(["board": .string("Refs"), "n": .number(3)]))
         let asset = try await self.source.ingest(draft, from: source, into: collectionID).asset
         if let name { try await self.source.setName(name, for: asset.id) }
@@ -142,9 +143,19 @@ private struct RoundTripRig {
             uniquingKeysWith: { first, _ in first })
     }
 
-    func targetItems(_ name: String) async throws -> [CollectionItemDetail] {
+    func targetItems(
+        _ name: String, sort: SortMode = .manual
+    ) async throws -> [CollectionItemDetail] {
         guard let collection = try await targetCollections()[name] else { return [] }
-        return try await target.collectionItems(in: collection.id, sort: .manual, includeArchived: false)
+        return try await target.collectionItems(in: collection.id, sort: sort, includeArchived: false)
+    }
+
+    /// The same read against the SOURCE library, so "preserved" can be measured as
+    /// an equality between two libraries rather than against a list retyped here.
+    func sourceItems(
+        _ collectionID: UUID, sort: SortMode = .manual
+    ) async throws -> [CollectionItemDetail] {
+        try await source.collectionItems(in: collectionID, sort: sort, includeArchived: false)
     }
 
     /// Distinct assets in a library, counted across every collection — the
@@ -244,6 +255,61 @@ struct LibraryArchiveRoundTripTests {
         #expect(try rig.targetStore.readBlob(hash: hash, fileExtension: "png")
             == Data("alpha".utf8))
         #expect(hash == ContentHasher.hash(Data("alpha".utf8)))
+    }
+
+    /// **Newest-first reads the same in both libraries (092 · S3 review, 17A).**
+    ///
+    /// `manual_order` was always carried across verbatim, so the round trip looked
+    /// whole as long as you only ever looked at a collection in Manual. Every other
+    /// read in the app — "Newest", search, the paging cursor — orders by
+    /// `asset.created_at`, and that column used to be stamped `Date()` at the moment
+    /// the IMPORT wrote the row. So a restored library collapsed to a single instant
+    /// under every sort but one, and its "Newest" was really "whatever order the
+    /// importer happened to replay in".
+    ///
+    /// `created_at` is now seeded from the source's `capturedAt`, which the archive
+    /// has carried in its manifest since 068 — so the fix is a read of something the
+    /// format already stored. The three captures below are seeded in an order that
+    /// is neither their capture order nor its reverse, so an importer that replayed
+    /// in file order, in insert order, or backwards would all fail this.
+    @Test("Newest-first ordering survives the round trip, not just manual order")
+    func createdAtOrderRoundTrips() async throws {
+        let rig = try RoundTripRig.make(archiveNamed: "Ordered Archive")
+        defer { rig.cleanup() }
+
+        let refs = try await rig.source.createCollection(name: "Refs")
+        let day = 86_400.0
+        // Seeded middle, oldest, newest.
+        let seeds: [(bytes: String, title: String, offset: Double)] = [
+            ("beta", "Beta", 2 * day),
+            ("alpha", "Alpha", 0),
+            ("gamma", "Gamma", 5 * day),
+        ]
+        for seed in seeds {
+            try await rig.seedImage(
+                bytes: seed.bytes, into: refs.id, title: seed.title,
+                url: "https://example.com/\(seed.bytes)",
+                capturedAt: Date(timeIntervalSince1970: 1_700_000_000 + seed.offset))
+        }
+
+        // What the SOURCE library reads as, before anything is exported.
+        let expected = try await rig.sourceItems(refs.id, sort: .newest)
+            .map { $0.source.title }
+        #expect(expected == ["Gamma", "Beta", "Alpha"])
+
+        try await rig.export()
+        let summary = await rig.importIntoTarget()
+        #expect(summary.outcome == .succeeded)
+        #expect(summary.newAssets == 3)
+
+        // …and what the TARGET library reads as, after.
+        let imported = try await rig.targetItems("Refs", sort: .newest)
+        #expect(imported.map { $0.source.title } == expected)
+        // Not merely the same ORDER — the same instants. A round trip that
+        // preserved the sequence by luck of insert order would pass the line above.
+        #expect(imported.map { $0.asset.createdAt }
+            == seeds.sorted { $0.offset > $1.offset }
+                .map { Date(timeIntervalSince1970: 1_700_000_000 + $0.offset) })
     }
 
     /// **The regression the manifest change exists for (011 · U5).** Favorites are

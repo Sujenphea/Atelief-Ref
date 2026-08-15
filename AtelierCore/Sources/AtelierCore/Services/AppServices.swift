@@ -1072,6 +1072,26 @@ public final class AppServices: Sendable {
 
     // MARK: - Ingest (C6 provenance + 18A dedup)
 
+    // **`asset.created_at` is the source's `capturedAt`, not the insert's `Date()`**
+    // (092 · S3 review, 18A/17A). Both insert sites below seed it that way, and the
+    // reason is that `created_at` is what the library ORDERS BY — a collection's
+    // "Newest", search results, the paging cursor — so it is a display fact about
+    // when the user took the thing, not an audit fact about when a row was written.
+    // Those two were the same moment for every producer the app had until the iOS
+    // inbox: paste, drag, the clipboard watcher and the capture endpoint all pass
+    // `capturedAt: Date()` at the moment they hand bytes over, so nothing about
+    // their behaviour changes. The two producers that are NOT happening now do
+    // change, and both wanted to:
+    //   • a share drained out of `inbox/` may have been sitting there since before
+    //     the last reboot, and it should land where the user's afternoon put it,
+    //     not at the top of the grid because the Mac was opened on Friday;
+    //   • an archive import (068) carries the ORIGINAL capture times in its
+    //     manifest, so a restored library now reads in the order the library it
+    //     was made from read in, instead of collapsing to the minute of the import.
+    // Deliberately NOT retroactive: rows already in a library keep the `created_at`
+    // they were stamped with, because rewriting history to fix an ordering would be
+    // a worse trade than one seam between old rows and new.
+
     /// Ingest an asset with its REQUIRED provenance into a collection, in ONE
     /// transaction (C6 — `source` is non-optional, so "asset with no origin"
     /// cannot compile). Implements the 18A dedup rule and is idempotent on
@@ -1120,11 +1140,13 @@ public final class AppServices: Sendable {
                     authorName: source.authorName, title: source.title,
                     capturedAt: source.capturedAt, rawMetadata: source.rawMetadata)
                 try newSource.insert(db)
+                // `created_at` is the source's `capturedAt`, NOT `Date()` — see the
+                // note under `MARK: - Ingest` above.
                 let newAsset = Asset(
                     id: UUID(), kind: asset.kind, blobHash: blobHash,
                     mimeType: asset.mimeType, width: asset.width, height: asset.height,
                     duration: asset.duration, fileSize: asset.fileSize,
-                    downloadState: asset.downloadState, createdAt: Date(),
+                    downloadState: asset.downloadState, createdAt: source.capturedAt,
                     sourceId: newSource.id)
                 try newAsset.insert(db)
                 resolvedAsset = newAsset
@@ -1236,13 +1258,17 @@ public final class AppServices: Sendable {
                 // Content in `payload`; born `.downloaded` (its substance is fully
                 // present). Byte columns are nil UNLESS a card image was supplied
                 // (Option 3) — then the asset also carries a real blob.
+                // `created_at` is the source's `capturedAt`, NOT `Date()` — see the
+                // note under `MARK: - Ingest` above. `effectiveSource` and `source`
+                // agree on `capturedAt` (only `originalURL` is canonicalized), but
+                // it is read from the draft the row was BUILT from either way.
                 let newAsset = Asset(
                     id: UUID(), kind: normalized.kind,
                     blobHash: normalizedBlob?.hash, mimeType: normalizedBlob?.mimeType,
                     width: normalizedBlob?.width, height: normalizedBlob?.height,
                     duration: nil, fileSize: normalizedBlob?.fileSize,
                     downloadState: .downloaded,
-                    createdAt: Date(), sourceId: newSource.id,
+                    createdAt: effectiveSource.capturedAt, sourceId: newSource.id,
                     payload: normalized.payload.jsonString(),
                     dedupKey: normalized.dedupKey, searchText: normalized.searchText)
                 try newAsset.insert(db)

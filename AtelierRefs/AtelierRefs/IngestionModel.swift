@@ -239,6 +239,11 @@ final class IngestionModel: ObservableObject {
     private var coordinator: IngestCoordinator?
     private(set) var services: AppServices?
     private var captureServer: CaptureServer?
+    /// Drains `inbox/` — the iOS share extension's half of the handoff — at launch
+    /// and on every activation (092 · S3). `nil` until `bootstrap()` opens the
+    /// library, since the inbox is a directory INSIDE it. Held so the activation
+    /// subscription outlives `bootstrap()`'s stack frame.
+    private(set) var inboxDrain: InboxDrainScheduler?
     /// The idle on-device analysis + embedding backfill loop (047 · 3a). Held so it
     /// can be cancelled; runs at `.background` for the app's lifetime.
     private var analysisTask: Task<Void, Never>?
@@ -825,6 +830,10 @@ final class IngestionModel: ObservableObject {
             await refreshSpaces()
             loadContents(of: selectedFolderID)
             await startCaptureEndpoint(coordinator: coordinator, services: services)
+            // The second producer, on the same coordinator as the first (092 · S3).
+            // After the endpoint rather than before it only because both are cheap
+            // and this is the one that touches the disk.
+            activateInboxDrain(libraryRoot: root, coordinator: coordinator)
 
             // Reclaim blobs orphaned by deletes that were never undone (010 ·
             // delete-undo). Off-main, after the UI is up; the undo history is empty
@@ -925,6 +934,46 @@ final class IngestionModel: ObservableObject {
         }
     }
 
+    // MARK: - The inbox (092 · S3)
+
+    /// Wire the iOS handoff: drain `inbox/` at launch and on every activation.
+    ///
+    /// Everything about WHEN lives in ``InboxDrainScheduler`` — including the
+    /// guard against two passes overlapping — so this is a call site and nothing
+    /// more. The drain feeds the SAME bounded `IngestCoordinator` the capture
+    /// endpoint and every paste/drag do; a second runner would be two things
+    /// deciding independently how much of the machine to spend decoding images.
+    private func activateInboxDrain(libraryRoot: URL, coordinator: IngestCoordinator) {
+        let drain = InboxDrain(libraryRoot: libraryRoot, coordinator: coordinator)
+        let scheduler = InboxDrainScheduler(
+            // A pass reports counts, not outcomes, and it resolves each record's
+            // OWN target collection — so the refresh is told "somewhere", not
+            // where. See ``refreshAfterIngest(touching:)``.
+            pass: { await drain.drainOnce() },
+            onIngest: { [weak self] in self?.refreshAfterIngest(touching: nil) })
+        inboxDrain = scheduler
+        scheduler.start()
+    }
+
+    // MARK: - Capture feedback
+
+    /// Bring the live UI back in step with a library some producer OTHER than the
+    /// user just wrote to: refresh the tree's counts, and reload the visible
+    /// folder if it may have received something.
+    ///
+    /// `collectionID` is the collection that received the items; `nil` means the
+    /// producer cannot say — an inbox pass resolves each record's own target and
+    /// reports only counts — in which case the visible folder is reloaded
+    /// unconditionally. That is a wasted query when the drain landed elsewhere,
+    /// and it is the honest response to not knowing: the alternative is a grid
+    /// that silently omits a capture the user just watched arrive.
+    private func refreshAfterIngest(touching collectionID: UUID?) {
+        Task { await refreshFolders() }
+        if collectionID == nil || collectionID == selectedFolderID {
+            loadContents(of: selectedFolderID)
+        }
+    }
+
     /// Refresh the live UI after a browser capture: reload the visible folder when
     /// it received the item, and always refresh the tree's counts. Runs on the
     /// main actor (hopped from the server's off-main callback).
@@ -933,10 +982,7 @@ final class IngestionModel: ObservableObject {
             if case let .ingested(asset, _) = $0 { return asset } else { return nil }
         }
         let imported = ingested.count
-        Task { await refreshFolders() }
-        if collectionID == selectedFolderID {
-            loadContents(of: selectedFolderID)
-        }
+        refreshAfterIngest(touching: collectionID)
         // A successful capture already raises its own "Saved N — Jump" toast below;
         // only the failure needs saying, since nothing else reports it.
         if imported == 0 { notify("A browser capture failed.") }

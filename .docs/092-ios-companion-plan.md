@@ -408,6 +408,47 @@ a scratch library — the whole path is provable before an iOS target exists.
 > suite was run three times because this changes concurrency, and was identical each
 > time. Both app targets still build.
 
+> **Reviewed 2026-08-15 — R3: departure 2 above is discharged** (changelog
+> [407](../.change-log/407-the-drain-nobody-called.md)). "Run it on macOS first" now means
+> in the app, not only in tests. `drainOnce()` had no caller anywhere in `AtelierRefs`
+> until this slice — everything beneath it was built, tested and proven, and a capture
+> shared from the phone reached `inbox/` and stopped there.
+>
+> 1. **A pass at launch and one on every activation. No timer, no watcher.**
+>    `IngestionModel.bootstrap()` drains after the capture endpoint is up, and a new
+>    `InboxDrainScheduler` observes `NSApplication.didBecomeActiveNotification`
+>    thereafter — records arrive by AirDrop and iCloud Drive while the app is already
+>    running, and an empty inbox costs one `contentsOfDirectory`. The bound is stated
+>    rather than hidden: a share landing while the app is already frontmost waits for the
+>    next activation.
+> 2. **Two passes cannot overlap.** A pass in flight is held in a `Task` handle and an
+>    activation that finds one is dropped rather than queued — the next pass re-enumerates
+>    the directory anyway. The guard is exact because the scheduler is `@MainActor`: the
+>    check and the claim are one synchronous step.
+> 3. **The cadence is its own type**, in the app target, taking the pass as a closure —
+>    which is what makes "three activations during one pass start no second pass"
+>    deterministic rather than a race a real drain finishes too fast to lose. `InboxDrain`
+>    gained **no** `onCapture` callback; keeping `AtelierIngestion` free of a UI-shaped
+>    seam is the property S3 was protecting. The refresh is driven by
+>    `DrainSummary.ingested > 0` and reuses the endpoint's path, now
+>    `IngestionModel.refreshAfterIngest(touching:)`, shared by both producers.
+>    `inboxUnreadable` goes to `AppLog.capture` and nowhere else.
+> 4. **`asset.created_at` is seeded from the source's `capturedAt`** at both `AppServices`
+>    insert sites, which settles the ordering problem R2 could only work around: nothing
+>    in the library orders by `source.captured_at`, so a drained share's grid position was
+>    decided by whichever insert transaction committed first. It now is not. This also
+>    changes **archive import** (068) — a restored library used to collapse to the minute
+>    of the import under every sort but Manual — and the manifest has carried the real
+>    times since 068, so no format change was needed. Not retroactive: existing rows keep
+>    their dates.
+>
+> Proven in the real app, not only in tests: the Debug build launched against a scratch
+> library under `-library-root`, fed by the real `InboxWriter`, ingested a record stamped
+> nineteen months earlier at launch and a second one on activation only, both landing in
+> Unsorted with `created_at` equal to the record's `capturedAt`. 14 new tests;
+> `AtelierCore` 760/105 → 765/106, every other package unchanged, `AtelierRefsTests` green
+> with no assertion edited.
+
 ## S4 — split into S4a and S4b
 
 S4 as written above bundled two jobs with nothing in common: making the *packages*
@@ -727,9 +768,13 @@ can review.
   touches the migrator, every filter, and the archive contract. `clipboard` /
   `localPaste` / `localDrag` are the existing exceptions and they are not a
   precedent worth extending for this.
-- Plus the two app-side seams S3 deferred: wiring `InboxDrain.drainOnce()` into the
+- ~~Plus the two app-side seams S3 deferred: wiring `InboxDrain.drainOnce()` into the
   Mac app behind the `-library-root` override, and giving it the equivalent of
-  `CaptureRoutes`' `onCapture` hook so a drained share refreshes the live UI.
+  `CaptureRoutes`' `onCapture` hook so a drained share refreshes the live UI.~~
+  **Done 2026-08-15, R3** ([407](../.change-log/407-the-drain-nobody-called.md)) — and
+  the second half landed differently than written here: no `onCapture` hook was added to
+  `InboxDrain`, because `DrainSummary.ingested` already answers the only question the
+  refresh asks, and a UI-shaped callback in `AtelierIngestion` is the seam S3 avoided.
 
 **~2 weeks.**
 
@@ -791,6 +836,21 @@ through the real share sheet on a simulator rather than only built. Every piece 
 that could be tested outside the extension is in `AtelierCapture` and is (73/4, up from
 57/3); the extension itself holds only what needs `UIKit` and `NSExtensionContext`.
 
+**The Mac drains the inbox now (2026-08-15, R3,
+[407](../.change-log/407-the-drain-nobody-called.md)).** This is the sentence that could
+not be written before: `InboxDrain.drainOnce()` had **no caller anywhere in the app** —
+every piece of the handoff existed, was tested and was proven, and a shared capture
+reached `inbox/` and stopped there. It is now called at launch and on every app
+activation, with overlapping passes prevented, `DrainSummary.ingested > 0` driving the
+same grid refresh the capture endpoint uses, and an unreadable inbox logged rather than
+surfaced. `asset.created_at` is seeded from the source's `capturedAt` at both
+`AppServices` insert sites, so a share drained days late lands where the user put it —
+and, as an intentional consequence, a restored archive reads in the order the library it
+was made from read in. The loop was run end to end on macOS against a scratch library:
+launch pass, activation pass, `created_at` equal to the record's capture time nineteen
+months earlier. **S3's app-wiring deferral is discharged**; what remains of S4b no longer
+includes it.
+
 **A review pass over S2/S3 is underway (2026-08-15).** Its first slice, R1, has landed
 ([403](../.change-log/403-a-record-that-named-its-neighbour.md)): a record's
 `payloadFile` must now be the writer's own name for that record's id, closing a case
@@ -805,14 +865,15 @@ by `captured_at`), records run in chunks at the coordinator's width instead of o
 time, an unreadable inbox is now distinguishable from an empty one, and both cancellation
 paths are tested. Later slices add their own notes here.
 
-**What is left of S4b** is three things, and none of them blocks S5: **tier 2** (the
+**What is left of S4b** is two things, and neither blocks S5: **tier 2** (the
 Safari `NSExtensionJavaScriptPreprocessingFile` path and the smallest useful subset of
-`extension/src/extractors/`), **the ~120 MB footprint measurement** with Instruments and
-a large share — gate 2, still a measurement and not an assertion — and **the two
-app-side seams S3 deferred** (`InboxDrain.drainOnce()` behind the `-library-root`
-override, and its `onCapture` equivalent so a drained share refreshes the live UI).
-Until that last pair exists, a shared capture reaches the inbox and stops there: nothing
-on the Mac drains it yet outside a test.
+`extension/src/extractors/`), and **the ~120 MB footprint measurement** with Instruments
+and a large share — gate 2, still a measurement and not an assertion. The third item, the
+two app-side seams S3 deferred, was **done on 2026-08-15 by R3**
+([407](../.change-log/407-the-drain-nobody-called.md)): the drain runs at launch and on
+activation, and a drained share refreshes the live UI through the same path the capture
+endpoint uses — without an `onCapture` callback on `InboxDrain`, since the summary the
+pass returns already says whether anything landed.
 
 What S4b inherits, all of it recorded rather than discovered later:
 
