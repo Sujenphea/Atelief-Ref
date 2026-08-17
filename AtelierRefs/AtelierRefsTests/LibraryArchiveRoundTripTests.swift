@@ -13,6 +13,7 @@
 //  copy. Presence proves nothing; counting does.
 //
 
+import AtelierArchive
 import AtelierCore
 import AtelierIngestion
 import Foundation
@@ -115,7 +116,7 @@ private struct RoundTripRig {
 
     func export() async throws {
         let writer = LibraryArchiveWriter(
-            services: source, store: sourceStore, appVersion: "1.0-test",
+            services: source, libraryRoot: sourceStore.layout.root, appVersion: "1.0-test",
             schemaVersion: "v18")
         _ = try await writer.write(
             to: archive, isCancelled: { false }, onProgress: { _ in })

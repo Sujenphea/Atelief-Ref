@@ -14,6 +14,7 @@
 //  actually hide.
 //
 
+import AtelierArchive
 import AtelierCore
 import CoreGraphics
 import Foundation

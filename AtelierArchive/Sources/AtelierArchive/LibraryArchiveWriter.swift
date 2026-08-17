@@ -20,33 +20,33 @@
 //  panel, or a bookmark.
 //
 
+import AtelierCapture
 import AtelierCore
-import AtelierIngestion
 import Foundation
 
 /// Why a run produced nothing worth committing.
-nonisolated enum ArchiveWriteError: Error, Equatable {
+public nonisolated enum ArchiveWriteError: Error, Equatable {
     /// Every byte-backed membership failed to copy — the destination is full or
     /// unwritable. No manifest is written, so the folder cannot be mistaken for
     /// a finished archive.
     case nothingCopied
 }
 
-nonisolated struct LibraryArchiveWriter: Sendable {
+public nonisolated struct LibraryArchiveWriter: Sendable {
 
     /// What one export produced, for the toast / status line. Skips are counted
     /// and reported, never silently swallowed (004's batch-outcome lesson).
-    struct Result: Sendable, Equatable {
+    public struct Result: Sendable, Equatable {
         /// Collections written (every collection, including empty ones).
-        var collections: Int = 0
+        public var collections: Int = 0
         /// Distinct assets in the manifest — the CANONICAL count, not the file
         /// count, which is larger whenever an asset lives in several folders.
-        var assets: Int = 0
+        public var assets: Int = 0
         /// Files copied into the tree.
-        var files: Int = 0
+        public var files: Int = 0
         /// Memberships whose bytes could not be written: a blob already gone
         /// from disk, or a copy the filesystem refused. The user-facing total.
-        var skipped: Int = 0
+        public var skipped: Int = 0
         /// The subset of ``skipped`` the DESTINATION refused — a copy that threw,
         /// rather than a source blob that was already gone.
         ///
@@ -56,24 +56,31 @@ nonisolated struct LibraryArchiveWriter: Sendable {
         /// refused copy is a fact about the destination — it is full, or
         /// read-only — and it is the one that must not be committed to as though
         /// it were a finished archive.
-        var writeFailures: Int = 0
+        public var writeFailures: Int = 0
         /// Where the manifest landed.
-        var manifestURL: URL
+        public var manifestURL: URL
     }
 
-    let services: AppServices
-    let store: MediaStore
-    let appVersion: String
-    let schemaVersion: String
+    public let services: AppServices
+    /// The library root the blobs hang off.
+    ///
+    /// A ROOT and not a `MediaStore`: the store took one thing from this file — a blob's
+    /// path — and lives in `AtelierIngestion`, which does not build for iOS. Depending on
+    /// it for a path join would have made this package macOS-only and 092 · S6 needs the
+    /// phone to write archives. `LibraryMediaPaths` computes the same path from a root on
+    /// both platforms, and it is the store's own authority for it.
+    public let libraryRoot: URL
+    public let appVersion: String
+    public let schemaVersion: String
 
-    init(
+    public init(
         services: AppServices,
-        store: MediaStore,
+        libraryRoot: URL,
         appVersion: String,
         schemaVersion: String = AppServices.schemaVersion
     ) {
         self.services = services
-        self.store = store
+        self.libraryRoot = libraryRoot
         self.appVersion = appVersion
         self.schemaVersion = schemaVersion
     }
@@ -87,7 +94,7 @@ nonisolated struct LibraryArchiveWriter: Sendable {
     /// rather than plausibly whole. Throws `CancellationError` the moment
     /// `isCancelled` trips; the caller classifies that, and must ask its own
     /// flag before it classifies anything (008 · H5b).
-    func write(
+    public func write(
         to root: URL,
         isCancelled: @Sendable () -> Bool,
         onProgress: @Sendable (Double) -> Void
@@ -194,10 +201,10 @@ nonisolated struct LibraryArchiveWriter: Sendable {
     // MARK: - Folder plan
 
     /// One collection's place in the archive's folder tree.
-    struct Node: Equatable {
-        var collection: Collection
+    public struct Node: Equatable {
+        public var collection: Collection
         /// Archive-relative directory components, `Collections` first.
-        var components: [String]
+        public var components: [String]
     }
 
     /// Resolve every collection to a folder, depth-first, parents before
@@ -209,7 +216,7 @@ nonisolated struct LibraryArchiveWriter: Sendable {
     /// sanitizer plus a per-parent `ExportNameAllocator`, because sanitizing can
     /// make distinct sibling names identical (`Refs / Q3` and `Refs   Q3`) even
     /// though Core guarantees the originals differ.
-    func folderPlan() async throws -> [Node] {
+    public func folderPlan() async throws -> [Node] {
         let all = try await services.listCollections()
         var childrenByParent: [UUID?: [Collection]] = [:]
         for collection in all {
@@ -256,7 +263,7 @@ nonisolated struct LibraryArchiveWriter: Sendable {
     /// The test for "nothing survives" is the INPUT, not `sanitize`'s output: a
     /// collection genuinely called `image` must keep its name, and a collection
     /// called `///` must not become one.
-    static func folderName(for name: String) -> String {
+    public static func folderName(for name: String) -> String {
         let survivable = CharacterSet(charactersIn: "/\\:\u{0} .-")
             .union(.controlCharacters).union(.whitespacesAndNewlines).inverted
         guard name.rangeOfCharacter(from: survivable) != nil else { return "Refs" }
@@ -282,9 +289,10 @@ nonisolated struct LibraryArchiveWriter: Sendable {
         result: inout Result
     ) -> String? {
         guard let hash = detail.asset.blobHash, !hash.isEmpty else { return nil }
-        let source = store.blobURL(
-            hash: hash,
-            fileExtension: ImageMetadata.fileExtension(forMIMEType: detail.asset.mimeType ?? ""))
+        let source = LibraryMediaPaths.blobURL(
+            libraryRoot: libraryRoot, hash: hash,
+            fileExtension: LibraryMediaPaths.fileExtension(
+                forMIMEType: detail.asset.mimeType ?? ""))
         guard let item = AssetExport.exportItem(
             asset: detail.asset, source: detail.source, blobURL: source) else {
             result.skipped += 1
@@ -320,7 +328,7 @@ nonisolated struct LibraryArchiveWriter: Sendable {
     /// the current one. Denominated in COLLECTIONS rather than in memberships
     /// because a total membership count would need a full pre-pass over the
     /// library — the one thing a streaming writer must not do.
-    static func fraction(collection: Int, of collections: Int, item: Int, of items: Int) -> Double {
+    public static func fraction(collection: Int, of collections: Int, item: Int, of items: Int) -> Double {
         guard collections > 0 else { return 1 }
         let within = items > 0 ? Double(item) / Double(items) : 0
         return min(1, (Double(collection) + within) / Double(collections))

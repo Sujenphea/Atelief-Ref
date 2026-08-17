@@ -36,6 +36,7 @@
 //     work, and those throws are a consequence of the user pressing Stop.
 //
 
+import AtelierArchive
 import AtelierCore
 import AtelierIngestion
 import Foundation
@@ -266,36 +267,11 @@ nonisolated struct LibraryImporter: Sendable {
 
     // MARK: - Ordering
 
-    /// `plans` reordered so a parent always precedes its children, depth-first.
-    ///
-    /// A plan whose `parentKey` is absent from `plans` is a root: an importer
-    /// must not be able to strand a collection by naming a parent it didn't
-    /// ship. Anything still unreached afterwards is appended rather than
-    /// dropped — a cycle cannot come out of this app, but a manifest is a FILE,
-    /// and losing a folder silently is worse than nesting it shallowly.
+    /// `plans` reordered so a parent always precedes its children — see
+    /// ``ImportPlan/parentsFirst(_:)``, which owns the rule now that `ImportPlan` lives
+    /// in `AtelierArchive`. Kept as the name this file's call sites already use.
     static func parentsFirst(_ plans: [ImportPlan]) -> [ImportPlan] {
-        let known = Set(plans.map(\.key))
-        var childrenOf: [String: [ImportPlan]] = [:]
-        var roots: [ImportPlan] = []
-        for plan in plans {
-            if let parentKey = plan.parentKey, parentKey != plan.key, known.contains(parentKey) {
-                childrenOf[parentKey, default: []].append(plan)
-            } else {
-                roots.append(plan)
-            }
-        }
-
-        var out: [ImportPlan] = []
-        var seen: Set<String> = []
-        var stack = roots
-        while !stack.isEmpty {
-            let plan = stack.removeFirst()
-            guard seen.insert(plan.key).inserted else { continue }
-            out.append(plan)
-            stack.insert(contentsOf: childrenOf[plan.key] ?? [], at: 0)
-        }
-        out.append(contentsOf: plans.filter { !seen.contains($0.key) })
-        return out
+        ImportPlan.parentsFirst(plans)
     }
 
     // MARK: - Helpers

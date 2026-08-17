@@ -17,6 +17,7 @@
 
 import AVKit
 import AppKit
+import AtelierArchive
 import AtelierCore
 import AtelierIngestion
 // For `AVPlayerItem.publisher(for: \.status)` — the poster placeholder's gate.

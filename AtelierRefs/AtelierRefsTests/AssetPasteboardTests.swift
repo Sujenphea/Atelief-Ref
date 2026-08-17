@@ -11,6 +11,7 @@
 //
 
 import AppKit
+import AtelierArchive
 import AtelierCore
 import Foundation
 import Testing

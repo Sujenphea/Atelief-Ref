@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [AtelierCore, AtelierCapture, AtelierBrowse, AtelierIngestion, AtelierServer, CanvasRenderer, AtelierExport]
+        package: [AtelierCore, AtelierCapture, AtelierBrowse, AtelierArchive, AtelierIngestion, AtelierServer, CanvasRenderer, AtelierExport]
     steps:
       - uses: actions/checkout@v4
       - name: Show toolchain
@@ -67,7 +67,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [AtelierCore, AtelierCapture, AtelierBrowse]
+        package: [AtelierCore, AtelierCapture, AtelierBrowse, AtelierArchive]
     steps:
       - uses: actions/checkout@v4
       - name: Show toolchain

@@ -37,21 +37,21 @@ import Foundation
 
 /// One collection to create, and the memberships to fill it with, in the order
 /// they should end up in the manual grid.
-nonisolated struct ImportPlan: Sendable, Equatable {
+public nonisolated struct ImportPlan: Sendable, Equatable {
     /// This collection's identity IN THE SOURCE — opaque to the replay layer,
     /// which only ever compares it to a ``parentKey``. A `String` rather than a
     /// `UUID` because the archive's ids are UUIDs and nothing else's have to be.
-    var key: String
+    public var key: String
     /// The source's parent id, or `nil` for a source-level root. A parent that
     /// is not among the plans is treated as absent — an importer must never be
     /// able to strand a collection by naming a parent it didn't ship.
-    var parentKey: String?
-    var name: String
-    var description: String?
+    public var parentKey: String?
+    public var name: String
+    public var description: String?
     /// Memberships in the order they should occupy the manual grid.
-    var items: [ImportItem]
+    public var items: [ImportItem]
 
-    init(
+    public init(
         key: String, parentKey: String? = nil, name: String,
         description: String? = nil, items: [ImportItem] = []
     ) {
@@ -65,32 +65,66 @@ nonisolated struct ImportPlan: Sendable, Equatable {
 
 /// One membership: which asset, where its substance is, and the per-asset facts
 /// only the source knows.
-nonisolated struct ImportItem: Sendable, Equatable {
+extension ImportPlan {
+    /// `plans` reordered so a parent always precedes its children, depth-first.
+    ///
+    /// A plan whose `parentKey` is absent from `plans` is a root: an importer
+    /// must not be able to strand a collection by naming a parent it didn't
+    /// ship. Anything still unreached afterwards is appended rather than
+    /// dropped — a cycle cannot come out of this app, but a manifest is a FILE,
+    /// and losing a folder silently is worse than nesting it shallowly.
+    public static func parentsFirst(_ plans: [ImportPlan]) -> [ImportPlan] {
+        let known = Set(plans.map(\.key))
+        var childrenOf: [String: [ImportPlan]] = [:]
+        var roots: [ImportPlan] = []
+        for plan in plans {
+            if let parentKey = plan.parentKey, parentKey != plan.key, known.contains(parentKey) {
+                childrenOf[parentKey, default: []].append(plan)
+            } else {
+                roots.append(plan)
+            }
+        }
+
+        var out: [ImportPlan] = []
+        var seen: Set<String> = []
+        var stack = roots
+        while !stack.isEmpty {
+            let plan = stack.removeFirst()
+            guard seen.insert(plan.key).inserted else { continue }
+            out.append(plan)
+            stack.insert(contentsOf: childrenOf[plan.key] ?? [], at: 0)
+        }
+        out.append(contentsOf: plans.filter { !seen.contains($0.key) })
+        return out
+    }
+}
+
+public nonisolated struct ImportItem: Sendable, Equatable {
     /// The asset's identity IN THE SOURCE. Two items sharing a key are the same
     /// asset in two collections — one asset, two memberships.
-    var key: String
+    public var key: String
     /// Where the asset's substance comes from.
-    var body: ImportBody
+    public var body: ImportBody
     /// Provenance, replayed VERBATIM. 18A dedup matches an existing asset over
     /// the same bytes only when its source matches — same `original_url` when
     /// one is given, else same `platform` — so a field normalized on the way
     /// through here forks a second asset on re-import. Idempotency is a property
     /// of what the parser produces, not only of the pipeline.
-    var source: SourceDraft
+    public var source: SourceDraft
     /// `(name, source)` pairs for ``AppServices/applyTag(_:to:source:)``.
-    var tags: [ImportTag]
+    public var tags: [ImportTag]
     /// The asset's display name, applied only when the asset is NEW (see
     /// ``LibraryImporter``).
-    var name: String?
+    public var name: String?
     /// The asset's note, applied only when the asset is NEW.
-    var note: String?
+    public var note: String?
     /// Whether the source marked this asset a favorite (011 · U5). Applied like a
     /// TAG, not like `name` / `note`: setting the star only ever ADDS information,
     /// so it is safe on a deduplicated asset, whereas overwriting a name would
     /// discard an edit made in this library. `false` is never replayed — an
     /// archive saying "not a favorite" is the absence of a claim, not an
     /// instruction to unstar something the user starred here.
-    var isFavorite: Bool
+    public var isFavorite: Bool
     /// Whether the source had this asset on its archive shelf (023 · A). Applied
     /// like the star, and for the same reasons: archiving is additive user intent
     /// that nothing can recompute, and `false` is never replayed — a plan saying
@@ -101,18 +135,18 @@ nonisolated struct ImportItem: Sendable, Equatable {
     /// replayable: `archive(_:)` is server-authoritative, exactly as `created_at`
     /// already is on this path. A restored shelf keeps its membership, not its
     /// original ordering.
-    var isArchived: Bool
+    public var isArchived: Bool
     /// Tag names the source recorded this asset as having REFUSED as suggestions
     /// (012 · I3). Replayed like the star and the shelf — additively, through
     /// `dismissSuggestion` — because a refusal only ever ADDS information, so
     /// applying it to a deduplicated asset cannot discard a decision made here.
     /// The absence of a name is the absence of a claim, never an instruction to
     /// un-refuse something refused in this library.
-    var suppressedTags: [String]
+    public var suppressedTags: [String]
     /// This membership's canvas placement, when it had one.
-    var placement: CanvasPlacement?
+    public var placement: CanvasPlacement?
 
-    init(
+    public init(
         key: String, body: ImportBody, source: SourceDraft,
         tags: [ImportTag] = [], name: String? = nil, note: String? = nil,
         isFavorite: Bool = false, isArchived: Bool = false,
@@ -133,11 +167,11 @@ nonisolated struct ImportItem: Sendable, Equatable {
 
 /// A tag as a plan carries it — exactly what `applyTag` finds-or-creates. No id:
 /// the destination library mints its own.
-nonisolated struct ImportTag: Sendable, Equatable {
-    var name: String
-    var source: TagSource
+public nonisolated struct ImportTag: Sendable, Equatable {
+    public var name: String
+    public var source: TagSource
 
-    init(name: String, source: TagSource) {
+    public init(name: String, source: TagSource) {
         self.name = name
         self.source = source
     }
@@ -150,14 +184,14 @@ nonisolated struct ImportTag: Sendable, Equatable {
 /// filed under a hash nobody verified would render as the wrong image for every
 /// future asset that hashes there, and that is not recoverable. A source's
 /// declared hash is a claim about a file the user can open, rename and replace.
-nonisolated struct ImportBytes: Sendable, Equatable {
-    var url: URL
-    var mimeType: String
-    var width: Int
-    var height: Int
-    var duration: Double?
+public nonisolated struct ImportBytes: Sendable, Equatable {
+    public var url: URL
+    public var mimeType: String
+    public var width: Int
+    public var height: Int
+    public var duration: Double?
 
-    init(url: URL, mimeType: String, width: Int, height: Int, duration: Double? = nil) {
+    public init(url: URL, mimeType: String, width: Int, height: Int, duration: Double? = nil) {
         self.url = url
         self.mimeType = mimeType
         self.width = width
@@ -167,7 +201,7 @@ nonisolated struct ImportBytes: Sendable, Equatable {
 }
 
 /// Where an item's substance is: in a file, or in the plan itself.
-nonisolated enum ImportBody: Sendable, Equatable {
+public nonisolated enum ImportBody: Sendable, Equatable {
     /// A byte-backed kind (`image` / `video`) — replayed through `ingest`.
     case media(kind: AssetKind, bytes: ImportBytes, downloadState: DownloadState)
     /// A media-less kind (`color` / `link` / `tweet`) — replayed through
@@ -182,7 +216,7 @@ nonisolated enum ImportBody: Sendable, Equatable {
 /// Why one membership was not imported. A skip is a decision the importer made
 /// knowingly; a failure is a writer that threw. Both are counted and named — a
 /// silent partial is the one outcome an import must never produce.
-nonisolated enum ImportSkipReason: String, Sendable, Equatable {
+public nonisolated enum ImportSkipReason: String, Sendable, Equatable {
     /// The membership named an asset the source didn't ship.
     case unknownAsset
     /// The asset named provenance the source didn't ship. Without it the asset
@@ -196,14 +230,14 @@ nonisolated enum ImportSkipReason: String, Sendable, Equatable {
 }
 
 /// One membership the importer knowingly did not import.
-nonisolated struct ImportSkip: Sendable, Equatable {
+public nonisolated struct ImportSkip: Sendable, Equatable {
     /// The collection it would have joined, by name — what a user recognises.
-    var collection: String
+    public var collection: String
     /// The item's source key, for a diagnostic log.
-    var item: String
-    var reason: ImportSkipReason
+    public var item: String
+    public var reason: ImportSkipReason
 
-    init(collection: String, item: String, reason: ImportSkipReason) {
+    public init(collection: String, item: String, reason: ImportSkipReason) {
         self.collection = collection
         self.item = item
         self.reason = reason
@@ -211,12 +245,12 @@ nonisolated struct ImportSkip: Sendable, Equatable {
 }
 
 /// One write that threw. `item` is `nil` when the whole collection failed.
-nonisolated struct ImportFailure: Sendable, Equatable {
-    var collection: String
-    var item: String?
-    var message: String
+public nonisolated struct ImportFailure: Sendable, Equatable {
+    public var collection: String
+    public var item: String?
+    public var message: String
 
-    init(collection: String, item: String? = nil, message: String) {
+    public init(collection: String, item: String? = nil, message: String) {
         self.collection = collection
         self.item = item
         self.message = message
@@ -225,24 +259,24 @@ nonisolated struct ImportFailure: Sendable, Equatable {
 
 /// What one replay produced. Honest by construction: every count here is
 /// something that happened, and everything that didn't happen is in ``failed``.
-nonisolated struct ImportReport: Sendable, Equatable {
+public nonisolated struct ImportReport: Sendable, Equatable {
     /// The new root collection everything landed under.
-    var destinationID: UUID?
+    public var destinationID: UUID?
     /// Its name AS CREATED — `createCollection` disambiguates a duplicate
     /// sibling name Finder-style, so this can differ from what was asked for.
-    var destinationName: String = ""
+    public var destinationName: String = ""
     /// Collections created BELOW the destination (the destination itself is not
     /// counted — it is the container, not content).
-    var collections: Int = 0
+    public var collections: Int = 0
     /// Distinct assets the memberships resolved to, deduplicated ones included.
-    var assets: Int = 0
+    public var assets: Int = 0
     /// How many of those were newly created rather than matched by 18A dedup.
     /// `assets - newAssets` is what a second import of the same archive reuses.
-    var newAssets: Int = 0
+    public var newAssets: Int = 0
     /// Memberships written.
-    var memberships: Int = 0
+    public var memberships: Int = 0
     /// Writes that threw.
-    var failed: [ImportFailure] = []
+    public var failed: [ImportFailure] = []
 
-    init() {}
+    public init() {}
 }

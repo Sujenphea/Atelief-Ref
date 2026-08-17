@@ -12,6 +12,7 @@
 
 import AppKit
 import AtelierCapture
+import AtelierArchive
 import AtelierCore
 import AtelierIngestion
 import AtelierServer

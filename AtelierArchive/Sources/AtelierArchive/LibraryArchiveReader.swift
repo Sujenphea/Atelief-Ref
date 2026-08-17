@@ -34,7 +34,7 @@ import Foundation
 
 /// Why an archive could not be read AT ALL. Distinct from a per-item skip: these
 /// stop the import before a single row is written.
-nonisolated enum ArchiveReadError: Error, Equatable {
+public nonisolated enum ArchiveReadError: Error, Equatable {
     /// No `manifest.json` at the root. The manifest is written LAST and
     /// atomically (008 · H6), so its absence means that export never finished —
     /// the same commit-record reasoning `BackupCatalog` applies to a backup.
@@ -50,36 +50,52 @@ nonisolated enum ArchiveReadError: Error, Equatable {
 // MARK: - What a parse produced
 
 /// An archive read into plans, with everything the report needs to be honest.
-nonisolated struct ArchiveParse: Sendable, Equatable {
+public nonisolated struct ArchiveParse: Sendable, Equatable {
     /// The name the destination collection should take — the archive folder's
     /// own name, so an import is findable by what the user chose in Finder.
-    var name: String
-    var manifestVersion: Int
-    var schemaVersion: String
-    var appVersion: String
-    var exportedAt: Date
+    public var name: String
+    public var manifestVersion: Int
+    public var schemaVersion: String
+    public var appVersion: String
+    public var exportedAt: Date
     /// One per collection in the manifest, in the manifest's order. The replay
     /// layer reorders parents-first; the parse leaves the contract's order
     /// alone so a plan list is directly comparable to the manifest.
-    var plans: [ImportPlan]
+    public var plans: [ImportPlan]
     /// Memberships that cannot be replayed, each with a reason.
-    var skipped: [ImportSkip]
+    public var skipped: [ImportSkip]
     /// Archive-relative paths of regular files no membership refers to. Never a
     /// failure — an archive the user has added a README to is still a valid
     /// archive — but counted, because a folder full of unreferenced images is
     /// how a torn manifest would look from the outside.
-    var unreferenced: [String]
+    public var unreferenced: [String]
+
+    /// Explicit for the reason ``AssetExportItem``'s is.
+    public init(
+        name: String, manifestVersion: Int, schemaVersion: String, appVersion: String,
+        exportedAt: Date, plans: [ImportPlan], skipped: [ImportSkip],
+        unreferenced: [String]
+    ) {
+        self.name = name
+        self.manifestVersion = manifestVersion
+        self.schemaVersion = schemaVersion
+        self.appVersion = appVersion
+        self.exportedAt = exportedAt
+        self.plans = plans
+        self.skipped = skipped
+        self.unreferenced = unreferenced
+    }
 }
 
 // MARK: - The parse
 
-nonisolated enum LibraryArchiveReader {
+public nonisolated enum LibraryArchiveReader {
 
     /// The destination name for an archive whose folder name is unusable (a
     /// volume root, a name that is entirely whitespace). `createCollection`
     /// rejects an empty name, and failing an otherwise-good import on the
     /// destination's *label* would be absurd.
-    static let fallbackName = "Imported Archive"
+    public static let fallbackName = "Imported Archive"
 
     /// Read the archive rooted at `root`.
     ///
@@ -87,7 +103,7 @@ nonisolated enum LibraryArchiveReader {
     /// skip in the returned parse. Nothing here writes, so a throw leaves the
     /// library exactly as it was — which is what "never partially apply an
     /// unknown contract" means in practice.
-    static func parse(
+    public static func parse(
         _ root: URL, schemaVersion: String = AppServices.schemaVersion
     ) throws -> ArchiveParse {
         let manifestURL = root.appendingPathComponent(ArchiveLayout.manifestFilename)
@@ -255,7 +271,7 @@ nonisolated enum LibraryArchiveReader {
     // MARK: - The folder
 
     /// The destination collection's name: the archive folder's own.
-    static func destinationName(for root: URL) -> String {
+    public static func destinationName(for root: URL) -> String {
         let name = root.standardizedFileURL.lastPathComponent
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty || name == "/" ? fallbackName : name
@@ -264,7 +280,7 @@ nonisolated enum LibraryArchiveReader {
     /// Regular files under `root` that no membership named, archive-relative and
     /// sorted. Hidden files are skipped: `.DS_Store` follows a user around
     /// Finder and reporting it as unexplained content would be noise.
-    static func unreferencedFiles(in root: URL, referenced: Set<String>) -> [String] {
+    public static func unreferencedFiles(in root: URL, referenced: Set<String>) -> [String] {
         let base = root.standardizedFileURL.path
         guard let walk = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: [.isRegularFileKey],

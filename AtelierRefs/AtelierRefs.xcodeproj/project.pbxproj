@@ -17,6 +17,7 @@
 		IA0000000000000000000003 /* AtelierCapture in Frameworks */ = {isa = PBXBuildFile; productRef = IA0000000000000000000002 /* AtelierCapture */; };
 		IA0000000000000000000005 /* AtelierCapture in Frameworks */ = {isa = PBXBuildFile; productRef = IA0000000000000000000004 /* AtelierCapture */; };
 		JA0000000000000000000003 /* AtelierBrowse in Frameworks */ = {isa = PBXBuildFile; productRef = JA0000000000000000000002 /* AtelierBrowse */; };
+		KA0000000000000000000003 /* AtelierArchive in Frameworks */ = {isa = PBXBuildFile; productRef = KA0000000000000000000002 /* AtelierArchive */; };
 		DA0000000000000000000005 /* AtelierCore in Frameworks */ = {isa = PBXBuildFile; productRef = DA0000000000000000000004 /* AtelierCore */; };
 /* End PBXBuildFile section */
 
@@ -129,6 +130,7 @@
 				FA0000000000000000000003 /* AtelierServer in Frameworks */,
 				GA0000000000000000000003 /* AtelierExport in Frameworks */,
 				HA0000000000000000000003 /* Sparkle in Frameworks */,
+				KA0000000000000000000003 /* AtelierArchive in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -217,6 +219,7 @@
 				FA0000000000000000000002 /* AtelierServer */,
 				GA0000000000000000000002 /* AtelierExport */,
 				HA0000000000000000000002 /* Sparkle */,
+				KA0000000000000000000002 /* AtelierArchive */,
 			);
 			productName = AtelierRefs;
 			productReference = 9907786E2FF364EF00718815 /* AtelierRefs.app */;
@@ -365,6 +368,7 @@
 				HA0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				IA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierCapture" */,
 				JA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierBrowse" */,
+				KA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierArchive" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9907786F2FF364EF00718815 /* Products */;
@@ -976,6 +980,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../AtelierBrowse;
 		};
+		KA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierArchive" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierArchive;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1026,6 +1034,10 @@
 		JA0000000000000000000002 /* AtelierBrowse */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AtelierBrowse;
+		};
+		KA0000000000000000000002 /* AtelierArchive */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierArchive;
 		};
 		DA0000000000000000000004 /* AtelierCore */ = {
 			isa = XCSwiftPackageProductDependency;

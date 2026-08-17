@@ -9,6 +9,7 @@
 //
 
 import AppKit
+import AtelierArchive
 import Foundation
 import Testing
 import UniformTypeIdentifiers

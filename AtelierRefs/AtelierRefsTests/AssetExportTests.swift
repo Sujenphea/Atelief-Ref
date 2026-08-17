@@ -8,6 +8,7 @@
 //  shares, so it is covered exhaustively (12A / 10A / 5A).
 //
 
+import AtelierArchive
 import AtelierCore
 import Foundation
 import Testing

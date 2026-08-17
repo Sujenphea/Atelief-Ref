@@ -22,13 +22,22 @@ import UniformTypeIdentifiers
 /// as, and the type the file promise advertises. Built by
 /// ``AssetExport/exportItem(asset:source:blobURL:)`` and consumed by the grid's
 /// file-promise drag and the detail view's `.onDrag`.
-nonisolated struct AssetExportItem: Equatable {
+public nonisolated struct AssetExportItem: Equatable {
     /// The on-disk full-resolution original (verified to exist at build time).
-    let blobURL: URL
+    public let blobURL: URL
     /// `<title-or-source>-<shorthash>.<ext>`, sanitized.
-    let filename: String
+    public let filename: String
     /// The drag/promise file type, derived from the blob's extension.
-    let utType: UTType
+    public let utType: UTType
+
+    /// Spelled out rather than synthesized: a memberwise initializer is internal, and
+    /// this type crosses a module boundary now that the naming rule is shared with the
+    /// phone (092 · S6).
+    public init(blobURL: URL, filename: String, utType: UTType) {
+        self.blobURL = blobURL
+        self.filename = filename
+        self.utType = utType
+    }
 }
 
 /// The naming rule for an exported/copied original, plus the shared
@@ -40,14 +49,14 @@ nonisolated struct AssetExportItem: Equatable {
 /// a detached writer. They were always pure — the annotation says so to the
 /// compiler as well as to the reader. `dragProvider` stays main-actor, since its
 /// caller is a view.
-enum AssetExport {
+public enum AssetExport {
 
     /// The human base name for an asset, in priority order: source title, then the
     /// author handle (a leading `@` dropped), then the source URL's host (`www.`
     /// dropped), else a bare `"image"`. The short blob hash appended by
     /// ``filename(base:blobHash:ext:)`` guarantees uniqueness, so the base only has
     /// to be *recognisable*, not unique.
-    nonisolated static func baseName(title: String?, authorHandle: String?, sourceURL: String?) -> String {
+    public nonisolated static func baseName(title: String?, authorHandle: String?, sourceURL: String?) -> String {
         if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
             return title
         }
@@ -65,7 +74,7 @@ enum AssetExport {
     /// collapse to one space, leading/trailing spaces / dots / dashes are trimmed
     /// (no hidden-file dot, no dangling separators), the result is capped at 60
     /// characters, and an empty result falls back to `"image"`.
-    nonisolated static func sanitize(_ raw: String) -> String {
+    public nonisolated static func sanitize(_ raw: String) -> String {
         let hostile = CharacterSet(charactersIn: "/\\:\u{0}").union(.controlCharacters)
         let replaced = String(String.UnicodeScalarView(
             raw.unicodeScalars.map { hostile.contains($0) ? Unicode.Scalar(32) : $0 }))
@@ -79,7 +88,7 @@ enum AssetExport {
     /// Assemble `<sanitized-base>-<shorthash>.<ext>`. The short hash is the first 8
     /// of the (already-lowercased) content hash; the extension is reduced to bare
     /// alphanumerics. A missing hash or extension simply drops that segment.
-    nonisolated static func filename(base: String, blobHash: String, ext: String) -> String {
+    public nonisolated static func filename(base: String, blobHash: String, ext: String) -> String {
         let name = sanitize(base)
         let shortHash = String(blobHash.prefix(8))
         let cleanExt = ext.lowercased().filter { $0.isLetter || $0.isNumber }
@@ -97,7 +106,7 @@ enum AssetExport {
     /// `source` is optional (052 · B1): a canvas ``SpaceItemDetail`` carries no
     /// source for an element row and none for some asset rows, so a nil source just
     /// drops the naming hints and falls back to the blob-derived `"image"` base.
-    nonisolated static func exportItem(asset: Asset, source: Source?, blobURL: URL?) -> AssetExportItem? {
+    public nonisolated static func exportItem(asset: Asset, source: Source?, blobURL: URL?) -> AssetExportItem? {
         guard let blobHash = asset.blobHash, !blobHash.isEmpty,
               let blobURL,
               FileManager.default.fileExists(atPath: blobURL.path) else { return nil }
@@ -111,26 +120,6 @@ enum AssetExport {
             blobURL: blobURL, filename: name, utType: UTType(filenameExtension: ext) ?? .data)
     }
 
-    /// The detail view's drag provider (7A + the 192 internal-drag guard): vends
-    /// the original blob file for an external drop AND registers the app-private
-    /// `.assetIDs` payload so an in-app drop is recognised as internal — the
-    /// collection pane's import guard refuses it instead of re-ingesting the
-    /// app's own file (the grid's file-promise drag gets the same guarantee from
-    /// `AssetFilePromiseProvider`). Hosts with a collection context pass a real
-    /// payload; the others pass ``AssetDragPayload/internalMarker``.
-    static func dragProvider(item: AssetExportItem, payload: AssetDragPayload) -> NSItemProvider {
-        let provider = NSItemProvider(contentsOf: item.blobURL) ?? NSItemProvider()
-        provider.suggestedName = item.filename
-        if let data = try? payload.pasteboardData() {
-            provider.registerDataRepresentation(
-                forTypeIdentifier: UTType.assetIDs.identifier, visibility: .all
-            ) { completion in
-                completion(data, nil)
-                return nil
-            }
-        }
-        return provider
-    }
 }
 
 /// Keeps ``AssetExport/filename(base:blobHash:ext:)`` results unique WITHIN ONE
@@ -154,18 +143,18 @@ enum AssetExport {
 ///
 /// Pure and order-dependent by design: the same input sequence always produces
 /// the same names, so an export is reproducible.
-nonisolated struct ExportNameAllocator {
+public nonisolated struct ExportNameAllocator {
     /// Lowercased forms of every name handed out so far.
     private var taken: Set<String> = []
 
-    init() {}
+    public init() {}
 
     /// A name for `filename` that no earlier ``claim(_:)`` has taken, compared
     /// case-insensitively. The first claim comes back verbatim; a collision gets
     /// `-2`, `-3`, … inserted BEFORE the extension (`hero-ab12cd34-2.png`),
     /// where a reader expects a duplicate marker and where the extension still
     /// says what the file is.
-    mutating func claim(_ filename: String) -> String {
+    public mutating func claim(_ filename: String) -> String {
         var candidate = filename
         var suffix = 1
         while !taken.insert(candidate.lowercased()).inserted {
@@ -177,7 +166,7 @@ nonisolated struct ExportNameAllocator {
 
     /// `name.ext` → `name-<suffix>.ext`; an extension-less name just gains the
     /// suffix.
-    static func disambiguated(_ filename: String, suffix: Int) -> String {
+    public static func disambiguated(_ filename: String, suffix: Int) -> String {
         let path = filename as NSString
         let ext = path.pathExtension
         let base = path.deletingPathExtension

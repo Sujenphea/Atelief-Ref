@@ -23,6 +23,7 @@
 //    when they stopped it themselves is the bug this ordering prevents.
 //
 
+import AtelierArchive
 import AtelierCore
 import AtelierIngestion
 import Combine

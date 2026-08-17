@@ -28,6 +28,7 @@
 // carried across a process boundary is machinery that can be called by mistake.
 
 import Foundation
+import UniformTypeIdentifiers
 
 /// The library's content-addressed media paths — a namespace, `static` only.
 ///
@@ -97,6 +98,26 @@ public enum LibraryMediaPaths {
     }
 
     // MARK: - File names
+
+    /// The canonical file extension for a MIME type — `image/jpeg` → `jpeg` — or `""`
+    /// for one the system cannot resolve.
+    ///
+    /// **The other half of every path above.** A blob is stored under the extension the
+    /// ingest derived, and every later reader has to map the same MIME back to the same
+    /// extension or it computes a path to a file that is not there. That made this
+    /// mapping part of the path math, so it belongs beside it — and it has to be HERE
+    /// rather than in `AtelierIngestion.ImageMetadata`, where it was, because iOS cannot
+    /// link that package (`Input/DirectInputReader.swift` imports AppKit) and 092 · S6
+    /// makes the phone a writer of archives, which resolve blob paths.
+    ///
+    /// `ImageMetadata.fileExtension(forMIMEType:)` now delegates here rather than being
+    /// a second copy — the same arrangement `LibraryLayout.inbox` has with
+    /// ``InboxLayout``, and for the same reason.
+    ///
+    /// Both directions resolve the one canonical `UTType`, so the round trip is exact.
+    public static func fileExtension(forMIMEType mimeType: String) -> String {
+        UTType(mimeType: mimeType)?.preferredFilenameExtension ?? ""
+    }
 
     /// A blob's file name: `<hash>`, with `.<ext>` appended only for a non-empty
     /// `fileExtension`.

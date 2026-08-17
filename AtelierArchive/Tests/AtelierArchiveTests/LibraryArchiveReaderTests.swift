@@ -16,7 +16,7 @@
 import AtelierCore
 import Foundation
 import Testing
-@testable import AtelierRefs
+@testable import AtelierArchive
 
 // MARK: - Rig
 
@@ -512,7 +512,7 @@ struct LibraryArchiveReaderNestingTests {
         let child = ImportPlan(key: "child", parentKey: "root", name: "Child")
         let grandchild = ImportPlan(key: "grand", parentKey: "child", name: "Grand")
 
-        let ordered = LibraryImporter.parentsFirst([grandchild, child, root])
+        let ordered = ImportPlan.parentsFirst([grandchild, child, root])
         #expect(ordered.map(\.key) == ["root", "child", "grand"])
     }
 
@@ -521,7 +521,7 @@ struct LibraryArchiveReaderNestingTests {
     @Test("A plan whose parent wasn't shipped becomes a root")
     func unknownParentIsARoot() {
         let orphan = ImportPlan(key: "orphan", parentKey: "nowhere", name: "Orphan")
-        #expect(LibraryImporter.parentsFirst([orphan]).map(\.key) == ["orphan"])
+        #expect(ImportPlan.parentsFirst([orphan]).map(\.key) == ["orphan"])
     }
 
     /// A cycle can't come out of this app, but a manifest is a FILE. Nothing is
@@ -532,7 +532,7 @@ struct LibraryArchiveReaderNestingTests {
         let b = ImportPlan(key: "b", parentKey: "a", name: "B")
         let free = ImportPlan(key: "c", name: "C")
 
-        let ordered = LibraryImporter.parentsFirst([a, b, free])
+        let ordered = ImportPlan.parentsFirst([a, b, free])
         #expect(Set(ordered.map(\.key)) == ["a", "b", "c"])
         #expect(ordered.count == 3)
     }
@@ -617,70 +617,3 @@ struct LibraryArchiveReaderRefusalTests {
     }
 }
 
-// MARK: - Prose
-
-@Suite("ArchiveImportCopy: what an import says (008 H7)")
-struct ArchiveImportCopyTests {
-
-    @Test("A refusal names the axis so the user can search for it")
-    func refusalProse() {
-        #expect(ArchiveImportCopy.message(for: .manifestTooNew(9)).contains("manifest version 9"))
-        #expect(ArchiveImportCopy.message(for: .schemaTooNew("v19")).contains("v19"))
-        // Both must say plainly that the library is untouched.
-        #expect(ArchiveImportCopy.message(for: .manifestTooNew(9)).contains("Nothing was changed"))
-        #expect(ArchiveImportCopy.message(for: .schemaTooNew("v19")).contains("Nothing was changed"))
-    }
-
-    @Test("A missing manifest is explained as an unfinished export")
-    func readErrorProse() {
-        #expect(ArchiveImportCopy.message(for: .missingManifest).contains("manifest.json"))
-        #expect(ArchiveImportCopy.message(for: .unreadableManifest).contains("Nothing was imported"))
-        #expect(ArchiveImportCopy.message(for: .refused(.manifestTooNew(2)))
-            == ArchiveImportCopy.message(for: .manifestTooNew(2)))
-    }
-
-    /// A bare "succeeded" over a partial import is the outcome 004 taught this
-    /// codebase not to report.
-    @Test("The status line counts what happened, including what didn't")
-    func statusLine() {
-        var summary = ImportRunSummary(
-            outcome: .succeeded, finishedAt: .now, destinationName: "Archive",
-            collections: 3, assets: 4, newAssets: 4, memberships: 5)
-        #expect(ArchiveImportCopy.statusLine(for: summary)
-            == "Imported 4 items in 3 collections into “Archive”.")
-
-        summary.outcome = .incomplete
-        summary.skipped = 1
-        summary.failed = 2
-        #expect(ArchiveImportCopy.statusLine(for: summary)?
-            .contains("1 item couldn’t be read") == true)
-        #expect(ArchiveImportCopy.statusLine(for: summary)?
-            .contains("2 items couldn’t be added") == true)
-
-        summary.skipped = 0
-        summary.failed = 0
-        summary.newAssets = 1
-        #expect(ArchiveImportCopy.statusLine(for: summary)?
-            .contains("3 already in your library") == true)
-    }
-
-    @Test("A stopped import says what it kept; a refusal says nothing twice")
-    func terminalStates() {
-        let cancelled = ImportRunSummary(outcome: .cancelled, finishedAt: .now)
-        #expect(ArchiveImportCopy.statusLine(for: cancelled)?.contains("kept") == true)
-        // The message line carries these, in orange — a second sentence under it
-        // would say the same thing twice.
-        #expect(ArchiveImportCopy.statusLine(
-            for: ImportRunSummary(outcome: .refused, finishedAt: .now)) == nil)
-        #expect(ArchiveImportCopy.statusLine(
-            for: ImportRunSummary(outcome: .failed, finishedAt: .now)) == nil)
-        #expect(ArchiveImportCopy.statusLine(for: nil) == nil)
-    }
-
-    @Test("Folder-access failures are named separately")
-    func folderAccessProse() {
-        #expect(ArchiveImportCopy.message(for: .noFolderChosen).contains("No archive folder"))
-        #expect(ArchiveImportCopy.message(for: .bookmarkUnresolvable).contains("reached"))
-        #expect(ArchiveImportCopy.message(for: .accessDenied).contains("allowed to read"))
-    }
-}

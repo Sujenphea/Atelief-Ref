@@ -22,6 +22,7 @@
 //
 
 import AppKit
+import AtelierArchive
 import AtelierCore
 import Combine
 import SwiftUI

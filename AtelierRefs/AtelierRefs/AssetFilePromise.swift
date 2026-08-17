@@ -20,6 +20,7 @@
 //
 
 import AppKit
+import AtelierArchive
 import UniformTypeIdentifiers
 
 /// An `NSFilePromiseProvider` carrying one asset's export, and — on the primary

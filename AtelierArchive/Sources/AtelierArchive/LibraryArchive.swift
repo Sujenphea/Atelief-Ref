@@ -42,31 +42,31 @@ import Foundation
 
 /// Where things go inside an archive folder, and the one rule that keeps a
 /// deeply-nested collection tree from producing a path the filesystem refuses.
-nonisolated enum ArchiveLayout {
+public nonisolated enum ArchiveLayout {
 
     /// The manifest's filename at the archive root.
-    static let manifestFilename = "manifest.json"
+    public static let manifestFilename = "manifest.json"
 
     /// The single top-level directory the browsable tree lives under. One
     /// directory rather than collections at the root, so the manifest always has
     /// an unambiguous neighbour and a future `Spaces/` sibling is additive.
-    static let collectionsDirectory = "Collections"
+    public static let collectionsDirectory = "Collections"
 
     /// Byte budget for an archive-RELATIVE path (`Collections/a/b/hero-ab12.png`).
     ///
     /// macOS caps a full path at `PATH_MAX` (1024 bytes). The archive root is
     /// chosen by the user and can be arbitrarily long, so the budget here is the
     /// relative part only, leaving ~256 bytes of room for the root.
-    static let maxRelativeBytes = 768
+    public static let maxRelativeBytes = 768
 
     /// Room reserved inside ``maxRelativeBytes`` for the filename a directory
     /// will hold. `AssetExport.sanitize` caps a base at 60 CHARACTERS, which is
     /// up to 240 UTF-8 bytes of emoji, plus `-<8 hex>` and an extension.
-    static let filenameReserve = 256
+    public static let filenameReserve = 256
 
     /// Whether a directory built from `components` still leaves room for the
     /// longest filename the naming layer can produce.
-    static func fits(_ components: [String]) -> Bool {
+    public static func fits(_ components: [String]) -> Bool {
         relativePath(components).utf8.count + filenameReserve <= maxRelativeBytes
     }
 
@@ -74,7 +74,7 @@ nonisolated enum ArchiveLayout {
     /// archive-relative, never an absolute URL. The manifest travels with the
     /// folder, so an absolute path in it would be wrong the moment the archive
     /// is copied anywhere.
-    static func relativePath(_ components: [String]) -> String {
+    public static func relativePath(_ components: [String]) -> String {
         components.joined(separator: "/")
     }
 
@@ -99,7 +99,7 @@ nonisolated enum ArchiveLayout {
     /// they in turn run out of budget. A pathologically deep tree comes out as
     /// several shallow trees rather than one flat pile — which is both the more
     /// browsable outcome and the one that needs no extra rule.
-    static func placement(
+    public static func placement(
         parent: [String], name: String, collectionID: UUID
     ) -> (parent: [String], name: String) {
         let nested = parent + [name]
@@ -117,7 +117,7 @@ nonisolated enum ArchiveLayout {
 /// archive was written by a newer AtelierRefs", the other is "its library schema
 /// is ahead of mine". Both are refusals BEFORE anything is applied — never a
 /// partial application of an unknown contract.
-nonisolated enum ArchiveRefusal: Error, Equatable {
+public nonisolated enum ArchiveRefusal: Error, Equatable {
     /// `manifest_version` is newer than ``ArchiveManifest/currentVersion``.
     case manifestTooNew(Int)
     /// `schema_version` is newer than this build migrates to.
@@ -137,7 +137,7 @@ nonisolated enum ArchiveRefusal: Error, Equatable {
 /// every date is truncated on the way IN as well, so the in-memory manifest and
 /// the on-disk one are the same value. (The same reasoning, and the same
 /// encoder, as `BackupManifest`.)
-nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
+public nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
 
     /// The manifest shape this build writes.
     ///
@@ -160,32 +160,32 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
     /// direction a v18-era archive decodes here with `is_favorite` absent, which
     /// ``AssetEntry/init(from:)`` reads as `false` — the truth, since the flag did
     /// not exist when it was written.
-    static let currentVersion = 1
+    public static let currentVersion = 1
 
     /// The shape of this file. A reader that does not recognise the number must
     /// refuse rather than guess.
-    var manifestVersion: Int
+    public var manifestVersion: Int
 
     /// The database migration identifier the export was written from ("v18").
-    var schemaVersion: String
+    public var schemaVersion: String
 
     /// The app build that wrote it — diagnostic only; nothing branches on it.
-    var appVersion: String
+    public var appVersion: String
 
     /// When the export finished.
-    var exportedAt: Date
+    public var exportedAt: Date
 
     /// Every source referenced by an asset below, by id. Provenance is verbatim
     /// (see the file header, rule 1).
-    var sources: [SourceEntry]
+    public var sources: [SourceEntry]
 
     /// Every asset, ONCE, regardless of how many collections hold it.
-    var assets: [AssetEntry]
+    public var assets: [AssetEntry]
 
     /// Every collection, depth-first, each carrying its memberships.
-    var collections: [CollectionEntry]
+    public var collections: [CollectionEntry]
 
-    init(
+    public init(
         manifestVersion: Int = ArchiveManifest.currentVersion,
         schemaVersion: String,
         appVersion: String,
@@ -206,7 +206,7 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
     /// snake_case on disk. Spelled out rather than left to a key-encoding
     /// strategy so the wire names are visible at the type and cannot drift when
     /// a property is renamed — this file is a contract with future readers.
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case manifestVersion = "manifest_version"
         case schemaVersion = "schema_version"
         case appVersion = "app_version"
@@ -215,26 +215,26 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
     }
 
     /// Truncate to whole seconds — the precision the wire format carries.
-    static func wire(_ date: Date) -> Date {
+    public static func wire(_ date: Date) -> Date {
         Date(timeIntervalSince1970: date.timeIntervalSince1970.rounded(.down))
     }
 
     // MARK: Entries
 
     /// One ``Source`` — the provenance an importer must replay verbatim.
-    struct SourceEntry: Codable, Equatable, Sendable {
-        var id: UUID
-        var platform: Platform
-        var originalURL: String?
-        var authorHandle: String?
-        var authorName: String?
-        var title: String?
-        var capturedAt: Date
+    public struct SourceEntry: Codable, Equatable, Sendable {
+        public var id: UUID
+        public var platform: Platform
+        public var originalURL: String?
+        public var authorHandle: String?
+        public var authorName: String?
+        public var title: String?
+        public var capturedAt: Date
         /// Platform extras, preserved exactly as captured — the escape hatch a
         /// round-trip must not quietly drop.
-        var rawMetadata: JSONValue
+        public var rawMetadata: JSONValue
 
-        init(_ source: Source) {
+        public init(_ source: Source) {
             self.id = source.id
             self.platform = source.platform
             self.originalURL = source.originalURL
@@ -245,7 +245,7 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
             self.rawMetadata = source.rawMetadata
         }
 
-        enum CodingKeys: String, CodingKey {
+        public enum CodingKeys: String, CodingKey {
             case id, platform, title
             case originalURL = "original_url"
             case authorHandle = "author_handle"
@@ -262,11 +262,11 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
     /// importer must ignore. A tag attached to NO asset is likewise not carried:
     /// there is no public writer that could recreate one, and everything in this
     /// contract is replayable through the shipped funnel.
-    struct TagEntry: Codable, Equatable, Sendable {
-        var name: String
-        var source: TagSource
+    public struct TagEntry: Codable, Equatable, Sendable {
+        public var name: String
+        public var source: TagSource
 
-        init(_ tag: Tag) {
+        public init(_ tag: Tag) {
             self.name = tag.name
             self.source = tag.source
         }
@@ -279,20 +279,20 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
     /// / `color`) carry their substance in `payload` instead — copied verbatim
     /// as the stored JSON TEXT, alongside the `dedup_key` that makes those kinds
     /// dedup on re-import.
-    struct AssetEntry: Codable, Equatable, Sendable {
-        var id: UUID
-        var sourceID: UUID
-        var kind: AssetKind
-        var blobHash: String?
-        var mimeType: String?
-        var width: Int?
-        var height: Int?
-        var duration: Double?
-        var fileSize: Int?
-        var downloadState: DownloadState
-        var createdAt: Date
-        var name: String?
-        var note: String?
+    public struct AssetEntry: Codable, Equatable, Sendable {
+        public var id: UUID
+        public var sourceID: UUID
+        public var kind: AssetKind
+        public var blobHash: String?
+        public var mimeType: String?
+        public var width: Int?
+        public var height: Int?
+        public var duration: Double?
+        public var fileSize: Int?
+        public var downloadState: DownloadState
+        public var createdAt: Date
+        public var name: String?
+        public var note: String?
         /// The star (011 · U5). Carried because it is user intent, not derived
         /// data — nothing can recompute which items someone chose to favorite, so
         /// an archive that dropped it would lose them silently on the first
@@ -300,7 +300,7 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
         /// included) rather than as an omit-when-nil optional, so a reader can
         /// tell "written by a build that knows favorites, and this one isn't one"
         /// from "written before the flag existed" if it ever needs to.
-        var isFavorite: Bool
+        public var isFavorite: Bool
         /// When the item was put on the archive shelf (023 · A), or `nil` for the
         /// overwhelming majority that never were. Carried for the same reason the
         /// star is — it is user intent nothing can recompute — and it is the
@@ -309,14 +309,14 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
         /// this key a restore would put the user's whole shelf back in the middle
         /// of their collections. Optional on the way in, so archives written
         /// before v20 decode unchanged.
-        var archivedAt: Date?
-        var viewCount: Int
-        var lastViewedAt: Date?
-        var payload: String?
-        var dedupKey: String?
-        var searchText: String?
+        public var archivedAt: Date?
+        public var viewCount: Int
+        public var lastViewedAt: Date?
+        public var payload: String?
+        public var dedupKey: String?
+        public var searchText: String?
         /// This asset's tags, in the stable `(name, id)` order Core returns.
-        var tags: [TagEntry]
+        public var tags: [TagEntry]
         /// The tag names this asset has REFUSED as suggestions (012 · I3),
         /// oldest refusal first — usually empty.
         ///
@@ -329,9 +329,9 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
         /// own `suppressed_at` like every other write it makes.
         ///
         /// Optional on the way in, so archives written before v22 decode unchanged.
-        var suppressedTags: [String]?
+        public var suppressedTags: [String]?
 
-        init(_ asset: Asset, tags: [Tag], suppressedTags: [String] = []) {
+        public init(_ asset: Asset, tags: [Tag], suppressedTags: [String] = []) {
             self.id = asset.id
             self.sourceID = asset.sourceId
             self.kind = asset.kind
@@ -358,7 +358,7 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
             self.suppressedTags = suppressedTags.isEmpty ? nil : suppressedTags
         }
 
-        enum CodingKeys: String, CodingKey {
+        public enum CodingKeys: String, CodingKey {
             case id, kind, width, height, duration, name, note, payload, tags
             case sourceID = "source_id"
             case blobHash = "blob_hash"
@@ -385,7 +385,7 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
         /// backward-compatibility argument for not bumping `manifest_version`
         /// rests on this one `decodeIfPresent`. Everything else is the synthesized
         /// behaviour spelled out, and `encode(to:)` is left synthesized.
-        init(from decoder: any Decoder) throws {
+        public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             id = try container.decode(UUID.self, forKey: .id)
             sourceID = try container.decode(UUID.self, forKey: .sourceID)
@@ -420,21 +420,21 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
     /// One ``CollectionItem`` — an asset's membership in the enclosing
     /// collection, with the manual order that makes a re-import land in the
     /// arrangement the user made, and the per-membership canvas placement.
-    struct MembershipEntry: Codable, Equatable, Sendable {
-        var assetID: UUID
-        var addedAt: Date
-        var manualOrder: Int?
+    public struct MembershipEntry: Codable, Equatable, Sendable {
+        public var assetID: UUID
+        public var addedAt: Date
+        public var manualOrder: Int?
         /// Archive-relative path of this asset's copy inside this collection's
         /// folder, or `nil` when there was nothing to copy — a media-less kind,
         /// or a blob whose file was already gone from disk.
-        var file: String?
-        var canvasX: Double?
-        var canvasY: Double?
-        var canvasW: Double?
-        var canvasH: Double?
-        var canvasZ: Int?
+        public var file: String?
+        public var canvasX: Double?
+        public var canvasY: Double?
+        public var canvasW: Double?
+        public var canvasH: Double?
+        public var canvasZ: Int?
 
-        init(_ item: CollectionItem, file: String?) {
+        public init(_ item: CollectionItem, file: String?) {
             self.assetID = item.assetID
             self.addedAt = ArchiveManifest.wire(item.addedAt)
             self.manualOrder = item.manualOrder
@@ -446,7 +446,7 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
             self.canvasZ = item.canvasZ
         }
 
-        enum CodingKeys: String, CodingKey {
+        public enum CodingKeys: String, CodingKey {
             case file
             case assetID = "asset_id"
             case addedAt = "added_at"
@@ -460,25 +460,25 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
     }
 
     /// One ``Collection``, its nesting, and its memberships.
-    struct CollectionEntry: Codable, Equatable, Sendable {
-        var id: UUID
-        var name: String
-        var description: String?
-        var parentID: UUID?
-        var coverAssetID: UUID?
-        var createdAt: Date
-        var updatedAt: Date
-        var sortMode: SortMode
-        var sortIndex: Int
+    public struct CollectionEntry: Codable, Equatable, Sendable {
+        public var id: UUID
+        public var name: String
+        public var description: String?
+        public var parentID: UUID?
+        public var coverAssetID: UUID?
+        public var createdAt: Date
+        public var updatedAt: Date
+        public var sortMode: SortMode
+        public var sortIndex: Int
         /// The folder this collection's copies were written to, archive-relative
         /// (`Collections/Design/Refs`). Presentation, not structure — `parentID`
         /// is the real nesting, and a path CAN repeat when the tree was too deep
         /// to nest (see ``ArchiveLayout/placement(parent:name:collectionID:)``).
-        var path: String
+        public var path: String
         /// Memberships, in this collection's manual order.
-        var items: [MembershipEntry]
+        public var items: [MembershipEntry]
 
-        init(_ collection: Collection, path: String, items: [MembershipEntry]) {
+        public init(_ collection: Collection, path: String, items: [MembershipEntry]) {
             self.id = collection.id
             self.name = collection.name
             self.description = collection.description
@@ -492,7 +492,7 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
             self.items = items
         }
 
-        enum CodingKeys: String, CodingKey {
+        public enum CodingKeys: String, CodingKey {
             case id, name, description, path, items
             case parentID = "parent_collection_id"
             case coverAssetID = "cover_asset_id"
@@ -508,14 +508,14 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
     /// Deterministic: sorted keys and ISO-8601 dates, so the same manifest
     /// always produces byte-identical output. That is what lets a test pin the
     /// contract against a golden string and fail loudly when the shape moves.
-    static func makeEncoder() -> JSONEncoder {
+    public static func makeEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
         encoder.dateEncodingStrategy = .iso8601
         return encoder
     }
 
-    static func makeDecoder() -> JSONDecoder {
+    public static func makeDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
@@ -525,12 +525,12 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
     /// interrupted here leaves no truncated contract behind — and because the
     /// manifest is written LAST, its presence is the export's commit record (the
     /// same role `BackupRunner`'s manifest plays for a backup).
-    func write(to url: URL) throws {
+    public func write(to url: URL) throws {
         try Self.makeEncoder().encode(self).write(to: url, options: .atomic)
     }
 
     /// Read a manifest, or throw if it is absent or unparseable.
-    static func read(from url: URL) throws -> ArchiveManifest {
+    public static func read(from url: URL) throws -> ArchiveManifest {
         try makeDecoder().decode(ArchiveManifest.self, from: Data(contentsOf: url))
     }
 
@@ -543,7 +543,7 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
     /// either side is deliberately NOT a refusal: refusing on it would brick an
     /// import for anyone whose version string this build simply doesn't
     /// recognise, and "I can't tell" is not evidence of "newer".
-    static func refusal(
+    public static func refusal(
         for manifest: ArchiveManifest,
         schemaVersion: String = AppServices.schemaVersion
     ) -> ArchiveRefusal? {
@@ -557,7 +557,7 @@ nonisolated struct ArchiveManifest: Codable, Equatable, Sendable {
     }
 
     /// `"v18"` → `18`; anything else → `nil` (unreadable, not "newer").
-    static func schemaOrdinal(_ version: String) -> Int? {
+    public static func schemaOrdinal(_ version: String) -> Int? {
         guard version.hasPrefix("v") else { return nil }
         return Int(version.dropFirst())
     }
