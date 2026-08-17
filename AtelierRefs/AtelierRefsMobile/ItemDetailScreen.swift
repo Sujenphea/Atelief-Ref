@@ -19,6 +19,7 @@
 
 import AtelierBrowse
 import AtelierCore
+import AtelierTokens
 import SwiftUI
 
 struct ItemDetailScreen: View {
@@ -51,7 +52,7 @@ struct ItemDetailScreen: View {
         Group {
             switch detail.asset.content {
             case .color(let hex):
-                (Color(hex: hex) ?? MobileTheme.Colors.mediaBackdrop)
+                (Color(hexString: hex) ?? MobileTheme.Colors.mediaBackdrop)
                     .aspectRatio(1, contentMode: .fit)
             case .image, .video, .link, .tweet, .unknown:
                 if imageURL != nil {
@@ -68,7 +69,7 @@ struct ItemDetailScreen: View {
                 }
             }
         }
-        // `mediaBackdrop` is the art's stable dark ground (`Theme.swift:55`–`:56`), so a
+        // `mediaBackdrop` is the art's stable dark ground (`Tokens.Hex.mediaBackdrop`), so a
         // light image and a dark one sit on the same tone instead of the image's own
         // edges reading as chrome — 093 § 6's second reason for dark-only.
         .clipShape(RoundedRectangle(cornerRadius: MobileTheme.Radius.card, style: .continuous))

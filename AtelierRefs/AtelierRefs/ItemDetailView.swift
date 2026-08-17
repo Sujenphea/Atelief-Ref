@@ -21,6 +21,7 @@ import AtelierArchive
 import AtelierCore
 import AtelierIngestion
 // For `AVPlayerItem.publisher(for: \.status)` — the poster placeholder's gate.
+import AtelierTokens
 import Combine
 import SwiftUI
 

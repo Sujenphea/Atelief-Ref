@@ -19,6 +19,9 @@
 		JA0000000000000000000003 /* AtelierBrowse in Frameworks */ = {isa = PBXBuildFile; productRef = JA0000000000000000000002 /* AtelierBrowse */; };
 		KA0000000000000000000003 /* AtelierArchive in Frameworks */ = {isa = PBXBuildFile; productRef = KA0000000000000000000002 /* AtelierArchive */; };
 		KA0000000000000000000005 /* AtelierArchive in Frameworks */ = {isa = PBXBuildFile; productRef = KA0000000000000000000004 /* AtelierArchive */; };
+		LA0000000000000000000003 /* AtelierTokens in Frameworks */ = {isa = PBXBuildFile; productRef = LA0000000000000000000002 /* AtelierTokens */; };
+		LA0000000000000000000005 /* AtelierTokens in Frameworks */ = {isa = PBXBuildFile; productRef = LA0000000000000000000004 /* AtelierTokens */; };
+		LA0000000000000000000007 /* AtelierTokens in Frameworks */ = {isa = PBXBuildFile; productRef = LA0000000000000000000006 /* AtelierTokens */; };
 		DA0000000000000000000005 /* AtelierCore in Frameworks */ = {isa = PBXBuildFile; productRef = DA0000000000000000000004 /* AtelierCore */; };
 /* End PBXBuildFile section */
 
@@ -132,6 +135,7 @@
 				GA0000000000000000000003 /* AtelierExport in Frameworks */,
 				HA0000000000000000000003 /* Sparkle in Frameworks */,
 				KA0000000000000000000003 /* AtelierArchive in Frameworks */,
+				LA0000000000000000000003 /* AtelierTokens in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -147,6 +151,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				IA0000000000000000000005 /* AtelierCapture in Frameworks */,
+				LA0000000000000000000007 /* AtelierTokens in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -158,6 +163,7 @@
 				JA0000000000000000000003 /* AtelierBrowse in Frameworks */,
 				DA0000000000000000000005 /* AtelierCore in Frameworks */,
 					KA0000000000000000000005 /* AtelierArchive in Frameworks */,
+				LA0000000000000000000005 /* AtelierTokens in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -222,6 +228,7 @@
 				GA0000000000000000000002 /* AtelierExport */,
 				HA0000000000000000000002 /* Sparkle */,
 				KA0000000000000000000002 /* AtelierArchive */,
+				LA0000000000000000000002 /* AtelierTokens */,
 			);
 			productName = AtelierRefs;
 			productReference = 9907786E2FF364EF00718815 /* AtelierRefs.app */;
@@ -268,6 +275,7 @@
 			name = AtelierRefsShare;
 			packageProductDependencies = (
 				IA0000000000000000000004 /* AtelierCapture */,
+				LA0000000000000000000006 /* AtelierTokens */,
 			);
 			productName = AtelierRefsShare;
 			productReference = 99205373302EE7DC00992742 /* AtelierRefsShare.appex */;
@@ -296,6 +304,7 @@
 				JA0000000000000000000002 /* AtelierBrowse */,
 				DA0000000000000000000004 /* AtelierCore */,
 				KA0000000000000000000004 /* AtelierArchive */,
+				LA0000000000000000000004 /* AtelierTokens */,
 			);
 			productName = AtelierRefsMobile;
 			productReference = B10000000000000000000001 /* AtelierRefsMobile.app */;
@@ -372,6 +381,7 @@
 				IA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierCapture" */,
 				JA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierBrowse" */,
 				KA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierArchive" */,
+				LA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierTokens" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9907786F2FF364EF00718815 /* Products */;
@@ -983,6 +993,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../AtelierBrowse;
 		};
+		LA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierTokens" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierTokens;
+		};
 		KA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierArchive" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../AtelierArchive;
@@ -1041,6 +1055,18 @@
 		KA0000000000000000000002 /* AtelierArchive */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AtelierArchive;
+		};
+		LA0000000000000000000002 /* AtelierTokens */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierTokens;
+		};
+		LA0000000000000000000004 /* AtelierTokens */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierTokens;
+		};
+		LA0000000000000000000006 /* AtelierTokens */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierTokens;
 		};
 		KA0000000000000000000004 /* AtelierArchive */ = {
 			isa = XCSwiftPackageProductDependency;

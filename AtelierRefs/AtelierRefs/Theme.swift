@@ -2,95 +2,63 @@
 //  Theme.swift
 //  AtelierRefs
 //
-//  The app's single design-token layer — the home the app previously lacked. It
-//  extends the existing centralization precedent of `ElementRendering` (canvas
-//  colour tokens) and the `*Layout` structs (geometry) to the app CHROME: the
-//  dark-studio palette, a spacing / radius / motion / elevation scale, and a few
-//  typography roles. Every scattered magic number (corner radii `6,8,10,12,14,20`,
-//  ad-hoc paddings, five different springs) resolves here.
+//  The Mac's view of the design tokens, plus the parts of "theme" that are AppKit and
+//  therefore cannot be shared.
 //
-//  Monochrome by design — both Figma frames confirm it. There is NO coloured
-//  accent: emphasis is a raised grey `field` fill (`#2C2C30`) + white/ink text.
+//  **The values moved out.** They live in `AtelierTokens`, a package the Mac app, the
+//  phone app and the share extension all link — because the same palette had been written
+//  by hand three times, once per target, and a hand-copied `#212121` is a drift waiting
+//  for the first adjustment. What is left here is what only a Mac has: the `NSColor`
+//  twins the layer-backed seams need, the `CALayer` shadow, the window material, and the
+//  popover container.
+//
+//  The forwarding enums below are deliberate and not ceremony. They keep every call site
+//  in the app reading `Theme.Colors.panel`, and they record which tokens the MAC uses —
+//  the same curation `MobileTheme` makes for the phone. A token with no reader is a copy
+//  waiting to be picked up by mistake; a token with a reader on one platform and none on
+//  the other is worth saying out loud.
+//
+//  Monochrome by design — both Figma frames confirm it. There is NO coloured accent:
+//  emphasis is a raised grey `field` fill + white/ink text.
 //
 
 import AppKit
+import AtelierTokens
 import SwiftUI
 
+//  **Why these forward by hand rather than `typealias`.** Swift 6 requires the module
+//  that DEFINES a member to be imported at the site that uses it, and a typealias does not
+//  change where a member is defined — so `typealias Colors = Tokens.Colors` would have
+//  made 44 view files import `AtelierTokens` to keep writing the `Theme.Colors.panel` they
+//  already write. Re-declaring the names here defines them in this module, where the app
+//  already looks. The VALUES still cross once, which is the whole point; only the names
+//  are restated, and a name that has no reader on this platform is left out.
 enum Theme {
 
     // MARK: - Colour (dark studio, monochrome)
 
     enum Colors {
-        /// Outermost window ground + the collapsed sidebar rail. Under the native
-        /// translucent window (D1b) the material supplies this tone; this is painted
-        /// BENEATH it as the opaque fallback, for Reduce Transparency and anywhere
-        /// else the material has nothing to sample.
-        static let canvasOuter = Color(hex: 0x131313)
-        /// The inset content panel the grid + detail live inside (opaque, radius 16).
-        static let panel = Color(hex: 0x212121)
-        /// Raised cards, sheets, toasts.
-        static let surface = Color(hex: 0x232326)
-        /// Sidebar selection, chips, and the floating bars (on a `hairline` border).
-        ///
-        /// NOT a popover's own fields and buttons, despite the name. Those sit on
-        /// `surface`, where a second raised grey reads as a third layer, so
-        /// ``DialogControls`` draws them unfilled on a `hairlineStrong` border instead
-        /// — see that file for why selection there is an outline rather than a fill.
-        static let field = Color(hex: 0x2C2C30)
-        /// The ACTIVE sidebar row — a brighter fill than `field` so the current
-        /// destination pops off the translucent sidebar (paired with `hairlineStrong`).
-        static let selection = Color(hex: 0x3A3A40)
-        /// The selection MARKER drawn over ARTWORK: the grid tile's ring, the gallery
-        /// card's ring, the marquee, the canvas item's outline. Distinct from
-        /// ``selection``, which is the grey FILL marking the active sidebar row — a
-        /// fill can't be read on top of a photograph, and a ring can't be read on top
-        /// of a list row.
-        static let selectionMark = Color.white
-        /// The dark hairline nested just INSIDE ``selectionMark`` wherever the ring is
-        /// drawn OVER the image (the grid tile). White alone vanishes on a pale photo,
-        /// so the two make a two-sided edge: the white reads against dark artwork, this
-        /// reads against light. Neither carries selection alone — that is why it is
-        /// half-opaque and 2pt rather than the whisper it was under the blue accent.
-        static let selectionMarkContrast = Color.black.opacity(0.5)
-        /// Grid tiles + the detail media area — the art's stable dark ground.
-        static let mediaBackdrop = Color(hex: 0x141416)
-        // No `filmstrip` (#1A1A1C). It named the detail filmstrip's thumb ground and
-        // the Back-button fill; the thumbs stopped drawing it, and the top bar's pills
-        // — its last holder — moved onto `field` with the rest of the floating chrome.
-        // Dropped rather than left standing, per `.change-log/295`: a token nothing
-        // draws is a fourth copy of the palette waiting to be picked up by mistake.
-        /// Section titles + primary text.
-        static let inkPrimary = Color(hex: 0xF2F1EE)
-        /// Labels, values, captions.
-        static let inkSecondary = Color(hex: 0x9A9A9E)
-        /// Borders, dividers, chip / field hairlines.
-        static let hairline = Color.white.opacity(0.08)
-        /// A stronger hairline for interactive borders (e.g. the detail Back pill).
-        static let hairlineStrong = Color.white.opacity(0.14)
-        /// Pointer-over feedback on a full-width ROW — sidebar nav + collection rows,
-        /// the overflow popover's rows and section headers, the search mode segments.
-        /// Deliberately a whisper: `selection` marks where you ARE, and hover must not
-        /// be mistakable for it. (White rather than `Color.primary` so the SwiftUI rows
-        /// and their AppKit siblings in `SidebarOutlineKit` render the same grey.)
-        static let hoverRow = Color.white.opacity(0.06)
-        /// Pointer-over feedback on a GLYPH BUTTON — toolbar / action-bar icons, where
-        /// the fill is the whole affordance and has to read over a busy backdrop.
-        static let hoverControl = Color.white.opacity(0.10)
-        /// The app's ONE alarm colour: a warning label, an unreachable backup drive, a
-        /// stopped sweep, a capture endpoint that couldn't take the port.
-        ///
-        /// The single exception to the monochrome rule above, and deliberately the
-        /// ONLY one — every "healthy" state is ink, so colour appearing anywhere in the
-        /// chrome means exactly one thing. It had been spelled `.orange` at eleven
-        /// sites; naming it is what stops a twelfth from picking `.red` or `.yellow`
-        /// and quietly introducing a second severity the app doesn't have.
-        ///
-        /// Left as the SYSTEM orange rather than a hex literal, unlike every token
-        /// above it. The greys are the app's own studio palette and have to be exact;
-        /// this one has to stay legible under Increase Contrast and the accessibility
-        /// colour filters, which AppKit only does for a system colour. A hex here would
-        /// trade the one property that matters for a consistency the eye can't check.
-        static let warning = Color.orange
+        static let canvasOuter = Tokens.Colors.canvasOuter
+        static let panel = Tokens.Colors.panel
+        static let surface = Tokens.Colors.surface
+        static let field = Tokens.Colors.field
+        static let selection = Tokens.Colors.selection
+        static let selectionMark = Tokens.Colors.selectionMark
+        static let selectionMarkContrast = Tokens.Colors.selectionMarkContrast
+        static let mediaBackdrop = Tokens.Colors.mediaBackdrop
+        static let inkPrimary = Tokens.Colors.inkPrimary
+        static let inkSecondary = Tokens.Colors.inkSecondary
+        static let hairline = Tokens.Colors.hairline
+        static let hairlineStrong = Tokens.Colors.hairlineStrong
+        /// Pointer-over feedback on a full-width ROW. Deliberately a whisper: `selection`
+        /// marks where you ARE, and hover must not be mistakable for it.
+        static let hoverRow = Tokens.Colors.hoverRow
+        /// Pointer-over feedback on a GLYPH BUTTON, where the fill is the whole
+        /// affordance and has to read over a busy backdrop.
+        static let hoverControl = Tokens.Colors.hoverControl
+        /// The app's ONE alarm colour — every "healthy" state is ink, so colour appearing
+        /// anywhere in the chrome means exactly one thing.
+        static let warning = Tokens.Colors.warning
     }
 
     /// AppKit (`NSColor`) mirrors of the tokens the layer-backed grid cell
@@ -98,186 +66,88 @@ enum Theme {
     /// Every `NSView` / `CALayer` seam draws from HERE — an `NSColor(hex:)` literal in a
     /// view file is a token that has drifted, not a colour choice.
     ///
-    /// Only the mirrors an AppKit seam actually reads live here. `field`, `panel` and
-    /// `hairline` were mirrored speculatively and read by nothing; a mirror with no
-    /// reader is a second copy of a value that can silently fall out of step with the
-    /// `Colors` original — which is how three of these had already drifted before.
-    /// Add one back when a seam needs it, not before.
+    /// **Built from `Tokens.Hex`, not restated.** These used to be hand-written hex
+    /// literals beside the SwiftUI originals, and three of them had drifted before the
+    /// list was culled to the mirrors with readers. Deriving both representations from
+    /// one number is what makes that impossible rather than merely watched.
+    ///
+    /// Only the mirrors an AppKit seam actually reads live here — add one back when a
+    /// seam needs it, not before.
     enum NS {
-        static let mediaBackdrop = NSColor(hex: 0x141416)
-        static let selection = NSColor(hex: 0x3A3A40)
+        static let mediaBackdrop = NSColor(hex: Tokens.Hex.mediaBackdrop)
+        static let selection = NSColor(hex: Tokens.Hex.selection)
         static let selectionMark = NSColor.white
-        static let selectionMarkContrast = NSColor.black.withAlphaComponent(0.5)
-        static let inkPrimary = NSColor(hex: 0xF2F1EE)
-        static let inkSecondary = NSColor(hex: 0x9A9A9E)
-        static let hairlineStrong = NSColor.white.withAlphaComponent(0.14)
-        static let hoverRow = NSColor.white.withAlphaComponent(0.06)
-        static let hoverControl = NSColor.white.withAlphaComponent(0.10)
+        static let selectionMarkContrast =
+            NSColor.black.withAlphaComponent(Tokens.Alpha.selectionMarkContrast)
+        static let inkPrimary = NSColor(hex: Tokens.Hex.inkPrimary)
+        static let inkSecondary = NSColor(hex: Tokens.Hex.inkSecondary)
+        static let hairlineStrong =
+            NSColor.white.withAlphaComponent(Tokens.Alpha.hairlineStrong)
+        static let hoverRow = NSColor.white.withAlphaComponent(Tokens.Alpha.hoverRow)
+        static let hoverControl = NSColor.white.withAlphaComponent(Tokens.Alpha.hoverControl)
     }
 
-    // MARK: - Spacing (4-pt scale)
+    // MARK: - Scale
 
+    /// The 4-pt scale.
     enum Spacing {
-        static let xs: CGFloat = 4
-        static let sm: CGFloat = 8
-        static let md: CGFloat = 12
-        static let lg: CGFloat = 16
-        static let xl: CGFloat = 24
-        static let xxl: CGFloat = 40
+        static let xs = Tokens.Spacing.xs
+        static let sm = Tokens.Spacing.sm
+        static let md = Tokens.Spacing.md
+        static let lg = Tokens.Spacing.lg
+        static let xl = Tokens.Spacing.xl
+        static let xxl = Tokens.Spacing.xxl
     }
-
-    // MARK: - Radius
 
     enum Radius {
-        /// Small rounded backgrounds: chips, sidebar + menu rows, filter pills.
-        /// Deliberately the same value as ``field`` — everything small rounds the
-        /// same; the two names record what a call site IS, not two measurements.
-        static let chip: CGFloat = 6
-        static let field: CGFloat = 6
-        /// A glyph button's hover fill — the ``HoverHighlight`` default and the
-        /// selection bar's icons. Its own step because it sits between a chip and a
-        /// tile, hugging a 15pt icon in a 30×28 hit area.
-        static let control: CGFloat = 7
-        static let tile: CGFloat = 8
-        static let card: CGFloat = 12
-        static let cover: CGFloat = 14
-        /// The largest rounded surface: the content panel, and the detail page's hero
-        /// colour swatch.
-        static let panel: CGFloat = 16
-        // No `sheet`: the app's three sheets are system `.sheet` presentations and
-        // AppKit draws their corners. The token named a radius the app never got to
-        // choose.
+        static let chip = Tokens.Radius.chip
+        static let field = Tokens.Radius.field
+        static let control = Tokens.Radius.control
+        static let tile = Tokens.Radius.tile
+        static let card = Tokens.Radius.card
+        static let cover = Tokens.Radius.cover
+        static let panel = Tokens.Radius.panel
     }
 
-    // MARK: - Disabled
-
-    /// What "unavailable" looks like on a `.plain`-family control.
-    ///
-    /// `.buttonStyle(.plain)` and the `HoverHighlight` family drop the system's own
-    /// disabled dimming, so the app has to draw it. 0.35 is what ``DialogButtonStyle``,
-    /// ``HoverHighlight`` and every hand-written `.opacity(…: 0.35)` in a floating bar
-    /// had each arrived at separately — named once here so the next control inherits it
-    /// instead of rediscovering it, and so the two export buttons that never applied it
-    /// at all can't recur.
-    static let disabledOpacity: Double = 0.35
-
-    // MARK: - Motion (one canonical set — replaces the per-site springs)
-
+    /// One canonical set, replacing the five per-site springs the app had grown.
     enum Motion {
-        static let snappy = Animation.spring(response: 0.28, dampingFraction: 0.82)
-        static let gentle = Animation.easeOut(duration: 0.15)
-        static let toast = Animation.spring(response: 0.35, dampingFraction: 0.85)
+        static let snappy = Tokens.Motion.snappy
+        static let gentle = Tokens.Motion.gentle
+        static let toast = Tokens.Motion.toast
     }
 
-    // MARK: - Elevation (hover / rest shadow tokens)
+    /// The elevation TYPE is shared; `.elevation(.hover)` resolves its cases on the
+    /// package's type, so the handful of files that write one import `AtelierTokens`.
+    typealias Elevation = Tokens.Elevation
 
-    struct Elevation {
-        /// Black at this alpha. Stored as the ALPHA rather than a ready-made `Color` so
-        /// the AppKit seams can mirror the same token — `CALayer.shadowOpacity` wants a
-        /// `Float`, and a `Color` can't be taken apart again.
-        let opacity: Double
-        let radius: CGFloat
-        let y: CGFloat
-
-        var color: Color { .black.opacity(opacity) }
-
-        // No `rest`: nothing rested at 0.40 / 2 / 1. The two small resting shadows the
-        // app does draw — `ToastCard` (0.15 / 8 / 3) and `FanCard` (0.2 / 3 / 2) — are
-        // genuinely different weights rather than drifted copies of it, so collapsing
-        // them onto one token would be inventing a rule, not recording one.
-        static let hover = Elevation(opacity: 0.55, radius: 14, y: 8)
-        /// A floating BAR or pill riding directly over content it did not lay out — the
-        /// selection action bar, the import pill, the Space format bubble. Softer and
-        /// lower than `hover`: these track a thing on screen, so a heavy shadow would
-        /// read as a second object rather than as the bar's own lift.
-        static let floating = Elevation(opacity: 0.35, radius: 14, y: 5)
-    }
-
-    // MARK: - Typography
-
-    /// The app's nine text roles — every piece of TEXT it draws. Four are the Figma's
-    /// original tokens; five replace the raw SwiftUI text styles that had been
-    /// standing in for them at 70 sites.
-    ///
-    /// Each is a text style plus a weight, NOT a point size. That is a deliberate
-    /// reversal of how the first four were written, and the reason is Dynamic Type:
-    /// `Font.system(size:)` does not scale with the Accessibility text-size setting,
-    /// and `Font.system(size:weight:relativeTo:)` — which would give exact sizes AND
-    /// scaling — does not exist. `relativeTo:` belongs to `Font.custom`, which needs a
-    /// font NAME; the only name matching the system font's metrics is the private
-    /// `.AppleSystemUIFont`, and CoreText warns against it. A name that stops
-    /// resolving falls back silently (`.SFNS-Regular` yields Times New Roman), which
-    /// is not a failure mode worth accepting for every string in the app.
-    ///
-    /// So the sizes are Apple's, and the app inherits Dynamic Type for free. On macOS
-    /// today those land at: largeTitle 26 · title2 17 · title3 15 · headline 13 ·
-    /// body 13 · callout 12 · subheadline 11 · caption2 10. Seven of the nine roles
-    /// therefore render exactly what they rendered before this change.
+    /// The app's nine text roles — every piece of TEXT it draws. Each is a text style
+    /// plus a weight, NOT a point size, which is what makes Dynamic Type work; see the
+    /// package for why exact sizes are not on offer.
     enum Typography {
-        // No `display`: the app's only `.largeTitle` was an empty-state GLYPH, not
-        // text, and it now takes an explicit glyph size like its siblings. Adding the
-        // role anyway would have put a token with no reader straight back into a file
-        // that just had five removed for exactly that.
-
-        /// A SHEET / OVERLAY title ("Snapshots", "Duplicates", "Sweeps", "Export
-        /// moodboard") — chrome that arrived on top of the app and has to name itself
-        /// before it can be dismissed.
-        ///
-        /// Not a PANE title, however page-like the pane feels. Capture was listed here
-        /// while it was the old toolbar popover, and kept the role after 006 turned it
-        /// into a sidebar destination — which left one of the four panes titled a step
-        /// louder than Home, Collection and Space. A pane takes ``sectionTitle``.
-        static let pageTitle = Font.system(.title2, design: .default, weight: .semibold)
-        /// The ONE page / section title role. Home section headers ("Collections",
-        /// "Spaces"), the Collection + Space + Capture page titles, and the detail
-        /// inspector section headers ("Data", "Source", "Details") all share this so no
-        /// page title drifts to its own `.title2`/`.title3`/`.headline`.
-        static let sectionTitle = Font.system(.title3, design: .default, weight: .semibold)
-        /// Sidebar top-nav rows ("Home", "Search", …).
-        static let navItem = Font.system(.title2, design: .default, weight: .medium)
-        /// Sidebar collection rows, chip / field text.
-        static let row = Font.system(.body, design: .default, weight: .regular)
-        /// Emphasised body — a card title, a list row's heading.
-        static let bodyEmphasis = Font.system(.headline, design: .default, weight: .semibold)
-        /// Running text: descriptions, toast messages, secondary rows.
-        static let body = Font.system(.callout, design: .default, weight: .regular)
-        /// The count label in a floating action bar ("16 selected") — `body` weight
-        /// raised to medium so a short string holds its own beside 15pt glyphs.
-        ///
-        /// A role rather than the raw `.callout.weight(.medium)` the three selection
-        /// bars each wrote out: the app defines its text sizes here precisely so a
-        /// specimen page can show them, and a weight applied at a call site is a size
-        /// decision made where nothing can see it.
-        static let barLabel = Font.system(.callout, design: .default, weight: .medium)
-        /// Metadata labels + values.
-        static let label = Font.system(.subheadline, design: .default, weight: .regular)
-        /// The smallest text the app draws — captions, counters, badge numerals.
-        static let caption = Font.system(.caption2, design: .default, weight: .regular)
-        /// A value that is a STRING OF CHARACTERS rather than a word — the capture
-        /// pairing token, and anything else where the reader's job is to compare or
-        /// transcribe it glyph by glyph. Monospaced so `0`/`O` and `1`/`l` separate.
-        ///
-        /// Sized off `.body`, so it sits on the same line as the `row` label beside it
-        /// in a ``DialogRow``. The two capture surfaces had been passing their own text
-        /// STYLE into `CaptureTokenText` (`.body` in Settings, `.callout` in the pane) —
-        /// which is how one token ended up rendering at two sizes.
-        static let mono = Font.system(.body, design: .monospaced)
+        static let pageTitle = Tokens.Typography.pageTitle
+        static let sectionTitle = Tokens.Typography.sectionTitle
+        static let navItem = Tokens.Typography.navItem
+        static let row = Tokens.Typography.row
+        static let bodyEmphasis = Tokens.Typography.bodyEmphasis
+        static let body = Tokens.Typography.body
+        static let barLabel = Tokens.Typography.barLabel
+        static let label = Tokens.Typography.label
+        static let caption = Tokens.Typography.caption
+        static let mono = Tokens.Typography.mono
     }
+
+    /// What "unavailable" looks like on a `.plain`-family control — those drop the
+    /// system's own disabled dimming, so the app has to draw it.
+    static let disabledOpacity = Tokens.disabledOpacity
 }
 
-// MARK: - Shadow convenience
-
-extension View {
-    /// Apply an `Elevation` token as a drop shadow.
-    func elevation(_ e: Theme.Elevation) -> some View {
-        shadow(color: e.color, radius: e.radius, y: e.y)
-    }
-}
+// MARK: - Elevation on a layer
 
 extension CALayer {
     /// Apply an `Elevation` token to a layer-backed seam, so an AppKit surface lifts by
     /// the same amount as its SwiftUI siblings. AppKit's y axis is not flipped, so the
-    /// token's downward offset becomes a NEGATIVE `shadowOffset.height`.
+    /// token's downward offset becomes a NEGATIVE `shadowOffset.height` — which is
+    /// exactly why this stayed behind when the token itself crossed platforms.
     func applyElevation(_ e: Theme.Elevation) {
         masksToBounds = false
         shadowColor = NSColor.black.cgColor
@@ -363,22 +233,10 @@ struct VisualEffectBackground: NSViewRepresentable {
 
 // MARK: - Compile-time hex colours
 
-extension Color {
-    /// A `Color` from a 24-bit `0xRRGGBB` literal (sRGB), for token definitions.
-    /// (The app's other hex path — `init?(hexString:)` in `SharedThumbnail` — parses
-    /// STORED strings; this one is for compile-time literals only.)
-    init(hex: UInt32) {
-        self.init(
-            .sRGB,
-            red: Double((hex >> 16) & 0xFF) / 255,
-            green: Double((hex >> 8) & 0xFF) / 255,
-            blue: Double(hex & 0xFF) / 255)
-    }
-}
-
 extension NSColor {
     /// An `NSColor` from a 24-bit `0xRRGGBB` literal (sRGB), for the AppKit token
-    /// mirrors used by the layer-backed grid.
+    /// mirrors used by the layer-backed grid. The SwiftUI half of this pair lives in
+    /// `AtelierTokens`; this one stays where AppKit is.
     convenience init(hex: UInt32) {
         self.init(
             srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,

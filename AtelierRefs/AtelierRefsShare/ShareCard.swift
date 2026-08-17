@@ -4,93 +4,80 @@
 // landed, or one card that says it did not. No picker, no form, no fields — 093
 // decides post-and-dismiss, and this file draws the consequence.
 //
-// **Why the tokens are restated here rather than imported.** `Theme.swift` is a
-// macOS app-target file: it `import AppKit`, mirrors every colour into an `NSColor`
-// twin and extends `CALayer`, so it cannot compile for iOS at all, and an app
-// extension cannot import its host app's target either way. What crosses is
-// therefore the VALUES, copied by hand, each with the `Theme.swift` line it came
-// from so the copy is checkable against its source rather than merely plausible.
-// 093 § 4 is the list of which tokens cross; this is the subset one card needs.
+// **Where the tokens come from.** They were hand-copied literals here once, each citing
+// the `Theme.swift` line it came from, because `Theme.swift` is a macOS app-target file
+// that imports AppKit and an extension cannot import its host's target either way. This
+// file's own header predicted the ending: *"When S5 brings a real iOS UI, this stops
+// being the right shape and a shared cross-platform token target becomes the question."*
+// It is `AtelierTokens`, and this card reads it like everything else that draws.
 //
-// The rule `Theme.NS` states for the AppKit mirrors governs this copy too — *a
-// mirror with no reader is a second copy waiting to drift* — so nothing is restated
-// speculatively. Six colours, three geometry constants, two animations, one font
-// role: exactly what is drawn below and nothing else. When S5 brings a real iOS UI,
-// this stops being the right shape and a shared cross-platform token target becomes
-// the question; one card is not enough reader to justify one now.
+// The curation the copy enforced is kept below rather than lost: this names the subset one
+// card needs, so nothing here reaches for a token that means nothing in an extension.
 
+import AtelierTokens
 import SwiftUI
 
-/// The tokens this card draws with — hand-copied values from
-/// `AtelierRefs/AtelierRefs/Theme.swift`, cited line by line.
+/// The tokens this card draws with — the shared values, narrowed to what one receipt uses.
 enum ShareTheme {
     enum Colors {
-        /// Raised cards, sheets, toasts — `Theme.Colors.surface` (`Theme.swift:32`).
-        static let surface = Color(hex: 0x232326)
-        /// Section titles + primary text — `Theme.Colors.inkPrimary` (`:63`).
-        static let inkPrimary = Color(hex: 0xF2F1EE)
-        /// Labels, values, captions — `Theme.Colors.inkSecondary` (`:65`).
-        static let inkSecondary = Color(hex: 0x9A9A9E)
-        /// Borders, dividers — `Theme.Colors.hairline` (`:67`).
-        static let hairline = Color.white.opacity(0.08)
-        /// The app's ONE alarm colour — `Theme.Colors.warning` (`:93`). Left as the
-        /// SYSTEM orange for the same reason it is there: it has to stay legible under
-        /// Increase Contrast and the accessibility colour filters, which only a system
-        /// colour gets.
-        static let warning = Color.orange
+        /// Raised cards, sheets, toasts.
+        static let surface = Tokens.Colors.surface
+        /// Section titles + primary text.
+        static let inkPrimary = Tokens.Colors.inkPrimary
+        /// Labels, values, captions.
+        static let inkSecondary = Tokens.Colors.inkSecondary
+        /// Borders, dividers.
+        static let hairline = Tokens.Colors.hairline
+        /// The app's ONE alarm colour, and the system orange rather than a hex: it has to
+        /// stay legible under Increase Contrast and the accessibility colour filters,
+        /// which only a system colour gets.
+        static let warning = Tokens.Colors.warning
     }
 
+    /// Re-declared rather than aliased: Swift 6 asks the USE site to import the module
+    /// that DEFINES a member, and a typealias does not move a definition.
     enum Spacing {
-        /// `Theme.Spacing.xs` (`Theme.swift:121`).
-        static let xs: CGFloat = 4
-        /// `Theme.Spacing.sm` (`:122`).
-        static let sm: CGFloat = 8
-        /// `Theme.Spacing.md` (`:123`).
-        static let md: CGFloat = 12
-        /// `Theme.Spacing.lg` (`:124`).
-        static let lg: CGFloat = 16
-        /// `Theme.Spacing.xl` (`:125`).
-        static let xl: CGFloat = 24
+        static let xs = Tokens.Spacing.xs
+        static let sm = Tokens.Spacing.sm
+        static let md = Tokens.Spacing.md
+        static let lg = Tokens.Spacing.lg
+        static let xl = Tokens.Spacing.xl
     }
 
     enum Radius {
-        /// `Theme.Radius.chip` (`Theme.swift:134`).
-        static let chip: CGFloat = 6
-        /// `Theme.Radius.card` (`:142`).
-        static let card: CGFloat = 12
+        static let chip = Tokens.Radius.chip
+        static let card = Tokens.Radius.card
     }
 
     enum Motion {
-        /// `Theme.Motion.gentle` (`Theme.swift:168`) — the card leaving.
-        static let gentle = Animation.easeOut(duration: 0.15)
-        /// `Theme.Motion.toast` (`:169`) — the card arriving.
-        static let toast = Animation.spring(response: 0.35, dampingFraction: 0.85)
+        /// The card leaving.
+        static let gentle = Tokens.Motion.gentle
+        /// The card arriving.
+        static let toast = Tokens.Motion.toast
         /// `gentle`'s duration, as a number, so the dismissal can wait for it.
-        static let gentleDuration: Duration = .milliseconds(150)
+        static let gentleDuration = Tokens.Motion.gentleDuration
     }
 
-    /// `Theme.Elevation.hover` (`Theme.swift:188`) — 093 § 1 names it for this card.
-    /// Applied directly rather than through the `.elevation()` modifier, which lives
-    /// in `Theme.swift` beside a `CALayer` extension that does not build here.
+    /// `Tokens.Elevation.hover` — 093 § 1 names it for this card. Spelled as three values
+    /// because the card applies it to a `.shadow` directly.
     enum Elevation {
-        static let color = Color.black.opacity(0.55)
-        static let radius: CGFloat = 14
-        static let y: CGFloat = 8
+        static let color = Tokens.Elevation.hover.color
+        static let radius = Tokens.Elevation.hover.radius
+        static let y = Tokens.Elevation.hover.y
     }
 
-    /// Running text: descriptions, toast messages — `Theme.Typography.body`
-    /// (`Theme.swift:243`). A text style plus a weight, never a point size, so the
-    /// card inherits Dynamic Type — which 093 § 4 notes is worth more on a phone than
-    /// it ever was on the Mac.
+    /// Running text: descriptions, toast messages. A text style plus a weight, never a
+    /// point size, so the card inherits Dynamic Type — which 093 § 4 notes is worth more
+    /// on a phone than it ever was on the Mac.
     enum Typography {
-        static let body = Font.system(.callout, design: .default, weight: .regular)
-        /// `Theme.Typography.caption` (`:259`), for the dismiss glyph.
-        static let caption = Font.system(.caption2, design: .default, weight: .regular)
+        static let body = Tokens.Typography.body
+        /// For the dismiss glyph.
+        static let caption = Tokens.Typography.caption
     }
 
     /// Apple's touch minimum. 093 § 5: visual size stays on the tokens, the hit area
     /// is a separate `.contentShape` of at least this square.
-    static let touchTarget: CGFloat = 44
+    static let touchTarget = Tokens.touchTarget
 }
 
 /// Which card is on screen, or none (093 § 1).
@@ -208,21 +195,6 @@ struct ShareCardView: View {
         case .saved: "Saved to Unsorted"
         case .failed: "Couldn't save. Try sharing again."
         }
-    }
-}
-
-// MARK: - Compile-time hex colours
-
-private extension Color {
-    /// A `Color` from a 24-bit `0xRRGGBB` literal (sRGB). The same three lines as
-    /// `Theme.swift:366`–`:377`, so the hex literals above can be compared to the
-    /// app's character for character.
-    init(hex: UInt32) {
-        self.init(
-            .sRGB,
-            red: Double((hex >> 16) & 0xFF) / 255,
-            green: Double((hex >> 8) & 0xFF) / 255,
-            blue: Double(hex & 0xFF) / 255)
     }
 }
 

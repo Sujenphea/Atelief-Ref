@@ -26,6 +26,7 @@
 
 import AppKit
 import AtelierCore
+import AtelierTokens
 import SwiftUI
 
 /// Loads a thumbnail's image asynchronously via ``ThumbnailPipeline``, so the
@@ -353,39 +354,12 @@ struct CoverCard: View {
 }
 
 extension Color {
-    /// A SwiftUI `Color` from a hex string; `nil` for anything unparseable. Kept in
-    /// the view layer — the domain stores the hex string, the UI renders it.
-    ///
-    /// Accepts the same grammar as `ElementRendering.rgba(fromHex:)` and
-    /// `AtelierExport`'s `RGBA.init(hex:)` — `#`-optional, whitespace-tolerant,
-    /// case-insensitive, 3/4/6/8 digits (see `HexGrammarTests`). It used to take 6
-    /// digits only, which was safe for a `ColorPayload` (canonicalised to `#rrggbb`
-    /// on write) but wrong for anything else that reached it.
-    init?(hexString: String) {
-        var s = hexString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if s.hasPrefix("#") { s.removeFirst() }
-        guard s.allSatisfy(\.isHexDigit) else { return nil }
-        switch s.count {
-        case 3, 4: s = s.map { "\($0)\($0)" }.joined()
-        case 6, 8: break
-        default: return nil
-        }
-        guard let v = UInt32(s, radix: 16) else { return nil }
-        if s.count == 8 {
-            self.init(
-                .sRGB,
-                red: Double((v >> 24) & 0xff) / 255,
-                green: Double((v >> 16) & 0xff) / 255,
-                blue: Double((v >> 8) & 0xff) / 255,
-                opacity: Double(v & 0xff) / 255)
-            return
-        }
-        self.init(
-            .sRGB,
-            red: Double((v >> 16) & 0xff) / 255,
-            green: Double((v >> 8) & 0xff) / 255,
-            blue: Double(v & 0xff) / 255)
-    }
+    // `init?(hexString:)` lives in `AtelierTokens` now. It had been written twice — here
+    // and again on iOS, where the copy took 3/6 rather than 3/4/6/8 — which is the same
+    // divergence `HexGrammarTests` exists to prevent between the canvas and export
+    // parsers, arrived at by a different road. Those two genuinely cannot share an
+    // implementation (`AtelierExport` has zero product dependencies by design); the
+    // SwiftUI one always could.
 
     /// Canonical `#rrggbb` for this color (via sRGB), or `nil` if it can't be
     /// resolved to RGB — the inverse of ``init(hexString:)``, used to turn a

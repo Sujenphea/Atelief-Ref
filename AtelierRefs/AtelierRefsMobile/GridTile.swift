@@ -14,6 +14,7 @@
 
 import AtelierBrowse
 import AtelierCore
+import AtelierTokens
 import SwiftUI
 
 struct GridTile: View {
@@ -54,7 +55,7 @@ struct GridTile: View {
                 ThumbnailImage(url: thumbnailURL, width: width)
             }
         case .color(let hex):
-            Color(hex: hex) ?? MobileTheme.Colors.mediaBackdrop
+            Color(hexString: hex) ?? MobileTheme.Colors.mediaBackdrop
         case .link(let link):
             if link.imageBlobHash != nil {
                 ZStack {
@@ -121,17 +122,8 @@ private struct TextCard: View {
     }
 }
 
-extension Color {
-    /// A `Color` from a `#rrggbb` / `#rgb` string — an `AssetContent.color`'s canonical
-    /// hex. `nil` for anything that is not one, so a corrupt payload falls back rather
-    /// than drawing black and looking deliberate.
-    init?(hex string: String) {
-        var text = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("#") { text.removeFirst() }
-        if text.count == 3 {
-            text = text.map { "\($0)\($0)" }.joined()
-        }
-        guard text.count == 6, let value = UInt32(text, radix: 16) else { return nil }
-        self.init(hex: value)
-    }
-}
+// The `#rrggbb` parser this file used to carry is gone: it was a FOURTH implementation of
+// a grammar three others are pinned to by `HexGrammarTests`, and it took 3/6 where they
+// take 3/4/6/8 — so a stored colour with an alpha rendered on the Mac and fell back to
+// grey here. `Color(hexString:)` is one implementation now, in `AtelierTokens`, linked by
+// both platforms.

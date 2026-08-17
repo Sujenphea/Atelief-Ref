@@ -7,17 +7,24 @@
 //
 //    • `AtelierExport.RGBA.init(hex:)`      — the export renderer
 //    • `ElementRendering.rgba(fromHex:)`    — the canvas
-//    • `Color.init?(hexString:)`            — SwiftUI chrome
+//    • `AtelierTokens`' `Color.init?(hexString:)` — SwiftUI chrome, BOTH platforms
 //
-//  `AtelierExport` has zero product dependencies by design, so the duplication is
+//  `AtelierExport` has zero product dependencies by design, so that duplication is
 //  structural and staying. What is NOT acceptable is the three disagreeing, which
 //  they did: 3/4/6/8 vs 6/8 vs 6-only, so a `#f3a` drew in an export, vanished on
 //  the board, and fell back to a placeholder in the inspector.
+//
+//  **There were four for a while.** The SwiftUI parser was written a second time for
+//  iOS (`GridTile.swift`), taking 3/6 — so a stored colour with an alpha rendered on
+//  the Mac and fell back to grey on the phone, the same divergence by a different
+//  road. It moved into `AtelierTokens` with the design tokens, which both platforms
+//  link, so the row below now covers the phone as well as this app.
 //
 //  These tests are the seam that keeps them honest. A parser that gains or loses a
 //  length here fails until all three move together.
 //
 
+import AtelierTokens
 import SwiftUI
 import Testing
 

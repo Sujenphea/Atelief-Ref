@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [AtelierCore, AtelierCapture, AtelierBrowse, AtelierArchive, AtelierIngestion, AtelierServer, CanvasRenderer, AtelierExport]
+        package: [AtelierCore, AtelierCapture, AtelierBrowse, AtelierArchive, AtelierTokens, AtelierIngestion, AtelierServer, CanvasRenderer, AtelierExport]
     steps:
       - uses: actions/checkout@v4
       - name: Show toolchain
@@ -43,7 +43,9 @@ jobs:
     name: iOS packages (swift build, arm64-apple-ios26.0)
     # 092 · S4a, extended by S5. Build-only, and only the packages that actually
     # ship inside an iOS process: the two the share extension links, plus
-    # AtelierBrowse, which is the companion app's read-side logic. There is no
+    # AtelierBrowse, which is the companion app's read-side logic, plus AtelierTokens,
+    # which every target that draws links — the Mac app, the phone app and the share
+    # extension. There is no
     # `swift test` row because SwiftPM cannot run a test bundle without a simulator
     # host; the compile IS the gate, and it is the one that catches a macOS-only API
     # sneaking into AtelierCore — the packages have none today, and this job is what
@@ -67,7 +69,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [AtelierCore, AtelierCapture, AtelierBrowse, AtelierArchive]
+        package: [AtelierCore, AtelierCapture, AtelierBrowse, AtelierArchive, AtelierTokens]
     steps:
       - uses: actions/checkout@v4
       - name: Show toolchain

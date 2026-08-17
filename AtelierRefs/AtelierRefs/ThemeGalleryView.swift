@@ -2,8 +2,8 @@
 //  ThemeGalleryView.swift
 //  AtelierRefs
 //
-//  The design system, rendered. `Theme.swift` is the app's token layer and its
-//  header comment is effectively the style guide — but until now there was nowhere
+//  The design system, rendered. `AtelierTokens` holds the values and `Theme.swift`
+//  is this app's view of them — but until now there was nowhere
 //  to SEE it, which is how `field` and `selection` drifted to within 14 points of
 //  each other unnoticed, and how three `NS` mirrors fell out of step with their
 //  `Colors` originals (both recorded in `.change-log/295-adopt-or-drop-every-token.md`).
@@ -27,6 +27,7 @@
 #if DEBUG
 
 import AppKit
+import AtelierTokens
 import SwiftUI
 
 struct ThemeGalleryView: View {
@@ -36,7 +37,7 @@ struct ThemeGalleryView: View {
                 Text("Theme")
                     .font(Theme.Typography.sectionTitle)
                     .foregroundStyle(Theme.Colors.inkPrimary)
-                Text("Every token in `Theme.swift`, drawn. DEBUG builds only.")
+                Text("Every token in `AtelierTokens`, drawn. DEBUG builds only.")
                     .font(Theme.Typography.body)
                     .foregroundStyle(Theme.Colors.inkSecondary)
 

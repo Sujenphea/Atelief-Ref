@@ -358,7 +358,7 @@ private struct EmptyNotice: View {
 }
 
 /// The library could not be opened or read. `warning` is the app's single alarm colour
-/// and its one deliberate exception to monochrome (`Theme.swift:93`).
+/// and its one deliberate exception to monochrome (`Tokens.Colors.warning`).
 private struct FailureNotice: View {
     let message: String
 

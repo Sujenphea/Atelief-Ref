@@ -9,6 +9,7 @@
 //
 
 import AppKit
+import AtelierTokens
 import SwiftUI
 
 /// One entry in the floating add menu.
