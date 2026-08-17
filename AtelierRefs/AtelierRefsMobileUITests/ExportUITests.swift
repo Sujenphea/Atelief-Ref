@@ -38,11 +38,15 @@ final class ExportUITests: XCTestCase {
         XCTAssertTrue(send.waitForExistence(timeout: 20))
         send.tap()
 
-        // The system share sheet. Its own view has no stable public identity, so this looks
-        // for the one thing every configuration of it has: a Copy activity.
-        let sheet = app.collectionViews.firstMatch
+        // The system share sheet. Its own view has no stable public identity, so this
+        // polls every anchor it could have at once rather than spending a whole timeout on
+        // the first one — which is how this went flaky: `collectionViews` for 20s and then
+        // `Copy` for 5 gives the SECOND anchor five seconds on a simulator where the first
+        // never appears. And the budget is generous on purpose: presenting the sheet means
+        // discovering every share extension installed, which on a cold or loaded simulator
+        // is tens of seconds. A slow machine must not read as a broken app.
         XCTAssertTrue(
-            sheet.waitForExistence(timeout: 20) || app.buttons["Copy"].waitForExistence(timeout: 5),
+            waitForShareSheet(in: app, timeout: 90),
             "sending produced no share sheet")
         attach(app, named: "export-share-sheet")
 
@@ -57,11 +61,31 @@ final class ExportUITests: XCTestCase {
         // who cancels the share sheet, or AirDrops to a Mac that is asleep, has lost
         // nothing — and a second import of the same archive collapses on blob hash.
         XCTAssertTrue(
-            send.waitForExistence(timeout: 10),
+            send.waitForExistence(timeout: 30),
             "the export control vanished after a send — the captures were consumed")
         XCTAssertTrue(
             send.label.contains("\(pending)"),
             "the waiting count changed after an export: \(send.label)")
+    }
+
+    /// Whether a share sheet is up, by any of the marks one leaves.
+    ///
+    /// Three anchors because the sheet is not the app's view and its internals are not a
+    /// contract: the activity grid, a Copy activity, and — the one that holds whatever
+    /// Apple does inside it — the app's own control disappearing behind a modal
+    /// presentation while the app is still running. Any one of them means the tap
+    /// produced a sheet.
+    private func waitForShareSheet(in app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let send = app.buttons["export.send"]
+        let up = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                if app.collectionViews.firstMatch.exists { return true }
+                if app.buttons["Copy"].exists { return true }
+                guard app.state == .runningForeground else { return false }
+                return send.exists ? !send.isHittable : true
+            },
+            object: nil)
+        return XCTWaiter().wait(for: [up], timeout: timeout) == .completed
     }
 
     // MARK: - Fixtures

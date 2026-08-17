@@ -67,6 +67,20 @@ S6c therefore asserts what the destination rule actually promises — two contai
 one clobbered — and does not pin the wart, so fixing the rule later doesn't have to come
 back through this file.
 
+## A flake caught on the way past
+
+Running the iOS UI bundle three times in a row for this change turned
+`testSendingPresentsAShareSheetAndKeepsTheCaptures` red once: *sending produced no share
+sheet*. Not the app — the run took 396s with simulator launch failures in the log, and the
+sheet's wait was `collectionViews` for 20s and THEN `Copy` for 5, so the second anchor got
+five seconds on a machine where the first was never going to appear.
+
+Rewritten as one predicate polling every anchor at once — the activity grid, a Copy
+activity, and the app's own control going unreachable behind a modal — with 90s to do it
+in. Presenting a share sheet means discovering every share extension installed, and a slow
+machine must not read as a broken app. On a warm simulator the whole test now takes 13s;
+the budget is there for the cold one.
+
 ## Files
 
     AtelierArchive/Sources/AtelierArchive/       `pendingRecords(in:)` — the decoder fix;
@@ -77,6 +91,9 @@ back through this file.
       InboxArchiveImportTests.swift
     AtelierArchive/Tests/AtelierArchiveTests/    the epoch, pinned where it lives
       InboxArchiveTests.swift
+    AtelierRefs/AtelierRefsMobileUITests/        the share-sheet wait, de-flaked
+      ExportUITests.swift
+    .docs/092-ios-companion-plan.md              S6 status: three slices, both findings
 
 ## Migration notes
 
