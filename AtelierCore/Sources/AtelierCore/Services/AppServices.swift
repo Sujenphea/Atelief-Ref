@@ -2017,10 +2017,42 @@ public final class AppServices: Sendable {
     /// the UI can resolve the on-disk thumbnail). Collections with no cover — or
     /// a cover asset that was deleted (`SET NULL`) — are simply absent from the
     /// result. One joined round-trip; ids not present in the store are skipped.
-    public func collectionCovers(_ ids: [UUID]) async throws -> [UUID: String] {
+    ///
+    /// `fallingBackToRecent` (093 § 2) closes the gap between "has a cover" and
+    /// "is recognisable": a cover is a thing the user has to have SET, and almost
+    /// nobody has, so a surface that shows only explicit covers shows a column of
+    /// placeholders. With it on, a collection with no surviving cover maps to its
+    /// most recently added byte-backed, non-archived member instead — which is
+    /// the same fallback the Mac's gallery already reaches by a different route
+    /// (its fan card, ``collectionStackPreviews(limit:includeUnsorted:)``), and is
+    /// stated once here rather than a second time in a caller. A collection with
+    /// no byte-backed member at all is still absent, which is what lets a caller
+    /// draw a folder placeholder for a genuinely empty one.
+    ///
+    /// It is **off by default** so the gallery keeps the shape it was measured
+    /// with: the card wants an explicit cover FIRST and a fan of three second, and
+    /// a defaulted-on fallback here would quietly fill the first slot with what
+    /// the second is for.
+    public func collectionCovers(
+        _ ids: [UUID], fallingBackToRecent: Bool = false
+    ) async throws -> [UUID: String] {
         guard !ids.isEmpty else { return [:] }
         return try await read { db in
-            try Self.covers(in: db, table: "collection", ids: ids)
+            var covers = try Self.covers(in: db, table: "collection", ids: ids)
+            guard fallingBackToRecent else { return covers }
+            let uncovered = ids.filter { covers[$0] == nil }
+            guard !uncovered.isEmpty else { return covers }
+            // `limit: 1` — the same window query the fan uses, asked for one row
+            // per collection rather than three, so the two surfaces cannot
+            // disagree about which member represents a collection.
+            let (_, recent) = try Self.stackPreviews(
+                in: db, parentIDs: uncovered,
+                childTable: "collection_item", parentColumn: "collection_id",
+                recencyColumn: "added_at", limit: 1)
+            for (id, hashes) in recent {
+                if let hash = hashes.first { covers[id] = hash }
+            }
+            return covers
         }
     }
 

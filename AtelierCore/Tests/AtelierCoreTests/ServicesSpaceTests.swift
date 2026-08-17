@@ -555,4 +555,83 @@ struct ServicesCollectionCoverTests {
         defer { temp.cleanup() }
         #expect(try await services.collectionCovers([]).isEmpty)
     }
+
+    // MARK: The recent-member fallback (093 § 2)
+    //
+    // What the phone's switcher rows read. The rule being pinned is that an
+    // EXPLICIT cover always wins, that a collection without one falls back to its
+    // most recently added byte-backed member, and that a collection with neither
+    // is still absent — so the row can draw a folder rather than an empty frame.
+
+    @Test("the fallback yields the most recently added byte-backed member")
+    func fallsBackToRecentMember() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let collection = try await services.createCollection(name: "Textures")
+        _ = try await ingest(hash: "aa01", into: collection.id, services: services)
+        _ = try await ingest(hash: "aa02", into: collection.id, services: services)
+
+        #expect(try await services.collectionCovers([collection.id])[collection.id] == nil)
+        let covers = try await services.collectionCovers(
+            [collection.id], fallingBackToRecent: true)
+        #expect(covers[collection.id] == "aa02")
+    }
+
+    @Test("an explicit cover beats the fallback")
+    func explicitCoverWins() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let collection = try await services.createCollection(name: "Textures")
+        let chosen = try await ingest(hash: "aa01", into: collection.id, services: services)
+        _ = try await ingest(hash: "aa02", into: collection.id, services: services)
+        try await services.setCollectionCover(collectionID: collection.id, assetID: chosen)
+
+        let covers = try await services.collectionCovers(
+            [collection.id], fallingBackToRecent: true)
+        #expect(covers[collection.id] == "aa01")
+    }
+
+    @Test("a collection with no byte-backed member stays absent under the fallback")
+    func emptyCollectionStaysAbsent() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let empty = try await services.createCollection(name: "Type")
+        let colourOnly = try await services.createCollection(name: "Swatches")
+        _ = try await services.ingestContent(
+            AssetContentDraft.color(hex: "#ff0000"),
+            from: SourceDraft(platform: .localPaste, capturedAt: Date()),
+            into: colourOnly.id)
+
+        let covers = try await services.collectionCovers(
+            [empty.id, colourOnly.id], fallingBackToRecent: true)
+        #expect(covers[empty.id] == nil)
+        #expect(covers[colourOnly.id] == nil)
+    }
+
+    @Test("an archived member cannot become the fallback cover")
+    func archivedMemberExcluded() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let collection = try await services.createCollection(name: "Textures")
+        _ = try await ingest(hash: "aa01", into: collection.id, services: services)
+        let newest = try await ingest(hash: "aa02", into: collection.id, services: services)
+        _ = try await services.archive([newest])
+
+        let covers = try await services.collectionCovers(
+            [collection.id], fallingBackToRecent: true)
+        #expect(covers[collection.id] == "aa01")
+    }
+
+    /// One byte-backed capture into `collection`, returning its asset id.
+    private func ingest(
+        hash: String, into collection: UUID, services: AppServices
+    ) async throws -> UUID {
+        let asset = AssetDraft(
+            kind: .image, blobHash: hash, mimeType: "image/png",
+            width: 10, height: 10, duration: nil, fileSize: 100,
+            downloadState: .downloaded)
+        let source = SourceDraft(
+            platform: .web, originalURL: "https://example.com/\(hash)", capturedAt: Date())
+        return try await services.ingest(asset, from: source, into: collection).asset.id
+    }
 }
