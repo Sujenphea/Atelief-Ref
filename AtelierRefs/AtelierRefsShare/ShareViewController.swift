@@ -62,7 +62,13 @@ final class ShareViewController: UIViewController {
     /// `static` because the item-provider loading below is static too — it holds no
     /// controller state — and a log line from inside a completion handler is exactly
     /// where a share that went wrong is diagnosed.
-    private static let logger = Logger(
+    ///
+    /// `nonisolated` for that last reason: `UIViewController` is `@MainActor`, so a
+    /// static on this class inherits that isolation, and the handler this is logged from
+    /// runs on whatever thread `NSItemProvider` calls back on. `Logger` is `Sendable` and
+    /// os_log is thread-safe, so the isolation was never buying anything here — it was
+    /// only making the diagnostic unreachable from the place that needs it.
+    private nonisolated static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "sujenphea.AtelierRefsMobile.Share",
         category: "share")
 
@@ -307,7 +313,14 @@ final class ShareViewController: UIViewController {
     /// `InboxWriter` would have thrown, against the same constant, so the cap has one
     /// value and one meaning. A copy that fails for any other reason returns nil, which
     /// falls back to `loadDataRepresentation` rather than failing the share outright.
-    private static func adopt(_ url: URL) throws -> URL? {
+    ///
+    /// `nonisolated`, and that is the same requirement stated a second way: this has to
+    /// run synchronously inside `NSItemProvider`'s handler, on whatever thread the
+    /// handler was given, because the temporary file is gone the moment it returns. A
+    /// `@MainActor` copy would have to be awaited — which is exactly the deferral 406
+    /// removed. Nothing it touches is isolated: a size check, `FileManager`, and the
+    /// logger above.
+    private nonisolated static func adopt(_ url: URL) throws -> URL? {
         if let size = InboxWriter.payloadSize(of: .fileURL(url)),
            size > InboxWriter.maximumPayloadBytes {
             Self.logger.error(

@@ -75,6 +75,13 @@ struct ThumbnailImage: View {
 
     @State private var image: UIImage?
 
+    /// The scale of the screen this view is actually on — `UIScreen.main` is deprecated
+    /// in iOS 26 in favour of a scale found through context, and this is that context.
+    /// It also happens to be the correct answer rather than the usually-correct one:
+    /// `main` is the device's built-in screen even when the window is on an external
+    /// display, and the decode wants the pixels the picture will be drawn at.
+    @Environment(\.displayScale) private var displayScale
+
     var body: some View {
         Group {
             if let image {
@@ -97,8 +104,7 @@ struct ThumbnailImage: View {
     }
 
     private var maxPixel: Int {
-        let scale = UIScreen.main.scale
-        let pixels = Int((width * scale).rounded(.up))
+        let pixels = Int((width * displayScale).rounded(.up))
         // Round up to a 128 bucket so a handful of widths share cache entries.
         return max(128, ((pixels + 127) / 128) * 128)
     }
