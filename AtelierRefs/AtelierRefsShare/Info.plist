@@ -36,19 +36,43 @@
 			  `harvest` has exactly one "nothing capturable" path and no per-type
 			  branching.
 
-			  `SupportsWebURLWithMaxCount` rather than `SupportsWebPage`: the web-page
-			  key is the tier-2 trigger — it is what makes Safari run an
-			  `NSExtensionJavaScriptPreprocessingFile` — and tier 2 is a later slice
-			  (092 · S4b). Omitted keys default to zero/false, so `SupportsText`,
-			  `SupportsMovie`, `SupportsFile` and the rest are off by not being here.
+			  **`SupportsWebPage` is now on — that is tier 2** (092 · S4b). It is the key
+			  that makes Safari run `NSExtensionJavaScriptPreprocessingFile` against the
+			  shared page, which is the only way a share sheet sees a DOM, and so the only
+			  way the phone can match the browser extension on the auth-walled sites
+			  (`PageResolver.isAuthWalledHost`) where a cookie-less fetch from the Mac
+			  sees a login wall instead of the post.
+
+			  `SupportsWebURL` STAYS beside it and is not replaced. The two are different
+			  offers: the web-page rule is what Safari uses, and every other app that
+			  shares a link — Mail, Messages, a native app's share button — offers a URL
+			  and no page. Dropping the URL key to "simplify" would silently narrow the
+			  extension to one app, which is the kind of regression a plist makes
+			  invisible.
+
+			  Omitted keys default to zero/false, so `SupportsText`, `SupportsMovie`,
+			  `SupportsFile` and the rest are off by not being here.
 			-->
 			<key>NSExtensionActivationRule</key>
 			<dict>
 				<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
 				<integer>1</integer>
+				<key>NSExtensionActivationSupportsWebPageWithMaxCount</key>
+				<integer>1</integer>
 				<key>NSExtensionActivationSupportsImageWithMaxCount</key>
 				<integer>1</integer>
 			</dict>
+			<!--
+			  The script Safari runs inside the shared page (092 · S4b, tier 2). Named
+			  WITHOUT the `.js` extension, which is what the key expects.
+
+			  It reads the DOM and returns a raw snapshot; every decision about that
+			  snapshot is made in Swift, in `AtelierCapture.PageExtractor`, where tests
+			  reach it without a device. See `PagePreprocessor.js`'s own header for the
+			  split and for what it deliberately does not gather.
+			-->
+			<key>NSExtensionJavaScriptPreprocessingFile</key>
+			<string>PagePreprocessor</string>
 		</dict>
 		<!--
 		  093 · D-c — a principal class, not a storyboard. `Base.lproj/MainInterface.storyboard`

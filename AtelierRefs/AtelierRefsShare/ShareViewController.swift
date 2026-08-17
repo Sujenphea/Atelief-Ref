@@ -32,11 +32,19 @@
 // capped by `InboxWriter.maximumPayloadBytes` so an absurd share fails on the error
 // card instead of by disappearing.
 //
-// **Tier 1 only.** A URL or image bytes, per 092 · S4b. No
-// `NSExtensionJavaScriptPreprocessingFile`, no ported extractors, no DOM. The Mac
-// resolves og-tags at drain time through the existing `PageResolver`. Tier 2 is a
-// later slice, and the shape it will need — richer provenance from a preprocessed
-// dictionary — is a second `SharedItem` case, not a rewrite of this file.
+// **Tier 2 is here, and it is the second `SharedItem` case this header predicted.** A
+// share from Safari now carries `NSExtensionJavaScriptPreprocessingResultsKey` — the
+// snapshot `PagePreprocessor.js` took of the page's DOM — and that snapshot becomes
+// provenance in `AtelierCapture.PageExtractor`, off in a package with tests. This file
+// gained exactly two things a process has to do: read that one attachment, and fetch the
+// media URL the extractor picked.
+//
+// The fetch is the only NETWORK this extension does, and it is bounded on every axis that
+// can hurt: http(s) only (decided in `ShareCapture.mediaCandidates`), a short timeout so a
+// share sheet is never left waiting on a slow CDN, the same byte cap `InboxWriter`
+// enforces, and streamed to a FILE so nothing is held in memory (091 · D2). Every failure
+// degrades to the tier-1 link, carrying the richer provenance — so tier 2 failing is tier
+// 1 succeeding, which is what makes attempting it here safe.
 
 import AtelierCapture
 import OSLog
@@ -202,6 +210,14 @@ final class ShareViewController: UIViewController {
     /// big to accept — refused before it is copied, and rendered by `capture()`'s
     /// existing failure card.
     private func harvest(_ items: [NSExtensionItem]) async throws -> SharedItem? {
+        // Tier 2 first: when Safari ran the preprocessing script, the page's own DOM
+        // beats anything the share sheet's other attachments can say about it — a URL
+        // and a title, where this has the author, the post's canonical URL and the
+        // picture. Only Safari supplies it; every other sharing app falls through.
+        if let harvest = await Self.preprocessedPage(in: items) {
+            return await Self.pageItem(for: PageExtractor.capture(from: harvest))
+        }
+
         var image: PayloadSource?
         var urlString: String?
         // Only the sharing app's own title. Deliberately NOT `attributedContentText`,
@@ -225,6 +241,108 @@ final class ShareViewController: UIViewController {
         }
 
         return ShareCapture.sharedItem(image: image, urlString: urlString, title: title)
+    }
+
+    // MARK: - Tier 2: the page Safari preprocessed
+
+    /// The DOM snapshot `PagePreprocessor.js` returned, or nil when this share did not
+    /// come from a web page.
+    ///
+    /// Safari puts it in a `public.propertylist` attachment, under the results key, and
+    /// only when the activation rule asked for a web page — so its absence is the
+    /// ordinary case (a photo, a link out of Messages) and not a failure.
+    private static func preprocessedPage(in items: [NSExtensionItem]) async -> PageHarvest? {
+        for item in items {
+            for provider in item.attachments ?? [] {
+                guard provider.hasItemConformingToTypeIdentifier(
+                    UTType.propertyList.identifier) else { continue }
+                // The classification happens INSIDE the handler, and the continuation is
+                // resumed with the finished ``PageHarvest``. `loadItem` hands back an
+                // `NSSecureCoding` — a reference type that is not `Sendable`, so carrying
+                // it across the resume is a data race the compiler is right to refuse.
+                // The value that crosses is a struct of strings and integers.
+                let harvest: PageHarvest? = await withCheckedContinuation { continuation in
+                    provider.loadItem(
+                        forTypeIdentifier: UTType.propertyList.identifier, options: nil
+                    ) { value, _ in
+                        // The attachment is `[resultsKey: <what the script returned>]`.
+                        let results = (value as? [String: Any])?[PageHarvest.resultsKey]
+                        continuation.resume(returning: PageHarvest.harvest(fromResults: results))
+                    }
+                }
+                if let harvest { return harvest }
+            }
+        }
+        return nil
+    }
+
+    /// A page capture with its media fetched, or without it.
+    ///
+    /// Never throws and never fails the share: everything here is best-effort by
+    /// construction, because the alternative to a picture is a link that still carries
+    /// the DOM's provenance. That is the whole reason fetching in an extension is
+    /// defensible.
+    private static func pageItem(for capture: PageCapture) async -> SharedItem {
+        for candidate in ShareCapture.mediaCandidates(for: capture) {
+            if let file = await fetchMedia(candidate) {
+                return .page(capture, bytes: .fileURL(file))
+            }
+        }
+        return .page(capture)
+    }
+
+    /// How long the whole media fetch may take before the share gives up on it.
+    ///
+    /// A receipt the user is watching is on the other side of this. 093 § 1 wants the
+    /// card in under a second; a picture is worth waiting a little longer for, and a CDN
+    /// that has not answered in eight seconds is not about to make anyone happy.
+    private static let mediaFetchTimeout: TimeInterval = 8
+
+    /// Download `urlString` to a file this process owns, or nil.
+    ///
+    /// **Streamed to disk, never held.** `URLSession.download` writes the body to a
+    /// temporary file, so a 12 MB photo costs this process no memory — the same reason
+    /// `loadFileRepresentation` is preferred over `loadDataRepresentation` above, and the
+    /// reason a fetch is affordable at all inside a ~120 MB ceiling (091 · D2).
+    ///
+    /// The size is checked TWICE and both are necessary: `expectedContentLength` refuses
+    /// an absurd file before a byte is transferred, and the file's real size catches a
+    /// server that lied or sent no length at all.
+    ///
+    /// A cookie-less ephemeral session, matching `PageResolver`'s posture on the Mac: the
+    /// URL came out of a page, this is a fetch of a public CDN asset, and there is no
+    /// reason to hand it anybody's cookies.
+    private static func fetchMedia(_ urlString: String) async -> URL? {
+        guard let url = URL(string: urlString) else { return nil }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.timeoutIntervalForRequest = mediaFetchTimeout
+        configuration.timeoutIntervalForResource = mediaFetchTimeout
+        let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
+
+        do {
+            let (file, response) = try await session.download(from: url)
+            if let expected = (response as? HTTPURLResponse)?.expectedContentLength,
+               expected > Int64(InboxWriter.maximumPayloadBytes) {
+                logger.info("media of \(expected, privacy: .public) bytes is over the cap")
+                try? FileManager.default.removeItem(at: file)
+                return nil
+            }
+            if let status = (response as? HTTPURLResponse)?.statusCode, status != 200 {
+                logger.info("media fetch returned \(status, privacy: .public)")
+                try? FileManager.default.removeItem(at: file)
+                return nil
+            }
+            // The downloaded file lives in a temporary location the system reclaims, so
+            // it is adopted immediately — the same discipline `loadFileRepresentation`
+            // needs, for the same reason. `adopt` also applies the byte cap.
+            return try adopt(file)
+        } catch {
+            logger.info("media fetch failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
 
     /// The provider's registered identifier that is an image, or nil.
@@ -345,9 +463,16 @@ final class ShareViewController: UIViewController {
     }
 
     /// Delete the copy ``adopt(_:)`` took, once the capture is committed or lost.
+    ///
+    /// Both byte-carrying cases, because tier 2's downloaded file is adopted by the same
+    /// function and is just as much this process's to clean up.
     private static func discardAdoptedFile(of item: SharedItem) {
-        guard case .image(.fileURL(let url), _, _) = item else { return }
-        try? FileManager.default.removeItem(at: url)
+        switch item {
+        case .image(.fileURL(let url), _, _), .page(_, .fileURL(let url)):
+            try? FileManager.default.removeItem(at: url)
+        default:
+            break
+        }
     }
 
     /// The provider's bytes for `identifier`, without decoding them.
