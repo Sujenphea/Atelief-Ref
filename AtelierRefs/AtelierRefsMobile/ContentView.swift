@@ -50,6 +50,7 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingSwitcher) {
             CollectionSwitcher(
                 nodes: store.collections,
+                covers: store.collectionCovers,
                 selectedID: store.rootCollectionID,
                 onSelect: { id in
                     // Switching the ROOT collection, so the stack goes back to it —

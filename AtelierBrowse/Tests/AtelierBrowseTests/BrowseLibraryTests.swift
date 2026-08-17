@@ -156,6 +156,53 @@ struct BrowseLibraryTests {
             == "\(hash)@\(LibraryMediaPaths.detailThumbnailSize).jpg")
     }
 
+    // MARK: - Switcher covers
+
+    @Test("a collection with no cover set still has a picture: its newest member")
+    func coversFallBackToNewestMember() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        try await fixture.ingest(hashSeed: 1, capturedAt: date(2026, 1, 1))
+        let newest = try await fixture.ingest(hashSeed: 2, capturedAt: date(2026, 1, 2))
+        let hash = try await fixture.library.asset(id: newest).asset.blobHash!
+
+        let covers = try await fixture.library.collectionCovers(
+            for: [BrowseLibrary.rootCollectionID])
+        // The 512 tier's path, exactly as a tile would ask for it — the switcher and the
+        // grid share a decode cache keyed by path, so a disagreement here would be two
+        // decodes of one file rather than a wrong picture.
+        #expect(covers[BrowseLibrary.rootCollectionID]
+            == fixture.library.gridThumbnailURL(forHash: hash))
+    }
+
+    @Test("an empty collection is absent from the covers, so its row can draw a folder")
+    func emptyCollectionHasNoCover() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        let empty = try await fixture.services.createCollection(name: "Type")
+        let covers = try await fixture.library.collectionCovers(
+            for: [BrowseLibrary.rootCollectionID, empty.id])
+        #expect(covers[empty.id] == nil)
+    }
+
+    @Test("an archived newest member does not become a collection's cover")
+    func archivedMemberIsNotACover() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        let kept = try await fixture.ingest(hashSeed: 1, capturedAt: date(2026, 1, 1))
+        let shelved = try await fixture.ingest(hashSeed: 2, capturedAt: date(2026, 1, 2))
+        _ = try await fixture.services.archive([shelved])
+        let hash = try await fixture.library.asset(id: kept).asset.blobHash!
+
+        let covers = try await fixture.library.collectionCovers(
+            for: [BrowseLibrary.rootCollectionID])
+        #expect(covers[BrowseLibrary.rootCollectionID]
+            == fixture.library.gridThumbnailURL(forHash: hash))
+    }
+
     // MARK: - Fixtures
 
     private func date(_ year: Int, _ month: Int, _ day: Int) -> Date {

@@ -108,10 +108,37 @@ public struct BrowseLibrary: Sendable {
     /// something the image loader finds out anyway, one file open later, at the moment
     /// it was going to touch the disk regardless.
     public func gridThumbnailURL(for asset: Asset) -> URL? {
-        guard let hash = asset.blobHash else { return nil }
-        return LibraryMediaPaths.thumbnailURL(
+        asset.blobHash.map(gridThumbnailURL(forHash:))
+    }
+
+    /// The 512 tier for a blob hash — for a caller holding a hash rather than an asset,
+    /// which is what the cover reads return.
+    public func gridThumbnailURL(forHash hash: String) -> URL {
+        LibraryMediaPaths.thumbnailURL(
             libraryRoot: root, hash: hash,
             size: LibraryMediaPaths.gridThumbnailSize, fileExtension: "jpg")
+    }
+
+    /// A representative thumbnail per collection, for the switcher's rows (093 § 2:
+    /// "a reference library's collections are recognised by their contents, not their
+    /// spelling").
+    ///
+    /// The explicit cover where one is set, and the collection's most recently added
+    /// byte-backed member where none is — `fallingBackToRecent`, which exists because
+    /// nothing sets a cover by default, so on a real library the un-fallen-back answer
+    /// is a sheet of placeholders. The rule itself lives in `AppServices` rather than
+    /// here, so this seam and the Mac's gallery cannot pick different pictures for the
+    /// same folder.
+    ///
+    /// A collection with nothing to show is **absent** from the result rather than
+    /// mapped to a `nil` URL — the row then draws a folder, which is what "empty" looks
+    /// like, as opposed to "the tier has not been generated", which is what an absent
+    /// file at a present URL looks like. Unstat'ed for the same reason
+    /// ``gridThumbnailURL(for:)`` is: the image loader finds that out one file open
+    /// later, and this is called with the whole tree.
+    public func collectionCovers(for ids: [UUID]) async throws -> [UUID: URL] {
+        try await services.collectionCovers(ids, fallingBackToRecent: true)
+            .mapValues(gridThumbnailURL(forHash:))
     }
 
     /// The detail screen's image — the 1280 tier, falling back to the 512 tier when

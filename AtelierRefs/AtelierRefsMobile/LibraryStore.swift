@@ -42,6 +42,10 @@ final class LibraryStore {
     private(set) var phase: Phase = .loading
     /// The whole collection tree, for the switcher sheet.
     private(set) var collections: [BrowseCollectionNode] = []
+    /// One thumbnail per collection, for the switcher's rows (093 § 2). Keyed by
+    /// collection id; **absent means there is nothing to show**, and the row draws a
+    /// folder rather than an empty frame.
+    private(set) var collectionCovers: [UUID: URL] = [:]
     /// Which collection the ROOT grid shows. Unsorted at launch, always, in v1
     /// (093 § 2) — it is where every share lands (092 · S3), so it is the answer to
     /// "what did I save" by construction.
@@ -63,7 +67,11 @@ final class LibraryStore {
             let opened = try BrowseLibrary(root: root)
             library = opened
             collections = try await opened.collectionTree()
+            // Ready BEFORE the covers: the grid is what the user launched for and it
+            // needs none of them, so gating first paint on a read only the sheet
+            // consumes would spend launch latency on a screen nobody has asked for yet.
             phase = .ready
+            await refreshCovers()
         } catch {
             phase = .failed(Self.message(for: error))
         }
@@ -74,6 +82,20 @@ final class LibraryStore {
     func refreshCollections() async {
         guard let library else { return }
         collections = (try? await library.collectionTree()) ?? collections
+        await refreshCovers()
+    }
+
+    /// Re-read the switcher's row thumbnails, for the tree as it currently stands.
+    ///
+    /// Never throws and never clears: a cover read that fails leaves the previous map in
+    /// place and the rows that have no entry draw folders. This is decoration for a
+    /// sheet — it must not be able to take out the library the way a failed tree read
+    /// legitimately can.
+    private func refreshCovers() async {
+        guard let library else { return }
+        let ids = BrowseCollectionTree.flattened(collections).map(\.node.id)
+        guard let covers = try? await library.collectionCovers(for: ids) else { return }
+        collectionCovers = covers
     }
 
     // MARK: - Reads
