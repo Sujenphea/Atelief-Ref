@@ -12,6 +12,7 @@
 //  "we couldn't look" and "your backup is damaged" is the entire value.
 //
 
+import AtelierCapture
 import AtelierCore
 import AtelierIngestion
 import Foundation

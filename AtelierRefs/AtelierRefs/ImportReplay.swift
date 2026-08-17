@@ -37,6 +37,7 @@
 //
 
 import AtelierArchive
+import AtelierCapture
 import AtelierCore
 import AtelierIngestion
 import Foundation
