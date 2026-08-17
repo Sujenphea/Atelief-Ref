@@ -241,7 +241,11 @@ enum BakeoffEnvironment {
         guard size > 0 else { return "unknown" }
         var bytes = [CChar](repeating: 0, count: size)
         sysctlbyname("hw.model", &bytes, &size, nil, 0)
-        return String(cString: bytes)
+        // `size` counts the NUL that `sysctlbyname` writes, so the text is
+        // everything before the first one. The array form of `String(cString:)`
+        // is deprecated for the ambiguity this line spells out instead.
+        let text = bytes.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: text, as: UTF8.self)
     }
 
     static var osVersion: String {

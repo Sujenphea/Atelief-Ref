@@ -142,7 +142,14 @@ public struct SSRFGuard: Sendable {
             if getnameinfo(
                 n.pointee.ai_addr, n.pointee.ai_addrlen,
                 &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 {
-                ips.append(String(cString: buffer))
+                // Truncate at the NUL ourselves and decode what precedes it —
+                // `String(cString:)` on an ARRAY is deprecated, and the reason is
+                // exactly this shape: a fixed `NI_MAXHOST` buffer whose tail is
+                // padding, not text. `getnameinfo` NUL-terminates on success, so a
+                // missing NUL means a buffer we should not be reading past; taking
+                // the prefix rather than assuming one is what makes that safe.
+                let text = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+                ips.append(String(decoding: text, as: UTF8.self))
             }
             node = n.pointee.ai_next
         }

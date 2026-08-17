@@ -96,7 +96,7 @@ struct AssetFolderWriterTests {
 
     @Test("An empty file list is a hard failure, not an empty folder")
     func emptyThrows() throws {
-        try withTempDirectory { temp in
+        withTempDirectory { temp in
             let out = temp.appendingPathComponent("out", isDirectory: true)
             #expect(throws: ExportError.noPages) {
                 try AssetFolderWriter.write(files: [], to: out)
@@ -200,7 +200,7 @@ struct AssetFolderWriterTests {
 
     @Test("Cancel before the first copy throws and writes nothing")
     func cancelUpFront() throws {
-        try withTempDirectory { temp in
+        withTempDirectory { temp in
             let source = temp.appendingPathComponent("blob")
             makeFile(source)
             let out = temp.appendingPathComponent("out", isDirectory: true)
@@ -216,7 +216,7 @@ struct AssetFolderWriterTests {
 
     @Test("Cancel mid-run stops copying; cleanup is the caller's job")
     func cancelMidRun() throws {
-        try withTempDirectory { temp in
+        withTempDirectory { temp in
             let source = temp.appendingPathComponent("blob")
             makeFile(source)
             let out = temp.appendingPathComponent("out", isDirectory: true)

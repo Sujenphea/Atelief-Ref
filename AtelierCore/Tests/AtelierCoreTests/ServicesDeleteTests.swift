@@ -275,7 +275,7 @@ struct ServicesDeleteTests {
 
         // Remove one asset WITHOUT going through deleteAssets → its blob orphans, but
         // its ledger rows are left stranded (the exact gap the reconcile closes).
-        try await temp.database.write { db in
+        try temp.database.write { db in
             _ = try Asset
                 .filter(Column("blob_hash") == "9a9a")
                 .deleteAll(db)

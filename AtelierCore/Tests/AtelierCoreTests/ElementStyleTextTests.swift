@@ -101,7 +101,7 @@ struct ElementStyleTextTests {
     @Test("textAutoWidth round-trips both ways", arguments: [true, false])
     func autoWidthRoundTrips(_ flag: Bool) throws {
         let style = ElementStyle(text: "x", textAutoWidth: flag)
-        let back = try #require(ElementStyle(jsonString: #require(style.jsonString())))
+        let back = try #require(ElementStyle(jsonString: style.jsonString()))
         #expect(back.textAutoWidth == flag)
         #expect(back.hugsWidth == flag)
     }
@@ -129,7 +129,7 @@ struct ElementStyleTextTests {
     @Test("the two fields are independent — a hugging box keeps its legacy token")
     func autoWidthAndResizeModeCoexist() throws {
         let style = ElementStyle(text: "x", textAutoWidth: true, resizeMode: "fixed")
-        let back = try #require(ElementStyle(jsonString: #require(style.jsonString())))
+        let back = try #require(ElementStyle(jsonString: style.jsonString()))
         #expect(back.hugsWidth == true)
         #expect(back.resizeMode == "fixed")
     }
