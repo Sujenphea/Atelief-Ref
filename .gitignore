@@ -9,6 +9,10 @@
 # on every open and it rode along in unrelated commits. Untracked (not deleted)
 # so the rule finally bites.
 xcuserdata/
+# Written into the workspace's SHARED data, so the rule above misses it — but its
+# contents are per-machine (build-system opt-outs, a derived-data location) and
+# ours is an empty dict, which is Xcode saying "I opened this", not a setting.
+WorkspaceSettings.xcsettings
 DerivedData/
 *.xcscmblueprint
 *.xccheckout
