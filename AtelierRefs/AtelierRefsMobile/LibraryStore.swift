@@ -51,6 +51,10 @@ final class LibraryStore {
     /// "what did I save" by construction.
     var rootCollectionID: UUID = BrowseLibrary.rootCollectionID
 
+    /// Where the library lives — the inbox hangs off the same root, and the export
+    /// controller needs it. Set once bootstrap has resolved it.
+    private(set) var libraryRoot: URL?
+
     private var library: BrowseLibrary?
 
     // MARK: - Bootstrap
@@ -73,6 +77,7 @@ final class LibraryStore {
             #endif
             let opened = try BrowseLibrary(root: root)
             library = opened
+            libraryRoot = root
             collections = try await opened.collectionTree()
             // Ready BEFORE the covers: the grid is what the user launched for and it
             // needs none of them, so gating first paint on a read only the sheet

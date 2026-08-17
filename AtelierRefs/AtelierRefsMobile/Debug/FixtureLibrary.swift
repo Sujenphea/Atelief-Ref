@@ -131,7 +131,32 @@ enum FixtureLibrary {
             AssetContentDraft.color(hex: "#B4472A"),
             from: SourceDraft(platform: .localPaste, capturedAt: Date()),
             into: swatches.id)
+
+        try seedInbox(at: root)
     }
+
+    /// Pending captures, written the way the share extension writes them.
+    ///
+    /// The inbox is a SECOND thing a fixture has to seed, and it is not the library: a
+    /// capture made on a phone never becomes a row there (092 · S6). Without these the
+    /// export control is correctly invisible, and the thing it does cannot be driven.
+    private static func seedInbox(at root: URL) throws {
+        let writer = InboxWriter(libraryRoot: root)
+        for index in 1...pendingCaptures {
+            _ = try writer.write(
+                CaptureRequest(
+                    provenance: ProvenanceDTO(
+                        platform: "web",
+                        originalURL: "https://example.com/pending/\(index)",
+                        title: "Pending \(index)")),
+                payload: jpeg(size: CGSize(width: 60, height: 40), label: "S\(index)"),
+                capturedAt: Date().addingTimeInterval(Double(index) * -60))
+        }
+    }
+
+    /// How many captures the fixture leaves waiting. Three, so the count is legibly
+    /// plural and a test can assert a number rather than "some".
+    static let pendingCaptures = 3
 
     /// Both display tiers for one fixture asset, drawn rather than shipped — a bundled
     /// JPEG would be a resource to keep in sync with a hash computed here.

@@ -34,6 +34,11 @@ struct ContentView: View {
     @State private var store = LibraryStore()
     @State private var path: [BrowseRoute] = []
     @State private var isShowingSwitcher = false
+    /// Created after the library root resolves, because the inbox hangs off it — and `nil`
+    /// when it never does, which is the same state the failure screen is already showing.
+    @State private var export: CaptureExport?
+
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -46,7 +51,38 @@ struct ContentView: View {
         // Info.plist, exactly as the Mac commits both in SwiftUI and in `NSApp`.
         .preferredColorScheme(.dark)
         .tint(MobileTheme.Colors.inkPrimary)
-        .task { await store.bootstrap() }
+        .task {
+            await store.bootstrap()
+            // After bootstrap, so the root is resolved (and seeded, in a debug fixture run)
+            // before anything counts what is in its inbox.
+            if let root = store.libraryRoot, export == nil {
+                let export = CaptureExport(libraryRoot: root, appVersion: Self.appVersion)
+                export.refresh()
+                self.export = export
+            }
+        }
+        // A share arrives while this app is in the background — the extension is another
+        // process — so the count is re-read on activation, the same cadence the Mac's drain
+        // runs on (407).
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { export?.refresh() }
+        }
+        .overlay(alignment: .bottom) {
+            if case .failed(let message) = export?.phase {
+                ExportFailureNotice(message: message)
+                    .transition(.opacity)
+                    .task {
+                        try? await Task.sleep(for: .seconds(4))
+                        export?.finish()
+                    }
+            }
+        }
+        .animation(MobileTheme.Motion.gentle, value: export?.phase)
+        .sheet(isPresented: shareSheetBinding) {
+            if case .ready(let url) = export?.phase {
+                ShareSheet(url: url) { export?.finish() }
+            }
+        }
         .sheet(isPresented: $isShowingSwitcher) {
             CollectionSwitcher(
                 nodes: store.collections,
@@ -60,6 +96,20 @@ struct ContentView: View {
                     store.rootCollectionID = id
                 })
         }
+    }
+
+    /// What the manifest records as the writing app — the same string the Mac's own
+    /// exports carry, read from the bundle rather than spelled here.
+    static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    }
+
+    /// The share sheet is presented for exactly one phase, and dismissing it has to put the
+    /// controller back to `.idle` — otherwise the sheet re-presents itself forever.
+    private var shareSheetBinding: Binding<Bool> {
+        Binding(
+            get: { if case .ready = export?.phase { true } else { false } },
+            set: { if !$0 { export?.finish() } })
     }
 
     // MARK: - Root
@@ -76,7 +126,8 @@ struct ContentView: View {
                 store: store,
                 collectionID: store.rootCollectionID,
                 isRoot: true,
-                onSwitchCollection: { isShowingSwitcher = true })
+                onSwitchCollection: { isShowingSwitcher = true },
+                export: export)
         }
     }
 
@@ -85,7 +136,8 @@ struct ContentView: View {
         switch route {
         case .collection(let id):
             CollectionScreen(
-                store: store, collectionID: id, isRoot: false, onSwitchCollection: nil)
+                store: store, collectionID: id, isRoot: false, onSwitchCollection: nil,
+                export: nil)
         case .item(let collectionID, let itemID):
             ItemScreen(store: store, collectionID: collectionID, itemID: itemID)
         }
@@ -104,6 +156,9 @@ struct CollectionScreen: View {
     /// Present only on the root: the title is the switcher (093 § 2), and a pushed
     /// screen's title is where it came from, which is not a control.
     let onSwitchCollection: (() -> Void)?
+    /// Also root-only: a subcollection is a place you are reading, not a place you send
+    /// from. `nil` on every pushed screen, and on the root until the library root resolves.
+    let export: CaptureExport?
 
     @State private var feed = CollectionFeed()
 
@@ -123,6 +178,15 @@ struct CollectionScreen: View {
                             name: feed.name,
                             isEnabled: !store.collections.isEmpty,
                             action: onSwitchCollection)
+                    }
+                }
+                // Only when there is something to send: an empty inbox shows the grid and
+                // nothing else, which is 093 § 2's resting state.
+                if let export, let pending = export.pending, pending > 0 {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        ExportButton(count: pending, phase: export.phase) {
+                            Task { await export.export() }
+                        }
                     }
                 }
             }
