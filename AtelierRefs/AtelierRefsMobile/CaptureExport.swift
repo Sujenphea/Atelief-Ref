@@ -83,10 +83,9 @@ final class CaptureExport {
         layout: InboxLayout, appVersion: String, now: Date
     ) throws -> URL {
         // Capture-time order, the same order the drain walks (405) — so a folder opened on
-        // the Mac reads in the order the user actually saved things.
-        let records = try layout.pendingRecordURLs()
-            .compactMap { try? JSONDecoder().decode(InboxRecord.self, from: Data(contentsOf: $0)) }
-            .sorted { ($0.capturedAt, $0.id.uuidString) < ($1.capturedAt, $1.id.uuidString) }
+        // the Mac reads in the order the user actually saved things. Asked for by name
+        // rather than spelled here, so the Mac-side round-trip test exercises THIS order.
+        let records = try InboxArchive.pendingRecords(in: layout)
 
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Exports", isDirectory: true)

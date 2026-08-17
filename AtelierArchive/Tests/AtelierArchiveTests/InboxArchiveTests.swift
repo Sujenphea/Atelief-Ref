@@ -91,6 +91,28 @@ struct InboxArchiveTests {
         #expect(source.platform == .web)
     }
 
+    /// **The bug 092 · S6c found, pinned where it happened.** Records are written with
+    /// `.secondsSince1970`; a stock `JSONDecoder` reads a bare number as
+    /// `timeIntervalSinceReferenceDate`, which is the same digits 31 years later. Every
+    /// date was shifted by the same constant, so the export's ORDER was right and nothing
+    /// looked wrong until a Mac imported the folder and dated the captures 2054.
+    @Test("Capture time survives the read, rather than gaining 31 years")
+    func captureTimeIsNotEpochShifted() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let when = Date(timeIntervalSince1970: 1_700_000_000)
+        _ = try rig.writer.write(
+            CaptureRequest(
+                provenance: ProvenanceDTO(platform: "web", originalURL: "https://example.com/t")),
+            payload: try Rig.jpeg(width: 8, height: 8),
+            capturedAt: when)
+
+        let records = try InboxArchive.pendingRecords(in: rig.layout)
+
+        #expect(records.count == 1)
+        #expect(records.first?.capturedAt == when)
+    }
+
     // MARK: - Sharing and skipping
 
     @Test("Two captures of the same bytes share one file")
@@ -238,9 +260,7 @@ struct InboxArchiveTests {
         }
 
         func export() throws -> InboxArchive.Summary {
-            let records = try layout.pendingRecordURLs()
-                .compactMap { try? JSONDecoder().decode(InboxRecord.self, from: Data(contentsOf: $0)) }
-                .sorted { $0.capturedAt < $1.capturedAt }
+            let records = try InboxArchive.pendingRecords(in: layout)
             return try InboxArchive.write(
                 records: records, layout: layout, to: root,
                 appVersion: "1.0-test", schemaVersion: "v19",

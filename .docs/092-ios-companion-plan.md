@@ -922,7 +922,33 @@ Two things S5 found that this plan had assumed otherwise:
 
 Still open after S5, and none of it blocking S6: tier 2, the footprint measurement, a
 shared cross-platform token target (there are now two hand-copied token files on iOS),
-and thumbnails on the switcher's rows (093 § 2 asks for them).
+and thumbnails on the switcher's rows (093 § 2 asks for them — done since, by
+[410](../.change-log/410-a-cover-almost-nobody-set.md)).
+
+**S6 has landed (2026-08-17).** Three slices:
+
+| Slice | What | Change log |
+|---|---|---|
+| S6a | the archive format moves out of the app target into a new **`AtelierArchive`** package (macOS + iOS), so the phone can write one | [415](../.change-log/415-the-format-moves-to-where-both-can-reach-it.md) |
+| S6b-i | `InboxArchive` — the phone's INBOX as a `LibraryArchive`-shaped folder, through the same `CaptureDecoder` funnel the drain runs | [416](../.change-log/416-the-inbox-is-what-the-phone-has-to-send.md) |
+| S6b-ii | one toolbar control, shown only when the inbox has something in it, handing the folder to the system share sheet; nothing is deleted after an export | [417](../.change-log/417-one-control-that-sends.md) |
+| S6c | phone → archive → **Mac library**, end to end in `AtelierRefsTests` | [418](../.change-log/418-thirty-one-years-in-the-future.md) |
+
+S6b's finding is the one this plan had assumed otherwise: **what the phone has to send is
+not its library.** Because there is still no drain on iOS (S5's second finding), a capture
+made on the phone never becomes an asset THERE — it is a record plus a payload file. So
+the export reads `inbox/`, and `InboxArchive` is the only writer in the program that
+starts from records rather than from rows.
+
+S6c's finding is why the slice was worth running: the phone's export read its records with
+a stock `JSONDecoder` and dated every capture **31 years in the future**. Order was right,
+dedup was right, and the archive parsed cleanly — the shift was constant and time is not
+part of the dedup key — so it was invisible until an import stored a row and someone read
+its `created_at`. Fixed; see 418.
+
+**Still unproven in S6: the transport.** A simulator has no AirDrop, so
+folder-over-AirDrop is stated rather than demonstrated. The fallback if a device dislikes
+it is `NSFileCoordinator`'s `.forUploading` zip, one call away.
 
 What S4b inherits, all of it recorded rather than discovered later:
 

@@ -73,7 +73,33 @@ public nonisolated enum InboxArchive {
     /// Unsorted, always: the share sheet has no collection picker (093 § 1 posts and
     /// dismisses), so `collectionId` is nil on every record this reads, and the drain's own
     /// default for that is Unsorted. The archive says the same thing the drain would have.
-    static let collectionName = "Unsorted"
+    /// Public because it is the name the collection ARRIVES under on the Mac, which the
+    /// S6c round trip asserts rather than re-spells.
+    public static let collectionName = "Unsorted"
+
+    /// Every pending record in `layout`, in the order an export should write them.
+    ///
+    /// Capture-time order, the same order the Mac's drain walks (405), so a folder opened
+    /// on the Mac reads in the order the user actually saved things; the id breaks a tie
+    /// so two captures made in the same millisecond do not reorder between runs.
+    ///
+    /// This is a HELPER, not a step ``write(records:layout:to:appVersion:schemaVersion:exportedAt:)``
+    /// takes for itself — a writer that silently decided its own order would be a second
+    /// opinion about it. It exists so the phone's export and the round-trip test that
+    /// checks the phone's export agree by construction rather than by retyping.
+    ///
+    /// **`InboxRecord.makeDecoder()`, never a bare `JSONDecoder`.** Records are written
+    /// with `.secondsSince1970` and a stock decoder reads a bare number as
+    /// `timeIntervalSinceReferenceDate` — the same digits, 31 years later. The order came
+    /// out right either way (every date was shifted by the same constant), so the only
+    /// place it showed was the `created_at` the Mac ended up storing: every phone capture
+    /// dated 2054 and pinned to the top of Newest forever. 092 · S6c caught it.
+    public static func pendingRecords(in layout: InboxLayout) throws -> [InboxRecord] {
+        let decoder = InboxRecord.makeDecoder()
+        return try layout.pendingRecordURLs()
+            .compactMap { try? decoder.decode(InboxRecord.self, from: Data(contentsOf: $0)) }
+            .sorted { ($0.capturedAt, $0.id.uuidString) < ($1.capturedAt, $1.id.uuidString) }
+    }
 
     /// Write `records` into `root` as an archive.
     ///
