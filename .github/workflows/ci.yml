@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [AtelierCore, AtelierCapture, AtelierIngestion, AtelierServer, CanvasRenderer, AtelierExport]
+        package: [AtelierCore, AtelierCapture, AtelierBrowse, AtelierIngestion, AtelierServer, CanvasRenderer, AtelierExport]
     steps:
       - uses: actions/checkout@v4
       - name: Show toolchain
@@ -41,17 +41,25 @@ jobs:
 
   ios-packages:
     name: iOS packages (swift build, arm64-apple-ios26.0)
-    # 092 · S4a. Build-only, and only the two packages the iOS share extension
-    # links. There is no `swift test` row because SwiftPM cannot run a test
-    # bundle without a simulator host; the compile IS the gate, and it is the one
-    # that catches a macOS-only API sneaking into AtelierCore — the packages have
-    # none today, and this job is what keeps that true.
+    # 092 · S4a, extended by S5. Build-only, and only the packages that actually
+    # ship inside an iOS process: the two the share extension links, plus
+    # AtelierBrowse, which is the companion app's read-side logic. There is no
+    # `swift test` row because SwiftPM cannot run a test bundle without a simulator
+    # host; the compile IS the gate, and it is the one that catches a macOS-only API
+    # sneaking into AtelierCore — the packages have none today, and this job is what
+    # keeps that true. (AtelierBrowse's own tests DO run, on macOS, in the
+    # `swift-packages` job — it is dual-platform on purpose, so its logic is tested
+    # on the host and compiled for the phone.)
     #
     # The other four packages are host-side by design and deliberately declare no
     # `.iOS(...)` platform: AtelierIngestion imports AppKit (NSPasteboard, in
     # Input/DirectInputReader.swift), and AtelierServer / CanvasRenderer /
     # AtelierExport are things the phone never does. Porting any of them is a
-    # separately-costed decision, not a CI row.
+    # separately-costed decision, not a CI row — and S5 declined to make it: the
+    # AppKit file is not excludable with one `#if`, because `InboxDrain` and
+    # `RemoteImageFetcher` both call `DirectInputReader`, so dropping it on iOS takes
+    # the drain with it. The path math the phone needed moved to AtelierCapture
+    # instead (`LibraryMediaPaths`).
     #
     # `--sdk` is not optional: `--triple` alone leaves SwiftPM on the host's macOS
     # SDK and every target fails with "unable to load standard library".
@@ -59,7 +67,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [AtelierCore, AtelierCapture]
+        package: [AtelierCore, AtelierCapture, AtelierBrowse]
     steps:
       - uses: actions/checkout@v4
       - name: Show toolchain

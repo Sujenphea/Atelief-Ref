@@ -16,6 +16,8 @@
 		HA0000000000000000000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = HA0000000000000000000002 /* Sparkle */; };
 		IA0000000000000000000003 /* AtelierCapture in Frameworks */ = {isa = PBXBuildFile; productRef = IA0000000000000000000002 /* AtelierCapture */; };
 		IA0000000000000000000005 /* AtelierCapture in Frameworks */ = {isa = PBXBuildFile; productRef = IA0000000000000000000004 /* AtelierCapture */; };
+		JA0000000000000000000003 /* AtelierBrowse in Frameworks */ = {isa = PBXBuildFile; productRef = JA0000000000000000000002 /* AtelierBrowse */; };
+		DA0000000000000000000005 /* AtelierCore in Frameworks */ = {isa = PBXBuildFile; productRef = DA0000000000000000000004 /* AtelierCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -137,6 +139,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				IA0000000000000000000003 /* AtelierCapture in Frameworks */,
+				JA0000000000000000000003 /* AtelierBrowse in Frameworks */,
+				DA0000000000000000000005 /* AtelierCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -263,6 +267,8 @@
 			name = AtelierRefsMobile;
 			packageProductDependencies = (
 				IA0000000000000000000002 /* AtelierCapture */,
+				JA0000000000000000000002 /* AtelierBrowse */,
+				DA0000000000000000000004 /* AtelierCore */,
 			);
 			productName = AtelierRefsMobile;
 			productReference = B10000000000000000000001 /* AtelierRefsMobile.app */;
@@ -310,6 +316,7 @@
 				GA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierExport" */,
 				HA0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				IA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierCapture" */,
+				JA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierBrowse" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9907786F2FF364EF00718815 /* Products */;
@@ -848,6 +855,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../AtelierCapture;
 		};
+		JA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierBrowse" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierBrowse;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -894,6 +905,14 @@
 		IA0000000000000000000004 /* AtelierCapture */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AtelierCapture;
+		};
+		JA0000000000000000000002 /* AtelierBrowse */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierBrowse;
+		};
+		DA0000000000000000000004 /* AtelierCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

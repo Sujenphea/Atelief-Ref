@@ -20,5 +20,16 @@
 	-->
 	<key>AtelierAppGroupIdentifier</key>
 	<string>$(ATELIER_APP_GROUP)</string>
+	<!--
+	  093 § 6 — dark only. The Mac commits twice (`.preferredColorScheme(.dark)` AND
+	  `NSApp.appearance`), and the phone does the same: `.preferredColorScheme(.dark)`
+	  on the root view, and this key so the SYSTEM chrome the app does not draw —
+	  the status bar, the keyboard, a share sheet presented over it — matches. The
+	  share extension already carries its own copy (`AtelierRefsShare/Info.plist`),
+	  since an extension is its own bundle and does not inherit the host's preference.
+	  A light system chrome around a dark app is the worst of both.
+	-->
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
 </dict>
 </plist>

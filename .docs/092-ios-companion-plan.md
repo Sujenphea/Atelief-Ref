@@ -898,6 +898,32 @@ activation, and a drained share refreshes the live UI through the same path the 
 endpoint uses — without an `onCapture` callback on `InboxDrain`, since the summary the
 pass returns already says whether anything landed.
 
+**S5 has landed (2026-08-17, [409](../.change-log/409-the-rhythm-that-decomposed.md)).**
+The phone reads the library: a `NavigationStack` rooted at Unsorted, the masonry grid as
+`C` lazy column stacks per [093](093-ios-visual-design.md) § 3, the collection switcher
+behind the title, and an item detail keeping the three 041 sections. The laziness gate
+093 § 3 asked for was RUN — 2,010 items, 8 tile bodies at launch — so the uniform
+`LazyVGrid` fallback is not taken. The read-side logic lives in a new **`AtelierBrowse`**
+package (macOS + iOS, `swift test` on the host, cross-built by CI); the app target holds
+SwiftUI only.
+
+Two things S5 found that this plan had assumed otherwise:
+
+- **AtelierIngestion is not "near-free" to port** (091 · D1). Its one AppKit file is not
+  excludable with one `#if` — `InboxDrain` and `RemoteImageFetcher` both call
+  `DirectInputReader`, so dropping it on iOS takes the drain with it. S5 declined the
+  port and moved the path math the phone needed into `AtelierCapture.LibraryMediaPaths`,
+  with `MediaStore` / `LibraryLayout` delegating. That is the THIRD type the AppKit
+  boundary has pulled out of that package, after `InboxLayout` (S2) and `LibraryLocation`
+  (S4a).
+- **Consequently there is still no drain on iOS**, so a capture made on the phone is not
+  visible on the phone until the Mac has ingested it and it has come back. S6's problem;
+  the empty state says so.
+
+Still open after S5, and none of it blocking S6: tier 2, the footprint measurement, a
+shared cross-platform token target (there are now two hand-copied token files on iOS),
+and thumbnails on the switcher's rows (093 § 2 asks for them).
+
 What S4b inherits, all of it recorded rather than discovered later:
 
 - **The platform-pin blocker is gone, and it was only a declaration.** `.iOS("26.0")`
