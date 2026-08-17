@@ -64,6 +64,13 @@ final class LibraryStore {
             // `defaultRoot()` byte for byte, and with one it is the throwaway-library
             // escape hatch tests and seeded verification runs depend on.
             let root = try LibraryLocation.resolvedRoot()
+            // Before the library is opened, because seeding wipes and rewrites the root
+            // and a pool already on the old file would be reading a deleted inode. Debug
+            // builds only, launch-argument gated, and it refuses a non-throwaway root —
+            // see `FixtureLibrary`'s header.
+            #if DEBUG
+            if FixtureLibrary.isRequested { try await FixtureLibrary.seed(at: root) }
+            #endif
             let opened = try BrowseLibrary(root: root)
             library = opened
             collections = try await opened.collectionTree()
