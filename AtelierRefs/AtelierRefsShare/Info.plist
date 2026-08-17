@@ -36,19 +36,38 @@
 			  `harvest` has exactly one "nothing capturable" path and no per-type
 			  branching.
 
-			  **`SupportsWebPage` is now on — that is tier 2** (092 · S4b). It is the key
-			  that makes Safari run `NSExtensionJavaScriptPreprocessingFile` against the
-			  shared page, which is the only way a share sheet sees a DOM, and so the only
-			  way the phone can match the browser extension on the auth-walled sites
-			  (`PageResolver.isAuthWalledHost`) where a cookie-less fetch from the Mac
-			  sees a login wall instead of the post.
+			  **`SupportsWebPage` is OFF, and turning it on is the whole of tier 2**
+			  (092 · S4b). It is the key that makes Safari run
+			  `NSExtensionJavaScriptPreprocessingFile` against the shared page — the only
+			  way a share sheet sees a DOM, and so the only way the phone can match the
+			  browser extension on the auth-walled sites (`PageResolver.isAuthWalledHost`)
+			  where a cookie-less fetch from the Mac sees a login wall instead of the post.
 
-			  `SupportsWebURL` STAYS beside it and is not replaced. The two are different
-			  offers: the web-page rule is what Safari uses, and every other app that
-			  shares a link — Mail, Messages, a native app's share button — offers a URL
-			  and no page. Dropping the URL key to "simplify" would silently narrow the
-			  extension to one app, which is the kind of regression a plist makes
-			  invisible.
+			  It was on for a day and came back off, and the reason is worth keeping in
+			  front of whoever turns it on again (421):
+
+			    · With this key set, Safari sends the page item INSTEAD OF a URL item.
+			      The share then carries exactly one attachment, `com.apple.property-list`,
+			      and `attributedContentText` holds the page TITLE — there is no URL
+			      anywhere.
+			    · On the iOS 26.5 simulator that attachment never loads: `loadItem` and
+			      `loadDataRepresentation` both fail with `NSItemProviderErrorDomain -1000`
+			      over `NSCocoaErrorDomain 4101` — a dead connection to Safari's web
+			      content process, i.e. the script's results were never produced.
+			    · Those two facts together turn a share that used to become a LINK capture
+			      into a lost one. Tier 2 not working is acceptable; tier 2 not working
+			      being worse than tier 1 is not.
+
+			  Everything behind the key is written, tested and inert: `PagePreprocessor.js`
+			  ships in this bundle, `AtelierCapture.PageHarvest` / `PageExtractor` decide
+			  what a snapshot means, `SharedItem.page` drafts it, and
+			  `Tier2ShareUITests` drives the whole path through Safari. Turning both keys
+			  on and running that test on a DEVICE is the remaining step — a simulator's
+			  WebKit is the likeliest explanation for the failure above, and it is not
+			  something a simulator can be asked to prove.
+
+			  `SupportsWebURL` and `SupportsImage` are the tier-1 offers and stay: a link
+			  out of Safari, Mail, Messages or a native app, and a photo.
 
 			  Omitted keys default to zero/false, so `SupportsText`, `SupportsMovie`,
 			  `SupportsFile` and the rest are off by not being here.
@@ -57,22 +76,9 @@
 			<dict>
 				<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
 				<integer>1</integer>
-				<key>NSExtensionActivationSupportsWebPageWithMaxCount</key>
-				<integer>1</integer>
 				<key>NSExtensionActivationSupportsImageWithMaxCount</key>
 				<integer>1</integer>
 			</dict>
-			<!--
-			  The script Safari runs inside the shared page (092 · S4b, tier 2). Named
-			  WITHOUT the `.js` extension, which is what the key expects.
-
-			  It reads the DOM and returns a raw snapshot; every decision about that
-			  snapshot is made in Swift, in `AtelierCapture.PageExtractor`, where tests
-			  reach it without a device. See `PagePreprocessor.js`'s own header for the
-			  split and for what it deliberately does not gather.
-			-->
-			<key>NSExtensionJavaScriptPreprocessingFile</key>
-			<string>PagePreprocessor</string>
 		</dict>
 		<!--
 		  093 · D-c — a principal class, not a storyboard. `Base.lproj/MainInterface.storyboard`

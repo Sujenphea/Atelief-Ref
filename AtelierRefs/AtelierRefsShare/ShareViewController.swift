@@ -125,7 +125,17 @@ final class ShareViewController: UIViewController {
                 // not have offered Atelier at all. It is folded into the same failure
                 // card on 093's own grounds: it is a lost capture, and it leaves
                 // nothing partial.
-                Self.logger.error("share carried no web URL and no image bytes")
+                // **Name what actually arrived.** "Nothing capturable" is a conclusion,
+                // and a conclusion is the one thing a log line cannot be asked to explain
+                // later — the item providers are gone by the time anyone reads it. This
+                // is 403's rule for `InboxWriteError` applied to the path that has no
+                // error to carry: the vocabulary lands in the log or nowhere.
+                Self.logger.error(
+                    """
+                    share carried no web URL and no image bytes — \
+                    items=\(items.count, privacy: .public) \
+                    types=[\(Self.describe(items), privacy: .public)]
+                    """)
                 model.card = .failed
                 return
             }
@@ -252,6 +262,19 @@ final class ShareViewController: UIViewController {
         return ShareCapture.sharedItem(image: image, urlString: urlString, title: title)
     }
 
+    /// Every type identifier the share offered, and the two text fields that sometimes
+    /// carry a URL when no attachment does — the log line above is the only place any of
+    /// it survives.
+    private static func describe(_ items: [NSExtensionItem]) -> String {
+        let types = items
+            .flatMap { $0.attachments ?? [] }
+            .flatMap(\.registeredTypeIdentifiers)
+            .joined(separator: " ")
+        let text = items.compactMap { $0.attributedContentText?.string }.joined(separator: "|")
+        let titles = items.compactMap { $0.attributedTitle?.string }.joined(separator: "|")
+        return "\(types) text=\(text.isEmpty ? "none" : text) title=\(titles.isEmpty ? "none" : titles)"
+    }
+
     // MARK: - Tier 2: the page Safari preprocessed
 
     /// The DOM snapshot `PagePreprocessor.js` returned, or nil when this share did not
@@ -265,18 +288,43 @@ final class ShareViewController: UIViewController {
             for provider in item.attachments ?? [] {
                 guard provider.hasItemConformingToTypeIdentifier(
                     UTType.propertyList.identifier) else { continue }
-                // The classification happens INSIDE the handler, and the continuation is
-                // resumed with the finished ``PageHarvest``. `loadItem` hands back an
-                // `NSSecureCoding` — a reference type that is not `Sendable`, so carrying
-                // it across the resume is a data race the compiler is right to refuse.
-                // The value that crosses is a struct of strings and integers.
+                // **Loaded as DATA, not as an object.** `loadItem(forTypeIdentifier:)`
+                // fails on this attachment with `NSItemProviderErrorDomain -1000, "Cannot
+                // load representation of type com.apple.property-list"` — it negotiates a
+                // class across XPC with Safari's web content process, and that negotiation
+                // is what breaks. `loadDataRepresentation` asks for the bytes, which the
+                // provider vends without vending a type, and `PropertyListSerialization`
+                // turns them back into the dictionary. Found by instrumenting a real
+                // Safari share; nothing below this line would have revealed it.
+                //
+                // The classification also happens INSIDE the handler, so what crosses the
+                // continuation is a struct of strings and integers rather than a
+                // non-`Sendable` reference the compiler is right to refuse.
                 let harvest: PageHarvest? = await withCheckedContinuation { continuation in
-                    provider.loadItem(
-                        forTypeIdentifier: UTType.propertyList.identifier, options: nil
-                    ) { value, _ in
+                    provider.loadDataRepresentation(
+                        forTypeIdentifier: UTType.propertyList.identifier
+                    ) { data, error in
+                        let dictionary = data.flatMap {
+                            try? PropertyListSerialization.propertyList(
+                                from: $0, format: nil) as? [String: Any]
+                        } ?? nil
                         // The attachment is `[resultsKey: <what the script returned>]`.
-                        let results = (value as? [String: Any])?[PageHarvest.resultsKey]
-                        continuation.resume(returning: PageHarvest.harvest(fromResults: results))
+                        let results = dictionary?[PageHarvest.resultsKey]
+                        let harvest = PageHarvest.harvest(fromResults: results)
+                        if harvest == nil {
+                            // A page share that yields no snapshot is the one failure this
+                            // process cannot show and cannot reconstruct later: the item
+                            // providers are gone by the time anyone asks. What the plist
+                            // ACTUALLY held is the only thing that separates "the script
+                            // did not run" from "the script returned something else".
+                            logger.error(
+                                """
+                                page share yielded no harvest — \
+                                keys=[\(dictionary?.keys.joined(separator: " ") ?? "nil", privacy: .public)] \
+                                error=\(error.map { String(describing: $0) } ?? "none", privacy: .public)
+                                """)
+                        }
+                        continuation.resume(returning: harvest)
                     }
                 }
                 if let harvest { return harvest }

@@ -105,11 +105,41 @@ this one earns tests because it CAPS and it INDEXES, and those are rules.
 `verify.sh fast` 10 stages. Both apps and the extension build; `PagePreprocessor.js` is in
 the built `.appex` and the plist carries the key.
 
-**Unverified, and stated rather than glossed:** no share has been made from Safari on a
-device or a simulator. The activation rule, the script's presence and the key are checked
-in the built bundle; what a real page yields is not. Everything downstream of the snapshot
-is under test, so the untested span is the DOM read itself — which is the span a simulator
-share would exercise and nothing else can.
+## The simulator run, and why the switch is off
+
+A UI test was written to close exactly the gap above: it starts a one-page HTTP server
+inside the test process, drives Safari to it, opens the share sheet and picks Atelier, then
+reads the export control's count. Driving Safari cost three runs of learning alone — on iOS
+26 there is no `ShareButton` (Share lives inside `MoreMenuButton`), and the sheet's row is
+labelled by the HOST APP (`AtelierRefsMobile`), not the extension.
+
+It got all the way to the last assertion, and then found something better than a pass:
+
+1. Safari offers Atelier for a web page and launches the extension. The system's own read
+   of the plist shows `NSExtensionJavaScriptPreprocessingFile = PagePreprocessor`.
+2. **The script's results never arrive.** The one attachment
+   (`com.apple.property-list`) fails to load as an object AND as data:
+   `NSItemProviderErrorDomain -1000` over `NSCocoaErrorDomain 4101` — a dead connection to
+   Safari's web content process, which means the results were never produced rather than
+   mis-decoded.
+3. **`SupportsWebPage` removes the URL.** With the key on, Safari sends the page item
+   INSTEAD of a URL item: `items=1 types=[com.apple.property-list] text=A concrete stair
+   title=none`. There is no URL anywhere to fall back to.
+
+(2) and (3) together mean a Safari share that used to become a link capture became a LOST
+one. Tier 2 not working is acceptable; tier 2 not working being **worse than tier 1** is
+not — so both plist keys are off, and everything behind them ships inert: the script is in
+the bundle, the extractors are tested, the `.page` draft is tested, and the UI test is
+skipped with the reason rather than deleted.
+
+**Turning the two keys on and running that test on a DEVICE is what tier 2 owes.** A
+simulator's WebKit is the likeliest explanation for (2), and it is not something a
+simulator can be asked to prove.
+
+Two things the instrumentation left behind permanently, both in 403's spirit — the log is
+where the vocabulary lands, because the item providers are gone by the time anyone asks:
+the "nothing capturable" line now names the types, content text and title that actually
+arrived, and a failed page snapshot logs the plist's keys and the loader's error.
 
 ## Files
 
@@ -125,6 +155,10 @@ share would exercise and nothing else can.
     AtelierRefs/AtelierRefsShare/                reads the results, fetches the media
       ShareViewController.swift
     extension/test/ios-preprocessor.test.js      7 tests, where node runs
+    AtelierRefs/AtelierRefsMobileUITests/        Safari, driven; skipped until the
+      Tier2ShareUITests.swift                    keys are on
+    AtelierRefs/AtelierRefsMobileUITests/        a one-page server for it to read
+      PageFixtureServer.swift
 
 ## Migration notes
 
@@ -132,7 +166,7 @@ None. The wire contract is untouched — a tier-2 capture with bytes is the shap
 share already produced, and one without is the shape a link share already produced. A Mac
 running today's build imports both without knowing tier 2 exists.
 
-**What tier 2 still owes:** a share from Safari on a real device. And the rewrite rules
+**What tier 2 still owes:** the two plist keys, turned on and proven on a real device. And the rewrite rules
 (`name=orig`, `/originals/`) are a second mirror of `base.js` that the host-table gate does
 not cover — they fail softly, yielding a smaller image rather than a lost capture, which is
 why they ship without one, and why one would still be worth adding.
