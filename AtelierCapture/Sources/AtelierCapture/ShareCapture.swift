@@ -62,6 +62,16 @@ public enum SharedItem: Equatable, Sendable {
     /// memory — with the page or media URL they came from when the share carried one
     /// (a photo shared out of Photos carries none).
     case image(bytes: PayloadSource, sourceURL: String? = nil, title: String? = nil)
+    /// A page Safari preprocessed (tier 2): provenance the DOM gave us, and the media
+    /// the extension managed to fetch from it.
+    ///
+    /// `bytes` is nil when the page rendered nothing fetchable — a text-only tweet — or
+    /// when the fetch failed, and those two collapse ON PURPOSE. Both mean the same
+    /// thing to the user (a capture with no picture) and both degrade to the same
+    /// place: a link capture that still carries everything the DOM said. Tier 2 failing
+    /// is tier 1 succeeding, which is the property that makes fetching in the extension
+    /// safe to attempt at all.
+    case page(PageCapture, bytes: PayloadSource? = nil)
 }
 
 /// A capture ready for ``InboxWriter/write(_:payload:id:capturedAt:)`` — the request
@@ -276,6 +286,45 @@ public enum ShareCapture {
                     provenance: provenance(urlString: sourceURL, title: title),
                     collectionId: collectionID),
                 payload: bytes)
+
+        case let .page(capture, bytes):
+            // The provenance is the DOM's either way — that is the whole point of tier 2,
+            // and it is the half that survives when the picture does not.
+            //
+            // With bytes: a byte-backed capture, identical in shape to a photo share, so
+            // the drain, the archive and the Mac need nothing new for it (092 · S6c).
+            // Without: the same link capture tier 1 makes, carrying provenance tier 1
+            // could not have known — the author, the post's own URL, the tweet id.
+            guard let bytes else {
+                let url = capture.provenance.originalURL
+                return ShareCaptureDraft(
+                    request: CaptureRequest(
+                        provenance: capture.provenance,
+                        collectionId: collectionID,
+                        kind: url == nil ? nil : AssetKind.link.rawValue,
+                        payload: url.map { AssetPayload(link: LinkPayload(url: $0)) }),
+                    payload: nil)
+            }
+            return ShareCaptureDraft(
+                request: CaptureRequest(
+                    provenance: capture.provenance, collectionId: collectionID),
+                payload: bytes)
         }
+    }
+
+    /// The URLs to try for a page's media, best first.
+    ///
+    /// Two at most, and the second exists because the first is a REWRITE: `/originals/`
+    /// can 404 on Pinterest and `name=orig` can be refused, while the size the page
+    /// actually rendered is known to load. A caller that gets nothing from either has a
+    /// text-only post or a fetch that failed, and both mean a link capture.
+    ///
+    /// Filtered to http(s) here rather than at the fetch, because a `javascript:` or
+    /// `data:` src reaching a URLSession is a decision, not an accident — and this is the
+    /// side of the boundary that tests can see.
+    public static func mediaCandidates(for capture: PageCapture) -> [String] {
+        [capture.mediaURL, capture.mediaURLFallback]
+            .compactMap { $0 }
+            .filter { isWebScheme(URLComponents(string: $0)?.scheme) }
     }
 }

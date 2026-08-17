@@ -376,4 +376,74 @@ struct ShareCaptureTests {
 
         #expect(try layout.pendingRecordURLs().count == 2)
     }
+
+    // MARK: - Tier 2 (092 · S4b)
+
+    /// With bytes, a preprocessed page is a capture the rest of the program already
+    /// knows: the SAME shape a photo share produces, so the drain, the archive and the
+    /// Mac need nothing new for it. The only difference is that the provenance is richer
+    /// than any share sheet could have supplied.
+    @Test("a fetched page capture is an ordinary byte-backed capture, richly labelled")
+    func pageWithBytesIsAByteCapture() {
+        let capture = PageExtractor.capture(from: PageHarvest(
+            url: "https://x.com/ada/status/5",
+            metas: ["og:description": "a stair"],
+            media: [.init(kind: .image, src: "https://pbs.twimg.com/media/A?name=small",
+                          width: 900, height: 900, articleIndex: 0)]))
+
+        let draft = ShareCapture.draft(for: .page(capture, bytes: .data(Data("x".utf8))))
+
+        #expect(draft.payload != nil)
+        // A byte capture carries no `kind` and no payload — the bytes ARE the content.
+        #expect(draft.request.kind == nil)
+        #expect(draft.request.payload == nil)
+        // …and the base64 field stays nil, as on every inbox capture (092 · S2 · D-d).
+        #expect(draft.request.image == nil)
+        #expect(draft.request.provenance.platform == "twitter")
+        #expect(draft.request.provenance.authorHandle == "@ada")
+        #expect(draft.request.provenance.title == "a stair")
+    }
+
+    /// **The degradation that makes fetching safe to attempt.** A text-only post, a
+    /// media URL that 404s and a phone with no signal all arrive here, and all three
+    /// produce the tier-1 capture — carrying provenance tier 1 could not have known.
+    @Test("a page capture with no bytes degrades to a link that kept its provenance")
+    func pageWithoutBytesDegradesToALink() throws {
+        let capture = PageExtractor.capture(from: PageHarvest(
+            url: "https://x.com/ada/status/5?s=20",
+            metas: ["og:description": "a thought"]))
+
+        let draft = ShareCapture.draft(for: .page(capture))
+
+        #expect(draft.payload == nil)
+        #expect(draft.request.kind == AssetKind.link.rawValue)
+        #expect(draft.request.payload?.link?.url == "https://x.com/ada/status/5")
+        // The half tier 1 never had.
+        #expect(draft.request.provenance.authorHandle == "@ada")
+        #expect(draft.request.provenance.title == "a thought")
+        #expect(draft.request.provenance.platform == "twitter")
+    }
+
+    /// The fetch order, and the filter on it. A `javascript:` src reaching a URLSession
+    /// would be a decision rather than an accident, so it is refused on this side of the
+    /// boundary where a test can see it.
+    @Test("media candidates are best-first, http(s) only")
+    func mediaCandidatesAreFiltered() {
+        let both = PageCapture(
+            provenance: ProvenanceDTO(platform: "pinterest"),
+            mediaURL: "https://i.pinimg.com/originals/a.jpg",
+            mediaURLFallback: "https://i.pinimg.com/736x/a.jpg")
+        #expect(ShareCapture.mediaCandidates(for: both) == [
+            "https://i.pinimg.com/originals/a.jpg", "https://i.pinimg.com/736x/a.jpg",
+        ])
+
+        let hostile = PageCapture(
+            provenance: ProvenanceDTO(platform: "web"),
+            mediaURL: "javascript:alert(1)",
+            mediaURLFallback: "data:image/png;base64,AAAA")
+        #expect(ShareCapture.mediaCandidates(for: hostile).isEmpty)
+
+        #expect(ShareCapture.mediaCandidates(
+            for: PageCapture(provenance: ProvenanceDTO(platform: "web"))).isEmpty)
+    }
 }
