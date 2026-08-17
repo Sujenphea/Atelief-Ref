@@ -64,6 +64,12 @@ that makes attempting a fetch here safe rather than reckless.
   tainted for cross-origin video (so it fails on exactly these sites), and a data-URL of a
   decoded frame is an image's worth of bytes crossing XPC. The poster is harvested instead,
   so a video post still yields a picture.
+**One ordering worth stating.** When a share carries page results AND image bytes — a
+long-pressed image in Safari — the provenance is the DOM's and the picture is the bytes
+that arrived. Re-fetching "the largest image on the page" would hand the user a different
+picture than the one they pressed. It is tier 1's own rule (image bytes beat a URL) applied
+one level up.
+
 - **No `mediaUrls[]`.** The extension carries up to four photos of a tweet as payload
   references. The phone fetches one file into one sidecar (092 · S2), so a second URL would
   be a promise nothing keeps.

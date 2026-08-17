@@ -210,14 +210,6 @@ final class ShareViewController: UIViewController {
     /// big to accept — refused before it is copied, and rendered by `capture()`'s
     /// existing failure card.
     private func harvest(_ items: [NSExtensionItem]) async throws -> SharedItem? {
-        // Tier 2 first: when Safari ran the preprocessing script, the page's own DOM
-        // beats anything the share sheet's other attachments can say about it — a URL
-        // and a title, where this has the author, the post's canonical URL and the
-        // picture. Only Safari supplies it; every other sharing app falls through.
-        if let harvest = await Self.preprocessedPage(in: items) {
-            return await Self.pageItem(for: PageExtractor.capture(from: harvest))
-        }
-
         var image: PayloadSource?
         var urlString: String?
         // Only the sharing app's own title. Deliberately NOT `attributedContentText`,
@@ -238,6 +230,23 @@ final class ShareViewController: UIViewController {
                         await Self.loadURL(from: provider))
                 }
             }
+        }
+
+        // **Tier 2, and it takes the bytes with it.** When Safari ran the preprocessing
+        // script, the page's own DOM beats anything the other attachments can say about
+        // it — the author, the post's canonical URL, the picture — so the provenance is
+        // the harvest's.
+        //
+        // But bytes that ARRIVED with the share still win as the picture, and that
+        // ordering matters: long-pressing an image in Safari shares that image, and
+        // re-fetching "the largest image on the page" instead would hand the user a
+        // different picture than the one they pressed. This is tier 1's own rule (image
+        // bytes beat a URL) applied one level up — and when there are none, the media URL
+        // the extractor found is fetched instead.
+        if let harvest = await Self.preprocessedPage(in: items) {
+            let capture = PageExtractor.capture(from: harvest)
+            if let image { return .page(capture, bytes: image) }
+            return await Self.pageItem(for: capture)
         }
 
         return ShareCapture.sharedItem(image: image, urlString: urlString, title: title)
