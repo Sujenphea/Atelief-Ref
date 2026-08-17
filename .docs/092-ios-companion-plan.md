@@ -888,10 +888,16 @@ extension's memory and launch measurement (gate 2 below). It needs Instruments a
 to a **physical device** with a large share, which no simulator, no CI job and no unit
 test substitutes for. It is the user's to run.
 
-**What is left of S4b** is two things, and neither blocks S5: **tier 2** (the
+~~**What is left of S4b** is two things, and neither blocks S5: **tier 2** (the
 Safari `NSExtensionJavaScriptPreprocessingFile` path and the smallest useful subset of
-`extension/src/extractors/`), and **the ~120 MB footprint measurement** with Instruments
-and a large share — gate 2, still a measurement and not an assertion. The third item, the
+`extension/src/extractors/`),~~ **tier 2 landed 2026-08-18**
+([421](../.change-log/421-the-page-safari-was-already-signed-into.md)) — the preprocessing
+script reads the DOM and decides nothing, `AtelierCapture.PageExtractor` decides everything
+and is tested on the host, and the extension fetches the scraped media URL so a tier-2
+capture is the byte-backed shape everything downstream already handles. Its own remaining
+gap is a share made from Safari on a real device; everything downstream of the DOM read is
+under test. What is left of S4b is therefore **the ~120 MB footprint measurement** with
+Instruments and a large share — gate 2, still a measurement and not an assertion. The third item, the
 two app-side seams S3 deferred, was **done on 2026-08-15 by R3**
 ([407](../.change-log/407-the-drain-nobody-called.md)): the drain runs at launch and on
 activation, and a drained share refreshes the live UI through the same path the capture
