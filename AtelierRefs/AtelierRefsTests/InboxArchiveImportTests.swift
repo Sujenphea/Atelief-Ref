@@ -305,14 +305,11 @@ struct InboxArchiveImportTests {
         #expect(second.newAssets == 0)
         #expect(try await rig.macAssetCount() == 3)
 
-        // Two containers, not one clobbered — the destination rule. The SECOND one's
-        // name is asserted only as "different", deliberately: `Validation`'s Finder-style
-        // disambiguation strips a trailing integer before numbering, so this actually
-        // arrives as "Atelier 2026-08-17 2" — the export's time of day read as a copy
-        // index and thrown away. Cosmetic, and a property of a core naming rule (043 ·
-        // 2c) that every collection in the app shares, so pinning the wart here would
-        // make S6c the thing that has to change when the rule is fixed.
-        #expect(second.destinationName != first.destinationName)
+        // Two containers, not one clobbered — the destination rule. The second keeps the
+        // export's time of day: `Validation.uniqueCollectionName` used to read the
+        // trailing "2005" as a copy index and hand back "Atelier 2026-08-17 2", which is
+        // how S6c found that rule (419).
+        #expect(second.destinationName == "Atelier 2026-08-17 2005 2")
         #expect(try await rig.destination(first.destinationName) != nil)
         #expect(try await rig.destination(second.destinationName) != nil)
     }
