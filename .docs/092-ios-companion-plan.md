@@ -1017,10 +1017,32 @@ What S4b inherits, all of it recorded rather than discovered later:
    registered against the App ID, both iOS targets carry an entitlements file fed by
    `$(ATELIER_APP_GROUP)`, and the container resolves on a simulator on both
    configurations. It blocked S4b, not S0–S4a, and it no longer blocks anything.
-2. **Extension memory ceiling is not contractual.** ~120 MB is observed, not
-   documented. S2's design (write bytes, decode nothing) is what makes the number
-   irrelevant; do not let a "small optimization" pull decoding back into the
-   extension.
+2. ~~**Extension memory ceiling is not contractual.**~~ **Measured on a device
+   (2026-08-18)** ([423](../.change-log/423-the-extension-measures-itself.md)). The
+   ceiling is real and exact — `phys_footprint` + `os_proc_available_memory` sum to
+   **120.0 MB**, so "~120 MB, observed not documented" was right. What the extension
+   spends against it:
+
+   | share | payload | footprint |
+   |---|---|---|
+   | link capture | 0 | 6.2 MB |
+   | photo | 16,337,697 B | 6.4 MB |
+
+   **16.3 MB of payload costs 0.2 MB of memory.** In memory that image would be ~22 MB;
+   it is 6.4, which is only possible if the bytes move as file copies —
+   `loadFileRepresentation` → `adopt` → `write` — and never become a `Data` or a decoded
+   `UIImage`. S2's design (write bytes, decode nothing) is therefore not just intact but
+   demonstrated, and the ~114 MB of headroom is why the ceiling is irrelevant rather than
+   merely survivable.
+
+   The largest payload measured is 16.3 MB against `InboxWriter.maximumPayloadBytes` of
+   64 MiB, so the cap itself is not measured — the extrapolation rests on the mechanism
+   (a file copy does not scale with size) rather than on a reading at the cap.
+
+   The risk this gate exists for is unchanged and now has an instrument: do not let a
+   "small optimization" pull decoding back into the extension. The `captured` line
+   carries `bytes=` and `footprint=` on every share, so a regression shows up in the log
+   without anyone running a profiler.
 3. **091 open question 1 — MAIN-world content scripts in iOS Safari — is not on
    this path.** It gates the tier-3 Safari Web Extension only. S0–S6 do not depend
    on the answer, which is why the plan does not wait for it.

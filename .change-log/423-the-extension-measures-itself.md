@@ -66,6 +66,28 @@ profiling session cannot.
 ## Verification
 
 `Tier2ShareUITests` on the simulator — **TEST SUCCEEDED**, with a record and its payload
-written. The numbers themselves mean nothing on a simulator, which has no jetsam ceiling
-and no memory pressure; the measurement is a device exercise, and the gate stays open
-until a device produces it.
+written. The numbers mean nothing there: a simulator has no jetsam ceiling and no memory
+pressure. The measurement is a device exercise, and a device produced it.
+
+**Gate 2, measured (device, Release, debugger detached):**
+
+| share | payload | footprint | headroom |
+|---|---|---|---|
+| link capture | 0 | 6.2 MB | 113.8 MB |
+| photo | 16,337,697 B | 6.4 MB | 113.6 MB |
+
+Two readings worth stating separately.
+
+**The ceiling is exactly 120.0 MB.** `footprint + headroom` sums to it on every share.
+"~120 MB, observed not documented" has been the plan's phrasing since 395; it is right,
+and it no longer has to be hedged.
+
+**16.3 MB of payload costs 0.2 MB of memory.** That image in memory would be ~22 MB. The
+80:1 ratio between payload and footprint is only possible if the bytes never enter this
+process's address space — file copies from `loadFileRepresentation` through `adopt` to
+`write`. S2's "write bytes, decode nothing" is demonstrated rather than asserted, which is
+what gate 2 asked for.
+
+Not measured: the 64 MiB cap itself. The largest payload seen is 16.3 MB, and the claim
+that the footprint stays flat to the cap rests on the mechanism — a file copy does not
+scale with the file — rather than on a reading at it.
