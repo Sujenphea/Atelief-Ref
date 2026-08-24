@@ -131,6 +131,17 @@ final class ShareViewController: UIViewController {
     /// from the silent-share failure this whole design exists to avoid.
     private func capture() async {
         let items = (extensionContext?.inputItems as? [NSExtensionItem]) ?? []
+        // **What arrived, on every share, not only on the ones that fail.** This string
+        // was already built for the "nothing capturable" path, and keeping it there meant
+        // that the shares which SUCCEED — but succeed differently than expected, a link
+        // where a page was wanted, bytes with no URL beside them — said nothing at all.
+        // Three separate investigations today ended at "which items did Safari send?",
+        // and the answer existed each time and was thrown away. It is one line.
+        Self.logger.info(
+            """
+            share arrived — items=\(items.count, privacy: .public) \
+            [\(Self.describe(items), privacy: .public)]
+            """)
 
         do {
             guard let shared = try await harvest(items) else {
