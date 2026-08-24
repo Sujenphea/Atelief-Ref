@@ -39,28 +39,19 @@ final class Tier2ShareUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    /// **This test cannot pass until tier 2 is switched on, and tier 2 is off.**
+    /// **The one span nothing else can reach, and it only exists on a device.**
     ///
-    /// `NSExtensionActivationSupportsWebPageWithMaxCount` and
-    /// `NSExtensionJavaScriptPreprocessingFile` are commented out of the extension's
-    /// Info.plist — see there for why, at length. The short version: with the keys on,
-    /// Safari sends the page item INSTEAD of a URL, this simulator never produces the
-    /// script's results (`NSItemProviderErrorDomain -1000` over a dead connection to the
-    /// web content process), and the two together made a share that used to become a link
-    /// capture into a lost one.
+    /// Tier 2's keys are on in the extension's Info.plist. Everything else about it is
+    /// covered by faster tests; this is the only one that puts a real Safari on a real
+    /// page and asks whether the snapshot survives the trip into the extension.
     ///
-    /// So it is skipped rather than deleted, and skipped rather than left red: a red test
-    /// nobody can fix is noise, and a deleted one takes the Safari driving, the fixture
-    /// server and the share-sheet anchors with it — all of which cost real runs to learn
-    /// (Safari has no `ShareButton` on iOS 26; the sheet row is labelled by the HOST APP).
-    /// Turn the keys on, delete the `XCTSkip`, and this is the device check tier 2 owes.
+    /// It drives another app, so it is written for that: every step attaches a
+    /// screenshot, the share sheet is found by several anchors rather than one, and the
+    /// assertion is a COUNT the app already displays rather than anything reached into.
+    /// Two anchors here cost real runs to learn — Safari has no `ShareButton` on iOS 26,
+    /// and the sheet's row is labelled by the HOST APP, not the extension.
+    @MainActor
     func testASafariShareLandsACaptureInTheInbox() throws {
-        throw XCTSkip(
-            "tier 2 is off in the extension's Info.plist — see 421 and the plist's own "
-                + "comment; turn both keys on to run this against a device")
-    }
-
-    func deviceOnly_testASafariShareLandsACaptureInTheInbox() throws {
         let server = try PageFixtureServer(html: Self.fixtureHTML(port:), image: Self.jpeg())
         try server.start()
         defer { server.stop() }
@@ -85,6 +76,7 @@ final class Tier2ShareUITests: XCTestCase {
 
     // MARK: - Safari
 
+    @MainActor
     private func openPage(_ url: String, in safari: XCUIApplication) {
         // The address field is a text field in the toolbar; its identifier has moved
         // between releases, so it is found by either of the two it has had.
@@ -113,6 +105,7 @@ final class Tier2ShareUITests: XCTestCase {
     /// `MoreMenuButton`, and there is no `ShareButton` at all — a fact this test learned
     /// by dumping Safari's accessibility tree, and the reason it tries the direct button
     /// first and then the menu rather than assuming either.
+    @MainActor
     private func shareToAtelier(from safari: XCUIApplication) {
         let direct = safari.buttons["ShareButton"]
         if direct.exists {
@@ -160,9 +153,14 @@ final class Tier2ShareUITests: XCTestCase {
 
     /// What the export control says, or 0 when it is not there (an empty inbox hides it).
     ///
+    /// `@MainActor` because `XCUIElement.label` is, and this reads one. The class is not
+    /// annotated instead: `XCTestCase.setUp()` is nonisolated, and a main-actor class
+    /// cannot override it.
+    ///
     /// The app is launched WITHOUT the fixture seeder, against the real library root — see
     /// the file header. Terminated afterwards so the next read is a fresh count rather
     /// than a cached view.
+    @MainActor
     private func pendingCount() -> Int {
         let app = XCUIApplication()
         app.launch()
@@ -212,6 +210,8 @@ final class Tier2ShareUITests: XCTestCase {
         }
     }
 
+    /// `@MainActor` for `screenshot()`, which is — see ``pendingCount()``.
+    @MainActor
     private func attach(_ app: XCUIApplication, named name: String) {
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = name

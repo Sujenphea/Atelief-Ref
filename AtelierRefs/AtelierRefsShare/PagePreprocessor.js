@@ -26,6 +26,24 @@
 // very long feed a late image can fall off the end — acceptable, because tier 2 is for
 // sharing a POST page, where the media is near the top and few.
 //
+// **Never emit `null` — omit the key.** This is not style, it is the boundary's own rule,
+// and it cost a day to find. Safari vends this script's return value as a
+// `com.apple.property-list` attachment, and a JS `null` becomes `NSNull`, which is not a
+// valid property-list value. One null anywhere in the snapshot and Safari cannot produce
+// the representation at all: every `loadItem` and `loadDataRepresentation` fails with
+// `NSItemProviderErrorDomain -1000` ("Cannot load representation of type
+// com.apple.property-list") over an `NSCocoaErrorDomain 4101`, and the share is LOST —
+// because a page share carries no URL item to fall back to. It reads as a transport
+// failure and is nothing of the kind.
+//
+// It also fails INTERMITTENTLY, which is what made it expensive: a page whose images all
+// carry `alt` text and which has a canonical link produces no nulls and works, while the
+// next page over has one image without `alt` and cannot be shared at all.
+//
+// Every field of `RawPageSignals` is optional, so an absent key decodes to `nil` — which
+// is the same "one kind of absent" `text()` was written for, expressed in the one way this
+// boundary accepts. `put` is the only way a value should reach a snapshot object.
+//
 // **No canvas.** The browser extension rasterizes a video's current frame, because a video
 // post has no still on the server. Not here: a share sheet is already on screen and
 // waiting, `canvas` is tainted for cross-origin video (so it fails on exactly these
@@ -39,11 +57,19 @@ var ExtensionPreprocessingJS = new (function PagePreprocessor() {
   /** Enough for any post page; a bound rather than a judgement. */
   var MAX_IMAGES = 80;
 
-  /** A string, or null — never "" and never undefined, so Swift sees one kind of absent. */
+  /** A string, or null — never "" and never undefined. Null never reaches the snapshot:
+   * `put` drops it, and the key is simply absent. See the header. */
   function text(value) {
     if (typeof value !== "string") return null;
     var trimmed = value.trim();
     return trimmed === "" ? null : trimmed;
+  }
+
+  /** Assign only what exists. The one way a value reaches a snapshot object — a `null`
+   * that gets through is a share that cannot be loaded at all (see the header). */
+  function put(target, key, value) {
+    if (value !== null && value !== undefined) target[key] = value;
+    return target;
   }
 
   /** Every `<meta property|name>` pair, in document order. Duplicates are kept: which
@@ -52,10 +78,10 @@ var ExtensionPreprocessingJS = new (function PagePreprocessor() {
     var out = [];
     var nodes = document.querySelectorAll("meta[property], meta[name]");
     for (var i = 0; i < nodes.length; i += 1) {
-      out.push({
-        key: nodes[i].getAttribute("property") || nodes[i].getAttribute("name"),
-        content: nodes[i].getAttribute("content"),
-      });
+      var meta = {};
+      put(meta, "key", nodes[i].getAttribute("property") || nodes[i].getAttribute("name"));
+      put(meta, "content", nodes[i].getAttribute("content"));
+      out.push(meta);
     }
     return out;
   }
@@ -89,13 +115,10 @@ var ExtensionPreprocessingJS = new (function PagePreprocessor() {
       var width = img.naturalWidth || img.width || 0;
       var height = img.naturalHeight || img.height || 0;
       if (width < MIN_SIDE || height < MIN_SIDE) continue;
-      out.push({
-        src: src,
-        width: width,
-        height: height,
-        alt: text(img.alt),
-        articleIndex: indexOf(img),
-      });
+      out.push(
+        put(
+          { src: src, width: width, height: height, articleIndex: indexOf(img) },
+          "alt", text(img.alt)));
     }
     return out;
   }
@@ -109,13 +132,14 @@ var ExtensionPreprocessingJS = new (function PagePreprocessor() {
       var poster = text(video.poster);
       var src = text(video.currentSrc || video.src);
       if (!poster && !src) continue;
-      out.push({
-        poster: poster,
-        src: src,
+      var entry = {
         width: video.videoWidth || 0,
         height: video.videoHeight || 0,
         articleIndex: indexOf(video),
-      });
+      };
+      put(entry, "poster", poster);
+      put(entry, "src", src);
+      out.push(entry);
     }
     return out;
   }
@@ -134,16 +158,13 @@ var ExtensionPreprocessingJS = new (function PagePreprocessor() {
     // with nothing at all is refused in Swift and becomes a tier-1 link.
     var snapshot;
     try {
-      snapshot = {
-        url: text(document.location.href),
-        title: text(document.title),
-        canonical: canonical(),
-        metas: metas(),
-        images: images(indexOf),
-        videos: videos(indexOf),
-      };
+      snapshot = { metas: metas(), images: images(indexOf), videos: videos(indexOf) };
+      put(snapshot, "url", text(document.location.href));
+      put(snapshot, "title", text(document.title));
+      put(snapshot, "canonical", canonical());
     } catch (error) {
-      snapshot = { url: text(document.location.href), error: String(error) };
+      snapshot = { error: String(error) };
+      put(snapshot, "url", text(document.location.href));
     }
     parameters.completionFunction(snapshot);
   };

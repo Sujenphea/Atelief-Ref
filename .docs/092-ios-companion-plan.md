@@ -931,6 +931,18 @@ shared cross-platform token target (there are now two hand-copied token files on
 and thumbnails on the switcher's rows (093 § 2 asks for them — done since, by
 [410](../.change-log/410-a-cover-almost-nobody-set.md)).
 
+**Tier 2 has landed (2026-08-18).** `SupportsWebPage` and the preprocessing script are
+ON, `Tier2ShareUITests` passes, and a Safari share lands a capture built from the page's
+own DOM with the picture fetched by the phone. 421 shipped it switched OFF on the belief
+that Safari's page item could not be loaded; that belief was wrong. The item could not be
+loaded because the script returned JS `null`, which becomes `NSNull`, which is not a valid
+property-list value — so Safari could not produce the representation at all, on device or
+simulator, for any page holding one absent field. Absent KEYS fixed it
+([422](../.change-log/422-the-null-that-could-not-cross.md)), which is what
+`RawPageSignals`, being all-optional, always wanted. What remains is the auth-walled case
+on hardware — the one thing tier 2 exists for and the one thing a loopback fixture cannot
+stand in for.
+
 **S6 has landed (2026-08-17).** Three slices:
 
 | Slice | What | Change log |

@@ -67,6 +67,16 @@ final class ShareViewController: UIViewController {
 
     private let model = ShareCardModel()
 
+    /// The page snapshot, being loaded from the moment this process wakes up.
+    ///
+    /// **Started before anything else, on purpose.** The page item is vended across XPC
+    /// by Safari's web content process, and `NSItemProviderErrorDomain -1000` over
+    /// `NSCocoaErrorDomain 4101` is that connection going away underneath us. Everything
+    /// in `viewDidLoad` below — the appearance, the hosting controller, the SwiftUI tree
+    /// — is work this process does while that connection ages, so the load is kicked off
+    /// first and awaited later, in `harvest`, where its result is actually needed.
+    private var pageSnapshot: Task<PageHarvest?, Never>?
+
     /// `static` because the item-provider loading below is static too — it holds no
     /// controller state — and a log line from inside a completion handler is exactly
     /// where a share that went wrong is diagnosed.
@@ -84,6 +94,10 @@ final class ShareViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+
+        // First, before the UI — see `pageSnapshot`.
+        let inputItems = (extensionContext?.inputItems as? [NSExtensionItem]) ?? []
+        pageSnapshot = Task { await Self.preprocessedPage(in: inputItems) }
 
         // 093 § 6: the extension is its own bundle and inherits nothing from the host
         // app's appearance, so it commits to dark here as well as in its Info.plist.
@@ -253,8 +267,27 @@ final class ShareViewController: UIViewController {
         // different picture than the one they pressed. This is tier 1's own rule (image
         // bytes beat a URL) applied one level up — and when there are none, the media URL
         // the extractor found is fetched instead.
-        if let harvest = await Self.preprocessedPage(in: items) {
+        if let harvest = await pageSnapshot?.value {
             let capture = PageExtractor.capture(from: harvest)
+            // **`payload=none` has three causes that look identical from outside.** The
+            // page had no picture; the page had one and the extractor did not choose it;
+            // the extractor chose one and the fetch failed. Only the third logs anything
+            // today, and by the time anyone asks the DOM, the item providers and this
+            // process are all gone — 403's rule again: the vocabulary lands here or
+            // nowhere. `articles=` earns its place because the twitter branch scopes to
+            // the focal `<article>`, and a scoping that picks wrong is indistinguishable
+            // from a page with no media at every later point.
+            let kinds = Set(harvest.media.map(\.kind.rawValue)).sorted()
+            let articles = Set(harvest.media.compactMap(\.articleIndex)).sorted()
+            Self.logger.info(
+                """
+                page harvest — media=\(harvest.media.count, privacy: .public) \
+                kinds=[\(kinds.joined(separator: " "), privacy: .public)] \
+                articles=[\(articles.map(String.init).joined(separator: " "), privacy: .public)] \
+                metas=\(harvest.metas.count, privacy: .public) \
+                chose=\(capture.mediaURL ?? "none", privacy: .public) \
+                fallback=\(capture.mediaURLFallback ?? "none", privacy: .public)
+                """)
             if let image { return .page(capture, bytes: image) }
             return await Self.pageItem(for: capture)
         }
@@ -283,54 +316,148 @@ final class ShareViewController: UIViewController {
     /// Safari puts it in a `public.propertylist` attachment, under the results key, and
     /// only when the activation rule asked for a web page — so its absence is the
     /// ordinary case (a photo, a link out of Messages) and not a failure.
-    private static func preprocessedPage(in items: [NSExtensionItem]) async -> PageHarvest? {
+    private nonisolated static func preprocessedPage(
+        in items: [NSExtensionItem]
+    ) async -> PageHarvest? {
         for item in items {
             for provider in item.attachments ?? [] {
                 guard provider.hasItemConformingToTypeIdentifier(
                     UTType.propertyList.identifier) else { continue }
-                // **Loaded as DATA, not as an object.** `loadItem(forTypeIdentifier:)`
-                // fails on this attachment with `NSItemProviderErrorDomain -1000, "Cannot
-                // load representation of type com.apple.property-list"` — it negotiates a
-                // class across XPC with Safari's web content process, and that negotiation
-                // is what breaks. `loadDataRepresentation` asks for the bytes, which the
-                // provider vends without vending a type, and `PropertyListSerialization`
-                // turns them back into the dictionary. Found by instrumenting a real
-                // Safari share; nothing below this line would have revealed it.
-                //
-                // The classification also happens INSIDE the handler, so what crosses the
-                // continuation is a struct of strings and integers rather than a
-                // non-`Sendable` reference the compiler is right to refuse.
-                let harvest: PageHarvest? = await withCheckedContinuation { continuation in
-                    provider.loadDataRepresentation(
-                        forTypeIdentifier: UTType.propertyList.identifier
-                    ) { data, error in
-                        let dictionary = data.flatMap {
-                            try? PropertyListSerialization.propertyList(
-                                from: $0, format: nil) as? [String: Any]
-                        } ?? nil
-                        // The attachment is `[resultsKey: <what the script returned>]`.
-                        let results = dictionary?[PageHarvest.resultsKey]
-                        let harvest = PageHarvest.harvest(fromResults: results)
-                        if harvest == nil {
-                            // A page share that yields no snapshot is the one failure this
-                            // process cannot show and cannot reconstruct later: the item
-                            // providers are gone by the time anyone asks. What the plist
-                            // ACTUALLY held is the only thing that separates "the script
-                            // did not run" from "the script returned something else".
-                            logger.error(
-                                """
-                                page share yielded no harvest — \
-                                keys=[\(dictionary?.keys.joined(separator: " ") ?? "nil", privacy: .public)] \
-                                error=\(error.map { String(describing: $0) } ?? "none", privacy: .public)
-                                """)
-                        }
-                        continuation.resume(returning: harvest)
+
+                let started = Date()
+                // **Two routes, because they fail differently.** `loadDataRepresentation`
+                // asks for bytes and needs no class negotiation across XPC. `loadItem` is
+                // the documented call and hands back the dictionary already unarchived,
+                // but it negotiates a class with Safari's web content process — and that
+                // negotiation is what -1000 reports failing. Neither is reliably the
+                // better one, so the cheap route is tried first, the documented one
+                // second, and the log says which answered.
+                var route = "data"
+                var load = await loadPage(from: provider, asData: true)
+                if load.harvest == nil {
+                    let viaItem = await loadPage(from: provider, asData: false)
+                    if viaItem.harvest != nil {
+                        load = viaItem
+                        route = "item"
+                    } else {
+                        route = "data+item"
+                        load = PageLoad(
+                            harvest: nil,
+                            keys: "\(load.keys) | \(viaItem.keys)",
+                            error: "\(load.error) | \(viaItem.error)")
                     }
                 }
-                if let harvest { return harvest }
+                let ms = Int(Date().timeIntervalSince(started) * 1000)
+
+                // **The elapsed time is the diagnostic, not decoration.** A load that
+                // fails in single-digit milliseconds failed because the connection was
+                // already gone before this process asked; one that fails after seconds
+                // failed because Safari was still waiting on the script. Those have
+                // opposite fixes and are otherwise indistinguishable — the error reads
+                // -1000 either way.
+                let line = "page item — route=\(route) ms=\(ms) "
+                    + "keys=[\(load.keys)] error=\(load.error)"
+                if load.harvest == nil {
+                    logger.error("\(line, privacy: .public)")
+                } else {
+                    logger.info("\(line, privacy: .public)")
+                }
+
+                if let harvest = load.harvest { return harvest }
             }
         }
         return nil
+    }
+
+    /// What one attempt at the page item produced.
+    ///
+    /// `Sendable` so it can cross the continuation below — an `NSItemProvider`'s own
+    /// result cannot, which is why every attempt classifies inside its handler.
+    private struct PageLoad: Sendable {
+        var harvest: PageHarvest?
+        var keys: String
+        var error: String
+    }
+
+    private nonisolated static func loadPage(
+        from provider: NSItemProvider, asData: Bool
+    ) async -> PageLoad {
+        await withCheckedContinuation { continuation in
+            let identifier = UTType.propertyList.identifier
+            if asData {
+                provider.loadDataRepresentation(
+                    forTypeIdentifier: identifier
+                ) { data, error in
+                    continuation.resume(
+                        returning: Self.pageLoad(
+                            dictionary: data.flatMap(Self.resultsDictionary(from:)),
+                            error: error))
+                }
+            } else {
+                provider.loadItem(forTypeIdentifier: identifier, options: nil) { item, error in
+                    continuation.resume(
+                        returning: Self.pageLoad(
+                            dictionary: item as? [String: Any], error: error))
+                }
+            }
+        }
+    }
+
+    private nonisolated static func pageLoad(
+        dictionary: [String: Any]?, error: Error?
+    ) -> PageLoad {
+        let results = dictionary?[PageHarvest.resultsKey]
+        let harvest = PageHarvest.harvest(fromResults: results)
+        return PageLoad(
+            harvest: harvest,
+            keys: (dictionary?.keys.sorted().joined(separator: " ") ?? "nil")
+                + (harvest == nil ? " → \(diagnose(results))" : ""),
+            error: error.map { String(describing: $0) } ?? "none")
+    }
+
+    /// Why a loaded results dictionary produced no harvest.
+    ///
+    /// `PageHarvest.harvest(fromResults:)` is four `guard`s and one optional return, and it
+    /// reports which one refused by returning nil — a shape that is right for a pure
+    /// function tested over a hundred inputs, and useless in the one process where the
+    /// input cannot be reproduced. This walks the same steps and names the one that failed.
+    private nonisolated static func diagnose(_ results: Any?) -> String {
+        guard let results else { return "results absent" }
+        guard let dictionary = results as? [String: Any] else {
+            return "results is \(type(of: results)), not a dictionary"
+        }
+        let keys = dictionary.keys.sorted().joined(separator: " ")
+        guard JSONSerialization.isValidJSONObject(dictionary) else {
+            return "results not JSON-valid keys=[\(keys)]"
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: dictionary) else {
+            return "results not JSON-encodable keys=[\(keys)]"
+        }
+        do {
+            let raw = try JSONDecoder().decode(RawPageSignals.self, from: data)
+            return "decoded keys=[\(keys)] url=\(raw.url ?? "nil") "
+                + "images=\(raw.images?.count ?? -1) metas=\(raw.metas?.count ?? -1)"
+        } catch {
+            return "decode failed keys=[\(keys)] \(error)"
+        }
+    }
+
+    /// `nonisolated` for the same reason ``logger`` is: this runs on whatever thread
+    /// `NSItemProvider` calls back on, and it touches nothing but its argument.
+    private nonisolated static func resultsDictionary(from data: Data) -> [String: Any]? {
+        if let plain = try? PropertyListSerialization.propertyList(from: data, format: nil)
+            as? [String: Any], plain["$archiver"] == nil {
+            return plain
+        }
+        // The archive holds a dictionary of strings, numbers and nested collections —
+        // what a JSON-ish value from JavaScript becomes. Naming the classes is required:
+        // `unarchivedObject` keeps secure coding on, and an unbounded unarchive of data
+        // from another process is not something to do for convenience.
+        let classes = [
+            NSDictionary.self, NSArray.self, NSString.self, NSNumber.self, NSNull.self,
+        ]
+        let object = try? NSKeyedUnarchiver.unarchivedObject(ofClasses: classes, from: data)
+        return object as? [String: Any]
     }
 
     /// A page capture with its media fetched, or without it.

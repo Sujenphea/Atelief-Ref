@@ -36,35 +36,30 @@
 			  `harvest` has exactly one "nothing capturable" path and no per-type
 			  branching.
 
-			  **`SupportsWebPage` is OFF, and turning it on is the whole of tier 2**
-			  (092 · S4b). It is the key that makes Safari run
-			  `NSExtensionJavaScriptPreprocessingFile` against the shared page — the only
-			  way a share sheet sees a DOM, and so the only way the phone can match the
-			  browser extension on the auth-walled sites (`PageResolver.isAuthWalledHost`)
-			  where a cookie-less fetch from the Mac sees a login wall instead of the post.
+			  **`SupportsWebPage` is ON, and it is what tier 2 IS** (092 · S4b). It is the
+			  key that makes Safari run `NSExtensionJavaScriptPreprocessingFile` against the
+			  shared page — the only way a share sheet sees a DOM, and so the only way the
+			  phone can match the browser extension on the auth-walled sites
+			  (`PageResolver.isAuthWalledHost`) where a cookie-less fetch from the Mac sees a
+			  login wall instead of the post.
 
-			  It was on for a day and came back off, and the reason is worth keeping in
-			  front of whoever turns it on again (421):
+			  It was on for a day, came off, and is on again for a device check. What sent it
+			  off stays written down, because it is what to look for if it goes wrong (421):
 
 			    · With this key set, Safari sends the page item INSTEAD OF a URL item.
 			      The share then carries exactly one attachment, `com.apple.property-list`,
 			      and `attributedContentText` holds the page TITLE — there is no URL
-			      anywhere.
-			    · On the iOS 26.5 simulator that attachment never loads: `loadItem` and
+			      anywhere. So a snapshot that fails does not degrade to a link capture; it
+			      loses a capture tier 1 would have kept.
+			    · On the iOS 26.5 SIMULATOR that attachment never loads: `loadItem` and
 			      `loadDataRepresentation` both fail with `NSItemProviderErrorDomain -1000`
-			      over `NSCocoaErrorDomain 4101` — a dead connection to Safari's web
-			      content process, i.e. the script's results were never produced.
-			    · Those two facts together turn a share that used to become a LINK capture
-			      into a lost one. Tier 2 not working is acceptable; tier 2 not working
-			      being worse than tier 1 is not.
+			      over `NSCocoaErrorDomain 4101` — a dead connection to Safari's web content
+			      process, i.e. the script's results were never produced. A simulator's WebKit
+			      is the likeliest explanation, and it is not something a simulator can be
+			      asked to prove either way.
 
-			  Everything behind the key is written, tested and inert: `PagePreprocessor.js`
-			  ships in this bundle, `AtelierCapture.PageHarvest` / `PageExtractor` decide
-			  what a snapshot means, `SharedItem.page` drafts it, and
-			  `Tier2ShareUITests` drives the whole path through Safari. Turning both keys
-			  on and running that test on a DEVICE is the remaining step — a simulator's
-			  WebKit is the likeliest explanation for the failure above, and it is not
-			  something a simulator can be asked to prove.
+			  If a device shows the same thing, both keys come back out: tier 2 not working is
+			  acceptable, tier 2 being worse than tier 1 is not.
 
 			  `SupportsWebURL` and `SupportsImage` are the tier-1 offers and stay: a link
 			  out of Safari, Mail, Messages or a native app, and a photo.
@@ -78,7 +73,18 @@
 				<integer>1</integer>
 				<key>NSExtensionActivationSupportsImageWithMaxCount</key>
 				<integer>1</integer>
+				<key>NSExtensionActivationSupportsWebPageWithMaxCount</key>
+				<integer>1</integer>
 			</dict>
+			<!--
+			  The script Safari runs INSIDE the shared page, whose return value arrives as
+			  the `com.apple.property-list` attachment `preprocessedPage(in:)` reads.
+			  **A base name, not a file name** — the file is `PagePreprocessor.js`, and
+			  writing the extension here is the way to have Safari run nothing and say
+			  nothing about it.
+			-->
+			<key>NSExtensionJavaScriptPreprocessingFile</key>
+			<string>PagePreprocessor</string>
 		</dict>
 		<!--
 		  093 · D-c — a principal class, not a storyboard. `Base.lproj/MainInterface.storyboard`

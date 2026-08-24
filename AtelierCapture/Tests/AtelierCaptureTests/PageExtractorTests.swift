@@ -316,6 +316,24 @@ struct PageHarvestTests {
         #expect(harvest.media.first?.articleIndex == 0)
     }
 
+    /// `cleanURL` strips the query and the fragment — that is its job. It must not strip
+    /// the ORIGIN, and a port is part of the origin. `base.js` builds the same string from
+    /// `url.origin`, which includes a non-default port; rebuilding it from scheme and host
+    /// alone silently rewrote `http://host:8080/p` as a different page. Caught by a tier-2
+    /// capture off a loopback fixture, which is the only place in this project a
+    /// non-default port occurs — and exactly why it went unnoticed.
+    @Test("A non-default port survives cleaning; the query and fragment do not")
+    func keepsThePortAndDropsTheQuery() {
+        #expect(
+            PageExtractor.cleanURL("http://127.0.0.1:53421/page.html?utm_source=x#frag")
+                == "http://127.0.0.1:53421/page.html")
+        #expect(
+            PageExtractor.cleanURL("https://example.com/a?b=c") == "https://example.com/a")
+        // The default ports are not written back out: they are already implied, and a URL
+        // that gained ":443" would stop matching the one the browser extension recorded.
+        #expect(PageExtractor.cleanURL("https://example.com:443/a") == "https://example.com/a")
+    }
+
     @Test("Anything that is not a page snapshot is nil, not an empty harvest")
     func refusesNonSnapshots() {
         #expect(PageHarvest.harvest(fromResults: nil) == nil)

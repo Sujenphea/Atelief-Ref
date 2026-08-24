@@ -166,6 +166,38 @@ test("a video contributes its poster and source; a poster-less, source-less one 
   assert.equal(result.videos[0].src, "blob:https://example.com/1");
 });
 
+// **The rule this file exists for most.** Safari vends the snapshot as a
+// `com.apple.property-list`, and a JS `null` becomes `NSNull`, which is not a valid
+// property-list value. One null anywhere and Safari cannot produce the representation:
+// every load fails with `NSItemProviderErrorDomain -1000` and the share is LOST, because
+// a page share carries no URL item to fall back to. It presents as a transport error, it
+// is intermittent (a page whose images all have `alt` has no nulls and works), and it cost
+// a day of device testing to find. Absent keys are how "no value" is said here.
+test("no value anywhere in a snapshot is null, however empty the page", () => {
+  const result = snapshot({
+    // Everything optional missing or blank: no canonical, a meta with no content, an
+    // image with no alt, a video with a poster but no source.
+    canonical: null,
+    title: "",
+    metas: [element({ property: "og:title" })],
+    images: [element({ currentSrc: "https://example.com/a.jpg", naturalWidth: 400,
+                       naturalHeight: 400, alt: "" })],
+    videos: [element({ poster: "https://example.com/p.jpg", currentSrc: "",
+                       videoWidth: 640, videoHeight: 360 })],
+  });
+
+  const nulls = [];
+  (function walk(value, path) {
+    if (value === null) return nulls.push(path);
+    if (Array.isArray(value)) return value.forEach((v, i) => walk(v, `${path}[${i}]`));
+    if (value && typeof value === "object") {
+      for (const key of Object.keys(value)) walk(value[key], `${path}.${key}`);
+    }
+  })(result, "snapshot");
+
+  assert.deepEqual(nulls, [], `null is not plist-representable; found at: ${nulls}`);
+});
+
 test("a page that throws still completes, with the URL it managed to read", () => {
   const context = vm.createContext({
     document: {

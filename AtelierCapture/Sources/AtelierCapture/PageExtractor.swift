@@ -230,7 +230,17 @@ public enum PageExtractor {
         guard let raw, let components = URLComponents(string: raw),
               let scheme = components.scheme, let host = components.host
         else { return raw }
-        return "\(scheme)://\(host)\(components.path)"
+        // The port belongs to the origin. `base.js` builds this from `url.origin`, which
+        // INCLUDES a non-default port, and rebuilding from scheme and host alone dropped
+        // it — silently turning `http://host:8080/p` into a different page's URL. Found
+        // when a tier-2 capture off a loopback fixture recorded `127.0.0.1/page.html`.
+        // A DEFAULT port is dropped, as `url.origin` drops it: `https://host:443/a` and
+        // `https://host/a` are one page, and writing the port back out would stop a phone
+        // capture matching the one the browser extension recorded for the same URL.
+        let isDefault = (scheme == "http" && components.port == 80)
+            || (scheme == "https" && components.port == 443)
+        let port = isDefault ? "" : components.port.map { ":\($0)" } ?? ""
+        return "\(scheme)://\(host)\(port)\(components.path)"
     }
 
     /// The live URL, preferred over `canonical` (`base.js:liveURL`).
