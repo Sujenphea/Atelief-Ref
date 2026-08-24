@@ -165,11 +165,15 @@ final class ShareViewController: UIViewController {
             let draft = ShareCapture.draft(for: shared)
             let record = try InboxWriter(libraryRoot: root).write(
                 draft.request, payload: draft.payload)
+            // The footprint is read HERE because this is the high-water mark: the bytes
+            // have been fetched or adopted and the writer has just staged and committed
+            // them. Anything measured earlier is measuring the wrong moment.
             Self.logger.info(
                 """
                 captured \(record.id.uuidString, privacy: .public) \
                 platform=\(record.request.provenance.platform, privacy: .public) \
-                payload=\(record.payloadFile ?? "none", privacy: .public)
+                payload=\(record.payloadFile ?? "none", privacy: .public) \
+                \(Self.footprint(), privacy: .public)
                 """)
             await confirmAndDismiss()
         } catch {
@@ -413,6 +417,34 @@ final class ShareViewController: UIViewController {
             keys: (dictionary?.keys.sorted().joined(separator: " ") ?? "nil")
                 + (harvest == nil ? " → \(diagnose(results))" : ""),
             error: error.map { String(describing: $0) } ?? "none")
+    }
+
+    // MARK: - Gate 2: the footprint
+
+    /// This process's `phys_footprint` and its remaining headroom, in MB.
+    ///
+    /// **This is the gate-2 measurement, taken in process rather than in Instruments**
+    /// (092 · "Gates and risks" 2). The ~120 MB extension ceiling is observed, not
+    /// documented, and `phys_footprint` — dirty plus compressed — is the number jetsam
+    /// actually kills on; `os_proc_available_memory` is what is left before it does.
+    /// Reading both here beats attaching a profiler to a process that lives two seconds
+    /// and is launched by another app: it needs no Mac, no timing luck, and it keeps
+    /// working as a regression check if anyone ever pulls decoding back into this process
+    /// — which is the specific thing gate 2 exists to prevent.
+    ///
+    /// Cheap enough to leave in: two syscalls on a path that has already done file I/O.
+    private nonisolated static func footprint() -> String {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let outcome = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        let mb = { (bytes: UInt64) in String(format: "%.1f", Double(bytes) / 1_048_576) }
+        let used = outcome == KERN_SUCCESS ? mb(info.phys_footprint) : "?"
+        return "footprint=\(used)MB headroom=\(mb(UInt64(os_proc_available_memory())))MB"
     }
 
     /// Why a loaded results dictionary produced no harvest.
