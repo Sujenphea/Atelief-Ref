@@ -172,7 +172,12 @@ and not without a decision recorded separately.
   The separately-planned `design` doc was folded into it: the two contracts that
   needed designing (the shared capture DTO, the inbox record) are each half a page
   and belong beside the slice that builds them.
-- A Safari-extension research doc, only after open question 1 is answered.
+- [094-safari-extension-research](094-safari-extension-research.md) — written once open
+  question 1 came back yes. Its finding: the hook was never the hard part. The
+  **trigger** is — single-item capture is a right-click (`contexts: ["image"]`,
+  `info.srcUrl`), iOS Safari has no context menu for extensions, and the long-press share
+  sends a URL with no element identity. That seam is design, not porting, and the
+  "+4–6 weeks" above does not account for it.
 
 **Settled since this doc was written.** Open question 2 (which collection a share
 lands in) is answered in 092 · S3: `Collection.unsortedID`, the same default the
