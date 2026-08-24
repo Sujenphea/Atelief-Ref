@@ -964,9 +964,14 @@ dedup was right, and the archive parsed cleanly — the shift was constant and t
 part of the dedup key — so it was invisible until an import stored a row and someone read
 its `created_at`. Fixed; see 418.
 
-**Still unproven in S6: the transport.** A simulator has no AirDrop, so
-folder-over-AirDrop is stated rather than demonstrated. The fallback if a device dislikes
-it is `NSFileCoordinator`'s `.forUploading` zip, one call away.
+~~**Still unproven in S6: the transport.**~~ **Proven on a device (2026-08-18)**
+([424](../.change-log/424-airdrop-takes-a-folder.md)). A simulator has no AirDrop, so
+folder-over-AirDrop was stated rather than demonstrated for four days. A device took the
+folder — as a FOLDER, not silently zipped — the Mac imported it through
+Settings → Import Archive…, and the image captures landed. **The
+`NSFileCoordinator` `.forUploading` zip fallback is therefore not needed and is not
+built**; it stays written down as the answer if some future transport refuses a
+directory, which is the only reason it was ever specified.
 
 What S4b inherits, all of it recorded rather than discovered later:
 
