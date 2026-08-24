@@ -119,6 +119,30 @@ and useless in the one process whose input cannot be reproduced.
 
 with a real 1800×1200 JPEG beside it — DOM provenance and fetched bytes, the whole path.
 
+## Follow-up: the rewrite that downgraded
+
+The first real device capture off x.com logged:
+
+```
+chose=    …?format=webp&name=orig    → media fetch returned 404
+fallback= …?format=webp&name=medium  → saved
+```
+
+The fallback did its job, and that is exactly why this was worth catching: the capture
+succeeded at the WRONG RESOLUTION and nothing about it looked wrong. `name=orig` and
+`format=webp` are incompatible on twimg — the pair 404s — so every phone capture of a
+tweet photo was quietly landing as `medium`.
+
+`base.js` never hit it because a browser capture starts from a right-clicked `srcUrl`,
+which is jpg. The phone starts from the DOM's `currentSrc`, which Safari has negotiated to
+webp. `toOrigName` now moves `format=webp` to `jpg` along with the name, and only that one
+pair — a format that can serve `orig` is left alone.
+
+**`extension/src/extractors/base.js:105` has the same latent bug**, and would hit it
+wherever a browser extractor reads a rendered `<img>` rather than a right-click. Not
+changed here, because the browser path has not been observed failing and the two files are
+a deliberate mirror that should move together, deliberately.
+
 ## Still owed by a device
 
 The simulator proves the mechanism; it cannot prove the case tier 2 exists for. An

@@ -334,6 +334,24 @@ struct PageHarvestTests {
         #expect(PageExtractor.cleanURL("https://example.com:443/a") == "https://example.com/a")
     }
 
+    /// The rewrite's job is the ORIGINAL, and it was quietly not getting it.
+    @Test("Rewriting to name=orig also leaves webp behind, which orig cannot serve")
+    func origImpliesJPEG() {
+        #expect(
+            PageExtractor.toOrigName(
+                "https://pbs.twimg.com/media/F2K7?format=webp&name=small")
+                == "https://pbs.twimg.com/media/F2K7?format=jpg&name=orig")
+        // A format that already serves orig is left alone — this is one incompatibility,
+        // not a policy of rewriting formats.
+        #expect(
+            PageExtractor.toOrigName("https://pbs.twimg.com/media/F2K7?format=png&name=900x900")
+                == "https://pbs.twimg.com/media/F2K7?format=png&name=orig")
+        // No `name` at all is not a sized URL, so nothing is rewritten — including format.
+        #expect(
+            PageExtractor.toOrigName("https://pbs.twimg.com/media/F2K7?format=webp")
+                == "https://pbs.twimg.com/media/F2K7?format=webp")
+    }
+
     @Test("Anything that is not a page snapshot is nil, not an empty harvest")
     func refusesNonSnapshots() {
         #expect(PageHarvest.harvest(fromResults: nil) == nil)

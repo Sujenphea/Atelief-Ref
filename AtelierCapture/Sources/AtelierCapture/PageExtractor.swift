@@ -292,8 +292,18 @@ public enum PageExtractor {
               let items = components.queryItems,
               items.contains(where: { $0.name == "name" })
         else { return src }
-        components.queryItems = items.map {
-            $0.name == "name" ? URLQueryItem(name: "name", value: "orig") : $0
+        // **`format=webp` and `name=orig` are incompatible** — twimg 404s the pair, and
+        // the caller then falls back to the rendered size, silently capturing a `medium`
+        // where the whole point of the rewrite was the original. `base.js` never hit this
+        // because a browser capture starts from a right-clicked `srcUrl`, which is jpg;
+        // the phone starts from the DOM's `currentSrc`, which Safari negotiates to webp.
+        // Observed on a real device: `?format=webp&name=orig` → 404, `format=jpg` → 200.
+        components.queryItems = items.map { item in
+            switch item.name {
+            case "name": URLQueryItem(name: "name", value: "orig")
+            case "format" where item.value == "webp": URLQueryItem(name: "format", value: "jpg")
+            default: item
+            }
         }
         return components.string ?? src
     }
