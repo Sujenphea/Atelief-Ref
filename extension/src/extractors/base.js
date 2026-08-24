@@ -107,7 +107,16 @@ export function toOrigName(src, { addIfAbsent = false } = {}) {
   if (src.startsWith("data:")) return src;
   try {
     const url = new URL(src);
-    if (url.searchParams.has("name") || addIfAbsent) url.searchParams.set("name", "orig");
+    if (url.searchParams.has("name") || addIfAbsent) {
+      url.searchParams.set("name", "orig");
+      // **`name=orig` cannot serve webp** — twimg 404s the pair, and a caller that falls
+      // back then captures the RENDERED size while looking entirely successful. This path
+      // rarely sees webp, because a browser capture starts from a right-clicked `srcUrl`
+      // (jpg); it bites whenever an extractor reads a rendered `<img>`, whose `currentSrc`
+      // the browser has negotiated to webp. Observed on iOS, whose share extension has no
+      // right-click and only ever reads the DOM (422).
+      if (url.searchParams.get("format") === "webp") url.searchParams.set("format", "jpg");
+    }
     return url.toString();
   } catch {
     return src;

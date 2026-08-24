@@ -138,10 +138,10 @@ which is jpg. The phone starts from the DOM's `currentSrc`, which Safari has neg
 webp. `toOrigName` now moves `format=webp` to `jpg` along with the name, and only that one
 pair — a format that can serve `orig` is left alone.
 
-**`extension/src/extractors/base.js:105` has the same latent bug**, and would hit it
-wherever a browser extractor reads a rendered `<img>` rather than a right-click. Not
-changed here, because the browser path has not been observed failing and the two files are
-a deliberate mirror that should move together, deliberately.
+`base.js` carried the same latent bug and now carries the same fix — the two are a
+deliberate mirror and were moved together. It bites the browser wherever an extractor
+reads a rendered `<img>` rather than a right-click; that it has not been *observed* there
+is a fact about how the browser is used, not about the rule being right.
 
 ## Still owed by a device
 

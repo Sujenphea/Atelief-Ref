@@ -459,6 +459,25 @@ test("toOrigName rewrites name= to orig; passes through data: and unparseable", 
   assert.equal(toOrigName("not a url"), "not a url");
 });
 
+test("toOrigName moves webp to jpg, since orig cannot serve webp", () => {
+  // The pair 404s. A rewrite that yields a dead URL is worse than no rewrite: the caller
+  // falls back to the rendered size and the capture looks fine at the wrong resolution.
+  assert.equal(
+    toOrigName("https://pbs.twimg.com/media/A?format=webp&name=small"),
+    "https://pbs.twimg.com/media/A?format=jpg&name=orig",
+  );
+  // Only that one incompatibility — a format that serves orig is left alone.
+  assert.equal(
+    toOrigName("https://pbs.twimg.com/media/A?format=png&name=small"),
+    "https://pbs.twimg.com/media/A?format=png&name=orig",
+  );
+  // Nothing is rewritten when there is no name= to rewrite, format included.
+  assert.equal(
+    toOrigName("https://pbs.twimg.com/media/A?format=webp"),
+    "https://pbs.twimg.com/media/A?format=webp",
+  );
+});
+
 test("toOrigName { addIfAbsent } adds name=orig to a bare URL (bulk X mapper path)", () => {
   // Default: a bare URL is left alone (the DOM extractor's contract).
   assert.equal(toOrigName("https://pbs.twimg.com/media/B.jpg"), "https://pbs.twimg.com/media/B.jpg");
