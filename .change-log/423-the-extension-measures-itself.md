@@ -26,8 +26,13 @@ evidence about the scaffolding rather than about the code.
 `os_proc_available_memory()`, and the existing `captured` line carries both:
 
 ```
-captured <uuid> platform=twitter payload=<file>.bin footprint=42.3MB headroom=78.1MB
+captured <uuid> platform=twitter payload=<file>.bin bytes=27384219 \
+  footprint=6.3MB headroom=113.7MB
 ```
+
+`bytes=` is there so the footprint never has to be read next to a remembered file size.
+A footprint of 6.3MB means nothing on its own; 6.3MB while writing a 27MB payload is the
+whole claim. The two belong on one line or the measurement decays into an anecdote.
 
 Two syscalls on a path that has already done file I/O, so it stays in permanently.
 

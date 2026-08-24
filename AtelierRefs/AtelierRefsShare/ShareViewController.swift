@@ -173,6 +173,7 @@ final class ShareViewController: UIViewController {
                 captured \(record.id.uuidString, privacy: .public) \
                 platform=\(record.request.provenance.platform, privacy: .public) \
                 payload=\(record.payloadFile ?? "none", privacy: .public) \
+                bytes=\(draft.payload.flatMap(InboxWriter.payloadSize(of:)) ?? 0, privacy: .public) \
                 \(Self.footprint(), privacy: .public)
                 """)
             await confirmAndDismiss()
