@@ -144,10 +144,15 @@ and not without a decision recorded separately.
 
 ## Open questions
 
-1. **Does Safari on iOS support `world: "MAIN"` content scripts at `document_start`?**
-   The entire tier-3 case rests on it. Verify against a real device before any
-   Safari-extension work is scheduled — if MAIN-world injection is unavailable, the
-   hook cannot be ported and tier 3 collapses back to tier 2.
+1. ~~**Does Safari on iOS support `world: "MAIN"` content scripts at `document_start`?**~~
+   **Answered on a device (2026-08-25): YES, on iOS 26**
+   ([425](../.change-log/425-the-main-world-is-open-on-ios.md)). A probe extension
+   injected at `readyState: loading`, intercepted 36 of the page's own XHRs on a
+   logged-in x.com including a GraphQL call, and its ISOLATED control could NOT see the
+   MAIN world's globals — so `world` was honoured rather than silently ignored. **Tier 3
+   is unblocked**; the hook can be ported. Note that
+   `xcrun safari-web-extension-converter` WARNS that `world` is unsupported, and is
+   wrong — which is why this was verified functionally rather than from the tooling.
 2. **Which collection does a share land in?** The Mac app always has a selected
    collection; a share sheet has no context. Options: a fixed *Inbox* collection, a
    last-used default, or a picker in the extension UI (costs the extension a
