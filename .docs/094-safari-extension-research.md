@@ -127,6 +127,26 @@ content script → browser.runtime.sendNativeMessage
               → inbox/  →  InboxArchive  →  AirDrop  →  Mac
 ```
 
+> **[amended] The chain is one hop longer than that, measured on a device 2026-08-25.**
+> A content script calling `browser.runtime.sendNativeMessage` gets
+> `TypeError: sendNativeMessage is not a function`. Native messaging is not exposed to
+> content scripts — it lives in the background context and in extension pages. Same rule
+> as Chrome; not an iOS quirk. What actually runs is:
+>
+> ```
+> MAIN world (hook)  →postMessage→  ISOLATED content script
+>                    →runtime.sendMessage→  background service worker
+>                    →sendNativeMessage→  SafariWebExtensionHandler  →  InboxWriter
+> ```
+>
+> Two consequences, and neither is cosmetic. **The bytes cross two structured-clone
+> boundaries, not one**, so §4's shape 1 is paying for the payload twice and the ladder has
+> to say *which* hop refused it. And the extra hop lands squarely in §7.5 — MV3 background
+> on iOS — which this doc had filed as "moot if §6 is accepted". It is not moot: dropping
+> the sweep removes the *long-lived* background assumption, but single-item capture now
+> needs the worker alive for one round trip on every capture. That is the easy case for a
+> non-persistent worker, and it is no longer zero.
+
 Everything from `InboxWriter` rightwards is done, tested, and measured. `endpoint.js` and
 `base-url.js` are replaced by one native-message call; the *shape* being sent is already
 the shared `CaptureRequest` contract (`capture-contract.json`), which both languages
@@ -157,6 +177,16 @@ a login-walled image. But unlike tier 2, **the extension has the page's cookies*
 content script can fetch the bytes itself and hand over a blob, or the hook may already
 have the response body in hand from the interception it did.
 
+> **[SUPERSEDED 2026-08-25 by [095](095-tier3-spike-results.md) § 4 — the premise was
+> wrong.]** The table below asserts that shape 2 "**fails** — cookie-less". That was never
+> measured, and it is false for X: a session-less `URLSession` (ephemeral, cookies refused,
+> stricter than `ShareViewController.fetchMedia`'s) fetched the same `name=orig` image,
+> **byte-identical to the credentialed fetch**, at a 2.9 MB footprint. The auth wall is on
+> *reaching the post*, not on *fetching the media*. Shape 2 is the design; the ladder below
+> measured a road not taken. **Everything from here to the end of §4 is kept for the
+> record, not as guidance** — including the memory argument, which was right about shape 1
+> (measured 2.36–2.38×, predicted 2.33×) and is now moot. Read 095 first.
+>
 > **[amended] The two shapes above are the whole set, and for login-walled media neither
 > is good.** The reason is a limit this section did not state: **a content script cannot
 > write into the App Group.** Only the native handler can — it is the app extension, the
@@ -214,7 +244,13 @@ half the codebase not maintained twice.
 
 ## 7. Open questions
 
-1. **The worker question.** 425 measured `fetch: 0, XHR: 36`. Either the mobile site uses
+1. ~~**The worker question.**~~ **ANSWERED — no ceiling** ([095](095-tier3-spike-results.md) § 2).
+   Counting the transports apart gives `fetch: 2, xhr: 44–61`: the mobile site prefers XHR,
+   there is no hidden population in a worker, and `hook-core.js` wraps both. GraphQL lands
+   at roughly one in four parsed responses against 425's one in thirty-six. Original text
+   below.
+
+   **The worker question.** 425 measured `fetch: 0, XHR: 36`. Either the mobile site uses
    XHR where desktop uses `fetch`, or the `fetch` calls happen inside a **worker**, which a
    MAIN-world page hook does not reach. The second would mean some payloads are invisible
    on iOS in a way they are not on desktop — a fidelity ceiling, not a blocker. Resolvable
@@ -274,6 +310,12 @@ decides whether the other rows get built, and §2's third candidate is no longer
 trigger answer the paragraph above leans on.
 
 ## 9. Recommended next step
+
+> **[RAN 2026-08-25 — see [095](095-tier3-spike-results.md).]** Readings 1 and 3 are in and
+> both pass; reading 1 passed by overturning §4's premise rather than by confirming it, so
+> the stop condition below was never reached. Reading 2 is unrun and is only needed if the
+> share sheet stays the trigger. **The next doc is a plan, not more research** — after one
+> tap per host to check whether §4's finding generalises beyond X (095 § 8.1).
 
 Not a plan doc yet. **One spike, three readings, in this order** — the order matters
 because the first reading can end the project and the third is wasted effort until it
