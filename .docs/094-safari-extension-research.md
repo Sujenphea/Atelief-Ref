@@ -9,6 +9,20 @@ This doc is about everything else, because the mechanism turned out not to be th
 part. **Three seams do not port, and the interaction seam is the one 091's "+4–6 weeks"
 estimate does not account for.**
 
+> **Amended 2026-08-25**, after a verification pass over the claims below against the
+> code. Every file citation and both LOC figures were checked; §6's 2,407 is exact and
+> §5's was not (corrected in place). Three findings changed the argument rather than the
+> prose, and each is marked **[amended]** where it lands:
+>
+> 1. **Open question 2 was framed on a premise that cannot come back yes** — a native
+>    handler has no API for reading `browser.storage.local` (§7.2). The accumulator
+>    design survives, but it is not nearly free, which was the whole reason §2 liked it.
+> 2. **A content script cannot write into the App Group** — only the native handler can.
+>    That closes §4's fork tighter than §4 stated, and moves it ahead of the trigger as
+>    the question the spike must answer first (§9).
+> 3. **The hook already buffers responses for replay** (`hook-core.js:38`), which helps
+>    an accumulator and does nothing for persistence across a share.
+
 ---
 
 ## 1. What is settled
@@ -19,7 +33,17 @@ estimate does not account for.**
   That warning will reappear on the real port. Ignore it.
 - **Everything downstream of the inbox already exists.** 092 built `InboxWriter`,
   `InboxDrain`, `InboxArchive` and the Mac import, all tested, all measured. A tier-3
-  capture that reaches the inbox is finished work from that point on.
+  capture that reaches the inbox is finished work from that point on. The drain runs at
+  launch and on activation ([407](../.change-log/407-the-drain-nobody-called.md)), the
+  archive imports on the Mac dates and all
+  ([418](../.change-log/418-thirty-one-years-in-the-future.md)), and the transport was
+  taken by a device ([424](../.change-log/424-airdrop-takes-a-folder.md)).
+- **[amended] The probe is not in the repo, on purpose.** 425 kept it in a session
+  scratchpad (`tier3-probe/`, `tier3-xcode/`) because it was built to answer one question
+  once. Nothing under `extension/` or `AtelierRefs.xcodeproj` is a Safari-web-extension
+  target today. That was the right call for a feasibility probe and it is a cost for §9's
+  spike, which needs a probe that fetches, messages, and writes — so budget rebuilding it
+  rather than assuming 425's is on hand.
 
 ## 2. Seam one — the trigger does not exist on iOS
 
@@ -55,10 +79,20 @@ So a replacement has to be designed, not ported. The candidates:
 | **In-page affordance** injected by the content script (a small button per post) | precision equal to a right-click | the extension modifies the page's appearance; fragile against site redesigns; the desktop extension has deliberately never done this |
 | **Keep the share sheet** (tier 2) as the trigger, extension for fidelity only | no new interaction at all | the share sheet cannot see the hook's intercepted payloads — different process, different lifetime |
 
-The third deserves a hard look, because it is nearly free and it reframes the project: the
-extension's job becomes *accumulating* intercepted payloads, and the share sheet stays the
-"save this" gesture. Whether a content script can hand what it captured to a share
-extension that launches later is an open question (see §6).
+The third deserves a hard look because it reframes the project: the extension's job
+becomes *accumulating* intercepted payloads, and the share sheet stays the "save this"
+gesture. Whether a content script can hand what it captured to a share extension that
+launches later is an open question (see §7.2).
+
+> **[amended]** This paragraph said "nearly free", and that was the reason to prefer it.
+> It is not. The only route from a content script into the App Group is
+> `sendNativeMessage` → the native handler → a file (§4's amendment), so the accumulator
+> cannot be a lazy read at share time — it has to **push to native continuously while the
+> user browses**. That is a different posture on a phone: always-on writing, storage that
+> grows, battery, and a much larger set of intercepted payloads at rest than a
+> capture-on-demand design ever holds. It may still be the right answer. It is no longer
+> the cheap one, and the join at share time is a match on URL between what the share sheet
+> sends (`public.url`) and what the accumulator stored.
 
 **None of these is a port. This is new design, and 091's estimate reads like it assumed
 the interaction came across with the code.**
@@ -114,12 +148,38 @@ Two shapes, and the second is almost certainly right:
 Shape 2 also inherits the auth problem tier 2 has: a cookie-less native fetch cannot pull
 a login-walled image. But unlike tier 2, **the extension has the page's cookies** — so the
 content script can fetch the bytes itself and hand over a blob, or the hook may already
-have the response body in hand from the interception it did. That is the interesting
-design question in this seam and it is worth a spike before committing.
+have the response body in hand from the interception it did.
+
+> **[amended] The two shapes above are the whole set, and for login-walled media neither
+> is good.** The reason is a limit this section did not state: **a content script cannot
+> write into the App Group.** Only the native handler can — it is the app extension, the
+> content script is a web page. So there is no third shape where the page fetches with
+> cookies and hands over a *file*; anything the page fetches has to cross
+> `sendNativeMessage`.
+>
+> | | auth-walled media | memory |
+> |---|---|---|
+> | **1 — page fetches, base64 through the message** | works; the page has the cookies | the payload is resident in a jetsam-capped process, which is exactly what S2's design and the 6.4 MB reading exist to prevent. Safari's native-message size limit on iOS is **unmeasured** and may cap this well below `InboxWriter.maximumPayloadBytes` (64 MiB) |
+> | **2 — URL through the message, native fetches** | **fails** — cookie-less | free: `fetchMedia` → `download(from:)` → `adopt`, measured at 0.2 MB for 16.3 MB (`ShareViewController.swift:543`, [423](../.change-log/423-the-extension-measures-itself.md)) |
+>
+> The session-authenticated fetch the page side would use is not hypothetical — it is
+> built. `hook-core.js`'s `headerAllowlist` remembers the `authorization`/csrf pair the
+> page just sent, in the closure and never across a message boundary, and `hook-proxy.js`
+> spends it on follow-up requests in the user's own session (090 · 3A); `sw.js:60` already
+> fetches media bytes that way on the desktop. What is missing is not the fetch. It is a
+> cheap way for its result to reach a process that can write a file.
+>
+> **This, not the trigger, is the question that decides whether tier 3 is worth building.**
+> If neither shape carries auth-walled bytes affordably, tier 3's advantage over tier 2
+> collapses to provenance-only — better metadata on the same picture tier 2 already gets —
+> and the trigger question never needs answering. §9 is reordered accordingly.
 
 ## 5. What ports unchanged
 
-Roughly 1,136 lines, and they are the valuable ones:
+**1,455 lines** — counted 2026-08-25: `hook-core.js` 297, `twitter-hook.js` 109,
+`harvest.js` 164, `host-table.js` 263, `media-hosts.js` 56, `extractors/` 566 — and they
+are the valuable ones. *(**[amended]** this said "roughly 1,136"; the figure was low by
+28%, in the direction that favours the port.)*
 
 | file(s) | why it ports |
 |---|---|
@@ -129,7 +189,10 @@ Roughly 1,136 lines, and they are the valuable ones:
 
 The extractors have effectively been port-tested already: 092 · S4b reimplemented them in
 Swift for tier 2, which is how yesterday's `name=orig`/webp bug was found in **both**
-copies at once.
+copies at once. And the claim that the two copies agree is a CI gate rather than a comment
+— `npm run drift-check` runs in `ci.yml:109`
+([404](../.change-log/404-the-mirror-nobody-checked.md)), so a ported extractor that
+diverges from `PageExtractor.swift` fails the build.
 
 ## 6. What probably should not port
 
@@ -149,10 +212,27 @@ half the codebase not maintained twice.
    MAIN-world page hook does not reach. The second would mean some payloads are invisible
    on iOS in a way they are not on desktop — a fidelity ceiling, not a blocker. Resolvable
    with a timeline scroll and a counter.
-2. **Can an intercepted payload survive to a later share?** If yes, §2's third candidate
-   (share sheet as trigger, extension as accumulator) becomes the cheapest good answer.
-   Storage would be `browser.storage.local` written by the content script and read by the
-   native handler — needs verifying that both sides see the same store.
+2. ~~**Can an intercepted payload survive to a later share?** … Storage would be
+   `browser.storage.local` written by the content script and read by the native handler —
+   needs verifying that both sides see the same store.~~
+   **[amended] Rewritten — the original had no answer that could come back yes.** There is
+   no API by which `SafariWebExtensionHandler` reads `browser.storage.local`; the handler
+   is an app extension and sees only what a `sendNativeMessage` / `connectNative` call
+   hands it. `storage.local` is the *extension's* store, not a shared one, and the share
+   extension is a third process again. So the spike cannot verify "both sides see the same
+   store" — there is no store to share.
+
+   The reachable design, and the thing to verify instead: **content script →
+   `sendNativeMessage` → native handler → a file in the App Group → share extension reads
+   it at share time.** Every hop there exists; what is unproven is the cadence (§2's
+   amendment: continuous push, not lazy read) and the join at the far end, which is a
+   match on URL.
+
+   Note also that the hook **already buffers** — `RESPONSE_HOOK_REPLAY_LIMIT = 25`, with
+   responses re-emitted on a `message` whose `data.source === replaySource`
+   (`hook-core.js:38`). That is the accumulator's in-page half, already written and
+   already tested. It is *not* persistence: the buffer lives in the page's MAIN world and
+   dies with the tab, which is precisely the gap the native hop closes.
 3. **Does the popup exist on iOS as a usable surface?** `action.default_popup` is declared
    today and Safari on iOS reaches extensions through the address-bar menu. Whether that is
    a *good* capture gesture is a design question, not a technical one.
@@ -172,7 +252,7 @@ half the codebase not maintained twice.
 |---|---|
 | hooks + extractors port | small — the code moves as-is, the tests come with it |
 | native-message → `InboxWriter` seam | small — the contract exists and is gated |
-| bytes design + spike | medium — §4 has a real question in it |
+| **bytes for auth-walled media** | **[amended] the gating question** — §4's two shapes are the whole set and neither is free; a bad answer here ends the project rather than resizing it |
 | **the trigger** | **unestimated in 091** — this is design, not porting |
 | bulk sweep | excluded per §6 |
 
@@ -180,15 +260,43 @@ The estimate is plausible **only if the trigger question is answered cheaply** (
 candidate) and the sweep is out of scope. If the answer is an in-page affordance, the
 project is materially larger and takes on maintenance against three sites' redesigns.
 
+**[amended]** And it is plausible only if the bytes answer is shape 1 within Safari's
+native-message limit. Two rows above moved: the bytes row was "medium — §4 has a real
+question in it", which read as a sizing risk. It is not a sizing risk. It is the row that
+decides whether the other rows get built, and §2's third candidate is no longer the cheap
+trigger answer the paragraph above leans on.
+
 ## 9. Recommended next step
 
-Not a plan doc yet. **Answer open questions 1 and 2 (§7) with one afternoon's spike**,
-because between them they decide the shape of the whole thing:
+Not a plan doc yet. **One spike, three readings, in this order** — the order matters
+because the first reading can end the project and the third is wasted effort until it
+doesn't. All three run on one rebuilt probe extension (§1: 425's is not in the repo), on a
+device, against a logged-in x.com.
 
-- scroll a logged-in timeline with the probe still installed, and read whether GraphQL
-  traffic appears in quantity (fidelity ceiling), and
-- write from a content script to `browser.storage.local` and read it from the native
-  handler (decides whether the share sheet can stay the trigger).
+> **[amended] Reordered.** This section originally ran open questions 1 and 2 and did not
+> mention bytes at all — §4 said the bytes question was "worth a spike" and the spike did
+> not include it. Since a bad bytes answer collapses tier 3 to provenance-over-tier-2,
+> it goes first.
 
-If both come back well, tier 3 is a small project with a known shape. If either comes back
-badly, the design changes before anything is committed to.
+1. **Bytes, auth-walled (§4).** Fetch one login-walled image from the content script in
+   the page's own session, and push it through `sendNativeMessage` to a native handler
+   that writes it via `InboxWriter`. Read two numbers: **the largest payload the message
+   accepts**, and **the handler's `phys_footprint` while it holds one** — the extension
+   already knows how to report the second (`ShareViewController.swift:434`), so the probe
+   should borrow that code rather than invent it. A cap far below 64 MiB, or a footprint
+   that scales with payload, means shape 1 is out; shape 2 is already known not to carry
+   auth. **If both shapes are out, stop and write that down** — tier 3 is then a
+   provenance improvement on tier 2, priced accordingly, and readings 2 and 3 below are
+   moot along with the whole of §2.
+2. **Persistence (§7.2, as rewritten).** Push a payload from a content script to the
+   native handler, write it into the App Group, quit Safari, and read it from the *share*
+   extension at share time — joining on URL. This decides whether the share sheet can stay
+   the trigger, and note it is now a three-process test, not the two-process
+   `storage.local` check this doc first described.
+3. **Fidelity ceiling (§7.1).** Scroll a logged-in timeline with the probe installed and
+   read whether GraphQL traffic appears in quantity, and whether `fetch` stays at 0. Worth
+   knowing, and it changes a number rather than a decision.
+
+If 1 and 2 come back well, tier 3 is a small project with a known shape and the trigger
+(§2) is the only design left. If 1 comes back badly, the design changes before anything is
+committed to — and the honest outcome may be that it is not built.
