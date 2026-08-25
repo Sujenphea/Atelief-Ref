@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 
 import { toOrigName, toOriginals } from "../src/extractors/base.js";
 import { extractProvenance, findExtractor, web } from "../src/extractors/registry.js";
-import { twitter } from "../src/extractors/twitter.js";
+import { twitter, toStatusPermalink } from "../src/extractors/twitter.js";
 import { pinterest } from "../src/extractors/pinterest.js";
 import { instagram } from "../src/extractors/instagram.js";
 import { cosmos } from "../src/extractors/cosmos.js";
@@ -500,4 +500,98 @@ test("toOriginals rewrites an i.pinimg sized segment to /originals/", () => {
     toOriginals("https://i.pinimg.com/originals/ab/cd/ef.jpg"),
     "https://i.pinimg.com/originals/ab/cd/ef.jpg");
   assert.equal(toOriginals(null), null);
+});
+
+// ---------------------------------------------------------------------------
+// Status permalink normalization — the provenance fork found on a live feed.
+// ---------------------------------------------------------------------------
+
+test("toStatusPermalink: drops the sub-pages X hangs off a tweet", () => {
+  const canonical = "https://x.com/Starlink/status/2077559767858589763";
+  for (const suffix of ["/analytics", "/photo/1", "/photo/3", "/history", "/likes", "/retweets"]) {
+    assert.equal(toStatusPermalink(canonical + suffix), canonical, `failed for ${suffix}`);
+  }
+});
+
+test("toStatusPermalink: a canonical permalink is unchanged, and it is idempotent", () => {
+  const canonical = "https://x.com/designer/status/1780000000000000000";
+  assert.equal(toStatusPermalink(canonical), canonical);
+  assert.equal(toStatusPermalink(toStatusPermalink(canonical + "/photo/1")), canonical);
+});
+
+test("toStatusPermalink: a NON-status URL passes through untouched", () => {
+  for (const url of [
+    "https://x.com/designer",
+    "https://x.com/search",
+    "https://x.com/i/bookmarks",
+    "https://x.com/",
+  ]) {
+    assert.equal(toStatusPermalink(url), url);
+  }
+});
+
+test("toStatusPermalink: preserves the origin, so twitter.com stays twitter.com", () => {
+  assert.equal(
+    toStatusPermalink("https://twitter.com/designer/status/1780000000000000000/photo/1"),
+    "https://twitter.com/designer/status/1780000000000000000",
+  );
+});
+
+test("toStatusPermalink: a truncated or unparseable status URL is passed back, not mangled", () => {
+  assert.equal(toStatusPermalink("https://x.com/designer/status"), "https://x.com/designer/status");
+  assert.equal(toStatusPermalink("not a url"), "not a url");
+  assert.equal(toStatusPermalink(""), "");
+});
+
+test("twitter: a right-clicked PHOTO link yields the post permalink, not /photo/1", () => {
+  // The desktop fork: right-clicking the image gives linkUrl=/photo/1, right-clicking the
+  // text gives the bare permalink. Both must produce ONE originalURL, because 18A dedup
+  // keys on provenance.
+  const h = harvest({
+    url: "https://x.com/home",
+    media: [img("https://pbs.twimg.com/media/REAL?format=jpg&name=small", 1200, 800)],
+  });
+  const viaPhoto = extractProvenance(h, {
+    linkUrl: "https://x.com/designer/status/1780000000000000000/photo/1",
+    srcUrl: "https://pbs.twimg.com/media/REAL?format=jpg&name=small",
+  });
+  const viaText = extractProvenance(h, {
+    linkUrl: "https://x.com/designer/status/1780000000000000000",
+    srcUrl: "https://pbs.twimg.com/media/REAL?format=jpg&name=small",
+  });
+  assert.equal(viaPhoto.originalURL, "https://x.com/designer/status/1780000000000000000");
+  assert.equal(viaPhoto.originalURL, viaText.originalURL);
+  assert.deepEqual(viaPhoto.rawMetadata, { tweetId: "1780000000000000000" });
+});
+
+test("twitter: an /analytics-only post (a promoted tweet) still yields the permalink", () => {
+  // Observed live: a promoted post whose ONLY status link was /analytics, so no anchor
+  // choice could have rescued it — normalization is the only fix.
+  const h = harvest({ url: "https://x.com/home", media: [] });
+  const p = extractProvenance(h, {
+    linkUrl: "https://x.com/Starlink/status/2077559767858589763/analytics",
+  });
+  assert.equal(p.originalURL, "https://x.com/Starlink/status/2077559767858589763");
+  assert.equal(p.authorHandle, "@Starlink");
+  assert.deepEqual(p.rawMetadata, { tweetId: "2077559767858589763" });
+});
+
+test("twitter: a LIVE url sitting on the photo lightbox normalizes too", () => {
+  const h = harvest({
+    url: "https://x.com/designer/status/1780000000000000000/photo/1",
+    media: [img("https://pbs.twimg.com/media/REAL?format=jpg&name=small", 1200, 800)],
+  });
+  const p = extractProvenance(h);
+  assert.equal(p.originalURL, "https://x.com/designer/status/1780000000000000000");
+});
+
+test("twitter: the DOM path now agrees with the bulk mapper's composed permalink", () => {
+  // bulk-twitter.js:280 composes `https://{host}/{screenName}/status/{tweetId}`. A DOM
+  // capture of the same tweet must produce that exact string or the two producers fork.
+  const h = harvest({
+    url: "https://x.com/designer/status/1780000000000000000/photo/1",
+    media: [img("https://pbs.twimg.com/media/REAL?format=jpg&name=small", 1200, 800)],
+  });
+  const p = extractProvenance(h);
+  assert.equal(p.originalURL, `https://x.com/designer/status/1780000000000000000`);
 });
