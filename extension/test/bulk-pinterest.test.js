@@ -71,7 +71,11 @@ test("mapPinterestPin: maps the fixture pin to a complete BulkItem", () => {
   assert.equal(item.cursor, "CUR0");
   assert.deepEqual(item.provenance, {
     platform: "pinterest",
-    originalURL: "https://REDACTEDREDACTED",
+    // Canonicalized (21A): the sweep ran on REDACTED — see HOST — and the
+    // provenance host folds to www so a capture of this pin from another region, or
+    // by the DOM extractor, composes the SAME string. The API requests below still
+    // use the live host.
+    originalURL: "https://www.pinterest.comREDACTED",
     mediaUrl: "https://i.pinimg.com/originals/00/00/00/SAMPLE235.jpg",
     mediaUrlFallback: "https://i.pinimg.com/736x/00/00/00/SAMPLE234.jpg",
     authorHandle: "sampleuser",
@@ -392,4 +396,19 @@ test("a driver fetch failure halts the sweep gracefully (checkpoint preserved)",
   assert.equal(result.status, "halted");
   assert.equal(result.counts.ingested, 0);
   assert.match(result.error, /403/);
+});
+
+test("mapPinterestPin: the provenance host is canonical while API URLs keep the live host", () => {
+  // The two jobs `host` does must not be conflated (21A): provenance is canonicalized so
+  // one pin has one permalink; a resource request must stay in the session's region.
+  const item = mapPinterestPin(firstPin, { host: HOST, cursor: "CUR0" });
+  assert.match(item.provenance.originalURL, /^https:\/\/www\.pinterest\.com\/pin\//);
+  assert.ok(buildBoardFeedURL({ host: HOST, boardId: "1", boardUrl: "/u/b/" }).startsWith(`https://${HOST}/`),
+    "board-feed requests must stay on the live regional host");
+});
+
+test("mapPinterestPin: two regions map one pin to one originalURL (the fork 21A closes)", () => {
+  const nz = mapPinterestPin(firstPin, { host: "REDACTED" });
+  const www = mapPinterestPin(firstPin, { host: "www.pinterest.com" });
+  assert.equal(nz.provenance.originalURL, www.provenance.originalURL);
 });

@@ -123,6 +123,30 @@ export function toOrigName(src, { addIfAbsent = false } = {}) {
   }
 }
 
+/**
+ * The canonical host for a Pinterest permalink: `www.pinterest.com` for the `.com` domain
+ * and any of its regional subdomains, anything else untouched.
+ *
+ * Pinterest serves a country subdomain by geography — `REDACTED`, observed — and
+ * does NOT redirect it to `www`. Two sessions in two regions therefore produce two
+ * `originalURL`s for one pin, and `ServicesInvariantTests`'s
+ * "identical bytes but DIFFERENT provenance → two assets sharing the hash" is the rule
+ * that turns that into a duplicate. Canonicalizing at the producer keeps the fix in the
+ * same layer 432 and 434 put theirs, and leaves the dedup rule alone.
+ *
+ * **`pinterest.co.uk` is deliberately NOT folded in.** It is a separate domain rather than
+ * a subdomain — `hostIs` is false for it — and claiming it is the same site as
+ * `pinterest.com` is a bigger assertion than this observation supports.
+ *
+ * Shared by the Pinterest DOM extractor AND the bulk pin→provenance mapper (6A), so the
+ * two producers compose one string for one pin. The bulk mapper canonicalizes only the
+ * host it PUTS IN PROVENANCE — its API requests (`buildResourceURL`) must keep using the
+ * live host, or they leave the session's region.
+ */
+export function canonicalPinterestHost(host) {
+  return hostIs(String(host || "").toLowerCase(), "pinterest.com") ? "www.pinterest.com" : host;
+}
+
 /** Rewrite an i.pinimg sized path (…/474x/…) to full resolution (…/originals/…).
  * Shared by the Pinterest DOM extractor AND the bulk pin→provenance mapper (6A). */
 export function toOriginals(src) {
