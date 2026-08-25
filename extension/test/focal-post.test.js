@@ -161,6 +161,25 @@ test("candidates entirely off-screen are refused rather than guessed at", () => 
   assert.deepEqual(result, { postUrl: null, reason: "none-visible" });
 });
 
+test("every candidate measuring zero tall is no-geometry, not none-visible", () => {
+  // Observed live on instagram.com and pinterest.com: the selector matched, the permalinks
+  // were there, every rect was 0. That is a reading to distrust, not a "scroll a bit".
+  const result = chooseFocalPost(reading([
+    post(0, 300, 300),
+    post(1, 300, 300),
+  ]));
+  assert.deepEqual(result, { postUrl: null, reason: "no-geometry" });
+});
+
+test("a MIXTURE of zero-height and merely off-screen is none-visible", () => {
+  // Some geometry existed; it just was not in view. Different diagnosis, different fix.
+  const result = chooseFocalPost(reading([
+    post(0, 300, 300),    // no geometry
+    post(1, 900, 1600),   // real height, below the fold
+  ]));
+  assert.deepEqual(result, { postUrl: null, reason: "none-visible" });
+});
+
 test("a zero-height viewport is refused (no band can exist)", () => {
   const result = chooseFocalPost(reading([post(0, 0, 100)], { viewport: { height: 0, width: 390 } }));
   assert.deepEqual(result, { postUrl: null, reason: "no-viewport" });

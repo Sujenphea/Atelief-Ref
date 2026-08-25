@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Atelier tier-3 probe",
+  "version": "0.0.1",
+  "description": "Measurement instrument for 096 T0 — focal-post selection on a phone. Not a shipping surface.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "*://*.x.com/*",
+    "*://*.twitter.com/*",
+    "*://*.instagram.com/*",
+    "*://*.pinterest.com/*",
+    "*://*.pinterest.co.uk/*"
+  ],
+  "action": {
+    "default_title": "Atelier probe",
+    "default_popup": "src/probe.html"
+  }
+}

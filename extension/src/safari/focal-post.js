@@ -36,7 +36,7 @@
  *     url, host, matchedSelector,
  *     viewport: { height, width },
  *     candidates: [{ index, postUrl, top, bottom, area, visibleArea }],
- *     containerCount, linklessCount
+ *     containerCount, linklessCount, zeroRectCount
  *   }
  *
  * `top`/`bottom` are viewport coordinates (`getBoundingClientRect`), so they are negative
@@ -80,6 +80,14 @@ export function readPostCandidates() {
     candidates: [],
     containerCount: 0,
     linklessCount: 0,
+    // Containers that HAVE a permalink but measure zero pixels tall. Observed on both
+    // instagram.com and pinterest.com while validating these selectors: the selector
+    // matched, the links were there, every rect was 0. Whether that is virtualization,
+    // `content-visibility`, or a feed that had not laid out is unresolved — so it is
+    // COUNTED rather than guessed at, because "the page had no geometry to give" and
+    // "the user scrolled every post off screen" are different failures that would
+    // otherwise arrive as the same empty result.
+    zeroRectCount: 0,
   };
   if (!rule) return base;
 
@@ -115,6 +123,7 @@ export function readPostCandidates() {
       continue;
     }
     const rect = rects[index];
+    if (rect.bottom - rect.top <= 0) base.zeroRectCount += 1;
     const visibleTop = Math.max(rect.top, 0);
     const visibleBottom = Math.min(rect.bottom, base.viewport.height);
     base.candidates.push({
@@ -197,9 +206,17 @@ export function chooseFocalPost(reading, options = {}) {
   const basis = bandRanked[0].band > 0 ? "centre-band" : "visible-area";
   const ranked = basis === "centre-band" ? bandRanked : [...scored].sort(byVisible);
   const score = basis === "centre-band" ? ranked[0].band : ranked[0].visible;
-  if (!(score > 0)) return { postUrl: null, reason: "none-visible" };
+  if (!(score > 0)) {
+    // Nothing scored. Say WHICH nothing: a page that gave no geometry at all (every
+    // candidate zero pixels tall — see `zeroRectCount`) is a reading to distrust, while
+    // candidates with real height that simply sit off screen is an honest "scroll a bit".
+    // A MIXTURE is the second case: some geometry existed, it just was not in view.
+    const everyRectEmpty = candidates.every((c) => c.bottom - c.top <= 0);
+    return { postUrl: null, reason: everyRectEmpty ? "no-geometry" : "none-visible" };
+  }
 
   const next = ranked[1];
+
   const nextScore = next ? (basis === "centre-band" ? next.band : next.visible) : 0;
   return {
     postUrl: ranked[0].candidate.postUrl,

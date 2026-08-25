@@ -276,7 +276,7 @@ feed looks like — the defect `drift-check.js`'s header describes at length abo
 composed fixture (11–13 keys per media where the live API sends 108–128). Re-capturable
 wholesale, on the `-live.json` discipline that file already uses.
 
-**Three more things ride this session, because the phone is already in hand:**
+**Four more things ride this session, because the phone is already in hand:**
 
 - **The DOM-sufficiency gate for § D5.** With no hook, `harvestSignals` + the extractors are
   the only provenance source. Record, per platform, whether they yield a correct `mediaUrl`
@@ -287,6 +287,22 @@ wholesale, on the `-live.json` discipline that file already uses.
   reload warning is real and stays.
 - **Instagram at all**, which 095 § 9.1 left unverified and which no longer needs to be a
   hook question.
+- **The permalink shape, per platform.**
+  [432](../.change-log/432-the-tweet-with-only-an-analytics-link.md) found X handing back
+  `…/status/{id}/analytics` as a post's only link and normalized it, because 18A dedup keys
+  on `originalURL`. Instagram (`/p/{code}/liked_by/`) and Pinterest (`/pin/{id}/feedback/`)
+  have the same shape available and were left alone deliberately — reasoned about, never
+  observed. The probe's provenance panel shows `originalURL` for the chosen post, so this
+  is read off the screen rather than inferred, and then fixed for whatever is real.
+
+**The probe.** `extension/src/probe.html` + `src/probe.js`, with
+`extension/manifest.probe.json` beside the shipping manifest. It imports the REAL modules
+(`safari/focal-post.js`, `harvest.js`, `extractors/registry.js`), so what it measures is
+what will ship, and it answers all four riders plus the hit rate on one screen. The page
+lives inside `src/` rather than a sibling `probe/` root because an extension resolves module
+imports against its root — a `probe/` root could only reach the modules by copying them, and
+an unchecked mirror is the failure 404 exists to prevent. It is deleted when T0 is answered;
+the modules stay.
 
 **Verify:** two bars, doing two different jobs.
 
