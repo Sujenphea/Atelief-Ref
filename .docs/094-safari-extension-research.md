@@ -30,7 +30,14 @@ estimate does not account for.**
 - **The hook works.** MAIN world at `document_start`, worlds genuinely separate, 36 of the
   page's own XHRs intercepted on a logged-in x.com including a GraphQL call (425).
 - **`xcrun safari-web-extension-converter` warns `world` is unsupported and is wrong.**
-  That warning will reappear on the real port. Ignore it.
+  That warning will reappear on the real port. Ignore it. **[amended]** It did reappear,
+  on the first conversion after this doc was written — and it is not the converter's only
+  fault. Given `--bundle-identifier sujenphea.tier3probe` it wrote the app as
+  `sujenphea.Tier3Probe` (title-cased from `--app-name`) and the extension as
+  `sujenphea.tier3probe.Extension`, so the two no longer share a prefix and
+  `ValidateEmbeddedBinary` fails the build with *"Embedded binary's bundle identifier is
+  not prefixed with the parent app's bundle identifier."* One `sed` over the pbxproj. It is
+  named here because the message points at the embedding and the cause is the converter.
 - **Everything downstream of the inbox already exists.** 092 built `InboxWriter`,
   `InboxDrain`, `InboxArchive` and the Mac import, all tested, all measured. A tier-3
   capture that reaches the inbox is finished work from that point on. The drain runs at

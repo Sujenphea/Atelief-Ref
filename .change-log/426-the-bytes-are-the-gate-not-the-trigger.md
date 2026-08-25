@@ -57,9 +57,34 @@ stop rather than a resize. §2's third candidate (share sheet as trigger, extens
 accumulator) keeps its appeal and loses its price: it cannot be a lazy read at share time,
 so the accumulator has to push to native continuously while the user browses.
 
+## The probe for reading 1 is built
+
+Written straight after the amendment, so §9's spike is a device session rather than a
+project. Disposable and uncommitted, in the session scratchpad the way 425 kept its own:
+`tier3-probe/` (the web extension), `tier3-native/` (the handler), `tier3-xcode/` (the
+converted project, **building clean for the simulator**), and `tier3-probe/RUNBOOK.md`.
+
+It copies `extension/src/hook-core.js` **verbatim**, so reading 3's counters come from the
+shipping hook rather than a stand-in, and it borrows `ShareViewController.footprint()`
+unchanged so its numbers sit on the same scale as 423's 6.4 MB / 16.3 MB. The handler
+reports `phys_footprint` at three points — arrival, after decode, after write — because the
+shape of that curve is the finding and one number is not. It links no packages and uses no
+App Group: both are already discharged (401, 423) and requiring either means new
+provisioning for a throwaway.
+
+Reading 2 is deliberately not covered — it needs a third process and an App Group, and it
+is moot if reading 1 comes back badly.
+
+**The converter was wrong twice, not once.** `world` is "not supported" (stale, as 094 §1
+said it would be), and it also wrote an app id title-cased from `--app-name`
+(`sujenphea.Tier3Probe`) against an extension id lower-cased from `--bundle-identifier`
+(`sujenphea.tier3probe.Extension`), so `ValidateEmbeddedBinary` fails the build for a
+prefix mismatch the flags did not ask for. Recorded in 094 §1 — the message points at the
+embedding and the cause is the tool.
+
 ## Files
 
-Documentation only.
+Documentation only, in the repo.
 
 - `.docs/094-safari-extension-research.md` — amendment header; §1 gains the
   probe-not-in-repo note and the device-proof citations; §2's "nearly free" retracted; §4
