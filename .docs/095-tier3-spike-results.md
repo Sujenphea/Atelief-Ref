@@ -1,21 +1,24 @@
 # 095 — tier-3 spike: results
 
 > The device readings [094](094-safari-extension-research.md) § 9 asked for, taken
-> 2026-08-25 on an iPhone on iOS 26 against a logged-in x.com, with a throwaway Safari Web
-> Extension built for the purpose. Three readings were specified in order, because the
-> first could end the project. **It did not. It came back in the cheap direction, and it
-> did so by overturning the assumption the whole seam rested on.**
+> 2026-08-25 on an iPhone on iOS 26 against logged-in x.com, instagram.com and
+> pinterest.com, with a throwaway Safari Web Extension built for the purpose. Three
+> readings were specified in order, because the first could end the project. **It did not.
+> It came back in the cheap direction, and it did so by overturning the assumption the
+> whole seam rested on.**
 
 ## The one-line answer
 
 **Tier 3 is worth building, and the bytes problem 094 § 4 was built around does not exist.**
-X's media CDN serves the same bytes to a session-less `URLSession` that it serves to the
-page, so the extension never has to carry an image through a message. The auth wall is on
-**discovering** the media URL, not on fetching it — and discovering it is exactly what the
-hook is for.
+All three live platforms' media CDNs serve the same bytes to a session-less `URLSession`
+that they serve to the page — X, Instagram (signed URLs included) and Pinterest, verified
+byte-for-byte (§ 8). So the extension never has to carry an image through a message. The
+auth wall is on **discovering** the media URL, not on fetching it — and discovering it is
+exactly what the hook is for.
 
 094 § 9's stop condition was *"if neither shape carries auth-walled bytes affordably, stop"*.
-Shape 2 carries them at 2.9 MB.
+Shape 2 carries them at **2.9–3.1 MB, flat across every host and every size**, because it
+is a file copy and file copies do not scale.
 
 ---
 
@@ -27,7 +30,8 @@ that reports its own `phys_footprint` using `ShareViewController.footprint()` un
 so every number below sits on the same scale as
 [423](../.change-log/423-the-extension-measures-itself.md)'s.
 
-Readings taken over five builds; the ladder ran three times and reproduced.
+Readings taken over seven builds; the ladder ran four times and reproduced, and the § 4
+control ran on three platforms.
 
 ## 2. Reading 3 — the fidelity ceiling. **There isn't one.**
 
@@ -156,15 +160,53 @@ already takes, already measured at 0.2 MB for 16.3 MB.
 
 **S2's thesis survives the port intact:** the extension writes bytes it never held.
 
-## 8. What is still open
+## 8. Per-host — run 2026-08-25, all three live platforms
 
-1. **Per-host.** This is X. Instagram and Pinterest CDNs have not been put through
-   reading 1c, and **RedNote is known to be walled**
-   ([324](../.change-log/324-rednote-is-walled.md)) — so at least one host will need
-   shape 1 or nothing. Run the control per host before the plan commits to "native
-   fetches" as a universal rule.
-2. **URL lifetime.** A signed or expiring CDN URL makes "fetch later on the native side" a
-   race the desktop never had to think about, because it fetched immediately. Unmeasured.
+The control was repeated on Instagram and Pinterest. **It holds everywhere.**
+
+| host | with session | no session | native footprint | url |
+|---|---|---|---|---|
+| **x.com** | 200 · 125,523 B | **200 · 125,523 B** | 2.9 MB | plain, `name=orig` |
+| **instagram** | 200 · 52,422 B | **200 · 52,422 B** | 3.0 MB | **signed** (`oh=`/`oe=`) |
+| **pinterest** | 200 · 116,340 B | **200 · 116,340 B** | 3.1 MB | plain, `/originals/` |
+
+Byte-identical on every host, and **the native footprint is flat at 2.9–3.1 MB regardless
+of platform or payload** — it is a file copy, so it does not scale with the image. That is
+the whole argument for shape 2, and it is now measured three times rather than reasoned
+about once.
+
+**Instagram signs its URLs and it does not matter.** The signature is on the URL, not on
+the cookie jar: a session-less `URLSession` presenting the same signed URL gets the same
+bytes. It also settles the URL-lifetime worry — `oe=6A92F98C` decodes to
+**2026-08-29T15:23Z, about 99 hours out**. "The native side fetches later" is not a race at
+any timescale a capture lives on; only an archive left unimported for four days would find
+a dead URL, and by then the bytes are already in the inbox.
+
+**Pinterest 403'd first, and it was not an auth wall.** `/originals/` returned
+`403 · 263 B · application/xml` — *identically with and without the session*, which is the
+control answering in the clearest way available: the CDN does not look at credentials at
+all. It was a pin whose original Pinterest had not kept, exactly as
+`extractors/pinterest.js:37` documents ("`/originals/` can 404 … the rendered size is kept
+as a fetch fallback"). The probe had rewritten to `/originals/` with no fallback; the
+shipping extractor never would. **Transcribing the extractors' fallback chains rather than
+inventing a rewrite is load-bearing** — a probe without them reads a missing file as a dead
+platform. A second pin, which did have an original, returned 200 on the first try.
+
+**RedNote was not run** and is known walled ([324](../.change-log/324-rednote-is-walled.md)).
+It is the one host § 7's design should not be assumed to cover.
+
+## 9. What is still open
+
+1. **The hook on Instagram is unverified.** That run reported `installed: false`,
+   `readyState: complete` — the MAIN script ran after load, so `document_start` never
+   happened. The cause is almost certainly 094 § 7.4's trap in a new guise: the permission
+   was granted with the tab already open, so Safari injected retroactively. x.com and
+   Pinterest both report `installed: true, readyState: loading` on a fresh load. One clean
+   tab closes it.
+2. **The probe does not scope to the focal post.** On Instagram it picked avatars
+   (`s150x150`, `profile_pic`) and a video cover frame; the shipping extractors scope to
+   the post. Irrelevant to the auth question, which is about the CDN rather than the size,
+   but no byte count above should be quoted as "an Instagram capture".
 3. **Reading 2 — persistence.** Unrun, and only needed if the share sheet stays the
    trigger (094 § 2's third candidate). It needs a third process and an App Group.
 4. **The trigger.** Untouched by any of this, and now the *only* hard problem left. The
@@ -172,13 +214,13 @@ already takes, already measured at 0.2 MB for 16.3 MB.
    exactly as that section feared: it draws over the feed, it is styled against nothing,
    and it would break on a redesign.
 
-## 9. Recommendation
+## 10. Recommendation
 
 **Tier 3 is a go, and 094 § 8's sizing should be revised down** — the bytes row was priced
 as the gate and is now a solved seam that reuses code already written and measured. What
 091 called "+4–6 weeks, gated" is no longer gated, and the estimate's one unpriced row is
 the trigger, which is where the remaining design effort actually is.
 
-Next doc is a plan, not more research. Before it is written, run § 8.1 — the per-host
-control — because it is one tap per host and it decides whether the design in § 7 is the
-rule or merely the common case.
+**The per-host control is done, and § 7's design is the rule rather than the common
+case** — three platforms, byte-identical, flat 3 MB. Next doc is a plan, not more
+research.
