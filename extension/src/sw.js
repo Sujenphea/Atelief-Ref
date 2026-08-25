@@ -31,6 +31,7 @@ import {
   resolvePinterestVideo, shouldResolveVideo as pinterestHasVideo,
 } from "./pinterest-video.js";
 import { fetchWithTimeout } from "./net.js";
+import { planCapture, isTextCard } from "./capture-plan.js";
 import { MAX_VIDEO_BYTES } from "./config.js";
 import { isBulkMessage } from "./bulk-messages.js";
 import { handleBulkMessage } from "./bulk-sw.js";
@@ -224,13 +225,19 @@ export async function ingestOne(
   const maxImageBytes = caps ? (caps.maxBodyBytes ?? null) : null;
   const maxVideoBytes = caps ? (caps.maxVideoBodyBytes ?? null) : null;
 
-  if (mp4Url) {
+  // The DECISION (096 § D7) — which URLs, in what order, video or still, text card or not.
+  // Shared with tier 3, which consumes the same plan and hands it to the native handler
+  // instead of fetching here. This function keeps only the localhost transport.
+  const plan = planCapture(provenance, { mp4Url, content });
+
+  if (plan.videoUrl) {
     try {
       const { deduplicated } = await deps.downloadAndIngestVideo(
-        provenance, mp4Url, token, { jobId, sourceId, maxBytes: maxVideoBytes });
+        provenance, plan.videoUrl, token, { jobId, sourceId, maxBytes: maxVideoBytes });
       return { status: "saved", kind: "video", deduplicated };
     } catch (error) {
-      // A resolved video should normally ingest — log loudly, but still fall back.
+      // A resolved video should normally ingest — log loudly, but still fall back to the
+      // still candidates the plan carried alongside it.
       deps.logError("resolved video failed to download/ingest → image fallback:", error);
     }
   }
@@ -241,15 +248,12 @@ export async function ingestOne(
   // still surface as fetch-error (so a 401/403 auth wall halts the sweep, 5A), never
   // silently downgrade a picture tweet to a text card.
   let request;
-  if (content && !provenance.mediaUrl) {
+  if (isTextCard(plan)) {
     request = deps.buildContentCaptureRequest(provenance, null, content, { jobId, sourceId });
   } else {
     let fetched;
     try {
-      fetched = await deps.fetchImage(
-        [provenance.mediaUrl, provenance.mediaUrlFallback].filter(Boolean),
-        { maxBytes: maxImageBytes }
-      );
+      fetched = await deps.fetchImage(plan.urlCandidates, { maxBytes: maxImageBytes });
     } catch (error) {
       // Thread the CDN's HTTP status through (5A) so a 401/403 auth wall halts the sweep
       // resumable rather than burning through the rest of the board as permanent fails.
