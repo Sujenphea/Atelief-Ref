@@ -222,5 +222,8 @@ as the gate and is now a solved seam that reuses code already written and measur
 the trigger, which is where the remaining design effort actually is.
 
 **The per-host control is done, and § 7's design is the rule rather than the common
-case** — three platforms, byte-identical, flat 3 MB. Next doc is a plan, not more
-research.
+case** — three platforms, byte-identical, flat 3 MB. The plan is
+[096](096-tier3-plan.md), written 2026-08-25: it takes § 7's design as given, decides the
+trigger in favour of the popup, and puts the one thing that could still change the shape —
+whether a phone's viewport identifies the focal post — in a one-day gate before any port
+begins.

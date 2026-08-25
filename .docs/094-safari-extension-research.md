@@ -315,7 +315,9 @@ trigger answer the paragraph above leans on.
 > both pass; reading 1 passed by overturning §4's premise rather than by confirming it, so
 > the stop condition below was never reached. Reading 2 is unrun and is only needed if the
 > share sheet stays the trigger. **The next doc is a plan, not more research** — after one
-> tap per host to check whether §4's finding generalises beyond X (095 § 8.1).
+> tap per host to check whether §4's finding generalises beyond X (095 § 8.1) — **run, and
+> it does** ([428](../.change-log/428-three-cdns-none-of-them-asked.md)). The plan is
+> [096](096-tier3-plan.md); §2's trigger question is decided there, in favour of the popup.
 
 Not a plan doc yet. **One spike, three readings, in this order** — the order matters
 because the first reading can end the project and the third is wasted effort until it
