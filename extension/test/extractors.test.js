@@ -15,7 +15,7 @@ import { toOrigName, toOriginals } from "../src/extractors/base.js";
 import { extractProvenance, findExtractor, web } from "../src/extractors/registry.js";
 import { twitter, toStatusPermalink } from "../src/extractors/twitter.js";
 import { pinterest } from "../src/extractors/pinterest.js";
-import { instagram } from "../src/extractors/instagram.js";
+import { instagram, toPostPermalink } from "../src/extractors/instagram.js";
 import { cosmos } from "../src/extractors/cosmos.js";
 import { rednote, toRednoteOriginal } from "../src/extractors/rednote.js";
 
@@ -594,4 +594,59 @@ test("twitter: the DOM path now agrees with the bulk mapper's composed permalink
   });
   const p = extractProvenance(h);
   assert.equal(p.originalURL, `https://x.com/designer/status/1780000000000000000`);
+});
+
+// ---------------------------------------------------------------------------
+// Instagram permalink normalization — measured on a live feed, not reasoned about.
+// ---------------------------------------------------------------------------
+
+test("toPostPermalink: drops a post sub-page, keeping the trailing slash bulk composes", () => {
+  const canonical = "https://www.instagram.com/p/DceVsiRH8HO/";
+  for (const suffix of ["liked_by/", "comments/", "liked_by", "related/"]) {
+    assert.equal(toPostPermalink(canonical + suffix), canonical, `failed for ${suffix}`);
+  }
+});
+
+test("toPostPermalink: a reel keeps its /reel/ segment (honest provenance, per bulk)", () => {
+  assert.equal(
+    toPostPermalink("https://www.instagram.com/reel/ABC123/liked_by/"),
+    "https://www.instagram.com/reel/ABC123/",
+  );
+});
+
+test("toPostPermalink: adds the trailing slash a bare link may omit, and is idempotent", () => {
+  const canonical = "https://www.instagram.com/p/DceVsiRH8HO/";
+  assert.equal(toPostPermalink("https://www.instagram.com/p/DceVsiRH8HO"), canonical);
+  assert.equal(toPostPermalink(canonical), canonical);
+  assert.equal(toPostPermalink(toPostPermalink(canonical + "liked_by/")), canonical);
+});
+
+test("toPostPermalink: a NON-post URL passes through untouched", () => {
+  for (const url of [
+    "https://www.instagram.com/someone/",
+    "https://www.instagram.com/explore/",
+    "https://www.instagram.com/",
+    "not a url",
+  ]) {
+    assert.equal(toPostPermalink(url), url);
+  }
+});
+
+test("instagram: a /liked_by/ feed link yields the post permalink", () => {
+  // Measured: on a mobile-width feed EVERY post link was /liked_by/ and no bare /p/{code}/
+  // appeared, so this is the normal case rather than an edge one.
+  const h = harvest({
+    url: "https://www.instagram.com/",
+    media: [img("https://scontent.cdninstagram.com/v/REAL.jpg", 1080, 1080)],
+  });
+  const p = extractProvenance(h, { linkUrl: "https://www.instagram.com/p/DceVsiRH8HO/liked_by/" });
+  assert.equal(p.originalURL, "https://www.instagram.com/p/DceVsiRH8HO/");
+  assert.deepEqual(p.rawMetadata, { shortcode: "DceVsiRH8HO" });
+});
+
+test("instagram: the DOM path agrees with bulk-instagram.js's composed permalink", () => {
+  // bulk-instagram.js:179 → `https://{host}/{p|reel}/{code}/`. A DOM capture of the same
+  // post must produce that exact string or the two producers fork.
+  const h = harvest({ url: "https://www.instagram.com/p/DceVsiRH8HO/liked_by/", media: [] });
+  assert.equal(extractProvenance(h).originalURL, "https://www.instagram.com/p/DceVsiRH8HO/");
 });
