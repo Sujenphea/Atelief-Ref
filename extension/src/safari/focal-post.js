@@ -35,7 +35,7 @@
  *   {
  *     url, host, matchedSelector,
  *     viewport: { height, width },
- *     candidates: [{ index, postUrl, top, bottom, area, visibleArea }],
+ *     candidates: [{ index, postUrl, top, bottom, left, right, thumb, alt, area, visibleArea }],
  *     containerCount, linklessCount, zeroRectCount
  *   }
  *
@@ -121,6 +121,21 @@ export function readPostCandidates() {
     const anchor = element.querySelector(rule.link);
     return anchor ? anchor.href : null;
   });
+  // A THUMBNAIL per candidate, and its alt text.
+  //
+  // Not decoration: without it the probe is unusable on two of three platforms. A post URL
+  // identifies a post to a machine, and on x.com it happens to identify one to a human too
+  // because the handle is in the path (`/andrewwoan/status/…`). On instagram it is
+  // `/p/DcdkytGm1iW/`, on pinterest `/pin/477311260530128089/` — opaque. Asking someone to
+  // point at "the post that was centred" from a list of those is asking them to guess, and
+  // a corpus of guesses is worse than no corpus, because it looks like evidence.
+  const previews = elements.map((element) => {
+    const img = element.querySelector("img");
+    return {
+      thumb: (img && (img.currentSrc || img.src)) || null,
+      alt: (img && img.alt) || null,
+    };
+  });
   const rects = elements.map((element) => element.getBoundingClientRect());
 
   for (let index = 0; index < elements.length; index += 1) {
@@ -146,6 +161,18 @@ export function readPostCandidates() {
       postUrl,
       top: rect.top,
       bottom: rect.bottom,
+      // Horizontal extent. `chooseFocalPost` does NOT use it today — the rule is vertical
+      // overlap, which is complete information on a single-column feed. It is recorded
+      // because pinterest.com is a 2-column masonry grid where two pins share the vertical
+      // centre equally: measured on a phone, its winning margins were 15px and 46px against
+      // 274–350px on x.com and instagram.com, so those decisions were near coin flips.
+      // Evaluating any horizontal rule needs this in the corpus, and a corpus captured
+      // without it cannot answer the question later. Cheap to record, impossible to
+      // backfill.
+      left: rect.left,
+      right: rect.right,
+      thumb: previews[index].thumb,
+      alt: previews[index].alt,
       area: rect.width * rect.height,
       visibleArea: Math.max(0, visibleBottom - visibleTop) * rect.width,
     });

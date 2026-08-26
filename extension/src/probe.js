@@ -135,8 +135,22 @@ function renderCandidates(reading, pick) {
     // observation, not a spoiled one, and is how the corpus measures ad density alongside
     // the hit rate.
     const name = candidate.postUrl ? label(candidate.postUrl) : "— no link (ad?)";
-    button.textContent =
-      `${candidate.index}. ${name}  [${Math.round(candidate.top)}…${Math.round(candidate.bottom)}]`;
+    // The THUMBNAIL is what makes this list usable. A post id identifies a post to a
+    // machine; only x.com's URL happens to identify one to a human (the handle is in the
+    // path). On instagram and pinterest the ids are opaque, so without a picture the tap is
+    // a guess — and a corpus of guesses looks like evidence while being none.
+    if (candidate.thumb) {
+      const img = document.createElement("img");
+      img.src = candidate.thumb;
+      img.alt = "";
+      img.className = "thumb";
+      button.append(img);
+    }
+    const caption = document.createElement("span");
+    caption.textContent =
+      `${candidate.index}. ${name}  [${Math.round(candidate.top)}…${Math.round(candidate.bottom)}]`
+      + (candidate.alt ? `\n${candidate.alt.slice(0, 80)}` : "");
+    button.append(caption);
     if (pick.index === candidate.index) button.classList.add("chosen");
     button.addEventListener("click", () => record(candidate.postUrl || null));
     item.append(button);
