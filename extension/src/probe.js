@@ -228,4 +228,9 @@ els.clear.addEventListener("click", async () => {
   await refreshCount();
 });
 
-init();
+// Anything that escapes `init` lands in the status line. On a phone there is no console to
+// open, and a silent failure is indistinguishable from the page never having loaded — which
+// is exactly how the missing <script> tag presented: every field stuck on its placeholder.
+init().catch((error) => {
+  els.status.textContent = `probe failed: ${error && error.message ? error.message : String(error)}`;
+});
