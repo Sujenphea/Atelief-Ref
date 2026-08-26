@@ -45,3 +45,9 @@ DerivedData/
 # ~10 MB of third-party source that sat untracked in every `git status`, one
 # `git add .` away from being committed into this repo's history.
 /ref/
+
+# Tier-3 T0 probe (096 § T0) — a measurement instrument, deleted when T0 is answered.
+# The staging dir is a manifest plus a SYMLINK to extension/src (never a copy — 404), and
+# the Xcode project is converter output, regenerable in one command. Neither is source.
+/tier3-probe-stage/
+/tier3-probe-xcode/
