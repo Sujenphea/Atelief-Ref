@@ -209,6 +209,62 @@ test("a scrolled-past post with a negative top is clipped, not counted at full h
 });
 
 // ---------------------------------------------------------------------------
+// Uncapturable focal items (issue 22A) — ~25% of a real feed has no permalink
+// ---------------------------------------------------------------------------
+
+/** A container with no permalink: an ad, a promoted pin, a suggested-user card. */
+const ad = (index, top, bottom) => post(index, top, bottom, { postUrl: null });
+
+test("an AD in the centre is reported, not silently replaced by its neighbour", () => {
+  // The failure this closes: the ad was invisible to the chooser, so the geometric winner
+  // became a neighbouring post and the popup captured something else.
+  const result = chooseFocalPost(reading([
+    post(0, -400, 150),
+    ad(1, 150, 700),        // covers the whole band
+    post(2, 700, 1200),
+  ]));
+  assert.equal(result.postUrl, null);
+  assert.equal(result.reason, "uncapturable-focal");
+  assert.equal(result.index, 1, "it names WHICH container was in the way");
+});
+
+test("the best capturable thing nearby is offered as an alternative", () => {
+  const result = chooseFocalPost(reading([
+    ad(0, 150, 700),        // band overlap 400 — wins
+    post(1, 700, 900),      // visible, capturable
+  ]));
+  assert.equal(result.reason, "uncapturable-focal");
+  assert.deepEqual(result.alternative, {
+    postUrl: "https://x.com/a/status/1", index: 1, score: 0,
+  });
+});
+
+test("an ad that is NOT central loses to a real post, as it always did", () => {
+  const result = chooseFocalPost(reading([
+    ad(0, 0, 210),          // barely clips the band
+    post(1, 210, 800),      // covers most of it
+  ]));
+  assert.equal(result.postUrl, "https://x.com/a/status/1");
+  assert.equal(result.reason, undefined);
+});
+
+test("a feed of nothing BUT ads reports uncapturable, with no alternative", () => {
+  const result = chooseFocalPost(reading([ad(0, 100, 400), ad(1, 400, 700)]));
+  assert.equal(result.reason, "uncapturable-focal");
+  assert.equal(result.alternative, null);
+});
+
+test("ads still do not count as candidates for the empty cases", () => {
+  // No containers at all remains distinct from containers that cannot be captured.
+  assert.deepEqual(chooseFocalPost(reading([])), { postUrl: null, reason: "no-candidates" });
+  // An off-screen ad is none-visible, not uncapturable — nothing was in the middle at all.
+  assert.deepEqual(
+    chooseFocalPost(reading([ad(0, 900, 1600)])),
+    { postUrl: null, reason: "none-visible" },
+  );
+});
+
+// ---------------------------------------------------------------------------
 // The band is a knob, so the corpus can be re-scored offline
 // ---------------------------------------------------------------------------
 

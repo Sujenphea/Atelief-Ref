@@ -90,6 +90,15 @@ function renderPick(pick) {
   if (!pick.postUrl) {
     setText(els.basis, pick.reason);
     els.basis.classList.add("warn");
+    // `uncapturable-focal` is not "nothing here" — something IS centred, it just has no
+    // permalink. Naming which container, and what the nearest capturable thing was, is the
+    // whole point of 22A: without it the popup would have quietly captured the alternative.
+    if (pick.reason === "uncapturable-focal") {
+      setText(els.pick, `container ${pick.index} has no permalink (ad?)`);
+      setText(els.score, `${Math.round(pick.score)} / ${Math.round(pick.margin)}`);
+      setText(els.runner, pick.alternative ? `would have taken ${label(pick.alternative.postUrl)}` : "nothing capturable");
+      return;
+    }
     setText(els.pick, "no pick");
     setText(els.score, null);
     setText(els.runner, null);
@@ -121,10 +130,15 @@ function renderCandidates(reading, pick) {
   for (const candidate of reading.candidates) {
     const item = document.createElement("li");
     const button = document.createElement("button");
+    // An unlinked container is listed and TAPPABLE (22A). Tapping it records
+    // `expectedPostUrl: null` — "the thing in the middle was an ad" — which is a real
+    // observation, not a spoiled one, and is how the corpus measures ad density alongside
+    // the hit rate.
+    const name = candidate.postUrl ? label(candidate.postUrl) : "— no link (ad?)";
     button.textContent =
-      `${candidate.index}. ${label(candidate.postUrl)}  [${Math.round(candidate.top)}…${Math.round(candidate.bottom)}]`;
-    if (pick.postUrl === candidate.postUrl) button.classList.add("chosen");
-    button.addEventListener("click", () => record(candidate.postUrl));
+      `${candidate.index}. ${name}  [${Math.round(candidate.top)}…${Math.round(candidate.bottom)}]`;
+    if (pick.index === candidate.index) button.classList.add("chosen");
+    button.addEventListener("click", () => record(candidate.postUrl || null));
     item.append(button);
     els.candidates.append(item);
   }
@@ -141,7 +155,9 @@ async function record(expectedPostUrl) {
   list.push({ reading: state.reading, expectedPostUrl });
   await browser.storage.local.set({ [STORE_KEY]: list });
   const pick = chooseFocalPost(state.reading);
-  els.status.textContent = pick.postUrl === expectedPostUrl ? "recorded ✓ hit" : "recorded ✗ MISS";
+  // `null === null` is a HIT: the code said "the centred thing cannot be captured" and so
+  // did the human. That agreement is as much a success as naming the right post.
+  els.status.textContent = (pick.postUrl || null) === expectedPostUrl ? "recorded ✓ hit" : "recorded ✗ MISS";
   await refreshCount();
 }
 

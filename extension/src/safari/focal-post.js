@@ -59,12 +59,23 @@ export function readPostCandidates() {
     },
     {
       hosts: ["instagram.com"],
-      containers: ["article", '[role="presentation"] > div > div'],
+      // `article` only. The `[role="presentation"] > div > div` fallback this list used to
+      // carry was measured at a phone viewport and found 1 element with 0 permalinks — a
+      // fallback that cannot work is worse than none, because it turns "the selector broke"
+      // into "the selector found something useless". If `article` ever stops matching, the
+      // reading reports `matchedSelector: null` and says so plainly.
+      containers: ["article"],
       link: 'a[href^="/p/"], a[href^="/reel/"]',
     },
     {
       hosts: ["pinterest.com", "pinterest.co.uk"],
-      containers: ['[data-test-id="pin"]', '[data-test-id="pinWrapper"]', "[data-grid-item]"],
+      // Measured at a phone viewport: `[data-test-id="pin"]`, `[data-grid-item]` and
+      // `[role="listitem"]` all return the same 8 containers with the same 6 permalinks and
+      // the same 230px median height. `[data-test-id="pinWrapper"]` returns the same count
+      // but a SMALLER box (198px) — it is the inner wrapper, so it under-reports how much of
+      // the viewport a pin covers, and this file's whole job is measuring that. Dropped.
+      // One structural fallback is kept for the day Pinterest renames its test ids.
+      containers: ['[data-test-id="pin"]', "[data-grid-item]"],
       link: 'a[href^="/pin/"]',
     },
   ];
@@ -114,14 +125,18 @@ export function readPostCandidates() {
 
   for (let index = 0; index < elements.length; index += 1) {
     const postUrl = links[index];
-    if (!postUrl) {
-      // A container with no permalink cannot be captured, so it is not a candidate —
-      // but it is COUNTED, because "the selector matched 20 things and 20 had no link"
-      // and "the selector matched nothing" are different failures and T0 must tell them
-      // apart.
-      base.linklessCount += 1;
-      continue;
-    }
+    // A container with no permalink cannot be captured — an ad, a promoted pin, a
+    // "suggested for you" card. It is still a CANDIDATE, carrying `postUrl: null`.
+    //
+    // Dropping them was the earlier behaviour and it was wrong twice over. Measured at a
+    // phone viewport, about a quarter of a feed is unlinked (instagram 3 of 4, pinterest 6
+    // of 8), so an ad occupying the centre of the screen is common — and with the ad
+    // invisible to the chooser, the geometric winner became a NEIGHBOURING post. The popup
+    // would then silently capture something the user was not looking at, which is the worst
+    // failure available here, and `chooseFocalPost` had no way to detect it.
+    //
+    // `linklessCount` stays as the at-a-glance summary; the candidates carry the geometry.
+    if (!postUrl) base.linklessCount += 1;
     const rect = rects[index];
     if (rect.bottom - rect.top <= 0) base.zeroRectCount += 1;
     const visibleTop = Math.max(rect.top, 0);
@@ -216,8 +231,32 @@ export function chooseFocalPost(reading, options = {}) {
   }
 
   const next = ranked[1];
-
   const nextScore = next ? (basis === "centre-band" ? next.band : next.visible) : 0;
+
+  // The thing in the middle of the screen has no permalink. This is NOT "nothing here" —
+  // something is plainly there and the user is looking at it — so it gets its own answer,
+  // richer than the flat refusals above, carrying what was found and the best capturable
+  // thing near it. What the popup does with `alternative` is a product decision (offer it,
+  // or say "nothing to save here"); reporting it is this function's job.
+  if (!ranked[0].candidate.postUrl) {
+    const alternative = ranked.find((entry) => entry.candidate.postUrl) || null;
+    return {
+      postUrl: null,
+      reason: "uncapturable-focal",
+      index: ranked[0].candidate.index,
+      basis,
+      score,
+      margin: next ? score - nextScore : score,
+      alternative: alternative
+        ? {
+          postUrl: alternative.candidate.postUrl,
+          index: alternative.candidate.index,
+          score: basis === "centre-band" ? alternative.band : alternative.visible,
+        }
+        : null,
+    };
+  }
+
   return {
     postUrl: ranked[0].candidate.postUrl,
     index: ranked[0].candidate.index,
