@@ -288,7 +288,24 @@ public struct InboxDrain: Sendable {
         var chunk: [Ready] = []
         chunk.reserveCapacity(width)
 
-        for entry in orderedEntries(of: pending) {
+        // Ordering has to read and decode EVERY pending record before the first one
+        // can run — `capturedAt` lives inside the record, so there is no cheaper way
+        // to sort by it. That read is the one stretch of a pass with no cancellation
+        // check in it, and on a large backlog it is also the longest: fifty records
+        // is fifty file reads and fifty decodes before any work the summary can
+        // report. A pass cancelled in that window did all of it and returned nothing,
+        // which is exactly the "under-reports rather than mis-reports" contract above
+        // — but it under-reports having spent the time anyway.
+        //
+        // So the check is asked twice: once before the read, and once after it. The
+        // second is what actually pays, since the read is where the time goes.
+        // Nothing has been touched on either path — no record is resolved, no attempt
+        // spent — so an early return here leaves the inbox precisely as it was found.
+        if Task.isCancelled { return pass.summary }
+        let entries = orderedEntries(of: pending)
+        if Task.isCancelled { return pass.summary }
+
+        for entry in entries {
             if Task.isCancelled { return pass.summary }
 
             switch entry {
