@@ -292,6 +292,43 @@ test("DEFAULT_BAND is the documented default", () => {
 
 const CORPUS = fileURLToPath(new URL("./fixtures/focal-post-observations.json", import.meta.url));
 
+/** The three platforms 096 § T0 gates on, and the hosts that count towards each.
+ *
+ * Written as a table rather than derived from `reading.host` so a corpus that only ever
+ * saw `pinterest.com` still reports `pinterest` as a platform with observations, and a
+ * host nobody planned for (a `www.` prefix, a ccTLD) lands in a named bucket instead of
+ * inventing a fourth platform that then looks fully covered at n=1. */
+const PLATFORMS = [
+  { key: "x.com", domains: ["x.com", "twitter.com"] },
+  { key: "instagram.com", domains: ["instagram.com"] },
+  { key: "pinterest.com", domains: ["pinterest.com", "pinterest.co.uk"] },
+];
+
+/** `hostIs` — equal to the domain, or a subdomain of it. The same predicate
+ * `focal-post.js`'s reader and `extractors/base.js` use, so a corpus bucket and a live
+ * selector agree about what counts as pinterest. */
+function platformOf(host) {
+  const lower = String(host || "").toLowerCase();
+  const match = PLATFORMS.find((entry) =>
+    entry.domains.some((domain) => lower === domain || lower.endsWith("." + domain)));
+  return match ? match.key : `other:${lower || "unknown"}`;
+}
+
+/** Observations per platform, in `PLATFORMS` order with any stragglers after. */
+function tally(observations) {
+  const counts = new Map(PLATFORMS.map((entry) => [entry.key, 0]));
+  for (const observation of observations) {
+    const key = platformOf(observation.reading && observation.reading.host);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return counts;
+}
+
+const readCorpus = () => JSON.parse(readFileSync(CORPUS, "utf8"));
+
+// The REGRESSION bar. Runs against whatever has been captured, however little — a
+// thin corpus is still worth defending, and this is the half that will keep failing
+// usefully once T3 lands.
 test("T0 corpus: every observation still picks the post a human confirmed", (t) => {
   if (!existsSync(CORPUS)) {
     // Deliberately a SKIP with a sentence, not a silent pass. A corpus check that has
@@ -300,7 +337,7 @@ test("T0 corpus: every observation still picks the post a human confirmed", (t) 
     t.skip("no T0 corpus yet — capture it during 096 § T0 (fixtures/focal-post-observations.json)");
     return;
   }
-  const observations = JSON.parse(readFileSync(CORPUS, "utf8"));
+  const observations = readCorpus();
   assert.ok(Array.isArray(observations) && observations.length > 0, "corpus is a non-empty array");
 
   const misses = [];
@@ -317,4 +354,53 @@ test("T0 corpus: every observation still picks the post a human confirmed", (t) 
     }
   }
   assert.deepEqual(misses, [], `corpus regressions: ${JSON.stringify(misses, null, 2)}`);
+});
+
+/** 096 § T0's live bar: ≥27 of 30 unplanned popup openings, per platform. The corpus
+ * has to reach the same 30 before replaying it means anything, because a replay can
+ * only ever be as broad as what was recorded. */
+const REQUIRED_PER_PLATFORM = 30;
+
+// The COVERAGE bar, and it exists because the regression test above cannot fail
+// informatively on a corpus that is merely thin. Four observations from one platform
+// replay green, and a green check reads as "the focal-post rule is protected" — which
+// it is not yet: 096 § T0 asks for 30 per platform across three, and pinterest, the one
+// platform where the rule is known to be shaky (winning margins of 15px and 46px on a
+// 2-column grid, against 274-350 elsewhere — see 438), is the one most likely to be
+// missing when someone stops capturing early.
+//
+// So the corpus is made to state its own coverage on every run. This is `host-table.js`'s
+// FLOORS applied to a fixture instead of a parser, for the identical reason that file
+// gives: "a regex that silently stops matching passes forever, so 'we parsed something
+// plausible' is itself an invariant". Here the invariant is "we captured enough to be a
+// gate", and until it holds the test SKIPS with the tally rather than passing.
+//
+// It converts to a real gate by itself the moment T0 finishes — no edit, no remembering.
+test("T0 corpus: broad enough to be a regression gate", (t) => {
+  if (!existsSync(CORPUS)) {
+    t.skip("no T0 corpus yet — capture it during 096 § T0 (fixtures/focal-post-observations.json)");
+    return;
+  }
+  const counts = tally(readCorpus());
+  const line = [...counts.entries()]
+    .map(([key, n]) => `${key} ${n}/${REQUIRED_PER_PLATFORM}`)
+    .join("  ");
+
+  const short = PLATFORMS
+    .map((entry) => ({ key: entry.key, have: counts.get(entry.key) || 0 }))
+    .filter((entry) => entry.have < REQUIRED_PER_PLATFORM);
+
+  if (short.length) {
+    // The tally goes to stdout as well as into the skip reason: `node --test` prints a
+    // skip's message, but the count is the thing worth seeing scroll past on every run,
+    // and it is what makes "we are at 4 of 90" impossible to mistake for "green".
+    console.log(`  T0 corpus coverage: ${line}`);
+    t.skip(
+      `corpus is not yet a gate — ${line}. `
+      + `096 § T0 asks for ${REQUIRED_PER_PLATFORM} unplanned observations per platform; `
+      + `still short on ${short.map((entry) => `${entry.key} (${entry.have})`).join(", ")}.`);
+    return;
+  }
+  console.log(`  T0 corpus coverage: ${line}`);
+  assert.ok(true);
 });
