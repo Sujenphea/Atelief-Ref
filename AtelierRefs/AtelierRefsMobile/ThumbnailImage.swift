@@ -26,11 +26,47 @@ final class ThumbnailCache: @unchecked Sendable {
 
     private let cache = NSCache<NSString, UIImage>()
 
+    /// The ceiling on decoded bytes held at once — **96 MB**.
+    ///
+    /// **A count limit alone stopped being a bound once the detail screen shared this
+    /// cache.** The original reasoning was that these are display tiers and a phone
+    /// screen holds a dozen, so 240 was generous rather than dangerous. That describes
+    /// what is VISIBLE; the cache retains 240 whatever is on screen, and it now holds
+    /// two populations four times apart in size:
+    ///
+    ///   · a grid tile is the 512 tier decoded to a column width — ~570px on a 2-column
+    ///     phone layout, so roughly 1.3 MB of RGBA;
+    ///   · a detail image is the 1280 tier decoded to the full screen width — ~1170px,
+    ///     so roughly 5.5 MB.
+    ///
+    /// 240 of the second is well over a gigabyte. Nothing but `NSCache`'s own
+    /// memory-pressure eviction stood between a browse-heavy session and that, and
+    /// relying on pressure eviction alone is how a scroll ends up decoding, evicting
+    /// and re-decoding the same tiles.
+    ///
+    /// 96 MB holds several screenfuls of tiles plus a handful of detail images — the
+    /// working set of actually paging around a library — and leaves the rest to be
+    /// re-decoded, which is cheap because the files on disk are already small JPEGs.
+    private static let byteBudget = 96 * 1024 * 1024
+
     private init() {
-        // A generous count rather than a byte budget: these are display tiers, a phone
-        // screen holds a dozen, and the memory ceiling that matters on iOS belongs to
-        // the share extension (091 · D2), not to the app.
+        // The count limit stays as the coarse bound; the cost limit is the real one.
+        // `NSCache` enforces whichever is reached first, and they answer different
+        // questions — 240 caps how many keys can pile up, `byteBudget` caps what those
+        // keys can weigh, which is the number that actually matters on a phone.
         cache.countLimit = 240
+        cache.totalCostLimit = Self.byteBudget
+    }
+
+    /// What one decoded image weighs, for the cost limit above.
+    ///
+    /// `bytesPerRow * height` — the bitmap's real allocation, not a guess from the
+    /// point size, so a wide panorama and a tall skyscraper at the same `maxPixel` are
+    /// charged what they each actually cost. A `UIImage` with no backing `CGImage`
+    /// (nothing here produces one) is charged nothing rather than crashing the accounting.
+    private static func cost(of image: UIImage) -> Int {
+        guard let cgImage = image.cgImage else { return 0 }
+        return cgImage.bytesPerRow * cgImage.height
     }
 
     /// The image at `url`, decoded so its longest edge is at most `maxPixel`, or `nil`
@@ -43,7 +79,7 @@ final class ThumbnailCache: @unchecked Sendable {
         let decoded = await Task.detached(priority: .userInitiated) {
             Self.decode(url, maxPixel: maxPixel)
         }.value
-        if let decoded { cache.setObject(decoded, forKey: key) }
+        if let decoded { cache.setObject(decoded, forKey: key, cost: Self.cost(of: decoded)) }
         return decoded
     }
 
