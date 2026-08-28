@@ -446,4 +446,76 @@ struct ShareCaptureTests {
         #expect(ShareCapture.mediaCandidates(
             for: PageCapture(provenance: ProvenanceDTO(platform: "web"))).isEmpty)
     }
+
+    // MARK: - The tier-2 precedence rules
+
+    /// These four cover the three rules that lived in `ShareViewController.harvest` until
+    /// this suite could reach them. Each one is a sentence that file used to assert only by
+    /// executing, in a process with no test host.
+
+    /// Rule 1, and the half of it that is easy to miss: a page does not merely WIN, it
+    /// discards. The shared URL and the sharing app's title are dropped on the floor —
+    /// which is right, because the DOM knows the author and the canonical permalink and an
+    /// `attributedTitle` knows neither, but it is a real loss and it should be pinned.
+    @Test("a page snapshot beats the shared URL and title outright")
+    func pageBeatsTierOne() {
+        let capture = PageCapture(
+            provenance: ProvenanceDTO(
+                platform: "twitter", originalURL: "https://x.com/a/status/1", title: "from the DOM"),
+            mediaURL: "https://pbs.twimg.com/media/a.jpg?name=orig")
+
+        let resolution = ShareCapture.resolution(
+            image: nil,
+            urlString: "https://x.com/home",
+            title: "from the share sheet",
+            page: capture)
+
+        #expect(resolution == .needsMedia(capture))
+    }
+
+    /// Rule 2. Long-pressing an image in Safari shares THAT image; re-fetching the largest
+    /// thing on the page would hand back a different picture. So arrived bytes short-circuit
+    /// the fetch entirely — `.resolved`, not `.needsMedia` — while the provenance still
+    /// comes from the DOM.
+    @Test("bytes that arrived with the share beat the media URL the extractor found")
+    func arrivedBytesBeatTheFetch() {
+        let capture = PageCapture(
+            provenance: ProvenanceDTO(platform: "twitter", originalURL: "https://x.com/a/status/1"),
+            mediaURL: "https://pbs.twimg.com/media/other.jpg?name=orig")
+        let bytes = PayloadSource.data(Data([0xFF, 0xD8, 0xFF]))
+
+        #expect(
+            ShareCapture.resolution(
+                image: bytes, urlString: "https://x.com/a/status/1", page: capture)
+                == .resolved(.page(capture, bytes: bytes)))
+    }
+
+    /// Rule 3: with no page, nothing changes. The tier-1 answer is exactly
+    /// `sharedItem`'s, which is what keeps this function a router rather than a second
+    /// implementation of rules that already have one.
+    @Test("no page snapshot is tier 1, unchanged")
+    func noPageIsTierOne() {
+        let bytes = PayloadSource.data(Data([0x89, 0x50]))
+
+        #expect(
+            ShareCapture.resolution(image: bytes, urlString: "https://x.com/a/status/1")
+                == .resolved(
+                    ShareCapture.sharedItem(
+                        image: bytes, urlString: "https://x.com/a/status/1")!))
+
+        #expect(
+            ShareCapture.resolution(image: nil, urlString: "https://cosmos.so/e/1", title: " ")
+                == .resolved(.link(url: "https://cosmos.so/e/1", title: nil)))
+    }
+
+    /// The case the activation rule should make unreachable, decided somewhere a test can
+    /// reach it. A `file://` is not provenance, so a share carrying only one amounts to
+    /// nothing — and `.nothing` is what lets the caller tell "no capture" apart from "a
+    /// capture with no picture", which is the distinction the over-cap rethrow turns on.
+    @Test("no page, no bytes and no web URL is nothing")
+    func nothingCapturable() {
+        #expect(ShareCapture.resolution(image: nil, urlString: nil) == .nothing)
+        #expect(
+            ShareCapture.resolution(image: nil, urlString: "file:///tmp/a.jpg") == .nothing)
+    }
 }

@@ -233,12 +233,18 @@ final class ShareViewController: UIViewController {
 
     /// The one ``SharedItem`` in a share, or nil if there is nothing capturable.
     ///
-    /// **This function no longer decides anything** (406, issue 11). It walks the
-    /// providers, first-non-nil-wins, and hands three optionals to
-    /// `ShareCapture.sharedItem`, which is where image-beats-URL, URL-becomes-sourceURL,
-    /// the `file://` filter and the empty-title rule now live and are tested. What is
-    /// left here is asynchronous `NSItemProvider` loading, which is the only part that
-    /// needs a process.
+    /// **This function decides nothing, and this time the sentence is enforced.** It walks
+    /// the providers, first-non-nil-wins, reads the page snapshot, and hands four optionals
+    /// to `ShareCapture.resolution`, which is where image-beats-URL, URL-becomes-sourceURL,
+    /// the `file://` filter, the empty-title rule and — since this change — the three tier-2
+    /// precedence rules live and are tested. What is left here is asynchronous
+    /// `NSItemProvider` loading and the media fetch, which are the only parts that need a
+    /// process.
+    ///
+    /// The claim used to be true and then quietly stopped being: 406 · issue 11 moved four
+    /// decisions out, and tier 2 put three back (a page beats tier 1, arrived bytes beat
+    /// fetched bytes, no page means tier 1) in the one file with no test host. They are
+    /// pure over four optionals, so they went the same way the first four did.
     ///
     /// The web filter is applied at the assignment rather than only at the end, and
     /// that is not redundancy: a `file://` attachment arriving from one provider must
@@ -246,9 +252,8 @@ final class ShareViewController: UIViewController {
     /// idempotent, so asking twice costs nothing and asking once in the wrong place
     /// would cost a URL.
     ///
-    /// Throws only ``InboxWriteError/payloadTooLarge(bytes:limit:)``, from a file too
-    /// big to accept — refused before it is copied, and rendered by `capture()`'s
-    /// existing failure card.
+    /// Throws only ``InboxWriteError/payloadTooLarge(bytes:limit:)``, and only when nothing
+    /// else could be made of the share — see ``oversized`` below.
     private func harvest(_ items: [NSExtensionItem]) async throws -> SharedItem? {
         var image: PayloadSource?
         var urlString: String?
@@ -257,12 +262,38 @@ final class ShareViewController: UIViewController {
         // a title that is sometimes the URL is worse than no title, and tier 1 has no
         // way to tell the difference.
         var title: String?
+        // **An over-cap image is held, not thrown** — the whole reason this is a variable.
+        //
+        // `loadImage` refuses a file above `InboxWriter.maximumPayloadBytes` before copying
+        // it, and that refusal used to propagate straight out of this function. Which meant
+        // a share whose IMAGE was too big lost its PAGE as well: the snapshot had already
+        // loaded, the DOM had the author and the permalink and a rendered-size media URL
+        // that is under the cap by construction, and all of it was discarded for a card
+        // reading "that one didn't save".
+        //
+        // That inverts this file's own thesis. Tier 2 failing is tier 1 succeeding — stated
+        // three times in this header — but tier 1 failing was taking tier 2 down with it,
+        // and tier 2 was the path that would have worked.
+        //
+        // So the error is carried to the end and rethrown only if the share amounted to
+        // nothing else. The refusal is still explicit where it was written to be explicit:
+        // a plain oversized photo, with no page and no URL, fails on the card exactly as
+        // before, because that is a share with nothing to degrade to.
+        var oversized: (any Error)?
 
         for item in items {
             title = title ?? item.attributedTitle?.string
             for provider in item.attachments ?? [] {
                 if image == nil, let identifier = Self.imageIdentifier(of: provider) {
-                    image = try await Self.loadImage(from: provider, identifier: identifier)
+                    do {
+                        image = try await Self.loadImage(from: provider, identifier: identifier)
+                    } catch {
+                        // Recorded and stepped over, so the page snapshot below still gets
+                        // its chance. Only the FIRST is kept: they are all the same typed
+                        // refusal, and the first is the one that names the file the user
+                        // actually chose.
+                        oversized = oversized ?? error
+                    }
                 }
                 if urlString == nil,
                    provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
@@ -272,43 +303,61 @@ final class ShareViewController: UIViewController {
             }
         }
 
-        // **Tier 2, and it takes the bytes with it.** When Safari ran the preprocessing
-        // script, the page's own DOM beats anything the other attachments can say about
-        // it — the author, the post's canonical URL, the picture — so the provenance is
-        // the harvest's.
-        //
-        // But bytes that ARRIVED with the share still win as the picture, and that
-        // ordering matters: long-pressing an image in Safari shares that image, and
-        // re-fetching "the largest image on the page" instead would hand the user a
-        // different picture than the one they pressed. This is tier 1's own rule (image
-        // bytes beat a URL) applied one level up — and when there are none, the media URL
-        // the extractor found is fetched instead.
-        if let harvest = await pageSnapshot?.value {
-            let capture = PageExtractor.capture(from: harvest)
-            // **`payload=none` has three causes that look identical from outside.** The
-            // page had no picture; the page had one and the extractor did not choose it;
-            // the extractor chose one and the fetch failed. Only the third logs anything
-            // today, and by the time anyone asks the DOM, the item providers and this
-            // process are all gone — 403's rule again: the vocabulary lands here or
-            // nowhere. `articles=` earns its place because the twitter branch scopes to
-            // the focal `<article>`, and a scoping that picks wrong is indistinguishable
-            // from a page with no media at every later point.
-            let kinds = Set(harvest.media.map(\.kind.rawValue)).sorted()
-            let articles = Set(harvest.media.compactMap(\.articleIndex)).sorted()
-            Self.logger.info(
-                """
-                page harvest — media=\(harvest.media.count, privacy: .public) \
-                kinds=[\(kinds.joined(separator: " "), privacy: .public)] \
-                articles=[\(articles.map(String.init).joined(separator: " "), privacy: .public)] \
-                metas=\(harvest.metas.count, privacy: .public) \
-                chose=\(capture.mediaURL ?? "none", privacy: .public) \
-                fallback=\(capture.mediaURLFallback ?? "none", privacy: .public)
-                """)
-            if let image { return .page(capture, bytes: image) }
-            return await Self.pageItem(for: capture)
-        }
+        let page = await pageCapture()
 
-        return ShareCapture.sharedItem(image: image, urlString: urlString, title: title)
+        switch ShareCapture.resolution(
+            image: image, urlString: urlString, title: title, page: page
+        ) {
+        case .resolved(let item):
+            // A page resolved WITHOUT its own bytes cannot happen here — `resolution`
+            // returns `.needsMedia` for that — so a `.page` case reaching this line
+            // carries the picture the user pressed, oversized or not.
+            return item
+        case .needsMedia(let capture):
+            // The fetch, which is the one thing `resolution` cannot do. Its failure is a
+            // media-less `.page`, still carrying everything the DOM said, which is why an
+            // over-cap image is safe to have stepped over.
+            return await Self.pageItem(for: capture)
+        case .nothing:
+            // Nothing was made of the share. If the reason is the image we refused, that
+            // refusal is the honest answer and it is thrown now — the card it renders is
+            // the one `payloadTooLarge` was added for (091 · D2: a refusal beats a share
+            // sheet that silently did nothing).
+            if let oversized { throw oversized }
+            return nil
+        }
+    }
+
+    /// The tier-2 page snapshot as a ``PageCapture``, or nil when this share did not come
+    /// from a web page — plus the one log line that is the only record of what the DOM held.
+    ///
+    /// Split out of `harvest` so that function is a walk over providers and a single switch.
+    /// The logging is why this is not simply inlined into the call: it needs the raw
+    /// `PageHarvest` (media counts, kinds, article indices) which the `PageCapture` no longer
+    /// carries, so the two have to be in scope together somewhere.
+    private func pageCapture() async -> PageCapture? {
+        guard let harvest = await pageSnapshot?.value else { return nil }
+        let capture = PageExtractor.capture(from: harvest)
+        // **`payload=none` has three causes that look identical from outside.** The
+        // page had no picture; the page had one and the extractor did not choose it;
+        // the extractor chose one and the fetch failed. Only the third logs anything
+        // today, and by the time anyone asks the DOM, the item providers and this
+        // process are all gone — 403's rule again: the vocabulary lands here or
+        // nowhere. `articles=` earns its place because the twitter branch scopes to
+        // the focal `<article>`, and a scoping that picks wrong is indistinguishable
+        // from a page with no media at every later point.
+        let kinds = Set(harvest.media.map(\.kind.rawValue)).sorted()
+        let articles = Set(harvest.media.compactMap(\.articleIndex)).sorted()
+        Self.logger.info(
+            """
+            page harvest — media=\(harvest.media.count, privacy: .public) \
+            kinds=[\(kinds.joined(separator: " "), privacy: .public)] \
+            articles=[\(articles.map(String.init).joined(separator: " "), privacy: .public)] \
+            metas=\(harvest.metas.count, privacy: .public) \
+            chose=\(capture.mediaURL ?? "none", privacy: .public) \
+            fallback=\(capture.mediaURLFallback ?? "none", privacy: .public)
+            """)
+        return capture
     }
 
     /// Every type identifier the share offered, and the two text fields that sometimes
@@ -510,13 +559,56 @@ final class ShareViewController: UIViewController {
     /// construction, because the alternative to a picture is a link that still carries
     /// the DOM's provenance. That is the whole reason fetching in an extension is
     /// defensible.
+    /// **The budget is for the SHARE, not for each attempt** — which is what
+    /// ``mediaFetchBudget``'s own wording always claimed and the code did not do.
+    ///
+    /// `mediaCandidates` returns up to two URLs, and the second exists precisely because
+    /// the first is a rewrite that is KNOWN to fail sometimes (`/originals/` 404s on
+    /// Pinterest, `name=orig` gets refused). So two attempts is the expected path when the
+    /// rewrite is wrong, not an exotic one — and with the timeout applied per attempt, two
+    /// slow-or-dead CDN requests left the user watching the card for sixteen seconds. At
+    /// that length a share sheet does not read as "fetching", it reads as a hang.
+    ///
+    /// One deadline for the whole loop, and each attempt gets what is left of it. A
+    /// candidate reached with no budget remaining is not attempted at all, because starting
+    /// a request that is already out of time only delays the fallback that was going to
+    /// happen anyway.
+    ///
+    /// One session for the loop as well. Its `timeoutIntervalForResource` is the whole
+    /// budget — a genuine ceiling on the share rather than on a request — while each
+    /// request carries the remainder as its own `timeoutInterval`. The two together are
+    /// what make the bound hold whether one candidate hangs or both are merely slow.
     private static func pageItem(for capture: PageCapture) async -> SharedItem {
-        for candidate in ShareCapture.mediaCandidates(for: capture) {
-            if let file = await fetchMedia(candidate) {
+        let candidates = ShareCapture.mediaCandidates(for: capture)
+        guard !candidates.isEmpty else { return .page(capture) }
+
+        let session = makeMediaSession()
+        defer { session.finishTasksAndInvalidate() }
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(mediaFetchBudget))
+        for candidate in candidates {
+            let remaining = remainingSeconds(until: deadline)
+            guard remaining > 0 else {
+                logger.info("media budget spent before \(candidate, privacy: .public)")
+                break
+            }
+            if let file = await fetchMedia(candidate, in: session, timeout: remaining) {
                 return .page(capture, bytes: .fileURL(file))
             }
         }
         return .page(capture)
+    }
+
+    /// Seconds left before `deadline`, floored at zero.
+    ///
+    /// `ContinuousClock` rather than `Date`: it does not move when the wall clock does, and
+    /// a share sheet that got longer because the user crossed a timezone would be an
+    /// absurd bug to own.
+    private static func remainingSeconds(until deadline: ContinuousClock.Instant) -> TimeInterval {
+        let left = ContinuousClock.now.duration(to: deadline)
+        guard left > .zero else { return 0 }
+        let (seconds, attoseconds) = left.components
+        return TimeInterval(seconds) + TimeInterval(attoseconds) / 1e18
     }
 
     /// How long the whole media fetch may take before the share gives up on it.
@@ -524,7 +616,26 @@ final class ShareViewController: UIViewController {
     /// A receipt the user is watching is on the other side of this. 093 § 1 wants the
     /// card in under a second; a picture is worth waiting a little longer for, and a CDN
     /// that has not answered in eight seconds is not about to make anyone happy.
-    private static let mediaFetchTimeout: TimeInterval = 8
+    ///
+    /// Renamed from `mediaFetchTimeout` when it became one: a "timeout" is a property of a
+    /// request and this is a property of the share, and the old name is most of why it was
+    /// applied per candidate for as long as it was.
+    private static let mediaFetchBudget: TimeInterval = 8
+
+    /// The one session a share's fetches share.
+    ///
+    /// A cookie-less ephemeral session, matching `PageResolver`'s posture on the Mac: the
+    /// URL came out of a page, this is a fetch of a public CDN asset, and there is no
+    /// reason to hand it anybody's cookies.
+    private static func makeMediaSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.timeoutIntervalForRequest = mediaFetchBudget
+        // The share-wide ceiling. Per-request time is bounded again, more tightly, by the
+        // `timeout` each call passes.
+        configuration.timeoutIntervalForResource = mediaFetchBudget
+        return URLSession(configuration: configuration)
+    }
 
     /// Download `urlString` to a file this process owns, or nil.
     ///
@@ -537,21 +648,19 @@ final class ShareViewController: UIViewController {
     /// an absurd file before a byte is transferred, and the file's real size catches a
     /// server that lied or sent no length at all.
     ///
-    /// A cookie-less ephemeral session, matching `PageResolver`'s posture on the Mac: the
-    /// URL came out of a page, this is a fetch of a public CDN asset, and there is no
-    /// reason to hand it anybody's cookies.
-    private static func fetchMedia(_ urlString: String) async -> URL? {
+    /// `session` is the share's, not this call's — see ``pageItem(for:)``. `timeout` is
+    /// what remains of the share's budget, carried on the request so a second candidate
+    /// cannot spend a second full allowance.
+    private static func fetchMedia(
+        _ urlString: String, in session: URLSession, timeout: TimeInterval
+    ) async -> URL? {
         guard let url = URL(string: urlString) else { return nil }
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.timeoutIntervalForRequest = mediaFetchTimeout
-        configuration.timeoutIntervalForResource = mediaFetchTimeout
-        let session = URLSession(configuration: configuration)
-        defer { session.finishTasksAndInvalidate() }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
 
         do {
-            let (file, response) = try await session.download(from: url)
+            let (file, response) = try await session.download(for: request)
             if let expected = (response as? HTTPURLResponse)?.expectedContentLength,
                expected > Int64(InboxWriter.maximumPayloadBytes) {
                 logger.info("media of \(expected, privacy: .public) bytes is over the cap")

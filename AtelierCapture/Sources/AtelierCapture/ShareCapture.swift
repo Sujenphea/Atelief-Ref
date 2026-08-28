@@ -94,6 +94,28 @@ public struct ShareCaptureDraft: Equatable, Sendable {
     }
 }
 
+/// What a share resolves to once every attachment has been read — the answer
+/// ``ShareCapture/resolution(image:urlString:title:page:)`` gives.
+///
+/// Three cases because a share has three fates and only two of them are finished. A
+/// `SharedItem?` could express "here it is" and "there is nothing", but not "this is a
+/// tier-2 page whose picture still has to be fetched" — and fetching needs the network,
+/// which is the one thing that cannot happen in a pure function. Collapsing that third
+/// case into either of the others is how the decision ended up in the extension in the
+/// first place.
+public enum ShareResolution: Equatable, Sendable {
+    /// Finished: this is the capture.
+    case resolved(SharedItem)
+    /// A tier-2 page carrying provenance but no bytes yet. The caller walks
+    /// ``ShareCapture/mediaCandidates(for:)`` and folds the result — including a failure,
+    /// which is a media-less `.page` and still a good capture — back into a `SharedItem`.
+    case needsMedia(PageCapture)
+    /// Nothing capturable: no page, no bytes, no web URL. The extension's activation rule
+    /// should make this unreachable, which is exactly why it is decided somewhere a test
+    /// can reach.
+    case nothing
+}
+
 /// Turning a share into a capture. A namespace — `static` only, and pure.
 public enum ShareCapture {
     /// The `rawMetadata` key recording the ACT of capture, as distinct from the
@@ -239,6 +261,50 @@ public enum ShareCapture {
             return .link(url: webURL, title: title)
         }
         return nil
+    }
+
+    /// What a share amounts to once the tier-2 page snapshot is in hand as well — the
+    /// whole precedence decision, including the tier-1 case, as one function.
+    ///
+    /// **Why this exists.** 406 · issue 11 moved four decisions out of the extension's
+    /// `harvest` and into ``sharedItem(image:urlString:title:)``, and the doc comment there
+    /// says the function "no longer decides anything". Tier 2 then put three decisions back
+    /// — a page beats tier 1 outright, arrived bytes beat fetched bytes, no page means tier
+    /// 1 — in the one file in the project with no test host. They are pure over four
+    /// optionals, so they belong here, and this is the same relocation 406 already performed
+    /// on the same function rather than a new mechanism.
+    ///
+    /// The three rules, in order:
+    ///
+    ///   • **A page snapshot wins the provenance outright.** The DOM knows the author, the
+    ///     post's canonical URL and the tweet id; an item provider's `attributedTitle` and
+    ///     the shared URL know none of that. So `urlString` and `title` are DROPPED when a
+    ///     page is present — deliberately, and stated here because silently discarding a
+    ///     title is exactly the kind of thing that should not live where nothing can assert
+    ///     it.
+    ///   • **Bytes that ARRIVED with the share still win as the picture.** Long-pressing an
+    ///     image in Safari shares that image; re-fetching "the largest image on the page"
+    ///     would hand the user a different picture than the one they pressed. This is tier
+    ///     1's own image-beats-URL rule applied one level up.
+    ///   • **No page is tier 1**, unchanged, through ``sharedItem(image:urlString:title:)``.
+    ///
+    /// ``ShareResolution/needsMedia(_:)`` is the one outcome this cannot finish, and that is
+    /// the point of returning an enum rather than a `SharedItem?`: fetching needs the
+    /// network, which needs a process. The caller walks
+    /// ``mediaCandidates(for:)`` and folds whatever comes back — including nothing — into
+    /// `.page(capture, bytes:)`.
+    public static func resolution(
+        image: PayloadSource?, urlString: String?, title: String? = nil,
+        page: PageCapture? = nil
+    ) -> ShareResolution {
+        guard let page else {
+            guard let item = sharedItem(image: image, urlString: urlString, title: title) else {
+                return .nothing
+            }
+            return .resolved(item)
+        }
+        if let image { return .resolved(.page(page, bytes: image)) }
+        return .needsMedia(page)
     }
 
     /// The provenance a share carries: the site the content came from, the URL
