@@ -4,16 +4,16 @@ name: CI
 # package suites, an iOS cross-build of the two packages the share extension
 # links, the extension's node tests + drift check (which since review issue 4
 # also gates the SWIFT share extension's host table — see the `extension` job),
-# and an xcodebuild build-and-test of the app target (the SwiftUI layer isn't
+# an xcodebuild build-and-test of the app target (the SwiftUI layer isn't
 # SPM-tested, so the build is its compile-proof and AtelierRefsTests carries its
-# unit coverage).
+# unit coverage), and an xcodebuild build of the two iOS targets.
 #
 # Toolchain: the app targets macOS 26 / Xcode 26 (deployment target 26.5), so the
-# app job needs a runner with that SDK. The `ios-packages` job needs the same
-# Xcode for its iPhoneOS 26 SDK. Swift packages + the extension build on any
-# recent macOS runner. If GitHub-hosted images don't yet ship Xcode 26, point the
-# `app` and `ios-packages` jobs at a self-hosted macOS 26 runner (change
-# `runs-on`).
+# app job needs a runner with that SDK. The `ios-packages` and `ios-app` jobs need
+# the same Xcode for their iPhoneOS 26 SDK. Swift packages + the extension build on
+# any recent macOS runner. If GitHub-hosted images don't yet ship Xcode 26, point
+# the `app`, `ios-packages` and `ios-app` jobs at a self-hosted macOS 26 runner
+# (change `runs-on`).
 
 on:
   push:
@@ -107,6 +107,47 @@ jobs:
       - name: Drift check
         working-directory: extension
         run: npm run drift-check
+
+  ios-app:
+    name: iOS app + share extension (xcodebuild build)
+    # The gap this closes: until now NOTHING in CI compiled `AtelierRefsMobile`
+    # (1,837 lines) or `AtelierRefsShare` (951). `ios-packages` above builds the
+    # PACKAGES those targets link, and the `app` job below builds the Mac scheme
+    # against a macOS destination — so a syntax error in `ShareViewController.swift`
+    # went green, and the largest untested surface in the project was also the
+    # least verified.
+    #
+    # Build-only, and deliberately so: it is the same argument `ios-packages`
+    # makes one job up. A test bundle needs a booted simulator host and the UI
+    # tests in `AtelierRefsMobileUITests` need a real share sheet (and, for
+    # `Tier2ShareUITests`, Safari), so THE COMPILE IS THE GATE. What it catches is
+    # what it is for: a refactor that breaks the extension's process code, which is
+    # the one file in this repo with no unit test host at all.
+    #
+    # `generic/platform=iOS Simulator` rather than a named device: a build needs no
+    # booted simulator, and pinning `name=iPhone 16` would make this job fail the
+    # day the runner image retires that device rather than the day the code breaks.
+    #
+    # Both schemes explicitly, though building the app would drag the extension in
+    # as an embedded dependency. Two rows means a failure names which target broke
+    # instead of leaving that to be read out of the log.
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        scheme: [AtelierRefsMobile, AtelierRefsShare]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Xcode
+        run: xcodebuild -version
+      - name: Build ${{ matrix.scheme }}
+        run: |
+          xcodebuild build \
+            -project AtelierRefs/AtelierRefs.xcodeproj \
+            -scheme ${{ matrix.scheme }} \
+            -destination 'generic/platform=iOS Simulator' \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO
 
   app:
     name: App (xcodebuild build + AtelierRefsTests)
