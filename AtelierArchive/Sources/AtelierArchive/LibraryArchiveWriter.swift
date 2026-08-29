@@ -22,6 +22,7 @@
 
 import AtelierCapture
 import AtelierCore
+import AtelierLibraryPaths
 import Foundation
 
 /// Why a run produced nothing worth committing.

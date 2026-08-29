@@ -14,6 +14,7 @@ import AppKit
 import AtelierCapture
 import AtelierArchive
 import AtelierCore
+import AtelierLibraryPaths
 import AtelierIngestion
 import AtelierServer
 import CanvasRenderer

@@ -13,6 +13,7 @@ import Testing
 
 import AtelierCapture
 import AtelierCore
+import AtelierLibraryPaths
 @testable import AtelierBrowse
 
 @Suite("BrowseLibrary (092 S5)")

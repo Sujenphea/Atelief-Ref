@@ -29,6 +29,7 @@
 
 import AtelierCapture
 import AtelierCore
+import AtelierLibraryPaths
 import Foundation
 import UIKit
 

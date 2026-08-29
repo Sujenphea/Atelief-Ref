@@ -23,6 +23,7 @@ import UniformTypeIdentifiers
 
 import AtelierCapture
 import AtelierCore
+import AtelierLibraryPaths
 
 /// The intrinsic, byte-derived facts about an image (or video container) —
 /// decision C7. All fields come from the bytes; none from any filename.

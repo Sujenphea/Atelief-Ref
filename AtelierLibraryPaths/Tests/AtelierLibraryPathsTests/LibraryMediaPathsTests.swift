@@ -12,7 +12,7 @@
 import Foundation
 import Testing
 
-import AtelierCapture
+import AtelierLibraryPaths
 
 @Suite("LibraryMediaPaths (092 S5)")
 struct LibraryMediaPathsTests {

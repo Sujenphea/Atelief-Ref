@@ -14,6 +14,7 @@
 import Testing
 
 import AtelierCapture
+import AtelierLibraryPaths
 @testable import AtelierIngestion
 
 @Suite("Thumbnail tier agreement (092 S5)")

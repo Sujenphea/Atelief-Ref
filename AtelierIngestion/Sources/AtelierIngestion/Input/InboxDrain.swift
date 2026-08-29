@@ -90,6 +90,7 @@
 import Foundation
 import AtelierCapture
 import AtelierCore
+import AtelierLibraryPaths
 
 /// What one pass of the inbox did (092 · S3).
 ///

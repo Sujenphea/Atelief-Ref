@@ -18,6 +18,7 @@
 
 import Foundation
 import AtelierCapture
+import AtelierLibraryPaths
 
 /// The on-disk layout of a single Library directory (003 storage layout).
 ///

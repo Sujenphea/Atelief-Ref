@@ -26,6 +26,7 @@
 import AtelierArchive
 import AtelierCapture
 import AtelierCore
+import AtelierLibraryPaths
 import AtelierIngestion
 import CoreGraphics
 import Foundation

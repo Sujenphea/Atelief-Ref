@@ -17,6 +17,7 @@
 // caller supplies; the store only does path math and byte IO.
 
 import AtelierCapture
+import AtelierLibraryPaths
 import Foundation
 
 /// A content-addressed, sharded, atomic + idempotent file store for blobs and

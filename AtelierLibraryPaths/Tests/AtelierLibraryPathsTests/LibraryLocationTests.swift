@@ -18,7 +18,7 @@
 import Foundation
 import Testing
 
-import AtelierCapture
+import AtelierLibraryPaths
 
 @Suite("LibraryLocation (092 S1)")
 struct LibraryLocationTests {

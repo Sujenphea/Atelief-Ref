@@ -22,6 +22,7 @@
 
 import AtelierCapture
 import AtelierCore
+import AtelierLibraryPaths
 import Foundation
 
 /// The companion's read-only view of a library on disk.

@@ -47,6 +47,7 @@
 // 1 succeeding, which is what makes attempting it here safe.
 
 import AtelierCapture
+import AtelierLibraryPaths
 import OSLog
 import SwiftUI
 import UIKit

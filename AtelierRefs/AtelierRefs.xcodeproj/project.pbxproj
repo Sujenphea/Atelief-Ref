@@ -24,6 +24,11 @@
 		LA0000000000000000000005 /* AtelierTokens in Frameworks */ = {isa = PBXBuildFile; productRef = LA0000000000000000000004 /* AtelierTokens */; };
 		LA0000000000000000000007 /* AtelierTokens in Frameworks */ = {isa = PBXBuildFile; productRef = LA0000000000000000000006 /* AtelierTokens */; };
 		DA0000000000000000000005 /* AtelierCore in Frameworks */ = {isa = PBXBuildFile; productRef = DA0000000000000000000004 /* AtelierCore */; };
+		MA0000000000000000000003 /* AtelierLibraryPaths in Frameworks */ = {isa = PBXBuildFile; productRef = MA0000000000000000000002 /* AtelierLibraryPaths */; };
+		MA0000000000000000000005 /* AtelierLibraryPaths in Frameworks */ = {isa = PBXBuildFile; productRef = MA0000000000000000000004 /* AtelierLibraryPaths */; };
+		MA0000000000000000000007 /* AtelierLibraryPaths in Frameworks */ = {isa = PBXBuildFile; productRef = MA0000000000000000000006 /* AtelierLibraryPaths */; };
+		MA0000000000000000000009 /* AtelierLibraryPaths in Frameworks */ = {isa = PBXBuildFile; productRef = MA0000000000000000000008 /* AtelierLibraryPaths */; };
+		MA000000000000000000000B /* AtelierLibraryPaths in Frameworks */ = {isa = PBXBuildFile; productRef = MA000000000000000000000A /* AtelierLibraryPaths */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -139,6 +144,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				MA0000000000000000000003 /* AtelierLibraryPaths in Frameworks */,
 				CA0000000000000000000003 /* CanvasRenderer in Frameworks */,
 				DA0000000000000000000003 /* AtelierCore in Frameworks */,
 				EA0000000000000000000003 /* AtelierIngestion in Frameworks */,
@@ -154,6 +160,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				MA0000000000000000000005 /* AtelierLibraryPaths in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -161,6 +168,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				MA0000000000000000000007 /* AtelierLibraryPaths in Frameworks */,
 				IA0000000000000000000005 /* AtelierCapture in Frameworks */,
 				LA0000000000000000000007 /* AtelierTokens in Frameworks */,
 			);
@@ -170,6 +178,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				MA0000000000000000000009 /* AtelierLibraryPaths in Frameworks */,
 				IA0000000000000000000003 /* AtelierCapture in Frameworks */,
 				JA0000000000000000000003 /* AtelierBrowse in Frameworks */,
 				DA0000000000000000000005 /* AtelierCore in Frameworks */,
@@ -182,6 +191,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				MA000000000000000000000B /* AtelierLibraryPaths in Frameworks */,
 				IA0000000000000000000009 /* AtelierCapture in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -233,6 +243,7 @@
 			);
 			name = AtelierRefs;
 			packageProductDependencies = (
+				MA0000000000000000000002 /* AtelierLibraryPaths */,
 				CA0000000000000000000002 /* CanvasRenderer */,
 				DA0000000000000000000002 /* AtelierCore */,
 				EA0000000000000000000002 /* AtelierIngestion */,
@@ -264,6 +275,7 @@
 			);
 			name = AtelierRefsTests;
 			packageProductDependencies = (
+				MA0000000000000000000004 /* AtelierLibraryPaths */,
 			);
 			productName = AtelierRefsTests;
 			productReference = 9907787B2FF364F000718815 /* AtelierRefsTests.xctest */;
@@ -286,6 +298,7 @@
 			);
 			name = AtelierRefsShare;
 			packageProductDependencies = (
+				MA0000000000000000000006 /* AtelierLibraryPaths */,
 				IA0000000000000000000004 /* AtelierCapture */,
 				LA0000000000000000000006 /* AtelierTokens */,
 			);
@@ -312,6 +325,7 @@
 			);
 			name = AtelierRefsMobile;
 			packageProductDependencies = (
+				MA0000000000000000000008 /* AtelierLibraryPaths */,
 				IA0000000000000000000002 /* AtelierCapture */,
 				JA0000000000000000000002 /* AtelierBrowse */,
 				DA0000000000000000000004 /* AtelierCore */,
@@ -340,6 +354,7 @@
 			);
 			name = AtelierRefsMobileUITests;
 			packageProductDependencies = (
+				MA000000000000000000000A /* AtelierLibraryPaths */,
 				IA0000000000000000000008 /* AtelierCapture */,
 			);
 			productName = AtelierRefsMobileUITests;
@@ -395,6 +410,7 @@
 				JA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierBrowse" */,
 				KA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierArchive" */,
 				LA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierTokens" */,
+				MA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierLibraryPaths" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9907786F2FF364EF00718815 /* Products */;
@@ -1020,6 +1036,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../AtelierArchive;
 		};
+		MA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierLibraryPaths" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierLibraryPaths;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1098,6 +1118,26 @@
 		DA0000000000000000000004 /* AtelierCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AtelierCore;
+		};
+		MA0000000000000000000002 /* AtelierLibraryPaths */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierLibraryPaths;
+		};
+		MA0000000000000000000004 /* AtelierLibraryPaths */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierLibraryPaths;
+		};
+		MA0000000000000000000006 /* AtelierLibraryPaths */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierLibraryPaths;
+		};
+		MA0000000000000000000008 /* AtelierLibraryPaths */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierLibraryPaths;
+		};
+		MA000000000000000000000A /* AtelierLibraryPaths */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierLibraryPaths;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

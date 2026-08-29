@@ -30,6 +30,7 @@
 
 import AtelierCapture
 import AtelierCore
+import AtelierLibraryPaths
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers

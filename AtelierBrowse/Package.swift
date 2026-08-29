@@ -45,6 +45,7 @@ let package = Package(
     dependencies: [
         .package(path: "../AtelierCore"),
         .package(path: "../AtelierCapture"),
+        .package(path: "../AtelierLibraryPaths"),
     ],
     targets: [
         .target(
@@ -52,6 +53,7 @@ let package = Package(
             dependencies: [
                 .product(name: "AtelierCore", package: "AtelierCore"),
                 .product(name: "AtelierCapture", package: "AtelierCapture"),
+                .product(name: "AtelierLibraryPaths", package: "AtelierLibraryPaths"),
             ]
         ),
         .testTarget(
@@ -60,6 +62,7 @@ let package = Package(
                 "AtelierBrowse",
                 .product(name: "AtelierCore", package: "AtelierCore"),
                 .product(name: "AtelierCapture", package: "AtelierCapture"),
+                .product(name: "AtelierLibraryPaths", package: "AtelierLibraryPaths"),
             ]
         )
     ],

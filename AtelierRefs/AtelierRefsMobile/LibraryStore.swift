@@ -21,6 +21,7 @@
 import AtelierBrowse
 import AtelierCapture
 import AtelierCore
+import AtelierLibraryPaths
 import Foundation
 import Observation
 

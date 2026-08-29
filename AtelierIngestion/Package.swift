@@ -28,6 +28,7 @@ let package = Package(
     dependencies: [
         .package(path: "../AtelierCore"),
         .package(path: "../AtelierCapture"),
+        .package(path: "../AtelierLibraryPaths"),
     ],
     targets: [
         .target(
@@ -39,11 +40,15 @@ let package = Package(
                 // cannot link THIS package — `Input/DirectInputReader.swift` imports
                 // AppKit. So the arrow points this way and `LibraryLayout.inbox`
                 // delegates, rather than the name being spelled twice.
-                //
-                // `LibraryLocation` moved there for the same reason (092 · S4a): it is
-                // how the extension finds the library root, and a root-finder the
-                // extension cannot link is no seam at all.
                 .product(name: "AtelierCapture", package: "AtelierCapture"),
+                // `LibraryLocation` and `LibraryMediaPaths` left this package for the
+                // same AppKit reason (092 · S4a, S5) and then left AtelierCapture too
+                // (096 review 4A): three relocations into one package made *Capture*
+                // mean four things, and 092 · S4b had already written the rule — "if a
+                // third one appears, the boundary is the finding, not the type".
+                // AtelierLibraryPaths is a zero-dependency leaf, so this arrow points
+                // at filesystem knowledge rather than at a capture contract.
+                .product(name: "AtelierLibraryPaths", package: "AtelierLibraryPaths"),
             ]
         ),
         .testTarget(
@@ -56,6 +61,7 @@ let package = Package(
                 // contract drift while both suites stayed green. The fixtures come
                 // from the shared test-only product for the same reason (092 · S0).
                 .product(name: "AtelierCapture", package: "AtelierCapture"),
+                .product(name: "AtelierLibraryPaths", package: "AtelierLibraryPaths"),
                 .product(name: "AtelierCaptureTestSupport", package: "AtelierCapture"),
             ]
         )

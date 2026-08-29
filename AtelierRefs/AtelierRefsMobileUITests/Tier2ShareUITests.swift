@@ -43,6 +43,7 @@
 
 import AtelierCapture
 import AtelierCore
+import AtelierLibraryPaths
 import XCTest
 
 final class Tier2ShareUITests: XCTestCase {
