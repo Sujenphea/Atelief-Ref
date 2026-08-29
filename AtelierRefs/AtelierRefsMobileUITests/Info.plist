@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  This file exists for exactly one key, for the same reason `AtelierRefsMobile`'s
+	  does — and it is the same trap 401 recorded: `INFOPLIST_KEY_<arbitrary>` is
+	  accepted by the build without complaint and then DROPPED from the generated
+	  plist. A green build proves nothing here, so the key needs a real file.
+
+	  `GENERATE_INFOPLIST_FILE` stays YES; everything Xcode knows about a test bundle
+	  continues to arrive as `INFOPLIST_KEY_*` and is merged over this base.
+
+	  096 review 11A — the App Group the runner reads the inbox from, fed by the same
+	  $(ATELIER_APP_GROUP) build setting as this target's entitlements file. The
+	  entitlement GRANTS the container and this key NAMES it; feeding both from one
+	  variable is what stops them drifting, exactly as in the app and the extension.
+	-->
+	<key>AtelierAppGroupIdentifier</key>
+	<string>$(ATELIER_APP_GROUP)</string>
+</dict>
+</plist>

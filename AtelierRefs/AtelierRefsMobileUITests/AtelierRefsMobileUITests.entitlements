@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  096 review 11A — the App Group, for a TEST RUNNER rather than for a shipping
+	  process, and the reason is worth stating because a test target holding an
+	  entitlement looks like a mistake at a glance.
+
+	  `Tier2ShareUITests` asserts that a share from Safari reached the inbox. Until now
+	  it asserted that by reading a COUNT off the app's own export control — which is
+	  true whenever a capture landed, and stays true when tier 2 has silently degraded
+	  to tier 1: a preprocessing script that threw, a plist boundary that broke the way
+	  422 describes, or a media fetch that failed all produce a capture, all increment
+	  the count, and all mean the feature under test did not work.
+
+	  What separates those cases is the RECORD: its platform, its originalURL, whether
+	  it has a payload. That record is a file in the App Group container, and a test
+	  process without this entitlement cannot see the container at all —
+	  `containerURL(forSecurityApplicationGroupIdentifier:)` simply returns nil.
+
+	  The alternative was a debug-only provenance surface in the app, built for one
+	  test and shipped forever in the binary. The test's own header rejected that, and
+	  it was right to: an entitlement on a target that never ships is the smaller cost.
+
+	  $(ATELIER_APP_GROUP) is the same per-configuration build setting the app and the
+	  share extension use — Debug `group.sujenphea.AtelierRefs.dev`, Release
+	  `group.sujenphea.AtelierRefs`. Fed from one place so the container this runner is
+	  GRANTED and the one it ASKS for (via `AtelierAppGroupIdentifier` in this target's
+	  Info.plist) cannot disagree.
+
+	  READ ONLY, by discipline rather than by entitlement: the runner enumerates and
+	  decodes records and never writes to the inbox. The writer is the share extension
+	  and the drain is the Mac; a test that wrote here would be inventing a third
+	  producer of a format two shipped binaries read.
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(ATELIER_APP_GROUP)</string>
+	</array>
+</dict>
+</plist>

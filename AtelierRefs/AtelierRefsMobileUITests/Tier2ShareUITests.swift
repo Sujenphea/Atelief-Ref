@@ -12,17 +12,28 @@
 //  app.
 //
 //  Which makes it the most fragile test here, and it is written accordingly: every step
-//  attaches a screenshot on the way past, the share sheet is found by several anchors
-//  rather than one, and the assertion is a COUNT the app already displays rather than
-//  anything reached into.
+//  attaches a screenshot on the way past, and the share sheet is found by several anchors
+//  rather than one.
 //
-//  **What it asserts, and what it deliberately does not.** It asserts that a share from
-//  Safari lands one more capture in the inbox than was there before — which is only true
-//  if the activation rule offered Atelier for a web page, the preprocessing file ran, the
-//  results decoded, the extractor produced a capture and the writer committed it. It does
-//  NOT assert which tier produced it: the app shows a count, not a provenance, and adding
-//  a debug surface for that would be a permanent thing built for one test. Reading the
-//  record off the container proves the rest, and 421 records that reading.
+//  **What it asserts.** First that a share from Safari lands one more capture in the inbox
+//  than was there before — true only if the activation rule offered Atelier for a web page,
+//  the preprocessing file ran, the results decoded, the extractor produced a capture and the
+//  writer committed it. Then the RECORD that landed: its `originalURL`, its `og:site_name`,
+//  its `capturedVia` stamp, and that it has a payload.
+//
+//  **The second half is why this is a test of tier 2 rather than of the share sheet**
+//  (096 review 11A). The count alone is true whenever a capture landed, and stays true when
+//  tier 2 has silently degraded to tier 1 — a preprocessing script that threw, a plist
+//  boundary that broke the way 422 describes, a media fetch that failed. All three produce
+//  a capture, increment the count, and mean the feature under test did not work. 422 is not
+//  hypothetical: it shipped switched off for four days on a wrong belief, and this test as
+//  originally written would not have caught it.
+//
+//  This reads the record off the App Group container directly, which is why the target
+//  carries an entitlements file and a one-key Info.plist. The alternative was a debug-only
+//  provenance surface in the app — a permanent thing built for one test — and this header
+//  used to argue for the count on exactly that ground. The entitlement is the smaller cost:
+//  it sits on a target that never ships, and it needs nothing added to the product.
 //
 //  It also runs against the DEFAULT library root, not the `-library-root` fixture: the
 //  share extension is a separate process and never sees the app's launch arguments, so it
@@ -30,6 +41,8 @@
 //  would be counting a different inbox than the one being written to.
 //
 
+import AtelierCapture
+import AtelierCore
 import XCTest
 
 final class Tier2ShareUITests: XCTestCase {
@@ -57,6 +70,7 @@ final class Tier2ShareUITests: XCTestCase {
         defer { server.stop() }
 
         let before = pendingCount()
+        let recordsBefore = Set(try inboxRecords().map(\.id))
 
         let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
         safari.launch()
@@ -72,6 +86,98 @@ final class Tier2ShareUITests: XCTestCase {
         XCTAssertEqual(
             after, before + 1,
             "a share from Safari did not reach the inbox (was \(before), now \(after))")
+
+        // **And then the record itself, which is what makes this a test of TIER 2** (096
+        // review 11A). The count above is true whenever a capture landed — and it stays
+        // true when the preprocessing script threw, when the plist boundary broke the way
+        // 422 describes, or when the media fetch failed. Every one of those produces a
+        // capture, increments the count, and means the feature under test did not work.
+        //
+        // The record is what separates them, and it is a file in the App Group container
+        // this target now has an entitlement for. Nothing was added to the app to make this
+        // readable: the extension already writes it, `InboxLayout` already composes the
+        // path, and `InboxRecord.makeDecoder()` is already the one decoder any reader of
+        // the inbox must use — this reads the same bytes the Mac's drain will.
+        let landed = try inboxRecords().filter { !recordsBefore.contains($0.id) }
+        XCTAssertEqual(landed.count, 1, "expected exactly one new record")
+        guard let record = landed.first else { return }
+
+        let provenance = record.request.provenance
+
+        // A plain sanity check, and deliberately NOT the tier discriminator: the fixture is
+        // served from 127.0.0.1, so `web` is what BOTH tiers would record. Faking x.com off
+        // localhost would test the extractor's dispatch, which `PageExtractorTests` already
+        // does against a hundred harvests in microseconds.
+        XCTAssertEqual(provenance.platform, "web")
+
+        // The page's own URL. `originalURL` is what 18A dedup keys on, so a capture that
+        // arrives with the wrong one forks an asset instead of colliding with the existing
+        // one — the failure that presents as duplicates months later rather than as an error.
+        XCTAssertEqual(
+            provenance.originalURL, server.pageURL,
+            "the record's originalURL is not the page that was shared")
+
+        // **The first thing only tier 2 can produce.** `authorName` comes from the page's
+        // `og:site_name`, which lives in the DOM and reaches the extractor only through the
+        // preprocessing script. Tier 1 has no way to know it — a share sheet hands over a
+        // URL and a title and nothing else — so this is nil on every degrade path: a script
+        // that threw, a plist boundary that broke the way 422 describes, an item that would
+        // not load.
+        //
+        // The page's TITLE deliberately is not used for this. Safari supplies the document
+        // title as the share item's `attributedTitle`, so a tier-1 degrade of this very page
+        // would still carry it, and an assertion that passes on the failure it is meant to
+        // catch is worse than none.
+        XCTAssertEqual(
+            provenance.authorName, Self.fixtureSiteName,
+            "no og:site_name on the record, so the DOM snapshot never reached the extractor "
+            + "— this is the tier-2 degrade the count assertion cannot see")
+
+        // The stamp saying a phone did this, on every share regardless of tier. Read by
+        // pattern match: `rawMetadata` is a `JSONValue`, which is a tree and not a
+        // dictionary, and the object case is the only one a provenance stamp is ever in.
+        if case .object(let metadata)? = provenance.rawMetadata {
+            XCTAssertEqual(
+                metadata[ShareCapture.capturedViaKey],
+                .string(ShareCapture.capturedViaValue),
+                "the capture is not stamped as an iOS share")
+        } else {
+            XCTFail("rawMetadata is not an object, so it carries no capturedVia stamp")
+        }
+
+        // And the picture. The fixture page renders one image well above the preprocessor's
+        // icon floor, so tier 2 must have chosen it and the extension must have fetched it.
+        // A media-less record here means the extractor picked nothing or the fetch failed —
+        // the third of `payload=none`'s three indistinguishable causes, made distinguishable.
+        XCTAssertNotNil(
+            record.payloadFile,
+            "the record has no payload, so the media the page rendered was never fetched")
+    }
+
+    // MARK: - The inbox this share was supposed to land in
+
+    /// Every committed record in the shared inbox, decoded with the inbox's own decoder.
+    ///
+    /// **Read-only, and it reads the DEFAULT root** — the share extension is a separate
+    /// process and never sees this target's launch arguments, so it writes where
+    /// `LibraryLocation.defaultRoot()` says. A test that seeded a throwaway root with
+    /// `-library-root` would be counting a different inbox than the one being written to,
+    /// which is the trap the header above already records for `pendingCount()`.
+    ///
+    /// `LibraryLocation` resolves the App Group from THIS bundle's
+    /// `AtelierAppGroupIdentifier`, which is why the target carries an Info.plist for one
+    /// key and an entitlements file for one capability. Both are fed from
+    /// `$(ATELIER_APP_GROUP)`, so the container this runner is granted and the one it asks
+    /// for cannot disagree.
+    private func inboxRecords() throws -> [InboxRecord] {
+        let layout = InboxLayout(libraryRoot: try LibraryLocation.defaultRoot())
+        let decoder = InboxRecord.makeDecoder()
+        // An absent inbox is an empty inbox, not a failure — nothing has ever been shared
+        // on a fresh simulator, and that is the normal state of the `before` reading.
+        return (try? layout.pendingRecordURLs())?.compactMap { url in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return try? decoder.decode(InboxRecord.self, from: data)
+        } ?? []
     }
 
     // MARK: - Safari
@@ -181,6 +287,11 @@ final class Tier2ShareUITests: XCTestCase {
     /// the extractor's dispatch, which `PageExtractorTests` already does against a hundred
     /// harvests in microseconds; what only this test can prove is that a real Safari, on a
     /// real page, produces a snapshot the pipeline accepts.
+    /// The page's `og:site_name`, and the one signal in this fixture that ONLY the DOM
+    /// snapshot can carry into a record. Named here so the assertion and the HTML below
+    /// cannot drift apart — the whole test turns on them being the same string.
+    static let fixtureSiteName = "Atelier Fixture"
+
     private static func fixtureHTML(port: UInt16) -> String {
         """
         <!doctype html>
@@ -188,7 +299,7 @@ final class Tier2ShareUITests: XCTestCase {
         <meta charset="utf-8">
         <title>A concrete stair</title>
         <meta property="og:title" content="A concrete stair">
-        <meta property="og:site_name" content="Atelier Fixture">
+        <meta property="og:site_name" content="\(fixtureSiteName)">
         <meta property="og:image" content="\(PageFixtureServer.imageURL(port: port))">
         <link rel="canonical" href="http://127.0.0.1:\(port)/page.html">
         </head><body>
