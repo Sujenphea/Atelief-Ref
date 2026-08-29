@@ -18,7 +18,7 @@
 // from it re-fetches the same page and re-yields its pins (the engine's dedup-skip
 // makes the overlap idempotent). See bulk-engine.js for the checkpoint contract.
 
-import { toOriginals, makeProvenance } from "./extractors/base.js";
+import { toOriginals, makeProvenance, canonicalPinterestHost } from "./extractors/base.js";
 import { fetchWithTimeout } from "./net.js";
 
 /** Pinterest's end-of-feed sentinel bookmark. */
@@ -128,7 +128,11 @@ export function mapPinterestPin(pin, { host, cursor = null } = {}) {
 
   const creator = pin.pinner || pin.native_creator || null;
   const seoUrl = pin.seo_url || `/pin/${pinId}/`;
-  const originalURL = host ? `https://${host}${seoUrl}` : seoUrl;
+  // The PROVENANCE host is canonicalized so a sweep run from a regional subdomain
+  // (REDACTED) composes the same permalink the DOM extractor does. Only this
+  // one; `buildResourceURL` below must keep the LIVE host or its requests leave the
+  // session's region.
+  const originalURL = host ? `https://${canonicalPinterestHost(host)}${seoUrl}` : seoUrl;
   const isVideo = !!pin.is_video;
 
   const provenance = makeProvenance({

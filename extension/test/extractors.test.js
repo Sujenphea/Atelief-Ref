@@ -10,12 +10,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-import { toOrigName, toOriginals } from "../src/extractors/base.js";
+import { toOrigName, toOriginals, canonicalPinterestHost } from "../src/extractors/base.js";
 import { extractProvenance, findExtractor, web } from "../src/extractors/registry.js";
-import { twitter } from "../src/extractors/twitter.js";
+import { twitter, toStatusPermalink } from "../src/extractors/twitter.js";
 import { pinterest } from "../src/extractors/pinterest.js";
-import { instagram } from "../src/extractors/instagram.js";
+import { instagram, toPostPermalink } from "../src/extractors/instagram.js";
 import { cosmos } from "../src/extractors/cosmos.js";
 import { rednote, toRednoteOriginal } from "../src/extractors/rednote.js";
 
@@ -459,6 +461,25 @@ test("toOrigName rewrites name= to orig; passes through data: and unparseable", 
   assert.equal(toOrigName("not a url"), "not a url");
 });
 
+test("toOrigName moves webp to jpg, since orig cannot serve webp", () => {
+  // The pair 404s. A rewrite that yields a dead URL is worse than no rewrite: the caller
+  // falls back to the rendered size and the capture looks fine at the wrong resolution.
+  assert.equal(
+    toOrigName("https://pbs.twimg.com/media/A?format=webp&name=small"),
+    "https://pbs.twimg.com/media/A?format=jpg&name=orig",
+  );
+  // Only that one incompatibility — a format that serves orig is left alone.
+  assert.equal(
+    toOrigName("https://pbs.twimg.com/media/A?format=png&name=small"),
+    "https://pbs.twimg.com/media/A?format=png&name=orig",
+  );
+  // Nothing is rewritten when there is no name= to rewrite, format included.
+  assert.equal(
+    toOrigName("https://pbs.twimg.com/media/A?format=webp"),
+    "https://pbs.twimg.com/media/A?format=webp",
+  );
+});
+
 test("toOrigName { addIfAbsent } adds name=orig to a bare URL (bulk X mapper path)", () => {
   // Default: a bare URL is left alone (the DOM extractor's contract).
   assert.equal(toOrigName("https://pbs.twimg.com/media/B.jpg"), "https://pbs.twimg.com/media/B.jpg");
@@ -481,4 +502,334 @@ test("toOriginals rewrites an i.pinimg sized segment to /originals/", () => {
     toOriginals("https://i.pinimg.com/originals/ab/cd/ef.jpg"),
     "https://i.pinimg.com/originals/ab/cd/ef.jpg");
   assert.equal(toOriginals(null), null);
+});
+
+// ---------------------------------------------------------------------------
+// Status permalink normalization — the provenance fork found on a live feed.
+// ---------------------------------------------------------------------------
+
+test("toStatusPermalink: drops the sub-pages X hangs off a tweet", () => {
+  const canonical = "https://x.com/Starlink/status/2077559767858589763";
+  for (const suffix of ["/analytics", "/photo/1", "/photo/3", "/history", "/likes", "/retweets"]) {
+    assert.equal(toStatusPermalink(canonical + suffix), canonical, `failed for ${suffix}`);
+  }
+});
+
+test("toStatusPermalink: a canonical permalink is unchanged, and it is idempotent", () => {
+  const canonical = "https://x.com/designer/status/1780000000000000000";
+  assert.equal(toStatusPermalink(canonical), canonical);
+  assert.equal(toStatusPermalink(toStatusPermalink(canonical + "/photo/1")), canonical);
+});
+
+test("toStatusPermalink: a NON-status URL passes through untouched", () => {
+  for (const url of [
+    "https://x.com/designer",
+    "https://x.com/search",
+    "https://x.com/i/bookmarks",
+    "https://x.com/",
+  ]) {
+    assert.equal(toStatusPermalink(url), url);
+  }
+});
+
+test("toStatusPermalink: preserves the origin, so twitter.com stays twitter.com", () => {
+  assert.equal(
+    toStatusPermalink("https://twitter.com/designer/status/1780000000000000000/photo/1"),
+    "https://twitter.com/designer/status/1780000000000000000",
+  );
+});
+
+test("toStatusPermalink: a truncated or unparseable status URL is passed back, not mangled", () => {
+  assert.equal(toStatusPermalink("https://x.com/designer/status"), "https://x.com/designer/status");
+  assert.equal(toStatusPermalink("not a url"), "not a url");
+  assert.equal(toStatusPermalink(""), "");
+});
+
+test("twitter: a right-clicked PHOTO link yields the post permalink, not /photo/1", () => {
+  // The desktop fork: right-clicking the image gives linkUrl=/photo/1, right-clicking the
+  // text gives the bare permalink. Both must produce ONE originalURL, because 18A dedup
+  // keys on provenance.
+  const h = harvest({
+    url: "https://x.com/home",
+    media: [img("https://pbs.twimg.com/media/REAL?format=jpg&name=small", 1200, 800)],
+  });
+  const viaPhoto = extractProvenance(h, {
+    linkUrl: "https://x.com/designer/status/1780000000000000000/photo/1",
+    srcUrl: "https://pbs.twimg.com/media/REAL?format=jpg&name=small",
+  });
+  const viaText = extractProvenance(h, {
+    linkUrl: "https://x.com/designer/status/1780000000000000000",
+    srcUrl: "https://pbs.twimg.com/media/REAL?format=jpg&name=small",
+  });
+  assert.equal(viaPhoto.originalURL, "https://x.com/designer/status/1780000000000000000");
+  assert.equal(viaPhoto.originalURL, viaText.originalURL);
+  assert.deepEqual(viaPhoto.rawMetadata, { tweetId: "1780000000000000000" });
+});
+
+test("twitter: an /analytics-only post (a promoted tweet) still yields the permalink", () => {
+  // Observed live: a promoted post whose ONLY status link was /analytics, so no anchor
+  // choice could have rescued it — normalization is the only fix.
+  const h = harvest({ url: "https://x.com/home", media: [] });
+  const p = extractProvenance(h, {
+    linkUrl: "https://x.com/Starlink/status/2077559767858589763/analytics",
+  });
+  assert.equal(p.originalURL, "https://x.com/Starlink/status/2077559767858589763");
+  assert.equal(p.authorHandle, "@Starlink");
+  assert.deepEqual(p.rawMetadata, { tweetId: "2077559767858589763" });
+});
+
+test("twitter: a LIVE url sitting on the photo lightbox normalizes too", () => {
+  const h = harvest({
+    url: "https://x.com/designer/status/1780000000000000000/photo/1",
+    media: [img("https://pbs.twimg.com/media/REAL?format=jpg&name=small", 1200, 800)],
+  });
+  const p = extractProvenance(h);
+  assert.equal(p.originalURL, "https://x.com/designer/status/1780000000000000000");
+});
+
+test("twitter: the DOM path now agrees with the bulk mapper's composed permalink", () => {
+  // bulk-twitter.js:280 composes `https://{host}/{screenName}/status/{tweetId}`. A DOM
+  // capture of the same tweet must produce that exact string or the two producers fork.
+  const h = harvest({
+    url: "https://x.com/designer/status/1780000000000000000/photo/1",
+    media: [img("https://pbs.twimg.com/media/REAL?format=jpg&name=small", 1200, 800)],
+  });
+  const p = extractProvenance(h);
+  assert.equal(p.originalURL, `https://x.com/designer/status/1780000000000000000`);
+});
+
+// ---------------------------------------------------------------------------
+// Instagram permalink normalization — measured on a live feed, not reasoned about.
+// ---------------------------------------------------------------------------
+
+test("toPostPermalink: drops a post sub-page, keeping the trailing slash bulk composes", () => {
+  const canonical = "https://www.instagram.com/p/DceVsiRH8HO/";
+  for (const suffix of ["liked_by/", "comments/", "liked_by", "related/"]) {
+    assert.equal(toPostPermalink(canonical + suffix), canonical, `failed for ${suffix}`);
+  }
+});
+
+test("toPostPermalink: a reel keeps its /reel/ segment (honest provenance, per bulk)", () => {
+  assert.equal(
+    toPostPermalink("https://www.instagram.com/reel/ABC123/liked_by/"),
+    "https://www.instagram.com/reel/ABC123/",
+  );
+});
+
+test("toPostPermalink: adds the trailing slash a bare link may omit, and is idempotent", () => {
+  const canonical = "https://www.instagram.com/p/DceVsiRH8HO/";
+  assert.equal(toPostPermalink("https://www.instagram.com/p/DceVsiRH8HO"), canonical);
+  assert.equal(toPostPermalink(canonical), canonical);
+  assert.equal(toPostPermalink(toPostPermalink(canonical + "liked_by/")), canonical);
+});
+
+test("toPostPermalink: a NON-post URL passes through untouched", () => {
+  for (const url of [
+    "https://www.instagram.com/someone/",
+    "https://www.instagram.com/explore/",
+    "https://www.instagram.com/",
+    "not a url",
+  ]) {
+    assert.equal(toPostPermalink(url), url);
+  }
+});
+
+test("instagram: a /liked_by/ feed link yields the post permalink", () => {
+  // Measured: on a mobile-width feed EVERY post link was /liked_by/ and no bare /p/{code}/
+  // appeared, so this is the normal case rather than an edge one.
+  const h = harvest({
+    url: "https://www.instagram.com/",
+    media: [img("https://scontent.cdninstagram.com/v/REAL.jpg", 1080, 1080)],
+  });
+  const p = extractProvenance(h, { linkUrl: "https://www.instagram.com/p/DceVsiRH8HO/liked_by/" });
+  assert.equal(p.originalURL, "https://www.instagram.com/p/DceVsiRH8HO/");
+  assert.deepEqual(p.rawMetadata, { shortcode: "DceVsiRH8HO" });
+});
+
+test("instagram: the DOM path agrees with bulk-instagram.js's composed permalink", () => {
+  // bulk-instagram.js:179 → `https://{host}/{p|reel}/{code}/`. A DOM capture of the same
+  // post must produce that exact string or the two producers fork.
+  const h = harvest({ url: "https://www.instagram.com/p/DceVsiRH8HO/liked_by/", media: [] });
+  assert.equal(extractProvenance(h).originalURL, "https://www.instagram.com/p/DceVsiRH8HO/");
+});
+
+// ---------------------------------------------------------------------------
+// Pinterest host canonicalization (issue 21A) — regional subdomains fork provenance.
+// ---------------------------------------------------------------------------
+
+test("canonicalPinterestHost: regional subdomains and the bare apex fold to www", () => {
+  for (const host of ["REDACTED", "uk.pinterest.com", "de.pinterest.com",
+                      "pinterest.com", "www.pinterest.com"]) {
+    assert.equal(canonicalPinterestHost(host), "www.pinterest.com", `failed for ${host}`);
+  }
+});
+
+test("canonicalPinterestHost: pinterest.co.uk is a DIFFERENT domain and is left alone", () => {
+  // A separate domain, not a subdomain — folding it in is a bigger claim than the
+  // observation supports, and hostIs is false for it.
+  assert.equal(canonicalPinterestHost("pinterest.co.uk"), "pinterest.co.uk");
+  assert.equal(canonicalPinterestHost("www.pinterest.co.uk"), "www.pinterest.co.uk");
+  assert.equal(canonicalPinterestHost("pin.it"), "pin.it");
+  assert.equal(canonicalPinterestHost("evil-pinterest.com"), "evil-pinterest.com");
+});
+
+test("canonicalPinterestHost: a suffix spoof is not folded", () => {
+  assert.equal(canonicalPinterestHost("pinterest.com.evil.com"), "pinterest.com.evil.com");
+});
+
+test("pinterest: a pin captured on a regional subdomain gets the canonical permalink", () => {
+  const h = harvest({
+    url: "https://REDACTED/",
+    media: [img("https://i.pinimg.com/474x/ab/cd/PIN.jpg", 736, 1104)],
+  });
+  const p = extractProvenance(h, {
+    linkUrl: "https://REDACTED/pin/804877764689837649/",
+    srcUrl: "https://i.pinimg.com/474x/ab/cd/PIN.jpg",
+  });
+  assert.equal(p.originalURL, "https://www.pinterest.com/pin/804877764689837649/");
+  assert.deepEqual(p.rawMetadata, { pinId: "804877764689837649" });
+});
+
+test("pinterest: the same pin from two regions yields ONE originalURL", () => {
+  const shot = (host) => extractProvenance(
+    harvest({ url: `https://${host}/`, media: [img("https://i.pinimg.com/474x/ab/cd/PIN.jpg", 736, 1104)] }),
+    { linkUrl: `https://${host}/pin/804877764689837649/` },
+  ).originalURL;
+  assert.equal(shot("REDACTED"), shot("www.pinterest.com"));
+});
+
+test("pinterest: a pinterest.co.uk capture keeps its own host", () => {
+  const p = extractProvenance(
+    harvest({ url: "https://www.pinterest.co.uk/", media: [] }),
+    { linkUrl: "https://www.pinterest.co.uk/pin/804877764689837649/" },
+  );
+  assert.equal(p.originalURL, "https://www.pinterest.co.uk/pin/804877764689837649/");
+});
+
+// ---------------------------------------------------------------------------
+// The cross-extractor invariant `captureCore` leans on (096 § D7 review, 8B)
+// ---------------------------------------------------------------------------
+
+// `sw.js`'s `captureCore` asks `planCapture` whether there is anything to capture, and
+// `planCapture` builds its candidates from BOTH `mediaUrl` and `mediaUrlFallback`. Before
+// that it asked `!provenance.mediaUrl` alone — narrower, and safe only because no extractor
+// can produce a fallback without a primary.
+//
+// That is a real contract and it was asserted nowhere. It holds today because every rewrite
+// helper is TOTAL: `toOrigName` returns `src` when `new URL` throws, `toOriginals` returns
+// `src` when its regex misses, `toRednoteOriginal` returns `src` in every branch. Each
+// extractor then computes `mediaUrlFallback = rendered && mediaUrl !== rendered ? rendered
+// : null`, so a null `mediaUrl` can only come from a null `rendered`, which makes the
+// fallback null too.
+//
+// The shape that breaks it is the obvious one to write: a regex-replace helper returning
+// `null` when it does not match. Nothing would fail loudly — a capture would report
+// `no-image` and be lost with a usable URL sitting in its provenance. So the promise is
+// pinned here, at the layer that makes it.
+
+/** Harvests chosen to drive each extractor down its no-media path, plus the shapes most
+ * likely to make a rewrite helper hand back null: an unparseable src, and a src that
+ * matches no rewrite rule. */
+const NO_MEDIA_CASES = [
+  { label: "twitter, no media at all", url: "https://x.com/a/status/1", media: [] },
+  {
+    label: "twitter, an unparseable media src",
+    url: "https://x.com/a/status/1",
+    media: [img("not a url at all", 800, 600)],
+  },
+  { label: "pinterest, no media at all", url: "https://www.pinterest.com/pin/1/", media: [] },
+  {
+    label: "pinterest, a src matching no /NNNx/ rule",
+    url: "https://www.pinterest.com/pin/1/",
+    media: [img("https://i.pinimg.com/unsized/a.jpg", 800, 600)],
+  },
+  { label: "instagram, no media at all", url: "https://www.instagram.com/p/ABC/", media: [] },
+  { label: "cosmos, no media at all", url: "https://www.cosmos.so/e/1", media: [] },
+  { label: "rednote, no media at all", url: "https://www.xiaohongshu.com/explore/1", media: [] },
+  {
+    label: "rednote, a src off the CDN",
+    url: "https://www.xiaohongshu.com/explore/1",
+    media: [img("https://elsewhere.example/a.jpg", 800, 600)],
+  },
+  { label: "web, no media at all", url: "https://example.com/article", media: [] },
+];
+
+test("no extractor produces a mediaUrlFallback without a mediaUrl", () => {
+  for (const testCase of NO_MEDIA_CASES) {
+    const p = extractProvenance(harvest({ url: testCase.url, media: testCase.media }));
+    if (p.mediaUrl === null || p.mediaUrl === undefined) {
+      assert.ok(
+        p.mediaUrlFallback === null || p.mediaUrlFallback === undefined,
+        `${testCase.label}: mediaUrl is absent but mediaUrlFallback is `
+        + `${JSON.stringify(p.mediaUrlFallback)} — captureCore would report no-image and `
+        + `lose a capture that had a usable URL`);
+    }
+  }
+});
+
+// The other half of the same promise, asserted directly on the helpers rather than through
+// an extractor: a non-null src must never rewrite to null. This is the property that makes
+// the invariant above hold, so it is the one that would break first.
+test("every media-URL rewrite helper is total: non-null in, non-null out", () => {
+  const inputs = [
+    "https://pbs.twimg.com/media/A?format=webp&name=small",
+    "https://i.pinimg.com/736x/a.jpg",
+    "https://i.pinimg.com/unsized/a.jpg",
+    "https://sns-img.rednotecdn.com/x!nd_dft",
+    "https://elsewhere.example/a.jpg",
+    "not a url at all",
+    "data:image/png;base64,AAAA",
+    "/relative/path.jpg",
+  ];
+  for (const src of inputs) {
+    for (const [name, rewrite] of [
+      ["toOrigName", toOrigName], ["toOriginals", toOriginals],
+      ["toRednoteOriginal", toRednoteOriginal],
+    ]) {
+      assert.ok(
+        rewrite(src) != null,
+        `${name}(${JSON.stringify(src)}) returned null — a total helper is what keeps `
+        + `mediaUrl and mediaUrlFallback from disagreeing`);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The cross-language rewrite contract (096 review 1A)
+// ---------------------------------------------------------------------------
+
+// `PageExtractor.swift` is a hand-written Swift mirror of these rewrite rules, because the
+// iOS share extension cannot run JavaScript and the phone needs the same answer the browser
+// gives. `host-table.js` already gates the host → platform half of that mirror. It does not
+// gate this half — and this half is the one that has actually drifted.
+//
+// It drifted in THIS branch: `name=orig` and `format=webp` are incompatible, twimg 404s the
+// pair, and the fix landed on the phone first (422) and had to be carried back to `base.js`
+// by hand afterwards (see .change-log/428 and the `format=webp` note in both files). One
+// bug, found once, fixed twice, with nothing to say the second fix was needed.
+//
+// So the rules move into a fixture both suites read. This is the same device
+// `capture-contract.json` uses for the request shape, pointed at the other end of the same
+// mirror. The Swift half is in `PageExtractorTests.swift`; if you change a rule here,
+// `swift test` in AtelierCapture fails until the mirror agrees.
+//
+// Deliberately NOT a test of URL normalisation. Every case is a well-formed URL whose
+// rewrite is unambiguous, because `URL.toString()` and `URLComponents.string` are entitled
+// to disagree about percent-encoding and that is not what this pins.
+
+const REWRITE_CONTRACT = JSON.parse(readFileSync(
+  fileURLToPath(new URL("./fixtures/media-rewrite-contract.json", import.meta.url)), "utf8"));
+
+test("rewrite contract: toOrigName matches the fixture the Swift mirror is held to", () => {
+  assert.ok(REWRITE_CONTRACT.toOrigName.length > 0, "the contract has toOrigName cases");
+  for (const entry of REWRITE_CONTRACT.toOrigName) {
+    assert.equal(toOrigName(entry.input), entry.expected, entry.case);
+  }
+});
+
+test("rewrite contract: toOriginals matches the fixture the Swift mirror is held to", () => {
+  assert.ok(REWRITE_CONTRACT.toOriginals.length > 0, "the contract has toOriginals cases");
+  for (const entry of REWRITE_CONTRACT.toOriginals) {
+    assert.equal(toOriginals(entry.input), entry.expected, entry.case);
+  }
 });

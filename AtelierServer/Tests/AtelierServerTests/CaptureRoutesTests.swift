@@ -8,6 +8,8 @@
 import Foundation
 import Testing
 
+import AtelierCapture
+import AtelierCaptureTestSupport
 import AtelierCore
 import AtelierIngestion
 @testable import AtelierServer
@@ -61,7 +63,7 @@ struct CaptureRoutesTests {
         let env = try await makeServerTestEnv(); defer { env.cleanup() }
         let routes = makeRoutes(env)
         let file = try tempFile(ServerFixtures.mp4()); defer { try? FileManager.default.removeItem(at: file) }
-        let header = ServerFixtures.provenanceHeader(collectionId: env.collectionID)
+        let header = CaptureFixtures.provenanceHeader(collectionId: env.collectionID)
 
         let result = await routes.handleIngestVideo(
             fileURL: file, provenanceHeader: header, now: Self.now)
@@ -157,7 +159,7 @@ struct CaptureRoutesTests {
         let env = try await makeServerTestEnv(); defer { env.cleanup() }
         let routes = makeRoutes(env)
         let request = CaptureRequest(
-            image: ServerFixtures.nonImageBase64(),
+            image: CaptureFixtures.nonImageBase64(),
             provenance: ProvenanceDTO(platform: "web", originalURL: "https://e.com/x"),
             collectionId: env.collectionID)
 
@@ -266,7 +268,7 @@ struct CaptureRoutesTests {
         let env = try await makeServerTestEnv(); defer { env.cleanup() }
         let routes = makeRoutes(env)
         let request = CaptureRequest(
-            image: ServerFixtures.pngBase64(),
+            image: CaptureFixtures.pngBase64(),
             provenance: ProvenanceDTO(
                 platform: "twitter", originalURL: "https://x.com/ava/status/900",
                 authorHandle: "@ava"),

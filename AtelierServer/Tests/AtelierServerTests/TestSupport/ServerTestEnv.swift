@@ -1,16 +1,17 @@
-// AtelierServer tests — a throwaway ingestion environment + image fixtures.
+// AtelierServer tests — a throwaway ingestion environment + the video fixture.
 //
 // Mirrors AtelierIngestion's `makeTempPipeline`: one temp dir holding a real
 // migrated SQLite library + a content-addressed MediaStore + a collection + a
 // wired IngestPipeline/IngestCoordinator. AtelierServer's TestSupport can't reach
 // AtelierIngestion's (test targets aren't products), so we build a small one here.
+//
+// The image fixtures + request builders left for `AtelierCaptureTestSupport`
+// (092 · S0) — which is that same constraint solved properly, as a product both
+// packages' test targets can depend on rather than a copy in each.
 
 import AVFoundation
-import CoreGraphics
 import CoreVideo
 import Foundation
-import ImageIO
-import UniformTypeIdentifiers
 
 import AtelierCore
 import AtelierIngestion
@@ -52,39 +53,15 @@ func makeServerTestEnv(maxConcurrent: Int = 4) async throws -> ServerTestEnv {
         coordinator: coordinator, root: root)
 }
 
-// MARK: - Image fixtures
+// MARK: - Video fixtures
+//
+// The image bytes + request builders that used to live here moved to
+// `AtelierCaptureTestSupport` (092 · S0), where the capture contract's other
+// consumer can reach them. What is left is the one fixture that is genuinely
+// server-shaped: a video body is streamed as raw bytes over HTTP and has no
+// inbox counterpart, so nothing outside this package needs it.
 
 enum ServerFixtures {
-    /// A valid `width × height` PNG (deterministic solid fill).
-    static func png(width: Int = 16, height: Int = 16) -> Data {
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let ctx = CGContext(
-            data: nil, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        ctx.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.8, alpha: 1))
-        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        let image = ctx.makeImage()!
-
-        let data = NSMutableData()
-        let dest = CGImageDestinationCreateWithData(
-            data, UTType.png.identifier as CFString, 1, nil)!
-        CGImageDestinationAddImage(dest, image, nil)
-        CGImageDestinationFinalize(dest)
-        return data as Data
-    }
-
-    /// The base64 of a valid PNG — the `image` field of a well-formed request.
-    static func pngBase64(width: Int = 16, height: Int = 16) -> String {
-        png(width: width, height: height).base64EncodedString()
-    }
-
-    /// Non-image bytes (UTF-8 text) — a valid base64 payload that is NOT an image,
-    /// to drive `IngestError.unsupportedType`.
-    static func nonImageBase64() -> String {
-        Data("not an image".utf8).base64EncodedString()
-    }
-
     /// A tiny real H.264 MP4 (synthesized via AVAssetWriter, no committed binary)
     /// — the raw body of a `POST /ingest-video`.
     static func mp4(width: Int = 240, height: Int = 180, frames: Int = 10, fps: Int = 10) -> Data {
@@ -130,42 +107,4 @@ enum ServerFixtures {
         semaphore.wait()
         return try! Data(contentsOf: url)
     }
-
-    /// The base64-JSON value for the `X-Atelier-Provenance` header of a video POST.
-    static func provenanceHeader(
-        platform: String = "twitter", collectionId: UUID? = nil
-    ) -> String {
-        let header = VideoCaptureHeader(
-            provenance: ProvenanceDTO(
-                platform: platform,
-                originalURL: "https://x.com/designer/status/42",
-                authorHandle: "@designer",
-                rawMetadata: .object(["tweetId": .string("42")])),
-            collectionId: collectionId)
-        return try! JSONEncoder().encode(header).base64EncodedString()
-    }
-}
-
-// MARK: - Request builders
-
-extension CaptureRequest {
-    /// A well-formed capture with rich provenance.
-    static func sample(
-        image: String = ServerFixtures.pngBase64(),
-        platform: String = "twitter",
-        collectionId: UUID? = nil
-    ) -> CaptureRequest {
-        CaptureRequest(
-            image: image,
-            provenance: ProvenanceDTO(
-                platform: platform,
-                originalURL: "https://x.com/designer/status/42",
-                authorHandle: "@designer",
-                authorName: "A Designer",
-                title: "a reference",
-                rawMetadata: .object(["likes": .number(9)])),
-            collectionId: collectionId)
-    }
-
-    func jsonData() -> Data { try! JSONEncoder().encode(self) }
 }

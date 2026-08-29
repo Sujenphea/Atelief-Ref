@@ -12,6 +12,7 @@
 //  filename grammar is in `AssetExportTests`. This file covers only the seam.
 //
 
+import AtelierArchive
 import AtelierCore
 import AtelierExport
 import Foundation

@@ -166,9 +166,11 @@ struct ServicesShelfTests {
         let board = try await services.createSpace(name: "Board")
 
         let subject = try await seedAsset(services, into: left.id)
-        // Neighbours, so "order survived" is a real claim and not vacuous.
-        let before1 = try await seedAsset(services, into: left.id)
-        let after1 = try await seedAsset(services, into: left.id)
+        // Neighbours, so "order survived" is a real claim and not vacuous. Unnamed
+        // on purpose: what they prove is that `after.left == before.left` compares
+        // three ids rather than one, and that comparison reaches them by position.
+        _ = try await seedAsset(services, into: left.id)
+        _ = try await seedAsset(services, into: left.id)
         try await services.addAssets([subject], to: right.id)
         _ = try await services.addAssetToSpace(
             assetID: subject, to: board.id, x: 12, y: 34, w: 56, h: 78, z: 2)

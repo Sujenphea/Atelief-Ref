@@ -11,6 +11,8 @@
 import Foundation
 import Testing
 
+import AtelierCapture
+import AtelierCaptureTestSupport
 import AtelierCore
 @testable import AtelierServer
 
@@ -79,7 +81,7 @@ struct CaptureServerIntegrationTests {
     func validVideoPost() async throws {
         let running = try await start(); defer { Task { await running.server.stop() } }
         let mp4 = ServerFixtures.mp4()
-        let header = ServerFixtures.provenanceHeader(collectionId: running.env.collectionID)
+        let header = CaptureFixtures.provenanceHeader(collectionId: running.env.collectionID)
 
         let (data, response) = try await URLSession.shared.data(
             for: videoRequest(running, body: mp4, header: header))
@@ -107,7 +109,7 @@ struct CaptureServerIntegrationTests {
         // A 1 KB video cap makes a real mp4 exceed it; the stream aborts at 413.
         let running = try await start(maxVideoBodyBytes: 1024)
         defer { Task { await running.server.stop() } }
-        let header = ServerFixtures.provenanceHeader(collectionId: running.env.collectionID)
+        let header = CaptureFixtures.provenanceHeader(collectionId: running.env.collectionID)
 
         let (_, response) = try await URLSession.shared.data(
             for: videoRequest(running, body: ServerFixtures.mp4(), header: header))

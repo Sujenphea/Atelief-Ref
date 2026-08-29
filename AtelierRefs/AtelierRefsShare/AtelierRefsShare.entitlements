@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  092 · S1 (decision 1) — the App Group container the extension writes its inbox
+	  into, shared with the host app `AtelierRefsMobile`. $(ATELIER_APP_GROUP) is a
+	  per-configuration user-defined build setting: Debug
+	  `group.sujenphea.AtelierRefs.dev`, Release `group.sujenphea.AtelierRefs`. Both
+	  targets are fed the same variable on the same configuration, which is the whole
+	  mechanism by which app and extension reach ONE container.
+	  This file is a separate copy on purpose, not duplication to fold away: an
+	  extension's entitlements are its own, and so is its Info.plist — `Bundle.main`
+	  inside an app extension is the EXTENSION's bundle, so it needs its own
+	  `AtelierAppGroupIdentifier` key as well (092 · S4b, changelog 398).
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(ATELIER_APP_GROUP)</string>
+	</array>
+</dict>
+</plist>

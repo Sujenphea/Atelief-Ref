@@ -22,7 +22,15 @@ let package = Package(
         // The STRING form, not `.vNN`: the `SupportedPlatform` enum stops at `.v15`
         // under swift-tools-version 6.0, so 26 cannot be named any other way without
         // moving the tools version too.
-        .macOS("26.0")
+        .macOS("26.0"),
+        // 092 · S4a. The iOS floor mirrors the macOS one rather than being
+        // derived downward: this package ships inside the companion app and its
+        // share extension, both built from the same sources by the same
+        // toolchain, and a lower floor would buy `@available` guards for
+        // versions nothing installs. Declaring it at all is the point — without
+        // an `.iOS(...)` line SPM assumes iOS 12 and refuses the graph, since
+        // GRDB requires 13.
+        .iOS("26.0")
     ],
     products: [
         .library(name: "AtelierCore", targets: ["AtelierCore"])

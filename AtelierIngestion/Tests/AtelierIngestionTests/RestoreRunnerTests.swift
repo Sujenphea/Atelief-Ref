@@ -358,7 +358,7 @@ struct RestoreRunnerTests {
             Data("b0".utf8), hash: String(format: "%08x", 0xBBB0_0000), fileExtension: "png")
 
         let recorder = RestoreProgress()
-        try await runner(fixture, source: try source(fixture)).run(
+        _ = try await runner(fixture, source: try source(fixture)).run(
             onProgress: { done, total in recorder.record(done, total) })
 
         #expect(recorder.pairs == [(1, 2), (2, 2)].map { RestorePair(done: $0.0, total: $0.1) })

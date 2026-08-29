@@ -120,6 +120,15 @@ tiers are available on iOS, and they are not equivalent:
 v1 takes tier 1 + tier 2 and states the limit in the UI rather than pretending. Tier 3
 is the follow-on, gated on the open question below.
 
+**Where the three tiers end up (added 2026-08-29,
+[096 § D4b](096-tier3-plan.md)).** They are not three permanent layers. Tier 1 is native-app
+shares and stays. Tier 2 is the general web case and stays — it is the only path for a site
+no extractor knows, which is most sites. Tier 3, once proven end to end, **replaces** tier 2
+on x.com, instagram.com and pinterest.com rather than sitting beside it: two paths producing
+different captures for the same post is a bug nobody can triage. The share sheet keeps
+working on those three; it answers as `web` provenance plus og-tags, which is what a path
+that cannot read the DOM honestly knows.
+
 *Correcting the first read:* an iOS share is not URL-only. Safari's JS preprocessing
 gives real DOM access, which is a meaningful step above og-tags — it just cannot see
 the network traffic that `twitter-hook.js` exists to read.
@@ -144,10 +153,15 @@ and not without a decision recorded separately.
 
 ## Open questions
 
-1. **Does Safari on iOS support `world: "MAIN"` content scripts at `document_start`?**
-   The entire tier-3 case rests on it. Verify against a real device before any
-   Safari-extension work is scheduled — if MAIN-world injection is unavailable, the
-   hook cannot be ported and tier 3 collapses back to tier 2.
+1. ~~**Does Safari on iOS support `world: "MAIN"` content scripts at `document_start`?**~~
+   **Answered on a device (2026-08-25): YES, on iOS 26**
+   ([425](../.change-log/425-the-main-world-is-open-on-ios.md)). A probe extension
+   injected at `readyState: loading`, intercepted 36 of the page's own XHRs on a
+   logged-in x.com including a GraphQL call, and its ISOLATED control could NOT see the
+   MAIN world's globals — so `world` was honoured rather than silently ignored. **Tier 3
+   is unblocked**; the hook can be ported. Note that
+   `xcrun safari-web-extension-converter` WARNS that `world` is unsupported, and is
+   wrong — which is why this was verified functionally rather than from the tooling.
 2. **Which collection does a share land in?** The Mac app always has a selected
    collection; a share sheet has no context. Options: a fixed *Inbox* collection, a
    last-used default, or a picker in the extension UI (costs the extension a
@@ -163,7 +177,18 @@ and not without a decision recorded separately.
 
 ## Follow-on docs
 
-- `092-ios-companion-design` — the inbox record format, the App Group layout, the
-  extension↔host handoff, and the tier-1/tier-2 capture contract.
-- `093-ios-companion-plan` — implementation slices against the sizing table.
-- A Safari-extension research doc, only after open question 1 is answered.
+- [092-ios-companion-plan](092-ios-companion-plan.md) — the build order, S0–S6.
+  The separately-planned `design` doc was folded into it: the two contracts that
+  needed designing (the shared capture DTO, the inbox record) are each half a page
+  and belong beside the slice that builds them.
+- [094-safari-extension-research](094-safari-extension-research.md) — written once open
+  question 1 came back yes. Its finding: the hook was never the hard part. The
+  **trigger** is — single-item capture is a right-click (`contexts: ["image"]`,
+  `info.srcUrl`), iOS Safari has no context menu for extensions, and the long-press share
+  sends a URL with no element identity. That seam is design, not porting, and the
+  "+4–6 weeks" above does not account for it.
+
+**Settled since this doc was written.** Open question 2 (which collection a share
+lands in) is answered in 092 · S3: `Collection.unsortedID`, the same default the
+capture endpoint already uses — no new Inbox-collection concept, and nothing about
+the collection tree crosses the process boundary.

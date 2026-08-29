@@ -5,8 +5,20 @@
 // originals), `thumbnails/` (derived, regenerable), and `cache/` (transient,
 // purgeable, and where atomic writes stage their temp files). It creates
 // nothing on disk; directory creation is the media store's job, on demand.
+//
+// `inbox/` (092 · S2) is not the only subdirectory whose name is NOT spelled here, and
+// as of 092 · S5 it is no longer even the unusual case: `inbox/` is written by the iOS
+// share extension and `blobs/` + `thumbnails/` are READ by the iOS companion's browse
+// surface, and neither process can link this package (it imports AppKit via
+// `Input/DirectInputReader.swift` and does not build for iOS). All three names
+// therefore live in AtelierCapture — `InboxLayout` and `LibraryMediaPaths` — where both
+// sides can reach them, and the properties here delegate. One authority, reached from
+// both sides. `cache/` and `snapshots/` stay spelled here: nothing off this platform
+// has any business in either.
 
 import Foundation
+import AtelierCapture
+import AtelierLibraryPaths
 
 /// The on-disk layout of a single Library directory (003 storage layout).
 ///
@@ -26,20 +38,31 @@ public struct LibraryLayout: Sendable {
     }
 
     /// Content-addressed original media, sharded by hash prefix (`blobs/ab/cd/…`).
+    /// Named by ``LibraryMediaPaths/blobsDirectoryName`` for the reason `inbox`
+    /// delegates below — the phone resolves this path too and cannot link this
+    /// package (092 · S5).
     public var blobs: URL {
-        root.appendingPathComponent("blobs", isDirectory: true)
+        LibraryMediaPaths.blobs(inLibraryAt: root)
     }
 
     /// Derived, regenerable thumbnails, sharded by hash prefix
-    /// (`thumbnails/ab/cd/…`). Excluded from backups, purgeable.
+    /// (`thumbnails/ab/cd/…`). Excluded from backups, purgeable. Named by
+    /// ``LibraryMediaPaths/thumbnailsDirectoryName``, same reason.
     public var thumbnails: URL {
-        root.appendingPathComponent("thumbnails", isDirectory: true)
+        LibraryMediaPaths.thumbnails(inLibraryAt: root)
     }
 
     /// Transient scratch space, safe to purge. Atomic writes stage their temp
     /// files here so the move into `blobs`/`thumbnails` stays on the same volume.
     public var cache: URL {
         root.appendingPathComponent("cache", isDirectory: true)
+    }
+
+    /// The capture handoff directory (092 · S2): what the iOS share extension appends
+    /// records to and the host app drains. Named by ``InboxLayout/directoryName`` so
+    /// the writer and the reader cannot disagree about where it is.
+    public var inbox: URL {
+        root.appendingPathComponent(InboxLayout.directoryName, isDirectory: true)
     }
 
     /// Recovery snapshots (008): self-contained `.sqlite` copies of the database.

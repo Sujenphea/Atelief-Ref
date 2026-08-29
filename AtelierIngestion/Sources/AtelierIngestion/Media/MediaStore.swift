@@ -16,6 +16,8 @@
 // opaque lowercased-hex string and `fileExtension` is an opaque string the
 // caller supplies; the store only does path math and byte IO.
 
+import AtelierCapture
+import AtelierLibraryPaths
 import Foundation
 
 /// A content-addressed, sharded, atomic + idempotent file store for blobs and
@@ -75,6 +77,14 @@ public struct MediaStore: Sendable {
 
     // MARK: - Sharding
 
+    // The path math below is `AtelierCapture.LibraryMediaPaths` — every one of these
+    // members delegates rather than computing (092 · S5). It moved for the reason
+    // `InboxLayout` and `LibraryLocation` moved before it: the iOS companion resolves a
+    // thumbnail for a row it just read, and it cannot link THIS package (AppKit, via
+    // `Input/DirectInputReader.swift`). What stays here is everything that writes —
+    // the atomic staging, the `cache/` volume rule, the Trash removals and
+    // ``StoreError``, which is still this type's own vocabulary for a bad hash.
+
     /// The two shard directory components for `hash`: first two hex chars, then
     /// the next two (`"abcdef…"` → `("ab", "cd")`).
     ///
@@ -82,36 +92,31 @@ public struct MediaStore: Sendable {
     /// characters — a real content hash (a SHA-256 is 64 lowercased hex chars)
     /// always satisfies this; the guard only trips on caller misuse.
     func shardComponents(for hash: String) throws -> (String, String) {
-        guard hash.count >= 4 else { throw StoreError.invalidHash(hash) }
-        let chars = Array(hash)
-        let first = String(chars[0 ..< 2])
-        let second = String(chars[2 ..< 4])
-        return (first, second)
+        guard let components = LibraryMediaPaths.shardComponents(for: hash) else {
+            throw StoreError.invalidHash(hash)
+        }
+        return components
     }
 
     /// The file name for a blob: `<hash>` with `.<ext>` appended only when
     /// `fileExtension` is non-empty (empty ⇒ no dot suffix).
     private func blobFileName(hash: String, fileExtension: String) -> String {
-        appendingExtension(fileExtension, to: hash)
+        LibraryMediaPaths.blobFileName(hash: hash, fileExtension: fileExtension)
     }
 
     /// The file name for a thumbnail tier: `<hash>@<size>` with `.<ext>`
     /// appended only when `fileExtension` is non-empty.
     private func thumbnailFileName(hash: String, size: Int, fileExtension: String) -> String {
-        appendingExtension(fileExtension, to: "\(hash)@\(size)")
-    }
-
-    /// Append `.ext` to `base`, or return `base` unchanged for an empty ext.
-    private func appendingExtension(_ fileExtension: String, to base: String) -> String {
-        fileExtension.isEmpty ? base : "\(base).\(fileExtension)"
+        LibraryMediaPaths.thumbnailFileName(
+            hash: hash, size: size, fileExtension: fileExtension)
     }
 
     /// The sharded directory under `parent` for `hash` (`parent/ab/cd`).
     private func shardDirectory(under parent: URL, hash: String) throws -> URL {
-        let (first, second) = try shardComponents(for: hash)
-        return parent
-            .appendingPathComponent(first, isDirectory: true)
-            .appendingPathComponent(second, isDirectory: true)
+        guard let directory = LibraryMediaPaths.shardDirectory(under: parent, hash: hash) else {
+            throw StoreError.invalidHash(hash)
+        }
+        return directory
     }
 
     // MARK: - Blobs

@@ -10,6 +10,36 @@ import {
   firstMediaOfKind, mediaMatching, ogImage, toOrigName,
 } from "./base.js";
 
+/**
+ * A status URL reduced to its canonical permalink, `/{handle}/status/{id}`.
+ *
+ * X hangs sub-pages off a tweet — `/photo/1` on the image, `/analytics` on a promoted or
+ * own post, `/history` on an edited one — and every one of them satisfies `isStatus`
+ * (`pathSegments(u)[1] === "status"` is still true) and still yields the right id at
+ * `segments[2]`. What they do NOT yield is the same `originalURL`, and 18A dedup keys on
+ * provenance: right-click a tweet's IMAGE and you captured `…/status/{id}/photo/1`,
+ * right-click its TEXT and you captured `…/status/{id}`, and the library forks one post
+ * into two assets. Observed on a live feed, where a promoted post carried `/analytics` as
+ * its ONLY status link — so this cannot be fixed by picking a better anchor, only by
+ * normalizing the one there is.
+ *
+ * The bulk mapper never had this problem: `bulk-twitter.js:280` composes the permalink
+ * from `screenName` + `tweetId` rather than reading it off the page. This is the DOM path
+ * being brought into agreement with it, so the two producers of a `twitter` provenance
+ * emit one URL for one tweet.
+ *
+ * A non-status URL (a profile, a search) is passed through untouched.
+ */
+export function toStatusPermalink(url) {
+  const segments = pathSegments(url);
+  if (segments[1] !== "status" || !segments[2]) return url;
+  try {
+    return `${new URL(url).origin}/${segments[0]}/status/${segments[2]}`;
+  } catch {
+    return url;
+  }
+}
+
 export const twitter = {
   platform: "twitter",
 
@@ -20,9 +50,13 @@ export const twitter = {
 
   extract(harvest, context = {}) {
     const isStatus = (u) => pathSegments(u)[1] === "status";
-    const url =
+    // Normalized AFTER resolution rather than per candidate, so a sub-page URL from ANY
+    // source — the right-clicked link, a live `/photo/1` lightbox URL, a stale canonical —
+    // lands on the same permalink.
+    const url = toStatusPermalink(
       firstPostURL([context.linkUrl, harvest.url, harvest.canonical], isStatus) ||
-      liveURL(harvest);
+      liveURL(harvest)
+    );
     const segments = pathSegments(url);
     const handle = segments[0] ? "@" + segments[0] : null;
     const tweetId = segments[1] === "status" ? segments[2] || null : null;

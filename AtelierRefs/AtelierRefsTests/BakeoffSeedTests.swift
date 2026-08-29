@@ -41,7 +41,9 @@
 //      AtelierRefs.app/Contents/MacOS/AtelierRefs -library-root bakeoff-library
 //
 
+import AtelierCapture
 import AtelierCore
+import AtelierLibraryPaths
 import AtelierIngestion
 import CoreGraphics
 import Foundation

@@ -22,6 +22,7 @@
 //
 
 import AppKit
+import AtelierArchive
 import AtelierCore
 import Combine
 import SwiftUI
@@ -1059,7 +1060,7 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         guard collectionView != nil else { return }
         let visible = visibleItemIDs()
         let delta = selectionCellDelta(from: old, to: newValue)
-        var targets = selectionReconcileTargets(delta: delta, visibleIDs: visible)
+        let targets = selectionReconcileTargets(delta: delta, visibleIDs: visible)
         for id in targets {
             guard let index = idToIndex[id], let cell = cellIfVisible(at: index) else { continue }
             cell.applySelectionState(cellSelectionState(for: id, selection: newValue))

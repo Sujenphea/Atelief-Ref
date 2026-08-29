@@ -7,12 +7,28 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B1000000000000000000000D /* AtelierRefsShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 99205373302EE7DC00992742 /* AtelierRefsShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		CA0000000000000000000003 /* CanvasRenderer in Frameworks */ = {isa = PBXBuildFile; productRef = CA0000000000000000000002 /* CanvasRenderer */; };
 		DA0000000000000000000003 /* AtelierCore in Frameworks */ = {isa = PBXBuildFile; productRef = DA0000000000000000000002 /* AtelierCore */; };
 		EA0000000000000000000003 /* AtelierIngestion in Frameworks */ = {isa = PBXBuildFile; productRef = EA0000000000000000000002 /* AtelierIngestion */; };
 		FA0000000000000000000003 /* AtelierServer in Frameworks */ = {isa = PBXBuildFile; productRef = FA0000000000000000000002 /* AtelierServer */; };
 		GA0000000000000000000003 /* AtelierExport in Frameworks */ = {isa = PBXBuildFile; productRef = GA0000000000000000000002 /* AtelierExport */; };
 		HA0000000000000000000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = HA0000000000000000000002 /* Sparkle */; };
+		IA0000000000000000000003 /* AtelierCapture in Frameworks */ = {isa = PBXBuildFile; productRef = IA0000000000000000000002 /* AtelierCapture */; };
+		IA0000000000000000000005 /* AtelierCapture in Frameworks */ = {isa = PBXBuildFile; productRef = IA0000000000000000000004 /* AtelierCapture */; };
+		IA0000000000000000000009 /* AtelierCapture in Frameworks */ = {isa = PBXBuildFile; productRef = IA0000000000000000000008 /* AtelierCapture */; };
+		JA0000000000000000000003 /* AtelierBrowse in Frameworks */ = {isa = PBXBuildFile; productRef = JA0000000000000000000002 /* AtelierBrowse */; };
+		KA0000000000000000000003 /* AtelierArchive in Frameworks */ = {isa = PBXBuildFile; productRef = KA0000000000000000000002 /* AtelierArchive */; };
+		KA0000000000000000000005 /* AtelierArchive in Frameworks */ = {isa = PBXBuildFile; productRef = KA0000000000000000000004 /* AtelierArchive */; };
+		LA0000000000000000000003 /* AtelierTokens in Frameworks */ = {isa = PBXBuildFile; productRef = LA0000000000000000000002 /* AtelierTokens */; };
+		LA0000000000000000000005 /* AtelierTokens in Frameworks */ = {isa = PBXBuildFile; productRef = LA0000000000000000000004 /* AtelierTokens */; };
+		LA0000000000000000000007 /* AtelierTokens in Frameworks */ = {isa = PBXBuildFile; productRef = LA0000000000000000000006 /* AtelierTokens */; };
+		DA0000000000000000000005 /* AtelierCore in Frameworks */ = {isa = PBXBuildFile; productRef = DA0000000000000000000004 /* AtelierCore */; };
+		MA0000000000000000000003 /* AtelierLibraryPaths in Frameworks */ = {isa = PBXBuildFile; productRef = MA0000000000000000000002 /* AtelierLibraryPaths */; };
+		MA0000000000000000000005 /* AtelierLibraryPaths in Frameworks */ = {isa = PBXBuildFile; productRef = MA0000000000000000000004 /* AtelierLibraryPaths */; };
+		MA0000000000000000000007 /* AtelierLibraryPaths in Frameworks */ = {isa = PBXBuildFile; productRef = MA0000000000000000000006 /* AtelierLibraryPaths */; };
+		MA0000000000000000000009 /* AtelierLibraryPaths in Frameworks */ = {isa = PBXBuildFile; productRef = MA0000000000000000000008 /* AtelierLibraryPaths */; };
+		MA000000000000000000000B /* AtelierLibraryPaths in Frameworks */ = {isa = PBXBuildFile; productRef = MA000000000000000000000A /* AtelierLibraryPaths */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -23,13 +39,68 @@
 			remoteGlobalIDString = 9907786D2FF364EF00718815;
 			remoteInfo = AtelierRefs;
 		};
+		B1000000000000000000000C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 990778662FF364EF00718815 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 99205372302EE7DC00992742;
+			remoteInfo = AtelierRefsShare;
+		};
+		UT0000000000000000000008 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 990778662FF364EF00718815 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B10000000000000000000003;
+			remoteInfo = AtelierRefsMobile;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B10000000000000000000007 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				B1000000000000000000000D /* AtelierRefsShare.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		9907786E2FF364EF00718815 /* AtelierRefs.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AtelierRefs.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9907787B2FF364F000718815 /* AtelierRefsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtelierRefsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		99205373302EE7DC00992742 /* AtelierRefsShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AtelierRefsShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000001 /* Config/Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Release.xcconfig; sourceTree = "<group>"; };
+		B10000000000000000000001 /* AtelierRefsMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AtelierRefsMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		UT0000000000000000000001 /* AtelierRefsMobileUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtelierRefsMobileUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		9920537D302EE7DD00992742 /* Exceptions for "AtelierRefsShare" folder in "AtelierRefsShare" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 99205372302EE7DC00992742 /* AtelierRefsShare */;
+		};
+		IA0000000000000000000006 /* Exceptions for "AtelierRefsMobile" folder in "AtelierRefsMobile" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = B10000000000000000000003 /* AtelierRefsMobile */;
+		};
+		UT000000000000000000000C /* Exceptions for "AtelierRefsMobileUITests" folder in "AtelierRefsMobileUITests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = UT0000000000000000000003 /* AtelierRefsMobileUITests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		990778702FF364EF00718815 /* AtelierRefs */ = {
@@ -42,6 +113,30 @@
 			path = AtelierRefsTests;
 			sourceTree = "<group>";
 		};
+		99205374302EE7DC00992742 /* AtelierRefsShare */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				9920537D302EE7DD00992742 /* Exceptions for "AtelierRefsShare" folder in "AtelierRefsShare" target */,
+			);
+			path = AtelierRefsShare;
+			sourceTree = "<group>";
+		};
+		B10000000000000000000002 /* AtelierRefsMobile */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				IA0000000000000000000006 /* Exceptions for "AtelierRefsMobile" folder in "AtelierRefsMobile" target */,
+			);
+			path = AtelierRefsMobile;
+			sourceTree = "<group>";
+		};
+		UT0000000000000000000002 /* AtelierRefsMobileUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				UT000000000000000000000C /* Exceptions for "AtelierRefsMobileUITests" folder in "AtelierRefsMobileUITests" target */,
+			);
+			path = AtelierRefsMobileUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -49,12 +144,15 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				MA0000000000000000000003 /* AtelierLibraryPaths in Frameworks */,
 				CA0000000000000000000003 /* CanvasRenderer in Frameworks */,
 				DA0000000000000000000003 /* AtelierCore in Frameworks */,
 				EA0000000000000000000003 /* AtelierIngestion in Frameworks */,
 				FA0000000000000000000003 /* AtelierServer in Frameworks */,
 				GA0000000000000000000003 /* AtelierExport in Frameworks */,
 				HA0000000000000000000003 /* Sparkle in Frameworks */,
+				KA0000000000000000000003 /* AtelierArchive in Frameworks */,
+				LA0000000000000000000003 /* AtelierTokens in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -62,6 +160,39 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				MA0000000000000000000005 /* AtelierLibraryPaths in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		99205370302EE7DC00992742 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				MA0000000000000000000007 /* AtelierLibraryPaths in Frameworks */,
+				IA0000000000000000000005 /* AtelierCapture in Frameworks */,
+				LA0000000000000000000007 /* AtelierTokens in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B10000000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				MA0000000000000000000009 /* AtelierLibraryPaths in Frameworks */,
+				IA0000000000000000000003 /* AtelierCapture in Frameworks */,
+				JA0000000000000000000003 /* AtelierBrowse in Frameworks */,
+				DA0000000000000000000005 /* AtelierCore in Frameworks */,
+					KA0000000000000000000005 /* AtelierArchive in Frameworks */,
+				LA0000000000000000000005 /* AtelierTokens in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		UT0000000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				MA000000000000000000000B /* AtelierLibraryPaths in Frameworks */,
+				IA0000000000000000000009 /* AtelierCapture in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -73,6 +204,8 @@
 			children = (
 				990778702FF364EF00718815 /* AtelierRefs */,
 				9907787E2FF364F000718815 /* AtelierRefsTests */,
+				B10000000000000000000002 /* AtelierRefsMobile */,
+				99205374302EE7DC00992742 /* AtelierRefsShare */,
 				AA0000000000000000000001 /* Config/Release.xcconfig */,
 				9907786F2FF364EF00718815 /* Products */,
 			);
@@ -83,6 +216,9 @@
 			children = (
 				9907786E2FF364EF00718815 /* AtelierRefs.app */,
 				9907787B2FF364F000718815 /* AtelierRefsTests.xctest */,
+				B10000000000000000000001 /* AtelierRefsMobile.app */,
+				99205373302EE7DC00992742 /* AtelierRefsShare.appex */,
+				UT0000000000000000000001 /* AtelierRefsMobileUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -107,12 +243,15 @@
 			);
 			name = AtelierRefs;
 			packageProductDependencies = (
+				MA0000000000000000000002 /* AtelierLibraryPaths */,
 				CA0000000000000000000002 /* CanvasRenderer */,
 				DA0000000000000000000002 /* AtelierCore */,
 				EA0000000000000000000002 /* AtelierIngestion */,
 				FA0000000000000000000002 /* AtelierServer */,
 				GA0000000000000000000002 /* AtelierExport */,
 				HA0000000000000000000002 /* Sparkle */,
+				KA0000000000000000000002 /* AtelierArchive */,
+				LA0000000000000000000002 /* AtelierTokens */,
 			);
 			productName = AtelierRefs;
 			productReference = 9907786E2FF364EF00718815 /* AtelierRefs.app */;
@@ -136,10 +275,91 @@
 			);
 			name = AtelierRefsTests;
 			packageProductDependencies = (
+				MA0000000000000000000004 /* AtelierLibraryPaths */,
 			);
 			productName = AtelierRefsTests;
 			productReference = 9907787B2FF364F000718815 /* AtelierRefsTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		99205372302EE7DC00992742 /* AtelierRefsShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9920537E302EE7DD00992742 /* Build configuration list for PBXNativeTarget "AtelierRefsShare" */;
+			buildPhases = (
+				9920536F302EE7DC00992742 /* Sources */,
+				99205370302EE7DC00992742 /* Frameworks */,
+				99205371302EE7DC00992742 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				99205374302EE7DC00992742 /* AtelierRefsShare */,
+			);
+			name = AtelierRefsShare;
+			packageProductDependencies = (
+				MA0000000000000000000006 /* AtelierLibraryPaths */,
+				IA0000000000000000000004 /* AtelierCapture */,
+				LA0000000000000000000006 /* AtelierTokens */,
+			);
+			productName = AtelierRefsShare;
+			productReference = 99205373302EE7DC00992742 /* AtelierRefsShare.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		B10000000000000000000003 /* AtelierRefsMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B10000000000000000000008 /* Build configuration list for PBXNativeTarget "AtelierRefsMobile" */;
+			buildPhases = (
+				B10000000000000000000004 /* Sources */,
+				B10000000000000000000005 /* Frameworks */,
+				B10000000000000000000006 /* Resources */,
+				B10000000000000000000007 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B1000000000000000000000B /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B10000000000000000000002 /* AtelierRefsMobile */,
+			);
+			name = AtelierRefsMobile;
+			packageProductDependencies = (
+				MA0000000000000000000008 /* AtelierLibraryPaths */,
+				IA0000000000000000000002 /* AtelierCapture */,
+				JA0000000000000000000002 /* AtelierBrowse */,
+				DA0000000000000000000004 /* AtelierCore */,
+				KA0000000000000000000004 /* AtelierArchive */,
+				LA0000000000000000000004 /* AtelierTokens */,
+			);
+			productName = AtelierRefsMobile;
+			productReference = B10000000000000000000001 /* AtelierRefsMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+		UT0000000000000000000003 /* AtelierRefsMobileUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = UT0000000000000000000009 /* Build configuration list for PBXNativeTarget "AtelierRefsMobileUITests" */;
+			buildPhases = (
+				UT0000000000000000000004 /* Sources */,
+				UT0000000000000000000005 /* Frameworks */,
+				UT0000000000000000000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				UT0000000000000000000007 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				UT0000000000000000000002 /* AtelierRefsMobileUITests */,
+			);
+			name = AtelierRefsMobileUITests;
+			packageProductDependencies = (
+				MA000000000000000000000A /* AtelierLibraryPaths */,
+				IA0000000000000000000008 /* AtelierCapture */,
+			);
+			productName = AtelierRefsMobileUITests;
+			productReference = UT0000000000000000000001 /* AtelierRefsMobileUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
 
@@ -157,6 +377,16 @@
 					9907787A2FF364F000718815 = {
 						CreatedOnToolsVersion = 26.6;
 						TestTargetID = 9907786D2FF364EF00718815;
+					};
+					99205372302EE7DC00992742 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					B10000000000000000000003 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					UT0000000000000000000003 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = B10000000000000000000003;
 					};
 				};
 			};
@@ -176,6 +406,11 @@
 				FA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierServer" */,
 				GA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierExport" */,
 				HA0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				IA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierCapture" */,
+				JA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierBrowse" */,
+				KA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierArchive" */,
+				LA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierTokens" */,
+				MA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierLibraryPaths" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9907786F2FF364EF00718815 /* Products */;
@@ -184,6 +419,9 @@
 			targets = (
 				9907786D2FF364EF00718815 /* AtelierRefs */,
 				9907787A2FF364F000718815 /* AtelierRefsTests */,
+				B10000000000000000000003 /* AtelierRefsMobile */,
+				99205372302EE7DC00992742 /* AtelierRefsShare */,
+				UT0000000000000000000003 /* AtelierRefsMobileUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -197,6 +435,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		990778792FF364F000718815 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		99205371302EE7DC00992742 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B10000000000000000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		UT0000000000000000000006 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -220,6 +479,27 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		9920536F302EE7DC00992742 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B10000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		UT0000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -227,6 +507,16 @@
 			isa = PBXTargetDependency;
 			target = 9907786D2FF364EF00718815 /* AtelierRefs */;
 			targetProxy = 9907787C2FF364F000718815 /* PBXContainerItemProxy */;
+		};
+		B1000000000000000000000B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 99205372302EE7DC00992742 /* AtelierRefsShare */;
+			targetProxy = B1000000000000000000000C /* PBXContainerItemProxy */;
+		};
+		UT0000000000000000000007 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B10000000000000000000003 /* AtelierRefsMobile */;
+			targetProxy = UT0000000000000000000008 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -466,6 +756,190 @@
 			};
 			name = Release;
 		};
+		9920537B302EE7DD00992742 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ATELIER_APP_GROUP = group.sujenphea.AtelierRefs.dev;
+				CODE_SIGN_ENTITLEMENTS = AtelierRefsShare/AtelierRefsShare.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = L25247V6JG;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AtelierRefsShare/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = AtelierRefsShare;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sujenphea.AtelierRefsMobile.Share;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		9920537C302EE7DD00992742 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ATELIER_APP_GROUP = group.sujenphea.AtelierRefs;
+				CODE_SIGN_ENTITLEMENTS = AtelierRefsShare/AtelierRefsShare.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = L25247V6JG;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AtelierRefsShare/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = AtelierRefsShare;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sujenphea.AtelierRefsMobile.Share;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		B10000000000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ATELIER_APP_GROUP = group.sujenphea.AtelierRefs.dev;
+				CODE_SIGN_ENTITLEMENTS = AtelierRefsMobile/AtelierRefsMobile.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = L25247V6JG;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AtelierRefsMobile/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sujenphea.AtelierRefsMobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		B1000000000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ATELIER_APP_GROUP = group.sujenphea.AtelierRefs;
+				CODE_SIGN_ENTITLEMENTS = AtelierRefsMobile/AtelierRefsMobile.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = L25247V6JG;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AtelierRefsMobile/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sujenphea.AtelierRefsMobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		UT000000000000000000000A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ATELIER_APP_GROUP = group.sujenphea.AtelierRefs.dev;
+				CODE_SIGN_ENTITLEMENTS = AtelierRefsMobileUITests/AtelierRefsMobileUITests.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = L25247V6JG;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AtelierRefsMobileUITests/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sujenphea.AtelierRefsMobileUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = AtelierRefsMobile;
+			};
+			name = Debug;
+		};
+		UT000000000000000000000B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ATELIER_APP_GROUP = group.sujenphea.AtelierRefs;
+				CODE_SIGN_ENTITLEMENTS = AtelierRefsMobileUITests/AtelierRefsMobileUITests.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = L25247V6JG;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AtelierRefsMobileUITests/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sujenphea.AtelierRefsMobileUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = AtelierRefsMobile;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -496,6 +970,33 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		9920537E302EE7DD00992742 /* Build configuration list for PBXNativeTarget "AtelierRefsShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9920537B302EE7DD00992742 /* Debug */,
+				9920537C302EE7DD00992742 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B10000000000000000000008 /* Build configuration list for PBXNativeTarget "AtelierRefsMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B10000000000000000000009 /* Debug */,
+				B1000000000000000000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		UT0000000000000000000009 /* Build configuration list for PBXNativeTarget "AtelierRefsMobileUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				UT000000000000000000000A /* Debug */,
+				UT000000000000000000000B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -518,6 +1019,26 @@
 		GA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierExport" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../AtelierExport;
+		};
+		IA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierCapture" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierCapture;
+		};
+		JA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierBrowse" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierBrowse;
+		};
+		LA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierTokens" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierTokens;
+		};
+		KA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierArchive" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierArchive;
+		};
+		MA0000000000000000000001 /* XCLocalSwiftPackageReference "../AtelierLibraryPaths" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AtelierLibraryPaths;
 		};
 /* End XCLocalSwiftPackageReference section */
 
@@ -557,6 +1078,66 @@
 			isa = XCSwiftPackageProductDependency;
 			package = HA0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		IA0000000000000000000002 /* AtelierCapture */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierCapture;
+		};
+		IA0000000000000000000004 /* AtelierCapture */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierCapture;
+		};
+		IA0000000000000000000008 /* AtelierCapture */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierCapture;
+		};
+		JA0000000000000000000002 /* AtelierBrowse */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierBrowse;
+		};
+		KA0000000000000000000002 /* AtelierArchive */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierArchive;
+		};
+		LA0000000000000000000002 /* AtelierTokens */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierTokens;
+		};
+		LA0000000000000000000004 /* AtelierTokens */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierTokens;
+		};
+		LA0000000000000000000006 /* AtelierTokens */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierTokens;
+		};
+		KA0000000000000000000004 /* AtelierArchive */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierArchive;
+		};
+		DA0000000000000000000004 /* AtelierCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierCore;
+		};
+		MA0000000000000000000002 /* AtelierLibraryPaths */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierLibraryPaths;
+		};
+		MA0000000000000000000004 /* AtelierLibraryPaths */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierLibraryPaths;
+		};
+		MA0000000000000000000006 /* AtelierLibraryPaths */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierLibraryPaths;
+		};
+		MA0000000000000000000008 /* AtelierLibraryPaths */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierLibraryPaths;
+		};
+		MA000000000000000000000A /* AtelierLibraryPaths */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierLibraryPaths;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

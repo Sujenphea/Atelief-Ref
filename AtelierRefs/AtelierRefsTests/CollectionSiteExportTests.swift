@@ -12,6 +12,7 @@
 //  This file covers only the seam between them.
 //
 
+import AtelierArchive
 import AtelierCore
 import AtelierExport
 import CoreGraphics

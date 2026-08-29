@@ -49,13 +49,56 @@ Four decisions worth naming outside the doc:
 v1 sizes at 5–7 weeks; a feature-comparable iOS app at 3–5 months. The gap between
 those two numbers is the argument.
 
+## The build order, and the slice nobody costed
+
+[092](../.docs/092-ios-companion-plan.md) turns that into S0–S6. The ordering
+property worth stating outside the doc: **S0–S3 are pure Swift that land on the Mac
+app and need no iOS target, no device and no provisioning.** They run under the
+existing `swift test` matrix, and each improves the desktop build on its own terms.
+The plan reaches the "needs an iOS target" cliff with the contract already proven,
+and if the companion is shelved at S3 nothing is wasted.
+
+S0 is the slice 091 missed. `CaptureRequest` / `decode(body:now:)` already *are* the
+capture contract — a validated funnel from untrusted JSON to
+`(Data, SourceDraft, UUID?)` with a malformed-input matrix behind it — but they live
+inside `AtelierServer`, which links FlyingFox and does not exist on iOS. Extracting
+them to a zero-dependency `AtelierCapture` package is two days, changes no behaviour,
+and is what keeps the phone and the browser extension speaking one contract rather
+than two that resemble each other. It pushes the total from 5–7 weeks to 7–8.
+
+Three decisions the plan settles that the overview had left open or unasked:
+
+- **A share lands in Unsorted** — `decoded.collectionID ?? Collection.unsortedID`,
+  the exact default `startCaptureEndpoint` already uses. 091's open question 2 is
+  closed with no new concept: no Inbox collection, no picker in the extension, and
+  nothing about the collection tree crossing the process boundary.
+- **The macOS library does not move into an App Group.** The container base is
+  iOS-only, behind a platform conditional in `LibraryLocation`. Unifying the two
+  would look tidier and would cost a data migration of every existing library for
+  zero functional gain — macOS has no share extension to share with.
+- **No new `Platform` case for sharing.** `platform` records which *site* the
+  content came from and is persisted as a string; a new case touches the migrator,
+  every filter and the archive contract. The host is mapped to the existing cases
+  with a `.web` fallback, and the act is recorded as
+  `rawMetadata.capturedVia = "ios_share"`.
+
+The drain ingests through `ByteSource.fileURL`, never `.data` — the bytes are
+already on disk, and reading them into memory to hand them to a pipeline that writes
+them back out is the mistake the whole design exists to avoid. Records are two-phase
+(payload, then record-as-commit-marker) so a drain running against a mid-write
+extension skips rather than fails, and deletion happens only after a terminal
+outcome, with 18A dedup making the crash-retry a no-op.
+
 ## Files
 
     .docs/091-ios-companion-overview.md   new — the survey, six decisions, sizing,
                                           four open questions, follow-on index
+    .docs/092-ios-companion-plan.md       new — S0–S6, the inbox + capture-DTO
+                                          contracts, gates, per-slice test strategy
 
 ## Migration notes
 
-None — documentation only. Nothing is scheduled: 092 (design) and 093 (plan) are
-named in the doc but unwritten, and the Safari-extension research doc is explicitly
-gated on open question 1.
+None — documentation only. Nothing is built. 091 planned a separate `092-design`;
+it was folded into the plan, so 093 is unallocated and the Safari-extension research
+doc remains gated on open question 1 (whether iOS Safari supports MAIN-world content
+scripts at `document_start`) — which S0–S6 deliberately do not depend on.

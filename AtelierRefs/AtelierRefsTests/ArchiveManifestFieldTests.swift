@@ -22,6 +22,7 @@
 //  unnecessary.
 //
 
+import AtelierArchive
 import AtelierCore
 import Foundation
 import Testing

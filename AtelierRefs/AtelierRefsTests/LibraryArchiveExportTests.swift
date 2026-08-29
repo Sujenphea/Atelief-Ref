@@ -12,6 +12,7 @@
 //  stopped and leaves no manifest claiming otherwise.
 //
 
+import AtelierArchive
 import AtelierCore
 import AtelierIngestion
 import Foundation
@@ -33,7 +34,7 @@ private struct Rig {
 
     var writer: LibraryArchiveWriter {
         LibraryArchiveWriter(
-            services: services, store: store, appVersion: "1.0-test",
+            services: services, libraryRoot: store.layout.root, appVersion: "1.0-test",
             schemaVersion: "v18")
     }
 

@@ -17,6 +17,7 @@
 //  answer in this app, and a fourth export cannot quietly invent a different one.
 //
 
+import AtelierArchive
 import AtelierCore
 import Foundation
 

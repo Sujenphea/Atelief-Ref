@@ -1,14 +1,19 @@
 name: CI
 
-# 010 · Phase 1 — compile + test gate on every push / PR. Runs the four Swift
-# package suites, the extension's node tests + drift check, and an xcodebuild
-# build-and-test of the app target (the SwiftUI layer isn't SPM-tested, so the
-# build is its compile-proof and AtelierRefsTests carries its unit coverage).
+# 010 · Phase 1 — compile + test gate on every push / PR. Runs the ten Swift
+# package suites, an iOS cross-build of the two packages the share extension
+# links, the extension's node tests + drift check (which since review issue 4
+# also gates the SWIFT share extension's host table — see the `extension` job),
+# an xcodebuild build-and-test of the app target (the SwiftUI layer isn't
+# SPM-tested, so the build is its compile-proof and AtelierRefsTests carries its
+# unit coverage), and an xcodebuild build of the two iOS targets.
 #
 # Toolchain: the app targets macOS 26 / Xcode 26 (deployment target 26.5), so the
-# app job needs a runner with that SDK. Swift packages + the extension build on any
-# recent macOS runner. If GitHub-hosted images don't yet ship Xcode 26, point the
-# `app` job at a self-hosted macOS 26 runner (change `runs-on`).
+# app job needs a runner with that SDK. The `ios-packages` and `ios-app` jobs need
+# the same Xcode for their iPhoneOS 26 SDK. Swift packages + the extension build on
+# any recent macOS runner. If GitHub-hosted images don't yet ship Xcode 26, point
+# the `app`, `ios-packages` and `ios-app` jobs at a self-hosted macOS 26 runner
+# (change `runs-on`).
 
 on:
   push:
@@ -25,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [AtelierCore, AtelierIngestion, AtelierServer, CanvasRenderer, AtelierExport]
+        package: [AtelierCore, AtelierCapture, AtelierLibraryPaths, AtelierBrowse, AtelierArchive, AtelierTokens, AtelierIngestion, AtelierServer, CanvasRenderer, AtelierExport]
     steps:
       - uses: actions/checkout@v4
       - name: Show toolchain
@@ -34,8 +39,64 @@ jobs:
         working-directory: ${{ matrix.package }}
         run: swift test --parallel
 
+  ios-packages:
+    name: iOS packages (swift build, arm64-apple-ios26.0)
+    # 092 · S4a, extended by S5 and by 096 review 4A. Build-only, and only the
+    # packages that actually ship inside an iOS process: the ones the share extension
+    # links, plus AtelierBrowse, which is the companion app's read-side logic, plus
+    # AtelierTokens, which every target that draws links — the Mac app, the phone app
+    # and the share extension — and AtelierLibraryPaths, which is where the library
+    # root and the media-path arithmetic live. There is no
+    # `swift test` row because SwiftPM cannot run a test bundle without a simulator
+    # host; the compile IS the gate, and it is the one that catches a macOS-only API
+    # sneaking into AtelierCore — the packages have none today, and this job is what
+    # keeps that true. (AtelierBrowse's own tests DO run, on macOS, in the
+    # `swift-packages` job — it is dual-platform on purpose, so its logic is tested
+    # on the host and compiled for the phone.)
+    #
+    # The other four packages are host-side by design and deliberately declare no
+    # `.iOS(...)` platform: AtelierIngestion imports AppKit (NSPasteboard, in
+    # Input/DirectInputReader.swift), and AtelierServer / CanvasRenderer /
+    # AtelierExport are things the phone never does. Porting any of them is a
+    # separately-costed decision, not a CI row — and S5 declined to make it: the
+    # AppKit file is not excludable with one `#if`, because `InboxDrain` and
+    # `RemoteImageFetcher` both call `DirectInputReader`, so dropping it on iOS takes
+    # the drain with it. The path math the phone needed moved out instead — first to
+    # AtelierCapture (S5), and since 096 review 4A into AtelierLibraryPaths, which is a
+    # zero-dependency leaf rather than a lodger in the capture package.
+    #
+    # `--sdk` is not optional: `--triple` alone leaves SwiftPM on the host's macOS
+    # SDK and every target fails with "unable to load standard library".
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [AtelierCore, AtelierCapture, AtelierLibraryPaths, AtelierBrowse, AtelierArchive, AtelierTokens]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: swift --version && xcrun --sdk iphoneos --show-sdk-path
+      - name: Build ${{ matrix.package }} for iOS
+        working-directory: ${{ matrix.package }}
+        run: |
+          swift build \
+            --triple arm64-apple-ios26.0 \
+            --sdk "$(xcrun --sdk iphoneos --show-sdk-path)"
+
   extension:
     name: Extension (node --test + drift check)
+    # This job is no longer only about the extension. `npm run drift-check` now
+    # also runs the producer host-table check (review issue 4), which compares
+    # `src/extractors/` + `src/media-hosts.js` against the iOS share sheet's
+    # `AtelierCapture/.../ShareCapture.swift` table — so a domain added on one
+    # side and not the other fails HERE, in the cheapest job, rather than
+    # shipping as forked provenance and surfacing as duplicate assets.
+    #
+    # It reads a file OUTSIDE `extension/`, which works because the checkout is
+    # the whole repo and the script resolves that path relative to itself rather
+    # than to the cwd — so `working-directory: extension` below is unaffected.
+    # The capture-shape checks in the same command still run against committed
+    # fixtures only; they need a logged-in session for anything more.
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +109,47 @@ jobs:
       - name: Drift check
         working-directory: extension
         run: npm run drift-check
+
+  ios-app:
+    name: iOS app + share extension (xcodebuild build)
+    # The gap this closes: until now NOTHING in CI compiled `AtelierRefsMobile`
+    # (1,837 lines) or `AtelierRefsShare` (951). `ios-packages` above builds the
+    # PACKAGES those targets link, and the `app` job below builds the Mac scheme
+    # against a macOS destination — so a syntax error in `ShareViewController.swift`
+    # went green, and the largest untested surface in the project was also the
+    # least verified.
+    #
+    # Build-only, and deliberately so: it is the same argument `ios-packages`
+    # makes one job up. A test bundle needs a booted simulator host and the UI
+    # tests in `AtelierRefsMobileUITests` need a real share sheet (and, for
+    # `Tier2ShareUITests`, Safari), so THE COMPILE IS THE GATE. What it catches is
+    # what it is for: a refactor that breaks the extension's process code, which is
+    # the one file in this repo with no unit test host at all.
+    #
+    # `generic/platform=iOS Simulator` rather than a named device: a build needs no
+    # booted simulator, and pinning `name=iPhone 16` would make this job fail the
+    # day the runner image retires that device rather than the day the code breaks.
+    #
+    # Both schemes explicitly, though building the app would drag the extension in
+    # as an embedded dependency. Two rows means a failure names which target broke
+    # instead of leaving that to be read out of the log.
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        scheme: [AtelierRefsMobile, AtelierRefsShare]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Xcode
+        run: xcodebuild -version
+      - name: Build ${{ matrix.scheme }}
+        run: |
+          xcodebuild build \
+            -project AtelierRefs/AtelierRefs.xcodeproj \
+            -scheme ${{ matrix.scheme }} \
+            -destination 'generic/platform=iOS Simulator' \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO
 
   app:
     name: App (xcodebuild build + AtelierRefsTests)

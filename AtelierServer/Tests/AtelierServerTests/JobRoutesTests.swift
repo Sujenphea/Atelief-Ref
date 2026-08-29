@@ -11,6 +11,8 @@
 import Foundation
 import Testing
 
+import AtelierCapture
+import AtelierCaptureTestSupport
 import AtelierCore
 import AtelierIngestion
 @testable import AtelierServer
@@ -266,7 +268,7 @@ struct CaptureRoutesLedgerTests {
         let jobID = UUID()
 
         let result = await routes.handleIngest(
-            body: taggedRequest(env, image: ServerFixtures.pngBase64(), sourceId: "pin-1", jobId: jobID),
+            body: taggedRequest(env, image: CaptureFixtures.pngBase64(), sourceId: "pin-1", jobId: jobID),
             now: Self.now)
 
         #expect(result.statusCode == 200)
@@ -286,7 +288,7 @@ struct CaptureRoutesLedgerTests {
             coordinator: env.coordinator, defaultCollectionID: { env.collectionID },
             jobLedger: fake)
         let jobID = UUID()
-        let body = taggedRequest(env, image: ServerFixtures.pngBase64(), sourceId: "pin-1", jobId: jobID)
+        let body = taggedRequest(env, image: CaptureFixtures.pngBase64(), sourceId: "pin-1", jobId: jobID)
 
         _ = await routes.handleIngest(body: body, now: Self.now)
         _ = await routes.handleIngest(body: body, now: Self.now)
@@ -303,7 +305,7 @@ struct CaptureRoutesLedgerTests {
             jobLedger: fake)
         let jobID = UUID()
         let bad = CaptureRequest(
-            image: ServerFixtures.nonImageBase64(),
+            image: CaptureFixtures.nonImageBase64(),
             provenance: ProvenanceDTO(platform: "web", originalURL: "https://e.com/x"),
             collectionId: env.collectionID, jobId: jobID, sourceId: "src-9").jsonData()
 
@@ -327,7 +329,7 @@ struct CaptureRoutesLedgerTests {
             jobLedger: fake)
 
         let result = await routes.handleIngest(
-            body: taggedRequest(env, image: ServerFixtures.pngBase64(), sourceId: "pin-1", jobId: jobID),
+            body: taggedRequest(env, image: CaptureFixtures.pngBase64(), sourceId: "pin-1", jobId: jobID),
             now: Self.now)
 
         #expect(result.statusCode == 200)

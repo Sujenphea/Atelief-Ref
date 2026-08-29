@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  092 · S1 (decision 2) — the App Group whose container holds the Library, read by
+	  `LibraryLocation.appGroupIdentifier()`. Fed by the same $(ATELIER_APP_GROUP)
+	  build setting as `AtelierRefsShare.entitlements`, so the identifier this process
+	  ASKS for and the identifier it is GRANTED cannot disagree.
+	  The host app carries the identical key in its own (generated) Info.plist. That
+	  is not redundancy: `Bundle.main` inside an app extension is the extension's own
+	  bundle — an extension gets no reading of its container app's plist — so this
+	  copy is the only one this process can see (092 · S4b, changelog 398).
+	-->
+	<key>AtelierAppGroupIdentifier</key>
+	<string>$(ATELIER_APP_GROUP)</string>
+	<!--
+	  093 § 6 — the phone is dark only, and an app extension inherits NOTHING from its
+	  host app's appearance. `ShareViewController` also sets `overrideUserInterfaceStyle`;
+	  this is the half that governs the system chrome around it, and a light frame
+	  around a dark confirmation card is the worst of both.
+	-->
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<!--
+			  092 · S4b-ii · D-b — URLs and images, nothing else.
+
+			  This replaces `TRUEPREDICATE`, under which Atelier offered itself for
+			  every share on the phone including plain text, a contact and a PDF, and
+			  then had nothing to do with them. The rule is the gate: what the extension
+			  refuses here it does not have to fail politely at later, which is why
+			  `harvest` has exactly one "nothing capturable" path and no per-type
+			  branching.
+
+			  **`SupportsWebPage` is ON, and it is what tier 2 IS** (092 · S4b). It is the
+			  key that makes Safari run `NSExtensionJavaScriptPreprocessingFile` against the
+			  shared page — the only way a share sheet sees a DOM, and so the only way the
+			  phone can match the browser extension on the auth-walled sites
+			  (`PageResolver.isAuthWalledHost`) where a cookie-less fetch from the Mac sees a
+			  login wall instead of the post.
+
+			  It was on for a day, came off, and is on again for a device check. What sent it
+			  off stays written down, because it is what to look for if it goes wrong (421):
+
+			    · With this key set, Safari sends the page item INSTEAD OF a URL item.
+			      The share then carries exactly one attachment, `com.apple.property-list`,
+			      and `attributedContentText` holds the page TITLE — there is no URL
+			      anywhere. So a snapshot that fails does not degrade to a link capture; it
+			      loses a capture tier 1 would have kept.
+			    · On the iOS 26.5 SIMULATOR that attachment never loads: `loadItem` and
+			      `loadDataRepresentation` both fail with `NSItemProviderErrorDomain -1000`
+			      over `NSCocoaErrorDomain 4101` — a dead connection to Safari's web content
+			      process, i.e. the script's results were never produced. A simulator's WebKit
+			      is the likeliest explanation, and it is not something a simulator can be
+			      asked to prove either way.
+
+			  If a device shows the same thing, both keys come back out: tier 2 not working is
+			  acceptable, tier 2 being worse than tier 1 is not.
+
+			  `SupportsWebURL` and `SupportsImage` are the tier-1 offers and stay: a link
+			  out of Safari, Mail, Messages or a native app, and a photo.
+
+			  Omitted keys default to zero/false, so `SupportsText`, `SupportsMovie`,
+			  `SupportsFile` and the rest are off by not being here.
+			-->
+			<key>NSExtensionActivationRule</key>
+			<dict>
+				<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
+				<integer>1</integer>
+				<key>NSExtensionActivationSupportsImageWithMaxCount</key>
+				<integer>1</integer>
+				<key>NSExtensionActivationSupportsWebPageWithMaxCount</key>
+				<integer>1</integer>
+			</dict>
+			<!--
+			  The script Safari runs INSIDE the shared page, whose return value arrives as
+			  the `com.apple.property-list` attachment `preprocessedPage(in:)` reads.
+			  **A base name, not a file name** — the file is `PagePreprocessor.js`, and
+			  writing the extension here is the way to have Safari run nothing and say
+			  nothing about it.
+			-->
+			<key>NSExtensionJavaScriptPreprocessingFile</key>
+			<string>PagePreprocessor</string>
+		</dict>
+		<!--
+		  093 · D-c — a principal class, not a storyboard. `Base.lproj/MainInterface.storyboard`
+		  and the `SLComposeServiceViewController` it instantiated are gone: the compose
+		  sheet is a form with a text field and a Post button, and 093 § 1 decides
+		  post-and-dismiss with no form at all. It was also the only storyboard in a
+		  repo that is SwiftUI throughout.
+
+		  Module-qualified because the class is a plain Swift `UIViewController`
+		  subclass with no `@objc` name: the runtime symbol is mangled, and
+		  `$(PRODUCT_MODULE_NAME)` resolves it without an ObjC-visibility attribute
+		  existing only to satisfy a plist.
+		-->
+		<key>NSExtensionPrincipalClass</key>
+		<string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.share-services</string>
+	</dict>
+</dict>
+</plist>

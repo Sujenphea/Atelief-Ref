@@ -17,6 +17,7 @@
 import AppKit
 import AtelierCore
 import AtelierIngestion
+import AtelierTokens
 import Combine
 import OSLog
 import SwiftUI

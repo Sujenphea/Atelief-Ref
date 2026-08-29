@@ -35,6 +35,7 @@
 //  `AssetFolderExportTests`.
 //
 
+import AtelierArchive
 import AtelierCore
 import AtelierExport
 import Foundation

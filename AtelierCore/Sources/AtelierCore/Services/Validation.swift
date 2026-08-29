@@ -30,8 +30,21 @@ enum Validation {
     /// named "Refs" created three times under one parent becomes "Refs",
     /// "Refs 2", "Refs 3". An already-numbered desired name ("Refs 2") has its
     /// trailing index stripped first so families collapse onto one base rather
-    /// than nesting ("Refs 2 2"). Matching is case-insensitive; the ORIGINAL
-    /// casing of the base is preserved.
+    /// than nesting ("Refs 2 2") — but ONLY when that base is a name this parent
+    /// actually has. Matching is case-insensitive; the ORIGINAL casing of the
+    /// base is preserved.
+    ///
+    /// **Why the base has to exist first.** A trailing number is a copy index in
+    /// "Refs 2" and part of the name in "Refs 2005" or "Atelier 2026-08-17 2005",
+    /// and nothing in the string itself tells them apart. The siblings do: a
+    /// number is a copy index when the thing it is a copy OF is sitting beside it.
+    /// Stripping unconditionally turned a duplicated "Refs 2005" into "Refs 2" —
+    /// the year silently discarded — which 092 · S6c hit with the phone's
+    /// timestamped export folders (418).
+    ///
+    /// The corner this leaves: "Refs 2" duplicated when "Refs" is NOT there
+    /// becomes "Refs 2 2". Deliberate — with no base beside it, "Refs 2" is just
+    /// a name, and guessing otherwise is what the year case punishes.
     ///
     /// `desired` must already be trimmed/non-empty (run `collectionName` first).
     /// `siblings` is the names of the folders the new/renamed folder will sit
@@ -40,7 +53,8 @@ enum Validation {
     static func uniqueCollectionName(_ desired: String, among siblings: [String]) -> String {
         let taken = Set(siblings.map { $0.lowercased() })
         guard taken.contains(desired.lowercased()) else { return desired }
-        let base = strippedTrailingIndex(desired)
+        let stripped = strippedTrailingIndex(desired)
+        let base = taken.contains(stripped.lowercased()) ? stripped : desired
         var k = 2
         while taken.contains("\(base) \(k)".lowercased()) { k += 1 }
         return "\(base) \(k)"

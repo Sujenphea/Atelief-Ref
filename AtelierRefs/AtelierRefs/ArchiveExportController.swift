@@ -18,6 +18,7 @@
 //  may since have moved, renamed or mailed would be worse than none.
 //
 
+import AtelierArchive
 import AtelierCore
 import AtelierIngestion
 import Combine
@@ -224,8 +225,13 @@ final class ArchiveExportController: ObservableObject {
         do {
             let (root, result) = try await folder.withAccess {
                 root -> (URL, LibraryArchiveWriter.Result) in
+                // `store.layout.root`, not the store: the writer moved into
+                // `AtelierArchive` (092 · S6) and takes a library root, because
+                // `MediaStore` lives in a package the phone cannot link. Same path, one
+                // hop earlier.
                 let writer = LibraryArchiveWriter(
-                    services: services, store: store, appVersion: appVersion)
+                    services: services, libraryRoot: store.layout.root,
+                    appVersion: appVersion)
                 let result = try await writer.write(
                     to: root, isCancelled: { flag.isCancelled }, onProgress: onProgress)
                 return (root, result)

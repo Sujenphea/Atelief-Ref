@@ -18,6 +18,8 @@
 
 import Foundation
 
+import AtelierCapture
+
 /// The fields of an inbound request the gate reasons about.
 public struct RequestContext: Equatable, Sendable {
     /// Uppercased HTTP method, e.g. `"POST"`, `"OPTIONS"`.

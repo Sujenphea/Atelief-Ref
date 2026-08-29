@@ -12,6 +12,7 @@
 // tested against a real temp library (T1 pure layer + T3 mapping) with no socket.
 
 import Foundation
+import AtelierCapture
 import AtelierCore
 import AtelierIngestion
 

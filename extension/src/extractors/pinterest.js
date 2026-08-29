@@ -8,8 +8,21 @@
 
 import {
   hostname, hostIs, firstMeta, pathSegments, liveURL, firstPostURL, largestMedia,
-  ogImage, toOriginals,
+  ogImage, toOriginals, canonicalPinterestHost,
 } from "./base.js";
+
+/** A pin URL on its canonical host (see `canonicalPinterestHost`). Path untouched — the
+ * live grid already serves bare `/pin/{id}/` links, measured, so there is no sub-page
+ * shape to strip here the way x.com and instagram.com both needed. */
+function onCanonicalHost(url) {
+  try {
+    const parsed = new URL(url);
+    parsed.hostname = canonicalPinterestHost(parsed.hostname);
+    return parsed.origin + parsed.pathname;
+  } catch {
+    return url;
+  }
+}
 
 export const pinterest = {
   platform: "pinterest",
@@ -23,9 +36,10 @@ export const pinterest = {
 
   extract(harvest, context = {}) {
     const isPin = (u) => pathSegments(u)[0] === "pin";
-    const url =
+    const url = onCanonicalHost(
       firstPostURL([context.linkUrl, harvest.url, harvest.canonical], isPin) ||
-      liveURL(harvest);
+      liveURL(harvest)
+    );
     const segments = pathSegments(url);
     const pinId = segments[0] === "pin" ? segments[1] || null : null;
 

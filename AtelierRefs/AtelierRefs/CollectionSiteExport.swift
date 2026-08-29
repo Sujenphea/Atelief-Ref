@@ -31,6 +31,7 @@
 //  play glyph so the page says what it is.
 //
 
+import AtelierArchive
 import AtelierCore
 import AtelierExport
 import Foundation

@@ -27,8 +27,22 @@ import Foundation
 public actor IngestCoordinator {
     /// The single-image pipeline each item is run through.
     private let pipeline: IngestPipeline
+
     /// The maximum number of items ingested concurrently (default 4).
-    private let maxConcurrent: Int
+    ///
+    /// Readable, because a producer that has more work than one batch needs to know
+    /// how wide to make its batches — `InboxDrain` chunks the inbox at exactly this
+    /// number. A `let` of a `Sendable` type, so reading it across the actor boundary
+    /// is synchronous and free; it is state a caller may size a batch by, never state
+    /// a caller may set.
+    ///
+    /// Exposed rather than duplicated: a second constant meaning "how much of the
+    /// machine we spend on decoding" is two numbers that must agree, and they will
+    /// not the first time one of them is tuned.
+    ///
+    /// `nonisolated` and not merely `public`: reading a batch width should not cost
+    /// an `await` on the actor that is busy running the previous batch.
+    public nonisolated let maxConcurrent: Int
 
     public init(pipeline: IngestPipeline, maxConcurrent: Int = 4) {
         self.pipeline = pipeline

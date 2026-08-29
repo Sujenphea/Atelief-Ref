@@ -119,9 +119,15 @@ final class RestoreController: ObservableObject {
         folder: any FolderAccess
     ) async -> (sources: [BackupSource], message: String?) {
         do {
-            // The async bracket even here: reading an iCloud or network volume's
-            // directory can suspend, and the sync one would drop the scope.
-            let sources = try await folder.withAccess { target -> [BackupSource] in
+            // The SYNC bracket, which is what this has always called: the body is
+            // `BackupCatalog.sources(in:)`, which cannot suspend, so overload
+            // resolution picks the synchronous `withAccess` and the `await` this
+            // line used to carry awaited nothing. The scope-drop hazard the async
+            // overload exists for (`FolderAccess.swift:70`) needs a body that
+            // actually suspends — the copy loop has one; a directory listing does
+            // not. `performScan` stays `async` because its CALLER is, and running
+            // it off the main actor is the point.
+            let sources = try folder.withAccess { target -> [BackupSource] in
                 BackupCatalog.sources(in: target)
             }
             return (sources, sources.isEmpty ? BackupTarget.noBackupsFound : nil)

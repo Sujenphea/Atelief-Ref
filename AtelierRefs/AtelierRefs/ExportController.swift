@@ -295,7 +295,10 @@ final class ExportController: ObservableObject {
                 }
             }.value
 
-            await self?.finish(outcome, mappingSkips: mappingSkips, url: url)
+            // No `await`: this `Task` inherits the enclosing `@MainActor`, and
+            // `finish` is a synchronous method on it, so there was never a
+            // suspension here to mark. The hop already happened at `.value` above.
+            self?.finish(outcome, mappingSkips: mappingSkips, url: url)
         }
     }
 
@@ -339,7 +342,10 @@ final class ExportController: ObservableObject {
                 }
             }.value
 
-            await self?.finish(outcome, mappingSkips: mappingSkips, url: url)
+            // No `await`: this `Task` inherits the enclosing `@MainActor`, and
+            // `finish` is a synchronous method on it, so there was never a
+            // suspension here to mark. The hop already happened at `.value` above.
+            self?.finish(outcome, mappingSkips: mappingSkips, url: url)
         }
     }
 

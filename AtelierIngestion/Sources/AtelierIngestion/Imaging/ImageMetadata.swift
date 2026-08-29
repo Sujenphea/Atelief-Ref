@@ -21,7 +21,9 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
+import AtelierCapture
 import AtelierCore
+import AtelierLibraryPaths
 
 /// The intrinsic, byte-derived facts about an image (or video container) —
 /// decision C7. All fields come from the bytes; none from any filename.
@@ -186,7 +188,11 @@ extension ImageMetadata {
     /// extension `extract` would have stored (``MediaStore`` then uses a dotless
     /// path), so the URL still round-trips.
     public static func fileExtension(forMIMEType mimeType: String) -> String {
-        UTType(mimeType: mimeType)?.preferredFilenameExtension ?? ""
+        // Delegated, not spelled twice: the mapping moved to `AtelierCapture` with the
+        // rest of the path math when 092 · S6 gave the phone an archive to write, and
+        // this package does not build for iOS. Kept here as the name every caller in
+        // this package already uses.
+        LibraryMediaPaths.fileExtension(forMIMEType: mimeType)
     }
 
     /// Apply an EXIF orientation to stored pixel dimensions, returning

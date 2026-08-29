@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  This file exists for exactly one key. `GENERATE_INFOPLIST_FILE` is still YES —
+	  the launch screen, scene manifest and orientations continue to arrive as
+	  `INFOPLIST_KEY_*` build settings and are merged over this base, the same
+	  arrangement the macOS app (`../Info.plist`) and `AtelierRefsShare` already use.
+	  The key is here rather than a seventh `INFOPLIST_KEY_*` because that mechanism
+	  covers only the Info.plist keys Xcode knows: `INFOPLIST_KEY_AtelierAppGroupIdentifier`
+	  was accepted by the build without complaint and dropped from the generated
+	  plist, which is a silent failure the app would have reported at runtime as
+	  `appGroupIdentifierMissing` (092 · S4b).
+
+	  092 · S1 (decision 2) — the App Group whose container holds the Library, read by
+	  `LibraryLocation.appGroupIdentifier()`. Fed by the same $(ATELIER_APP_GROUP)
+	  build setting as `AtelierRefsMobile.entitlements`, so the identifier this
+	  process ASKS for and the identifier it is GRANTED cannot disagree.
+	-->
+	<key>AtelierAppGroupIdentifier</key>
+	<string>$(ATELIER_APP_GROUP)</string>
+	<!--
+	  093 § 6 — dark only. The Mac commits twice (`.preferredColorScheme(.dark)` AND
+	  `NSApp.appearance`), and the phone does the same: `.preferredColorScheme(.dark)`
+	  on the root view, and this key so the SYSTEM chrome the app does not draw —
+	  the status bar, the keyboard, a share sheet presented over it — matches. The
+	  share extension already carries its own copy (`AtelierRefsShare/Info.plist`),
+	  since an extension is its own bundle and does not inherit the host's preference.
+	  A light system chrome around a dark app is the worst of both.
+	-->
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
+</dict>
+</plist>

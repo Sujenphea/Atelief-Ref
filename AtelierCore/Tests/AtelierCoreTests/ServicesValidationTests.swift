@@ -57,6 +57,36 @@ struct ServicesValidationTests {
             Validation.uniqueCollectionName("Refs 2", among: ["Refs", "Refs 2"]) == "Refs 3")
     }
 
+    /// **A trailing number is only a copy index when the thing it would be a copy
+    /// OF is sitting beside it.** Nothing in "Refs 2005" says whether 2005 is an
+    /// index or a year; the siblings do. Stripping it unconditionally turned a
+    /// duplicated "Refs 2005" into "Refs 2" — the year gone — which is what 092 ·
+    /// S6c hit importing a phone archive twice: the folder is named
+    /// "Atelier 2026-08-17 2005" and its second copy lost the time of day (418).
+    @Test("a trailing number is kept when no such base exists beside it")
+    func uniqueKeepsANumberThatIsNotAnIndex() {
+        #expect(
+            Validation.uniqueCollectionName("Refs 2005", among: ["Refs 2005"])
+                == "Refs 2005 2")
+        #expect(
+            Validation.uniqueCollectionName(
+                "Atelier 2026-08-17 2005", among: ["Atelier 2026-08-17 2005"])
+                == "Atelier 2026-08-17 2005 2")
+        // The base being present is what makes it an index again — the case above
+        // and `uniqueCollapsesNumberedBase` differ ONLY in the siblings.
+        #expect(
+            Validation.uniqueCollectionName("Refs 2005", among: ["Refs", "Refs 2005"])
+                == "Refs 2")
+    }
+
+    /// The corner the rule above accepts: with no "Refs" beside it, "Refs 2" is
+    /// just a name, so its copy nests. Preferred to the alternative, which is
+    /// guessing that every trailing number is an index — the guess that loses years.
+    @Test("`Refs 2` with no `Refs` beside it nests rather than renumbering")
+    func uniqueNestsAnOrphanedIndex() {
+        #expect(Validation.uniqueCollectionName("Refs 2", among: ["Refs 2"]) == "Refs 2 2")
+    }
+
     @Test("matching is case-insensitive; the desired name's casing is kept")
     func uniqueCaseInsensitive() {
         #expect(Validation.uniqueCollectionName("REFS", among: ["refs"]) == "REFS 2")

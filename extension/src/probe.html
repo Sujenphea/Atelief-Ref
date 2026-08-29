@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atelier — tier-3 probe</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    margin: 0; padding: 12px; min-width: 320px; max-width: 460px;
+  }
+  h1 { font-size: 13px; margin: 0 0 8px; letter-spacing: .02em; text-transform: uppercase; opacity: .6; }
+  .row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+  .row span:last-child { font-variant-numeric: tabular-nums; text-align: right; }
+  .card { border: 1px solid currentColor; border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; opacity: .95; }
+  .muted { opacity: .6; }
+  .warn { font-weight: 600; }
+  .pick { font-weight: 600; word-break: break-all; }
+  ol { margin: 6px 0 0; padding: 0; list-style: none; }
+  li { margin: 4px 0; }
+  button {
+    font: inherit; padding: 7px 10px; border-radius: 7px; border: 1px solid currentColor;
+    background: transparent; color: inherit; cursor: pointer; width: 100%; text-align: left;
+  }
+  button.chosen { font-weight: 700; }
+  button { display: flex; gap: 8px; align-items: flex-start; }
+  .thumb {
+    width: 52px; height: 52px; object-fit: cover; border-radius: 4px; flex: 0 0 auto;
+    background: rgba(128,128,128,.25);
+  }
+  li button span { white-space: pre-wrap; line-height: 1.3; }
+  .actions { display: flex; gap: 8px; margin-top: 10px; }
+  .actions button { text-align: center; }
+  textarea {
+    width: 100%; height: 140px; margin-top: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; box-sizing: border-box;
+  }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+</style>
+
+<h1>Tier-3 probe · focal post</h1>
+
+<div class="card" id="readingCard">
+  <div class="row"><span>host</span><span id="host">…</span></div>
+  <div class="row"><span>selector</span><span id="selector">…</span></div>
+  <div class="row"><span>containers</span><span id="containers">…</span></div>
+  <div class="row"><span>no permalink</span><span id="linkless">…</span></div>
+  <div class="row"><span>zero-height</span><span id="zerorect">…</span></div>
+  <div class="row"><span>viewport</span><span id="viewport">…</span></div>
+</div>
+
+<div class="card" id="pickCard">
+  <div class="row"><span>chose</span><span id="basis">…</span></div>
+  <div class="pick" id="pick">…</div>
+  <div class="row muted"><span>score / margin</span><span id="score">…</span></div>
+  <div class="row muted"><span>runner-up</span><span id="runner">…</span></div>
+</div>
+
+<div class="card" id="provCard">
+  <div class="row"><span>platform</span><span id="pPlatform">…</span></div>
+  <div class="row"><span>author</span><span id="pAuthor">…</span></div>
+  <div class="row"><span>originalURL</span></div>
+  <div><code id="pURL">…</code></div>
+  <div class="row"><span>mediaUrl</span></div>
+  <div><code id="pMedia">…</code></div>
+</div>
+
+<div class="card">
+  <div class="muted">Which post was actually centred? Tap it to record.</div>
+  <ol id="candidates"></ol>
+</div>
+
+<div class="actions">
+  <button id="export">Export corpus</button>
+  <button id="clear">Clear</button>
+</div>
+<div class="row muted" style="margin-top:6px"><span id="count">0 recorded</span><span id="status"></span></div>
+<textarea id="out" hidden readonly></textarea>
+
+<script type="module" src="probe.js"></script>
