@@ -316,6 +316,10 @@ surface — available later, if T4 says failures are common enough to need it.
 
 ## T0 — the focal-post gate (before any port)
 
+> **How the session is actually run: [097](097-tier3-t0-protocol.md).** Six questions, the
+> tap each one needs, the two bars, and what to do with the files afterwards. This section
+> stays the specification; 097 is the thing you hold the phone next to.
+
 **Why first:** D1 is the only unproven thing in the plan, and it is unproven in a way that
 changes the shape rather than the size. Answer it on the throwaway probe, which already
 runs on all three platforms and already has a popup.
@@ -335,7 +339,7 @@ feed looks like — the defect `drift-check.js`'s header describes at length abo
 composed fixture (11–13 keys per media where the live API sends 108–128). Re-capturable
 wholesale, on the `-live.json` discipline that file already uses.
 
-**Four more things ride this session, because the phone is already in hand:**
+**Five more things ride this session, because the phone is already in hand:**
 
 - **The DOM-sufficiency gate for § D5.** With no hook, `harvestSignals` + the extractors are
   the only provenance source. Record, per platform, whether they yield a correct `mediaUrl`
@@ -346,6 +350,17 @@ wholesale, on the `-live.json` discipline that file already uses.
   reload warning is real and stays.
 - **Instagram at all**, which 095 § 9.1 left unverified and which no longer needs to be a
   hook question.
+- **A raw `harvestSignals` dump per platform (review 12B).** `PageExtractorTests`' Swift
+  fixtures and `extractors.test.js`' JS ones are both hand-composed — trimmed to exercise
+  one rule each, which is what makes a failure name the rule. What neither can say is
+  whether the rule still fires on a page X served today, the defect
+  `fixtures/README.md` states plainly about Instagram (11–13 keys per media composed
+  against 108–128 live): *"Running the canary over it proved only that our own reduction
+  still parsed."* The probe's **Dump signals** button stores the raw snapshot plus the
+  provenance the operator just read off the screen. **A feed AND an open post per
+  platform**, because Swift's `PageExtractor.capture(from:)` takes no `linkUrl` and so can
+  only be compared on a post page. Both replays are already written and skip loudly until
+  the file lands.
 - **The permalink shape, per platform.**
   [432](../.change-log/432-the-tweet-with-only-an-analytics-link.md) found X handing back
   `…/status/{id}/analytics` as a post's only link and normalized it, because 18A dedup keys

@@ -427,3 +427,117 @@ struct MediaRewriteContractTests {
         }
     }
 }
+
+// MARK: - The live page replay (096 review 12B)
+
+/// The other half of `extension/test/page-signals.test.js`, over the same file.
+///
+/// **Why a live page at all, when the suite above is deliberately hand-composed.** The
+/// fixtures in `PageExtractorTests` are trimmed to exercise one rule each, and that is
+/// what makes a failure say WHICH rule broke. What they cannot say is whether the rule
+/// still fires on a page X served today: a live feed is 100+ images — avatars, card art,
+/// tracking pixels — in an order nobody composing a fixture would write down, and
+/// `largestMedia`, the article-index scoping and the `name=orig` rewrite are all decisions
+/// taken against exactly that. `extension/test/fixtures/README.md` states the defect
+/// plainly about Instagram, whose composed fixture carries 11–13 keys per media where the
+/// live API sends 108–128: *"Running the canary over it proved only that our own reduction
+/// still parsed."*
+///
+/// **Why only the post pages.** `PageExtractor.capture(from:)` takes no context and
+/// dispatches on the page's own URL, because tier 2 is a share sheet and a share sheet has
+/// no right-clicked link to pass. Tier 3's JS extractors DO take a `linkUrl` — on a feed
+/// they are told which of forty posts was centred. So on a feed dump the two languages are
+/// answering different questions and must disagree: Swift would report `x.com/home`, which
+/// is not a post at all. Asserting agreement there would report drift where none exists,
+/// which is the fastest way to teach someone to ignore this file. Post pages are where the
+/// two converge, and `pageKind` in the fixture is what says which is which.
+///
+/// This is `drift-check.js`'s mirror guard (404) applied to page SHAPE rather than to host
+/// tables.
+@Suite("Live page signals: the Swift reader sees what the JS reader saw (096 12B)")
+struct LivePageSignalsTests {
+
+    struct Entry: Decodable {
+        struct Expected: Decodable {
+            let platform: String?
+            let originalURL: String?
+            let authorHandle: String?
+            let authorName: String?
+            let title: String?
+            let mediaUrl: String?
+            let mediaUrlFallback: String?
+        }
+        let host: String
+        let pageUrl: String
+        let pageKind: String
+        let linkUrl: String?
+        let expected: Expected
+        let raw: RawPageSignals
+    }
+
+    /// Same `#filePath` walk as `MediaRewriteContractTests.loadContract()` — four levels
+    /// up is the repo root, and it stays correct only as long as both suites sit at the
+    /// same depth. They do.
+    static var fixtureURL: URL {
+        var dir = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 { dir.deleteLastPathComponent() }
+        return dir.appendingPathComponent("extension/test/fixtures/page-signals-live.json")
+    }
+
+    static var fixtureExists: Bool {
+        FileManager.default.fileExists(atPath: fixtureURL.path)
+    }
+
+    static func load() throws -> [String: Entry] {
+        try JSONDecoder().decode([String: Entry].self, from: Data(contentsOf: fixtureURL))
+    }
+
+    /// Disabled rather than passing vacuously: a skipped test names itself and its reason
+    /// in the run output, where a test that quietly returns on a missing file reads as
+    /// green forever. `focal-post.test.js` skips with a sentence for the same reason.
+    @Test(
+        "a real post page yields the provenance the JS reader produced",
+        .enabled(
+            if: LivePageSignalsTests.fixtureExists,
+            "no live page-signal fixture yet — capture it during 096 § T0 with the probe's \"Dump signals\" button"))
+    func livePostPagesAgree() throws {
+        let entries = try Self.load().values.filter { $0.pageKind == "post" }
+        try #require(!entries.isEmpty, """
+            the fixture has no post-page entries — only a post page can be compared \
+            across the two languages (see this suite's header)
+            """)
+
+        for entry in entries {
+            let capture = PageExtractor.capture(from: PageHarvest.build(from: entry.raw))
+            let where_ = "\(entry.host) — \(entry.pageUrl)"
+
+            #expect(capture.provenance.platform == entry.expected.platform, "\(where_): platform")
+            #expect(capture.provenance.originalURL == entry.expected.originalURL, "\(where_): originalURL")
+            #expect(capture.provenance.authorHandle == entry.expected.authorHandle, "\(where_): authorHandle")
+            #expect(capture.provenance.authorName == entry.expected.authorName, "\(where_): authorName")
+            #expect(capture.provenance.title == entry.expected.title, "\(where_): title")
+            #expect(capture.mediaURL == entry.expected.mediaUrl, "\(where_): mediaUrl")
+            #expect(capture.mediaURLFallback == entry.expected.mediaUrlFallback, "\(where_): mediaUrlFallback")
+        }
+    }
+
+    /// The feed pages are not compared, but they are not ignored either: a feed dump the
+    /// Swift decoder cannot even READ is a fixture that will surprise someone later, and
+    /// `RawPageSignals` decoding is the half of the contract that holds for both kinds.
+    @Test(
+        "every captured page decodes as RawPageSignals, feed or post",
+        .enabled(
+            if: LivePageSignalsTests.fixtureExists,
+            "no live page-signal fixture yet — capture it during 096 § T0"))
+    func everyPageDecodes() throws {
+        let bag = try Self.load()
+        #expect(!bag.isEmpty)
+        for (key, entry) in bag {
+            #expect(entry.raw.url != nil, "\(key): the snapshot names the page it came from")
+            #expect(entry.pageKind == "post" || entry.pageKind == "feed", "\(key): pageKind")
+            // A page with no images at all is a dump taken before the feed loaded — real
+            // enough to store, useless as a fixture, and silent unless said out loud.
+            #expect((entry.raw.images?.count ?? 0) > 0, "\(key): the page had images when dumped")
+        }
+    }
+}
