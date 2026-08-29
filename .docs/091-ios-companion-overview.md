@@ -120,6 +120,15 @@ tiers are available on iOS, and they are not equivalent:
 v1 takes tier 1 + tier 2 and states the limit in the UI rather than pretending. Tier 3
 is the follow-on, gated on the open question below.
 
+**Where the three tiers end up (added 2026-08-29,
+[096 § D4b](096-tier3-plan.md)).** They are not three permanent layers. Tier 1 is native-app
+shares and stays. Tier 2 is the general web case and stays — it is the only path for a site
+no extractor knows, which is most sites. Tier 3, once proven end to end, **replaces** tier 2
+on x.com, instagram.com and pinterest.com rather than sitting beside it: two paths producing
+different captures for the same post is a bug nobody can triage. The share sheet keeps
+working on those three; it answers as `web` provenance plus og-tags, which is what a path
+that cannot read the DOM honestly knows.
+
 *Correcting the first read:* an iOS share is not URL-only. Safari's JS preprocessing
 gives real DOM access, which is a meaningful step above og-tags — it just cannot see
 the network traffic that `twitter-hook.js` exists to read.

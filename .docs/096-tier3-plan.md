@@ -16,6 +16,13 @@
 > prose and left unowned. The sizing table at the foot carries the result: ~3.5–4 weeks,
 > still inside 091's range, with most of the increase in T2, where sentences that read
 > "what needs the device is the message boundary" became things `swift test` runs.
+>
+> **Revised again 2026-08-29**, after a review pass over the branch
+> ([447](../.change-log/447-what-tier-3-replaces.md)). One addition, and it is a decision
+> the first two drafts never made: **§ D4b — tier 3 supersedes tier 2 on the three sites it
+> covers**, with T5 as the deletion that follows T4. Total moves to ~4–5 weeks, which is
+> back inside 091's original "+4–6 weeks" band; the extra half-week is a removal, not a
+> build, and it is what stops the Swift extractor mirror becoming permanent.
 
 ## What 095 settled, so this plan does not re-argue it
 
@@ -66,9 +73,15 @@ spike's own panel is a working instance of it: it draws over the feed, it is sty
 nothing, and it would break on a redesign. Three sites' redesigns, maintained twice. The
 desktop extension has deliberately never done this and this is not the moment to start.
 
-**Tier 2 stays exactly as it is.** The share sheet is shipped, tested and device-proven; it
-remains the capture path for native apps and for Safari when the extension is not enabled.
-Tier 3 adds a better path where the extension is running. Nothing is removed.
+**Tier 2 stays as the general case.** The share sheet is shipped, tested and device-proven;
+it remains the capture path for native apps, and for every site tier 3 does not name.
+
+~~Nothing is removed.~~ **Amended 2026-08-29 — see § D4b.** On the three sites tier 3 covers,
+it supersedes tier 2 rather than sitting beside it, and the per-platform branches of the
+Swift extractor are deleted once T4 passes (T5). Leaving both in place would mean two paths
+producing different captures for the same post, which is untriageable. The share sheet keeps
+working on those sites; it just answers as `web` provenance plus og-tags, which is what a
+path that cannot see the DOM honestly knows.
 
 ### D2 — The focal-post guess is gated by measurement, before anything is ported
 
@@ -127,6 +140,52 @@ by 095 § 7's design. It can be added when someone measures it.
 tier-3 fetch. The *desktop* single-item path doesn't use it either (`media-hosts.js:30` is
 imported only by `bulk-sw.js:12`) — a real, small improvement, and not tier 3's to make.
 Named here so it is a follow-up rather than a discovery.
+
+### D4b — Tier 3 SUPERSEDES tier 2 on the three sites it covers
+
+**Added 2026-08-29**, from a review pass over the branch. The first draft of this plan never
+said what happens to tier 2, and § D4 above lists what tier 3 *excludes* rather than what it
+*replaces*. That omission has a cost that compounds: without an answer, T1–T4 get built
+without knowing whether their output retires anything, and the Swift extractor mirror is
+either temporary scaffolding or permanent infrastructure — which changes how much is worth
+spending to keep it honest.
+
+**The decision: once T4 passes, tier 3 owns x.com, instagram.com and pinterest.com. Tier 2
+stays, and stays supported, for every other site.**
+
+*Why not keep both everywhere.* Tier 3 exists precisely because tier 2 cannot reach current
+fidelity — that is the premise of 094 and of this whole document. Two paths that produce
+DIFFERENT captures for the same post is the shape of bug nobody can triage: a user shares a
+tweet twice, once through the share sheet and once through the popup, and gets two different
+answers with no way to tell which was supposed to happen. It is also the thing
+`InboxDrain`'s own header rejects one layer down — "a second runner would mean two things
+deciding independently" — applied to extraction instead of to ingest.
+
+*Why tier 2 is not deleted.* It is the only path that works on a site no extractor knows,
+and that is most sites. `PageExtractor.web` — og-tags, the largest rendered image, the
+canonical URL — is not superseded by anything in tier 3, because tier 3's popup only offers
+itself on hosts the manifest names. Tier 2 is the general case; tier 3 is three special
+cases that happen to be the three that matter most.
+
+*What this retires, concretely.* After T4: `PageExtractor.twitter`, `.pinterest` and
+`.instagram`, and the per-platform half of `PageExtractorTests`. `PageExtractor.web`,
+`PageHarvest`, `PagePreprocessor.js`, `ShareCapture` and the whole inbox path stay exactly as
+they are. The share extension keeps its `SupportsWebPage` activation rule — a share of a
+twitter.com page from the share sheet still captures, it just captures as `web` provenance
+plus whatever og-tags the page carries, which is the honest answer for a path that cannot see
+the DOM the way the extension can.
+
+*What it does NOT retire.* The cross-language contracts, either of them. `host-table.js`
+gates host → platform for `ShareCapture`, which is tier 1 and tier 2 and survives entirely.
+`media-rewrite-contract.json` gates the URL-rewrite rules, and those live in
+`PageExtractor`'s per-platform branches — so that gate retires with them, and the fixture
+should be deleted in the same commit rather than left to pass vacuously against a mirror that
+no longer exists.
+
+**Sequencing: this is intent, not a task.** Nothing is removed until T4 has passed on all
+three platforms on a device. If T0's gate fails and tier 3 narrows to post pages only (§ T0's
+stated fallback), this decision narrows with it — tier 3 would then supersede tier 2 only on
+post pages, and feeds stay tier 2's. Revisit here rather than discovering it in T4.
 
 ### D5 — The hook is not ported, because nothing in tier 3 would listen to it
 
@@ -469,6 +528,30 @@ wrong thing.
 **~3 days**, device-bound — shorter than the first draft's estimate because the dedup
 question arrives here already answered.
 
+## T5 — retire tier 2 on the three sites (§ D4b)
+
+**Only after T4 has passed on all three platforms, on a device.** Until then tier 2 is the
+working path and tier 3 is unproven; removing the first before the second is demonstrated
+would be trading a capture that works for one that is supposed to.
+
+**Do:** delete `PageExtractor.twitter`, `.pinterest`, `.instagram` and the per-platform half
+of `PageExtractorTests`. Delete `extension/test/fixtures/media-rewrite-contract.json` and both
+suites' readers of it *in the same commit* — the fixture gates rules that only exist in the
+branches being removed, and a contract left behind to pass vacuously is worse than no
+contract, because it looks like coverage.
+
+**Don't:** touch `PageExtractor.web`, `PageHarvest`, `PagePreprocessor.js`, `ShareCapture`,
+`host-table.js`'s check, or the activation rule. Tier 2 remains the path for every site tier
+3 does not name, which is most of them.
+
+**Verify:** a share-sheet capture of an x.com page still lands a record — as `web`
+provenance with og-tags, which is the honest tier-2 answer once the special case is gone —
+and `Tier2ShareUITests` still passes on its localhost fixture, which never exercised the
+per-platform branches anyway.
+
+**~0.5–1 day.** It is a deletion, and the tests that go with it were written knowing this
+day was coming.
+
 ---
 
 ## Sizing
@@ -481,7 +564,8 @@ question arrives here already answered.
 | T2.5 — `capture-plan.js` + `safari/` | — | **1.5–2** | new |
 | T3 — the trigger | 4–5 | **4.5–5** | `capture-view.js` in, DOM stub out |
 | T4 — end to end, three platforms | 3–4 | **3** | dedup arrives answered |
-| **total** | **~3 weeks** | **~3.5–4 weeks** | |
+| T5 — retire tier 2 on the three sites | — | **0.5–1** | § D4b, new |
+| **total** | **~3 weeks** | **~4–5 weeks** | |
 
 Against 091's "+4–6 weeks, gated". The bytes seam was priced as an unknown with a spike in
 front of it, and it is a `URLSession.downloadTask` into code that already exists — that is
