@@ -75,6 +75,16 @@ struct ContentView: View {
                         try? await Task.sleep(for: .seconds(4))
                         export?.finish()
                     }
+            } else if case .sent(let count) = export?.phase {
+                // **No auto-dismiss timer here, unlike the failure notice above.** That one
+                // reports something already true and needs no answer; this one asks a
+                // question only the user can answer, and a question that vanishes after four
+                // seconds is a question that gets answered by accident. It waits.
+                ExportSentNotice(
+                    count: count,
+                    onClear: { Task { await export?.retire() } },
+                    onKeep: { export?.keep() })
+                    .transition(.opacity)
             }
         }
         .animation(MobileTheme.Motion.gentle, value: export?.phase)

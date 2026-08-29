@@ -96,3 +96,64 @@ struct ExportFailureNotice: View {
             .accessibilityIdentifier("export.failure")
     }
 }
+
+/// The offer to retire what was just sent (096 · 3B).
+///
+/// **Why this exists at all.** Nothing on the phone ever left the inbox: `InboxArchive`
+/// deletes nothing after an export — deliberately, since the phone cannot know whether the
+/// share sheet was cancelled, the AirDrop landed, or an import ever ran — so every export
+/// re-sent every capture ever made and `inbox/` grew for the life of the device.
+///
+/// **Why it is an offer and not a button that just does it.** The safe default has to be
+/// keeping. `UIActivityViewController`'s completion handler cannot tell a successful AirDrop
+/// from a cancelled one, and the Mac says nothing back by design (091 · D4 refuses a second
+/// transport direction). The only party who knows is the person who just watched the
+/// transfer, so they are asked — once, at the moment they know, with the cautious answer
+/// requiring no thought.
+///
+/// The wording avoids "delete" because nothing is deleted: the captures move to
+/// `inbox/sent/` and stay on disk.
+struct ExportSentNotice: View {
+    let count: Int
+    let onClear: () -> Void
+    let onKeep: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: MobileTheme.Spacing.sm) {
+            Text("Sent \(count) \(count == 1 ? "capture" : "captures")")
+                .font(MobileTheme.Typography.body)
+                .foregroundStyle(MobileTheme.Colors.inkPrimary)
+            Text("Once your Mac has imported them, clear them so the next send only carries what's new.")
+                .font(MobileTheme.Typography.caption)
+                .foregroundStyle(MobileTheme.Colors.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: MobileTheme.Spacing.md) {
+                // Keep is FIRST and is the plain one: the cautious answer should be the one
+                // a thumb reaches without deciding.
+                Button("Keep", action: onKeep)
+                    .font(MobileTheme.Typography.label)
+                    .foregroundStyle(MobileTheme.Colors.inkSecondary)
+                    .frame(minHeight: MobileTheme.touchTarget)
+                    .accessibilityIdentifier("export.keep")
+
+                Button("Clear", action: onClear)
+                    .font(MobileTheme.Typography.label)
+                    .foregroundStyle(MobileTheme.Colors.inkPrimary)
+                    .frame(minHeight: MobileTheme.touchTarget)
+                    .accessibilityIdentifier("export.clear")
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, MobileTheme.Spacing.lg)
+        .padding(.vertical, MobileTheme.Spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: MobileTheme.Radius.card, style: .continuous)
+                .fill(MobileTheme.Colors.surface))
+        .shadow(
+            color: MobileTheme.Elevation.color,
+            radius: MobileTheme.Elevation.radius, y: MobileTheme.Elevation.y)
+        .padding(MobileTheme.Spacing.lg)
+        .accessibilityIdentifier("export.sent")
+    }
+}

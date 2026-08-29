@@ -47,13 +47,26 @@ public nonisolated enum InboxArchive {
         public var files: Int = 0
         /// Records the funnel refused, or whose payload file was missing.
         public var skipped: Int = 0
+        /// The ids that actually reached the manifest, in the order they were written
+        /// (096 · 3B).
+        ///
+        /// **`captures` counts; this names.** A caller retiring what it just sent needs the
+        /// second, and cannot derive it from the first: the records it handed in are a
+        /// superset, because ``skipped`` records — a funnel refusal, a payload gone missing —
+        /// stay pending on purpose. Retiring on the strength of an export a capture was not
+        /// in is exactly the way "nothing is deleted" would stop being true.
+        public var exported: [UUID] = []
         /// Where the manifest landed.
         public var manifestURL: URL
 
-        public init(captures: Int = 0, files: Int = 0, skipped: Int = 0, manifestURL: URL) {
+        public init(
+            captures: Int = 0, files: Int = 0, skipped: Int = 0,
+            exported: [UUID] = [], manifestURL: URL
+        ) {
             self.captures = captures
             self.files = files
             self.skipped = skipped
+            self.exported = exported
             self.manifestURL = manifestURL
         }
     }
@@ -221,6 +234,10 @@ public nonisolated enum InboxArchive {
                     manualOrder: summary.captures),
                 file: file))
             summary.captures += 1
+            // Recorded here and nowhere earlier: every `continue` above is a record that
+            // stays pending, and this is the one line the loop reaches only when a capture
+            // is genuinely in the manifest.
+            summary.exported.append(record.id)
         }
 
         guard summary.captures > 0 else { throw WriteError.nothingCopied }

@@ -31,6 +31,10 @@ final class CaptureExport {
         case working
         /// The archive is written; `url` is the folder to hand to a share sheet.
         case ready(URL)
+        /// The share sheet has been dismissed and there are captures the user could now
+        /// retire (096 · 3B). `count` is how many actually reached the manifest — not how
+        /// many were pending, which is a superset.
+        case sent(Int)
         case failed(String)
     }
 
@@ -40,6 +44,15 @@ final class CaptureExport {
     /// Drives whether the export control is shown at all: an empty inbox has nothing to
     /// offer, and a button that always says "0" is chrome apologising for itself.
     private(set) var pending: Int?
+
+    /// The ids that reached the last export's manifest, and therefore the only ones the
+    /// clear control may retire.
+    ///
+    /// **Not "everything pending".** `InboxArchive` skips records its funnel refuses, and a
+    /// share made while the share sheet was open was never in the export at all. Retiring
+    /// either would take a capture out of the pending set on the strength of a send it was
+    /// not in — which is how "nothing is lost" quietly stops being true.
+    private var exported: [UUID] = []
 
     private let layout: InboxLayout
     private let appVersion: String
@@ -61,27 +74,71 @@ final class CaptureExport {
         let layout = layout
         let appVersion = appVersion
         do {
-            let url = try await Task.detached(priority: .userInitiated) {
+            let written = try await Task.detached(priority: .userInitiated) {
                 try Self.write(layout: layout, appVersion: appVersion, now: now)
             }.value
-            phase = .ready(url)
+            exported = written.exported
+            phase = .ready(written.url)
         } catch {
+            exported = []
             phase = .failed(Self.message(for: error))
         }
         refresh()
     }
 
-    /// Dismissing the share sheet returns the control to its resting state; the folder is
-    /// left in Caches for the system to reclaim.
+    /// Dismissing the share sheet leaves the folder in Caches for the system to reclaim,
+    /// and — if anything actually went into it — offers to retire what was sent.
+    ///
+    /// **The offer is here rather than on the send button, because this is the first moment
+    /// the phone knows anything happened.** `UIActivityViewController`'s completion cannot
+    /// tell us whether the AirDrop landed or the user cancelled, and the Mac says nothing
+    /// back (091 · D4 — no second transport direction). So the app does not infer; it asks,
+    /// once, at the point where the user has just watched the transfer and is the only
+    /// party who knows.
     func finish() {
+        phase = exported.isEmpty ? .idle : .sent(exported.count)
+    }
+
+    /// Move the last export's captures into `inbox/sent/` — the user asserting the Mac has
+    /// them (096 · 3B).
+    ///
+    /// Nothing is deleted. The captures leave the pending set, so the next export is what
+    /// was saved since rather than everything ever, and the toolbar count means "waiting"
+    /// again. A capture that will not move stays pending and will simply be sent again;
+    /// re-import collapses on blob hash, which is the property 091 · D4 bought.
+    func retire() async {
+        let layout = layout
+        let ids = exported
+        guard !ids.isEmpty else {
+            phase = .idle
+            return
+        }
+        await Task.detached(priority: .userInitiated) {
+            InboxRetirement.retire(ids, in: layout)
+        }.value
+        exported = []
+        phase = .idle
+        refresh()
+    }
+
+    /// Decline the offer: the captures stay pending and will go out again next time. The
+    /// safe answer, and the one a user picks when they are not sure the transfer worked.
+    func keep() {
+        exported = []
         phase = .idle
     }
 
     // MARK: - The run
 
+    /// The folder, and which captures are in it.
+    private struct Written: Sendable {
+        let url: URL
+        let exported: [UUID]
+    }
+
     private nonisolated static func write(
         layout: InboxLayout, appVersion: String, now: Date
-    ) throws -> URL {
+    ) throws -> Written {
         // Capture-time order, the same order the drain walks (405) — so a folder opened on
         // the Mac reads in the order the user actually saved things. Asked for by name
         // rather than spelled here, so the Mac-side round-trip test exercises THIS order.
@@ -96,10 +153,10 @@ final class CaptureExport {
         try? FileManager.default.removeItem(at: root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
-        _ = try InboxArchive.write(
+        let summary = try InboxArchive.write(
             records: records, layout: layout, to: root,
             appVersion: appVersion, exportedAt: now)
-        return root
+        return Written(url: root, exported: summary.exported)
     }
 
     /// `Atelier 2026-08-17 1830` — sortable, and it says what it is on a Mac desktop where

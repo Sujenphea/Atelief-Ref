@@ -147,6 +147,27 @@ struct InboxArchiveTests {
         #expect(try rig.manifest().assets.count == 1)
     }
 
+    /// The assertion that makes 096 · 3B's clear control safe. `exported` is what the phone
+    /// retires, and retiring a capture that never reached the manifest would take it out of
+    /// the pending set on the strength of a send it was not in — losing it, quietly, in a
+    /// feature whose whole premise is that nothing is lost.
+    ///
+    /// `captures` counts and cannot substitute: it says one, and says nothing about WHICH.
+    @Test("exported names only the captures that reached the manifest, never the skipped")
+    func exportedNamesOnlyWhatLanded() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let doomed = try rig.captureImage(width: 8, height: 8, url: "https://example.com/gone")
+        let kept = try rig.captureImage(width: 9, height: 9, url: "https://example.com/kept")
+        try FileManager.default.removeItem(at: rig.payloadURL(doomed))
+
+        let summary = try rig.export()
+
+        #expect(summary.captures == 1)
+        #expect(summary.skipped == 1)
+        #expect(summary.exported == [kept.id])
+    }
+
     @Test("A payload that is not a readable image is skipped rather than shipped")
     func unreadablePayloadIsSkipped() throws {
         let rig = try Rig()

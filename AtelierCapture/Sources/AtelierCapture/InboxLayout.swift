@@ -56,6 +56,23 @@ public struct InboxLayout: Sendable {
     /// directory has no extension.
     public static let failedDirectoryName = "failed"
 
+    /// Where the phone puts a capture it has handed to the Mac (096 review 3B). A plain
+    /// subdirectory beside ``failedDirectoryName``, and skipped by ``pendingRecordURLs()``
+    /// for the same reason: the enumeration takes only top-level `*.json`, and a directory
+    /// has no extension.
+    ///
+    /// **Moved, never deleted, and that is the whole design.** 091 · D4 bought import
+    /// idempotency so an export could be re-sent, re-imported, AirDropped twice — the
+    /// phone keeps its records precisely because it cannot know that a share sheet was not
+    /// cancelled, that an AirDrop arrived, or that an import ever ran. Retiring a capture
+    /// is the user asserting that it did; `sent/` is where the bytes go on that assertion,
+    /// so the assertion is reversible by dragging a file back.
+    ///
+    /// It exists because "nothing is deleted" was true and unbounded: every export re-sent
+    /// every capture ever made, and `inbox/` grew for the life of the device with no way to
+    /// reclaim it short of deleting the app.
+    public static let sentDirectoryName = "sent"
+
     /// The record's extension. The drain's enumeration filter, so it is a constant.
     public static let recordExtension = "json"
 
@@ -85,6 +102,13 @@ public struct InboxLayout: Sendable {
     public var staging: URL {
         directory.appendingPathComponent(
             InboxLayout.stagingDirectoryName, isDirectory: true)
+    }
+
+    /// `<inbox>/sent/` — where 096 review 3B retires a capture the user has confirmed
+    /// reached the Mac.
+    public var sent: URL {
+        directory.appendingPathComponent(
+            InboxLayout.sentDirectoryName, isDirectory: true)
     }
 
     /// `<inbox>/failed/` — where 092 · S3 quarantines a capture that has failed its
@@ -165,6 +189,21 @@ public struct InboxLayout: Sendable {
     public func failedURL(named name: String) -> URL? {
         guard InboxLayout.isPlainComponent(name) else { return nil }
         return failed.appendingPathComponent(name, isDirectory: false)
+    }
+
+    /// Where a retired record lands: `<inbox>/sent/<uuid>.json`. The `sent/` mirror of
+    /// ``failedRecordURL(for:)``, composed here for the reason that one is — a destination
+    /// built by hand at a call site is a destination that drifts from this file.
+    public func sentRecordURL(for id: UUID) -> URL {
+        sent.appendingPathComponent(
+            InboxLayout.recordFileName(for: id), isDirectory: false)
+    }
+
+    /// The retired location of a file currently sitting in the inbox, under the same guard
+    /// as ``payloadURL(named:)`` and ``failedURL(named:)``.
+    public func sentURL(named name: String) -> URL? {
+        guard InboxLayout.isPlainComponent(name) else { return nil }
+        return sent.appendingPathComponent(name, isDirectory: false)
     }
 
     /// Whether a file name written by another process may be appended to a
