@@ -10,6 +10,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { toOrigName, toOriginals, canonicalPinterestHost } from "../src/extractors/base.js";
 import { extractProvenance, findExtractor, web } from "../src/extractors/registry.js";
@@ -702,4 +704,132 @@ test("pinterest: a pinterest.co.uk capture keeps its own host", () => {
     { linkUrl: "https://www.pinterest.co.uk/pin/804877764689837649/" },
   );
   assert.equal(p.originalURL, "https://www.pinterest.co.uk/pin/804877764689837649/");
+});
+
+// ---------------------------------------------------------------------------
+// The cross-extractor invariant `captureCore` leans on (096 § D7 review, 8B)
+// ---------------------------------------------------------------------------
+
+// `sw.js`'s `captureCore` asks `planCapture` whether there is anything to capture, and
+// `planCapture` builds its candidates from BOTH `mediaUrl` and `mediaUrlFallback`. Before
+// that it asked `!provenance.mediaUrl` alone — narrower, and safe only because no extractor
+// can produce a fallback without a primary.
+//
+// That is a real contract and it was asserted nowhere. It holds today because every rewrite
+// helper is TOTAL: `toOrigName` returns `src` when `new URL` throws, `toOriginals` returns
+// `src` when its regex misses, `toRednoteOriginal` returns `src` in every branch. Each
+// extractor then computes `mediaUrlFallback = rendered && mediaUrl !== rendered ? rendered
+// : null`, so a null `mediaUrl` can only come from a null `rendered`, which makes the
+// fallback null too.
+//
+// The shape that breaks it is the obvious one to write: a regex-replace helper returning
+// `null` when it does not match. Nothing would fail loudly — a capture would report
+// `no-image` and be lost with a usable URL sitting in its provenance. So the promise is
+// pinned here, at the layer that makes it.
+
+/** Harvests chosen to drive each extractor down its no-media path, plus the shapes most
+ * likely to make a rewrite helper hand back null: an unparseable src, and a src that
+ * matches no rewrite rule. */
+const NO_MEDIA_CASES = [
+  { label: "twitter, no media at all", url: "https://x.com/a/status/1", media: [] },
+  {
+    label: "twitter, an unparseable media src",
+    url: "https://x.com/a/status/1",
+    media: [img("not a url at all", 800, 600)],
+  },
+  { label: "pinterest, no media at all", url: "https://www.pinterest.com/pin/1/", media: [] },
+  {
+    label: "pinterest, a src matching no /NNNx/ rule",
+    url: "https://www.pinterest.com/pin/1/",
+    media: [img("https://i.pinimg.com/unsized/a.jpg", 800, 600)],
+  },
+  { label: "instagram, no media at all", url: "https://www.instagram.com/p/ABC/", media: [] },
+  { label: "cosmos, no media at all", url: "https://www.cosmos.so/e/1", media: [] },
+  { label: "rednote, no media at all", url: "https://www.xiaohongshu.com/explore/1", media: [] },
+  {
+    label: "rednote, a src off the CDN",
+    url: "https://www.xiaohongshu.com/explore/1",
+    media: [img("https://elsewhere.example/a.jpg", 800, 600)],
+  },
+  { label: "web, no media at all", url: "https://example.com/article", media: [] },
+];
+
+test("no extractor produces a mediaUrlFallback without a mediaUrl", () => {
+  for (const testCase of NO_MEDIA_CASES) {
+    const p = extractProvenance(harvest({ url: testCase.url, media: testCase.media }));
+    if (p.mediaUrl === null || p.mediaUrl === undefined) {
+      assert.ok(
+        p.mediaUrlFallback === null || p.mediaUrlFallback === undefined,
+        `${testCase.label}: mediaUrl is absent but mediaUrlFallback is `
+        + `${JSON.stringify(p.mediaUrlFallback)} — captureCore would report no-image and `
+        + `lose a capture that had a usable URL`);
+    }
+  }
+});
+
+// The other half of the same promise, asserted directly on the helpers rather than through
+// an extractor: a non-null src must never rewrite to null. This is the property that makes
+// the invariant above hold, so it is the one that would break first.
+test("every media-URL rewrite helper is total: non-null in, non-null out", () => {
+  const inputs = [
+    "https://pbs.twimg.com/media/A?format=webp&name=small",
+    "https://i.pinimg.com/736x/a.jpg",
+    "https://i.pinimg.com/unsized/a.jpg",
+    "https://sns-img.rednotecdn.com/x!nd_dft",
+    "https://elsewhere.example/a.jpg",
+    "not a url at all",
+    "data:image/png;base64,AAAA",
+    "/relative/path.jpg",
+  ];
+  for (const src of inputs) {
+    for (const [name, rewrite] of [
+      ["toOrigName", toOrigName], ["toOriginals", toOriginals],
+      ["toRednoteOriginal", toRednoteOriginal],
+    ]) {
+      assert.ok(
+        rewrite(src) != null,
+        `${name}(${JSON.stringify(src)}) returned null — a total helper is what keeps `
+        + `mediaUrl and mediaUrlFallback from disagreeing`);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The cross-language rewrite contract (096 review 1A)
+// ---------------------------------------------------------------------------
+
+// `PageExtractor.swift` is a hand-written Swift mirror of these rewrite rules, because the
+// iOS share extension cannot run JavaScript and the phone needs the same answer the browser
+// gives. `host-table.js` already gates the host → platform half of that mirror. It does not
+// gate this half — and this half is the one that has actually drifted.
+//
+// It drifted in THIS branch: `name=orig` and `format=webp` are incompatible, twimg 404s the
+// pair, and the fix landed on the phone first (422) and had to be carried back to `base.js`
+// by hand afterwards (see .change-log/428 and the `format=webp` note in both files). One
+// bug, found once, fixed twice, with nothing to say the second fix was needed.
+//
+// So the rules move into a fixture both suites read. This is the same device
+// `capture-contract.json` uses for the request shape, pointed at the other end of the same
+// mirror. The Swift half is in `PageExtractorTests.swift`; if you change a rule here,
+// `swift test` in AtelierCapture fails until the mirror agrees.
+//
+// Deliberately NOT a test of URL normalisation. Every case is a well-formed URL whose
+// rewrite is unambiguous, because `URL.toString()` and `URLComponents.string` are entitled
+// to disagree about percent-encoding and that is not what this pins.
+
+const REWRITE_CONTRACT = JSON.parse(readFileSync(
+  fileURLToPath(new URL("./fixtures/media-rewrite-contract.json", import.meta.url)), "utf8"));
+
+test("rewrite contract: toOrigName matches the fixture the Swift mirror is held to", () => {
+  assert.ok(REWRITE_CONTRACT.toOrigName.length > 0, "the contract has toOrigName cases");
+  for (const entry of REWRITE_CONTRACT.toOrigName) {
+    assert.equal(toOrigName(entry.input), entry.expected, entry.case);
+  }
+});
+
+test("rewrite contract: toOriginals matches the fixture the Swift mirror is held to", () => {
+  assert.ok(REWRITE_CONTRACT.toOriginals.length > 0, "the contract has toOriginals cases");
+  for (const entry of REWRITE_CONTRACT.toOriginals) {
+    assert.equal(toOriginals(entry.input), entry.expected, entry.case);
+  }
 });

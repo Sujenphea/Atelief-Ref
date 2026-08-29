@@ -1,0 +1,62 @@
+{
+  "note": "The media-URL rewrite rules, as a contract both producers are held to. Loaded by extension/test/extractors.test.js (against src/extractors/base.js) and by AtelierCapture/Tests/AtelierCaptureTests/PageExtractorTests.swift (against PageExtractor). See 096 review issue 1A and .change-log/404 for why a comment was not enough.",
+  "toOrigName": [
+    {
+      "case": "a name= parameter is rewritten to orig",
+      "input": "https://pbs.twimg.com/media/ABC?format=jpg&name=small",
+      "expected": "https://pbs.twimg.com/media/ABC?format=jpg&name=orig"
+    },
+    {
+      "case": "webp is switched to jpg alongside the rewrite — twimg 404s the pair, and the caller then silently captures the rendered size (422, and the reason both sides carry this rule at all)",
+      "input": "https://pbs.twimg.com/media/ABC?format=webp&name=small",
+      "expected": "https://pbs.twimg.com/media/ABC?format=jpg&name=orig"
+    },
+    {
+      "case": "already orig but still webp is still repaired",
+      "input": "https://pbs.twimg.com/media/ABC?format=webp&name=orig",
+      "expected": "https://pbs.twimg.com/media/ABC?format=jpg&name=orig"
+    },
+    {
+      "case": "no format parameter is fine",
+      "input": "https://pbs.twimg.com/media/ABC?name=large",
+      "expected": "https://pbs.twimg.com/media/ABC?name=orig"
+    },
+    {
+      "case": "a bare URL is left alone — only a URL already carrying name= is rewritten",
+      "input": "https://pbs.twimg.com/media/ABC.jpg",
+      "expected": "https://pbs.twimg.com/media/ABC.jpg"
+    },
+    {
+      "case": "a format without a name is left alone, webp included: the webp repair rides the name rewrite and does not happen on its own",
+      "input": "https://pbs.twimg.com/media/ABC?format=png",
+      "expected": "https://pbs.twimg.com/media/ABC?format=png"
+    }
+  ],
+  "toOriginals": [
+    {
+      "case": "a single-dimension size segment becomes originals",
+      "input": "https://i.pinimg.com/736x/ab/cd/ef.jpg",
+      "expected": "https://i.pinimg.com/originals/ab/cd/ef.jpg"
+    },
+    {
+      "case": "a two-dimension size segment does too",
+      "input": "https://i.pinimg.com/236x236/ab/cd/ef.jpg",
+      "expected": "https://i.pinimg.com/originals/ab/cd/ef.jpg"
+    },
+    {
+      "case": "already originals is unchanged",
+      "input": "https://i.pinimg.com/originals/ab/cd/ef.jpg",
+      "expected": "https://i.pinimg.com/originals/ab/cd/ef.jpg"
+    },
+    {
+      "case": "a non-size segment is not a size — no rewrite",
+      "input": "https://i.pinimg.com/unsized/ab/cd/ef.jpg",
+      "expected": "https://i.pinimg.com/unsized/ab/cd/ef.jpg"
+    },
+    {
+      "case": "a size segment elsewhere in the path is not the one replaced",
+      "input": "https://i.pinimg.com/originals/736x/cd/ef.jpg",
+      "expected": "https://i.pinimg.com/originals/736x/cd/ef.jpg"
+    }
+  ]
+}

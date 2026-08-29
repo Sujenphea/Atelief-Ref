@@ -360,3 +360,70 @@ struct PageHarvestTests {
         #expect(PageHarvest.harvest(fromResults: ["title": "no url here"]) == nil)
     }
 }
+
+/// The Swift half of the cross-language rewrite contract (096 review 1A).
+///
+/// `PageExtractor.toOrigName` / `.toOriginals` are hand-written mirrors of
+/// `extension/src/extractors/base.js`, because the share extension cannot run JavaScript
+/// and the phone has to reach the same URL the browser would.
+///
+/// **That mirror has already drifted once, in the branch this test was written in.**
+/// `format=webp` and `name=orig` are incompatible — twimg 404s the pair — and the fix landed
+/// HERE first, on the phone that hit it, then had to be carried back to `base.js` by hand
+/// afterwards. One bug, found once, fixed twice, with nothing in either suite to say the
+/// second fix was owed.
+///
+/// `host-table.js`'s drift check already gates the host → platform half of this mirror, on
+/// the argument that a domain meaning `twitter` in one producer cannot mean `web` in the
+/// other. The rewrite rules are the same kind of claim and had no such gate; the fixture is
+/// the gate, read by both suites, and it is the same device `capture-contract.json` uses for
+/// the request shape.
+///
+/// Change a rule in one language and this fails until the other agrees. That is the whole
+/// point — the file it reads is under `extension/`, so neither side owns it.
+@Suite("The media-URL rewrite contract, shared with the browser extension")
+struct MediaRewriteContractTests {
+
+    struct Contract: Decodable {
+        struct Entry: Decodable {
+            let `case`: String
+            let input: String
+            let expected: String
+        }
+        let toOrigName: [Entry]
+        let toOriginals: [Entry]
+    }
+
+    /// Four levels up from this file is the repo root — the same `#filePath` walk
+    /// `CaptureDecoderTests.loadContract()` uses, and it stays correct only as long as both
+    /// suites sit at the same depth. They do.
+    static func loadContract() throws -> Contract {
+        var dir = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 { dir.deleteLastPathComponent() }
+        let url = dir.appendingPathComponent(
+            "extension/test/fixtures/media-rewrite-contract.json")
+        return try JSONDecoder().decode(Contract.self, from: Data(contentsOf: url))
+    }
+
+    @Test("toOrigName agrees with base.js on every case in the shared fixture")
+    func origNameMatchesContract() throws {
+        let contract = try Self.loadContract()
+        #expect(!contract.toOrigName.isEmpty, "the contract has toOrigName cases")
+        for entry in contract.toOrigName {
+            #expect(
+                PageExtractor.toOrigName(entry.input) == entry.expected,
+                "\(entry.case) — input \(entry.input)")
+        }
+    }
+
+    @Test("toOriginals agrees with base.js on every case in the shared fixture")
+    func originalsMatchesContract() throws {
+        let contract = try Self.loadContract()
+        #expect(!contract.toOriginals.isEmpty, "the contract has toOriginals cases")
+        for entry in contract.toOriginals {
+            #expect(
+                PageExtractor.toOriginals(entry.input) == entry.expected,
+                "\(entry.case) — input \(entry.input)")
+        }
+    }
+}

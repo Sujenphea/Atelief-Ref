@@ -31,7 +31,7 @@ import {
   resolvePinterestVideo, shouldResolveVideo as pinterestHasVideo,
 } from "./pinterest-video.js";
 import { fetchWithTimeout } from "./net.js";
-import { planCapture, isTextCard } from "./capture-plan.js";
+import { planCapture, isTextCard, CAPTURE_KIND } from "./capture-plan.js";
 import { MAX_VIDEO_BYTES } from "./config.js";
 import { isBulkMessage } from "./bulk-messages.js";
 import { handleBulkMessage } from "./bulk-sw.js";
@@ -179,7 +179,32 @@ export async function captureCore(harvest, context, token, deps = defaultDeps) {
   // when there's NEITHER an image NOR usable tweet content. `ingestOne` then posts a
   // media-less content capture when there's a descriptor but no media URL.
   const content = deps.tweetContent(provenance);
-  if (!provenance.mediaUrl && !content) return { status: "no-image" };
+  // **"Is there anything to capture" is `planCapture`'s question, asked once.**
+  //
+  // This used to be `!provenance.mediaUrl && !content`, hand-written here — a second,
+  // NARROWER copy of the decision `capture-plan.js` was extracted to own (096 § D7). It
+  // ignored `mediaUrlFallback`, which `planCapture` counts: the plan builds its candidates
+  // from `[mediaUrl, mediaUrlFallback].filter(Boolean)`.
+  //
+  // That was not a live bug. `mediaUrl` is null only when `rendered` is null, and every
+  // rewrite helper is total — `toOrigName` returns `src` on a parse failure, `toOriginals`
+  // returns `src` when its regex misses, `toRednoteOriginal` returns `src` in every branch
+  // — so `mediaUrl == null` implies `mediaUrlFallback == null` across all five extractors
+  // today. It held by an invariant spread over five files and asserted nowhere, and the
+  // shape that breaks it is the natural one to write: a regex-replace helper returning
+  // `null` when it does not match. The failure would have been silent — a capture reporting
+  // `no-image` and quietly lost with a usable fallback URL sitting in its provenance.
+  //
+  // The invariant is now pinned in `extractors.test.js` as well. Belt and braces: the test
+  // documents what the extractors promise, and this asks the authority anyway.
+  //
+  // No `mp4Url` yet — resolution needs the network and happens below. That is deliberate
+  // and matches what the hand-written test did: a video post carries a poster or a frame,
+  // so its `mediaUrl` is set and the plan is never `none`. A post with neither a still nor
+  // content was already rejected here before any video call, and still is.
+  if (planCapture(provenance, { content }).kind === CAPTURE_KIND.none) {
+    return { status: "no-image" };
+  }
   if (!token) return { status: "no-token" };
 
   // Video DETECTION + resolution is single-item-specific: it reads harvest/context
@@ -229,6 +254,17 @@ export async function ingestOne(
   // Shared with tier 3, which consumes the same plan and hands it to the native handler
   // instead of fetching here. This function keeps only the localhost transport.
   const plan = planCapture(provenance, { mp4Url, content });
+
+  // Nothing to capture. `captureCore` asks the same question before it spends a token
+  // check or a video resolution, so this is unreachable from there — but `ingestOne` is
+  // also the bulk engine's tail and tier 3's, and reaching here with an empty plan used
+  // to fall through to `fetchImage([])`, which throws its "No media URL to fetch."
+  // placeholder and surfaces as a fetch-error: a sweep item classified as a network
+  // failure when in fact there was simply nothing on the post. The plan already says so;
+  // this reports what it says.
+  if (plan.kind === CAPTURE_KIND.none) {
+    return { status: "no-image", reason: plan.reason };
+  }
 
   if (plan.videoUrl) {
     try {
