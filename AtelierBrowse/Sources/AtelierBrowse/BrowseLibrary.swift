@@ -10,17 +10,17 @@
 // pool and migrates what it finds, which on a first launch is what creates the library
 // and its Unsorted collection. The share extension still never opens SQLite (091 · D2)
 // — it appends files to a directory and returns — so the phone has exactly one process
-// on the database, which is the same shape the Mac has.
+// on the database, which is the same shape the Mac has. Since 096 · 4 the companion app
+// opens that pool itself and composes it in through ``init(root:services:)``, because the
+// drain writes through the same `AppServices` this reads through.
 //
-// **What this does NOT do: drain the inbox.** A capture written by the share extension
-// sits in `inbox/` until a host ingests it, and on iOS no host does. `InboxDrain` lives
-// in AtelierIngestion, which did not build for this platform when this was written and
-// does now (`.change-log/452`) — what is still missing is a caller, not a compile. So the
-// phone
-// browses what the MAC has ingested and synced back, and a capture made on the phone
-// is not visible on the phone until it has been round-tripped. That is a real hole in
-// the v1 story and it is S6's, not this slice's; it is stated here because a reader of
-// this file will otherwise assume the obvious.
+// **What this does NOT do: drain the inbox.** Something does, now — the companion's
+// `InboxDrainScheduler` runs `InboxDrain` at launch and on every foreground (096 · 4), so
+// a capture made on the phone appears in the phone's own grid without a round trip through
+// a Mac. It is still not THIS type, and the boundary is the point: there is no write funnel
+// here and deliberately no way to reach one, because the way "v1 browse is read-only"
+// (091 · D1) survives contact with a UI is by the UI not being handed the verb. The app
+// wires the drain from beside this seam rather than through it.
 
 import AtelierCapture
 import AtelierCore

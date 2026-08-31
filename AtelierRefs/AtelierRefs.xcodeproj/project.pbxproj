@@ -11,6 +11,7 @@
 		CA0000000000000000000003 /* CanvasRenderer in Frameworks */ = {isa = PBXBuildFile; productRef = CA0000000000000000000002 /* CanvasRenderer */; };
 		DA0000000000000000000003 /* AtelierCore in Frameworks */ = {isa = PBXBuildFile; productRef = DA0000000000000000000002 /* AtelierCore */; };
 		EA0000000000000000000003 /* AtelierIngestion in Frameworks */ = {isa = PBXBuildFile; productRef = EA0000000000000000000002 /* AtelierIngestion */; };
+		EA0000000000000000000005 /* AtelierIngestion in Frameworks */ = {isa = PBXBuildFile; productRef = EA0000000000000000000004 /* AtelierIngestion */; };
 		FA0000000000000000000003 /* AtelierServer in Frameworks */ = {isa = PBXBuildFile; productRef = FA0000000000000000000002 /* AtelierServer */; };
 		GA0000000000000000000003 /* AtelierExport in Frameworks */ = {isa = PBXBuildFile; productRef = GA0000000000000000000002 /* AtelierExport */; };
 		HA0000000000000000000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = HA0000000000000000000002 /* Sparkle */; };
@@ -182,6 +183,7 @@
 				IA0000000000000000000003 /* AtelierCapture in Frameworks */,
 				JA0000000000000000000003 /* AtelierBrowse in Frameworks */,
 				DA0000000000000000000005 /* AtelierCore in Frameworks */,
+				EA0000000000000000000005 /* AtelierIngestion in Frameworks */,
 					KA0000000000000000000005 /* AtelierArchive in Frameworks */,
 				LA0000000000000000000005 /* AtelierTokens in Frameworks */,
 			);
@@ -329,6 +331,7 @@
 				IA0000000000000000000002 /* AtelierCapture */,
 				JA0000000000000000000002 /* AtelierBrowse */,
 				DA0000000000000000000004 /* AtelierCore */,
+				EA0000000000000000000004 /* AtelierIngestion */,
 				KA0000000000000000000004 /* AtelierArchive */,
 				LA0000000000000000000004 /* AtelierTokens */,
 			);
@@ -1063,6 +1066,10 @@
 			productName = AtelierCore;
 		};
 		EA0000000000000000000002 /* AtelierIngestion */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierIngestion;
+		};
+		EA0000000000000000000004 /* AtelierIngestion */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AtelierIngestion;
 		};

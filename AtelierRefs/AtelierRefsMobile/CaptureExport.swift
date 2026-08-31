@@ -1,10 +1,25 @@
-// AtelierRefsMobile — handing this phone's captures to the Mac (092 · S6b).
+// AtelierRefsMobile — handing this phone's captures to the Mac (092 · S6b, 096 · 4).
 //
-// **What this is exporting, and why it is not the library.** iOS never drains its inbox
-// (`InboxDrain` is macOS-only), so a share made on this phone is a record plus a payload
-// file and never becomes an asset here. What there is to send is the INBOX, and
-// `InboxArchive` turns it into a `LibraryArchive`-shaped folder the Mac already knows how
-// to import.
+// **What this is exporting, and why it is not the library.** What there is to send is the
+// INBOX, and `InboxArchive` turns it into a `LibraryArchive`-shaped folder the Mac already
+// knows how to import. That was once true because iOS never drained its inbox at all; it
+// is still true now that it does, and for a better reason: the phone's SQLite library holds
+// only what the Mac has synced back to it, so the inbox record and its original payload are
+// the only copy of a phone-made capture that can cross. 096 · 4's
+// `InboxDrain.Retention.retainForExport` is what keeps them there after ingest.
+//
+// **"Pending" means pending EXPORT.** Since a drained record moves to `inbox/ingested/`
+// rather than being deleted, the set this controller counts and sends is the union of
+// `inbox/` and `inbox/ingested/` — which is exactly what `InboxArchive.pendingRecords(in:)`
+// reads. Counting only the pending directory would make the toolbar's number fall to zero
+// the moment the drain ran and quietly withdraw the send control from a phone with three
+// captures still owed to the Mac.
+//
+// **The inbox is taken exclusively.** A drain pass moves records between those same two
+// directories, so one running underneath an archive write would let a payload move out from
+// under a copy that had already resolved its site. The export therefore runs inside
+// ``InboxExclusion`` — see `InboxDrainScheduler`'s header for why the id-dedup inside
+// `pendingRecords(in:)` is not an answer to that race.
 //
 // **Nothing is deleted.** After an export the records stay exactly where they were. That
 // is not laziness, it is the property 091 · D4 bought with the archive format: provenance
@@ -57,20 +72,53 @@ final class CaptureExport {
     private let layout: InboxLayout
     private let appVersion: String
 
-    init(libraryRoot: URL, appVersion: String) {
+    /// Takes the inbox away from the drain for the duration of a body (096 · 4).
+    ///
+    /// **No default**, for the same reason `InboxDrain.Retention` has none: a default would
+    /// be a decision about who else is writing this directory, taken silently on behalf of
+    /// every future caller, and the caller that gets it wrong loses a payload mid-copy
+    /// rather than failing a build.
+    private let exclusion: InboxExclusion
+
+    init(libraryRoot: URL, appVersion: String, exclusion: @escaping InboxExclusion) {
         layout = InboxLayout(libraryRoot: libraryRoot)
         self.appVersion = appVersion
+        self.exclusion = exclusion
     }
 
-    /// Re-count the inbox. Cheap — a directory listing — and safe to call on every
-    /// appearance, which is what keeps the control honest after a share.
+    /// Re-count what is waiting to be sent. Cheap — two directory listings — and safe to
+    /// call on every appearance, which is what keeps the control honest after a share.
+    ///
+    /// **Both directories**, per the note at the top of this file: a record the drain has
+    /// ingested has left `inbox/` for `inbox/ingested/` and is still owed to the Mac.
+    ///
+    /// Counted rather than decoded. `InboxArchive.pendingRecords(in:)` is the authority on
+    /// what will actually be sent and it dedups ids across the two sets, so a hand-edited
+    /// inbox holding one id in both places would be counted twice here and sent once. That
+    /// is not a state the drain can produce — retention MOVES a record — and paying a
+    /// decode of every record on every activation to be exact about it would spend a real
+    /// cost on an impossible one.
     func refresh() {
-        pending = (try? layout.pendingRecordURLs().count) ?? 0
+        let waiting = (try? layout.pendingRecordURLs().count) ?? 0
+        let drained = (try? layout.ingestedRecordURLs().count) ?? 0
+        pending = waiting + drained
     }
 
-    /// Write the archive, off the main actor.
+    /// Write the archive, off the main actor and with the inbox to ourselves.
+    ///
+    /// `.working` is set BEFORE the wait rather than after it: the send button disables on
+    /// that phase, and a control that stays live while an export queues behind a drain pass
+    /// is a control that can be pressed twice.
     func export(now: Date = Date()) async {
         phase = .working
+        await exclusion { [weak self] in
+            guard let self else { return }
+            await writeArchive(now: now)
+        }
+    }
+
+    /// The archive write itself, once the inbox is ours.
+    private func writeArchive(now: Date) async {
         let layout = layout
         let appVersion = appVersion
         do {
@@ -99,13 +147,19 @@ final class CaptureExport {
         phase = exported.isEmpty ? .idle : .sent(exported.count)
     }
 
-    /// Move the last export's captures into `inbox/sent/` — the user asserting the Mac has
-    /// them (096 · 3B).
+    /// Retire the last export's captures — the user asserting the Mac has them (096 · 3B).
     ///
-    /// Nothing is deleted. The captures leave the pending set, so the next export is what
-    /// was saved since rather than everything ever, and the toolbar count means "waiting"
-    /// again. A capture that will not move stays pending and will simply be sent again;
-    /// re-import collapses on blob hash, which is the property 091 · D4 bought.
+    /// A record still in `inbox/` moves to `inbox/sent/`; one the drain has already
+    /// ingested is DELETED, because the phone's own library holds the asset and its blob
+    /// and a second copy under `sent/` would defer the unbounded growth 449 was written to
+    /// end (096 · 4 · `InboxRetirement`). Which fate applies is read off the disk, not
+    /// passed in: this is a button, and it knows what the user asserted rather than which
+    /// directory the drain left a capture in.
+    ///
+    /// Under the same exclusion the export runs under, and for a sharper version of the
+    /// same reason: this MOVES and DELETES records the drain may be reading in the middle
+    /// of a pass. A capture that will not move stays where it is and will simply be sent
+    /// again; re-import collapses on blob hash, which is the property 091 · D4 bought.
     func retire() async {
         let layout = layout
         let ids = exported
@@ -113,12 +167,18 @@ final class CaptureExport {
             phase = .idle
             return
         }
-        await Task.detached(priority: .userInitiated) {
-            InboxRetirement.retire(ids, in: layout)
-        }.value
-        exported = []
-        phase = .idle
-        refresh()
+        await exclusion { [weak self] in
+            // The summary is counts the phone has nothing to say about: 449 argues the
+            // user asked how many captures left the waiting set, and the toolbar answers
+            // that by re-counting the inbox below.
+            _ = await Task.detached(priority: .userInitiated) {
+                InboxRetirement.retire(ids, in: layout)
+            }.value
+            guard let self else { return }
+            exported = []
+            phase = .idle
+            refresh()
+        }
     }
 
     /// Decline the offer: the captures stay pending and will go out again next time. The

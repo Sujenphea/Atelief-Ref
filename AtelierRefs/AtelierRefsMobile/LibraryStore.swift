@@ -56,7 +56,26 @@ final class LibraryStore {
     /// controller needs it. Set once bootstrap has resolved it.
     private(set) var libraryRoot: URL?
 
+    /// Bumped once per drain pass that put something new in the library (096 · 4).
+    ///
+    /// A counter rather than a notification or a callback into the feed, because there is
+    /// one grid per screen on the navigation stack and each owns its own
+    /// ``CollectionFeed`` — a store that held references to them would be holding views.
+    /// A screen keys its load on this alongside its collection id, so a capture that lands
+    /// while the user is looking at the grid appears in it. The value means nothing; only
+    /// that it changed does.
+    private(set) var ingestGeneration = 0
+
     private var library: BrowseLibrary?
+
+    /// The one open database in this process — the browse seam reads through it and, since
+    /// 096 · 4, the ingest pipeline writes through it.
+    ///
+    /// Held here rather than reached through ``BrowseLibrary``, which keeps its own copy
+    /// `private` on purpose: that type is the READ seam and the way "v1 browse is
+    /// read-only" survives contact with a UI is by the UI not being handed the verb. The
+    /// drain is not the UI, so it is wired from here instead of by widening that seam.
+    private(set) var services: AppServices?
 
     // MARK: - Bootstrap
 
@@ -76,10 +95,17 @@ final class LibraryStore {
             #if DEBUG
             if FixtureLibrary.isRequested { try await FixtureLibrary.seed(at: root) }
             #endif
-            let opened = try BrowseLibrary(root: root)
-            library = opened
+            // Opened here and composed into the browse seam, rather than letting
+            // `BrowseLibrary(root:)` open its own: 096 · 4 gave this process a writer as
+            // well as a reader, and two `AppServices` over one file would be two pools and
+            // two migration passes at launch for one library.
+            let opened = try AppServices(
+                databasePath: root.appendingPathComponent(AtelierCore.databaseFileName).path)
+            let browse = BrowseLibrary(root: root, services: opened)
+            services = opened
+            library = browse
             libraryRoot = root
-            collections = try await opened.collectionTree()
+            collections = try await browse.collectionTree()
             // Ready BEFORE the covers: the grid is what the user launched for and it
             // needs none of them, so gating first paint on a read only the sheet
             // consumes would spend launch latency on a screen nobody has asked for yet.
@@ -88,6 +114,15 @@ final class LibraryStore {
         } catch {
             phase = .failed(Self.message(for: error))
         }
+    }
+
+    /// A drain pass put something new in the library (096 · 4).
+    ///
+    /// Only the counter moves. Re-reading the tree and the feed is the screens' job — they
+    /// are keyed on this — and doing it here as well would be the same read twice, once for
+    /// a screen that may not be on top of the stack.
+    func noteIngest() {
+        ingestGeneration &+= 1
     }
 
     /// Re-read the collection tree — after a switch, so a collection made on the Mac

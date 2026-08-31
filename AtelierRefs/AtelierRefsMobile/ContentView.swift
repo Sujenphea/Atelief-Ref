@@ -15,6 +15,7 @@
 
 import AtelierBrowse
 import AtelierCore
+import AtelierIngestion
 import SwiftUI
 
 /// Everything the stack can push. A small enum of IDs rather than the model objects
@@ -37,6 +38,10 @@ struct ContentView: View {
     /// Created after the library root resolves, because the inbox hangs off it — and `nil`
     /// when it never does, which is the same state the failure screen is already showing.
     @State private var export: CaptureExport?
+    /// The thing that drains this phone's inbox into this phone's library (096 · 4).
+    /// Created beside the export, because the two share the inbox and one of them has to
+    /// be able to take it from the other.
+    @State private var inbox: InboxDrainScheduler?
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -52,19 +57,20 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .tint(MobileTheme.Colors.inkPrimary)
         .task {
+            // The grid is not gated on the drain (096 · 4): `bootstrap()` opens the library
+            // and the feed renders what is already in it, and only then is a pass started —
+            // behind the screen the user launched for. A backlog of fifty shares costs the
+            // first paint nothing.
             await store.bootstrap()
-            // After bootstrap, so the root is resolved (and seeded, in a debug fixture run)
-            // before anything counts what is in its inbox.
-            if let root = store.libraryRoot, export == nil {
-                let export = CaptureExport(libraryRoot: root, appVersion: Self.appVersion)
-                export.refresh()
-                self.export = export
-            }
+            startInbox()
         }
         // A share arrives while this app is in the background — the extension is another
-        // process — so the count is re-read on activation, the same cadence the Mac's drain
-        // runs on (407).
+        // process — so returning to the foreground is both when something may have landed
+        // and when the user is looking for it. The scheduler decides whether that becomes a
+        // pass; the count is re-read either way, because a pass that ingests nothing new
+        // still has to show what the extension added.
         .onChange(of: scenePhase) { _, phase in
+            inbox?.scenePhaseChanged(to: phase)
             if phase == .active { export?.refresh() }
         }
         .overlay(alignment: .bottom) {
@@ -106,6 +112,46 @@ struct ContentView: View {
                     store.rootCollectionID = id
                 })
         }
+    }
+
+    /// Build the two things that share the inbox, and start the drain (096 · 4).
+    ///
+    /// Runs after ``LibraryStore/bootstrap()``, so the root is resolved (and seeded, in a
+    /// debug fixture run) and the database is open before anything reads the inbox or
+    /// writes an asset. Idempotent on the scheduler, which is what a `task` that re-runs
+    /// needs it to be; a library that never opened leaves both `nil`, which is the state
+    /// the failure screen is already showing.
+    ///
+    /// **The scheduler is built first and handed to the export**, not the other way round:
+    /// the export has to be able to take the inbox from a running pass, and the thing that
+    /// owns the passes is the only thing that can give it away. The capture is strong —
+    /// both live for the process, and an export whose scheduler had been collected would
+    /// silently do nothing at all.
+    private func startInbox() {
+        guard let root = store.libraryRoot, let services = store.services else { return }
+        guard inbox == nil else { return }
+
+        let drain = MobileIngest.makeDrain(libraryRoot: root, services: services)
+        // The store, not `self.store`: this closure outlives the body that made it, and a
+        // long-lived closure over a `View` value is a subtlety nobody should have to
+        // re-derive. The object is what it wants.
+        let store = store
+        let scheduler = InboxDrainScheduler(
+            pass: { await drain.drainOnce() },
+            // A pass reports counts, not outcomes, and it resolves each record's OWN target
+            // collection — so the screens are told "something landed", not where. One
+            // counter is the whole signal: each grid is keyed on it and re-reads itself,
+            // and the root's reload is where the send control's count is refreshed too.
+            onIngest: { store.noteIngest() })
+        inbox = scheduler
+
+        if export == nil {
+            export = CaptureExport(
+                libraryRoot: root, appVersion: Self.appVersion,
+                exclusion: { body in await scheduler.exclusively(body) })
+        }
+        export?.refresh()
+        scheduler.start()
     }
 
     /// What the manifest records as the writing app — the same string the Mac's own
@@ -202,11 +248,31 @@ struct CollectionScreen: View {
             }
             .toolbarBackground(MobileTheme.Colors.canvasOuter, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
-            // Keyed on the id so switching the root collection reloads in place.
-            .task(id: collectionID) {
+            // Keyed on the id so switching the root collection reloads in place, and on the
+            // ingest counter so a capture the drain lands while this screen is up appears in
+            // it (096 · 4). Every screen on the stack re-reads, not just the visible one:
+            // the pass resolves each record's own target collection and reports only counts,
+            // so "which grid changed" is not knowable here. That is a wasted query on the
+            // screens the drain missed and the honest response to not knowing — the
+            // alternative is a grid that silently omits a capture the user watched arrive,
+            // which is the same trade `IngestionModel.refreshAfterIngest(touching:)` takes.
+            .task(id: FeedReload(collection: collectionID, ingest: store.ingestGeneration)) {
                 await feed.load(collectionID, from: store)
-                if isRoot { await store.refreshCollections() }
+                if isRoot {
+                    await store.refreshCollections()
+                    // The union the send control counts changes when a pass quarantines or
+                    // an extension writes, and this is the one reload every such moment
+                    // already runs through.
+                    export?.refresh()
+                }
             }
+    }
+
+    /// What a reload is keyed on: the collection being shown, and how many times the drain
+    /// has changed the library under it.
+    private struct FeedReload: Hashable {
+        let collection: UUID
+        let ingest: Int
     }
 
     @ViewBuilder
@@ -347,17 +413,18 @@ private struct LoadingNotice: View {
 
 /// A collection with nothing in it.
 ///
-/// Worth one sentence rather than a blank screen, and on this platform the sentence has
-/// to carry a fact the Mac's equivalent never had to: a capture made on the phone is not
-/// visible on the phone until the Mac has ingested it and it has come back. The drain
-/// runs only in the macOS app.
+/// Worth one sentence rather than a blank screen. The sentence used to carry a fact the
+/// Mac's equivalent never had to — that a capture made on the phone stayed invisible here
+/// until a Mac had ingested it and synced it back — and 096 · 4 made that false: the phone
+/// drains its own inbox now, so a share appears in this grid on its own. What is left to
+/// say is the ordinary thing, which is that shares land in Unsorted.
 private struct EmptyNotice: View {
     var body: some View {
         VStack(spacing: MobileTheme.Spacing.sm) {
             Text("Nothing here yet")
                 .font(MobileTheme.Typography.bodyEmphasis)
                 .foregroundStyle(MobileTheme.Colors.inkPrimary)
-            Text("Items you share arrive after your Mac has taken them in.")
+            Text("Anything you share arrives in Unsorted.")
                 .font(MobileTheme.Typography.body)
                 .foregroundStyle(MobileTheme.Colors.inkSecondary)
                 .multilineTextAlignment(.center)
