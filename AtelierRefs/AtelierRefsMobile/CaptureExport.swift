@@ -18,7 +18,7 @@
 // **The inbox is taken exclusively.** A drain pass moves records between those same two
 // directories, so one running underneath an archive write would let a payload move out from
 // under a copy that had already resolved its site. The export therefore runs inside
-// ``InboxExclusion`` — see `InboxDrainScheduler`'s header for why the id-dedup inside
+// ``InboxExclusion`` — see `InboxDrainPolicy`'s header for why the id-dedup inside
 // `pendingRecords(in:)` is not an answer to that race.
 //
 // **Nothing is deleted.** After an export the records stay exactly where they were. That
@@ -34,6 +34,7 @@
 // the user to hand it somewhere.
 
 import AtelierArchive
+import AtelierBrowse
 import AtelierCapture
 import Foundation
 import Observation

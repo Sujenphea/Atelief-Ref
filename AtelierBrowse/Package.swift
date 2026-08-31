@@ -26,10 +26,21 @@ import PackageDescription
 // the tests here state the invariant rather than the value, so a divergence has to be
 // argued for rather than merely allowed.
 //
+// **It is not only the read side any more (096 · 4, phase 4).** Phase 3 gave the phone a
+// writer — a drain over its own inbox — and shipped the policy deciding WHEN that writer
+// runs inside `AtelierRefsMobile`, untested, with its own changelog saying so. That policy
+// is now `InboxDrainPolicy` here. "Browse" was an accurate name while the phone only read;
+// the charter above — *companion-app logic that is not a view, put where `swift test` can
+// reach it* — is what actually decided it, and a new package for one dependency-free type
+// would have been a manifest, a CI row and a `Package.resolved` bought with nothing.
+//
 // The dependency line is the boundary: AtelierCore for the domain types and the read
-// surface, AtelierCapture for the library root and the media paths. No AtelierIngestion
-// (it imports AppKit and does not build for iOS), no SwiftUI, no UIKit — so every
-// decision below is testable without a device.
+// surface, AtelierCapture for the library root and the media paths. **No AtelierIngestion**
+// — it builds for iOS as of `.change-log/452`, so the old parenthetical here (that it
+// imports AppKit) is no longer the reason; the reason is that `InboxDrainPolicy` is generic
+// over what a pass returns precisely so this package never has to name `DrainSummary`, and
+// linking an entire ingest pipeline to type one closure would undo that. No SwiftUI, no
+// UIKit — so every decision below is testable without a device.
 let package = Package(
     name: "AtelierBrowse",
     platforms: [
