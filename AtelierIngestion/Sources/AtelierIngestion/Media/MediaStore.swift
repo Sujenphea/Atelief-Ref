@@ -80,8 +80,10 @@ public struct MediaStore: Sendable {
     // The path math below is `AtelierCapture.LibraryMediaPaths` — every one of these
     // members delegates rather than computing (092 · S5). It moved for the reason
     // `InboxLayout` and `LibraryLocation` moved before it: the iOS companion resolves a
-    // thumbnail for a row it just read, and it cannot link THIS package (AppKit, via
-    // `Input/DirectInputReader.swift`). What stays here is everything that writes —
+    // thumbnail for a row it just read, and at the time it could not link THIS package
+    // (AppKit, via `Input/DirectInputReader.swift`; `.change-log/452` split that file and
+    // the package now builds for iOS, but a browse surface still has no use for a write
+    // pipeline). What stays here is everything that writes —
     // the atomic staging, the `cache/` volume rule, the Trash removals and
     // ``StoreError``, which is still this type's own vocabulary for a bad hash.
 

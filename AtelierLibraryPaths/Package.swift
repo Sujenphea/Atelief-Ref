@@ -12,8 +12,8 @@ import PackageDescription
 //   > the boundary is the finding, not the type.
 //
 // `InboxLayout` moved out of `AtelierIngestion` in S2, `LibraryLocation` in S4a, and
-// `LibraryMediaPaths` in S5 — the third — because `AtelierIngestion` imports AppKit
-// (`Input/DirectInputReader.swift`) and so cannot build for iOS at all. Each move was
+// `LibraryMediaPaths` in S5 — the third — because `AtelierIngestion` imported AppKit
+// (`Input/DirectInputReader.swift`) and so could not build for iOS at all. Each move was
 // individually correct. The result was a package called *Capture* holding four unrelated
 // jobs: the capture wire contract, the inbox handoff, tier-2 page extraction, and this —
 // filesystem knowledge that has nothing to do with capturing anything.
@@ -22,12 +22,18 @@ import PackageDescription
 // `AtelierCapture` purely to reach `LibraryLayout.inbox` and the library root, so the
 // INGESTION package depended on the CAPTURE package for path arithmetic.
 //
-// **Fixing the actual boundary is a different, larger job.** Making `DirectInputReader`'s
-// AppKit surface conditional would let `AtelierIngestion` build for iOS and would unblock
-// the drain on the phone; S5 investigated it with the code in hand and declined, because
-// `InboxDrain` and `RemoteImageFetcher` both call that file and dropping it on iOS takes
-// the drain with it. That remains true and remains a project. This is the smaller,
-// honest move: stop the relocation reflex, and let the arrow point somewhere defensible.
+// **Fixing the actual boundary was a different, larger job — and it has since been done.**
+// S5 investigated making `DirectInputReader`'s AppKit surface conditional and declined,
+// because `InboxDrain` and `RemoteImageFetcher` both call that file and dropping it on
+// iOS takes the drain with it. `.change-log/452` split the file instead of excluding it:
+// the pure provenance factories those two callers actually reach for never touched
+// AppKit, so they left, and `AtelierIngestion` builds for iOS.
+//
+// That does NOT retire this package. Nothing here moves back: the reason a share
+// extension and a browse surface want path arithmetic without an ingest pipeline is
+// unchanged, and a zero-dependency leaf is still the honest home for it. What the split
+// retires is the RELOCATION REFLEX — the next type that needs to reach the phone gets
+// weighed on its own merits, not moved because the boundary made the decision.
 //
 // **Zero dependencies, and that is checked rather than hoped.** Neither file imports
 // `AtelierCore` — only Foundation and UniformTypeIdentifiers — and nothing in

@@ -6,8 +6,9 @@
 //
 // **Why this is in AtelierCapture and not AtelierIngestion**, where S1 built it: this
 // seam exists so the iOS share extension can find the library root, and in
-// `AtelierIngestion` it could not. That package imports AppKit
-// (`Input/DirectInputReader.swift`) and does not build for iOS at all, so the one
+// `AtelierIngestion` it could not. That package imported AppKit
+// (`Input/DirectInputReader.swift`) and did not build for iOS at all — `.change-log/452`
+// has since split that file, but at the time the one
 // caller the App Group branch below was written for had no way to reach
 // ``LibraryLocation/defaultRoot()``. Nothing was broken by that — the seam simply had
 // no caller on its own platform. This package is transport-free and platform-free by

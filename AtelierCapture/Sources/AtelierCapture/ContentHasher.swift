@@ -1,8 +1,10 @@
 // AtelierCapture — content hashing (chunk 3, decision C5)
 //
 // **Why it is here and not in AtelierIngestion**, where it was written: the phone writes
-// archives now (092 · S6), an archive's `blob_hash` IS this digest, and iOS cannot link
-// that package. Hashing bytes is CryptoKit and Foundation — nothing about it was ever
+// archives now (092 · S6), an archive's `blob_hash` IS this digest, and iOS could not link
+// that package at the time (`.change-log/452` has since made it buildable there, which
+// changes nothing here: an archive writer wants a digest, not a pipeline).
+// Hashing bytes is CryptoKit and Foundation — nothing about it was ever
 // macOS — so it moves rather than being spelled a second time with its own chunk size and
 // its own hex formatting, either of which could drift into producing a different address
 // for the same bytes. `AtelierIngestion.ContentHasher` is now a typealias to this.

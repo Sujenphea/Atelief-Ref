@@ -7,13 +7,15 @@
 //
 // **Why it is here and not in AtelierIngestion**, which owns `MediaStore` and wrote
 // every one of these paths first: the iOS companion's browse surface has to resolve a
-// thumbnail for a row it just read out of the database, and it cannot link
-// AtelierIngestion. That package imports AppKit (`Input/DirectInputReader.swift`) and
-// does not build for iOS — and unlike the AppKit residue `LibraryLocation` left
-// behind, this one does not come out with a single `#if`: `InboxDrain` and
-// `RemoteImageFetcher` both call `DirectInputReader`, so excluding the file on iOS
-// takes the drain with it. Porting the package is a separately-costed decision the CI
-// job already says it is; this slice does not make it.
+// thumbnail for a row it just read out of the database, and at the time it could not
+// link AtelierIngestion. That package imported AppKit (`Input/DirectInputReader.swift`)
+// and did not build for iOS — and unlike the AppKit residue `LibraryLocation` left
+// behind, that one did not come out with a single `#if`: `InboxDrain` and
+// `RemoteImageFetcher` both call `DirectInputReader`, so excluding the file on iOS took
+// the drain with it. `.change-log/452` split the file rather than excluding it and the
+// package builds for iOS now — which changes where the drain can run, not where a path
+// join belongs: a browse surface reading a thumbnail path has no business linking a
+// write pipeline.
 //
 // So the same move `InboxLayout` made in S2 and `LibraryLocation` made in S4a happens
 // a third time, for the same reason and with the same shape: the NAME lives in the
@@ -105,10 +107,11 @@ public enum LibraryMediaPaths {
     /// **The other half of every path above.** A blob is stored under the extension the
     /// ingest derived, and every later reader has to map the same MIME back to the same
     /// extension or it computes a path to a file that is not there. That made this
-    /// mapping part of the path math, so it belongs beside it — and it has to be HERE
-    /// rather than in `AtelierIngestion.ImageMetadata`, where it was, because iOS cannot
-    /// link that package (`Input/DirectInputReader.swift` imports AppKit) and 092 · S6
-    /// makes the phone a writer of archives, which resolve blob paths.
+    /// mapping part of the path math, so it belongs beside it — and it is HERE rather
+    /// than in `AtelierIngestion.ImageMetadata`, where it was, because 092 · S6 makes the
+    /// phone a writer of archives, which resolve blob paths, and at the time iOS could not
+    /// link that package at all (`Input/DirectInputReader.swift` imported AppKit; see
+    /// `.change-log/452`). An archive writer still should not have to.
     ///
     /// `ImageMetadata.fileExtension(forMIMEType:)` now delegates here rather than being
     /// a second copy — the same arrangement `LibraryLayout.inbox` has with

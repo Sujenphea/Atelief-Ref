@@ -9,10 +9,12 @@
 // `inbox/` (092 · S2) is not the only subdirectory whose name is NOT spelled here, and
 // as of 092 · S5 it is no longer even the unusual case: `inbox/` is written by the iOS
 // share extension and `blobs/` + `thumbnails/` are READ by the iOS companion's browse
-// surface, and neither process can link this package (it imports AppKit via
-// `Input/DirectInputReader.swift` and does not build for iOS). All three names
+// surface, and at the time neither process could link this package (it imported AppKit
+// via `Input/DirectInputReader.swift` and did not build for iOS at all — `.change-log/452`
+// has since split that file and the package does build for iOS). All three names
 // therefore live in AtelierCapture — `InboxLayout` and `LibraryMediaPaths` — where both
-// sides can reach them, and the properties here delegate. One authority, reached from
+// sides can reach them, and the properties here delegate. That is still the right home:
+// a share extension wants the NAMES without the pipeline. One authority, reached from
 // both sides. `cache/` and `snapshots/` stay spelled here: nothing off this platform
 // has any business in either.
 

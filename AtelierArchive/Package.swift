@@ -11,9 +11,12 @@
 // where the two copies would drift and nothing would notice.
 //
 // **What it deliberately does NOT depend on: `AtelierIngestion`.** The writer took a
-// `MediaStore` for one thing — resolving a blob's path — and that package is macOS-only
-// (`Input/DirectInputReader.swift` imports AppKit), so depending on it would have made
-// this package macOS-only too, for a path join. `AtelierCapture.LibraryMediaPaths`
+// `MediaStore` for one thing — resolving a blob's path — and that package was macOS-only
+// when this was written (`Input/DirectInputReader.swift` imported AppKit), so depending
+// on it would have made this package macOS-only too, for a path join. It is no longer
+// macOS-only (`.change-log/452`), and the dependency is still not worth taking: this is
+// a leaf that joins strings, and it should not pull in an ingest pipeline to do it.
+// `AtelierCapture.LibraryMediaPaths`
 // already computes that path on both platforms; it is the same move S4a made when the
 // drain needed the phone to know where blobs live.
 

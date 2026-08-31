@@ -6,10 +6,13 @@
 // so the shape is named exactly once — here.
 //
 // **Why this is in AtelierCapture and not AtelierIngestion**, where 092's prose put
-// it: `AtelierIngestion` imports AppKit (`Input/DirectInputReader.swift`) and so
-// cannot build for iOS at all; the share extension could never link it. This package
-// is transport-free and platform-free by construction and the extension already
-// links it. `LibraryLayout.inbox` delegates to ``InboxLayout/directoryName`` rather
+// it: `AtelierIngestion` imported AppKit (`Input/DirectInputReader.swift`) and so could
+// not build for iOS at all; the share extension could never link it. `.change-log/452`
+// split that file and the package builds for iOS now — but the answer does not change,
+// because the second half of it never depended on the first: this package is
+// transport-free and platform-free by construction, the extension already links it, and
+// what an extension needs from the handoff is its SHAPE, not the pipeline that drains
+// it. `LibraryLayout.inbox` delegates to ``InboxLayout/directoryName`` rather
 // than spelling `"inbox"` a second time, so there is still exactly one authority on
 // where the handoff lives — the dependency arrow just points the other way.
 //
@@ -91,7 +94,7 @@ public struct InboxLayout: Sendable {
 
     /// The inbox under a Library root — `<root>/inbox/`. The same arithmetic
     /// `LibraryLayout.inbox` performs, for callers (the share extension) that have a
-    /// root but cannot link `AtelierIngestion`.
+    /// root but do not link `AtelierIngestion`.
     public init(libraryRoot: URL) {
         self.init(
             directory: libraryRoot.appendingPathComponent(

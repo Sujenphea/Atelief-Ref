@@ -13,8 +13,10 @@
 // on the database, which is the same shape the Mac has.
 //
 // **What this does NOT do: drain the inbox.** A capture written by the share extension
-// sits in `inbox/` until a host ingests it, and on iOS no host does — `InboxDrain`
-// lives in AtelierIngestion, which does not build for this platform. So the phone
+// sits in `inbox/` until a host ingests it, and on iOS no host does. `InboxDrain` lives
+// in AtelierIngestion, which did not build for this platform when this was written and
+// does now (`.change-log/452`) — what is still missing is a caller, not a compile. So the
+// phone
 // browses what the MAC has ingested and synced back, and a capture made on the phone
 // is not visible on the phone until it has been round-tripped. That is a real hole in
 // the v1 story and it is S6's, not this slice's; it is stated here because a reader of

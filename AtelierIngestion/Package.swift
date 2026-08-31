@@ -20,7 +20,14 @@ import PackageDescription
 let package = Package(
     name: "AtelierIngestion",
     platforms: [
-        .macOS("26.0")
+        .macOS("26.0"),
+        // `.change-log/452`. The floor mirrors the macOS one rather than being derived
+        // downward — see the note in AtelierCore's manifest. The package is here at all
+        // because the companion app drains its OWN inbox into its OWN library, which is
+        // `InboxDrain` + the pipeline it feeds; the one file that could not come along,
+        // `Input/DirectInputReader.swift`, reads `NSPasteboard`s and now compiles out
+        // behind an `#if os(macOS)` after its pure factories moved next door.
+        .iOS("26.0")
     ],
     products: [
         .library(name: "AtelierIngestion", targets: ["AtelierIngestion"])
@@ -36,12 +43,16 @@ let package = Package(
             dependencies: [
                 .product(name: "AtelierCore", package: "AtelierCore"),
                 // The inbox's directory name (092 · S2). `InboxLayout` lives in
-                // AtelierCapture because the iOS share extension writes the inbox and
-                // cannot link THIS package — `Input/DirectInputReader.swift` imports
-                // AppKit. So the arrow points this way and `LibraryLayout.inbox`
-                // delegates, rather than the name being spelled twice.
+                // AtelierCapture because the iOS share extension writes the inbox and,
+                // at the time, could not link THIS package — `Input/DirectInputReader.swift`
+                // imported AppKit unconditionally. `.change-log/452` removed that
+                // obstacle, but not the reason: a share extension is a memory-capped
+                // process that wants the handoff's SHAPE and nothing else, and this
+                // package brings the whole pipeline with it. So the arrow still points
+                // this way and `LibraryLayout.inbox` still delegates, rather than the
+                // name being spelled twice.
                 .product(name: "AtelierCapture", package: "AtelierCapture"),
-                // `LibraryLocation` and `LibraryMediaPaths` left this package for the
+                // `LibraryLocation` and `LibraryMediaPaths` left this package for that
                 // same AppKit reason (092 · S4a, S5) and then left AtelierCapture too
                 // (096 review 4A): three relocations into one package made *Capture*
                 // mean four things, and 092 · S4b had already written the rule — "if a

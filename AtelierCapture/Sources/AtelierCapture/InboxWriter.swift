@@ -61,9 +61,9 @@ import Foundation
 /// the extension was the one place still contradicting it.
 ///
 /// The case names deliberately mirror `ByteSource`'s. They are two types because the
-/// packages are two link lines — `AtelierIngestion` imports AppKit and cannot build for
-/// iOS at all — and a shared name across both would need qualifying in the Mac app that
-/// imports each. What travels between them is the sidecar on disk, which a
+/// packages are two link lines — this one is what a memory-capped share extension links,
+/// and it was, until `.change-log/452`, the only one it COULD link — and a shared name
+/// across both would need qualifying in the Mac app that imports each. What travels between them is the sidecar on disk, which a
 /// ``fileURL(_:)`` write produces and a `ByteSource.fileURL` read consumes, so the
 /// bytes are never in anybody's memory on either side.
 public enum PayloadSource: Equatable, Sendable {

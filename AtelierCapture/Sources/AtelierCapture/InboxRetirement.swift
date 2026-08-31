@@ -1,8 +1,9 @@
 // AtelierCapture — taking a capture out of the pending set without losing it (096 · 3B).
 //
 // **The problem this closes.** iOS never drains its inbox (`InboxDrain` lives in
-// AtelierIngestion, which imports AppKit and does not build there), so a capture made on the
-// phone is a record plus a payload file, forever. `CaptureExport` reads ALL pending records
+// AtelierIngestion, which imported AppKit and did not build there — `.change-log/452` fixed
+// the build, and nothing on the phone calls the drain yet), so a capture made on the phone
+// is a record plus a payload file, forever. `CaptureExport` reads ALL pending records
 // on every run and `InboxArchive` deliberately deletes nothing afterwards — 091 · D4's
 // reasoning, and it is right: the phone cannot know whether a share sheet was cancelled, an
 // AirDrop failed, or an import ever ran, and import idempotency exists so re-sending is free.

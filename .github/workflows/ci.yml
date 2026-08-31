@@ -1,8 +1,8 @@
 name: CI
 
 # 010 · Phase 1 — compile + test gate on every push / PR. Runs the ten Swift
-# package suites, an iOS cross-build of the two packages the share extension
-# links, the extension's node tests + drift check (which since review issue 4
+# package suites, an iOS cross-build of every package that ships inside an iOS
+# process, the extension's node tests + drift check (which since review issue 4
 # also gates the SWIFT share extension's host table — see the `extension` job),
 # an xcodebuild build-and-test of the app target (the SwiftUI layer isn't
 # SPM-tested, so the build is its compile-proof and AtelierRefsTests carries its
@@ -41,29 +41,36 @@ jobs:
 
   ios-packages:
     name: iOS packages (swift build, arm64-apple-ios26.0)
-    # 092 · S4a, extended by S5 and by 096 review 4A. Build-only, and only the
-    # packages that actually ship inside an iOS process: the ones the share extension
-    # links, plus AtelierBrowse, which is the companion app's read-side logic, plus
-    # AtelierTokens, which every target that draws links — the Mac app, the phone app
-    # and the share extension — and AtelierLibraryPaths, which is where the library
-    # root and the media-path arithmetic live. There is no
+    # 092 · S4a, extended by S5, by 096 review 4A, and by `.change-log/452`. Build-only,
+    # and only the packages that actually ship inside an iOS process: the ones the share
+    # extension links, plus AtelierBrowse, which is the companion app's read-side logic,
+    # plus AtelierTokens, which every target that draws links — the Mac app, the phone
+    # app and the share extension — and AtelierLibraryPaths, which is where the library
+    # root and the media-path arithmetic live, and AtelierIngestion, which is how the
+    # phone drains its own inbox into its own library. There is no
     # `swift test` row because SwiftPM cannot run a test bundle without a simulator
     # host; the compile IS the gate, and it is the one that catches a macOS-only API
     # sneaking into AtelierCore — the packages have none today, and this job is what
-    # keeps that true. (AtelierBrowse's own tests DO run, on macOS, in the
-    # `swift-packages` job — it is dual-platform on purpose, so its logic is tested
-    # on the host and compiled for the phone.)
+    # keeps that true. (AtelierBrowse's and AtelierIngestion's own tests DO run, on
+    # macOS, in the `swift-packages` job — they are dual-platform on purpose, so the
+    # logic is tested on the host and compiled for the phone.)
     #
-    # The other four packages are host-side by design and deliberately declare no
-    # `.iOS(...)` platform: AtelierIngestion imports AppKit (NSPasteboard, in
-    # Input/DirectInputReader.swift), and AtelierServer / CanvasRenderer /
-    # AtelierExport are things the phone never does. Porting any of them is a
-    # separately-costed decision, not a CI row — and S5 declined to make it: the
-    # AppKit file is not excludable with one `#if`, because `InboxDrain` and
-    # `RemoteImageFetcher` both call `DirectInputReader`, so dropping it on iOS takes
-    # the drain with it. The path math the phone needed moved out instead — first to
-    # AtelierCapture (S5), and since 096 review 4A into AtelierLibraryPaths, which is a
-    # zero-dependency leaf rather than a lodger in the capture package.
+    # **AtelierIngestion was on the declined list until `.change-log/452`, and the
+    # reason it was declined was true.** S5 read it as "the AppKit file is not
+    # excludable with one `#if`, because InboxDrain and RemoteImageFetcher both call
+    # DirectInputReader, so dropping it on iOS takes the drain with it" — correct about
+    # the FILE. It was wrong about the type: what those two callers reach for are the
+    # pure provenance factories, which never touched AppKit. So the file was split
+    # rather than excluded — `Input/DirectInputFactories.swift` declares the namespace
+    # and the factories and builds everywhere, `Input/DirectInputReader.swift` keeps the
+    # NSPasteboard / NSItemProvider readers behind `#if os(macOS)` — and nothing else in
+    # the package needed a guard at all: Vision and NaturalLanguage are iOS frameworks,
+    # so the analysis and embedding adapters cross-compile as they stand.
+    #
+    # The remaining three packages are host-side by design and deliberately declare no
+    # `.iOS(...)` platform: AtelierServer / CanvasRenderer / AtelierExport are things
+    # the phone never does. Porting any of them is a separately-costed decision, not a
+    # CI row.
     #
     # `--sdk` is not optional: `--triple` alone leaves SwiftPM on the host's macOS
     # SDK and every target fails with "unable to load standard library".
@@ -71,7 +78,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [AtelierCore, AtelierCapture, AtelierLibraryPaths, AtelierBrowse, AtelierArchive, AtelierTokens]
+        package: [AtelierCore, AtelierCapture, AtelierLibraryPaths, AtelierBrowse, AtelierArchive, AtelierTokens, AtelierIngestion]
     steps:
       - uses: actions/checkout@v4
       - name: Show toolchain

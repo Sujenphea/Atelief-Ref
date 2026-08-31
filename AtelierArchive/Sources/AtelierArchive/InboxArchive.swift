@@ -1,7 +1,8 @@
 // AtelierArchive — the phone's captures as an archive the Mac can import (092 · S6).
 //
 // **What the phone actually has to send, which is not its library.** iOS never drains its
-// inbox — `InboxDrain` lives in AtelierIngestion and does not build there — so a capture
+// inbox — `InboxDrain` lives in AtelierIngestion, which did not build there when this was
+// written and now does (`.change-log/452`), with no iOS caller yet — so a capture
 // made on the phone is a RECORD plus a payload file in `inbox/`, and never becomes an
 // asset row on the device that captured it. The phone's SQLite library holds only what has
 // been synced back to it. So "export what the phone captured" means reading the inbox, not

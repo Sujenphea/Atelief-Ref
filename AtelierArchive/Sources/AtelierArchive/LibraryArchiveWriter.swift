@@ -66,9 +66,11 @@ public nonisolated struct LibraryArchiveWriter: Sendable {
     /// The library root the blobs hang off.
     ///
     /// A ROOT and not a `MediaStore`: the store took one thing from this file — a blob's
-    /// path — and lives in `AtelierIngestion`, which does not build for iOS. Depending on
-    /// it for a path join would have made this package macOS-only and 092 · S6 needs the
-    /// phone to write archives. `LibraryMediaPaths` computes the same path from a root on
+    /// path — and lives in `AtelierIngestion`, which did not build for iOS at the time.
+    /// Depending on it for a path join would have made this package macOS-only and
+    /// 092 · S6 needs the phone to write archives. That package builds for iOS now
+    /// (`.change-log/452`) and the shape still stands: linking an ingest pipeline to
+    /// resolve one path is the wrong trade whether or not it compiles. `LibraryMediaPaths` computes the same path from a root on
     /// both platforms, and it is the store's own authority for it.
     public let libraryRoot: URL
     public let appVersion: String
