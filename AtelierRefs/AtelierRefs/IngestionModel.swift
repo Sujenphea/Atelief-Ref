@@ -946,7 +946,12 @@ final class IngestionModel: ObservableObject {
     /// endpoint and every paste/drag do; a second runner would be two things
     /// deciding independently how much of the machine to spend decoding images.
     private func activateInboxDrain(libraryRoot: URL, coordinator: IngestCoordinator) {
-        let drain = InboxDrain(libraryRoot: libraryRoot, coordinator: coordinator)
+        // `.discardWhenIngested` because this library is where the capture was going. The
+        // record's absence is the commit marker saying it arrived; the phone retains
+        // instead, because for it the same ingest is a waypoint (096 · 4).
+        let drain = InboxDrain(
+            libraryRoot: libraryRoot, coordinator: coordinator,
+            retention: .discardWhenIngested)
         let scheduler = InboxDrainScheduler(
             // A pass reports counts, not outcomes, and it resolves each record's
             // OWN target collection — so the refresh is told "somewhere", not

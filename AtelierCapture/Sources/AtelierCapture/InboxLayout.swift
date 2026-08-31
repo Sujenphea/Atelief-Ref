@@ -29,11 +29,12 @@
 //     <root>/inbox/<uuid>.bin               the payload bytes, when there are any
 //     <root>/inbox/<uuid>.json              the record — and the commit marker
 //
-// Everything here is pure path arithmetic and creates nothing, with two marked
-// exceptions at the bottom — "which records are pending" and "is this one complete"
-// cannot be answered without looking at the disk, and they are the two questions
-// 092 · S3's drain opens with. They live beside the paths they interrogate rather
-// than in a third type.
+// Everything here is pure path arithmetic and creates nothing, with three marked
+// exceptions at the bottom — "which records are pending", "which have been ingested
+// already" and "is this one complete" cannot be answered without looking at the disk.
+// The first and third are the two questions 092 · S3's drain opens with; the second is
+// the one 096 · 4 added for the phone. They live beside the paths they interrogate
+// rather than in a third type.
 
 import Foundation
 
@@ -76,6 +77,30 @@ public struct InboxLayout: Sendable {
     /// reclaim it short of deleting the app.
     public static let sentDirectoryName = "sent"
 
+    /// Where a drain that is not the capture's final destination parks a record it has
+    /// ingested (096 · 4). A plain subdirectory beside ``failedDirectoryName`` and
+    /// ``sentDirectoryName``, skipped by ``pendingRecordURLs()`` for the same reason both
+    /// of those are: the enumeration takes only top-level `*.json`, and a directory has no
+    /// extension.
+    ///
+    /// **Why ingestion stopped being the end of a record's life.** On the Mac it still is:
+    /// the library a capture drains into IS the destination, so `InboxDrain` deletes the
+    /// record, and the record's absence is the commit marker saying the capture arrived.
+    /// On the phone the same ingest is half of the trip. The capture appears in the phone's
+    /// own grid, and it is still owed to the Mac — which `InboxArchive` sends by reading
+    /// the inbox, because the phone's SQLite library holds only what has been synced back
+    /// to it. A drain that deleted the record there would destroy the one copy export has.
+    ///
+    /// So a record that has been ingested but must not be destroyed moves HERE: out of
+    /// ``pendingRecordURLs()``, so no later pass drains it a second time, and still on disk
+    /// under a name the export knows to read.
+    ///
+    /// **Not `sent/`, which was the obvious place to reuse.** That directory means "the
+    /// user asserted this reached the Mac"; these captures have asserted nothing and are
+    /// exactly the ones still waiting to go. Folding them together would make the next
+    /// export skip a capture the phone had never sent.
+    public static let ingestedDirectoryName = "ingested"
+
     /// The record's extension. The drain's enumeration filter, so it is a constant.
     public static let recordExtension = "json"
 
@@ -112,6 +137,13 @@ public struct InboxLayout: Sendable {
     public var sent: URL {
         directory.appendingPathComponent(
             InboxLayout.sentDirectoryName, isDirectory: true)
+    }
+
+    /// `<inbox>/ingested/` — where 096 · 4's retaining drain parks a capture that is in
+    /// the local library and still owed to the Mac.
+    public var ingested: URL {
+        directory.appendingPathComponent(
+            InboxLayout.ingestedDirectoryName, isDirectory: true)
     }
 
     /// `<inbox>/failed/` — where 092 · S3 quarantines a capture that has failed its
@@ -209,9 +241,31 @@ public struct InboxLayout: Sendable {
         return sent.appendingPathComponent(name, isDirectory: false)
     }
 
+    /// Where an ingested record lands: `<inbox>/ingested/<uuid>.json`. The `ingested/`
+    /// mirror of ``failedRecordURL(for:)`` and ``sentRecordURL(for:)``, composed here for
+    /// the reason those are — a destination built by hand at a call site is a destination
+    /// that drifts from this file.
+    public func ingestedRecordURL(for id: UUID) -> URL {
+        ingested.appendingPathComponent(
+            InboxLayout.recordFileName(for: id), isDirectory: false)
+    }
+
+    /// The ingested location of a file currently sitting in the inbox, under the same guard
+    /// as ``payloadURL(named:)``, ``failedURL(named:)`` and ``sentURL(named:)``.
+    ///
+    /// The guard is not ceremony here either. A drain retaining a record resolves that
+    /// record's `payloadFile` for MOVING, exactly as quarantine does, and a name that could
+    /// be talked into leaving the inbox on the way to `failed/` could be talked into it on
+    /// the way to `ingested/` — same name, same crossing of a process boundary, same
+    /// answer.
+    public func ingestedURL(named name: String) -> URL? {
+        guard InboxLayout.isPlainComponent(name) else { return nil }
+        return ingested.appendingPathComponent(name, isDirectory: false)
+    }
+
     /// Whether a file name written by another process may be appended to a
     /// directory URL at all: one plain component, nothing relative, no separator.
-    /// The single authority both `named:` resolvers ask, so they cannot drift.
+    /// The single authority every `named:` resolver asks, so they cannot drift.
     private static func isPlainComponent(_ name: String) -> Bool {
         !name.isEmpty && name != "." && name != ".."
             && !name.contains("/") && !name.contains("\\")
@@ -241,7 +295,7 @@ public struct InboxLayout: Sendable {
         return payloadURL(for: record.id)
     }
 
-    // MARK: - The two questions that need the disk
+    // MARK: - The questions that need the disk
 
     /// Every committed record in the inbox, in file-name order, and nothing else.
     ///
@@ -253,10 +307,37 @@ public struct InboxLayout: Sendable {
     ///
     /// Touches the filesystem. The top level only, `*.json` only — which is what makes
     /// `.staging/` invisible and therefore what makes the two-phase write safe, and
-    /// what keeps ``failed/`` out too: both are directories, and a directory has no
-    /// `json` extension, so neither they nor anything under them can be returned. An
-    /// absent inbox is an empty inbox, not an error: nothing has ever been shared.
+    /// what keeps `failed/`, `sent/` and `ingested/` out too: all four are directories,
+    /// and a directory has no `json` extension, so neither they nor anything under them
+    /// can be returned. An absent inbox is an empty inbox, not an error: nothing has ever
+    /// been shared.
     public func pendingRecordURLs() throws -> [URL] {
+        try InboxLayout.recordURLs(in: directory)
+    }
+
+    /// Every record a retaining drain has already run, in file-name order.
+    ///
+    /// **A second name rather than a flag on the first.** ``pendingRecordURLs()`` is what
+    /// the drain walks, and it must never see one of these: a record here has been through
+    /// the coordinator, and handing it back would re-ingest the same capture on every pass
+    /// for the life of the device. The one caller that wants both sets is the export, which
+    /// needs them because "in the phone's library" and "delivered to the Mac" are different
+    /// facts — so the union is composed there, deliberately, instead of being the default
+    /// answer to a question the drain also asks.
+    ///
+    /// Touches the filesystem, with the same filter and the same tolerance for an absent
+    /// directory: an inbox whose drain has never retained anything has no `ingested/`, and
+    /// that is an empty answer rather than an error.
+    public func ingestedRecordURLs() throws -> [URL] {
+        try InboxLayout.recordURLs(in: ingested)
+    }
+
+    /// The one enumeration both public callers above are. Written once because they must
+    /// agree on the filter down to `skipsHiddenFiles`: the properties that make `.staging/`
+    /// invisible to a pending walk are the same properties that keep a half-moved file
+    /// invisible to an ingested one, and two copies of them would eventually be two
+    /// different filters.
+    private static func recordURLs(in directory: URL) throws -> [URL] {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: directory.path) else { return [] }
         let entries = try fileManager.contentsOfDirectory(

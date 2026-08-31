@@ -8,6 +8,14 @@
 // been synced back to it. So "export what the phone captured" means reading the inbox, not
 // the library, and this file is the only writer in the program that starts from records.
 //
+// **And that stays true once the phone does drain.** 096 · 4 gives `InboxDrain` a retention
+// policy so the phone can ingest a share into its own grid without destroying the record —
+// the record moves to `inbox/ingested/` instead of being deleted, because the capture is in
+// the local library and has still not reached the Mac. Those two facts are independent, and
+// this file is where that shows: ``pendingRecords(in:)`` reads the pending set AND the
+// ingested one, and ``payloadSite(of:layout:)`` finds a payload at either site. An export
+// that read only the top level would ingest a capture and then be unable to send it.
+//
 // **Why an archive rather than shipping the inbox folder.** 091 · D4 chose the archive
 // manifest for one property: import idempotency. Provenance is copied verbatim, so 18A
 // blob-hash dedup collapses a re-import onto the existing asset instead of forking a
@@ -92,7 +100,27 @@ public nonisolated enum InboxArchive {
     /// S6c round trip asserts rather than re-spells.
     public static let collectionName = "Unsorted"
 
-    /// Every pending record in `layout`, in the order an export should write them.
+    /// Every record the phone still owes the Mac, in the order an export should write
+    /// them.
+    ///
+    /// **"Pending" here has always meant pending EXPORT, and 096 · 4 is what made the
+    /// difference visible.** Until the phone drained its own inbox the two sets were the
+    /// same one: a record was in `inbox/` until somebody took it away, and nobody did. Now
+    /// a retaining `InboxDrain` moves an ingested record to `inbox/ingested/` so no pass
+    /// runs it twice — and if this read only the top level, the phone would ingest a
+    /// capture into its own grid and then be permanently unable to send it. Being in the
+    /// phone's library says nothing about having reached the Mac; that is the whole reason
+    /// the record is kept at all.
+    ///
+    /// So the union is composed HERE and nowhere else. ``InboxLayout/pendingRecordURLs()``
+    /// deliberately still cannot see `ingested/` — the drain asks that question and must
+    /// get the old answer — and the export asks a second one on top of it.
+    ///
+    /// Ids are deduplicated, keeping the first of a repeat. A record cannot legitimately be
+    /// in both places (the drain MOVES it), so this is guarding a state that should not
+    /// exist rather than a state that happens; it costs a set and it stops a half-finished
+    /// hand-edit of the inbox from producing a manifest with two entries under one source
+    /// id, which the reader has no way to make sense of.
     ///
     /// Capture-time order, the same order the Mac's drain walks (405), so a folder opened
     /// on the Mac reads in the order the user actually saved things; the id breaks a tie
@@ -111,8 +139,11 @@ public nonisolated enum InboxArchive {
     /// dated 2054 and pinned to the top of Newest forever. 092 · S6c caught it.
     public static func pendingRecords(in layout: InboxLayout) throws -> [InboxRecord] {
         let decoder = InboxRecord.makeDecoder()
-        return try layout.pendingRecordURLs()
+        let urls = try layout.pendingRecordURLs() + layout.ingestedRecordURLs()
+        var seen: Set<UUID> = []
+        return urls
             .compactMap { try? decoder.decode(InboxRecord.self, from: Data(contentsOf: $0)) }
+            .filter { seen.insert($0.id).inserted }
             .sorted { ($0.capturedAt, $0.id.uuidString) < ($1.capturedAt, $1.id.uuidString) }
     }
 
@@ -274,7 +305,7 @@ public nonisolated enum InboxArchive {
     /// Run `record` through the same decode funnel the Mac's drain uses, or `nil` when the
     /// funnel refuses it or its payload file is not there.
     private static func decode(_ record: InboxRecord, layout: InboxLayout) -> Capture? {
-        let payloadURL = layout.payloadURL(for: record)
+        let payloadURL = payloadSite(of: record, layout: layout)
         if let payloadURL, FileManager.default.fileExists(atPath: payloadURL.path) {
             guard let decoded = try? CaptureDecoder.decodeFileInput(
                 record.request, now: record.capturedAt) else { return nil }
@@ -306,6 +337,40 @@ public nonisolated enum InboxArchive {
             // that has no business in an inbox export.
             return nil
         }
+    }
+
+    /// Where this record's bytes actually are: beside it in `inbox/`, or under
+    /// `inbox/ingested/` where a retaining drain parked them. `nil` for a media-less
+    /// record, for a `payloadFile` the layout refuses, and for bytes that are in neither
+    /// place.
+    ///
+    /// **Both sites, and only the export looks in both.** The drain reads exactly one —
+    /// asking it to consider `ingested/` would be asking it to re-run captures it has
+    /// already run — so the two-site question is asked here, by the one caller whose set of
+    /// records genuinely spans them. A layout method meaning "wherever the payload is"
+    /// would have been the tidier-looking place for it and would have put that answer
+    /// within reach of the code that must not have it.
+    ///
+    /// The inbox is checked first, and the order is not arbitrary. ``InboxDrain`` moves the
+    /// record before the payload, so an interrupted retention leaves an ingested record
+    /// whose bytes are still in the inbox — a real state, reachable by a crash, and one
+    /// this reads as the whole capture it is.
+    ///
+    /// The name is the record's own throughout: `payloadURL(for record:)` is what refuses a
+    /// record naming a neighbour's sidecar, and the `ingested/` candidate is composed from
+    /// ``InboxLayout/payloadFileName(for:)`` rather than from `payloadFile`, so the second
+    /// site cannot honour a name the first one rejected.
+    private static func payloadSite(
+        of record: InboxRecord, layout: InboxLayout
+    ) -> URL? {
+        guard let inInbox = layout.payloadURL(for: record) else { return nil }
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: inInbox.path) { return inInbox }
+        guard let retained = layout.ingestedURL(
+            named: InboxLayout.payloadFileName(for: record.id)),
+            fileManager.fileExists(atPath: retained.path)
+        else { return inInbox }
+        return retained
     }
 
     /// The facts about a payload file an `AssetEntry` needs, read from its header.

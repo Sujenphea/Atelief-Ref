@@ -80,6 +80,21 @@
 // has been deleted is permanently incomplete and would be skipped on every pass
 // forever.
 //
+// **Who the library at the end of the drain belongs to.** Everything above assumes
+// the library a capture ingests into is the capture's destination, which on the Mac
+// it is — and that assumption is spent, once, on the strongest possible thing: the
+// record is DELETED. On the phone it is false. iOS drains its inbox into its own
+// library so a share shows up in its own grid, and the capture is still owed to the
+// Mac afterwards; `InboxArchive` sends it by reading the inbox, because the phone's
+// SQLite library holds only what has been synced back to it. A drain that deleted
+// the record there would destroy the only copy the export has.
+//
+// So ``InboxDrain/Retention`` is a parameter and not a platform check. It is stated
+// at the call site — the Mac says ``Retention/discardWhenIngested`` because it IS the
+// destination, the phone will say ``Retention/retainForExport`` because it is not —
+// and both are exercisable by a host test, which a `#if os(iOS)` would have made
+// impossible for exactly the half that is new.
+//
 // **Three attempts, then out of the way.** Retry-forever is the failure mode a
 // durable inbox invites: one capture that can never ingest is re-decoded on every
 // launch for the life of the library. A transient failure stamps
@@ -152,8 +167,34 @@ public struct InboxDrain: Sendable {
     /// a capture which will never work stops costing a decode on every launch.
     public static let maxAttempts = 3
 
+    /// What happens to a record once the coordinator has ingested it (096 · 4).
+    ///
+    /// The one question a drain cannot answer for itself: whether the library it just
+    /// wrote to is where the capture was going. A host that IS the destination is done
+    /// with the record; a host that is a waypoint still owes it to somebody. Both answers
+    /// are correct, neither is derivable from anything the drain can see, and so the
+    /// caller states it.
+    ///
+    /// Spelled as a policy rather than a `Bool` because the call site is the only place
+    /// the reasoning is visible, and `keepRecords: true` at a call site is a fact with its
+    /// argument removed.
+    public enum Retention: Sendable, Equatable {
+        /// Delete the record and its payload. The default fate since 092 · S3 and still
+        /// the Mac's: the record's absence is the commit marker saying this capture
+        /// arrived, and the library it arrived in is the one the user was aiming at.
+        case discardWhenIngested
+
+        /// Move the record and its payload to `inbox/ingested/`. The phone's fate: the
+        /// capture is in the local library AND still has to reach the Mac, so it leaves
+        /// the pending set — no pass drains it twice — without leaving the disk.
+        case retainForExport
+    }
+
     /// The inbox being drained.
     public let layout: InboxLayout
+
+    /// What an ingested record's files are for, stated by whoever built this drain.
+    public let retention: Retention
 
     /// The app's single bounded coordinator — shared, never owned (see the note at
     /// the top of this file).
@@ -164,17 +205,27 @@ public struct InboxDrain: Sendable {
     /// second commit mechanism, and a subtly less careful one.
     private let writer: InboxWriter
 
-    public init(layout: InboxLayout, coordinator: IngestCoordinator) {
+    /// `retention` has no default on purpose. A default would be a decision about who
+    /// owns the library at the end of the drain, taken silently on behalf of every future
+    /// caller — and the one caller that gets it wrong loses captures rather than failing
+    /// a build.
+    public init(
+        layout: InboxLayout, coordinator: IngestCoordinator, retention: Retention
+    ) {
         self.layout = layout
         self.coordinator = coordinator
+        self.retention = retention
         self.writer = InboxWriter(layout: layout)
     }
 
     /// The inbox under a Library root — the initializer the app uses, since it has a
     /// root from `LibraryLocation` before it has a `LibraryLayout`.
-    public init(libraryRoot: URL, coordinator: IngestCoordinator) {
+    public init(
+        libraryRoot: URL, coordinator: IngestCoordinator, retention: Retention
+    ) {
         self.init(
-            layout: InboxLayout(libraryRoot: libraryRoot), coordinator: coordinator)
+            layout: InboxLayout(libraryRoot: libraryRoot), coordinator: coordinator,
+            retention: retention)
     }
 
     // MARK: - The state one pass carries
@@ -198,6 +249,12 @@ public struct InboxDrain: Sendable {
         /// Whether `createDirectory` has already been attempted this pass.
         private var preparedFailedDirectory = false
 
+        /// The same flag for `inbox/ingested/`. Separate rather than shared: a pass that
+        /// quarantines nothing and retains something must create one directory and not
+        /// the other, and one flag for two destinations would create whichever came
+        /// second only by accident.
+        private var preparedIngestedDirectory = false
+
         /// Spelled out because the synthesized memberwise initializer would inherit
         /// the private flag's access and a test could not start a pass.
         init() {}
@@ -210,6 +267,21 @@ public struct InboxDrain: Sendable {
             preparedFailedDirectory = true
             try? FileManager.default.createDirectory(
                 at: failed, withIntermediateDirectories: true)
+        }
+
+        /// Ensure `inbox/ingested/` exists, once, and only under
+        /// ``InboxDrain/Retention/retainForExport``. Lazily for the reason `failed/` is:
+        /// a Mac drains with ``InboxDrain/Retention/discardWhenIngested`` forever and must
+        /// never grow a directory that describes a policy it does not have.
+        ///
+        /// Best-effort too, and the failure is survivable in the same shape: if the create
+        /// fails the moves fail, the record stays pending, and the next pass re-ingests it
+        /// onto the asset 18A dedup already has.
+        mutating func prepareIngestedDirectory(_ ingested: URL) {
+            guard !preparedIngestedDirectory else { return }
+            preparedIngestedDirectory = true
+            try? FileManager.default.createDirectory(
+                at: ingested, withIntermediateDirectories: true)
         }
     }
 
@@ -440,7 +512,7 @@ public struct InboxDrain: Sendable {
     func resolve(_ record: InboxRecord, outcome: IngestOutcome?, into pass: inout Pass) {
         switch outcome {
         case .ingested?:
-            discard(record)
+            settle(record, into: &pass)
             pass.summary.ingested += 1
         case .failed?:
             transientFailure(record, into: &pass)
@@ -547,7 +619,20 @@ public struct InboxDrain: Sendable {
         }
     }
 
-    /// The capture succeeded: take it out of the inbox.
+    /// The capture succeeded: take it out of the pending set, by whichever of the two
+    /// routes ``retention`` names.
+    ///
+    /// One function so the summary line above it stays true for both. `ingested` counts
+    /// the fate, not the filesystem operation — a capture that reached the library is
+    /// ingested whether the record was unlinked or parked.
+    private func settle(_ record: InboxRecord, into pass: inout Pass) {
+        switch retention {
+        case .discardWhenIngested: discard(record)
+        case .retainForExport: retain(record, into: &pass)
+        }
+    }
+
+    /// The capture arrived where it was going: take it out of the inbox for good.
     ///
     /// The record goes first. Deleting the payload first and then dying would leave a
     /// record naming bytes that are gone — permanently incomplete, and therefore
@@ -561,6 +646,56 @@ public struct InboxDrain: Sendable {
         try? fileManager.removeItem(at: layout.recordURL(for: record.id))
         if let payload = layout.payloadURL(for: record) {
             try? fileManager.removeItem(at: payload)
+        }
+    }
+
+    /// The capture reached this library and is still owed to another one: move it to
+    /// `inbox/ingested/`, where the export can still read it and no pass will drain it
+    /// again.
+    ///
+    /// **The record moves FIRST, and it is the same argument ``discard(_:)`` makes.** The
+    /// two facts the inbox encodes are "pending", which is the record sitting at the top
+    /// level where ``InboxLayout/pendingRecordURLs()`` looks, and "complete", which is the
+    /// payload sitting beside it (``InboxLayout/isComplete(_:)``).
+    ///
+    /// Move the payload first and an interruption leaves a record that is still pending
+    /// and no longer complete — and `isComplete` returning false means one specific thing
+    /// to the next pass: *the writer is mid-flight, come back later*. That answer never
+    /// changes here, because there is no writer. The capture is skipped as incomplete on
+    /// every pass for the life of the device, and the phone's pending count never comes
+    /// down. A wedge.
+    ///
+    /// Move the record first and an interruption leaves an ingested record whose bytes are
+    /// still in the inbox top level. Nothing is confused by that: the enumeration takes
+    /// only `*.json`, so a stray `.bin` is invisible to every pass, and the export resolves
+    /// a payload from either site precisely so this state reads as a whole capture.
+    /// `InboxRetirement` reclaims the stray when the capture is cleared. A leak.
+    ///
+    /// Leak beats wedge — the same trade `discard(_:)` takes, the inverse of the order
+    /// `InboxWriter` commits in, and the opposite conclusion from ``quarantine(_:into:)``,
+    /// which moves the payload first because nothing ever reads `failed/` again and a whole
+    /// capture is what a human going in there needs to find.
+    ///
+    /// If the record will not move, the payload is left where it is: moving it anyway
+    /// would manufacture exactly the wedge above. The capture stays pending, the next pass
+    /// re-ingests it, and 18A blob-hash dedup resolves that onto the asset already in the
+    /// library rather than a second one — which is the same cost as crashing mid-drain,
+    /// and it is a cost this design has already accepted.
+    private func retain(_ record: InboxRecord, into pass: inout Pass) {
+        pass.prepareIngestedDirectory(layout.ingested)
+
+        guard move(
+            layout.recordURL(for: record.id),
+            to: layout.ingestedRecordURL(for: record.id))
+        else { return }
+
+        // Resolved through the record and not through the bare name, exactly as quarantine
+        // resolves it: `payloadURL(for record:)` is the accessor that holds `payloadFile`
+        // to being this record's OWN sidecar, and a record that named a neighbour's file
+        // must not have that name honoured by the thing that moves files.
+        if let from = layout.payloadURL(for: record),
+            let to = layout.ingestedURL(named: InboxLayout.payloadFileName(for: record.id)) {
+            move(from, to: to)
         }
     }
 
@@ -644,9 +779,21 @@ public struct InboxDrain: Sendable {
     /// Move a file, clearing the destination first. Best-effort: quarantine is
     /// already the failure path, and failing to move a failed capture leaves it in
     /// the inbox to be attempted (and quarantined) again rather than losing it.
-    private func move(_ from: URL, to destination: URL) {
+    ///
+    /// Reports whether it worked, and the result is discardable because only one caller
+    /// wants it: ``retain(_:into:)`` has a second move to decide about, and doing that one
+    /// after this one failed is what turns a leak into a wedge. Quarantine has no such
+    /// decision to make — both of its moves are unconditional, and a capture that will not
+    /// leave the inbox is quarantined again next pass.
+    @discardableResult
+    private func move(_ from: URL, to destination: URL) -> Bool {
         let fileManager = FileManager.default
         try? fileManager.removeItem(at: destination)
-        try? fileManager.moveItem(at: from, to: destination)
+        do {
+            try fileManager.moveItem(at: from, to: destination)
+            return true
+        } catch {
+            return false
+        }
     }
 }

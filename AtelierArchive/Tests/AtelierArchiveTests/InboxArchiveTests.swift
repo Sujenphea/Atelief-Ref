@@ -198,6 +198,187 @@ struct InboxArchiveTests {
             atPath: rig.root.appendingPathComponent(ArchiveLayout.manifestFilename).path))
     }
 
+    // MARK: - Ingested is not sent (096 · 4)
+
+    /// The failure this exists to prevent, stated as the thing that must not happen: the
+    /// phone drains a share into its own grid and can then never hand it to the Mac. Being
+    /// in the local library and having reached the Mac are independent facts, and the export
+    /// answers the second one.
+    @Test("A capture the phone has ingested is still exported, bytes and all")
+    func ingestedCaptureIsStillExported() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let record = try rig.captureImage(width: 40, height: 30, url: "https://example.com/a")
+        try rig.retain(record)
+
+        let summary = try rig.export()
+
+        #expect(summary.captures == 1)
+        #expect(summary.files == 1)
+        #expect(summary.skipped == 0)
+        #expect(summary.exported == [record.id])
+
+        // The bytes travelled, not just the row: the manifest's file is really in the
+        // folder, with the dimensions the reader refuses an entry without.
+        let manifest = try rig.manifest()
+        let asset = try #require(manifest.assets.first)
+        #expect(asset.width == 40)
+        #expect(asset.height == 30)
+        let file = try #require(manifest.collections.first?.items.first?.file)
+        #expect(FileManager.default.fileExists(
+            atPath: rig.root.appendingPathComponent(file).path))
+    }
+
+    /// A phone whose drain has caught up has an EMPTY pending set and a full `ingested/`.
+    /// Reading only the top level would make that the same case as a phone that has never
+    /// captured anything, and the export would refuse with `nothingToExport`.
+    @Test("An inbox of nothing but ingested captures is not an empty inbox")
+    func ingestedOnlyInboxStillExports() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        try rig.retain(
+            try rig.captureImage(width: 12, height: 12, url: "https://example.com/a"))
+        try rig.retain(try rig.captureLink("https://example.com/b"))
+
+        #expect(try rig.layout.pendingRecordURLs().isEmpty)
+
+        let summary = try rig.export()
+        #expect(summary.captures == 2)
+        #expect(summary.exported.count == 2)
+    }
+
+    /// The ordinary state of a phone that drains on foreground: some captures through the
+    /// pipeline, some landed since. Both go, and the order is capture time — which is what
+    /// the drained ones would have lost if the union were simply appended.
+    @Test("Pending and ingested captures export together, in capture order")
+    func pendingAndIngestedExportInCaptureOrder() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+
+        // The older capture is the one that has already been drained, so file order,
+        // directory order and capture order all disagree.
+        let older = try rig.writer.write(
+            CaptureRequest(provenance: ProvenanceDTO(
+                platform: "web", originalURL: "https://example.com/older")),
+            payload: try Rig.jpeg(width: 8, height: 8),
+            capturedAt: base)
+        let newer = try rig.writer.write(
+            CaptureRequest(provenance: ProvenanceDTO(
+                platform: "web", originalURL: "https://example.com/newer")),
+            payload: try Rig.jpeg(width: 9, height: 9),
+            capturedAt: base.addingTimeInterval(60))
+        try rig.retain(older)
+
+        let summary = try rig.export()
+
+        #expect(summary.captures == 2)
+        #expect(summary.exported == [older.id, newer.id])
+        #expect(try InboxArchive.pendingRecords(in: rig.layout).map(\.id)
+            == [older.id, newer.id])
+    }
+
+    /// The residue of a crash between `InboxDrain`'s two moves: record retained, payload
+    /// still in the inbox. The drain's ordering argues this is a leak rather than a wedge,
+    /// and "not a wedge" means precisely that the export still reads it as a whole capture.
+    @Test("A half-finished retention exports with the bytes it left behind")
+    func halfFinishedRetentionStillExports() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let record = try rig.captureImage(width: 16, height: 16, url: "https://example.com/a")
+        try rig.retain(record, movingPayload: false)
+
+        // The state under test, spelled out so a change in the fixture cannot quietly make
+        // this test about something else.
+        #expect(FileManager.default.fileExists(
+            atPath: rig.layout.ingestedRecordURL(for: record.id).path))
+        #expect(FileManager.default.fileExists(
+            atPath: rig.layout.payloadURL(for: record.id).path))
+
+        let summary = try rig.export()
+        #expect(summary.captures == 1)
+        #expect(summary.files == 1)
+        #expect(summary.skipped == 0)
+        #expect(try rig.manifest().assets.first?.width == 16)
+    }
+
+    /// An ingested record whose bytes are gone from BOTH sites is the same case as a pending
+    /// one whose payload was deleted: skipped, left where it is, and not shipped as an entry
+    /// the Mac's reader would drop.
+    @Test("An ingested capture with no bytes anywhere is skipped, not shipped")
+    func ingestedCaptureWithoutBytesIsSkipped() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let doomed = try rig.captureImage(width: 8, height: 8, url: "https://example.com/gone")
+        let kept = try rig.captureImage(width: 9, height: 9, url: "https://example.com/kept")
+        try rig.retain(doomed)
+        try FileManager.default.removeItem(
+            at: rig.layout.ingested.appendingPathComponent(
+                InboxLayout.payloadFileName(for: doomed.id)))
+
+        let summary = try rig.export()
+
+        #expect(summary.captures == 1)
+        #expect(summary.skipped == 1)
+        #expect(summary.exported == [kept.id])
+    }
+
+    /// A record cannot legitimately be pending AND ingested — retention moves it — so this
+    /// pins the guard against a state that should not exist. Two manifest entries under one
+    /// source id is not something the reader can make sense of, and the id is the record's
+    /// by design so a re-export stays diffable.
+    @Test("A record in both directories is exported once")
+    func aRecordInBothPlacesIsExportedOnce() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let record = try rig.captureImage(width: 10, height: 10, url: "https://example.com/a")
+
+        // Copied, not moved: both sites, one id.
+        try FileManager.default.createDirectory(
+            at: rig.layout.ingested, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: rig.layout.recordURL(for: record.id),
+            to: rig.layout.ingestedRecordURL(for: record.id))
+
+        let summary = try rig.export()
+
+        #expect(summary.captures == 1)
+        #expect(summary.exported == [record.id])
+        #expect(try rig.manifest().sources.count == 1)
+    }
+
+    /// `sent/` is the user's assertion that a capture reached the Mac, and it has to keep
+    /// meaning that. If the export read it the way it now reads `ingested/`, Clear would
+    /// stop doing anything at all.
+    @Test("A retired capture under sent/ is not exported")
+    func retiredCaptureIsNotExported() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let record = try rig.captureImage(width: 10, height: 10, url: "https://example.com/a")
+        InboxRetirement.retire([record.id], in: rig.layout)
+
+        #expect(throws: InboxArchive.WriteError.nothingToExport) { _ = try rig.export() }
+        #expect(try InboxArchive.pendingRecords(in: rig.layout).isEmpty)
+    }
+
+    /// And the same for `failed/`: a capture the drain gave up on is not something to hand
+    /// the Mac, and the enumeration that keeps it out is the one `ingested/` had to be added
+    /// without disturbing.
+    @Test("A quarantined capture under failed/ is not exported")
+    func quarantinedCaptureIsNotExported() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let record = try rig.captureImage(width: 10, height: 10, url: "https://example.com/a")
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: rig.layout.failed, withIntermediateDirectories: true)
+        try fileManager.moveItem(
+            at: rig.layout.recordURL(for: record.id),
+            to: rig.layout.failedRecordURL(for: record.id))
+
+        #expect(try InboxArchive.pendingRecords(in: rig.layout).isEmpty)
+    }
+
     // MARK: - The handshake
 
     @Test("What the phone writes, the Mac's reader reads")
@@ -278,6 +459,32 @@ struct InboxArchiveTests {
 
         func payloadURL(_ record: InboxRecord) -> URL {
             layout.payloadURL(for: record)!
+        }
+
+        /// What a retaining `InboxDrain` leaves behind (096 · 4): the capture's files under
+        /// `inbox/ingested/`, out of the pending set and still on disk.
+        ///
+        /// Performed by hand because the drain lives in `AtelierIngestion`, which this
+        /// package does not depend on and should not start to for a fixture. The move it
+        /// mimics — record first, payload second — is pinned against the real drain by
+        /// `InboxDrainTests`; `movingPayload: false` reproduces the state a crash between
+        /// those two moves leaves behind.
+        @discardableResult
+        func retain(_ record: InboxRecord, movingPayload: Bool = true) throws -> InboxRecord {
+            let fileManager = FileManager.default
+            try fileManager.createDirectory(
+                at: layout.ingested, withIntermediateDirectories: true)
+            try fileManager.moveItem(
+                at: layout.recordURL(for: record.id),
+                to: layout.ingestedRecordURL(for: record.id))
+            let payload = layout.payloadURL(for: record.id)
+            if movingPayload, fileManager.fileExists(atPath: payload.path) {
+                try fileManager.moveItem(
+                    at: payload,
+                    to: layout.ingested.appendingPathComponent(
+                        InboxLayout.payloadFileName(for: record.id)))
+            }
+            return record
         }
 
         func export() throws -> InboxArchive.Summary {
