@@ -102,3 +102,101 @@ extension AtelierError {
         }
     }
 }
+
+// MARK: - LocalizedError (6A)
+
+/// Every case carries a sentence a person can read (6A).
+///
+/// Before this, every surface that could show a failure wrote its own `switch`
+/// over these cases — `IngestionModel.message(for:)`, `SpaceModel.message(for:)`
+/// and three controller copies — and each one had a `default:` arm. A case added
+/// here therefore reached the user as whatever that arm said, in five places, and
+/// nothing failed. The table below has **no `default`**: a new case does not
+/// compile until someone has written its sentence, once, here.
+///
+/// These are USER-FACING sentences, not debug descriptions. They say what went
+/// wrong in the terms of the thing the person was doing ("that folder", "this
+/// smart collection"), name no table, no id and no SQLite code, and do not end in
+/// a colon expecting an appended payload. `.persistenceFailure`'s detail is the
+/// one exception, and it is deliberately kept out of the sentence: the diagnostic
+/// belongs in a log, not in an alert.
+extension AtelierError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .notFound(let entity, _):
+            "Couldn't find that \(Self.noun(for: entity))."
+        case .invalidName:
+            "A name can't be empty."
+        case .invalidDimensions:
+            "That image didn't report a usable width and height."
+        case .invalidFileSize:
+            "That file didn't report a usable size."
+        case .invalidBlobHash:
+            "That file's fingerprint was missing or malformed."
+        case .invalidPlacement:
+            "That position on the board isn't a place something can go."
+        case .missingOriginalURL(let platform):
+            "A capture from \(Self.noun(for: platform)) needs the address of the page it came from."
+        case .protectedCollection:
+            "Unsorted is built in — it can't be renamed, moved, or deleted."
+        case .folderCycle:
+            "A folder can't be moved inside itself."
+        case .invalidSpaceItem:
+            "That board element is neither a placed item nor a shape, so it can't be saved."
+        case .invalidContentKind:
+            "That kind of item can't be created this way."
+        case .missingPayload:
+            "That item had nothing in it to save."
+        case .invalidColor:
+            "That isn't a colour value the library can read."
+        case .invalidLinkURL:
+            "That isn't a web address the library can open."
+        case .emptyTweet:
+            "That post had no text and no media, so there was nothing to save."
+        case .invalidSavedSearchRules:
+            "This smart collection's search can't be read, so it can't be run."
+        case .relevanceSortUnpageable:
+            "Best-match results arrive all at once — they can't be loaded a page at a time."
+        case .constraintViolation:
+            "That change would have left the library inconsistent, so nothing was saved."
+        case .persistenceFailure:
+            "The library couldn't be written to. Nothing was saved."
+        }
+    }
+
+    /// The human noun for a table-ish `entity` string. `.notFound` carries the
+    /// storage name (`"collection_item"`, `"saved_search"`) because that is what
+    /// the throwing site knows; a person has never seen those words. An entity
+    /// with no mapping degrades to "item" — the sentence stays readable rather
+    /// than leaking a table name, and this is a lookup, not the exhaustive table
+    /// above, so a `default` here costs nothing.
+    static func noun(for entity: String) -> String {
+        switch entity {
+        case "collection": "folder"
+        case "collection_item": "item in that folder"
+        case "asset": "item"
+        case "source": "capture"
+        case "space": "space"
+        case "space_item": "element on that board"
+        case "saved_search": "smart collection"
+        case "job": "import"
+        case "tag": "tag"
+        default: "item"
+        }
+    }
+
+    /// The human name of a ``Platform`` for the one sentence that needs it.
+    static func noun(for platform: Platform) -> String {
+        switch platform {
+        case .twitter: "X"
+        case .pinterest: "Pinterest"
+        case .instagram: "Instagram"
+        case .cosmos: "Cosmos"
+        case .rednote: "RedNote"
+        case .web: "the web"
+        case .clipboard: "the clipboard"
+        case .localPaste: "a paste"
+        case .localDrag: "a drag"
+        }
+    }
+}

@@ -110,18 +110,56 @@ struct AssetReadSurfaceTests {
             #/\bAsset(?:SourceRow)?\.fetch(?:All|One)\b/#,
             #/\bCollectionItemRow\.fetch(?:All|One)\b/#,
             #/\bAsset\.filter\b/#,
+            // The P0 `require` helper is a fetch-by-key with the record type as
+            // an argument, so the plain `Asset.fetchOne` spelling above no longer
+            // appears at those sites. Without this arm `setName` / `setNote`
+            // silently left the pinned surface — which is exactly the class of
+            // disappearance this whole file exists to catch, arriving through a
+            // refactor rather than a deletion.
+            //
+            // No leading `\b`: `Self.require` is ONE word to Swift Regex, because
+            // UAX #29 does not break on a `.` between two letters (it is how "e.g."
+            // stays a word). A `\brequire` here silently matches nothing.
+            #/require\(Asset\.self\b/#,
         ].map { Regex<AnyRegexOutput>($0) }
     }
 
-    private func appServicesSource() throws -> String {
+    /// Every file the `AppServices` surface is spelled across, DISCOVERED rather
+    /// than listed: `AppServices.swift` plus each `AppServices+*.swift`.
+    ///
+    /// The surface used to be one 4,200-line file and this scan read exactly it.
+    /// The P0 split moved the sections into per-subject extensions, and a canary
+    /// that names one file would have kept passing while scanning a tenth of the
+    /// surface — the precise way a shape-level check dies unnoticed. A directory
+    /// listing means the next extension file added is scanned the day it lands,
+    /// with no edit here.
+    private func appServicesSources() throws -> [(name: String, text: String)] {
         // …/AtelierCore/Tests/AtelierCoreTests/<this file>
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()    // AtelierCoreTests
             .deletingLastPathComponent()    // Tests
             .deletingLastPathComponent()    // AtelierCore
-        let source = packageRoot
-            .appendingPathComponent("Sources/AtelierCore/Services/AppServices.swift")
-        return try String(contentsOf: source, encoding: .utf8)
+        let services = packageRoot.appendingPathComponent("Sources/AtelierCore/Services")
+        let names = try FileManager.default
+            .contentsOfDirectory(atPath: services.path)
+            .filter { $0.hasPrefix("AppServices") && $0.hasSuffix(".swift") }
+            .sorted()
+        return try names.map {
+            ($0, try String(contentsOf: services.appendingPathComponent($0), encoding: .utf8))
+        }
+    }
+
+    /// The read sites across the whole surface, merged. Scanned per FILE rather
+    /// than over a concatenation, so the "which function am I in" cursor cannot
+    /// run off the end of one file into the next.
+    private func allReadSites() throws -> [String: [Int]] {
+        var merged: [String: [Int]] = [:]
+        for file in try appServicesSources() {
+            for (name, lines) in readSites(in: file.text) {
+                merged[name, default: []].append(contentsOf: lines)
+            }
+        }
+        return merged
     }
 
     /// Function name ⇒ the 1-based lines in it that read `asset`.
@@ -149,8 +187,7 @@ struct AssetReadSurfaceTests {
 
     @Test("every function reading the asset table is pinned with a stated reason")
     func readSurfaceIsPinned() throws {
-        let source = try appServicesSource()
-        let sites = readSites(in: source)
+        let sites = try allReadSites()
         let found = Set(sites.keys)
         let pinned = Set(Self.allowed.keys)
 
@@ -178,9 +215,13 @@ struct AssetReadSurfaceTests {
     /// guarding nothing at all — the classic way a canary dies unnoticed.
     @Test("the scan actually reads the file and finds the surface it claims to")
     func scanIsNotVacuous() throws {
-        let source = try appServicesSource()
-        #expect(source.contains("public func searchAssets"))
-        let sites = readSites(in: source)
+        let files = try appServicesSources()
+        // The surface is split; a scan that found one file found a tenth of it.
+        #expect(files.count > 1, "expected AppServices.swift + its extensions")
+        #expect(files.contains { $0.name == "AppServices.swift" })
+        let joined = files.map(\.text).joined(separator: "\n")
+        #expect(joined.contains("public func searchAssets"))
+        let sites = try allReadSites()
         #expect(sites.count >= 20)
         // Spot-check both matcher families: raw SQL and the query interface.
         #expect(sites["referencedBlobHashes"]?.isEmpty == false)   // FROM asset

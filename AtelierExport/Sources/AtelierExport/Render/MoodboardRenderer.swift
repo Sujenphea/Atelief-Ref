@@ -207,10 +207,12 @@ public enum MoodboardRenderer {
     ) {
         guard !style.string.isEmpty, rect.width > 0, rect.height > 0 else { return }
         let pointSize = Swift.max(1, style.fontSize * scale)
-        let font = CTFontCreateWithName("Helvetica" as CFString, pointSize, nil)
+        let font = self.font(family: style.fontFamily, weight: style.weight, size: pointSize)
         let attributes: [NSAttributedString.Key: Any] = [
             .init(rawValue: kCTFontAttributeName as String): font,
             .init(rawValue: kCTForegroundColorAttributeName as String): style.color.cgColor,
+            .init(rawValue: kCTParagraphStyleAttributeName as String):
+                paragraphStyle(alignment: style.alignment),
         ]
         let attributed = NSAttributedString(string: style.string, attributes: attributes)
         let framesetter = CTFramesetterCreateWithAttributedString(attributed as CFAttributedString)
@@ -245,6 +247,65 @@ public enum MoodboardRenderer {
         }
     }
 
+    // MARK: - Type (2A)
+
+    /// Resolve a ``TextStyle``'s family + weight to a concrete `CTFont`.
+    ///
+    /// The rule, in order:
+    ///   1. A non-empty family is MATCHED first (`CTFontDescriptorCreateMatching…`
+    ///      with the family mandatory). Matching is what makes "unknown family"
+    ///      detectable: `CTFontCreateWithName` on a name nothing has silently
+    ///      hands back a default face, so a board styled in a font the exporting
+    ///      machine lacks would export as if it had asked for nothing. A nil match
+    ///      falls through to step 2 deliberately.
+    ///   2. The system font, weighted. `.SFNS` carries the whole weight axis, so
+    ///      the trait resolves to a real face rather than a synthesized one.
+    ///
+    /// The weight rides as a `kCTFontWeightTrait` in both branches, so a family
+    /// that ships a Bold face gets that face (Helvetica → Helvetica-Bold) and one
+    /// that does not gets its nearest.
+    static func font(family: String?, weight: FontWeight, size: CGFloat) -> CTFont {
+        let traits = [kCTFontWeightTrait: weight.coreTextWeight] as CFDictionary
+        if let family, !family.isEmpty {
+            let attributes: [CFString: Any] = [
+                kCTFontFamilyNameAttribute: family,
+                kCTFontTraitsAttribute: traits,
+            ]
+            let descriptor = CTFontDescriptorCreateWithAttributes(attributes as CFDictionary)
+            let mandatory: Set<CFString> = [kCTFontFamilyNameAttribute]
+            if let matched = CTFontDescriptorCreateMatchingFontDescriptor(
+                descriptor, mandatory as CFSet) {
+                return CTFontCreateWithFontDescriptor(matched, size, nil)
+            }
+        }
+        return systemFont(weight: weight, size: size)
+    }
+
+    /// The system UI font at `weight`. `.regular` returns it untouched; any other
+    /// weight copies its descriptor with the weight trait applied.
+    private static func systemFont(weight: FontWeight, size: CGFloat) -> CTFont {
+        let base = CTFontCreateUIFontForLanguage(.system, size, nil)
+            ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)
+        guard weight != .regular else { return base }
+        let weighted = CTFontDescriptorCreateCopyWithAttributes(
+            CTFontCopyFontDescriptor(base),
+            [kCTFontTraitsAttribute: [kCTFontWeightTrait: weight.coreTextWeight]] as CFDictionary)
+        return CTFontCreateWithFontDescriptor(weighted, size, nil)
+    }
+
+    /// A paragraph style carrying nothing but the horizontal alignment — the one
+    /// place the `.left` / `.center` / `.right` token becomes a CoreText setting.
+    private static func paragraphStyle(alignment: TextAlignment) -> CTParagraphStyle {
+        var value = alignment.coreTextAlignment
+        return withUnsafeBytes(of: &value) { raw in
+            var setting = CTParagraphStyleSetting(
+                spec: .alignment,
+                valueSize: MemoryLayout<CTTextAlignment>.size,
+                value: raw.baseAddress!)
+            return CTParagraphStyleCreate(&setting, 1)
+        }
+    }
+
     // MARK: - Encoding
 
     private static func encodePNG(_ image: CGImage) throws -> Data {
@@ -259,5 +320,33 @@ public enum MoodboardRenderer {
 
     private static func throwIfCancelled(_ isCancelled: () -> Bool) throws {
         if isCancelled() { throw CancellationError() }
+    }
+}
+
+// MARK: - Token → CoreText (2A)
+
+private extension FontWeight {
+    /// The `kCTFontWeightTrait` value for each token — the same numbers
+    /// `NSFont.Weight.regular / .medium / .semibold / .bold` carry, so the export
+    /// asks CoreText for the face AppKit would have picked on screen.
+    var coreTextWeight: CGFloat {
+        switch self {
+        case .regular: 0.0
+        case .medium: 0.23
+        case .semibold: 0.3
+        case .bold: 0.4
+        }
+    }
+}
+
+private extension TextAlignment {
+    /// The `CTTextAlignment` for each token. Exhaustive, no `default`: a fifth
+    /// alignment token has to be given a CoreText value before this compiles.
+    var coreTextAlignment: CTTextAlignment {
+        switch self {
+        case .left: .left
+        case .center: .center
+        case .right: .right
+        }
     }
 }

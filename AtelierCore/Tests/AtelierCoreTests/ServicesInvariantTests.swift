@@ -188,15 +188,12 @@ struct ServicesInvariantTests {
         }
     }
 
-    @Test("setGridOrder with a non-member rolls back the whole batch")
-    func gridOrderRollback() async throws {
+    @Test("setGridOrder IGNORES a non-member and orders the rest (14A)")
+    func gridOrderIgnoresNonMembers() async throws {
         let (services, temp) = try makeServices()
         defer { temp.cleanup() }
         let c = try await services.createCollection(name: "C")
         let r = try await services.ingest(assetDraft(), from: sourceDraft(), into: c.id)
-        // The single ingest appended it at slot 0 — capture that so the assertion
-        // tracks the atomicity invariant (rollback leaves the order UNCHANGED),
-        // not a hardcoded pre-insert value.
         func storedOrder() throws -> Int? {
             try temp.database.read { db -> Int? in
                 try CollectionItem
@@ -204,15 +201,125 @@ struct ServicesInvariantTests {
                     .fetchOne(db)?.manualOrder
             }
         }
-        let before = try storedOrder()
-        #expect(before == 0)
+        #expect(try storedOrder() == 0)
 
+        // This THREW `.notFound(entity: "collection_item")` and rolled the whole
+        // batch back until 14A. It no longer does: an id that is not a member has
+        // no position to be given, and every caller was pre-reading the membership
+        // set to strip exactly these before calling — a full collection read in
+        // front of every drag, computing what the statement now does for free.
         let ghost = UUID()
-        await #expect(throws: AtelierError.notFound(entity: "collection_item", id: ghost)) {
-            try await services.setGridOrder(collectionID: c.id, orderedAssetIDs: [r.asset.id, ghost])
+        try await services.setGridOrder(
+            collectionID: c.id, orderedAssetIDs: [ghost, r.asset.id])
+        // The member took its INDEX in the list, not a compacted position: the
+        // ghost's slot 0 is left as a gap, because only the relative order is
+        // meaningful and closing gaps would move rows the caller never mentioned.
+        #expect(try storedOrder() == 1)
+    }
+
+    @Test("setGridOrder still throws notFound for a collection that does not exist")
+    func gridOrderMissingCollection() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "C")
+        let r = try await services.ingest(assetDraft(), from: sourceDraft(), into: c.id)
+        let ghostCollection = UUID()
+        // Naming a folder that isn't there is a different mistake from naming an
+        // item that left one, and it is still reported.
+        await #expect(throws: AtelierError.notFound(entity: "collection", id: ghostCollection)) {
+            try await services.setGridOrder(
+                collectionID: ghostCollection, orderedAssetIDs: [r.asset.id])
         }
-        // The member's order must be untouched by the rolled-back batch.
-        #expect(try storedOrder() == before)
+    }
+
+    @Test("setGridOrder with an empty list is a no-op, even for a missing collection")
+    func gridOrderEmptyList() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        // No ids means nothing to order, so there is nothing to look up and
+        // nothing to complain about — the shape a caller reaches when its own
+        // filter emptied the list.
+        try await services.setGridOrder(collectionID: UUID(), orderedAssetIDs: [])
+    }
+
+    @Test("setGridOrder leaves unlisted members' order untouched")
+    func gridOrderLeavesUnlistedAlone() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "C")
+        // Distinct hashes AND urls — 18A dedup would otherwise fold these into
+        // one asset with one membership, and the assertions would be about that.
+        let a = try await services.ingest(
+            assetDraft(hash: "aaa1"), from: sourceDraft(url: "https://e/a"), into: c.id).asset.id
+        let b = try await services.ingest(
+            assetDraft(hash: "bbb2"), from: sourceDraft(url: "https://e/b"), into: c.id).asset.id
+        let unlisted = try await services.ingest(
+            assetDraft(hash: "ccc3"), from: sourceDraft(url: "https://e/c"), into: c.id).asset.id
+        func storedOrder(_ id: UUID) throws -> Int? {
+            try temp.database.read { db -> Int? in
+                try CollectionItem
+                    .filter(Column("asset_id") == id.uuidString.lowercased())
+                    .fetchOne(db)?.manualOrder
+            }
+        }
+        #expect(try storedOrder(unlisted) == 2)
+
+        // The `CASE` has no arm for `unlisted`, so without the `IN (…)` guard the
+        // UPDATE would match its row and write the CASE's implicit NULL — silently
+        // dropping it to the front of the grid. This is that guard's test.
+        try await services.setGridOrder(collectionID: c.id, orderedAssetIDs: [b, a])
+        #expect(try storedOrder(b) == 0)
+        #expect(try storedOrder(a) == 1)
+        #expect(try storedOrder(unlisted) == 2)
+    }
+
+    @Test("setGridOrder takes a duplicated id's LAST position")
+    func gridOrderDuplicateIDs() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "C")
+        let a = try await services.ingest(
+            assetDraft(hash: "aaa1"), from: sourceDraft(url: "https://e/a"), into: c.id).asset.id
+        let b = try await services.ingest(
+            assetDraft(hash: "bbb2"), from: sourceDraft(url: "https://e/b"), into: c.id).asset.id
+        // What the per-row loop did (each assignment overwrote the previous), kept
+        // deliberately: `ImportReplay` dedups before calling and documents this
+        // exact rule as the reason.
+        try await services.setGridOrder(collectionID: c.id, orderedAssetIDs: [a, b, a])
+        func storedOrder(_ id: UUID) throws -> Int? {
+            try temp.database.read { db -> Int? in
+                try CollectionItem
+                    .filter(Column("asset_id") == id.uuidString.lowercased())
+                    .fetchOne(db)?.manualOrder
+            }
+        }
+        #expect(try storedOrder(a) == 2)
+        #expect(try storedOrder(b) == 1)
+    }
+
+    @Test("setGridOrder spans more than one chunk correctly")
+    func gridOrderAcrossChunks() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let c = try await services.createCollection(name: "C")
+        // One more than the chunk size, so the reorder is split across two
+        // statements. The chunk exists because SQLite caps how many variables one
+        // statement may bind (`SQLITE_MAX_VARIABLE_NUMBER`) and each id spends
+        // three of them — `WHEN ? THEN ?` plus its slot in the `IN (…)` list — so
+        // an unbounded grid would eventually produce a statement the engine
+        // refuses to prepare. The seam between chunks is what this asserts.
+        let count = AppServices.gridOrderChunkSize + 1
+        var ids: [UUID] = []
+        for i in 0..<count {
+            ids.append(try await services.ingest(
+                assetDraft(hash: String(format: "%040x", i)),
+                from: sourceDraft(url: "https://e/\(i)"), into: c.id).asset.id)
+        }
+        let reversed = Array(ids.reversed())
+        try await services.setGridOrder(collectionID: c.id, orderedAssetIDs: reversed)
+
+        let items = try await services.collectionItems(in: c.id, includeArchived: false)
+        #expect(items.map(\.asset.id) == reversed)
     }
 
     @Test("createCollection rejects an empty name with invalidName")

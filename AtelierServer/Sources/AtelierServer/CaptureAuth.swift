@@ -52,27 +52,73 @@ public struct CaptureAuth: Sendable {
     /// The request header carrying the shared secret.
     public static let tokenHeaderName = "X-Atelier-Token"
 
+    /// The scheme the extension-id pin is defined for. A pin is a CHROME concept
+    /// — the id in a `chrome-extension://` origin is the unpacked extension's
+    /// key hash — so it is scoped to this scheme by name rather than applied to
+    /// whatever scheme happens to be first in the allowlist (3A).
+    public static let chromeExtensionScheme = "chrome-extension"
+
     private let token: String
-    /// When set, only this exact extension id is allowed; when `nil`, any
-    /// `chrome-extension://` origin is accepted (dev-friendly — the unpacked
-    /// extension's id churns; the token remains the real secret).
+    /// The URL schemes an `Origin` header may carry, lowercased. Data, not a
+    /// literal in the matcher (3A): Safari's wrapper of the same extension calls
+    /// with `safari-web-extension://`, and a second surface should be an entry in
+    /// this array rather than a second branch in ``isAllowedOrigin(_:)``.
+    private let allowedOriginSchemes: [String]
+    /// When set, only this exact extension id is allowed on the
+    /// `chrome-extension` scheme; when `nil`, any origin on an allowed scheme is
+    /// accepted (dev-friendly — the unpacked extension's id churns; the token
+    /// remains the real secret).
     private let pinnedExtensionID: String?
 
-    public init(token: String, pinnedExtensionID: String? = nil) {
+    /// - Parameters:
+    ///   - token: the shared secret every non-preflight request must present.
+    ///   - allowedOriginSchemes: the schemes an `Origin` may carry. Defaults to
+    ///     Chrome's alone, which is what shipped; compared case-insensitively
+    ///     (RFC 3986 schemes are).
+    ///   - pinnedExtensionID: when set, pins the `chrome-extension` scheme to one
+    ///     id. It does NOT constrain any other listed scheme — a Safari origin
+    ///     carries a wrapper UUID, not this id, so applying the pin there would
+    ///     reject every legitimate Safari call.
+    public init(
+        token: String,
+        allowedOriginSchemes: [String] = [CaptureAuth.chromeExtensionScheme],
+        pinnedExtensionID: String? = nil
+    ) {
         self.token = token
+        self.allowedOriginSchemes = allowedOriginSchemes.map { $0.lowercased() }
         self.pinnedExtensionID = pinnedExtensionID
     }
 
     /// Whether `origin` is an acceptable caller. An **absent** origin (a
     /// non-browser client) is allowed *here* — such a client is still stopped by
-    /// the token check. A present origin must be the extension's.
+    /// the token check. A present origin must PARSE (a scheme, `://`, and a
+    /// non-empty remainder) and carry a listed scheme.
+    ///
+    /// Parsing rather than prefix-matching (3A) is not cosmetic: `hasPrefix` on a
+    /// list of schemes accepts `chrome-extension://` as a prefix of anything, so a
+    /// second entry would have had to be an exact-length check to stay safe. A
+    /// scheme split says what it means and rejects the malformed shapes (`no
+    /// separator`, empty scheme, scheme with nothing after it) explicitly.
     public func isAllowedOrigin(_ origin: String?) -> Bool {
         guard let origin else { return true }
-        guard origin.hasPrefix("chrome-extension://") else { return false }
-        if let pinnedExtensionID {
-            return origin == "chrome-extension://\(pinnedExtensionID)"
+        guard let parsed = Self.parseOrigin(origin) else { return false }
+        guard allowedOriginSchemes.contains(parsed.scheme) else { return false }
+        // The pin is Chrome-only, by construction — see `init`.
+        if parsed.scheme == Self.chromeExtensionScheme, let pinnedExtensionID {
+            return parsed.rest == pinnedExtensionID
         }
         return true
+    }
+
+    /// Split an `Origin` into its lowercased scheme and the rest, or `nil` when
+    /// the string is not an origin at all: no `://`, an empty scheme (`://x`), or
+    /// nothing after the separator (`chrome-extension://`).
+    static func parseOrigin(_ origin: String) -> (scheme: String, rest: String)? {
+        guard let separator = origin.range(of: "://") else { return nil }
+        let scheme = String(origin[origin.startIndex..<separator.lowerBound])
+        let rest = String(origin[separator.upperBound...])
+        guard !scheme.isEmpty, !rest.isEmpty else { return nil }
+        return (scheme.lowercased(), rest)
     }
 
     /// Decide a request. Order: origin barrier → preflight short-circuit → token

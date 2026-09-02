@@ -187,6 +187,38 @@ struct CaptureServerIntegrationTests {
         #expect(http.statusCode == 413)
     }
 
+    // MARK: - Binding (3A · the port-in-use path)
+
+    @Test("binding a port twice → the second start() throws")
+    func portInUse() async throws {
+        // The first server takes an ephemeral port and reports which one.
+        let first = try await start()
+        defer { Task { await first.server.stop() } }
+
+        // A second server aimed at THAT port cannot bind. `start()` must surface
+        // it — the app shows the user "another copy is already listening", and
+        // the only way that message is ever produced is by this throw. Before
+        // this test the path existed and nothing exercised it: a regression that
+        // swallowed the bind failure would have left `start()` returning
+        // normally with no listener behind it.
+        let env = try await makeServerTestEnv()
+        let target = env.collectionID
+        let second = CaptureServer(
+            port: first.port,
+            auth: CaptureAuth(token: Self.token),
+            routes: CaptureRoutes(coordinator: env.coordinator, defaultCollectionID: { target }))
+        await #expect(throws: (any Error).self) {
+            try await second.start()
+        }
+        // …and it unwound: no port is claimed by the failed server.
+        #expect(await second.boundPort() == nil)
+
+        // The first server is untouched and still serving.
+        let (_, response) = try await URLSession.shared.data(
+            for: request(first, method: "GET", path: "/health"))
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+    }
+
     @Test("GET /health with a valid token → 200 + version handshake")
     func health() async throws {
         let running = try await start(); defer { Task { await running.server.stop() } }

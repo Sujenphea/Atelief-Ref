@@ -46,22 +46,65 @@ public enum MoodboardContent: Equatable, Sendable {
     case frame(FrameStyle)
 }
 
+/// A text element's font weight (2A). Mirrors `AtelierCore.TextWeight` and
+/// `CanvasRenderer.FontWeight`: the rawValues MUST stay the same four stored
+/// tokens, because the app bridges `ElementStyle.fontWeight` into this type by a
+/// plain rawValue hop, exactly as it does into the canvas renderer. This package
+/// cannot import `AtelierCore`, so the match is a contract, not a compiler
+/// guarantee — a cross-package conformance test in the app target drives both
+/// bridges from one fixture set and is what actually holds it.
+public enum FontWeight: String, Equatable, Hashable, Sendable, CaseIterable {
+    case regular, medium, semibold, bold
+}
+
+/// A text element's horizontal alignment (2A). Mirrors `AtelierCore.TextAlign`
+/// and `CanvasRenderer.TextAlignment` under the same rawValue-match contract as
+/// ``FontWeight``.
+public enum TextAlignment: String, Equatable, Hashable, Sendable, CaseIterable {
+    case left, center, right
+}
+
 /// A text element's presentation, mapped from `ElementStyle`. `fontSize` is in
 /// WORLD units (scaled to page points by the renderer via
 /// ``PlacedElement/scale``).
+///
+/// The family / weight / alignment fields exist so an exported page matches what
+/// the board shows (2A). Before them the renderer drew every string in Helvetica
+/// regular, left-aligned, whatever the element's style said — a moodboard whose
+/// heading was 24pt bold centred Futura exported as 24pt Helvetica flush left.
 public struct TextStyle: Equatable, Sendable {
     public var string: String
     public var fontSize: Double
     public var color: RGBA
+    /// Font family name (an installed family, e.g. `"Futura"`); `nil` — or a
+    /// family this machine does not have — draws in the system font.
+    public var fontFamily: String?
+    /// Font weight; defaults to `.regular`.
+    public var weight: FontWeight
+    /// Horizontal alignment within the element rect; defaults to `.left`.
+    public var alignment: TextAlignment
 
     /// - Parameters:
     ///   - string: the text to draw (wrapped within the element rect).
     ///   - fontSize: point size in WORLD units.
     ///   - color: fill colour; defaults to opaque black.
-    public init(string: String, fontSize: Double, color: RGBA = .black) {
+    ///   - fontFamily: installed family name; `nil` → the system font.
+    ///   - weight: font weight; defaults to `.regular`.
+    ///   - alignment: horizontal alignment; defaults to `.left`.
+    public init(
+        string: String,
+        fontSize: Double,
+        color: RGBA = .black,
+        fontFamily: String? = nil,
+        weight: FontWeight = .regular,
+        alignment: TextAlignment = .left
+    ) {
         self.string = string
         self.fontSize = fontSize
         self.color = color
+        self.fontFamily = fontFamily
+        self.weight = weight
+        self.alignment = alignment
     }
 }
 
@@ -72,7 +115,9 @@ public struct FrameStyle: Equatable, Sendable {
     public var fill: RGBA?
     public var stroke: RGBA?
     public var strokeWidth: Double
-    /// Optional label drawn top-left inside the frame; reuses the text fields.
+    /// Optional label drawn inside the frame; reuses the text fields — family,
+    /// weight and alignment included, so a frame's label honours its style the
+    /// same way a standalone text element does (2A).
     public var label: TextStyle?
 
     public init(

@@ -58,6 +58,18 @@ let package = Package(
                 // had copied verbatim, the temp-root maker, and the retention fixture
                 // that executes the drain's own move order.
                 .product(name: "AtelierCaptureTestSupport", package: "AtelierCapture"),
-            ]),
+            ],
+            // 12A. The importers this package will grow (Eagle, Raindrop,
+            // Pinterest) parse files written by OTHER programs, and a parser
+            // tested only against JSON the test itself composed is a parser
+            // tested against the author's belief about the format. Committed
+            // fixtures are how a real export gets into the suite. `.copy` (not
+            // `.process`) so the bytes reach the bundle unchanged — a fixture
+            // whose whitespace or key order a resource pipeline "helpfully"
+            // rewrote would no longer be the file the exporter produced.
+            //
+            // The whole directory is copied, so adding a fixture needs no edit
+            // here. `TestSupport/Fixture.swift` is the only reader.
+            resources: [.copy("Fixtures")]),
     ]
 )
