@@ -64,7 +64,8 @@ Three facts shape the sequencing more than any finding did.
 | 13A | A `Coalescer` behind `refreshAfterIngest`; 071 · Phase 0 measurement; the narrow summary row only if decode dominates | P3 |
 | 14A | `setGridOrder` as one chunked `CASE` statement that ignores non-members; the app's membership pre-read goes; a harness row | P0 (Core), P3 (app) |
 | 15A | A semantic-search harness row; a resident corpus cache only if 20k measures over ~100 ms | P0 (row), P0b (cache, conditional) |
-| 16A | Launch orphan GC runs on a `gc-pending` marker; the undo-window reaper sweeps the `BlobRef`s `DeletedAssetsBackup` already holds | P1 |
+| 16A | Launch orphan GC runs on a `gc-pending` marker. **The reaper half is withdrawn — see 18A below.** | P1 |
+| 18A | The undo-window reaper is not viable as specified; the marker half stands alone | P1 (closed) |
 
 Three directions the user set for the plan itself: the work happens on **`feat/mac-backlog` in a git worktree**; phases run **sequentially, one agent each**; the importer parsers run only once **`resources/<eagle|raindrop|pinterest>/` exists** (the user will supply real exports).
 
@@ -559,6 +560,35 @@ and only the user can. And forcing the drift arm to prove it still fails turned 
 in the Instagram check itself: a fixture with every `items` array emptied **passes**, since
 the check reports counts as signals without asserting they are non-zero. The other checks
 were not probed for the same hole. **P11 owns it** — it is the phase that owns `extension/`.
+
+### 18A — the undo-window reaper is withdrawn
+
+16A had two halves. The marker half shipped in P1 and did the work it was for: launch
+no longer walks the whole blob directory, because `runOrphanBlobGC` runs only when
+`snapshots/.gc-pending` says a recoverable delete happened.
+
+The reaper half rested on four premises, three of them false and the fourth fatal:
+
+- `DeletedAssetsBackup` does **not** hold `[BlobRef]`. It holds `[Asset]`, `[Source]`,
+  `[CollectionItem]`, `[AssetTag]` and `[CoverRef]`. Deriving blob refs from the assets
+  is not dedup-safe — two assets can share a blob — and the dedup-safe list that *does*
+  exist is built and discarded inside `deleteAssetsRecoverable`, in Core.
+- **`levelsOfUndo` is set nowhere in the tree.** Nothing is ever evicted, so an
+  eviction-triggered reap never fires.
+- `UndoManager` publishes no eviction hook, so building one means bounding undo depth —
+  a user-visible change no decision in this plan covers.
+- `applicationWillTerminate` is synchronous, so a dedup-safe reap there would block
+  quit on a database read.
+
+**Decision (the user, issue 18): drop it, and record why.** The marker already triggers
+GC on the next launch after a delete, so deleted media is reclaimed — the reaper would
+only have made it sooner. A bespoke eviction mechanism for that margin is the
+over-engineering this plan's preferences rule out. The backlog line *"deferring the
+reaper within the undo window is a named follow-up"* closes as **not viable as named**.
+
+If it is ever wanted, the shape that would work is not the one 16A described: retain the
+dedup-safe `BlobRef` list on the backup at `deleteAssetsRecoverable` time, and sweep
+backups older than the undo window on a timer — no undo bound, no eviction hook.
 
 ## Risks, named
 
