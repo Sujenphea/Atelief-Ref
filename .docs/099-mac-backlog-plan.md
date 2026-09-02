@@ -246,6 +246,38 @@ unless the view accepts the first mouse (`NSTableView` does, `NSButton` does not
 built with `CODE_SIGNING_ALLOWED=NO` is SIGKILLed before it connects. `full` is now
 fourteen stages.
 
+## P2b — the thumbnail suites' intermittent failure
+
+*Unplanned. Issue 20A, authorised by the user after the flake blocked two gate runs.
+No decision in the table above covers it. Effort S.*
+
+**Why an unplanned phase exists.** `verify.sh full` is the only gate (9C), and it was
+failing roughly one run in four for a reason no phase owned. When it went, it went the
+same way every time: `ThumbnailPipelineTests` and `ThumbnailWindowPrefetcherTests`
+failing **together** — about 42 issues across 15 tests — with the other ~1,690 cases in
+the target green. [465](../.change-log/465-the-corpus-goes-resident.md) hit it on its
+second gate run and [468](../.change-log/468-the-mac-gets-a-window-a-keystroke-and-an-order.md)
+on its first, and both wrote it up as somebody else's. A gate that fails once in four
+runs for no stated reason is a gate that stops being read, which is the road
+[464](../.change-log/464-the-gate-tells-its-two-arms-apart.md) exists to get off — so
+the user took it out of the backlog and made it its own phase, ahead of P3.
+
+The obstacle was that the failure was **illegible**: `xcodebuild`'s log records one
+`Test case '…' failed` line per test and no assertion text at all. The first job was to
+get the text, with `-resultBundlePath` and `xcrun xcresulttool get test-results summary`,
+which prints the `failureText` Swift Testing actually recorded. That is the tool the next
+flake should reach for first.
+
+**Verify:** the failure reproduced before the fix; the affected suites run ≥10 times
+consecutively after it; `verify.sh` full.
+
+**Done** ([469](../.change-log/469-the-cache-that-was-never-promised.md)). The text says
+every cache read returned `nil` for a key whose decode had provably run — eight
+one-megabyte entries under a sixty-four-megabyte budget, **zero** resident. The suites
+were asserting residency against an `NSCache`, which documents that it does not promise
+it. Production keeps `NSCache`; the two suites get a `ThumbnailStore` seam and a
+deterministic store behind it. **No production behaviour changed.**
+
 ## P3 — the per-window read model
 
 *Decisions 1A, 6A (collapse), 13A, 14A (app). The largest phase. Effort L.*
@@ -532,6 +564,7 @@ supplied. 12A's rule applies to each. Effort M each.*
 | P0b | done — 20k warm 1,535 → 59 ms, cold 1,676 → 303 ms, 41 MB resident | [465](../.change-log/465-the-corpus-goes-resident.md) |
 | P1 | done — 16A's reaper half reported, not built | [466](../.change-log/466-the-app-target-gets-its-foundations.md) |
 | P2 | done — target, seeder, four identifiers, three flows, a 14th gate stage | [468](../.change-log/468-the-mac-gets-a-window-a-keystroke-and-an-order.md) |
+| P2b | done — unplanned (20A); the two thumbnail suites stop asserting residency against `NSCache` | [469](../.change-log/469-the-cache-that-was-never-promised.md) |
 | P3 | not started | — |
 | P4 | not started | — |
 | P5 | not started | — |

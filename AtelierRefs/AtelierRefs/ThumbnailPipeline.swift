@@ -143,21 +143,63 @@ nonisolated struct ThumbnailRequest: Sendable {
     var key: ThumbnailKey { ThumbnailKey(hash: hash, bucket: bucket) }
 }
 
-// MARK: - The pipeline
+// MARK: - Where decoded bitmaps live (099 · P2b)
 
-/// Process-wide decoded-thumbnail cache with coalesced loads and gated prefetch.
+/// The pipeline's cache seam: a keyed, cost-bounded box of decoded bitmaps.
 ///
-/// Thread-safe by construction: `NSCache` is thread-safe on its own, and the
-/// bookkeeping (in-flight map, prefetch queue) is guarded by one lock held only
-/// for pointer-shuffling — never across a decode or an `await`.
-nonisolated final class ThumbnailPipeline: @unchecked Sendable {
-    /// The decode seam. Synchronous by design — it runs inside a detached task,
-    /// and injecting it is what lets ``ThumbnailPipelineTests`` exercise
-    /// coalescing, eviction and cancellation without touching the filesystem.
-    typealias Decode = @Sendable (URL, Int) -> DecodedThumbnail?
+/// **Why this is a protocol and not just the `NSCache` it used to be.** An
+/// `NSCache` is the right thing for the app — it hands memory back to the system
+/// on its own schedule, which is exactly what a thumbnail cache should do — and
+/// it is precisely the wrong thing to assert against, because that schedule is
+/// not ours. `NSCache`'s own documentation says so: it "incorporates various
+/// auto-eviction policies", and a caller "should not rely on a cache to store"
+/// anything. Residency is a hope, not a guarantee.
+///
+/// `ThumbnailPipelineTests` and `ThumbnailWindowPrefetcherTests` were built on
+/// that hope. Roughly one gate run in four they lost it: **fifteen tests across
+/// the two suites failing together**, every one of them reducing to the same
+/// sentence — `cachedExact(hash:bucket:) → nil` for a key whose decode had
+/// provably run and whose `insert` had provably happened. Under a 64× budget,
+/// with eight one-megabyte entries inserted, `residentUnderRoomyBudget → 0`. The
+/// cache had simply been emptied between the store and the read.
+///
+/// Nothing about the pipeline was wrong, and nothing about `NSCache` was wrong
+/// either. The tests were asserting a guarantee that does not exist. So the
+/// guarantee is named here instead, and the tests are given a store that makes
+/// it (`PinnedThumbnailStore`, in the test target) while the app keeps the one
+/// that does not.
+///
+/// **The contract, which every conforming store owes and which the pipeline's
+/// `store(_:for:)` is written against:**
+///
+///  1. `costLimit` is a byte budget. `0` means unbounded.
+///  2. An entry whose cost exceeds the *whole* budget is **refused outright**,
+///     not admitted-then-evicted. This is `NSCache`'s real behaviour and it is
+///     the reason ``ThumbnailPipeline/store(_:for:)`` clamps; see the measurement
+///     recorded there and in `.change-log/284`.
+///  3. Anything else may be evicted whenever the store likes. A store is
+///     permitted to keep everything; none is required to.
+///
+/// Implementations must be thread-safe and must never call back into the
+/// pipeline: ``ThumbnailPipeline/prefetch(_:)`` and its `pump` read the store
+/// while holding the pipeline's lock.
+nonisolated protocol ThumbnailStore: AnyObject, Sendable {
+    /// The byte budget. `0` means no limit.
+    var costLimit: Int { get }
+    /// The bitmap stored under `key`, if the store still has it.
+    func image(forKey key: String) -> CGImage?
+    /// Offer `image` to the store at `cost` bytes. May be refused (rule 2) or
+    /// evicted later (rule 3) — neither is an error.
+    func insert(_ image: CGImage, forKey key: String, cost: Int)
+}
 
-    static let shared = ThumbnailPipeline()
-
+/// The production store: an `NSCache`, cost-bounded, with **no count limit**.
+///
+/// Cost, NOT count: `ThumbnailCache`'s `countLimit = 512` is what thrashes at
+/// target scale (036 §1.4), so no `countLimit` is set here on purpose and
+/// ``countLimit`` is exposed so a test can say that out loud without asserting
+/// on residency.
+nonisolated final class NSCacheThumbnailStore: ThumbnailStore, @unchecked Sendable {
     /// `NSCache` needs a class value. `Box` also lets a real byte cost be charged
     /// instead of a meaningless count limit. `nonisolated` because it is built on
     /// the DECODE thread (the target defaults to main-actor isolation).
@@ -167,6 +209,43 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
     }
 
     private let cache = NSCache<NSString, Box>()
+
+    let costLimit: Int
+
+    init(costLimit: Int) {
+        self.costLimit = costLimit
+        cache.totalCostLimit = costLimit
+    }
+
+    /// `NSCache`'s count limit, for the configuration test. `0` is "no limit",
+    /// which is the whole point of this cache.
+    var countLimit: Int { cache.countLimit }
+
+    func image(forKey key: String) -> CGImage? {
+        cache.object(forKey: key as NSString)?.image
+    }
+
+    func insert(_ image: CGImage, forKey key: String, cost: Int) {
+        cache.setObject(Box(image), forKey: key as NSString, cost: cost)
+    }
+}
+
+// MARK: - The pipeline
+
+/// Process-wide decoded-thumbnail cache with coalesced loads and gated prefetch.
+///
+/// Thread-safe by construction: the ``ThumbnailStore`` is thread-safe on its own,
+/// and the bookkeeping (in-flight map, prefetch queue) is guarded by one lock
+/// held only for pointer-shuffling — never across a decode or an `await`.
+nonisolated final class ThumbnailPipeline: @unchecked Sendable {
+    /// The decode seam. Synchronous by design — it runs inside a detached task,
+    /// and injecting it is what lets ``ThumbnailPipelineTests`` exercise
+    /// coalescing, eviction and cancellation without touching the filesystem.
+    typealias Decode = @Sendable (URL, Int) -> DecodedThumbnail?
+
+    static let shared = ThumbnailPipeline()
+
+    private let cache: ThumbnailStore
     private let decode: Decode
     private let maxConcurrentPrefetches: Int
 
@@ -184,21 +263,37 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
 
     /// - Parameters:
     ///   - decode: injected for tests; defaults to the shared ImageIO decoder.
-    ///   - totalCostLimit: byte budget; defaults to
-    ///     ``thumbnailCacheCostLimit(physicalMemory:)`` for this machine.
+    ///   - cache: where decoded bitmaps live. Defaults to the production
+    ///     ``NSCacheThumbnailStore``; a test passes a store that honours the
+    ///     ``ThumbnailStore`` contract *and* keeps what it is given, because
+    ///     `NSCache` does not promise the second half (099 · P2b).
     ///   - maxConcurrentPrefetches: the 036 §4 C1 gate — background prefetching
     ///     must never starve the decode lanes a visible cell needs.
     init(
+        decode: @escaping Decode = ThumbnailPipeline.imageIODecode,
+        cache: ThumbnailStore,
+        maxConcurrentPrefetches: Int = 4
+    ) {
+        self.decode = decode
+        self.cache = cache
+        self.maxConcurrentPrefetches = max(1, maxConcurrentPrefetches)
+    }
+
+    /// The production shape: an `NSCache` at `totalCostLimit` bytes.
+    ///
+    /// Kept as its own initialiser so every app call site — and
+    /// ``ThumbnailPipeline/shared`` — reads exactly as it did before the store
+    /// became a seam.
+    convenience init(
         decode: @escaping Decode = ThumbnailPipeline.imageIODecode,
         totalCostLimit: Int = thumbnailCacheCostLimit(
             physicalMemory: ProcessInfo.processInfo.physicalMemory),
         maxConcurrentPrefetches: Int = 4
     ) {
-        self.decode = decode
-        self.maxConcurrentPrefetches = max(1, maxConcurrentPrefetches)
-        // Cost, NOT count: `ThumbnailCache`'s countLimit = 512 is what thrashes
-        // at target scale (036 §1.4). No countLimit is set here on purpose.
-        cache.totalCostLimit = totalCostLimit
+        self.init(
+            decode: decode,
+            cache: NSCacheThumbnailStore(costLimit: totalCostLimit),
+            maxConcurrentPrefetches: maxConcurrentPrefetches)
     }
 
     /// The production decoder: one ImageIO decode to the bucket, EXIF-transformed,
@@ -213,7 +308,7 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
     /// A cache hit at exactly `bucket`, or nil. Thread-safe; cheap enough for the
     /// render path.
     func cachedExact(hash: String, bucket: Int) -> CGImage? {
-        cache.object(forKey: ThumbnailKey(hash: hash, bucket: bucket).cacheKey as NSString)?.image
+        cache.image(forKey: ThumbnailKey(hash: hash, bucket: bucket).cacheKey)
     }
 
     /// The best cached bitmap for `hash` at `bucket`: the exact bucket if
@@ -365,12 +460,13 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
 
     /// Charge the real decoded size — but never more than the entire budget.
     ///
-    /// `NSCache` refuses an object whose cost exceeds `totalCostLimit` outright
-    /// rather than evicting to make room, and it does so SILENTLY. Charging one
-    /// oversized cost therefore does not cost you one entry, it costs you the
-    /// cache: every insert is refused, every read misses, every cell re-decodes,
-    /// forever, with nothing logged. Measured: at a 64 MB limit, 8 inserts at
-    /// 1 MB leave 8 resident; the same 8 at limit+1 leave **zero**.
+    /// A ``ThumbnailStore`` refuses an object whose cost exceeds `costLimit`
+    /// outright rather than evicting to make room, and it does so SILENTLY —
+    /// contract rule 2, which is `NSCache`'s real behaviour and which every store
+    /// therefore owes. Charging one oversized cost does not cost you one entry,
+    /// it costs you the cache: every insert is refused, every read misses, every
+    /// cell re-decodes, forever, with nothing logged. Measured: at a 64 MB limit,
+    /// 8 inserts at 1 MB leave 8 resident; the same 8 at limit+1 leave **zero**.
     ///
     /// Clamping keeps the bitmap a cell is actually waiting on resident. It will
     /// evict the rest of the cache to do so, which is the right trade for a
@@ -380,7 +476,7 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
     /// against a wrong cost, not a large one.
     private func store(_ decoded: DecodedThumbnail, for key: ThumbnailKey) {
         let cost = max(0, decoded.byteCost)
-        let budget = cache.totalCostLimit          // 0 means "no limit"
+        let budget = cache.costLimit               // 0 means "no limit"
         assertCostIsPlausible(cost, for: key)
         if budget > 0, cost > budget {
             // Legitimate on a deliberately tiny budget (the tests do exactly
@@ -389,8 +485,8 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
             AppLog.thumbnails.notice(
                 "thumbnail cost \(cost) exceeds the whole budget \(budget); clamping")
         }
-        cache.setObject(
-            Box(decoded.image), forKey: key.cacheKey as NSString,
+        cache.insert(
+            decoded.image, forKey: key.cacheKey,
             cost: budget > 0 ? min(cost, budget) : cost)
     }
 

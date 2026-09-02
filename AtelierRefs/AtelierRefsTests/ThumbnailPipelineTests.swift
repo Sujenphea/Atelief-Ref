@@ -304,6 +304,31 @@ private func request(_ hash: String, bucket: Int = 256) -> ThumbnailRequest {
     ThumbnailRequest(hash: hash, url: url(hash), bucket: bucket)
 }
 
+/// A pipeline over a ``PinnedThumbnailStore`` — the only cache these two suites
+/// may read a residency assertion out of (099 · P2b).
+///
+/// Every test below eventually says "this key is cached" or "this key is not",
+/// and against the production `NSCache` that is a bet, not an assertion: it
+/// evicts on a schedule of its own and one gate run in four it took the whole
+/// cache with it, failing fifteen tests across both suites at once. See
+/// ``PinnedThumbnailStore`` for the failure text and why the pipeline itself was
+/// never at fault. The app still uses `NSCache`; only these suites do not.
+///
+/// `totalCostLimit: 0` — unbounded — is the default here on purpose. The
+/// scheduling tests are about coalescing, promotion and cancellation, and a byte
+/// budget none of them asked for is one more reason a lookup could miss. The two
+/// tests that ARE about the budget pass their own.
+private func pinnedPipeline(
+    decode: @escaping ThumbnailPipeline.Decode,
+    totalCostLimit: Int = 0,
+    maxConcurrentPrefetches: Int = 4
+) -> ThumbnailPipeline {
+    ThumbnailPipeline(
+        decode: decode,
+        cache: PinnedThumbnailStore(costLimit: totalCostLimit),
+        maxConcurrentPrefetches: maxConcurrentPrefetches)
+}
+
 // MARK: - Pipeline
 
 /// The time limit is not decoration. Every test below drives real concurrency
@@ -322,7 +347,7 @@ struct ThumbnailPipelineTests {
         // than trickling in after it finished — this is the real coalescing case,
         // not a cache-hit race that would pass vacuously.
         let probe = DecodeProbe(blocking: ["a"])
-        let pipeline = ThumbnailPipeline(decode: probe.decode)
+        let pipeline = pinnedPipeline(decode: probe.decode)
 
         // Release once all 32 have ATTACHED — one `startedDecoding` plus 31
         // `joined`. Counted, not waited out: the 80 ms this replaces was a bet
@@ -377,7 +402,7 @@ struct ThumbnailPipelineTests {
         // iterations at 32 callers, and it reproduces with as few as 2.
         for i in 0..<40 {
             let probe = DecodeProbe()
-            let pipeline = ThumbnailPipeline(decode: probe.decode)
+            let pipeline = pinnedPipeline(decode: probe.decode)
             let hash = "h\(i)"
 
             let images = await withTaskGroup(of: Bool.self) { group in
@@ -406,7 +431,7 @@ struct ThumbnailPipelineTests {
         // is the regression guard on it.
         dispatchPrecondition(condition: .onQueue(.main))
         let probe = DecodeProbe()
-        let pipeline = ThumbnailPipeline(decode: probe.decode)
+        let pipeline = pinnedPipeline(decode: probe.decode)
 
         _ = await pipeline.image(hash: "a", url: url("a"), bucket: 256)
         pipeline.prefetch([request("b"), request("c")])
@@ -419,7 +444,7 @@ struct ThumbnailPipelineTests {
     @Test("a second request after completion is served from cache, not re-decoded")
     func cachedRequestDoesNotDecodeAgain() async {
         let probe = DecodeProbe()
-        let pipeline = ThumbnailPipeline(decode: probe.decode)
+        let pipeline = pinnedPipeline(decode: probe.decode)
 
         _ = await pipeline.image(hash: "a", url: url("a"), bucket: 256)
         _ = await pipeline.image(hash: "a", url: url("a"), bucket: 256)
@@ -433,7 +458,7 @@ struct ThumbnailPipelineTests {
     @Test("an exact hit beats any fallback")
     func exactHitWins() async {
         let probe = DecodeProbe()
-        let pipeline = ThumbnailPipeline(decode: probe.decode)
+        let pipeline = pinnedPipeline(decode: probe.decode)
         _ = await pipeline.image(hash: "a", url: url("a"), bucket: 256)
         _ = await pipeline.image(hash: "a", url: url("a"), bucket: 512)
 
@@ -445,7 +470,7 @@ struct ThumbnailPipelineTests {
     @Test("a miss falls back to the nearest LARGER cached bucket")
     func fallsBackToLargerBucket() async {
         let probe = DecodeProbe()
-        let pipeline = ThumbnailPipeline(decode: probe.decode)
+        let pipeline = pinnedPipeline(decode: probe.decode)
         // Cache one smaller (192) and one larger (384) than the 256 requested.
         _ = await pipeline.image(hash: "a", url: url("a"), bucket: 192)
         _ = await pipeline.image(hash: "a", url: url("a"), bucket: 384)
@@ -459,7 +484,7 @@ struct ThumbnailPipelineTests {
     @Test("with only smaller buckets cached, the nearest smaller one is used")
     func fallsBackToSmallerWhenNoLargerExists() async {
         let probe = DecodeProbe()
-        let pipeline = ThumbnailPipeline(decode: probe.decode)
+        let pipeline = pinnedPipeline(decode: probe.decode)
         _ = await pipeline.image(hash: "a", url: url("a"), bucket: 128)
         _ = await pipeline.image(hash: "a", url: url("a"), bucket: 192)
 
@@ -471,7 +496,7 @@ struct ThumbnailPipelineTests {
     @Test("fallback never crosses hashes")
     func fallbackIsPerHash() async {
         let probe = DecodeProbe()
-        let pipeline = ThumbnailPipeline(decode: probe.decode)
+        let pipeline = pinnedPipeline(decode: probe.decode)
         _ = await pipeline.image(hash: "a", url: url("a"), bucket: 384)
         #expect(pipeline.cachedEntry(hash: "b", bucket: 256) == nil)
     }
@@ -485,7 +510,7 @@ struct ThumbnailPipelineTests {
 
         // Budget for ~2 entries, insert 8.
         let tightProbe = DecodeProbe()
-        let tight = ThumbnailPipeline(decode: tightProbe.decode, totalCostLimit: cost * 2)
+        let tight = pinnedPipeline(decode: tightProbe.decode, totalCostLimit: cost * 2)
         for i in 0..<8 {
             _ = await tight.image(hash: "k\(i)", url: url("k\(i)"), bucket: side)
         }
@@ -498,7 +523,7 @@ struct ThumbnailPipelineTests {
         // eviction above is attributable to the cost limit and not to the images
         // being dropped for some unrelated reason.
         let roomyProbe = DecodeProbe()
-        let roomy = ThumbnailPipeline(decode: roomyProbe.decode, totalCostLimit: cost * 64)
+        let roomy = pinnedPipeline(decode: roomyProbe.decode, totalCostLimit: cost * 64)
         for i in 0..<8 {
             _ = await roomy.image(hash: "k\(i)", url: url("k\(i)"), bucket: side)
         }
@@ -517,7 +542,7 @@ struct ThumbnailPipelineTests {
         let side = 512
         let probe = DecodeProbe()
         let oneEntry = makeImage(side: side).bytesPerRow * side
-        let pipeline = ThumbnailPipeline(decode: probe.decode, totalCostLimit: oneEntry / 2)
+        let pipeline = pinnedPipeline(decode: probe.decode, totalCostLimit: oneEntry / 2)
 
         _ = await pipeline.image(hash: "a", url: url("a"), bucket: side)
 
@@ -536,7 +561,7 @@ struct ThumbnailPipelineTests {
         // next `cancelPrefetch` for it cancels the work an on-screen cell is
         // awaiting — and the cell paints nothing.
         let probe = DecodeProbe(blocking: ["a"])
-        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
+        let pipeline = pinnedPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
 
         // ONE subscription, two waits — which is why this records rather than
         // iterating: the promotion can arrive while the first assertion is
@@ -573,7 +598,7 @@ struct ThumbnailPipelineTests {
         // Gate of 1: "a" starts and blocks, so "b" and "c" are stuck in the queue
         // where cancellation can still reach them. No timing assumptions.
         let probe = DecodeProbe(blocking: ["a"])
-        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
+        let pipeline = pinnedPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
 
         pipeline.prefetch([request("a"), request("b"), request("c")])
         pipeline.cancelPrefetch(hashes: ["b", "c"])
@@ -592,7 +617,7 @@ struct ThumbnailPipelineTests {
     @Test("cancelling one hash leaves the rest of the queue intact")
     func cancelIsSelective() async {
         let probe = DecodeProbe(blocking: ["a"])
-        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
+        let pipeline = pinnedPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
 
         pipeline.prefetch([request("a"), request("b"), request("c")])
         pipeline.cancelPrefetch(hashes: ["b"])
@@ -612,7 +637,7 @@ struct ThumbnailPipelineTests {
         // out of the queue and run now. If the gate applied to visible loads this
         // test would deadlock until the timeout.
         let probe = DecodeProbe(blocking: ["a"])
-        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
+        let pipeline = pinnedPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
 
         pipeline.prefetch([request("a"), request("b")])
         let image = await pipeline.image(hash: "b", url: url("b"), bucket: 256)
@@ -649,7 +674,7 @@ struct ThumbnailWindowPrefetcherTests {
         // "a" blocks the only prefetch slot; "b" is queued behind it. The next
         // window contains neither.
         let probe = DecodeProbe(blocking: ["a"])
-        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
+        let pipeline = pinnedPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
         let prefetcher = ThumbnailWindowPrefetcher()
 
         prefetcher.update(requests: [request("a"), request("b")], pipeline: pipeline)
@@ -670,7 +695,7 @@ struct ThumbnailWindowPrefetcherTests {
     @Test("a hash promoted into the rendered window is NOT cancelled")
     func keepSetIsNotCancelled() async {
         let probe = DecodeProbe(blocking: ["a"])
-        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 2)
+        let pipeline = pinnedPipeline(decode: probe.decode, maxConcurrentPrefetches: 2)
         let prefetcher = ThumbnailWindowPrefetcher()
 
         prefetcher.update(requests: [request("a")], pipeline: pipeline)
@@ -688,7 +713,7 @@ struct ThumbnailWindowPrefetcherTests {
     @Test("a hash still in the new window is not cancelled and is not re-decoded")
     func stableHashSurvives() async {
         let probe = DecodeProbe()
-        let pipeline = ThumbnailPipeline(decode: probe.decode)
+        let pipeline = pinnedPipeline(decode: probe.decode)
         let prefetcher = ThumbnailWindowPrefetcher()
 
         prefetcher.update(requests: [request("a"), request("b")], pipeline: pipeline)
@@ -703,7 +728,7 @@ struct ThumbnailWindowPrefetcherTests {
     @Test("cancelAll drops everything outstanding and is idempotent")
     func cancelAllClears() async {
         let probe = DecodeProbe(blocking: ["a"])
-        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
+        let pipeline = pinnedPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
         let prefetcher = ThumbnailWindowPrefetcher()
 
         prefetcher.update(requests: [request("a"), request("b")], pipeline: pipeline)
@@ -723,7 +748,7 @@ struct ThumbnailWindowPrefetcherTests {
     @Test("the outstanding set tracks the latest window, not the union of all of them")
     func outstandingIsTheLatestWindow() async {
         let probe = DecodeProbe(blocking: ["a", "b", "c"])
-        let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
+        let pipeline = pinnedPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
         let prefetcher = ThumbnailWindowPrefetcher()
 
         prefetcher.update(requests: [request("a"), request("b")], pipeline: pipeline)
@@ -738,5 +763,114 @@ struct ThumbnailWindowPrefetcherTests {
         probe.release()
         await pipeline.waitForPendingWork()
         #expect(!probe.timedOutWaitingForRelease)
+    }
+}
+
+// MARK: - The store seam (099 · P2b)
+
+/// The contract the two suites above now stand on.
+///
+/// `PinnedThumbnailStore` is what makes their residency assertions assertions
+/// rather than bets, so the properties they lean on are checked here rather than
+/// assumed: it refuses what the budget cannot hold, it evicts only when the
+/// budget makes it, and it never drops anything otherwise.
+@Suite("PinnedThumbnailStore: the contract the thumbnail suites assert against")
+struct PinnedThumbnailStoreTests {
+
+    @Test("an unbounded store keeps everything it is given")
+    func unboundedKeepsEverything() {
+        // The default the scheduling tests use. Whatever else is true of a run,
+        // a key that was inserted is a key that reads back — which is precisely
+        // what `NSCache` would not promise and why this type exists.
+        let store = PinnedThumbnailStore()
+        #expect(store.costLimit == 0)
+        for i in 0..<64 {
+            store.insert(makeImage(side: 128), forKey: "k\(i)", cost: 1_000_000)
+        }
+        #expect(store.count == 64)
+        #expect((0..<64).allSatisfy { store.image(forKey: "k\($0)") != nil })
+    }
+
+    @Test("the byte budget evicts oldest-first, and only when it must")
+    func budgetEvictsOldestFirst() {
+        // Room for exactly three. The three most recent survive; the rest go in
+        // the order they arrived.
+        let store = PinnedThumbnailStore(costLimit: 300)
+        for i in 0..<5 { store.insert(makeImage(side: 128), forKey: "k\(i)", cost: 100) }
+        #expect(store.count == 3)
+        #expect(store.image(forKey: "k0") == nil)
+        #expect(store.image(forKey: "k1") == nil)
+        #expect(store.image(forKey: "k2") != nil)
+        #expect(store.image(forKey: "k4") != nil)
+        // Nothing is evicted while the budget is not exceeded.
+        let roomy = PinnedThumbnailStore(costLimit: 10_000)
+        for i in 0..<5 { roomy.insert(makeImage(side: 128), forKey: "k\(i)", cost: 100) }
+        #expect(roomy.count == 5)
+    }
+
+    @Test("an entry costing more than the WHOLE budget is refused outright")
+    func oversizedIsRefused() {
+        // Contract rule 2, and the exact `NSCache` behaviour
+        // `ThumbnailPipeline.store(_:for:)`'s clamp is written against: too big
+        // means refused on arrival, not admitted and then evicted. A store that
+        // quietly accepted it would make that clamp untestable.
+        let store = PinnedThumbnailStore(costLimit: 100)
+        store.insert(makeImage(side: 128), forKey: "big", cost: 101)
+        #expect(store.image(forKey: "big") == nil)
+        // Exactly the budget fits — which is what the clamp charges.
+        store.insert(makeImage(side: 128), forKey: "exact", cost: 100)
+        #expect(store.image(forKey: "exact") != nil)
+    }
+
+    @Test("re-inserting a key replaces it without double-charging the budget")
+    func reinsertReplaces() {
+        // Two decodes of one key can race (a visible load and a prefetch that
+        // both got past the cache check), so the same key really is written
+        // twice; charging it twice would evict a bystander for no reason.
+        let store = PinnedThumbnailStore(costLimit: 200)
+        store.insert(makeImage(side: 128), forKey: "a", cost: 100)
+        store.insert(makeImage(side: 192), forKey: "a", cost: 100)
+        store.insert(makeImage(side: 128), forKey: "b", cost: 100)
+        #expect(store.count == 2)
+        #expect(store.image(forKey: "a")?.width == 192)
+        #expect(store.image(forKey: "b") != nil)
+    }
+}
+
+/// The production store, checked for the two things about it that are decisions
+/// rather than defaults — **without** asserting that it holds anything.
+///
+/// Residency is the one claim `NSCache` will not honour, and asserting it here
+/// is what made fifteen tests flake. What is left is still worth pinning: the
+/// budget is the number that was asked for, and there is no count limit.
+@Suite("NSCacheThumbnailStore: cost, NOT count")
+struct NSCacheThumbnailStoreTests {
+
+    @Test("the byte budget is the one it was constructed with")
+    func costLimitIsHonoured() {
+        let store = NSCacheThumbnailStore(costLimit: 64 * 1024 * 1024)
+        #expect(store.costLimit == 64 * 1024 * 1024)
+    }
+
+    @Test("no count limit is set — the countLimit=512 thrash must not come back")
+    func noCountLimit() {
+        // 036 §1.4: the `ThumbnailCache` this replaced was `countLimit = 512`
+        // with no cost, which is what thrashes a 2000-item collection while the
+        // byte footprint stays unknowable. `0` is `NSCache` for "no limit".
+        #expect(NSCacheThumbnailStore(costLimit: 1 << 20).countLimit == 0)
+    }
+
+    @Test("a pipeline built the production way gets an NSCache-backed store")
+    func productionPipelineUsesNSCache() async {
+        // The convenience initialiser is what `ThumbnailPipeline.shared` and
+        // every app call site take, so it is worth one test that it still
+        // reaches a real cache and a real decode rather than a test double.
+        let probe = DecodeProbe()
+        let pipeline = ThumbnailPipeline(decode: probe.decode, totalCostLimit: 8 << 20)
+        _ = await pipeline.image(hash: "a", url: url("a"), bucket: 256)
+        // Not `cachedExact != nil` — that is the assertion this whole phase is
+        // about not making against an `NSCache`. The decode having run is the
+        // part that is actually guaranteed.
+        #expect(probe.callCount("a") == 1)
     }
 }
