@@ -132,15 +132,22 @@ nonisolated enum MediaFetcher {
 
         do {
             let (file, response) = try await session.download(for: request)
+            // **One removal, on every path out** (098 · finding 7). The two refusals below
+            // each removed the download themselves and the `adopt` path did not, so a file
+            // over the cap — the one case where the file is BIG — was left in the temporary
+            // directory of a process with a ~120 MB budget for the system to reclaim on its
+            // own schedule. `adopt` COPIES, so the download is this call's to delete
+            // whatever happens to it, and a `defer` is the only spelling of that which a
+            // new early return cannot forget.
+            defer { try? FileManager.default.removeItem(at: file) }
+
             if let expected = (response as? HTTPURLResponse)?.expectedContentLength,
                expected > Int64(InboxWriter.maximumPayloadBytes) {
                 ShareLog.share.info("media of \(expected, privacy: .public) bytes is over the cap")
-                try? FileManager.default.removeItem(at: file)
                 return nil
             }
             if let status = (response as? HTTPURLResponse)?.statusCode, status != 200 {
                 ShareLog.share.info("media fetch returned \(status, privacy: .public)")
-                try? FileManager.default.removeItem(at: file)
                 return nil
             }
             // The downloaded file lives in a temporary location the system reclaims, so

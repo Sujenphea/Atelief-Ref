@@ -15,12 +15,25 @@
 // os_log is thread-safe, so the isolation was never buying anything — it was only making
 // the diagnostic unreachable from the place that needs it.
 
+import AtelierCapture
 import Foundation
 import OSLog
 
 nonisolated enum ShareLog {
     /// This process's own bundle identifier, with the build's spelling as the fallback.
-    static let subsystem = Bundle.main.bundleIdentifier ?? "sujenphea.AtelierRefsMobile.Share"
+    ///
+    /// **The fallback is a constant and not a literal** (098 · finding 7). It was
+    /// `"sujenphea.AtelierRefsMobile.Share"`, hand-spelled here, beside a second
+    /// hand-spelling of the phone app's own identifier as `MobileLog.subsystem` — two
+    /// strings, in two targets, describing one `PRODUCT_BUNDLE_IDENTIFIER`, and an edit to
+    /// that setting would have rotted both without breaking or warning anything.
+    /// ``CompanionBundle`` is the one spelling, in the package both targets link, with a
+    /// test that reads the identifiers back out of `project.pbxproj`. `MobileLog` adopts it
+    /// in P6, which is the phase allowed to edit the phone app.
+    ///
+    /// `Bundle.main.bundleIdentifier` is still preferred over the constant: it is what this
+    /// process actually IS, where the constant is only what it is supposed to be.
+    static let subsystem = Bundle.main.bundleIdentifier ?? CompanionBundle.shareExtension
 
     /// Everything the share does: what arrived, what the page held, what was written.
     static let share = Logger(subsystem: subsystem, category: "share")

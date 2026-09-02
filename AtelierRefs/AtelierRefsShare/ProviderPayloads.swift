@@ -99,11 +99,25 @@ nonisolated enum ProviderPayloads {
     /// `loadDataRepresentation`, not `loadItem` — the latter cheerfully hands back a
     /// `UIImage`, which is a decoded bitmap this process must never hold (092 · S2).
     /// The fallback only: see ``loadImage(from:identifier:)``.
+    ///
+    /// **Its error is logged, and that is 098 · finding 7's one silent path.** This handler
+    /// was `{ data, _ in }` — the LAST route to an image's bytes, discarding the only
+    /// account of why it produced none. What the user then sees is `harvest` resolving to a
+    /// link (or to nothing) with no line anywhere saying the photo's bytes were asked for
+    /// and refused. That is the exact shape `ShareViewController` states as its own rule
+    /// for the path with no error to carry: the vocabulary lands in the log or nowhere.
     private static func loadData(
         from provider: NSItemProvider, identifier: String
     ) async -> Data? {
         await withCheckedContinuation { continuation in
-            _ = provider.loadDataRepresentation(forTypeIdentifier: identifier) { data, _ in
+            _ = provider.loadDataRepresentation(forTypeIdentifier: identifier) { data, error in
+                if data == nil {
+                    ShareLog.share.error(
+                        """
+                        no data representation for \(identifier, privacy: .public): \
+                        \(error.map { String(describing: $0) } ?? "no error given", privacy: .public)
+                        """)
+                }
                 continuation.resume(returning: data)
             }
         }

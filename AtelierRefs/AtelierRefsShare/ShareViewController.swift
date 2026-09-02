@@ -121,10 +121,12 @@ final class ShareViewController: UIViewController {
         // where a page was wanted, bytes with no URL beside them — said nothing at all.
         // Three separate investigations today ended at "which items did Safari send?",
         // and the answer existed each time and was thrown away. It is one line.
+        let arrived = Self.describe(items)
         ShareLog.share.info(
             """
             share arrived — items=\(items.count, privacy: .public) \
-            [\(Self.describe(items), privacy: .public)]
+            types=[\(arrived.types, privacy: .public)] \
+            \(arrived.content, privacy: .private)
             """)
 
         do {
@@ -143,7 +145,8 @@ final class ShareViewController: UIViewController {
                     """
                     share carried no web URL and no image bytes — \
                     items=\(items.count, privacy: .public) \
-                    types=[\(Self.describe(items), privacy: .public)]
+                    types=[\(arrived.types, privacy: .public)] \
+                    \(arrived.content, privacy: .private)
                     """)
                 model.card = .failed
                 return
@@ -265,10 +268,15 @@ final class ShareViewController: UIViewController {
         // before, because that is a share with nothing to degrade to.
         var oversized: (any Error)?
 
+        // Which image types the share OFFERED, whether or not any of them produced bytes.
+        // Non-empty with `image == nil` at the end is the silent downgrade below.
+        var offeredImages: [String] = []
+
         for item in items {
             title = title ?? item.attributedTitle?.string
             for provider in item.attachments ?? [] {
                 if image == nil, let identifier = ProviderPayloads.imageIdentifier(of: provider) {
+                    offeredImages.append(identifier)
                     do {
                         image = try await ProviderPayloads.loadImage(
                             from: provider, identifier: identifier)
@@ -290,9 +298,31 @@ final class ShareViewController: UIViewController {
 
         let page = await pageCapture()
 
-        switch ShareCapture.resolution(
-            image: image, urlString: urlString, title: title, page: page
-        ) {
+        let resolution = ShareCapture.resolution(
+            image: image, urlString: urlString, title: title, page: page)
+
+        // **The share said "photo" and the capture says "link"** (098 · finding 7). Both
+        // byte routes failed — no file representation and no data, or a refusal above the
+        // cap — a web URL was beside them, and `resolution` correctly falls back to a link.
+        // Correctly, and silently: the receipt reads "Saved to Unsorted" and nothing on the
+        // phone distinguishes the photo that saved from the photo that became its URL.
+        //
+        // **It logs at `.error` and does NOT show the failure card**, which is the decision
+        // and not an omission. The capture is real, durable, and carries the media URL as
+        // its `originalURL`, so the Mac resolves the picture at import; a failure card would
+        // claim a loss that did not happen and would leave the user re-sharing a photo that
+        // is already in the inbox. What the card cannot yet say — "saved as a link" — is a
+        // third card, which is a design decision and 093's to take, not this file's.
+        if !offeredImages.isEmpty, image == nil, case .resolved(.link) = resolution {
+            ShareLog.share.error(
+                """
+                image share saved as a LINK — every byte route failed for \
+                [\(offeredImages.joined(separator: " "), privacy: .public)]; \
+                refusal=\(oversized.map { String(describing: $0) } ?? "none", privacy: .public)
+                """)
+        }
+
+        switch resolution {
         case .resolved(let item):
             // A page resolved WITHOUT its own bytes cannot happen here — `resolution`
             // returns `.needsMedia` for that — so a `.page` case reaching this line
@@ -331,6 +361,13 @@ final class ShareViewController: UIViewController {
         // nowhere. `articles=` earns its place because the twitter branch scopes to
         // the focal `<article>`, and a scoping that picks wrong is indistinguishable
         // from a page with no media at every later point.
+        //
+        // **The counts are public and the URLs are not** (098 · finding 7). `media=`,
+        // `kinds=`, `articles=` and `metas=` are numbers and a closed vocabulary — they are
+        // what the line is for. `chose=` and `fallback=` are URLs a PAGE chose, on a page
+        // the user was signed in to, and a CDN URL carries a signed token and a post id in
+        // the clear. Same rule as `describe` above: private does not mean gone, it means
+        // the person debugging their own phone can still read it and a log dump cannot.
         let kinds = Set(harvest.media.map(\.kind.rawValue)).sorted()
         let articles = Set(harvest.media.compactMap(\.articleIndex)).sorted()
         ShareLog.share.info(
@@ -339,23 +376,46 @@ final class ShareViewController: UIViewController {
             kinds=[\(kinds.joined(separator: " "), privacy: .public)] \
             articles=[\(articles.map(String.init).joined(separator: " "), privacy: .public)] \
             metas=\(harvest.metas.count, privacy: .public) \
-            chose=\(capture.mediaURL ?? "none", privacy: .public) \
-            fallback=\(capture.mediaURLFallback ?? "none", privacy: .public)
+            chose=\(capture.mediaURL ?? "none", privacy: .private) \
+            fallback=\(capture.mediaURLFallback ?? "none", privacy: .private)
             """)
         return capture
     }
 
-    /// Every type identifier the share offered, and the two text fields that sometimes
-    /// carry a URL when no attachment does — the log line above is the only place any of
-    /// it survives.
-    private static func describe(_ items: [NSExtensionItem]) -> String {
+    /// What a share offered, split at the line the unified log is annotated along.
+    ///
+    /// **The split is the fix** (098 · finding 7). This was one string, interpolated
+    /// `privacy: .public`, and it carried `attributedContentText` and every
+    /// `attributedTitle` — which is a page's title, a message's compose text, and on some
+    /// hosts the shared URL itself, complete with any userinfo in it. `.public` in os_log
+    /// means legible in the clear to anyone who opens the unified log on that phone or
+    /// takes a sysdiagnose off it, and none of those fields is a diagnostic: the three
+    /// investigations that made this line exist all ended at *which items did Safari send*,
+    /// which is `types`.
+    ///
+    /// So `types` — a fixed vocabulary of UTIs, the whole diagnostic value — stays public,
+    /// and `content` is logged `.private`, which redacts unless someone has deliberately
+    /// installed the profile that unredacts it. The field is still THERE, which is what
+    /// matters: the vocabulary is recoverable by the person debugging their own device,
+    /// and not by a log dump.
+    private struct ShareDescription {
+        /// Every registered type identifier, space-separated. Public.
+        var types: String
+        /// The two text fields that sometimes carry a URL when no attachment does. Private.
+        var content: String
+    }
+
+    private static func describe(_ items: [NSExtensionItem]) -> ShareDescription {
         let types = items
             .flatMap { $0.attachments ?? [] }
             .flatMap(\.registeredTypeIdentifiers)
             .joined(separator: " ")
         let text = items.compactMap { $0.attributedContentText?.string }.joined(separator: "|")
         let titles = items.compactMap { $0.attributedTitle?.string }.joined(separator: "|")
-        return "\(types) text=\(text.isEmpty ? "none" : text) title=\(titles.isEmpty ? "none" : titles)"
+        return ShareDescription(
+            types: types,
+            content: "text=\(text.isEmpty ? "none" : text) "
+                + "title=\(titles.isEmpty ? "none" : titles)")
     }
 
     // MARK: - Gate 2: the footprint
@@ -371,8 +431,19 @@ final class ShareViewController: UIViewController {
     /// working as a regression check if anyone ever pulls decoding back into this process
     /// — which is the specific thing gate 2 exists to prevent.
     ///
-    /// Cheap enough to leave in: two syscalls on a path that has already done file I/O.
+    /// **Gate 2 is discharged (092:1025-1050), so Release stops paying for it**
+    /// (098 · finding 7). The measurement answered its question — a 16.3 MB payload cost
+    /// 0.2 MB of footprint — and what was left was two mach syscalls on every SUCCESSFUL
+    /// share, in a shipped extension, feeding a log line nobody reads. It stays under
+    /// `#if DEBUG` because the regression check is still the reason it was written: pull
+    /// decoding back into this process and a debug share says so immediately.
+    ///
+    /// Release returns the empty string rather than dropping the interpolation, so the
+    /// two builds' log lines differ by a trailing space and not by a format.
     private nonisolated static func footprint() -> String {
+        #if !DEBUG
+        return ""
+        #else
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(
             MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
@@ -384,5 +455,6 @@ final class ShareViewController: UIViewController {
         let mb = { (bytes: UInt64) in String(format: "%.1f", Double(bytes) / 1_048_576) }
         let used = outcome == KERN_SUCCESS ? mb(info.phys_footprint) : "?"
         return "footprint=\(used)MB headroom=\(mb(UInt64(os_proc_available_memory())))MB"
+        #endif
     }
 }
