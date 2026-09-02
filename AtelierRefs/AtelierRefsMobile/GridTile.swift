@@ -81,10 +81,14 @@ struct GridTile: View {
         }
     }
 
+    /// What VoiceOver calls this tile, and what a UI test taps by.
+    ///
+    /// One rule with the item detail's navigation title since 098 · P6: this was
+    /// `title(name:sourceTitle:) ?? platform(_:)`, which announced "Web" for a bare link
+    /// tile whose own card said `example.com` — the tile drew one answer and named itself
+    /// with another.
     private var accessibilityLabel: String {
-        BrowseFormat.title(
-            name: detail.asset.name, sourceTitle: detail.source.title)
-            ?? BrowseFormat.platform(detail.source.platform)
+        BrowseFormat.displayTitle(for: detail.asset, source: detail.source)
     }
 }
 

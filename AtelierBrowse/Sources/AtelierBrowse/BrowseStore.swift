@@ -254,6 +254,11 @@ public final class BrowseStore {
         try await requireLibrary().item(itemID, in: collectionID)
     }
 
+    /// Every collection an asset is in. See ``BrowseLibrary/memberships(of:)``.
+    public func memberships(of assetID: UUID) async throws -> [Collection] {
+        try await requireLibrary().memberships(of: assetID)
+    }
+
     // MARK: - Media
 
     public func gridThumbnailURL(for asset: Asset) -> URL? {

@@ -8,10 +8,19 @@
 //
 // **Read-only, and visibly so.** The Mac's Details section is the item's EDITABLE
 // surface: name, note, collection chips, tag chips, each with a verb behind it. None of
-// those verbs exist here (091 · D1), so the section shows the two fields that have
-// content and omits itself entirely when neither does — rather than rendering empty
-// text fields the user cannot type into. Visit is the one action, and it leaves the
-// app rather than changing the library.
+// those verbs exist here (091 · D1, and 098 closes 093's open question 1 as *no* — the Mac
+// stays the curation surface), so the section shows the fields that have content and omits
+// itself entirely when none do, rather than rendering empty text fields the user cannot
+// type into. Visit is the one action, and it leaves the app rather than changing the
+// library.
+//
+// **Completed by 098 · P6.** 093 § 7 left the full layout undecided and this file drew a
+// partial one: no collection, and a navigation title that was empty whenever the item had
+// neither a name nor a source title — which on this phone is every tier-1 link, since
+// nothing enriches one. The nine facts 098 · P6 asks for are the image, the title, the
+// author, the platform, the collection, the saved date, the dimensions and the source
+// link, and every one of them is worded by `BrowseFormat` — the same functions the Mac
+// uses since P4, so there is one rule per fact rather than two.
 //
 // The image is the 1280 tier, never the original blob — see
 // `LibraryMediaPaths.detailThumbnailSize`. Zoom is not here: 093 § 7 lists "what a
@@ -25,6 +34,10 @@ import SwiftUI
 struct ItemDetailScreen: View {
     let detail: CollectionItemDetail
     let imageURL: URL?
+    /// Every collection this asset is in — a second read, so it arrives after the first
+    /// paint and is empty until it does (see `ItemScreen`). Empty renders no row rather
+    /// than an empty one, which is also the honest state while it is still loading.
+    let collections: [Collection]
 
     @Environment(\.openURL) private var openURL
 
@@ -40,7 +53,10 @@ struct ItemDetailScreen: View {
             .padding(.bottom, MobileTheme.Spacing.xxl)
         }
         .background(MobileTheme.Colors.panel)
-        .navigationTitle(title ?? "")
+        // Never empty now: `displayTitle` falls through name → source title → the content's
+        // own idea of itself (a link's host, a post's author) → the platform. It used to be
+        // `title ?? ""`, which drew a bare bar for every unenriched link.
+        .navigationTitle(BrowseFormat.displayTitle(for: detail.asset, source: detail.source))
         .navigationBarTitleDisplayMode(.inline)
     }
 
@@ -102,20 +118,30 @@ struct ItemDetailScreen: View {
 
     /// "Details" — the Mac's editable surface, read-only and therefore only as much of
     /// it as has content. Omitted entirely when there is nothing to show.
+    ///
+    /// **Collections is a row and not chips** (098 · P6). The Mac draws each membership as
+    /// a removable chip beside an Add / Move popover (`ItemDetailView.swift:1907`); take the
+    /// three verbs away and what is left is a fact, which belongs in the same label / value
+    /// shape as every other fact on this screen. Last of the three because it is the one
+    /// that changes on the other device.
+    ///
+    /// In practice this section is now nearly always drawn, since every asset is in at
+    /// least Unsorted — the `if` remains for the moment before the memberships read lands
+    /// and for an asset whose last membership has gone.
     @ViewBuilder
     private var detailsSection: some View {
         let name = TextRules.nonBlank(detail.asset.name)
         let note = TextRules.nonBlank(detail.asset.note)
-        if name != nil || note != nil {
+        let inCollections = BrowseFormat.collectionNames(collections)
+        if name != nil || note != nil || inCollections != nil {
             DetailSection("Details") {
                 if let name { DetailRow("Name", name) }
                 if let note { DetailRow("Note", note) }
+                if let inCollections {
+                    DetailRow(collections.count == 1 ? "Collection" : "Collections", inCollections)
+                }
             }
         }
-    }
-
-    private var title: String? {
-        BrowseFormat.title(name: detail.asset.name, sourceTitle: detail.source.title)
     }
 
     private var sourceURL: URL? {

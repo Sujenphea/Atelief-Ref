@@ -133,6 +133,20 @@ public struct BrowseLibrary: Sendable {
             in: collectionID, id: itemID, includeArchived: false)
     }
 
+    /// Every collection an asset belongs to, in the read's own order (098 · P6).
+    ///
+    /// **A second read, and deliberately after the first.** The memberships are keyed on
+    /// the ASSET, and the asset id only exists once ``item(_:in:)`` has answered — so
+    /// these cannot run concurrently, and the detail screen does not try: it renders on
+    /// the first read and fills this row in when it lands. Gating the picture on a read
+    /// the picture does not need would be finding 13 again in miniature.
+    ///
+    /// Read-only, like everything else on this seam. The Mac's equivalent is chips with an
+    /// Add / Move popover behind them; the phone's is a line of text (091 · D1).
+    public func memberships(of assetID: UUID) async throws -> [Collection] {
+        try await services.collections(for: assetID)
+    }
+
     // MARK: - Items
 
     /// A collection's items, in the collection's OWN persisted sort mode, archived

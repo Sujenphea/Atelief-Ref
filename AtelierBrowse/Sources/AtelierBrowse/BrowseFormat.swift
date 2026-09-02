@@ -67,6 +67,57 @@ public enum BrowseFormat {
         TextRules.nonBlank(name) ?? TextRules.nonBlank(sourceTitle)
     }
 
+    /// What a screen calls this item when it has to call it something (098 · P6).
+    ///
+    /// **One rule, two call sites, and they used to be two rules.** `GridTile`'s
+    /// accessibility label was `title(name:sourceTitle:) ?? platform(_:)`; the item
+    /// detail's navigation title was `title(name:sourceTitle:)` and drew an EMPTY BAR when
+    /// that was nil. Meanwhile the tile's own link card had a third answer — the host name
+    /// — which the label it announced to VoiceOver did not use. So a bare link tile read
+    /// "example.com" and announced "Web", and its detail screen was untitled.
+    ///
+    /// The order is: what the user called it, then what the source called it, then what the
+    /// CONTENT can say about itself, then the platform. The third step is the one worth
+    /// having — a link knows its site and a post knows its author, and both are recognisable
+    /// where "Web" and "Twitter / X" are not. Never `nil`: every screen that asks has a
+    /// place it must put a string.
+    public static func displayTitle(for asset: Asset, source: Source) -> String {
+        if let title = title(name: asset.name, sourceTitle: source.title) { return title }
+        switch asset.content {
+        case .link(let link):
+            // `linkTitle` is title-then-host-then-the-raw-URL, and the raw URL is the one
+            // answer it can give that is not guaranteed to be a string: a stored `url` of
+            // `""` returns `""`, which is a title bar with nothing in it. `nonBlank` is
+            // where that falls through to the platform. Found by the property test rather
+            // than by reading, which is the reason that test is a loop over every kind and
+            // every platform instead of four examples.
+            return TextRules.nonBlank(linkTitle(link.title, url: link.url))
+                ?? platform(source.platform)
+        case .tweet(let tweet):
+            return author(name: tweet.authorName, handle: tweet.authorHandle)
+                ?? platform(source.platform)
+        case .image, .video, .color, .unknown:
+            return platform(source.platform)
+        }
+    }
+
+    /// The collections an item belongs to, as one line — or `nil` when it belongs to none,
+    /// which the read cannot produce for a membership the phone opened FROM one.
+    ///
+    /// **A line and not chips.** The Mac draws these as removable chips with an Add / Move
+    /// popover behind them (`ItemDetailView.swift:1907`), which is three verbs the phone
+    /// does not have (091 · D1, and 098 closes 093's open question 1 as *no*). What is left
+    /// once the verbs go is a fact, and a fact belongs in the same label / value row as
+    /// every other fact on that screen.
+    ///
+    /// Order is the read's — `AppServices.collections(for:)` — and is not re-sorted here: a
+    /// second opinion about ordering is how the Mac and the phone start disagreeing about
+    /// what an item is in.
+    public static func collectionNames(_ collections: [Collection]) -> String? {
+        let names = collections.compactMap { TextRules.nonBlank($0.name) }
+        return names.isEmpty ? nil : names.joined(separator: ", ")
+    }
+
     /// A link tile's title: the source's own title if it has one, else the site it came
     /// from, else the raw URL (098 · "also found").
     ///

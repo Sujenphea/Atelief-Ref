@@ -275,6 +275,62 @@ struct BrowseLibraryTests {
         }
     }
 
+    // MARK: - Memberships (098 · P6)
+
+    @Test("an item's memberships are the collections it is actually in")
+    func membershipsOfAnItem() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        let id = try await fixture.ingest(hashSeed: 1, capturedAt: date(2026, 1, 1))
+        let names = try await fixture.library.memberships(of: id).map(\.name)
+        // Every capture lands in Unsorted (092 · S3), which is why the item detail's
+        // Collections row is drawn on effectively every screen rather than occasionally.
+        #expect(names == ["Unsorted"])
+    }
+
+    @Test("filing an item moves it out of Unsorted, so the row names where it went")
+    func membershipsAfterFiling() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        let id = try await fixture.ingest(hashSeed: 1, capturedAt: date(2026, 1, 1))
+        let textures = try await fixture.services.createCollection(name: "Textures")
+        _ = try await fixture.services.addAssets([id], to: textures.id)
+
+        let names = try await fixture.library.memberships(of: id).map(\.name)
+        // **"Unsorted means not filed"** (`.change-log/298`): adding to a real collection
+        // drops the Unsorted membership rather than adding a second one. Pinned here
+        // because the phone's Collections row is a READING of this rule — it is why the
+        // row is singular on nearly every screen, and why the phone can show one line of
+        // text where the Mac shows a chip flow.
+        #expect(names == ["Textures"])
+    }
+
+    @Test("an item in two real collections names both, in the read's order")
+    func membershipsInTwoCollections() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        let id = try await fixture.ingest(hashSeed: 1, capturedAt: date(2026, 1, 1))
+        let textures = try await fixture.services.createCollection(name: "Textures")
+        let posters = try await fixture.services.createCollection(name: "Posters")
+        _ = try await fixture.services.addAssets([id], to: textures.id)
+        _ = try await fixture.services.addAssets([id], to: posters.id)
+
+        let names = Set(try await fixture.library.memberships(of: id).map(\.name))
+        #expect(names == ["Textures", "Posters"])
+    }
+
+    @Test("an asset nothing owns has no memberships, and that is not a throw")
+    func membershipsOfNothing() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+        // The Collections row is omitted rather than the screen failing — see
+        // `ItemScreen`'s `try?` and `BrowseFormat.collectionNames`.
+        #expect(try await fixture.library.memberships(of: UUID()).isEmpty)
+    }
+
     // MARK: - Media paths
 
     @Test("the grid tile's thumbnail is the 512 tier under the library root")

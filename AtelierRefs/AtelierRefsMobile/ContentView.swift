@@ -376,13 +376,18 @@ struct ItemScreen: View {
     let itemID: UUID
 
     @State private var detail: CollectionItemDetail?
+    /// Every collection the asset is in (098 · P6). A SECOND read, keyed on the asset id,
+    /// which only exists once the first has answered — so it cannot be concurrent with it
+    /// and deliberately does not try to be.
+    @State private var collections: [Collection] = []
     @State private var error: String?
 
     var body: some View {
         Group {
             if let detail {
                 ItemDetailScreen(
-                    detail: detail, imageURL: store.detailImageURL(for: detail.asset))
+                    detail: detail, imageURL: store.detailImageURL(for: detail.asset),
+                    collections: collections)
             } else if let error {
                 FailureNotice(message: error)
             } else {
@@ -395,8 +400,21 @@ struct ItemScreen: View {
                 // ONE row, by the pair of ids the route carries. This used to be
                 // `store.items(in:).first { }` — the whole P14 join, 0.293 s at 5,000
                 // rows (450), paid per tap to keep one of them (098 · finding 13).
-                detail = try await store.item(itemID, in: collectionID)
-                if detail == nil { error = "That item is no longer in the library." }
+                let found = try await store.item(itemID, in: collectionID)
+                detail = found
+                guard let found else {
+                    error = "That item is no longer in the library."
+                    return
+                }
+                // After the assignment above, so the picture is on screen while this runs.
+                // A row that appears a frame late is better than a picture that arrives a
+                // read late, which is the same trade the whole of finding 13 was about.
+                //
+                // `try?`: the memberships are ONE row of a screen whose other eight facts
+                // have already rendered. A read that fails here draws no Collections row,
+                // exactly as an item in no collection would — it must not be able to
+                // replace the item with an error screen.
+                collections = (try? await store.memberships(of: found.asset.id)) ?? []
             } catch {
                 self.error = BrowseFailure.message(for: error)
             }

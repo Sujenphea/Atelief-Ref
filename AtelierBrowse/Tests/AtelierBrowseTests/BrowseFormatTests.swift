@@ -187,4 +187,145 @@ struct BrowseFormatTests {
         #expect(BrowseFormat.title(name: " ", sourceTitle: "Theirs") == "Theirs")
         #expect(BrowseFormat.title(name: nil, sourceTitle: nil) == nil)
     }
+
+    // MARK: - What a screen calls an item (098 · P6)
+
+    @Test("the display title takes the name, then the source title")
+    func displayTitleTakesTheNames() {
+        #expect(
+            BrowseFormat.displayTitle(
+                for: Self.image(name: "Mine"), source: Self.source(title: "Theirs")) == "Mine")
+        #expect(
+            BrowseFormat.displayTitle(
+                for: Self.image(), source: Self.source(title: "Theirs")) == "Theirs")
+    }
+
+    @Test("a nameless picture falls back to its platform, never to nothing")
+    func displayTitleFallsBackToPlatform() {
+        // The old rule ended here and the item detail spelled it as `title ?? ""`, so an
+        // unnamed capture pushed a screen with a BLANK navigation bar.
+        #expect(
+            BrowseFormat.displayTitle(for: Self.image(), source: Self.source(platform: .pinterest))
+                == "Pinterest")
+        #expect(
+            BrowseFormat.displayTitle(for: Self.image(), source: Self.source(platform: .localDrag))
+                == "Dragged in")
+    }
+
+    @Test("a bare link names its site, which is what its own tile already drew")
+    func displayTitleOfABareLink() {
+        // Every tier-1 link share on this phone is nameless and titleless — nothing
+        // enriches one (098 · "also found") — so this is the ordinary case, not an edge.
+        // The tile drew the host and announced "Web"; now both say the same thing.
+        #expect(
+            BrowseFormat.displayTitle(
+                for: Self.link(url: "https://www.example.com/a/b?utm=1"),
+                source: Self.source(platform: .web)) == "example.com")
+    }
+
+    @Test("a link whose payload carries a title uses it, not the host")
+    func displayTitleOfATitledLink() {
+        #expect(
+            BrowseFormat.displayTitle(
+                for: Self.link(url: "https://example.com/x", title: "A concrete stair"),
+                source: Self.source(platform: .web)) == "A concrete stair")
+    }
+
+    @Test("a text post names its author, then falls back to the platform")
+    func displayTitleOfAPost() {
+        #expect(
+            BrowseFormat.displayTitle(
+                for: Self.tweet(authorName: "Ada", authorHandle: "@ada"),
+                source: Self.source(platform: .twitter)) == "Ada (@ada)")
+        #expect(
+            BrowseFormat.displayTitle(
+                for: Self.tweet(), source: Self.source(platform: .twitter)) == "Twitter / X")
+    }
+
+    @Test("the display title is never empty, for any content and any platform")
+    func displayTitleIsNeverEmpty() {
+        // The property the two call sites actually depend on: a navigation bar and a
+        // VoiceOver label both need a string, and neither has anywhere to put a `nil`.
+        let assets = [
+            Self.image(), Self.link(url: ""), Self.link(url: "not a url"), Self.tweet(),
+            Self.color(),
+        ]
+        for asset in assets {
+            for platform in Platform.allCases {
+                let title = BrowseFormat.displayTitle(
+                    for: asset, source: Self.source(platform: platform))
+                #expect(!title.isEmpty, "\(platform) / \(asset.kind) has no title")
+            }
+        }
+    }
+
+    // MARK: - Which collections an item is in (098 · P6)
+
+    @Test("collections are joined in the read's order, not re-sorted")
+    func collectionNamesKeepTheirOrder() {
+        let names = ["Unsorted", "Textures", "Concrete"]
+        #expect(
+            BrowseFormat.collectionNames(names.map(Self.collection))
+                == "Unsorted, Textures, Concrete")
+    }
+
+    @Test("one collection is one name with no separator")
+    func oneCollection() {
+        #expect(BrowseFormat.collectionNames([Self.collection("Posters")]) == "Posters")
+    }
+
+    @Test("no collections is nil, so the row is omitted rather than drawn empty")
+    func noCollections() {
+        #expect(BrowseFormat.collectionNames([]) == nil)
+        // A collection whose name is blank contributes nothing, and a list of only those
+        // is the same as no list — the same `nonBlank` rule every other field here uses.
+        #expect(BrowseFormat.collectionNames([Self.collection("  ")]) == nil)
+        #expect(
+            BrowseFormat.collectionNames([Self.collection(" "), Self.collection("Type")])
+                == "Type")
+    }
+
+    // MARK: - Fixtures
+
+    private static func source(
+        platform: Platform = .web, title: String? = nil
+    ) -> Source {
+        Source(id: UUID(), platform: platform, title: title, capturedAt: Date())
+    }
+
+    /// Built through `AssetPayload.jsonString()` rather than from hand-written JSON, so
+    /// these fixtures cannot encode a shape the app never stores.
+    private static func asset(
+        kind: AssetKind, name: String? = nil, payload: AssetPayload? = nil,
+        blobHash: String? = nil
+    ) -> Asset {
+        Asset(
+            id: UUID(), kind: kind, blobHash: blobHash, mimeType: nil, width: nil,
+            height: nil, fileSize: nil, downloadState: .downloaded, createdAt: Date(),
+            name: name, sourceId: UUID(), payload: payload?.jsonString())
+    }
+
+    private static func image(name: String? = nil) -> Asset {
+        asset(kind: .image, name: name, blobHash: String(repeating: "a", count: 64))
+    }
+
+    private static func color() -> Asset {
+        asset(kind: .color, payload: AssetPayload(color: ColorPayload(hex: "#B4472A")))
+    }
+
+    private static func link(url: String, title: String? = nil) -> Asset {
+        asset(kind: .link, payload: AssetPayload(link: LinkPayload(url: url, title: title)))
+    }
+
+    private static func tweet(authorName: String? = nil, authorHandle: String? = nil) -> Asset {
+        asset(
+            kind: .tweet,
+            payload: AssetPayload(
+                tweet: TweetPayload(
+                    tweetID: "1", authorHandle: authorHandle, authorName: authorName)))
+    }
+
+    private static func collection(_ name: String) -> Collection {
+        Collection(id: UUID(), name: name, createdAt: Date(), updatedAt: Date())
+    }
 }
