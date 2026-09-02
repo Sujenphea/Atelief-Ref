@@ -213,4 +213,194 @@ struct InboxLayoutTests {
             == layout.directory.standardizedFileURL)
         #expect(!InboxLayout.ingestedDirectoryName.hasPrefix("."))
     }
+
+    // MARK: - The payload mirrors (457)
+    //
+    // Each mirror is asserted against the `named:` resolver it replaced at the call
+    // sites, so the two ways of naming the same file cannot drift — and against the
+    // record mirror beside it, so a payload always lands in the directory its record did.
+
+    @Test("failedPayloadURL(for:) is failed/<uuid>.bin, beside failedRecordURL(for:)")
+    func failedPayloadMirror() throws {
+        let layout = try Self.makeLayout()
+        let id = UUID()
+
+        let url = layout.failedPayloadURL(for: id)
+        #expect(url.lastPathComponent == InboxLayout.payloadFileName(for: id))
+        #expect(url.deletingLastPathComponent().standardizedFileURL
+            == layout.failed.standardizedFileURL)
+        #expect(url == layout.failedURL(named: InboxLayout.payloadFileName(for: id)))
+        #expect(url.deletingLastPathComponent()
+            == layout.failedRecordURL(for: id).deletingLastPathComponent())
+        #expect(!url.hasDirectoryPath)
+    }
+
+    @Test("sentPayloadURL(for:) is sent/<uuid>.bin, beside sentRecordURL(for:)")
+    func sentPayloadMirror() throws {
+        let layout = try Self.makeLayout()
+        let id = UUID()
+
+        let url = layout.sentPayloadURL(for: id)
+        #expect(url.lastPathComponent == InboxLayout.payloadFileName(for: id))
+        #expect(url.deletingLastPathComponent().standardizedFileURL
+            == layout.sent.standardizedFileURL)
+        #expect(url == layout.sentURL(named: InboxLayout.payloadFileName(for: id)))
+        #expect(url.deletingLastPathComponent()
+            == layout.sentRecordURL(for: id).deletingLastPathComponent())
+    }
+
+    @Test("ingestedPayloadURL(for:) is ingested/<uuid>.bin, beside ingestedRecordURL(for:)")
+    func ingestedPayloadMirror() throws {
+        let layout = try Self.makeLayout()
+        let id = UUID()
+
+        let url = layout.ingestedPayloadURL(for: id)
+        #expect(url.lastPathComponent == InboxLayout.payloadFileName(for: id))
+        #expect(url.deletingLastPathComponent().standardizedFileURL
+            == layout.ingested.standardizedFileURL)
+        #expect(url == layout.ingestedURL(named: InboxLayout.payloadFileName(for: id)))
+        #expect(url.deletingLastPathComponent()
+            == layout.ingestedRecordURL(for: id).deletingLastPathComponent())
+    }
+
+    // MARK: - The retention plan (457)
+
+    /// The order IS the plan: the record first, then the payload. `InboxDrain.retain`
+    /// executes this list in order and `InboxFixtures.retain` executes the same list, so
+    /// this is the one place the order is stated and the one test that pins it.
+    @Test("a retention plan moves the record first, then its payload, into ingested/")
+    func retentionPlanOrder() throws {
+        let layout = try Self.makeLayout()
+        // A record naming its OWN sidecar — the writer's shape.
+        let id = UUID()
+        let own = InboxRecord(
+            id: id,
+            capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            request: Self.request(),
+            payloadFile: InboxLayout.payloadFileName(for: id))
+
+        let moves = layout.retentionMoves(for: own)
+
+        #expect(moves.map(\.file) == [.record, .payload])
+        #expect(moves[0].from == layout.recordURL(for: own.id))
+        #expect(moves[0].to == layout.ingestedRecordURL(for: own.id))
+        #expect(moves[1].from == layout.payloadURL(for: own.id))
+        #expect(moves[1].to == layout.ingestedPayloadURL(for: own.id))
+    }
+
+    @Test("a media-less record's plan is the record move alone")
+    func retentionPlanWithoutPayload() throws {
+        let layout = try Self.makeLayout()
+        let record = InboxRecord(
+            capturedAt: Date(timeIntervalSince1970: 1_700_000_000), request: Self.request())
+
+        let moves = layout.retentionMoves(for: record)
+
+        #expect(moves.map(\.file) == [.record])
+        #expect(moves[0].from == layout.recordURL(for: record.id))
+        #expect(moves[0].to == layout.ingestedRecordURL(for: record.id))
+    }
+
+    /// The same refusal `payloadURL(for record:)` makes, seen through the plan: a record
+    /// naming a neighbour's sidecar gets no payload move, so nothing executing the plan
+    /// can carry off a sibling capture.
+    @Test("a record naming a file that is not its own sidecar plans no payload move")
+    func retentionPlanRefusesForeignPayload() throws {
+        let layout = try Self.makeLayout()
+        let record = InboxRecord(
+            capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            request: Self.request(),
+            payloadFile: InboxLayout.payloadFileName(for: UUID()))
+
+        #expect(layout.retentionMoves(for: record).map(\.file) == [.record])
+    }
+
+    // MARK: - The shared primitives (457)
+
+    @Test("replacingMove overwrites whatever is at the destination and reports success")
+    func replacingMoveReplaces() throws {
+        let layout = try Self.makeLayout()
+        defer { try? FileManager.default.removeItem(at: layout.directory) }
+        try FileManager.default.createDirectory(
+            at: layout.directory, withIntermediateDirectories: true)
+        let from = layout.directory.appendingPathComponent("from.bin")
+        let to = layout.directory.appendingPathComponent("to.bin")
+        try Data([0x01]).write(to: from)
+        try Data([0x02]).write(to: to)
+
+        #expect(InboxLayout.replacingMove(from, to: to))
+
+        #expect(!FileManager.default.fileExists(atPath: from.path))
+        #expect(try Data(contentsOf: to) == Data([0x01]))
+    }
+
+    @Test("replacingMove of an absent source is false, and the destination is cleared")
+    func replacingMoveMissingSource() throws {
+        let layout = try Self.makeLayout()
+        defer { try? FileManager.default.removeItem(at: layout.directory) }
+        try FileManager.default.createDirectory(
+            at: layout.directory, withIntermediateDirectories: true)
+        let from = layout.directory.appendingPathComponent("absent.bin")
+        let to = layout.directory.appendingPathComponent("to.bin")
+        try Data([0x02]).write(to: to)
+
+        #expect(!InboxLayout.replacingMove(from, to: to))
+        // "Clearing the destination first" is unconditional: the caller asked for the
+        // source to be what sits there, and a stale file is not that.
+        #expect(!FileManager.default.fileExists(atPath: to.path))
+    }
+
+    @Test("removeIfPresent treats an absent file as already gone")
+    func removeIfPresentTolerant() throws {
+        let layout = try Self.makeLayout()
+        defer { try? FileManager.default.removeItem(at: layout.directory) }
+        try FileManager.default.createDirectory(
+            at: layout.directory, withIntermediateDirectories: true)
+        let file = layout.directory.appendingPathComponent("gone.bin")
+        try Data([0x03]).write(to: file)
+
+        #expect(InboxLayout.removeIfPresent(file))
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(InboxLayout.removeIfPresent(file))
+        #expect(InboxLayout.removeIfPresent(
+            layout.directory.appendingPathComponent("never-there.bin")))
+    }
+
+    @Test("a LazyDirectory creates nothing until prepared, then exactly once")
+    func lazyDirectoryPreparesOnce() throws {
+        let layout = try Self.makeLayout()
+        defer { try? FileManager.default.removeItem(at: layout.directory) }
+        var directory = InboxLayout.LazyDirectory(layout.failed)
+
+        #expect(!directory.isPrepared)
+        #expect(!FileManager.default.fileExists(atPath: layout.failed.path))
+
+        directory.prepare()
+        #expect(directory.isPrepared)
+        var isDirectory: ObjCBool = false
+        #expect(FileManager.default.fileExists(
+            atPath: layout.failed.path, isDirectory: &isDirectory))
+        #expect(isDirectory.boolValue)
+
+        // A second prepare does not recreate — a file put there in between survives it.
+        let marker = layout.failed.appendingPathComponent("marker")
+        try Data("x".utf8).write(to: marker)
+        directory.prepare()
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    /// Value semantics are the "once per pass" guarantee: a copy taken before `prepare()`
+    /// does not learn that the original prepared, and two passes share nothing.
+    @Test("a LazyDirectory is a value — a copy keeps its own flag")
+    func lazyDirectoryIsAValue() throws {
+        let layout = try Self.makeLayout()
+        defer { try? FileManager.default.removeItem(at: layout.directory) }
+        var first = InboxLayout.LazyDirectory(layout.sent)
+        let copy = first
+
+        first.prepare()
+
+        #expect(first.isPrepared)
+        #expect(!copy.isPrepared)
+    }
 }

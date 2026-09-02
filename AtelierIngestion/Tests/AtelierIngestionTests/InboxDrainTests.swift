@@ -1180,7 +1180,7 @@ struct InboxDrainTests {
         // the window between the drain's own check and the batch being primed. A test
         // cannot open that window from outside, so the rule is asserted where it is
         // implemented instead of being approximated by a sleep.
-        var pass = InboxDrain.Pass()
+        var pass = InboxDrain.Pass(layout: layout)
         drain(env).resolve(written, outcome: .cancelled, into: &pass)
 
         #expect(pass.summary == DrainSummary())
@@ -1205,7 +1205,7 @@ struct InboxDrainTests {
         // The impossible case — the coordinator returning fewer outcomes than inputs.
         // "We were told nothing about this record" and "this record was not
         // attempted" have the same correct response, and it is not to guess.
-        var pass = InboxDrain.Pass()
+        var pass = InboxDrain.Pass(layout: layout)
         drain(env).resolve(written, outcome: nil, into: &pass)
 
         #expect(pass.summary == DrainSummary())

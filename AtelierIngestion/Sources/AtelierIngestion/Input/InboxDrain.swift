@@ -231,57 +231,33 @@ public struct InboxDrain: Sendable {
     // MARK: - The state one pass carries
 
     /// What a pass accumulates as it goes: the summary being built, and whether
-    /// `inbox/failed/` has been created yet.
+    /// `inbox/failed/` and `inbox/ingested/` have been created yet.
     ///
     /// Threaded `inout` rather than stored, because ``InboxDrain`` is a value with
     /// no mutable state — two passes over the same inbox share nothing, which is
     /// what lets a caller drive cadence without asking this type anything.
     ///
-    /// The directory flag is here so `mkdir` happens at most ONCE per pass instead
-    /// of once per quarantined record at two separate call sites. Lazily, not up
-    /// front: a pass that quarantines nothing must not leave an empty `failed/`
-    /// behind, since `failed/` existing is the signal to a human that something
-    /// went wrong.
+    /// The two directories are `InboxLayout.LazyDirectory`s, which is where the
+    /// argument for "once per pass, and only when something goes in" now lives. Two
+    /// rather than one, separate rather than shared: a pass that quarantines nothing
+    /// and retains something must create one directory and not the other, and one flag
+    /// for two destinations would create whichever came second only by accident. The
+    /// ingested one is prepared only under ``InboxDrain/Retention/retainForExport`` —
+    /// a Mac drains with ``InboxDrain/Retention/discardWhenIngested`` forever and must
+    /// never grow a directory that describes a policy it does not have.
     struct Pass {
         /// The counts, and the unreadable-inbox flag.
         var summary = DrainSummary()
 
-        /// Whether `createDirectory` has already been attempted this pass.
-        private var preparedFailedDirectory = false
+        /// `inbox/failed/`, created on the first quarantine.
+        var failedDirectory: InboxLayout.LazyDirectory
 
-        /// The same flag for `inbox/ingested/`. Separate rather than shared: a pass that
-        /// quarantines nothing and retains something must create one directory and not
-        /// the other, and one flag for two destinations would create whichever came
-        /// second only by accident.
-        private var preparedIngestedDirectory = false
+        /// `inbox/ingested/`, created on the first retention.
+        var ingestedDirectory: InboxLayout.LazyDirectory
 
-        /// Spelled out because the synthesized memberwise initializer would inherit
-        /// the private flag's access and a test could not start a pass.
-        init() {}
-
-        /// Ensure `inbox/failed/` exists, once. Best-effort like everything on the
-        /// quarantine path: if the create fails, the moves that follow fail too and
-        /// the capture stays in the inbox to be quarantined again next pass.
-        mutating func prepareFailedDirectory(_ failed: URL) {
-            guard !preparedFailedDirectory else { return }
-            preparedFailedDirectory = true
-            try? FileManager.default.createDirectory(
-                at: failed, withIntermediateDirectories: true)
-        }
-
-        /// Ensure `inbox/ingested/` exists, once, and only under
-        /// ``InboxDrain/Retention/retainForExport``. Lazily for the reason `failed/` is:
-        /// a Mac drains with ``InboxDrain/Retention/discardWhenIngested`` forever and must
-        /// never grow a directory that describes a policy it does not have.
-        ///
-        /// Best-effort too, and the failure is survivable in the same shape: if the create
-        /// fails the moves fail, the record stays pending, and the next pass re-ingests it
-        /// onto the asset 18A dedup already has.
-        mutating func prepareIngestedDirectory(_ ingested: URL) {
-            guard !preparedIngestedDirectory else { return }
-            preparedIngestedDirectory = true
-            try? FileManager.default.createDirectory(
-                at: ingested, withIntermediateDirectories: true)
+        init(layout: InboxLayout) {
+            failedDirectory = InboxLayout.LazyDirectory(layout.failed)
+            ingestedDirectory = InboxLayout.LazyDirectory(layout.ingested)
         }
     }
 
@@ -349,7 +325,7 @@ public struct InboxDrain: Sendable {
     /// An unfinished pass under-reports rather than mis-reports, and the inbox itself
     /// is the accounting that survives.
     public func drainOnce() async -> DrainSummary {
-        var pass = Pass()
+        var pass = Pass(layout: layout)
 
         guard let pending = try? layout.pendingRecordURLs() else {
             pass.summary.inboxUnreadable = true
@@ -570,7 +546,12 @@ public struct InboxDrain: Sendable {
             }
         }
 
-        // A sidecar: same funnel, same validation, but the bytes never leave disk.
+        // A sidecar: same funnel, same validation, and the bytes are handed on as a
+        // `ByteSource.fileURL` rather than being read here. That saves THIS process
+        // nothing on its own — `IngestPipeline.storeBytesBlobFirst` reads the file
+        // whole into memory, hashes it and stores the blob from that `Data` — but it
+        // keeps the drain from holding a second copy while the pipeline holds the
+        // first, and it is the shape a streaming storage stage would consume unchanged.
         switch try CaptureDecoder.decodeFileInput(request, now: capturedAt) {
         case .bytes(let decoded):
             return DirectInputReader.remoteFile(
@@ -642,10 +623,9 @@ public struct InboxDrain: Sendable {
     /// re-ingested because its file could not be unlinked, and it will not be — the
     /// blob hash it would dedup against is now in the library.
     private func discard(_ record: InboxRecord) {
-        let fileManager = FileManager.default
-        try? fileManager.removeItem(at: layout.recordURL(for: record.id))
+        InboxLayout.removeIfPresent(layout.recordURL(for: record.id))
         if let payload = layout.payloadURL(for: record) {
-            try? fileManager.removeItem(at: payload)
+            InboxLayout.removeIfPresent(payload)
         }
     }
 
@@ -653,49 +633,29 @@ public struct InboxDrain: Sendable {
     /// `inbox/ingested/`, where the export can still read it and no pass will drain it
     /// again.
     ///
-    /// **The record moves FIRST, and it is the same argument ``discard(_:)`` makes.** The
-    /// two facts the inbox encodes are "pending", which is the record sitting at the top
-    /// level where ``InboxLayout/pendingRecordURLs()`` looks, and "complete", which is the
-    /// payload sitting beside it (``InboxLayout/isComplete(_:)``).
-    ///
-    /// Move the payload first and an interruption leaves a record that is still pending
-    /// and no longer complete — and `isComplete` returning false means one specific thing
-    /// to the next pass: *the writer is mid-flight, come back later*. That answer never
-    /// changes here, because there is no writer. The capture is skipped as incomplete on
-    /// every pass for the life of the device, and the phone's pending count never comes
-    /// down. A wedge.
-    ///
-    /// Move the record first and an interruption leaves an ingested record whose bytes are
-    /// still in the inbox top level. Nothing is confused by that: the enumeration takes
-    /// only `*.json`, so a stray `.bin` is invisible to every pass, and the export resolves
-    /// a payload from either site precisely so this state reads as a whole capture.
-    /// `InboxRetirement` reclaims the stray when the capture is cleared. A leak.
-    ///
-    /// Leak beats wedge — the same trade `discard(_:)` takes, the inverse of the order
-    /// `InboxWriter` commits in, and the opposite conclusion from ``quarantine(_:into:)``,
-    /// which moves the payload first because nothing ever reads `failed/` again and a whole
-    /// capture is what a human going in there needs to find.
+    /// **The record moves FIRST, and it is the same argument ``discard(_:)`` makes** —
+    /// stated once, at `InboxLayout.retentionMoves(for:)`, which is the list this
+    /// executes in order. It lives there rather than here because two suites in packages
+    /// that cannot link this one need to leave an inbox in exactly this state, and until
+    /// 457 each hand-rolled the order; now the drain and the fixture read the same plan.
+    /// The short form: the payload first would leave a record that is pending and never
+    /// complete, which the next pass reads as "writer mid-flight" forever (a wedge); the
+    /// record first leaves a stray `.bin` nothing enumerates and the export still finds
+    /// (a leak). Leak beats wedge — the inverse of the order `InboxWriter` commits in, and
+    /// the opposite conclusion from ``quarantine(_:into:)``, which moves the payload
+    /// first because nothing ever reads `failed/` again and a whole capture is what a
+    /// human going in there needs to find.
     ///
     /// If the record will not move, the payload is left where it is: moving it anyway
     /// would manufacture exactly the wedge above. The capture stays pending, the next pass
     /// re-ingests it, and 18A blob-hash dedup resolves that onto the asset already in the
     /// library rather than a second one — which is the same cost as crashing mid-drain,
-    /// and it is a cost this design has already accepted.
+    /// and it is a cost this design has already accepted. So the loop stops at the first
+    /// move that fails, and there is no third move to stop before.
     private func retain(_ record: InboxRecord, into pass: inout Pass) {
-        pass.prepareIngestedDirectory(layout.ingested)
-
-        guard move(
-            layout.recordURL(for: record.id),
-            to: layout.ingestedRecordURL(for: record.id))
-        else { return }
-
-        // Resolved through the record and not through the bare name, exactly as quarantine
-        // resolves it: `payloadURL(for record:)` is the accessor that holds `payloadFile`
-        // to being this record's OWN sidecar, and a record that named a neighbour's file
-        // must not have that name honoured by the thing that moves files.
-        if let from = layout.payloadURL(for: record),
-            let to = layout.ingestedURL(named: InboxLayout.payloadFileName(for: record.id)) {
-            move(from, to: to)
+        pass.ingestedDirectory.prepare()
+        for move in layout.retentionMoves(for: record) {
+            guard InboxLayout.replacingMove(move.from, to: move.to) else { return }
         }
     }
 
@@ -714,25 +674,25 @@ public struct InboxDrain: Sendable {
     /// out of the inbox without saying so in the summary.
     private func quarantine(_ record: InboxRecord, into pass: inout Pass) {
         pass.summary.quarantined += 1
-        pass.prepareFailedDirectory(layout.failed)
+        pass.failedDirectory.prepare()
 
         // The payload moves first, mirroring the writer: whatever is in `failed/`
         // should be a whole capture, not a record whose bytes are still elsewhere.
-        // Resolved through the record, not through the bare name: a record quarantined
-        // BECAUSE its `payloadFile` was refused must not have that name honoured on the
-        // way out, or quarantine becomes the thing that carries off a sibling capture.
-        if let from = layout.payloadURL(for: record),
-            let to = layout.failedURL(named: InboxLayout.payloadFileName(for: record.id)) {
-            move(from, to: to)
+        // The SOURCE is resolved through the record, not through the bare name: a
+        // record quarantined BECAUSE its `payloadFile` was refused must not have that
+        // name honoured on the way out, or quarantine becomes the thing that carries
+        // off a sibling capture. The destination is the layout's own mirror of it.
+        if let from = layout.payloadURL(for: record) {
+            InboxLayout.replacingMove(from, to: layout.failedPayloadURL(for: record.id))
         }
 
         let origin = layout.recordURL(for: record.id)
         let destination = layout.failedRecordURL(for: record.id)
         if let encoded = try? InboxRecord.makeEncoder().encode(record),
             (try? encoded.write(to: destination, options: .atomic)) != nil {
-            try? FileManager.default.removeItem(at: origin)
+            InboxLayout.removeIfPresent(origin)
         } else {
-            move(origin, to: destination)
+            InboxLayout.replacingMove(origin, to: destination)
         }
     }
 
@@ -744,14 +704,14 @@ public struct InboxDrain: Sendable {
     /// bytes behind would leak them silently. The name comes from the enumeration, so
     /// it is a plain component by construction.
     private func quarantineUnparsedRecord(at url: URL, into pass: inout Pass) {
-        pass.prepareFailedDirectory(layout.failed)
+        pass.failedDirectory.prepare()
 
         let stem = url.deletingPathExtension().lastPathComponent
         let payloadName = "\(stem).\(InboxLayout.payloadExtension)"
         if let from = layout.payloadURL(named: payloadName),
             FileManager.default.fileExists(atPath: from.path),
             let to = layout.failedURL(named: payloadName) {
-            move(from, to: to)
+            InboxLayout.replacingMove(from, to: to)
         }
 
         // `failedURL(named:)` and not ``InboxLayout/failedRecordURL(for:)``: there is
@@ -760,7 +720,7 @@ public struct InboxDrain: Sendable {
         // had. The guard cannot refuse an enumerated name — asking it anyway is what
         // keeps `failed/` composed in one place instead of two.
         if let destination = layout.failedURL(named: url.lastPathComponent) {
-            move(url, to: destination)
+            InboxLayout.replacingMove(url, to: destination)
         }
 
         pass.summary.quarantined += 1
@@ -774,26 +734,5 @@ public struct InboxDrain: Sendable {
     private func readRecord(at url: URL) -> InboxRecord? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? InboxRecord.makeDecoder().decode(InboxRecord.self, from: data)
-    }
-
-    /// Move a file, clearing the destination first. Best-effort: quarantine is
-    /// already the failure path, and failing to move a failed capture leaves it in
-    /// the inbox to be attempted (and quarantined) again rather than losing it.
-    ///
-    /// Reports whether it worked, and the result is discardable because only one caller
-    /// wants it: ``retain(_:into:)`` has a second move to decide about, and doing that one
-    /// after this one failed is what turns a leak into a wedge. Quarantine has no such
-    /// decision to make — both of its moves are unconditional, and a capture that will not
-    /// leave the inbox is quarantined again next pass.
-    @discardableResult
-    private func move(_ from: URL, to destination: URL) -> Bool {
-        let fileManager = FileManager.default
-        try? fileManager.removeItem(at: destination)
-        do {
-            try fileManager.moveItem(at: from, to: destination)
-            return true
-        } catch {
-            return false
-        }
     }
 }

@@ -1,12 +1,13 @@
 // AtelierCapture — taking a capture out of the pending set without losing it (096 · 3B).
 //
-// **The problem this closes.** iOS never drains its inbox (`InboxDrain` lives in
-// AtelierIngestion, which imported AppKit and did not build there — `.change-log/452` fixed
-// the build, and nothing on the phone calls the drain yet), so a capture made on the phone
-// is a record plus a payload file, forever. `CaptureExport` reads ALL pending records
-// on every run and `InboxArchive` deliberately deletes nothing afterwards — 091 · D4's
-// reasoning, and it is right: the phone cannot know whether a share sheet was cancelled, an
-// AirDrop failed, or an import ever ran, and import idempotency exists so re-sending is free.
+// **The problem this closes.** When this was written iOS never drained its inbox
+// (`InboxDrain` lives in AtelierIngestion, which imported AppKit and did not build there;
+// `.change-log/452` fixed the build and 454 wired the drain), so a capture made on the phone
+// was a record plus a payload file, forever. It still is, from the export's point of view:
+// `CaptureExport` reads ALL pending records on every run and `InboxArchive` deliberately
+// deletes nothing afterwards — 091 · D4's reasoning, and it is right: the phone cannot know
+// whether a share sheet was cancelled, an AirDrop failed, or an import ever ran, and import
+// idempotency exists so re-sending is free.
 //
 // The consequence was never written down. Every export contained every capture ever made:
 // export twelve re-sends the same two hundred payloads export eleven sent, `inbox/` grows for
@@ -41,9 +42,9 @@
 // written to end, deferred by one directory. So an ingested record and its payload are
 // deleted outright.
 //
-// The `sent/` path is not a fallback and is not dead: the Mac-less phone — every phone
-// until 096 · 4's Phase 3 wires the drain, and any phone whose drain has not run — retires
-// records that were never ingested, and those still move.
+// The `sent/` path is not a fallback and is not dead: a phone whose drain has not run yet
+// — the share landed while the app was closed and the user cleared before the next launch
+// — retires records that were never ingested, and those still move.
 
 import Foundation
 
@@ -104,10 +105,9 @@ public enum InboxRetirement {
 
         let fileManager = FileManager.default
         // Lazily, and once — a pass that retires nothing must not leave an empty `sent/`
-        // behind, for the same reason the drain does not leave an empty `failed/`: the
-        // directory existing is itself a signal to whoever goes looking. A pass that only
+        // behind, for the reason `InboxLayout.LazyDirectory` gives. A pass that only
         // deletes ingested records creates nothing at all.
-        var preparedDirectory = false
+        var sentDirectory = InboxLayout.LazyDirectory(layout.sent)
 
         for id in ids {
             let hasPending = fileManager.fileExists(
@@ -126,11 +126,7 @@ public enum InboxRetirement {
                 succeeded = delete(id, in: layout, reclaimingInboxPayload: !hasPending)
             }
             if hasPending {
-                if !preparedDirectory {
-                    preparedDirectory = true
-                    try? fileManager.createDirectory(
-                        at: layout.sent, withIntermediateDirectories: true)
-                }
+                sentDirectory.prepare()
                 // Evaluated first so the move actually happens: `&&` short-circuits on the
                 // left, and a capture must not be skipped because the other half of an
                 // impossible pair failed.
@@ -157,17 +153,15 @@ public enum InboxRetirement {
     /// A payload that will not move stops the retirement where it stands, rather than
     /// retiring a record away from bytes still sitting in the inbox.
     private static func moveToSent(_ id: UUID, in layout: InboxLayout) -> Bool {
-        let fileManager = FileManager.default
-        // Resolved through the layout, not composed here — the guard that stops a name
-        // escaping the inbox is the same one `failedURL(named:)` applies, asked in the
-        // one place that owns it.
-        let payloadName = InboxLayout.payloadFileName(for: id)
+        // Both destinations resolved through the layout's mirrors, not composed here — a
+        // destination built by hand at a call site is a destination that drifts.
         let payload = layout.payloadURL(for: id)
-        if fileManager.fileExists(atPath: payload.path),
-           let destination = layout.sentURL(named: payloadName) {
-            guard move(payload, to: destination) else { return false }
+        if FileManager.default.fileExists(atPath: payload.path) {
+            guard InboxLayout.replacingMove(payload, to: layout.sentPayloadURL(for: id))
+            else { return false }
         }
-        return move(layout.recordURL(for: id), to: layout.sentRecordURL(for: id))
+        return InboxLayout.replacingMove(
+            layout.recordURL(for: id), to: layout.sentRecordURL(for: id))
     }
 
     /// Retire a capture the local library already holds: delete it.
@@ -187,47 +181,17 @@ public enum InboxRetirement {
     private static func delete(
         _ id: UUID, in layout: InboxLayout, reclaimingInboxPayload: Bool
     ) -> Bool {
-        guard remove(layout.ingestedRecordURL(for: id)) else { return false }
-
-        let payloadName = InboxLayout.payloadFileName(for: id)
-        if let retained = layout.ingestedURL(named: payloadName) {
-            remove(retained)
+        guard InboxLayout.removeIfPresent(layout.ingestedRecordURL(for: id)) else {
+            return false
         }
+
+        // The record is the fate; a payload that survives either remove is bytes nothing
+        // refers to, which the paragraph above already accepted — so the results are
+        // dropped on purpose.
+        InboxLayout.removeIfPresent(layout.ingestedPayloadURL(for: id))
         if reclaimingInboxPayload {
-            remove(layout.payloadURL(for: id))
+            InboxLayout.removeIfPresent(layout.payloadURL(for: id))
         }
         return true
-    }
-
-    /// Move a file, clearing the destination first. Mirrors `InboxDrain.move` — a retire of
-    /// an id already in `sent/` (a second press, a re-export of the same capture) overwrites
-    /// rather than failing, since the two files are the same capture by construction.
-    private static func move(_ from: URL, to destination: URL) -> Bool {
-        let fileManager = FileManager.default
-        try? fileManager.removeItem(at: destination)
-        do {
-            try fileManager.moveItem(at: from, to: destination)
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    /// Delete a file, treating an absent one as done. A media-less capture has no payload
-    /// to reclaim and a second press has nothing left to delete; neither is a failure, and
-    /// only a file that is there and will not go counts as one.
-    ///
-    /// The result is discardable because the record is the fate: a payload that survives is
-    /// bytes nothing refers to, which the paragraph above already accepted.
-    @discardableResult
-    private static func remove(_ url: URL) -> Bool {
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: url.path) else { return true }
-        do {
-            try fileManager.removeItem(at: url)
-            return true
-        } catch {
-            return false
-        }
     }
 }

@@ -1,12 +1,12 @@
 // AtelierArchive — the phone's captures as an archive the Mac can import (092 · S6).
 //
-// **What the phone actually has to send, which is not its library.** iOS never drains its
-// inbox — `InboxDrain` lives in AtelierIngestion, which did not build there when this was
-// written and now does (`.change-log/452`), with no iOS caller yet — so a capture
-// made on the phone is a RECORD plus a payload file in `inbox/`, and never becomes an
-// asset row on the device that captured it. The phone's SQLite library holds only what has
-// been synced back to it. So "export what the phone captured" means reading the inbox, not
-// the library, and this file is the only writer in the program that starts from records.
+// **What the phone actually has to send, which is not its library.** When this was written
+// iOS never drained its inbox — `InboxDrain` lives in AtelierIngestion, which did not build
+// there (`.change-log/452` fixed that, and 454 wired the drain) — so a capture made on the
+// phone was a RECORD plus a payload file in `inbox/`, and never became an asset row on the
+// device that captured it. The phone's SQLite library held only what had been synced back
+// to it. So "export what the phone captured" means reading the inbox, not the library, and
+// this file is the only writer in the program that starts from records.
 //
 // **And that stays true once the phone does drain.** 096 · 4 gives `InboxDrain` a retention
 // policy so the phone can ingest a share into its own grid without destroying the record —
@@ -357,20 +357,18 @@ public nonisolated enum InboxArchive {
     /// this reads as the whole capture it is.
     ///
     /// The name is the record's own throughout: `payloadURL(for record:)` is what refuses a
-    /// record naming a neighbour's sidecar, and the `ingested/` candidate is composed from
-    /// ``InboxLayout/payloadFileName(for:)`` rather than from `payloadFile`, so the second
-    /// site cannot honour a name the first one rejected.
+    /// record naming a neighbour's sidecar, and the `ingested/` candidate is the layout's
+    /// mirror for the record's ID — ``InboxLayout/ingestedPayloadURL(for:)`` — rather than
+    /// anything derived from `payloadFile`, so the second site cannot honour a name the
+    /// first one rejected.
     private static func payloadSite(
         of record: InboxRecord, layout: InboxLayout
     ) -> URL? {
         guard let inInbox = layout.payloadURL(for: record) else { return nil }
         let fileManager = FileManager.default
         if fileManager.fileExists(atPath: inInbox.path) { return inInbox }
-        guard let retained = layout.ingestedURL(
-            named: InboxLayout.payloadFileName(for: record.id)),
-            fileManager.fileExists(atPath: retained.path)
-        else { return inInbox }
-        return retained
+        let retained = layout.ingestedPayloadURL(for: record.id)
+        return fileManager.fileExists(atPath: retained.path) ? retained : inInbox
     }
 
     /// The facts about a payload file an `AssetEntry` needs, read from its header.
