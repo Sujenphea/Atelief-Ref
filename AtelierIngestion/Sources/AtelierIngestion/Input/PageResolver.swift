@@ -14,6 +14,9 @@
 // the thin guarded network layer around it. og-tags only in v1 (no oEmbed discovery
 // request — added later if the hit-rate disappoints).
 
+// `SSRFGuard` is `AtelierCapture`'s type behind a typealias (457); a default
+// argument value of `SSRFGuard()` needs the defining module imported by name.
+import AtelierCapture
 import Foundation
 
 /// A resolved page's link metadata. Every field is best-effort — a page may expose

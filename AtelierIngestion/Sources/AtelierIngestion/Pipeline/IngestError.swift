@@ -30,6 +30,18 @@ public enum IngestError: Error, Equatable {
     /// truncated bytes, or missing the properties needed to read dimensions.
     case decodeFailed
 
+    /// The header declares more pixels than this host will decode (457; 098 ·
+    /// finding 3). Refused BEFORE any decode, blob write or thumbnail from the
+    /// dimensions `ImageMetadata.extract` reads out of the container, so a hostile
+    /// 30,000 × 30,000 PNG costs a header read and nothing else. `pixels` is the
+    /// declared area (`width × height`, display-oriented) and `limit` the cap the
+    /// pipeline was built with — nil on the Mac, where there is no cap and this
+    /// case is never produced.
+    ///
+    /// Terminal, not transient: a header does not shrink between attempts, so a
+    /// drain that counts this against `attempts` is right to.
+    case pixelAreaExceeded(pixels: Int, limit: Int)
+
     /// Thumbnail generation failed for one or more tiers.
     case thumbnailFailed
 

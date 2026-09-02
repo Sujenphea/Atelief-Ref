@@ -21,6 +21,9 @@
 
 import Foundation
 
+// `SSRFGuard` is `AtelierCapture`'s type behind a typealias (457); a default
+// argument value of `SSRFGuard()` needs the defining module imported by name.
+import AtelierCapture
 import AtelierCore
 
 /// A typed failure downloading a remote image (backlog B1). `Equatable` so tests

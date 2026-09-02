@@ -177,11 +177,13 @@ public enum DirectInputReader {
     ///
     /// The distinction the two names draw is media type, and media type is not what
     /// this factory decides: the pipeline sniffs the bytes and classifies the asset
-    /// itself. What it decides is that the bytes stay on disk. The share extension
-    /// wrote them to a `.bin` sidecar precisely so no process would hold them in
-    /// memory; reading them into a `Data` here to build a `.data` source would undo
-    /// that at the last step, for a pipeline that is only going to write them back
-    /// out to a blob.
+    /// itself. What it decides is that the bytes are handed on as a FILE. That is
+    /// not the same as staying on disk — `IngestPipeline.storeBytesBlobFirst` reads
+    /// a `.fileURL` whole, hashes it and stores the blob from that `Data` — but it
+    /// means the drain never holds a copy of its own beside the pipeline's, and it
+    /// is the shape a streaming storage stage would consume unchanged (098 · P2).
+    /// Reading the sidecar into a `Data` HERE would add a second resident copy for
+    /// a pipeline that is going to make its own.
     public static func remoteFile(
         fileURL: URL, provenance: SourceDraft, into collectionID: UUID
     ) -> IngestInput {

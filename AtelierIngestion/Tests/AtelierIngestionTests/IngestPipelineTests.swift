@@ -323,6 +323,139 @@ struct IngestPipelineTests {
         #expect(env.blobFiles().isEmpty)
     }
 
+    // MARK: - The pixel-area gate (457; 098 · finding 3)
+    //
+    // The gate reads the header and nothing else, so the assertion that matters is
+    // what a refusal leaves behind: no blob, no thumbnail, no staged file, no row. A
+    // gate placed after the blob write would pass a "returns .failed" test and still
+    // leak a blob per hostile share.
+
+    /// A pipeline over `env` with a cap, and everything else as the default.
+    private static func capped(_ env: TempPipeline, at pixels: Int) -> IngestPipeline {
+        IngestPipeline(store: env.store, services: env.services, maximumPixelArea: pixels)
+    }
+
+    @Test("an image exactly at the cap ingests — the boundary is inclusive")
+    func atTheCapIngests() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let bytes = try FixtureImages.solidImage(width: 300, height: 200, format: .png)
+
+        let outcome = await Self.capped(env, at: 300 * 200).ingest(Self.input(bytes, into: env))
+
+        guard case .ingested(let asset, _) = outcome else {
+            Issue.record("expected .ingested, got \(outcome)")
+            return
+        }
+        let hash = try #require(asset.blobHash)
+        #expect(env.store.hasBlob(hash: hash, fileExtension: "png"))
+        for tier in ThumbnailTier.allCases {
+            #expect(env.store.hasThumbnail(
+                hash: hash, size: tier.rawValue, fileExtension: "jpg"))
+        }
+    }
+
+    @Test("one pixel over the cap → .failed(.pixelAreaExceeded), and nothing on disk")
+    func onePixelOverIsRefusedBeforeAnyWrite() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let bytes = try FixtureImages.solidImage(width: 300, height: 200, format: .png)
+
+        let outcome = await Self.capped(env, at: 300 * 200 - 1)
+            .ingest(Self.input(bytes, into: env))
+
+        guard case .failed(let error) = outcome else {
+            Issue.record("expected .failed, got \(outcome)")
+            return
+        }
+        #expect(error == .pixelAreaExceeded(pixels: 60_000, limit: 59_999))
+        // Refused from the header: no blob, no tier, no staging residue, no row.
+        #expect(env.blobFiles().isEmpty)
+        #expect(env.thumbnailFiles().isEmpty)
+        #expect(env.cacheFiles().isEmpty)
+        #expect(try await env.services.searchAssets(text: nil).isEmpty)
+    }
+
+    @Test("nil is no cap — the Mac's default, and the same image ingests")
+    func nilCapIsNoCap() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        #expect(env.pipeline.maximumPixelArea == nil)
+        let bytes = try FixtureImages.solidImage(width: 1200, height: 900, format: .png)
+
+        let outcome = await env.pipeline.ingest(Self.input(bytes, into: env))
+
+        guard case .ingested(let asset, _) = outcome else {
+            Issue.record("expected .ingested, got \(outcome)")
+            return
+        }
+        #expect(asset.width == 1200)
+        #expect(asset.height == 900)
+    }
+
+    /// The card-image path shares the storage stage, so it shares the gate — a tweet
+    /// whose picture is over the cap is refused whole rather than persisted picture-less.
+    @Test("a tweet's card image is gated too, and the tweet is not persisted without it")
+    func contentWithBytesIsGated() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let bytes = try FixtureImages.solidImage(width: 300, height: 200, format: .png)
+        let input = IngestInput(
+            content: .tweet(tweetID: "https://x.com/ava/status/1", text: "hello",
+                            authorHandle: "@ava", media: []),
+            image: .data(bytes),
+            provenance: Self.twitterProvenance("https://x.com/ava/status/1"),
+            collectionID: env.collectionID)
+
+        let outcome = await Self.capped(env, at: 59_999).ingest(input)
+
+        guard case .failed(let error) = outcome else {
+            Issue.record("expected .failed, got \(outcome)")
+            return
+        }
+        #expect(error == .pixelAreaExceeded(pixels: 60_000, limit: 59_999))
+        #expect(env.blobFiles().isEmpty)
+        #expect(try await env.services.searchAssets(text: nil).isEmpty)
+    }
+
+    /// Area is orientation-invariant: a 300 × 200 stored as 200 × 300 with an EXIF
+    /// rotation is the same number of pixels, and a cap that read the raw stored size
+    /// would agree — but it must not double-count or swap into a different product.
+    @Test("an EXIF-rotated image is measured by its area, which orientation cannot change")
+    func orientedImageAreaIsInvariant() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let bytes = try FixtureImages.orientedImage(pixelWidth: 300, pixelHeight: 200)
+
+        let outcome = await Self.capped(env, at: 300 * 200).ingest(Self.input(bytes, into: env))
+
+        guard case .ingested(let asset, _) = outcome else {
+            Issue.record("expected .ingested, got \(outcome)")
+            return
+        }
+        // Display-oriented, as `ImageMetadata` reports it — and still 60,000 pixels.
+        #expect(asset.width == 200)
+        #expect(asset.height == 300)
+    }
+
+    /// The product is checked, not trusted: a header declaring dimensions whose product
+    /// overflows `Int` is the input a cap exists for, and a wrapped product could land
+    /// under the limit.
+    @Test("an overflowing width × height is over any cap, reported as Int.max")
+    func overflowingAreaIsOverTheCap() {
+        let hostile = ImageMetadata(
+            width: Int.max, height: 2, mimeType: "image/png", kind: .image,
+            fileExtension: "png")
+
+        #expect(throws: IngestError.pixelAreaExceeded(pixels: Int.max, limit: 1_000_000)) {
+            try IngestPipeline.checkPixelArea(of: hostile, against: 1_000_000)
+        }
+        // And a nil limit never throws, whatever the header says.
+        #expect(throws: Never.self) {
+            try IngestPipeline.checkPixelArea(of: hostile, against: nil)
+        }
+    }
+
     @Test("file URL input ingests just like in-memory bytes")
     func fileURLIngests() async throws {
         let env = try await makeTempPipeline()

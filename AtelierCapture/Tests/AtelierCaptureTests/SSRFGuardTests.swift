@@ -1,14 +1,18 @@
-// AtelierIngestion — SSRF guard tests (001 · C2b)
+// AtelierCapture — SSRF guard tests (001 · C2b; moved with the guard in 457)
 //
-// The guard is the security boundary for app-side page/image resolution, so its IP
-// classification + validation are unit-tested exhaustively with an INJECTED resolver
-// (no real DNS): every private / loopback / link-local / ULA / multicast range, the
-// IPv4-mapped-v6 case, IP literals, and the scheme / unresolvable / mixed-address
-// paths. A miss here is an SSRF hole, so the matrix is deliberately broad.
+// The guard is the security boundary for every fetch of attacker-influenceable content
+// — the Mac's page/image resolution and, from 098 · P5, the share extension's tier-2
+// media fetch — so its IP classification + validation are unit-tested exhaustively with
+// an INJECTED resolver (no real DNS): every private / loopback / link-local / ULA /
+// multicast range, the IPv4-mapped-v6 case, IP literals, and the scheme / unresolvable /
+// mixed-address paths. A miss here is an SSRF hole, so the matrix is deliberately broad.
+//
+// Moved unchanged apart from the module it imports: the seam is the same seam, and an
+// assertion that had to change would have meant the move was not clean.
 
 import Foundation
 import Testing
-@testable import AtelierIngestion
+@testable import AtelierCapture
 
 @Suite("SSRF guard (001 · C2b)")
 struct SSRFGuardTests {

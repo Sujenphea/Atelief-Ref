@@ -10,8 +10,14 @@ import Foundation
 import AtelierCore
 
 /// Where an item's raw bytes come from: already in memory (a paste) or a file on
-/// disk (a drag). The pipeline reads both into a single `Data` (images are
-/// modest); a file that can't be read maps to `.unreadableSource`.
+/// disk (a drag, an inbox sidecar). The pipeline reads both into a single `Data`
+/// at `IngestPipeline.storeBytesBlobFirst` — a `.fileURL` is `Data(contentsOf:)`
+/// then hashed and stored from memory — so the case saves the CALLER's memory,
+/// not the pipeline's; what bounds the read is the producer's own cap (an inbox
+/// payload is at most `InboxWriter.maximumPayloadBytes`, 64 MiB). A file that
+/// can't be read maps to `.unreadableSource`. A streaming stage that keeps a
+/// `.fileURL` on disk is deferred until a device timing says it is needed
+/// (098 · P2).
 public enum ByteSource: Sendable {
     /// Bytes already resident in memory — e.g. a pasteboard image.
     case data(Data)

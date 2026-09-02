@@ -32,6 +32,21 @@ public struct IngestPipeline: Sendable {
     /// The thumbnail tiers generated eagerly at ingest (A4). Defaults to every
     /// defined tier (128 / 512 / 1280).
     public let tiers: [ThumbnailTier]
+    /// The most pixels (`width × height`, as the container's header declares them)
+    /// this host will decode, or `nil` for no cap (457; 098 · finding 3).
+    ///
+    /// Checked from the header metadata alone, BEFORE the blob is stored and before
+    /// any thumbnail decode, so an image over the cap costs a hash and a header
+    /// read and leaves nothing on disk. It exists for the phone: `Validation` only
+    /// asks that dimensions be positive, so a very large PNG decodes unbounded, and
+    /// on a device with a jetsam ceiling that is a deterministic crash on every
+    /// launch until the record is quarantined. The Mac has RAM to spend and the
+    /// user watching, so its default is no cap; the phone's drain states its own
+    /// beside its narrowed `tiers`, for the same reason it states those.
+    ///
+    /// A parameter beside `tiers` rather than a platform check, so the cap is a
+    /// fact at the call site and a host test can exercise both sides of it.
+    public let maximumPixelArea: Int?
     /// Optional per-ingest phase-timing sink (Phase 8, 16A) — the app logs slow
     /// thumbnail phases here to reveal a stall. Nil ⇒ timing is measured but not
     /// emitted (a handful of cheap clock reads, no behaviour change).
@@ -41,11 +56,13 @@ public struct IngestPipeline: Sendable {
         store: MediaStore,
         services: AppServices,
         tiers: [ThumbnailTier] = ThumbnailTier.allCases,
+        maximumPixelArea: Int? = nil,
         timing: (@Sendable (IngestTiming) -> Void)? = nil
     ) {
         self.store = store
         self.services = services
         self.tiers = tiers
+        self.maximumPixelArea = maximumPixelArea
         self.timing = timing
     }
 
@@ -75,7 +92,8 @@ public struct IngestPipeline: Sendable {
     /// The stages, in blob-first order (A2) with the P14 short-circuit:
     /// 1. obtain the bytes (in-memory, or read the file URL);
     /// 2. content-hash them (`ContentHasher`, streamed-equivalent digest);
-    /// 3. extract byte-derived metadata (dims / mime / kind / extension, C7);
+    /// 3. extract byte-derived metadata (dims / mime / kind / extension, C7), and
+    ///    refuse the item here if its declared area exceeds ``maximumPixelArea``;
     /// 4. **blob-first + P14**: store the blob only if absent, then generate +
     ///    store only the MISSING thumbnail tiers (a fully-present blob+tiers does
     ///    no decode/thumbnail work at all);
@@ -138,8 +156,12 @@ public struct IngestPipeline: Sendable {
     private func storeBytesBlobFirst(
         _ byteSource: ByteSource, clock: ContinuousClock
     ) async throws -> StoredBytes {
-        // 1. Bytes: in-memory as-is; a file URL is read now (a read failure —
-        //    missing/unreadable file — maps to `.unreadableSource`).
+        // 1. Bytes: in-memory as-is; a file URL is read WHOLE into memory now (a
+        //    read failure — missing/unreadable file — maps to `.unreadableSource`).
+        //    This is the one place a `.fileURL` stops being a file: the hash below
+        //    and `storeBlob(_:)` both take the `Data`. A streaming stage over
+        //    `ContentHasher.hash(contentsOf:)` / `storeBlobFile(copyingFrom:)` waits
+        //    on a device timing (098 · P2) before anyone rewrites this.
         let bytes: Data
         switch byteSource {
         case .data(let d):
@@ -159,6 +181,7 @@ public struct IngestPipeline: Sendable {
         //    unreadable via IngestError(mapping:)). A movie container can't be
         //    read by CGImageSource, so it falls back to the AVFoundation path.
         let meta = try await Self.extractMetadata(from: bytes)
+        try Self.checkPixelArea(of: meta, against: maximumPixelArea)
         let afterMetadata = clock.now
 
         // Set only when THIS call created the blob; reclaimed here if a later
@@ -218,6 +241,26 @@ public struct IngestPipeline: Sendable {
                     hash: created.hash, fileExtension: created.fileExtension)
             }
             throw error
+        }
+    }
+
+    /// The pixel-area gate (457): refuse `meta` when its declared `width × height`
+    /// exceeds `limit`. Header dimensions only — nothing has been decoded when this
+    /// runs, and nothing is decoded or written afterwards if it throws.
+    ///
+    /// The multiplication is checked rather than trusted: the dimensions come out
+    /// of a container another process wrote, and a header declaring 2³² × 2³² is
+    /// exactly the input a cap exists for. An overflowing product is over any
+    /// limit, so it is reported as `Int.max` rather than as the wrapped value.
+    /// Applied to a video's track size as well as an image's — the cap is a fact
+    /// about what this host will hold decoded, and a poster frame is decoded at
+    /// the source's own size before it is scaled.
+    static func checkPixelArea(of meta: ImageMetadata, against limit: Int?) throws {
+        guard let limit else { return }
+        let (product, overflowed) = meta.width.multipliedReportingOverflow(by: meta.height)
+        let pixels = overflowed ? Int.max : product
+        if pixels > limit {
+            throw IngestError.pixelAreaExceeded(pixels: pixels, limit: limit)
         }
     }
 
