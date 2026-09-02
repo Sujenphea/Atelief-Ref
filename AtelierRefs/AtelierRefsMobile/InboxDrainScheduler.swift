@@ -109,21 +109,20 @@ extension InboxDrainPolicy where Outcome == DrainSummary {
     /// app's, and the counter it bumps belongs to `LibraryStore`. The half that DID move is
     /// the guarantee this is called under — once per completed pass, after the inbox has
     /// been released — which is now pinned by `InboxDrainPolicyTests`.
+    ///
+    /// **And the WORDING moved too** (098 · finding 5). Until now the body below was
+    /// byte-identical to `AtelierRefs/InboxDrainScheduler.swift`'s apart from the logger
+    /// name — including in what it left out, which was `skippedExhausted`: the fate phase 2
+    /// added for exactly this platform, produced only under `.retainForExport`, and named
+    /// in neither app's log. ``DrainSummary/reportLines`` decides the sentences, their
+    /// order and their level; what is left here is the mapping onto `MobileLog`, which is
+    /// the app's and cannot be anything else.
     static func report(_ summary: DrainSummary, onIngest: @MainActor () -> Void) {
-        if summary.inboxUnreadable {
-            MobileLog.capture.error("inbox could not be enumerated; captures left in place")
-        }
-        if summary.quarantined > 0 {
-            MobileLog.capture.error(
-                "\(summary.quarantined) capture(s) moved to inbox/failed/")
-        }
-        if summary.ingested > 0 || summary.retrying > 0 || summary.skippedIncomplete > 0 {
-            MobileLog.capture.notice(
-                """
-                inbox drain: \(summary.ingested) ingested, \
-                \(summary.retrying) retrying, \
-                \(summary.skippedIncomplete) incomplete
-                """)
+        for line in summary.reportLines {
+            switch line.level {
+            case .notice: MobileLog.capture.notice("\(line.text, privacy: .public)")
+            case .error: MobileLog.capture.error("\(line.text, privacy: .public)")
+            }
         }
         if summary.ingested > 0 { onIngest() }
     }

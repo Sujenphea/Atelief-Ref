@@ -140,21 +140,21 @@ final class InboxDrainScheduler {
     /// the next pass. A quarantine is louder in consequence and just as
     /// unactionable in the moment, so it is logged too, at the level that says
     /// "someone will want to have seen this".
+    ///
+    /// **The wording is not decided here any more** (098 · finding 5).
+    /// ``DrainSummary/reportLines`` says what a pass is worth saying, in what order
+    /// and at which of two levels; this method routes those lines to the Mac's
+    /// `Logger` and does the one thing that genuinely is the app's — the refresh.
+    /// The phone's scheduler is the same four lines against `MobileLog`. What is
+    /// left duplicated is the level mapping, deliberately: `os` is a system
+    /// framework no package here imports, and a pre-built `String` handed to
+    /// `Logger` also gives up the `privacy:` control every other call site keeps.
     private func report(_ summary: DrainSummary) {
-        if summary.inboxUnreadable {
-            AppLog.capture.error("inbox could not be enumerated; captures left in place")
-        }
-        if summary.quarantined > 0 {
-            AppLog.capture.error(
-                "\(summary.quarantined) capture(s) moved to inbox/failed/")
-        }
-        if summary.ingested > 0 || summary.retrying > 0 || summary.skippedIncomplete > 0 {
-            AppLog.capture.notice(
-                """
-                inbox drain: \(summary.ingested) ingested, \
-                \(summary.retrying) retrying, \
-                \(summary.skippedIncomplete) incomplete
-                """)
+        for line in summary.reportLines {
+            switch line.level {
+            case .notice: AppLog.capture.notice("\(line.text, privacy: .public)")
+            case .error: AppLog.capture.error("\(line.text, privacy: .public)")
+            }
         }
         if summary.ingested > 0 { onIngest() }
     }
