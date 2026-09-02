@@ -16,32 +16,27 @@
 //  the test runner's app becoming active around it, and two cases running back to
 //  back cannot post into each other.
 //
+//  **What the cases assert did not change when the scheduler did** (098 · finding 5).
+//  The guard-and-claim they drive is `InboxDrainPolicy`'s now and the scheduler is an
+//  adapter over it; every assertion below is the assertion it was, against the same
+//  `start()` / `drain()` / `currentPass` / `isDraining` surface. That is the point of
+//  running them unchanged: the policy's own 39 tests prove the rule, and these prove the
+//  Mac still gets THAT rule, through its own notification, with its own idempotence.
+//
+//  The gate is ``AtelierCaptureTestSupport``'s (098 · finding 12). This file held the
+//  third of three, in the third shape; 457 replaced the two in the packages and could
+//  not reach this one, because the Mac's bundle did not link the fixtures. It is a
+//  `Mutex`-guarded class whose `open()` is SYNCHRONOUS by design — an actor would insert
+//  a suspension point between opening the gate and the next assertion, and reorder every
+//  claim a test makes about what happened next.
+//
 
 import AppKit
+import AtelierCaptureTestSupport
 import AtelierIngestion
 import Foundation
 import Testing
 @testable import AtelierRefs
-
-/// A one-shot gate a pass can be parked on. `open()` is idempotent and may be
-/// called before `wait()`, so a test never has to sequence the two.
-@MainActor
-private final class Gate {
-    private var continuation: CheckedContinuation<Void, Never>?
-    private var isOpen = false
-
-    func wait() async {
-        if isOpen { return }
-        await withCheckedContinuation { continuation = $0 }
-    }
-
-    func open() {
-        guard !isOpen else { return }
-        isOpen = true
-        continuation?.resume()
-        continuation = nil
-    }
-}
 
 /// A scheduler over a counting pass, plus the knobs a test drives it with.
 @MainActor

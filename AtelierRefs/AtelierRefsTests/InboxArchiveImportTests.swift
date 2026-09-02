@@ -25,14 +25,12 @@
 
 import AtelierArchive
 import AtelierCapture
+import AtelierCaptureTestSupport
 import AtelierCore
 import AtelierLibraryPaths
 import AtelierIngestion
-import CoreGraphics
 import Foundation
-import ImageIO
 import Testing
-import UniformTypeIdentifiers
 
 @testable import AtelierRefs
 
@@ -179,22 +177,19 @@ private struct PhoneToMacRig {
     // MARK: Bytes
 
     /// A real JPEG — `InboxArchive.probe` reads a container's header, so a fixture has to
-    /// be a container. Sized distinctly per call so a swapped payload is visible.
+    /// be a container. Sized distinctly per call so a swapped payload is visible: the
+    /// shared builder draws a gradient across the width, so two different widths cannot
+    /// encode to the same bytes.
+    ///
+    /// ``FixtureImages/solidImage(width:height:format:)`` since 098 · finding 12. This was
+    /// the last hand-rolled copy of that builder in the program — 457 moved it out of
+    /// `AtelierCapture`'s and `AtelierBrowse`'s suites and deleted the one in
+    /// `InboxArchiveTests`, and left this one because the Mac's test bundle did not link
+    /// the fixtures package. P4 links it, so this is the copy going. Kept as a named
+    /// wrapper rather than inlined at the one call site: `jpeg(width:height:)` is what the
+    /// rig's vocabulary calls a payload, and the encoder choice is the rig's decision.
     static func jpeg(width: Int, height: Int) throws -> Data {
-        let context = CGContext(
-            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-        context.setFillColor(
-            red: CGFloat(width % 7) / 7, green: 0.4, blue: 0.6, alpha: 1)
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        let image = context.makeImage()!
-        let data = NSMutableData()
-        let destination = CGImageDestinationCreateWithData(
-            data, UTType.jpeg.identifier as CFString, 1, nil)!
-        CGImageDestinationAddImage(destination, image, nil)
-        CGImageDestinationFinalize(destination)
-        return data as Data
+        try FixtureImages.solidImage(width: width, height: height, format: .jpeg)
     }
 }
 

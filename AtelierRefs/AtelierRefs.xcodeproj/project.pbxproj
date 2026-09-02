@@ -22,6 +22,7 @@
 		JA0000000000000000000005 /* AtelierBrowse in Frameworks */ = {isa = PBXBuildFile; productRef = JA0000000000000000000004 /* AtelierBrowse */; };
 		JA0000000000000000000007 /* AtelierBrowse in Frameworks */ = {isa = PBXBuildFile; productRef = JA0000000000000000000006 /* AtelierBrowse */; };
 		DA0000000000000000000007 /* AtelierCore in Frameworks */ = {isa = PBXBuildFile; productRef = DA0000000000000000000006 /* AtelierCore */; };
+		IA000000000000000000000B /* AtelierCaptureTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = IA000000000000000000000A /* AtelierCaptureTestSupport */; };
 		KA0000000000000000000003 /* AtelierArchive in Frameworks */ = {isa = PBXBuildFile; productRef = KA0000000000000000000002 /* AtelierArchive */; };
 		KA0000000000000000000005 /* AtelierArchive in Frameworks */ = {isa = PBXBuildFile; productRef = KA0000000000000000000004 /* AtelierArchive */; };
 		LA0000000000000000000003 /* AtelierTokens in Frameworks */ = {isa = PBXBuildFile; productRef = LA0000000000000000000002 /* AtelierTokens */; };
@@ -168,6 +169,7 @@
 				MA0000000000000000000005 /* AtelierLibraryPaths in Frameworks */,
 				JA0000000000000000000007 /* AtelierBrowse in Frameworks */,
 				DA0000000000000000000007 /* AtelierCore in Frameworks */,
+				IA000000000000000000000B /* AtelierCaptureTestSupport in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -287,6 +289,7 @@
 				MA0000000000000000000004 /* AtelierLibraryPaths */,
 				JA0000000000000000000006 /* AtelierBrowse */,
 				DA0000000000000000000006 /* AtelierCore */,
+				IA000000000000000000000A /* AtelierCaptureTestSupport */,
 			);
 			productName = AtelierRefsTests;
 			productReference = 9907787B2FF364F000718815 /* AtelierRefsTests.xctest */;
@@ -1106,6 +1109,10 @@
 		IA0000000000000000000008 /* AtelierCapture */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AtelierCapture;
+		};
+		IA000000000000000000000A /* AtelierCaptureTestSupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierCaptureTestSupport;
 		};
 		JA0000000000000000000002 /* AtelierBrowse */ = {
 			isa = XCSwiftPackageProductDependency;
