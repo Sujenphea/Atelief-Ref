@@ -1,3 +1,16 @@
+//
+//  099 · 8A — the spike's fixture data is DEBUG-only.
+//
+//  `Spike/` exists to feed the canvas harnesses: a seeded PRNG, a dummy tile
+//  generator and a handful of procedurally-drawn fixture images. Its only
+//  consumers are `CanvasRendererTests` (`CanvasBenchmark`, `CanvasPinchTests`,
+//  `SpikeDataTests`) and the app's own `Debug/` bake-off — both of which build
+//  in debug. Nothing in a shipped app draws a dummy tile, and the one mention
+//  of these types outside the spike and its tests is a doc comment.
+//
+
+#if DEBUG
+
 import CoreGraphics
 
 /// Generates a deterministic, realistically-distributed set of dummy ``Tile``s
@@ -82,3 +95,5 @@ public struct DummyTileGenerator {
         return sum - 3.0
     }
 }
+
+#endif  // DEBUG

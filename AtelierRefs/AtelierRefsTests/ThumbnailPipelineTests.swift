@@ -324,8 +324,18 @@ struct ThumbnailPipelineTests {
         let probe = DecodeProbe(blocking: ["a"])
         let pipeline = ThumbnailPipeline(decode: probe.decode)
 
+        // Release once all 32 have ATTACHED — one `startedDecoding` plus 31
+        // `joined`. Counted, not waited out: the 80 ms this replaces was a bet
+        // that 32 task-group members reach `join` before the decode is unblocked,
+        // and it is exactly the bet a loaded machine loses (099 · 11A).
+        let attached = EventRecorder(pipeline.events.stream())
         async let unblock: Void = {
-            try? await Task.sleep(nanoseconds: 80_000_000)
+            await attached.wait(forAtLeast: 32) { event in
+                switch event {
+                case .startedDecoding, .joined: true
+                default: false
+                }
+            }
             probe.release()
         }()
 
@@ -528,29 +538,28 @@ struct ThumbnailPipelineTests {
         let probe = DecodeProbe(blocking: ["a"])
         let pipeline = ThumbnailPipeline(decode: probe.decode, maxConcurrentPrefetches: 1)
 
+        // ONE subscription, two waits — which is why this records rather than
+        // iterating: the promotion can arrive while the first assertion is
+        // running, and a fresh stream would have missed it (099 · 11A).
+        let recorder = EventRecorder(pipeline.events.stream())
         pipeline.prefetch([request("a")])
-        // Wait until the decode has genuinely STARTED, so the visible request
-        // takes `join`'s in-flight branch and not its queued one. BOUNDED: if the
-        // prefetch never starts, this test's premise is gone and it must say so,
-        // not spin forever burning a core.
-        var started = false
-        for _ in 0..<500 where !started {
-            if probe.callCount("a") > 0 { started = true; break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
+        // The decode has genuinely STARTED, so the visible request takes `join`'s
+        // in-flight branch and not its queued one. This was a bounded loop over
+        // the decode probe's call count, reimplemented inline here because the
+        // pipeline had nothing to say about itself; it says it now.
+        await recorder.wait(forAtLeast: 1) {
+            if case .startedDecoding = $0 { true } else { false }
         }
-        #expect(started, "the prefetch decode never started")
         #expect(pipeline.cancellablePrefetchKeys.count == 1)
 
         async let visible = pipeline.image(hash: "a", url: url("a"), bucket: 256)
 
-        // Bounded wait: the promotion happens as `image` joins. Without it the
-        // key stays cancellable and this times out rather than passing by luck.
-        var promoted = false
-        for _ in 0..<200 where !promoted {
-            if pipeline.cancellablePrefetchKeys.isEmpty { promoted = true; break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        #expect(promoted, "the joined task is still cancellable as a prefetch")
+        // The promotion happens as `image` joins. Awaiting the event rather than
+        // polling the set means this test proves the transition, not a state that
+        // could also have been reached by the task simply ending.
+        await recorder.wait(forAtLeast: 1) { if case .promoted = $0 { true } else { false } }
+        #expect(pipeline.cancellablePrefetchKeys.isEmpty,
+                "the joined task is still cancellable as a prefetch")
 
         // Now prove the consequence: cancelling the hash must not blank the cell.
         pipeline.cancelPrefetch(hashes: ["a"])

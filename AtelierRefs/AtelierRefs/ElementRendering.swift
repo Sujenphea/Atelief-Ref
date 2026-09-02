@@ -17,14 +17,20 @@ import SwiftUI
 
 enum ElementRendering {
     // Defaults for freshly-created elements.
-    static let defaultFontSize: Double = 16
+    //
+    // The four below are `nonisolated` because they are the ONE source both style
+    // bridges read (099 · 2A) and the export bridge (`MoodboardExport`) is a
+    // `nonisolated enum`. Plain constants and pure string math over a `Sendable`
+    // value — nothing here has ever needed the main actor; it had it only because
+    // this target is MainActor-by-default.
+    nonisolated static let defaultFontSize: Double = 16
     /// Text with no colour of its own, and every freshly-created text box. White,
     /// because the board is a dark surface — the near-black this used to be dates
     /// from when the canvas was light, and reads as an invisible box today.
-    static let defaultTextColor = RGBAColor(red: 1, green: 1, blue: 1)
+    nonisolated static let defaultTextColor = RGBAColor(red: 1, green: 1, blue: 1)
     /// The same colour as stored — ONE source, so a new box and a legacy row with no
     /// colour can't disagree.
-    static var defaultTextColorHex: String { hex(from: defaultTextColor) }
+    nonisolated static var defaultTextColorHex: String { hex(from: defaultTextColor) }
     /// A frame's LABEL. The same white as body text, and defined in terms of it so
     /// the two cannot drift apart again.
     ///
@@ -66,14 +72,21 @@ enum ElementRendering {
             return .text(textStyle(for: style))
         case .frame:
             let style = ElementStyle(jsonString: item.style) ?? ElementStyle()
-            let label: TextStyle? = {
-                guard let text = style.text, !text.isEmpty else { return nil }
-                return TextStyle(
-                    string: text, fontSize: style.fontSize ?? 16,
-                    // A frame draws on the bare board, so a label with no stored
-                    // colour takes the board's text default, not a dark literal.
-                    color: rgba(fromHex: style.textColor) ?? defaultTextColor)
-            }()
+            // The label goes through ``textStyle(for:)`` rather than being rebuilt
+            // from three fields, so a frame's caption carries family / weight /
+            // alignment exactly as a text element does (2A). It used to restate
+            // `fontSize ?? 16` and the colour default by hand — a second opinion
+            // about what an unstyled label looks like, and the reason the export's
+            // frame label would have gained typography the board's did not the
+            // moment `MoodboardExport.textStyle(from:)` was filled in.
+            //
+            // A frame draws on the bare board, so a label with no stored colour
+            // takes the board's text default, not a dark literal — that rule now
+            // lives in one place.
+            // Spelled as the export's own condition (`text?.isEmpty == false`), so
+            // the two bridges agree on when a frame HAS a label as well as on what
+            // that label looks like.
+            let label: TextStyle? = style.text?.isEmpty == false ? textStyle(for: style) : nil
             return .frame(FrameStyle(
                 fill: rgba(fromHex: style.fillColor),
                 stroke: rgba(fromHex: style.strokeColor)
@@ -195,7 +208,7 @@ enum ElementRendering {
     /// this was the app's only uppercase hex emitter, so the same colour was written
     /// two ways depending on which path stored it. Nothing compares these as strings
     /// (the swatch chrome compares components), so the case was pure inconsistency.
-    static func hex(from c: RGBAColor) -> String {
+    nonisolated static func hex(from c: RGBAColor) -> String {
         func h(_ x: Double) -> String { String(format: "%02x", Int((max(0, min(1, x)) * 255).rounded())) }
         if c.alpha < 1 { return "#\(h(c.red))\(h(c.green))\(h(c.blue))\(h(c.alpha))" }
         return "#\(h(c.red))\(h(c.green))\(h(c.blue))"

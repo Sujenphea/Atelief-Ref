@@ -17,6 +17,18 @@
 //  (`LibraryLocation.resolvedRoot()` already honours that argument — it exists
 //  for exactly this).
 //
+//
+//  099 · 8A — the whole bake-off harness is DEBUG-only.
+//
+//  It is 2,765 lines across seven files, and until this guard it compiled into
+//  every Release build the user ever ran: a grid harness, a pinch harness, a
+//  frame-time recorder and a scroll driver, none of them reachable without a
+//  launch argument, all of them shipped. `#if DEBUG` is the whole fix — the
+//  folder still deletes in one move, and the app the user installs no longer
+//  carries it.
+//
+
+#if DEBUG
 
 import AppKit
 import AtelierCore
@@ -695,3 +707,5 @@ struct GridBakeoffView: View {
 
     private func ms(_ value: Double) -> String { String(format: "%.2f", value) }
 }
+
+#endif  // DEBUG

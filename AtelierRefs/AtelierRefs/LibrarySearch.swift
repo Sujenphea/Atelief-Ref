@@ -166,6 +166,30 @@ final class LibrarySearchModel: ObservableObject {
     /// error from a genuine "no matches" (they used to look identical).
     @Published private(set) var queryFailed = false
 
+    // MARK: Lifecycle signal (099 · 11A)
+
+    /// What one query run did. The `LibrarySearchModel` half of 11A: every
+    /// terminal state of a debounced query, so a test can await the state it means
+    /// instead of sleeping past the debounce and hoping.
+    ///
+    /// `settled` carries the ``resultsVersion`` it published, so a test can say
+    /// "wait for version 1" rather than "wait for something". `superseded` is the
+    /// case that did not exist before — a query cancelled by a newer keystroke
+    /// returns without touching any published state, which is correct and means
+    /// there was previously NO evidence a cancelled query had finished being
+    /// cancelled.
+    enum Event: Sendable, Equatable {
+        /// `results` and `resultsVersion` were (re)assigned — a hit, a failure, or
+        /// the clear that follows the query going inactive.
+        case settled(version: Int)
+        /// A query task ended without publishing, because a newer one replaced it.
+        case superseded
+    }
+
+    /// The lifecycle broadcast. `nonisolated let` so a test can take its stream
+    /// before touching the main actor.
+    nonisolated let events = EventSignal<Event>()
+
     private var services: AppServices?
     /// The screen's collection (`nil` = the global gallery — no scope toggle).
     private var collectionID: UUID?
@@ -363,6 +387,7 @@ final class LibrarySearchModel: ObservableObject {
         queryTask?.cancel()
         guard isActive else {
             results = []; resultsVersion &+= 1; isRunning = false; queryFailed = false
+            events.emit(.settled(version: resultsVersion))
             return
         }
         let (fts, tagNeedle) = Self.parse(query: text)
@@ -404,17 +429,23 @@ final class LibrarySearchModel: ObservableObject {
         isRunning = true
         queryTask = Task {
             try? await Task.sleep(for: .milliseconds(220))
-            guard !Task.isCancelled else { return }
+            // Each `return` below is a query that was SUPERSEDED — cancelled by a
+            // newer keystroke before it could publish. Until 11A it left no trace
+            // at all, which is why "only the latest query ran" had to be asserted
+            // by sleeping 120 ms and hoping the losers had finished losing.
+            guard !Task.isCancelled else { events.emit(.superseded); return }
             do {
                 let hits = try await run(query)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else { events.emit(.superseded); return }
                 results = hits
                 resultsVersion &+= 1
                 queryFailed = false
+                events.emit(.settled(version: resultsVersion))
             } catch is CancellationError {
+                events.emit(.superseded)
                 return  // a superseded query — leave state for the live one.
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else { events.emit(.superseded); return }
                 // A relevance/cursor misuse is OUR bug (the UI never pages
                 // relevance), so trap it in debug; other errors are runtime DB
                 // failures — log and surface distinctly (an empty `results` alone
@@ -426,6 +457,7 @@ final class LibrarySearchModel: ObservableObject {
                 results = []
                 resultsVersion &+= 1
                 queryFailed = true
+                events.emit(.settled(version: resultsVersion))
             }
             isRunning = false
         }

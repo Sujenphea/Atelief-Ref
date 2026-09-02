@@ -233,7 +233,13 @@ struct DetailDisplayDecodeTests {
 
 // MARK: - Loader
 
-@Suite("DetailImageLoader: coalescing, promotion, retainOnly")
+/// The time limit is the outer bound on every `await` below (099 · 11A). These
+/// tests now wait on the loader's own lifecycle signal instead of sleeping, which
+/// is exact — and an exact wait for something that never happens is a hang, where
+/// a sleep was merely wrong. `ThumbnailPipelineTests` has carried this trait for
+/// the same reason since 330; this suite drives the same detached-task
+/// concurrency and did not.
+@Suite("DetailImageLoader: coalescing, promotion, retainOnly", .timeLimit(.minutes(1)))
 struct DetailImageLoaderCoreTests {
 
     private func loader(_ probe: DecodeProbe) -> DetailImageLoader {
@@ -245,8 +251,19 @@ struct DetailImageLoaderCoreTests {
         let probe = DecodeProbe(blocking: ["a"])
         let loader = loader(probe)
 
+        // Release once all 24 have ATTACHED — one `started` plus 23 `joined`.
+        // That is the coalescing this test is named for, counted rather than
+        // waited out: the 80 ms sleep this replaces was betting that 24 task-group
+        // members reach `join` before a blocked decode is unblocked, and on a
+        // loaded machine that bet is simply wrong (099 · 11A).
+        let attached = EventRecorder(loader.events.stream())
         async let unblock: Void = {
-            try? await Task.sleep(nanoseconds: 80_000_000)
+            await attached.wait(forAtLeast: 24) { event in
+                switch event {
+                case .started, .joined: true
+                default: false
+                }
+            }
             probe.release()
         }()
 
@@ -273,8 +290,11 @@ struct DetailImageLoaderCoreTests {
         let loader = loader(probe)
 
         await loader.preload(hash: "a", url: url("a"), targetLongSidePx: nil)
+        let recorder = EventRecorder(loader.events.stream())
         async let image = loader.displayImage(hash: "a", url: url("a"), targetLongSidePx: nil)
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        // The event the 50 ms sleep was approximating: the visible request has
+        // JOINED the preload's task rather than starting a second decode.
+        await recorder.wait(forAtLeast: 1) { if case .joined = $0 { true } else { false } }
         probe.release()
 
         #expect(await image != nil)
@@ -308,8 +328,12 @@ struct DetailImageLoaderCoreTests {
         let loader = loader(probe)
 
         await loader.preload(hash: "c", url: url("c"), targetLongSidePx: nil)
+        let recorder = EventRecorder(loader.events.stream())
         async let image = loader.displayImage(hash: "c", url: url("c"), targetLongSidePx: nil)
-        try? await Task.sleep(nanoseconds: 50_000_000)   // let the promotion land
+        // "let the promotion land" — the old comment beside a 50 ms sleep, and now
+        // the actual event. This is the ONE moment `retainOnly` stops being able to
+        // cancel "c", so a test of that must be standing on it, not near it.
+        await recorder.wait(forAtLeast: 1) { if case .promoted = $0 { true } else { false } }
         await loader.retainOnly(hashes: [])              // would cancel "c" if still a preload
         probe.release()
 

@@ -1918,6 +1918,10 @@ private struct CollectionsField: View {
     /// Which verb the popover's rows perform. Resets to `.add` on every open, so the
     /// destructive-ish one is never the state you inherit from last time.
     @State private var verb: Verb = .add
+    /// The destination-tree memo (012 · CQ 1A), the same one `CollectionView` and
+    /// `LibrarySearch` keep for their menus. Plain `@State`, not observed —
+    /// `MasonryLayoutCache`'s discipline.
+    @State private var moveTargetsCache = MoveTargetsCache()
 
     /// What a row in the destination list does. Two verbs, one list — the alternative
     /// was two 240pt lists stacked in one popover.
@@ -1975,7 +1979,8 @@ private struct CollectionsField: View {
                             // moving into a collection you are already in is the no-op an
                             // add into it would be.
                             excluded: Set(collections.map(\.id)),
-                            emptyTitle: "No other collections"
+                            emptyTitle: "No other collections",
+                            cache: moveTargetsCache
                         ) { id in
                             guard let c = allCollections.first(where: { $0.id == id })
                             else { return }

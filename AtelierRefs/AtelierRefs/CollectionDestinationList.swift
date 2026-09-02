@@ -41,6 +41,19 @@ struct CollectionDestinationList: View {
     var highlighted: UUID?
     /// The non-tappable row shown when nothing is left to offer.
     var emptyTitle: String = "No collections"
+    /// The host's destination-tree memo (012 · CQ 1A), when it has one.
+    ///
+    /// This view rebuilt the whole hierarchy — group by parent, sort each parent's
+    /// children, walk it recursively, flatten it — on every body pass, and TWICE
+    /// per pass, because `nodes` was a computed property read once for `isEmpty`
+    /// and again for the `ForEach`. Inside ``DestinationPicker`` that is three
+    /// rebuilds per arrow key, since the cursor is `@State` on the picker.
+    ///
+    /// `MoveTargetsCache` is the memo `CollectionView` and `LibrarySearch` have
+    /// used for their context menus since 012; it is keyed on
+    /// `(unsortedID, folders)` and hits across renders. `nil` keeps the old
+    /// uncached path, which is what the pure statics below still exercise.
+    var cache: MoveTargetsCache?
     let onSelect: (UUID) -> Void
 
     /// The list's height cap. Past it the list scrolls; short lists shrink to fit.
@@ -57,6 +70,18 @@ struct CollectionDestinationList: View {
     ) -> [MoveTargetNode] {
         CollectionTargets.moveTargetTree(folders: folders, unsortedID: unsortedID)
             .filter { !excluded.contains($0.id) }
+    }
+
+    /// The same rows from an ALREADY-BUILT tree — the memoized path.
+    ///
+    /// Split out rather than given a cache parameter so the pure static above
+    /// keeps its signature (`MoveAddShortcutTests` drives it directly) and so the
+    /// two paths visibly share one flatten + one filter. `MoveTargetsCache` vends
+    /// the nested `[DestinationTreeNode]`; the flatten is the only step left.
+    nonisolated static func rows(
+        tree: [DestinationTreeNode], excluded: Set<UUID> = []
+    ) -> [MoveTargetNode] {
+        CollectionTargets.flatten(tree).filter { !excluded.contains($0.id) }
     }
 
     /// The ids a KEYBOARD cursor may land on, in row order: the rows above minus the
@@ -90,10 +115,19 @@ struct CollectionDestinationList: View {
     }
 
     private var nodes: [MoveTargetNode] {
-        Self.rows(folders: folders, unsortedID: unsortedID, excluded: excluded)
+        guard let cache else {
+            return Self.rows(folders: folders, unsortedID: unsortedID, excluded: excluded)
+        }
+        return Self.rows(
+            tree: cache.destinationTree(folders: folders, unsortedID: unsortedID),
+            excluded: excluded)
     }
 
     var body: some View {
+        // Read ONCE per body pass. It was read twice — `isEmpty` here and the
+        // `ForEach` below — which doubled whatever the tree build costs, memo or
+        // not.
+        let nodes = self.nodes
         if nodes.isEmpty {
             SelectionMenuRow(emptyTitle, isEnabled: false)
         } else {

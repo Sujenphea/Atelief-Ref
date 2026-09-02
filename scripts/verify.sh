@@ -17,8 +17,10 @@
 #   ./scripts/verify.sh fast    compile everything, including test targets.
 #                               Seconds. Catches the class of break above.
 #   ./scripts/verify.sh         the full CI matrix: package tests, the
-#                               extension's node tests + drift check, and the
-#                               app's build-and-test.
+#                               extension's node tests + drift check, the app's
+#                               build-and-test, and a Release BUILD of the app
+#                               (099 · 8A — the only stage that compiles the
+#                               `#if DEBUG` guards' other side).
 #
 # Exit code is non-zero if any stage fails; every stage runs regardless, so one
 # failure does not hide the others (CI's `fail-fast: false`).
@@ -141,6 +143,36 @@ app_target() {
     return ${status}
 }
 
+# 099 · 8A. `Debug/`, `CanvasRenderer/Spike/` and `-library-root` are now behind
+# `#if DEBUG`, and a `#if DEBUG` guard is only ever checked by a build that does
+# NOT define DEBUG. Every other stage here — `swift test`, the app's own
+# build-and-test — is a debug build, so before this stage the entire Release side
+# of those guards was unparsed: a type referenced from production code but
+# declared inside `#if DEBUG` compiles green all day and fails at the one build
+# nobody runs, which is the one that ships.
+#
+# A plain `run_stage`, not `run_warnable_stage`: a Release build failure is a
+# real failure. Build only, never test — the test targets are debug-configured
+# and there is nothing here to run; what is being checked is that the app's
+# sources still form a program without DEBUG.
+app_release_build() {
+    local log
+    log="$(mktemp -t verify-app-release)"
+    local status=0
+    xcodebuild build \
+        -project "${REPO_ROOT}/AtelierRefs/AtelierRefs.xcodeproj" \
+        -scheme AtelierRefs \
+        -configuration Release \
+        -destination 'platform=macOS' \
+        -skipPackagePluginValidation \
+        CODE_SIGNING_ALLOWED=NO \
+        > "${log}" 2>&1 || status=$?
+
+    grep -E "error:|BUILD (SUCCEEDED|FAILED)" "${log}" | tail -20
+    [[ ${status} -ne 0 ]] && echo "  (full log: ${log})"
+    return ${status}
+}
+
 extension_tests() {
     # The node suite is a hard failure, always. drift-check separates its arms:
     # 1 is real drift (a parser disagrees with a fixture, or the host tables
@@ -163,6 +195,13 @@ for pkg in "${PACKAGES[@]}"; do
 done
 
 run_stage "App target" app_target
+
+# Release is a full-mode stage: it is a second whole-app compile, and `fast` is
+# meant to stay in the seconds. The guards it checks are not the kind that change
+# between one edit and the next.
+if [[ "${MODE}" == "full" ]]; then
+    run_stage "App target (Release)" app_release_build
+fi
 
 # The extension is node, not Swift — nothing to compile-check, so it is a
 # full-mode stage only.

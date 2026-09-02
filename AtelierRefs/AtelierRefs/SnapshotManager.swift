@@ -80,10 +80,52 @@ final class SnapshotManager {
         self.now = now
     }
 
+    // MARK: - Best-effort, but not silent (099 · 6A)
+
+    /// Run `work`, returning `nil` and LOGGING when it throws.
+    ///
+    /// `nonisolated`, like the marker helpers below it: these are filesystem
+    /// bookkeeping, and the launch sweep that reads them runs on a detached task.
+    ///
+    /// This file had twelve `try?`s, and every one of them was a deliberate
+    /// best-effort: snapshot bookkeeping must never stop a launch, a delete or a
+    /// restore. That decision is not in question — what was wrong is that a
+    /// swallowed failure here produces symptoms nobody can trace back. A marker
+    /// that will not delete makes a one-time warning fire on every launch forever.
+    /// A `.just-restored` file that will not write makes the NEXT launch reap the
+    /// media the restore was protecting. A rollback that fails leaves the app with
+    /// no database at all. Each of those is a bug report that arrives as "it keeps
+    /// doing this" with nothing in the log underneath it.
+    ///
+    /// `what` is a short phrase naming the attempt, in the sentence "snapshots:
+    /// <what> failed: <error>". `.public` throughout: these name marker files and
+    /// filesystem errors, never user content.
+    @discardableResult
+    nonisolated static func attempt<T>(_ what: String, _ work: () throws -> T) -> T? {
+        do {
+            return try work()
+        } catch {
+            AppLog.model.error(
+                "snapshots: \(what, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
     /// Every parsed snapshot on disk, newest first.
     func list() -> [SnapshotFile] {
-        let urls = (try? FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: nil)) ?? []
+        // A directory that does not exist yet is the ordinary first-launch state,
+        // not a failure — only a directory that exists and will not READ is worth a
+        // line, and that one means the snapshots sheet is about to show "none" for a
+        // library that has them.
+        let urls: [URL]
+        if FileManager.default.fileExists(atPath: directory.path) {
+            urls = Self.attempt("listing \(directory.lastPathComponent)/") {
+                try FileManager.default.contentsOfDirectory(
+                    at: directory, includingPropertiesForKeys: nil)
+            } ?? []
+        } else {
+            urls = []
+        }
         return urls.compactMap { SnapshotFile(url: $0) }.sorted { $0.date > $1.date }
     }
 
@@ -121,7 +163,15 @@ final class SnapshotManager {
         if let newestDaily, now().timeIntervalSince(newestDaily.date) < maxAge {
             return
         }
-        _ = try? await snapshot(reason: .daily)
+        do {
+            _ = try await snapshot(reason: .daily)
+        } catch {
+            // Swallowed by design (the doc above), and now audible: a library whose
+            // daily snapshot has been failing silently has no recovery point, and
+            // the first anyone would learn of it is the day they need one.
+            AppLog.model.error(
+                "snapshots: the daily snapshot failed — this library has no fresh recovery point: \(String(describing: error), privacy: .public)")
+        }
     }
 
     /// The pre-destructive net, freshness-gated: take a snapshot unless ANY
@@ -144,7 +194,12 @@ final class SnapshotManager {
     func consumePreMigrationSnapshotFailure() -> Bool {
         let marker = directory.appendingPathComponent(".pre-migration-snapshot-failed")
         guard FileManager.default.fileExists(atPath: marker.path) else { return false }
-        try? FileManager.default.removeItem(at: marker)
+        // "Fires once" is the whole contract of this method, and it is the removal
+        // that keeps it. A removal that fails turns a one-time warning into a
+        // permanent one, which reads to the user as the app being broken.
+        Self.attempt("clearing the pre-migration-failure marker") {
+            try FileManager.default.removeItem(at: marker)
+        }
         return true
     }
 
@@ -175,7 +230,13 @@ final class SnapshotManager {
         // A file that can't even be opened is unhealthy by definition — fold
         // open-failures into the one typed refusal instead of leaking a raw
         // database error to the sheet.
-        guard (try? AppServices.isHealthy(databaseFileAt: snapshot.url)) == true else {
+        guard Self.attempt("integrity-checking \(snapshot.url.lastPathComponent)", {
+            try AppServices.isHealthy(databaseFileAt: snapshot.url)
+        }) == true else {
+            // The sheet gets one typed refusal, deliberately (above). The reason
+            // the file would not open — the thing that says whether this is a
+            // truncated copy or a permissions problem — is in the log now instead
+            // of nowhere.
             throw SnapshotError.unhealthySnapshot
         }
         try snapshot.url.lastPathComponent.write(
@@ -203,12 +264,25 @@ final class SnapshotManager {
     static func applyPendingRestore(snapshotsDir: URL, livePath: URL) -> Bool {
         let fm = FileManager.default
         let marker = snapshotsDir.appendingPathComponent(".pending-restore")
-        guard let raw = try? String(contentsOf: marker, encoding: .utf8) else { return false }
-        defer { try? fm.removeItem(at: marker) }
+        // No marker is the ordinary launch, so it is not read as a failure. A
+        // marker that EXISTS and will not read is a restore the user asked for and
+        // will not get, silently — that one is logged.
+        guard fm.fileExists(atPath: marker.path) else { return false }
+        guard let raw = attempt("reading the pending-restore marker", {
+            try String(contentsOf: marker, encoding: .utf8)
+        }) else { return false }
+        // A marker that survives is a restore that runs AGAIN on the next launch —
+        // over a library that has already been restored once, moving the live DB
+        // aside a second time.
+        defer {
+            attempt("clearing the pending-restore marker") { try fm.removeItem(at: marker) }
+        }
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let snapshot = snapshotsDir.appendingPathComponent(name)
         guard !name.isEmpty, fm.fileExists(atPath: snapshot.path),
-              (try? AppServices.isHealthy(databaseFileAt: snapshot)) == true
+              attempt("integrity-checking the staged snapshot \(name)", {
+                  try AppServices.isHealthy(databaseFileAt: snapshot)
+              }) == true
         else { return false }
 
         let stamp = String(Int(Date().timeIntervalSince1970))
@@ -225,14 +299,34 @@ final class SnapshotManager {
             // Tell the next bootstrap a restore just landed (008 review, 3A): it
             // reconciles blobs against the restored DB and REPORTS instead of
             // silently reaping media the snapshot doesn't know about.
-            try? "".write(
-                to: snapshotsDir.appendingPathComponent(".just-restored"),
-                atomically: true, encoding: .utf8)
+            // If this write fails, the next launch runs the ORPHAN GC instead of
+            // the post-restore reconcile — and reaps every blob captured after the
+            // snapshot, which is precisely the media the reconcile exists to
+            // protect. The restore itself has already succeeded, so this cannot
+            // throw; it can be loud.
+            attempt("writing the just-restored marker") {
+                try "".write(
+                    to: snapshotsDir.appendingPathComponent(".just-restored"),
+                    atomically: true, encoding: .utf8)
+            }
             return true
         } catch {
             staging.remove()
+            AppLog.model.error(
+                "snapshots: installing the staged restore failed: \(String(describing: error), privacy: .public)")
             // Roll the live DB back if we moved it aside but couldn't install.
-            if !live.exists, aside.exists { try? aside.move(to: live) }
+            // THIS is the failure that matters most in the file: if the rollback
+            // also fails, the app is about to open with no database where its
+            // database used to be, and the user's library is sitting under a
+            // `library.corrupt-<epoch>.sqlite` name nobody has told them about.
+            if !live.exists, aside.exists {
+                if attempt("rolling the live database back after a failed restore", {
+                    try aside.move(to: live)
+                }) == nil {
+                    AppLog.model.fault(
+                        "snapshots: the live database is NOT in place — it is at \(aside.base.lastPathComponent, privacy: .public)")
+                }
+            }
             return false
         }
     }
@@ -274,8 +368,17 @@ final class SnapshotManager {
         snapshotsDir: URL, libraryRoot: URL, restored: Bool
     ) -> Bool {
         let marker = snapshotsDir.appendingPathComponent(".pending-library-id")
-        guard let raw = try? String(contentsOf: marker, encoding: .utf8) else { return false }
-        try? FileManager.default.removeItem(at: marker)
+        // As with the restore marker: absent is ordinary, unreadable is not.
+        guard FileManager.default.fileExists(atPath: marker.path) else { return false }
+        guard let raw = attempt("reading the pending-library-id marker", {
+            try String(contentsOf: marker, encoding: .utf8)
+        }) else { return false }
+        // "Consumed either way" is this method's stated contract (above), and the
+        // removal is what makes it true. A marker that survives fires after some
+        // unrelated FUTURE restore and adopts an identity nobody asked for.
+        attempt("clearing the pending-library-id marker") {
+            try FileManager.default.removeItem(at: marker)
+        }
         guard restored else { return false }
         let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
@@ -290,13 +393,92 @@ final class SnapshotManager {
         }
     }
 
+    // MARK: - The launch blob pass (099 · 16A)
+
+    /// What a launch should do about blob files.
+    ///
+    /// Three states, and the third is the new one. Before 16A the choice was
+    /// binary — reconcile after a restore, otherwise SWEEP — and the sweep
+    /// enumerates every blob file in the library on every single launch, to find
+    /// orphans that exist only if a delete happened and was never undone. On a
+    /// 20,000-item library that is a full directory walk at launch, almost always
+    /// to discover that there is nothing to reclaim.
+    nonisolated enum LaunchBlobPass: Equatable {
+        /// The first launch after a restore: report both divergence directions,
+        /// reap nothing (008 review · 3A). The restored database is older than the
+        /// disk, so "unreferenced" includes media captured after the snapshot.
+        case reconcile
+        /// A delete left orphans behind. Walk the blobs and reclaim them.
+        case sweep
+        /// Nothing has been deleted since the last completed sweep — so nothing on
+        /// disk can be unreferenced, and there is nothing to walk.
+        case none
+    }
+
+    /// The launch decision, as a pure function of the two markers.
+    ///
+    /// Restore wins, and that is not arbitrary: the marker says the database is
+    /// older than the disk, and a sweep in that state trashes media the reconcile
+    /// exists to protect. A library that was restored AND has a pending GC keeps
+    /// its `.gc-pending` marker for the next ordinary launch — the orphans are
+    /// still there and still reclaimable, just not today.
+    nonisolated static func launchBlobPass(justRestored: Bool, gcPending: Bool) -> LaunchBlobPass {
+        if justRestored { return .reconcile }
+        return gcPending ? .sweep : .none
+    }
+
+    /// The marker that says "a delete left blobs behind; sweep at the next
+    /// launch". Written by the delete, consumed by the sweep.
+    nonisolated static func gcPendingMarker(in snapshotsDir: URL) -> URL {
+        snapshotsDir.appendingPathComponent(".gc-pending")
+    }
+
+    /// Record that a delete has left unreferenced blobs on disk.
+    ///
+    /// Best-effort like every other marker here: a delete must not fail because a
+    /// hint file could not be written. A marker that goes missing costs a sweep
+    /// that does not happen, and the blobs it would have reclaimed are picked up
+    /// by the next delete's sweep — the cost is disk, not correctness. Logged
+    /// nonetheless, because "my library never reclaims space" is otherwise
+    /// untraceable.
+    nonisolated static func markGCPending(snapshotsDir: URL) {
+        attempt("marking the library for a blob sweep") {
+            try FileManager.default.createDirectory(
+                at: snapshotsDir, withIntermediateDirectories: true)
+            try "".write(
+                to: gcPendingMarker(in: snapshotsDir), atomically: true, encoding: .utf8)
+        }
+    }
+
+    /// Whether a delete has left blobs to reclaim.
+    nonisolated static func hasGCPending(snapshotsDir: URL) -> Bool {
+        FileManager.default.fileExists(atPath: gcPendingMarker(in: snapshotsDir).path)
+    }
+
+    /// Clear the marker — **only after a sweep that actually completed**.
+    ///
+    /// A sweep that gave up (the referenced-set read failed) must leave it, or the
+    /// orphans it did not look at become invisible until the next delete.
+    nonisolated static func clearGCPending(snapshotsDir: URL) {
+        let marker = gcPendingMarker(in: snapshotsDir)
+        guard FileManager.default.fileExists(atPath: marker.path) else { return }
+        attempt("clearing the gc-pending marker") {
+            try FileManager.default.removeItem(at: marker)
+        }
+    }
+
     /// Consume the "a restore just landed" marker: `true` exactly once after a
     /// successful ``applyPendingRestore``. The caller runs the post-restore blob
     /// reconcile (report, don't reap) in place of that launch's orphan GC.
     func consumeJustRestored() -> Bool {
         let marker = directory.appendingPathComponent(".just-restored")
         guard FileManager.default.fileExists(atPath: marker.path) else { return false }
-        try? FileManager.default.removeItem(at: marker)
+        // A marker that will not clear pins this library on the post-restore path
+        // forever: every launch reconciles and reports instead of reclaiming, so
+        // orphaned blobs accumulate and the user is told about them each time.
+        Self.attempt("clearing the just-restored marker") {
+            try FileManager.default.removeItem(at: marker)
+        }
         return true
     }
 }

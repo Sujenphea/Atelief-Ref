@@ -378,8 +378,24 @@ public enum ColorPalette {
 
     /// Parse `#rrggbb` / `rrggbb`, any case, to an sRGB triple. `nil` for
     /// anything else — wrong length, non-hex digits, empty.
-    static func rgb(fromHex hex: String) -> ColorExtractor.RGB? {
-        var s = hex.trimmingCharacters(in: .whitespaces)
+    ///
+    /// **Six digits only, and that is deliberate.** The app has three other hex
+    /// parsers (`AtelierExport.RGBA`, `ElementRendering.rgba(fromHex:)`,
+    /// `AtelierTokens`' `Color.init?(hexString:)`) and they take 3 / 4 / 6 / 8,
+    /// because they read colours a person can type or pick. This one reads only
+    /// what `ColorSwatch.encodeList(_:)` writes, which is always the full
+    /// `#rrggbb` — a swatch this package extracted itself. `HexGrammarTests` pins
+    /// all four together on the six-digit form and pins this one's narrowness so
+    /// it cannot widen or narrow by accident.
+    ///
+    /// `public` so that suite can reach it: it is the fourth reader of one stored
+    /// string and was the only one no cross-parser test could see.
+    public static func rgb(fromHex hex: String) -> ColorExtractor.RGB? {
+        // `whitespacesAndNewlines`, matching the other three. It was `.whitespaces`,
+        // which meant a stored value with a trailing newline parsed on three
+        // surfaces and filed as "not a color" here — the same divergence class the
+        // grammar suite exists for, in the one parser it did not cover.
+        var s = hex.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.hasPrefix("#") { s.removeFirst() }
         guard s.count == 6, let value = UInt32(s, radix: 16) else { return nil }
         return ColorExtractor.RGB(

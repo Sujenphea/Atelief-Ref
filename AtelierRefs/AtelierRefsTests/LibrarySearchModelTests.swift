@@ -15,8 +15,11 @@ import Foundation
 import Testing
 @testable import AtelierRefs
 
+/// The time limit is the outer bound on the lifecycle awaits below (099 · 11A):
+/// awaiting a signal is exact, and an exact wait for something that never happens
+/// hangs the runner rather than merely failing.
 @MainActor
-@Suite("LibrarySearchModel state (007 G2)")
+@Suite("LibrarySearchModel state (007 G2)", .timeLimit(.minutes(1)))
 struct LibrarySearchModelTests {
 
     private func token(_ name: String, _ source: TagSource = .user) -> SearchToken {
@@ -112,15 +115,10 @@ struct LibrarySearchModelTests {
         var dismissals = 0
     }
 
-    /// Poll a main-actor condition until true or a bounded timeout (the model's
-    /// query/suggestion Tasks are debounced ~220/120ms, so a fixed wait would be
-    /// either flaky or slow; polling settles as soon as the Task lands).
-    private func poll(_ condition: @MainActor () -> Bool) async {
-        for _ in 0..<300 {
-            if condition() { return }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
+    // The `poll` this suite used to declare privately now lives in
+    // `TestSupport/Poll.swift` (099 · 11A) — same bound, same interval, and one
+    // place for the next person to find. Every `await poll { … }` below is
+    // unchanged: a trailing closure fills the shared helper's `until:` parameter.
 
     @Test("a query failure sets queryFailed and clears results")
     func queryFailureSetsFlag() async {
@@ -199,12 +197,19 @@ struct LibrarySearchModelTests {
         let recorder = Recorder()
         let m = LibrarySearchModel()
         m.runQuery = { q in recorder.queries.append(q); return [] }
+        let events = EventRecorder(m.events.stream())
         m.text = "a"; m.textChanged()
         m.text = "ab"; m.textChanged()
         m.text = "abc"; m.textChanged()
-        await poll { !recorder.queries.isEmpty }
-        // Let any stragglers land, then assert only the final query ran.
-        try? await Task.sleep(for: .milliseconds(120))
+
+        // Three keystrokes started three query tasks, so all three have to END
+        // before "only the latest ran" means anything. That used to be "sleep
+        // 120 ms and hope the losers have finished losing"; it is now the model
+        // saying so — two `superseded`, one `settled` (099 · 11A).
+        await events.wait(forAtLeast: 3) { _ in true }
+        #expect(events.count { $0 == .superseded } == 2,
+                "two of the three query tasks must be cancelled")
+        #expect(events.count { if case .settled = $0 { true } else { false } } == 1)
         #expect(recorder.queries.map(\.text) == ["abc"])
     }
 

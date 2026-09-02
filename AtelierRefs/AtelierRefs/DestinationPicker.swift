@@ -52,6 +52,11 @@ struct DestinationPicker: View {
     /// Listed but greyed — and skipped by the cursor. The collection in view on a
     /// grid; EMPTY on a board, which is not a collection and so excludes nothing.
     var disabled: Set<UUID> = []
+    /// The host's destination-tree memo — see ``CollectionDestinationList/cache``.
+    /// It matters more here than anywhere: `highlighted` is `@State` on this view,
+    /// so every arrow key re-runs the body, and the body rebuilt the tree once for
+    /// `navigableIDs` and twice more inside the list.
+    var cache: MoveTargetsCache?
     let onSelect: (UUID) -> Void
     let onDismiss: () -> Void
 
@@ -61,8 +66,14 @@ struct DestinationPicker: View {
     @FocusState private var isFocused: Bool
 
     private var navigableIDs: [UUID] {
-        CollectionDestinationList.navigableIDs(
-            folders: folders, unsortedID: unsortedID, disabled: disabled)
+        guard let cache else {
+            return CollectionDestinationList.navigableIDs(
+                folders: folders, unsortedID: unsortedID, disabled: disabled)
+        }
+        return CollectionDestinationList
+            .rows(tree: cache.destinationTree(folders: folders, unsortedID: unsortedID))
+            .map(\.id)
+            .filter { !disabled.contains($0) }
     }
 
     var body: some View {
@@ -71,6 +82,7 @@ struct DestinationPicker: View {
             CollectionDestinationList(
                 folders: folders, unsortedID: unsortedID,
                 disabled: disabled, highlighted: highlighted,
+                cache: cache,
                 onSelect: commit)
         }
         .selectionMenuChrome()

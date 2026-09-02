@@ -55,6 +55,10 @@ struct SpaceView: View {
     /// clicked color swatch lands.
     @Environment(\.librarySearch) private var librarySearch
     @State private var quickLook = QuickLookController()
+    /// The destination-tree memo for the `M` / `A` picker (012 · CQ 1A). A board
+    /// had none, so every arrow key inside the picker rebuilt the folder tree
+    /// three times.
+    @State private var moveTargetsCache = MoveTargetsCache()
     @State private var tool: CanvasTool = .select
     @State private var showEditor = false
     /// The asset row shown in the full-window detail overlay, or `nil`.
@@ -606,6 +610,7 @@ struct SpaceView: View {
                     count: request.assetIDs.count,
                     folders: model.folders,
                     unsortedID: model.unsortedFolderID,
+                    cache: moveTargetsCache,
                     // `copyToCollection` with no source: a board's tiles are
                     // placements, not memberships, so there is no folder for the
                     // notice's verb to read "moved out of" (019 · C1).

@@ -139,7 +139,23 @@ public enum ColorExtractor {
         groups
             .filter { $0.weight > 0 }
             .map { ColorSwatch(hex: hex($0.rgb), coverage: Double($0.weight) / total) }
-            .sorted { $0.coverage > $1.coverage }
+            // Coverage first, then HEX — a TOTAL order (099 · P1, found by the gate).
+            //
+            // This was `sorted { $0.coverage > $1.coverage }`, which is not total:
+            // two swatches with equal coverage compare equal both ways, `sort` is
+            // not stable, and what they fell back on was the order `histogram`
+            // produced — `Dictionary.values`, whose iteration order Swift
+            // randomizes per PROCESS via the seeded hasher.
+            //
+            // So `randomizedInvariants`' "deterministic across a shuffle" assertion
+            // held inside one process and could fail across two, which is exactly
+            // what a `swift test --parallel` run is. It failed a `verify.sh full`
+            // on this branch with two equal-coverage swatches transposed and every
+            // hex and coverage identical. `ColorPalette.merged` already breaks its
+            // ties on the bucket's raw value and says why ("so the order is total
+            // rather than whatever the dictionary iterated"); this is the same
+            // lesson, one function earlier.
+            .sorted { $0.coverage != $1.coverage ? $0.coverage > $1.coverage : $0.hex < $1.hex }
     }
 
     // MARK: - Histogram
@@ -177,7 +193,12 @@ public enum ColorExtractor {
             table[key, default: Accum()].add(p)
         }
 
-        return table.values.map { acc in
+        // Sorted by the quantized key, not left in `Dictionary` order: the hasher
+        // is seeded per process, so this map's order — which reaches k-means'
+        // seeding and `finalize`'s tie-break — would otherwise differ between two
+        // runs of the same build (099 · P1). 4096 buckets at most, on the
+        // background analysis path.
+        return table.sorted { $0.key < $1.key }.map { (_, acc) in
             let mean = RGB(
                 r: UInt8((acc.sr + acc.count / 2) / acc.count),
                 g: UInt8((acc.sg + acc.count / 2) / acc.count),

@@ -165,6 +165,41 @@ struct ColorExtractorTests {
         }
     }
 
+    @Test("equal coverages break on hex — the order is TOTAL, not merely sorted")
+    func equalCoverageOrderIsTotal() {
+        // 099 · P1. `finalize` sorted on coverage alone, which compares two equal
+        // coverages as equal in both directions; `sort` is not stable, so those
+        // two fell back on `histogram`'s `Dictionary.values` order — randomized
+        // per PROCESS by Swift's seeded hasher. `determinismUnderShuffle` above
+        // could not see it, because both of its calls run in one process. A
+        // `--parallel` run does not, and this failed a `verify.sh full`.
+        //
+        // Three colours, exactly equal counts, deliberately given in DESCENDING
+        // hex order so a stable sort of the input would produce the wrong answer
+        // and only a real tie-break produces the right one.
+        let px = pixels((255, 0, 0), 10)      // #ff0000
+            + pixels((0, 255, 0), 10)         // #00ff00
+            + pixels((0, 0, 255), 10)         // #0000ff
+        let result = ColorExtractor.swatches(fromPixels: px, maxColors: 3)
+        #expect(result.count == 3)
+        #expect(result.map(\.hex) == ["#0000ff", "#00ff00", "#ff0000"])
+        #expect(Set(result.map(\.coverage)).count == 1, "the premise: all three tie")
+    }
+
+    @Test("the swatch order does not depend on the hasher's per-process seed")
+    func orderIsHashSeedIndependent() {
+        // The same pixels handed over in several different ORDERS. The histogram
+        // is keyed by quantized colour, so a different insertion order is a
+        // different `Dictionary` layout — the closest a single process can come to
+        // reproducing what a second process's hash seed does.
+        let base = pixels((255, 0, 0), 10) + pixels((0, 255, 0), 10) + pixels((0, 0, 255), 10)
+        let expected = ColorExtractor.swatches(fromPixels: base, maxColors: 3)
+        for seed: UInt64 in [1, 7, 99, 0xDEAD_BEEF, 0x0BAD_F00D] {
+            #expect(ColorExtractor.swatches(
+                fromPixels: shuffled(base, seed: seed), maxColors: 3) == expected)
+        }
+    }
+
     // MARK: - Adapters (12A)
 
     private func parseHex(_ hex: String) -> (r: Int, g: Int, b: Int) {

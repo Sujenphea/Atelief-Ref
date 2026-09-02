@@ -214,6 +214,34 @@ struct AppUndoTests {
         model.setItemsForTesting(try await services.collectionItems(in: folder, includeArchived: false))
     }
 
+    @Test("a reorder naming an asset deleted in another window still orders the rest")
+    func reorderSurvivesAStaleID() async throws {
+        // 099 · 14A / P1. `applyOrder` used to read the WHOLE collection before
+        // every drag — every membership row joined to its asset and source — purely
+        // to strip ids that were no longer members, because `setGridOrder` threw
+        // `.notFound` on one and rolled the batch back. The service ignores them
+        // now, so the pre-read is gone; this is the case it was paying for.
+        let (model, services) = try await makeModel()
+        let folder = try await services.createCollection(name: "Grid")
+        let ids = try await seedColors(4, into: folder.id, services)
+        try await services.setCollectionSortMode(.manual, for: folder.id)
+        try await services.setGridOrder(collectionID: folder.id, orderedAssetIDs: ids)
+        model.selectedFolderID = folder.id
+        try await primeItems(model, folder: folder.id, services)
+
+        // Another window deletes one of them; this model's `items` still holds it,
+        // so the order it computes names an id that is no longer a member.
+        _ = try await services.deleteAssets([ids[1]])
+
+        model.reorderItems(movingAssetIDs: [ids[3]], insertAt: 0)
+        await model.waitForWrites()
+
+        #expect(model.lastError == nil, "a stale id must not surface as an error")
+        // The survivors are ordered, and the drag landed: the moved item is first.
+        let after = try await members(of: folder.id, services)
+        #expect(after == [ids[3], ids[0], ids[2]])
+    }
+
     // MARK: - Delete (010 · delete-undo)
 
     @Test("delete → undo restores the assets + order → redo re-deletes")

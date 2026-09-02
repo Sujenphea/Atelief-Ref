@@ -331,4 +331,40 @@ struct LibraryLocationTests {
             arguments: ["AtelierRefs", "-library-root"],
             environment: [:]) == nil)
     }
+
+    // MARK: - The two arms are not equally reachable (099 · 8A)
+
+    @Test("the -library-root ARGUMENT is read in DEBUG builds only")
+    func argumentArmIsDebugOnly() {
+        // A launch argument reaches the app from a double-click: Finder's
+        // Open-with, a `.command` file, a login item, `open -a … --args`. In a
+        // shipped build that is not an escape hatch, it is a way for the app to
+        // silently open a library the user did not choose. The argument's NAME
+        // survives in both configurations — this test needs it — but only a debug
+        // build parses it.
+        //
+        // The tests above this MARK exercise the argument arm and therefore pass
+        // only in a debug build. That is where the package suite runs; the Release
+        // half of this `#if` is the written-down contract, and `verify.sh`'s
+        // Release BUILD stage is what compile-checks the guard itself.
+        let value = LibraryLocation.overrideValue(
+            arguments: ["AtelierRefs", "-library-root", "scratch"], environment: [:])
+        #if DEBUG
+        #expect(value == "scratch")
+        #else
+        #expect(value == nil, "a Release build must not redirect the library from argv")
+        #endif
+    }
+
+    @Test("ATELIER_LIBRARY_ROOT is read in EVERY configuration")
+    func environmentArmIsUnconditional() {
+        // Deliberately not guarded: an environment variable is not reachable by a
+        // double-click — a shell, a test runner or an Xcode scheme has to put it
+        // in the process environment, which is exactly the audience the hatch is
+        // for. The macOS UI-test target (099 · P2) seeds its throwaway library
+        // through this key, so narrowing it to DEBUG would break P2.
+        #expect(LibraryLocation.overrideValue(
+            arguments: ["AtelierRefs"],
+            environment: [LibraryLocation.overrideEnvironmentKey: "scratch"]) == "scratch")
+    }
 }

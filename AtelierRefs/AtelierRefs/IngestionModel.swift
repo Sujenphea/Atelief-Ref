@@ -715,13 +715,23 @@ final class IngestionModel: ObservableObject {
     /// orchestration) so the destructive verbs + their undo can be driven
     /// deterministically — mirrors ``SpaceModel``'s injectable init. Callers load
     /// the tree with ``refreshFolders()``.
-    init(services: AppServices, store: MediaStore) {
+    /// - Parameter snapshotsDirectory: where the `.gc-pending` marker (099 · 16A)
+    ///   is written. `nil` — the default, and every existing caller — means no
+    ///   marker, which is the honest behaviour for a model with no snapshot
+    ///   orchestration: `bootstrap()` is what gives a real library one.
+    init(services: AppServices, store: MediaStore, snapshotsDirectory: URL? = nil) {
         self.services = services
         self.store = store
+        self.snapshotsDirectory = snapshotsDirectory
         self.selectedFolderID = services.unsortedFolderID
         self.isReady = true
         observeSelection()
     }
+
+    /// The library's `snapshots/` directory, for the marker files that survive a
+    /// launch. Set by ``bootstrap()`` from the `LibraryLayout`; injectable in the
+    /// test init above.
+    private var snapshotsDirectory: URL?
 
     /// Rebuild the `selectedAssetIDs` cache whenever the store publishes a new
     /// selection — the Combine replacement for the old `selection.didSet`. The
@@ -783,6 +793,7 @@ final class IngestionModel: ObservableObject {
             let snapshots = SnapshotManager(
                 services: services, directory: layout.snapshots)
             self.snapshotManager = snapshots
+            self.snapshotsDirectory = layout.snapshots
             // Normally false here — the restore this launch was asked for has
             // just been applied and its marker consumed — but a restore that
             // was staged and then refused leaves one behind, and the Backup
@@ -802,12 +813,32 @@ final class IngestionModel: ObservableObject {
             // Any sweep still "open" at launch is abandoned (nothing is running yet),
             // so reconcile it to paused — otherwise a tab closed mid-sweep last session
             // would show as a phantom "running" job forever.
-            _ = try? await services.pauseStaleOpenJobs(olderThan: 0, now: Date())
+            //
+            // 099 · 6A: the failure is still swallowed — a launch must not be
+            // stopped by a bookkeeping write — but it is no longer INVISIBLE. The
+            // symptom of this failing is a phantom running job that no amount of
+            // relaunching clears, and until now nothing anywhere said why.
+            do {
+                _ = try await services.pauseStaleOpenJobs(olderThan: 0, now: Date())
+            } catch {
+                AppLog.model.error(
+                    "launch: pausing stale open jobs failed — a sweep may still show as running: \(String(describing: error), privacy: .public)")
+            }
 
             // Enforce known ⟺ blob present: forget any ledger row whose blob was
             // removed outside deleteAssets, so a future sweep re-imports that source
             // instead of dedup-skipping bytes that are gone.
-            _ = try? await services.reconcileOrphanedKnownItems()
+            //
+            // 099 · 6A: swallowed, and now logged. The symptom of this failing is a
+            // re-sweep that SKIPS a source as already-known while its bytes are
+            // gone — an item the user can see is missing and the app insists it
+            // has. That is worth a line in the log.
+            do {
+                _ = try await services.reconcileOrphanedKnownItems()
+            } catch {
+                AppLog.model.error(
+                    "launch: known-item reconcile failed — a re-sweep may skip a source whose bytes are gone: \(String(describing: error), privacy: .public)")
+            }
 
             // Ambient clipboard capture (013 · K3). Bound here, after the library
             // is open: its preference is namespaced by library id, and nothing
@@ -846,10 +877,23 @@ final class IngestionModel: ObservableObject {
             // captured AFTER the snapshot — reaping now would silently trash it.
             // That launch reconciles and REPORTS both divergence directions
             // instead; the next launch's GC reclaims whatever isn't rescued.
-            if snapshots.consumeJustRestored() {
+            //
+            // 099 · 16A: and only when a delete actually left something behind.
+            // The sweep is a full walk of `blobs/`, and it ran on EVERY launch to
+            // look for orphans that can only exist if a delete happened and was
+            // never undone — a directory enumeration of the whole library, almost
+            // always to find nothing. `deleteRecoverably` now leaves a marker; a
+            // launch with no marker has nothing to look for.
+            switch SnapshotManager.launchBlobPass(
+                justRestored: snapshots.consumeJustRestored(),
+                gcPending: SnapshotManager.hasGCPending(snapshotsDir: layout.snapshots)) {
+            case .reconcile:
                 runPostRestoreBlobReconcile(services: services, store: store)
-            } else {
-                runOrphanBlobGC(services: services, store: store)
+            case .sweep:
+                runOrphanBlobGC(services: services, store: store,
+                                snapshotsDir: layout.snapshots)
+            case .none:
+                break
             }
 
             // Daily-on-launch snapshot if the newest daily is >1 day stale (008
@@ -1700,15 +1744,25 @@ final class IngestionModel: ObservableObject {
         } catch { lastError = Self.message(for: error) }
     }
 
-    /// Set `folder`'s grid order to `desired`, filtered to current members so a
-    /// concurrently-deleted asset can't throw `.notFound`.
+    /// Set `folder`'s grid order to `desired`.
+    ///
+    /// **The membership pre-read is gone** (099 · 14A). This used to read the
+    /// WHOLE collection — every membership row joined to its asset and source,
+    /// decoded in full — in front of every drag, to strip ids that were no longer
+    /// members so `setGridOrder` would not throw `.notFound` and roll the batch
+    /// back. `AppServices.setGridOrder` now IGNORES a non-member by contract
+    /// (`AppServices+Collections.swift`: the `WHERE … AND asset_id IN (…)` simply
+    /// matches no row), which is exactly what the pre-read was computing, and it
+    /// computes it inside the statement that was going to run anyway.
+    ///
+    /// Two consequences, both intended and both documented at the service:
+    /// positions are indices into `desired`, so a dropped id leaves a GAP and only
+    /// the relative order is meaningful; and a `.notFound` can still arrive, for a
+    /// missing COLLECTION, which is a different mistake and worth surfacing.
     private func applyOrder(folder: UUID, desired: [UUID]) async {
         guard let services, !desired.isEmpty else { return }
         do {
-            let members = Set(try await services.collectionItems(in: folder, includeArchived: false).map { $0.asset.id })
-            let filtered = desired.filter(members.contains)
-            guard !filtered.isEmpty else { return }
-            try await services.setGridOrder(collectionID: folder, orderedAssetIDs: filtered)
+            try await services.setGridOrder(collectionID: folder, orderedAssetIDs: desired)
         } catch { lastError = Self.message(for: error) }
     }
 
@@ -2900,6 +2954,12 @@ final class IngestionModel: ObservableObject {
             }
             do {
                 let backup = try await services.deleteAssetsRecoverable(assetIDs)
+                // 099 · 16A. A recoverable delete deliberately does NOT reap the
+                // blobs — an in-session ⌘Z has to find the bytes still on disk —
+                // so from here until the next completed sweep the library holds
+                // media nothing references. This marker is the record of that, and
+                // it is the whole reason the next launch bothers to look.
+                self.markBlobSweepPending()
                 await self.refreshFolders()
                 self.loadContents(of: self.selectedFolderID)
                 let message = "Deleted \(Self.itemCount(count))."
@@ -2932,25 +2992,63 @@ final class IngestionModel: ObservableObject {
         guard let services else { return }
         do {
             _ = try await services.deleteAssets(assetIDs)
+            // The redo orphans blobs exactly as the original delete did (it, too,
+            // defers reaping so a second ⌘Z still restores), so it marks too —
+            // otherwise a delete → undo → redo sequence leaves orphans behind a
+            // marker that the undo's sweep has already cleared (099 · 16A).
+            markBlobSweepPending()
             await refreshFolders()
             loadContents(of: selectedFolderID)
             notify("Deleted \(Self.itemCount(count)).")
         } catch { lastError = Self.message(for: error) }
     }
 
+    /// Record that a delete has left unreferenced blobs on disk, so the next
+    /// launch sweeps (099 · 16A). A no-op for a model with no snapshots directory
+    /// — the injectable test init — which is why the marker tests pass one.
+    private func markBlobSweepPending() {
+        guard let snapshotsDirectory else { return }
+        SnapshotManager.markGCPending(snapshotsDir: snapshotsDirectory)
+    }
+
     /// Reclaim orphaned blob files left by deletes that were never undone (010 ·
     /// delete-undo). Runs off-main after launch, when the undo history is empty so
     /// any unreferenced blob is unreachable. A failed read of the referenced set
     /// SKIPS the sweep (never reaps on uncertainty).
-    private func runOrphanBlobGC(services: AppServices, store: MediaStore) {
+    private func runOrphanBlobGC(
+        services: AppServices, store: MediaStore, snapshotsDir: URL
+    ) {
         Task.detached(priority: .utility) {
-            guard let referenced = try? await services.referencedBlobHashes() else { return }
-            let reaped = MediaReaper(store: store).reapOrphanedBlobs(referenced: referenced)
-            if !reaped.isEmpty {
-                AppLog.model.info(
-                    "launch orphan-GC reclaimed \(reaped.count, privacy: .public) file(s)")
-            }
+            await Self.sweepOrphanBlobs(
+                services: services, store: store, snapshotsDir: snapshotsDir)
         }
+    }
+
+    /// The sweep itself, off the model so a test can await it (099 · 16A).
+    ///
+    /// The marker is cleared **only on the path that completed**. A failed read of
+    /// the referenced set skips the sweep — never reap on uncertainty — and
+    /// therefore must also leave the marker, or the orphans it declined to look at
+    /// would stay invisible until the next delete happened to set it again.
+    ///
+    /// - Returns: how many files were moved to the Trash, or `nil` if the sweep
+    ///   did not run.
+    @discardableResult
+    nonisolated static func sweepOrphanBlobs(
+        services: AppServices, store: MediaStore, snapshotsDir: URL
+    ) async -> Int? {
+        guard let referenced = try? await services.referencedBlobHashes() else {
+            AppLog.model.error(
+                "launch orphan-GC: could not read the referenced set — skipping the sweep and keeping the marker")
+            return nil
+        }
+        let reaped = MediaReaper(store: store).reapOrphanedBlobs(referenced: referenced)
+        SnapshotManager.clearGCPending(snapshotsDir: snapshotsDir)
+        if !reaped.isEmpty {
+            AppLog.model.info(
+                "launch orphan-GC reclaimed \(reaped.count, privacy: .public) file(s)")
+        }
+        return reaped.count
     }
 
     /// The first launch after a restore (008 review, 3A): diff the restored DB's
@@ -3342,7 +3440,16 @@ final class IngestionModel: ObservableObject {
                     x: rect.x, y: rect.y, w: rect.w, h: rect.h, z: rect.z)
             }
             if let cover = sourceItems.first {
-                try? await services.setSpaceCover(spaceID: space.id, assetID: cover.asset.id)
+                // 099 · 6A: a cover is decoration on a space that was otherwise
+                // created successfully, so its failure must not fail the seed — but
+                // it is not nothing either. A space that quietly has no cover card
+                // looks like a rendering bug from the outside.
+                do {
+                    try await services.setSpaceCover(spaceID: space.id, assetID: cover.asset.id)
+                } catch {
+                    AppLog.model.error(
+                        "seeding a space from a collection: setting its cover failed: \(String(describing: error), privacy: .public)")
+                }
             }
             await refreshSpaces()
             return space.id
@@ -3384,7 +3491,15 @@ final class IngestionModel: ObservableObject {
                 }
                 // First content into an empty space → seed its cover.
                 if existing.isEmpty, let first = assets.first {
-                    try? await services.setSpaceCover(spaceID: spaceID, assetID: first.id)
+                    // 099 · 6A: same rule as the seed path above — the assets DID
+                    // land, so this must not throw the drop away; the cover not
+                    // appearing is a real symptom and now says so in the log.
+                    do {
+                        try await services.setSpaceCover(spaceID: spaceID, assetID: first.id)
+                    } catch {
+                        AppLog.model.error(
+                            "adding to a space: seeding its first cover failed: \(String(describing: error), privacy: .public)")
+                    }
                 }
                 await refreshSpaces()
                 let name = spaces.first(where: { $0.id == spaceID })?.name ?? ""
@@ -3769,25 +3884,22 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Errors
 
-    /// Map an `AtelierError` to a friendly message for the alert.
-    private static func message(for error: Error) -> String {
-        guard let error = error as? AtelierError else { return error.localizedDescription }
-        switch error {
-        case .protectedCollection:
-            return "The Unsorted folder is protected — it can't be renamed, moved, or deleted."
-        case .folderCycle:
-            return "Can't move a folder inside itself or one of its own subfolders."
-        case .invalidName:
-            return "That name isn't valid. Enter a non-empty folder name."
-        case .notFound:
-            return "That folder no longer exists."
-        case .persistenceFailure(let detail):
-            if let detail, !detail.isEmpty {
-                return "Library storage failed: \(detail)"
-            }
-            return "Library storage failed."
-        default:
-            return "\(error)"
-        }
+    /// The sentence this surface shows for a failure (099 · 6A).
+    ///
+    /// One override, and it earns its place: a `.notFound` on a COLLECTION here is
+    /// almost always a folder deleted in another window while this one was looking
+    /// at it, and "That folder no longer exists." says that where Core's "Couldn't
+    /// find that folder." only says the lookup missed. Every other case — and a
+    /// `.notFound` on anything that is not a collection — goes to Core's table,
+    /// which is exhaustive and has no `default` to fall through.
+    ///
+    /// What went away: four arms that restated Core's sentences in slightly
+    /// different words, and a `default: "\(error)"` that put an enum's DEBUG
+    /// description in an alert for every case nobody had thought about. The
+    /// `persistenceFailure` detail went with them, into the log — see
+    /// ``ErrorMessage/text(for:)``.
+    static func message(for error: Error) -> String {
+        ErrorMessage.notFound(error, entity: "collection", say: "That folder no longer exists.")
+            ?? ErrorMessage.text(for: error)
     }
 }

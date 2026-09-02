@@ -215,10 +215,27 @@ public enum LibraryLocation {
 
     /// The launch argument that overrides the Library root, e.g.
     /// `AtelierRefs -library-root bakeoff`.
+    ///
+    /// **Honoured in DEBUG builds only** (099 · 8A). A launch argument is the
+    /// cheapest thing in the world to pass — Finder's Open-with, a `.command`
+    /// file, a login item, an `open -a … --args` from any script the user runs —
+    /// and this one silently redirects the app at a DIFFERENT LIBRARY. In a
+    /// shipped build that is not a debugging affordance, it is a way for the app
+    /// to open somewhere the user did not put their work. The constant survives
+    /// in both configurations (it is the argument's NAME, and the DEBUG-only
+    /// behaviour is asserted against it); what is DEBUG-only is
+    /// ``overrideValue(arguments:environment:)`` reading it.
     public static let overrideArgument = "-library-root"
 
     /// The environment variable that overrides the Library root — the same value
     /// space as ``overrideArgument``, checked only when the argument is absent.
+    ///
+    /// **Unconditional, in every configuration, deliberately.** An environment
+    /// variable is not reachable by a double-click: something has to set it in the
+    /// process's environment, which means a shell, a test runner or an Xcode
+    /// scheme. That is exactly the audience the escape hatch is for, and the
+    /// macOS UI-test target (099 · P2) seeds its throwaway library through this
+    /// key on a build it does not control the configuration of.
     public static let overrideEnvironmentKey = "ATELIER_LIBRARY_ROOT"
 
     /// The Library root to actually open: an override when one is supplied,
@@ -272,9 +289,16 @@ public enum LibraryLocation {
         arguments: [String] = CommandLine.arguments,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String? {
+        // The argument arm is DEBUG-only (099 · 8A) — see ``overrideArgument``.
+        // In a Release build `arguments` is not consulted at all, so a passed
+        // `-library-root` is not "ignored after parsing", it is never parsed.
+        #if DEBUG
         let fromArgument: String? = arguments.firstIndex(of: overrideArgument)
             .map { $0 + 1 }
             .flatMap { arguments.indices.contains($0) ? arguments[$0] : nil }
+        #else
+        let fromArgument: String? = nil
+        #endif
         let raw = fromArgument ?? environment[overrideEnvironmentKey]
         // Spelled here rather than `AtelierCore.TextRules.nonBlank`: this package has no
         // dependencies by charter (see the manifest), and a leaf cannot import the rule.

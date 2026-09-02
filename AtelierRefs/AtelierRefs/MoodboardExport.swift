@@ -66,6 +66,11 @@ nonisolated enum ExportDefaults {
 
 /// The pure bridge from board rows to the render package.
 nonisolated enum MoodboardExport {
+    /// The export package's ``AtelierExport/TextStyle``, named symmetrically with
+    /// ``ElementRendering/BoardTextStyle`` so the conformance suite can hold both
+    /// in one scope. See that alias for why the qualified spellings do not work.
+    typealias PageTextStyle = TextStyle
+
 
     /// The mapped result: renderable elements, the id→URL table the provider
     /// resolves, and a count of rows that couldn't be represented at all
@@ -161,19 +166,60 @@ nonisolated enum MoodboardExport {
 
     /// A ``TextStyle`` from an `ElementStyle`, applying moodboard defaults.
     ///
-    /// The colourless fallback is WHITE, matching `ElementRendering.defaultTextColor`
-    /// — the board's own default since the canvas went dark. It used to be `.black`,
-    /// which meant a legacy text row with no stored colour drew white on the board
-    /// and black in the export: the same element, two colours.
-    private static func textStyle(from style: ElementStyle?) -> TextStyle {
-        TextStyle(
-            string: style?.text ?? "",
-            fontSize: style?.fontSize ?? 17,
-            color: style?.textColor.flatMap(RGBA.init(hex:)) ?? .white)
+    /// **The second of the two bridges out of `ElementStyle`**, the first being
+    /// `ElementRendering.textStyle(for:)`, which builds the CanvasRenderer value the
+    /// board draws. They read the same stored JSON and must produce the same
+    /// typography, or an exported page stops being a picture of the board.
+    /// `StyleBridgeConformanceTests` drives one fixture set through both and
+    /// compares field for field; this doc comment is not the guarantee, that test is.
+    ///
+    /// The three defaults are therefore expressed in terms of the board's own, not
+    /// restated: the fallbacks that used to live here as literals (`17`, `.white`)
+    /// were an independent second opinion about what an unstyled element looks like,
+    /// and one of them was already wrong — a legacy row with no `fontSize` drew at 16
+    /// on the board and exported at 17.
+    ///
+    /// The colourless fallback is WHITE — the board's default since the canvas went
+    /// dark. It used to be `.black`, which meant a legacy text row with no stored
+    /// colour drew white on the board and black in the export: the same element, two
+    /// colours. That is the bug class this whole bridge is now tested against.
+    static func textStyle(from style: ElementStyle?) -> TextStyle {
+        let style = style ?? ElementStyle()
+        return TextStyle(
+            string: style.text ?? "",
+            fontSize: style.fontSize ?? ElementRendering.defaultFontSize,
+            color: style.textColor.flatMap(RGBA.init(hex:)) ?? Self.defaultTextColor,
+            // 2A: family / weight / alignment. `AtelierExport.TextStyle` grew these
+            // in P0 and `MoodboardRenderer` has honoured them since, but nothing
+            // filled them — so every export was still Helvetica regular flush left,
+            // byte-identical to before the renderer changed. This is the fill.
+            //
+            // The two enums are rawValue-matched to `AtelierCore`'s tokens by
+            // contract (see `FontWeight` / `TextAlignment` in AtelierExport), so the
+            // hop is a rawValue lookup and the `??` arms are unreachable in practice
+            // — `ElementStyle.weight` / `.align` have already degraded an unknown
+            // token to the same default this line falls back to. Both defaults are
+            // asserted equal to the board's in the conformance suite.
+            fontFamily: style.fontFamily,
+            weight: FontWeight(rawValue: style.weight.rawValue) ?? .regular,
+            alignment: TextAlignment(rawValue: style.align.rawValue) ?? .left)
     }
 
+    /// The export's fallback text colour, parsed from the SAME hex string a new text
+    /// box stores, so the board and the page cannot drift apart the way they did when
+    /// this was a literal `.black`. `ElementRendering.defaultTextColorHex` is the one
+    /// source; `.white` is only the unreachable arm of a parse that cannot fail.
+    static let defaultTextColor: RGBA =
+        RGBA(hex: ElementRendering.defaultTextColorHex) ?? .white
+
     /// A ``FrameStyle`` from an `ElementStyle` (fill / stroke + optional label).
-    private static func frameStyle(from style: ElementStyle?) -> FrameStyle {
+    ///
+    /// The label goes through ``textStyle(from:)``, so a frame's caption inherits
+    /// family / weight / alignment exactly as a text element does — `FrameStyle.label`
+    /// is a `TextStyle` and P0's fields ride it for free. The board's frame label was
+    /// built by hand from three fields and is now routed through
+    /// `ElementRendering.textStyle(for:)` for the same reason.
+    static func frameStyle(from style: ElementStyle?) -> FrameStyle {
         let label = (style?.text?.isEmpty == false) ? textStyle(from: style) : nil
         return FrameStyle(
             fill: style?.fillColor.flatMap(RGBA.init(hex:)),

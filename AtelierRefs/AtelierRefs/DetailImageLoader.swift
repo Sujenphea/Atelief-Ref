@@ -316,7 +316,13 @@ actor DetailImageLoader {
     /// is no longer cancellable. No `await` inside, so this is atomic on the actor.
     private func join(key: DetailImageKey, url: URL, visible: Bool) -> Task<Void, Never> {
         if let existing = inFlight[key] {
-            if visible { preloadKeys.remove(key) }
+            if visible, preloadKeys.remove(key) != nil {
+                // The promotion, and the only moment it happens. `retainOnly`
+                // cannot cancel this key from here on, and until 11A no test could
+                // observe that having happened — both of them slept 50 ms and hoped.
+                events.emit(.promoted(key))
+            }
+            events.emit(.joined(key))
             return existing
         }
         return startTask(key: key, url: url, visible: visible)
@@ -339,16 +345,42 @@ actor DetailImageLoader {
             await self?.finish(key)
         }
         inFlight[key] = task
+        events.emit(.started(key))
         return task
     }
 
     private func finish(_ key: DetailImageKey) {
         inFlight[key] = nil
         preloadKeys.remove(key)
+        events.emit(.finished(key))
     }
 
     /// Await everything in flight — test/diagnostic support only.
     func waitForPendingWork() async {
         for task in inFlight.values { await task.value }
     }
+
+    // MARK: - Lifecycle signal (099 · 11A)
+
+    /// What happened to one key. See ``EventSignal`` for why this exists and what
+    /// it costs when nothing is listening.
+    ///
+    /// `joined` fires for EVERY request that attaches to an existing task,
+    /// `started` for the one that created it — so "N requests, one decode" is
+    /// countable rather than timeable, which is what
+    /// `concurrentRequestsCoalesce` is actually asserting.
+    enum Event: Sendable, Equatable {
+        /// A decode task was created for this key.
+        case started(DetailImageKey)
+        /// A request attached to a task already running for this key.
+        case joined(DetailImageKey)
+        /// A visible request took a preload out of the cancellable set.
+        case promoted(DetailImageKey)
+        /// The decode task ended (cached, or cancelled before it cached).
+        case finished(DetailImageKey)
+    }
+
+    /// The lifecycle broadcast. `nonisolated let` so a test can take its stream
+    /// without awaiting the actor it is about to watch.
+    nonisolated let events = EventSignal<Event>()
 }

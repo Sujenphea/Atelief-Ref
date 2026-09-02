@@ -387,6 +387,66 @@ struct CollectionDestinationPerfTests {
         return folders
     }
 
+    // MARK: - The destination LIST and PICKER take the memo too (099 · noted)
+
+    @Test("the memoized rows are the same rows the pure static builds")
+    func cachedRowsMatchTheStatic() {
+        // The list grew a second path, so the two have to be one answer. If they
+        // could differ, the keyboard cursor (`navigableIDs`) and the drawn rows
+        // would be walking different orders, which is the bug 027 §A was filed
+        // for in the first place.
+        let folders = Self.library()
+        let cache = MoveTargetsCache()
+        let cached = CollectionDestinationList.rows(
+            tree: cache.destinationTree(folders: folders, unsortedID: Self.unsortedID))
+        let pure = CollectionDestinationList.rows(
+            folders: folders, unsortedID: Self.unsortedID)
+        #expect(cached == pure)
+        #expect(!cached.isEmpty)
+    }
+
+    @Test("exclusion behaves identically on both paths, including an excluded parent")
+    func cachedRowsHonourExclusion() {
+        // An excluded PARENT keeps its children at their original depth — the
+        // rule the pure static's doc comment states. The memoized path flattens
+        // the same tree, so it inherits the rule rather than restating it, and
+        // this is the assertion that says so.
+        let folders = Self.library()
+        let cache = MoveTargetsCache()
+        let parent = try! #require(folders.first { $0.name == "Root 1" })
+        let excluded: Set<UUID> = [parent.id]
+        let cached = CollectionDestinationList.rows(
+            tree: cache.destinationTree(folders: folders, unsortedID: Self.unsortedID),
+            excluded: excluded)
+        let pure = CollectionDestinationList.rows(
+            folders: folders, unsortedID: Self.unsortedID, excluded: excluded)
+        #expect(cached == pure)
+        #expect(!cached.contains { $0.id == parent.id })
+        #expect(cached.contains { $0.collection.parentCollectionID == parent.id },
+                "an excluded parent must not take its children with it")
+    }
+
+    @Test("a picker's arrow keys stop rebuilding the tree")
+    func pickerCursorDoesNotRebuild() {
+        // `highlighted` is `@State` on `DestinationPicker`, so every arrow press
+        // re-runs its body — which read `navigableIDs` (one build) and then drew
+        // `CollectionDestinationList`, whose `nodes` was a computed property read
+        // TWICE per pass (two more). Three full tree builds per keystroke, on a
+        // popover the user is holding a key down in.
+        let folders = Self.library()
+        let cache = MoveTargetsCache()
+        var cursor: UUID?
+        for _ in 0..<60 {
+            let ids = CollectionDestinationList
+                .rows(tree: cache.destinationTree(
+                    folders: folders, unsortedID: Self.unsortedID))
+                .map(\.id)
+            cursor = CollectionDestinationList.step(from: cursor, in: ids, by: 1)
+        }
+        #expect(cache.buildCount == 1)
+        #expect(cursor != nil)
+    }
+
     @Test("the memo hits across renders — one build per folder-tree change")
     func cacheHitsAcrossRenders() {
         let folders = Self.library()

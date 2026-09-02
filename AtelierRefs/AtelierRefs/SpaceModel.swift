@@ -1113,18 +1113,19 @@ final class SpaceModel: ObservableObject {
 
     // MARK: - Errors
 
-    private static func message(for error: Error) -> String {
-        guard let error = error as? AtelierError else { return error.localizedDescription }
-        switch error {
-        case .notFound:
-            return "That space no longer exists."
-        case .invalidPlacement:
-            return "That placement isn't valid."
-        case .persistenceFailure(let detail):
-            if let detail, !detail.isEmpty { return "Library storage failed: \(detail)" }
-            return "Library storage failed."
-        default:
-            return "\(error)"
-        }
+    /// The sentence this surface shows for a failure (099 · 6A).
+    ///
+    /// One override: a `.notFound` on the SPACE is the board being deleted out from
+    /// under an open window, and this model exists to be that window. It is scoped
+    /// to the space entity — the same switch used to answer "That space no longer
+    /// exists." for a missing ASSET on the board, which is a different thing and
+    /// Core says so.
+    ///
+    /// `.invalidPlacement` was an override and is not one any more: Core's "That
+    /// position on the board isn't a place something can go." is this surface's own
+    /// sentence, written once, where a new case cannot skip it.
+    static func message(for error: Error) -> String {
+        ErrorMessage.notFound(error, entity: "space", say: "That space no longer exists.")
+            ?? ErrorMessage.text(for: error)
     }
 }

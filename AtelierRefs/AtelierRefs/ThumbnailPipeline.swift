@@ -306,8 +306,13 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
             // does still occupy a decode slot, and `finish` decrements it from
             // the `isPrefetch` captured at creation. The `remove` there becomes
             // a no-op, which is correct.
-            if visible { inFlightPrefetches.remove(request.key) }
+            let promoted = visible && inFlightPrefetches.remove(request.key) != nil
             lock.unlock()
+            // Emitted OUTSIDE the lock — `yield` runs a consumer's buffering, and
+            // holding this lock across code that is not ours is how the pipeline
+            // would acquire a deadlock it does not have today (099 · 11A).
+            if promoted { events.emit(.promoted(request.key)) }
+            events.emit(.joined(request.key))
             return existing
         }
         // Re-check the cache UNDER the lock, exactly as `pump` does before it
@@ -349,6 +354,12 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
             self?.finish(request.key, wasPrefetch: isPrefetch)
         }
         inFlight[request.key] = task
+        // `lock` IS held here (this method's contract), so the emit is deliberate
+        // and safe only because `EventSignal` never calls back into the pipeline:
+        // it takes its own lock, copies continuations, releases, and yields. The
+        // alternative — returning the event to two callers to emit after their
+        // own unlock — buys nothing and loses the ordering.
+        events.emit(.startedDecoding(request.key))
         return task
     }
 
@@ -414,6 +425,7 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
             activePrefetches = max(0, activePrefetches - 1)
         }
         lock.unlock()
+        events.emit(.finished(key))
         pump()
     }
 
@@ -462,6 +474,31 @@ nonisolated final class ThumbnailPipeline: @unchecked Sendable {
         defer { lock.unlock() }
         return (Array(inFlight.values), !queued.isEmpty)
     }
+
+    // MARK: - Lifecycle signal (099 · 11A)
+
+    /// What happened to one key. The mirror of ``DetailImageLoader/Event``; see
+    /// ``EventSignal`` for why it exists and what it costs unlistened-to.
+    ///
+    /// `startedDecoding` is the one the tests could not previously see at all.
+    /// "The prefetch decode has genuinely begun" was the premise of
+    /// `visibleJoinPromotesOutOfPrefetch`, and it was established by polling the
+    /// decode probe's own call count — a bounded loop reimplemented inline,
+    /// twice, because the pipeline had nothing to say about itself.
+    enum Event: Sendable, Equatable {
+        /// A decode task was created for this key (a visible start, or a prefetch
+        /// admitted through the gate).
+        case startedDecoding(ThumbnailKey)
+        /// A request attached to a task already running for this key.
+        case joined(ThumbnailKey)
+        /// A visible request took a prefetch out of the cancellable set.
+        case promoted(ThumbnailKey)
+        /// The decode task ended (stored, or cancelled before it stored).
+        case finished(ThumbnailKey)
+    }
+
+    /// The lifecycle broadcast.
+    let events = EventSignal<Event>()
 }
 
 // MARK: - Window-driven prefetching

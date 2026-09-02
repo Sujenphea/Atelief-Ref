@@ -622,7 +622,9 @@ struct CollectionView: View {
     private func destinationList(copy: Bool) -> some View {
         CollectionDestinationList(
             folders: model.folders, unsortedID: model.unsortedFolderID,
-            disabled: [collectionID]) { id in
+            // The memo this screen already keeps for its right-click menu, now
+            // also feeding the accordion — the tree is the same tree.
+            disabled: [collectionID], cache: moveTargetsCache) { id in
             moveOrCopy(copy: copy, to: id)
         }
     }
@@ -647,6 +649,7 @@ struct CollectionView: View {
                     // selection bar and the right-click menu list it — filing where
                     // the items already are is a no-op, not a missing row.
                     disabled: [collectionID],
+                    cache: moveTargetsCache,
                     onSelect: { target in file(request, into: target) },
                     onDismiss: { destinationRequest = nil })
             }

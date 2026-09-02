@@ -5,6 +5,7 @@
 //  Created by Sujen Phea on 30/06/2026.
 //
 
+import AppKit
 import AtelierCore
 import SwiftUI
 
@@ -15,8 +16,10 @@ struct AtelierRefsApp: App {
     @StateObject private var model = IngestionModel()
     // 037 — opens the grid bake-off window under `-grid-bakeoff`, and does
     // nothing otherwise. The whole spike lives in `Debug/`; this line is its
-    // only footprint outside that folder.
-    @NSApplicationDelegateAdaptor(GridBakeoffAppDelegate.self) private var bakeoffDelegate
+    // only footprint outside that folder — and since 099 · 8A it names a
+    // production delegate that FORWARDS there in DEBUG, so the harness is not
+    // installed in a shipped build (see ``AppDelegate``).
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     // 052 · A3 — the app-global Sparkle updater. `startingUpdater: true` boots the
     // updater at launch; the App menu's "Check for Updates…" command reads it.
     /// Grid view preferences (density, carousel grouping), lifted here for the same
@@ -359,4 +362,31 @@ private struct BackCommand: View {
             .keyboardShortcut("[", modifiers: .command)
             .disabled(nav?.path.isEmpty ?? true)
     }
+}
+
+/// The app's one `NSApplicationDelegate` seat (099 · 8A).
+///
+/// An app gets exactly one, and until this type the bake-off harness held it —
+/// `@NSApplicationDelegateAdaptor(GridBakeoffAppDelegate.self)`, installed in
+/// every build, Release included. The harness is a measurement spike; shipping
+/// it was an accident of there being nowhere else to put the adaptor.
+///
+/// So the seat belongs to production code, and the harness is a DEBUG-only
+/// forward. `Debug/` is now `#if DEBUG` whole, so in a Release build
+/// `GridBakeoffAppDelegate` does not exist to name and this method is empty —
+/// which is the compiler checking the guard rather than a reader trusting it.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        bakeoff.applicationDidFinishLaunching(notification)
+        #endif
+    }
+
+    #if DEBUG
+    /// The 037 harness, alive only in a debug build. Held rather than inherited
+    /// from: the harness delegate is its own object with its own state, and a
+    /// subclass would put its `Debug/` type in this file's declaration line —
+    /// where a Release build could not compile it away.
+    private let bakeoff = GridBakeoffAppDelegate()
+    #endif
 }

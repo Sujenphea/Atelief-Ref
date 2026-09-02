@@ -23,6 +23,29 @@ struct BoundedWorkTests {
         func record(_ value: String) { values.append(value) }
     }
 
+    /// The same job as ``Recorder``, without an await to reach it (099 · 11A).
+    ///
+    /// `ProgressReporter`'s callback is synchronous, so an ACTOR recorder can only
+    /// be written from it through a detached `Task` — and then the test has to
+    /// wait for those tasks to drain before it can read what was recorded.
+    /// `progressIsMonotonic` did that by sleeping 50 ms, which is a guess about
+    /// how long 24 detached tasks take on a machine that may be doing something
+    /// else at the time.
+    ///
+    /// A lock records inside the callback instead. There is nothing to drain, so
+    /// there is nothing to wait for: when `runBounded` returns, every `report()`
+    /// has already appended. That is not a faster wait, it is the absence of one.
+    private final class SyncRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [String] = []
+        func record(_ value: String) {
+            lock.lock(); storage.append(value); lock.unlock()
+        }
+        var values: [String] {
+            lock.lock(); defer { lock.unlock() }; return storage
+        }
+    }
+
     @Test("works over an arbitrary Sendable element type, results in INPUT order")
     func genericElementInputOrder() async throws {
         // Strings, not IngestInput — the generalization's whole point. Reversed
@@ -115,25 +138,29 @@ struct BoundedWorkTests {
 
     @Test("progress is delivered strictly 1…total even under concurrent completion")
     func progressIsMonotonic() async throws {
-        let recorder = Recorder()
+        let recorder = SyncRecorder()
         let total = 24
         let reporter = ProgressReporter(total: total) { completed, reportedTotal in
-            // Callback fires under the actor's isolation; capture the sequence.
-            Task { await recorder.record("\(completed)/\(reportedTotal)") }
+            // Recorded INSIDE the callback, under the reporter's own isolation, so
+            // `runBounded` returning is itself the guarantee that every report has
+            // landed. The detached `Task` this replaces was the only reason the
+            // test needed a drain wait at all (099 · 11A).
+            recorder.record("\(completed)/\(reportedTotal)")
         }
         _ = await runBounded(Array(0 ..< total), maxConcurrent: 6) { index, _ in
-            // Jittered so completions genuinely interleave.
+            // Jittered so completions genuinely interleave. This one is the
+            // SCENARIO, not a wait: without it the six workers finish in lockstep
+            // and the interleaving the test is named for never happens.
             try? await Task.sleep(nanoseconds: UInt64((index % 5) + 1) * 1_000_000)
             await reporter.report()
             return index
         }
-        // Let the recording tasks drain.
-        try await Task.sleep(nanoseconds: 50_000_000)
 
-        let counts = await recorder.values.compactMap { Int($0.split(separator: "/")[0]) }
+        let values = recorder.values
+        let counts = values.compactMap { Int($0.split(separator: "/")[0]) }
         #expect(counts.count == total)
         #expect(Set(counts) == Set(1...total)) // each count delivered exactly once
-        #expect(await recorder.values.allSatisfy { $0.hasSuffix("/\(total)") })
+        #expect(values.allSatisfy { $0.hasSuffix("/\(total)") })
     }
 
     @Test("a reporter with no callback still counts without crashing")

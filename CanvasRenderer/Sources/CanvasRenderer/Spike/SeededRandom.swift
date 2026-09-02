@@ -4,6 +4,19 @@
 /// and lets culling tests assert exact sets.
 ///
 /// Not cryptographic — purely for reproducible test/benchmark data.
+//
+//  099 · 8A — the spike's fixture data is DEBUG-only.
+//
+//  `Spike/` exists to feed the canvas harnesses: a seeded PRNG, a dummy tile
+//  generator and a handful of procedurally-drawn fixture images. Its only
+//  consumers are `CanvasRendererTests` (`CanvasBenchmark`, `CanvasPinchTests`,
+//  `SpikeDataTests`) and the app's own `Debug/` bake-off — both of which build
+//  in debug. Nothing in a shipped app draws a dummy tile, and the one mention
+//  of these types outside the spike and its tests is a doc comment.
+//
+
+#if DEBUG
+
 public struct SeededRandom: RandomNumberGenerator {
     private var state: UInt64
 
@@ -20,3 +33,5 @@ public struct SeededRandom: RandomNumberGenerator {
         return z ^ (z >> 31)
     }
 }
+
+#endif  // DEBUG
