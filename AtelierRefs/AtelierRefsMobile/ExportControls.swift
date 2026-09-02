@@ -15,6 +15,7 @@
 // folder, and inventing a picker for AirDrop / Files / iCloud Drive would be building a
 // worse copy of the thing every iOS user already knows.
 
+import AtelierBrowse
 import SwiftUI
 import UIKit
 

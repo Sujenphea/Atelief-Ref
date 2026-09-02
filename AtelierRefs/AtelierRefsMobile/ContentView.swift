@@ -324,11 +324,13 @@ struct ItemScreen: View {
         .background(MobileTheme.Colors.panel)
         .task(id: itemID) {
             do {
-                detail = try await store.items(in: collectionID)
-                    .first { $0.item.id == itemID }
+                // ONE row, by the pair of ids the route carries. This used to be
+                // `store.items(in:).first { }` — the whole P14 join, 0.293 s at 5,000
+                // rows (450), paid per tap to keep one of them (098 · finding 13).
+                detail = try await store.item(itemID, in: collectionID)
                 if detail == nil { error = "That item is no longer in the library." }
             } catch {
-                self.error = LibraryStore.message(for: error)
+                self.error = BrowseFailure.message(for: error)
             }
         }
     }
