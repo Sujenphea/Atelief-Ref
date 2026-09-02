@@ -74,12 +74,14 @@ extension InboxDrainPolicy where Outcome == DrainSummary {
     /// in `ContentView` say what it means.
     convenience init(
         pass: @escaping @MainActor () async -> DrainSummary,
-        onIngest: @escaping @MainActor () -> Void
+        onIngest: @escaping @MainActor () -> Void,
+        onNotice: @escaping @MainActor (String?) -> Void
     ) {
         self.init(
             pass: pass,
             report: { summary in
-                InboxDrainScheduler.report(summary, onIngest: onIngest)
+                InboxDrainScheduler.report(
+                    summary, onIngest: onIngest, onNotice: onNotice)
             },
             observe: { event in InboxDrainScheduler.log(event) })
     }
@@ -99,11 +101,15 @@ extension InboxDrainPolicy where Outcome == DrainSummary {
 
     /// Log what the pass found, and tell the app if the library changed.
     ///
-    /// Nothing here reaches the user directly, which is the Mac's conclusion and 093 § 7's:
-    /// an unreadable inbox and a quarantined capture are both conditions a person holding a
-    /// phone has no lever for, and the captures are still on disk either way. A quarantine
-    /// is louder in consequence and just as unactionable in the moment, so it is logged at
-    /// the level that says "someone will want to have seen this".
+    /// **The log is not the only reader any more** (098 · P6). This used to say that
+    /// nothing here reaches the user, on the ground that an unreadable inbox and a
+    /// quarantined capture are conditions a person has no lever for. Both are still true
+    /// and 093 § 1 had already named the exception, in the paragraph defending the word
+    /// "Saved" on the share sheet's card: a quarantine "is a bug and belongs on the surface
+    /// that can show it". `DrainSummary.userNotice` decides which of the six fields is
+    /// worth a sentence — two of them — and this routes it. The rule it applies is not "can
+    /// the user act" but "would the app otherwise misrepresent itself"; the argument is at
+    /// the property.
     ///
     /// This is the half of phase 3's `report(_:)` that could not move: `os.Logger` is the
     /// app's, and the counter it bumps belongs to `LibraryStore`. The half that DID move is
@@ -117,7 +123,11 @@ extension InboxDrainPolicy where Outcome == DrainSummary {
     /// in neither app's log. ``DrainSummary/reportLines`` decides the sentences, their
     /// order and their level; what is left here is the mapping onto `MobileLog`, which is
     /// the app's and cannot be anything else.
-    static func report(_ summary: DrainSummary, onIngest: @MainActor () -> Void) {
+    static func report(
+        _ summary: DrainSummary,
+        onIngest: @MainActor () -> Void,
+        onNotice: @MainActor (String?) -> Void
+    ) {
         for line in summary.reportLines {
             switch line.level {
             case .notice: MobileLog.capture.notice("\(line.text, privacy: .public)")
@@ -125,5 +135,10 @@ extension InboxDrainPolicy where Outcome == DrainSummary {
             }
         }
         if summary.ingested > 0 { onIngest() }
+        // Unconditional, `nil` included: a pass with nothing to say must clear a notice an
+        // earlier pass put up, or a quarantine reported once stays on screen for the life
+        // of the process. The phone drains on every activation, so a condition that still
+        // holds says so again within seconds.
+        onNotice(summary.userNotice)
     }
 }

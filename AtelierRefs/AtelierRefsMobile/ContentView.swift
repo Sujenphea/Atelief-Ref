@@ -74,27 +74,10 @@ struct ContentView: View {
             inbox?.scenePhaseChanged(to: phase)
             if phase == .active { export?.refresh() }
         }
-        .overlay(alignment: .bottom) {
-            if case .failed(let message) = export?.phase {
-                ExportFailureNotice(message: message)
-                    .transition(.opacity)
-                    .task {
-                        try? await Task.sleep(for: .seconds(4))
-                        export?.finish()
-                    }
-            } else if case .sent(let count) = export?.phase {
-                // **No auto-dismiss timer here, unlike the failure notice above.** That one
-                // reports something already true and needs no answer; this one asks a
-                // question only the user can answer, and a question that vanishes after four
-                // seconds is a question that gets answered by accident. It waits.
-                ExportSentNotice(
-                    count: count,
-                    onClear: { Task { await export?.retire() } },
-                    onKeep: { export?.keep() })
-                    .transition(.opacity)
-            }
-        }
+        .overlay(alignment: .bottom) { bottomNotice }
         .animation(MobileTheme.Motion.gentle, value: export?.phase)
+        .animation(MobileTheme.Motion.gentle, value: export?.pendingFailure)
+        .animation(MobileTheme.Motion.gentle, value: store.drainNotice)
         .sheet(isPresented: shareSheetBinding) {
             if case .ready(let url) = export?.phase {
                 ShareSheet(url: url) { export?.finish() }
@@ -143,7 +126,12 @@ struct ContentView: View {
             // collection — so the screens are told "something landed", not where. One
             // counter is the whole signal: each grid is keyed on it and re-reads itself,
             // and the root's reload is where the send control's count is refreshed too.
-            onIngest: { store.noteIngest() })
+            onIngest: { store.noteIngest() },
+            // And the one thing a pass can find that the user was told the opposite of
+            // (098 · P6). `DrainSummary.userNotice` decides whether there is a sentence at
+            // all, and says no for four of the six fields; this is where it lands.
+            // Unconditional, `nil` included: the notice describes the LAST pass.
+            onNotice: { store.noteDrain(notice: $0) })
         inbox = scheduler
 
         if export == nil {
@@ -173,6 +161,59 @@ struct ContentView: View {
         Binding(
             get: { if case .ready = export?.phase { true } else { false } },
             set: { if !$0 { export?.finish() } })
+    }
+
+    // MARK: - What is on top of the grid
+
+    /// The one card the grid can be wearing (098 · P6). Four conditions, one at a time, in
+    /// the order of how recently the user caused them.
+    ///
+    /// **One card and not a stack**, because a stack of warnings at the bottom of a phone
+    /// screen is a screen. The export phases come first: they are the answer to a tap that
+    /// happened seconds ago, and a person waiting for one must not have it hidden behind a
+    /// standing condition. The inbox failure comes next because it is the reason the send
+    /// control is not there. The drain's notice is last because it is the only one about
+    /// something that happened behind the screen.
+    @ViewBuilder
+    private var bottomNotice: some View {
+        if case .failed(let message) = export?.phase {
+            WarningNotice(message: message, identifier: NoticeID.exportFailure)
+                .transition(.opacity)
+                .task {
+                    try? await Task.sleep(for: .seconds(4))
+                    export?.finish()
+                }
+        } else if case .sent(let count, let skipped) = export?.phase {
+            // **No auto-dismiss timer here, unlike the failure notice above.** That one
+            // reports something already true and needs no answer; this one asks a
+            // question only the user can answer, and a question that vanishes after four
+            // seconds is a question that gets answered by accident. It waits.
+            ExportSentNotice(
+                count: count, skipped: skipped,
+                onClear: { Task { await export?.retire() } },
+                onKeep: { export?.keep() })
+                .transition(.opacity)
+        } else if let failure = export?.pendingFailure {
+            // **This one does not dismiss, and that is the design** (098 · P6). The other
+            // three report an event; this reports a STATE — the inbox cannot be
+            // enumerated, so the send control is not in the toolbar and there is no other
+            // sign anything is wrong. A card that timed out would leave a phone that
+            // silently cannot send its captures looking exactly like a phone with nothing
+            // to send, which is the condition this whole change exists to remove. It goes
+            // when the state does: `refresh()` runs on every activation and clears the
+            // failure the moment the directory reads again.
+            WarningNotice(message: failure, identifier: NoticeID.inboxUnreadable)
+                .transition(.opacity)
+        } else if let notice = store.drainNotice {
+            // Six seconds rather than the export failure's four: nothing on this screen
+            // prompted it, so the user has to notice it before they can read it.
+            WarningNotice(message: notice, identifier: NoticeID.drain)
+                .transition(.opacity)
+                .task(id: notice) {
+                    try? await Task.sleep(for: .seconds(6))
+                    store.dismissDrainNotice()
+                }
+        }
     }
 
     // MARK: - Root
@@ -288,19 +329,39 @@ struct CollectionScreen: View {
             FailureNotice(message: error)
         } else if !feed.hasLoaded {
             LoadingNotice()
-        } else if feed.items.isEmpty && feed.subcollections.isEmpty {
-            EmptyNotice()
         } else {
             VStack(spacing: 0) {
+                // Above the emptiness test, not inside it: a collection holding only
+                // subfolders has chips AND nothing to draw under them, and that pair is
+                // the case the old condition could not express (098 · P6).
                 if !feed.subcollections.isEmpty {
                     SubcollectionBar(collections: feed.subcollections)
                 }
-                MasonryGridView(
-                    items: feed.items,
-                    collectionID: collectionID,
-                    thumbnailURL: { store.gridThumbnailURL(for: $0) })
+                if let empty = emptyState {
+                    EmptyNotice(state: empty)
+                } else {
+                    MasonryGridView(
+                        items: feed.items,
+                        collectionID: collectionID,
+                        thumbnailURL: { store.gridThumbnailURL(for: $0) })
+                }
             }
         }
+    }
+
+    /// Which kind of nothing this grid is showing, or `nil` when it is showing something.
+    ///
+    /// **`isUnsorted` and not `isRoot`.** The root screen's collection is whatever the
+    /// switcher last chose, so `isRoot` answers a question about the navigation stack; the
+    /// sentence "anything you share arrives here" is true of Unsorted and of no other
+    /// collection (092 · S3). The two used to be the same thing and stopped being one the
+    /// moment the switcher landed.
+    private var emptyState: BrowseEmptyState? {
+        BrowseEmptyState.resolve(
+            isUnsorted: collectionID == BrowseLibrary.rootCollectionID,
+            itemCount: feed.items.count,
+            subcollectionCount: feed.subcollections.count,
+            libraryCollectionCount: store.collectionCount)
     }
 }
 
@@ -402,54 +463,3 @@ private struct SubcollectionBar: View {
     }
 }
 
-private struct LoadingNotice: View {
-    var body: some View {
-        ProgressView()
-            .controlSize(.large)
-            .tint(MobileTheme.Colors.inkSecondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-/// A collection with nothing in it.
-///
-/// Worth one sentence rather than a blank screen. The sentence used to carry a fact the
-/// Mac's equivalent never had to — that a capture made on the phone stayed invisible here
-/// until a Mac had ingested it and synced it back — and 096 · 4 made that false: the phone
-/// drains its own inbox now, so a share appears in this grid on its own. What is left to
-/// say is the ordinary thing, which is that shares land in Unsorted.
-private struct EmptyNotice: View {
-    var body: some View {
-        VStack(spacing: MobileTheme.Spacing.sm) {
-            Text("Nothing here yet")
-                .font(MobileTheme.Typography.bodyEmphasis)
-                .foregroundStyle(MobileTheme.Colors.inkPrimary)
-            Text("Anything you share arrives in Unsorted.")
-                .font(MobileTheme.Typography.body)
-                .foregroundStyle(MobileTheme.Colors.inkSecondary)
-                .multilineTextAlignment(.center)
-        }
-        .padding(MobileTheme.Spacing.xl)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-/// The library could not be opened or read. `warning` is the app's single alarm colour
-/// and its one deliberate exception to monochrome (`Tokens.Colors.warning`).
-private struct FailureNotice: View {
-    let message: String
-
-    var body: some View {
-        VStack(spacing: MobileTheme.Spacing.sm) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 28))
-                .foregroundStyle(MobileTheme.Colors.warning)
-            Text(message)
-                .font(MobileTheme.Typography.body)
-                .foregroundStyle(MobileTheme.Colors.warning)
-                .multilineTextAlignment(.center)
-        }
-        .padding(MobileTheme.Spacing.xl)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}

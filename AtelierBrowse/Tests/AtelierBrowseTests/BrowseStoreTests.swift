@@ -223,6 +223,76 @@ struct BrowseStoreTests {
         #expect(rig.store.collections == before)
     }
 
+    // MARK: - The drain's one sentence (098 · P6)
+
+    @Test("a drain notice arrives, is read, and is dismissed")
+    func drainNoticeRoundTrip() async throws {
+        let rig = try StoreRig()
+        defer { rig.cleanup() }
+        await rig.store.bootstrap()
+
+        #expect(rig.store.drainNotice == nil)
+        rig.store.noteDrain(notice: "This phone's inbox can't be read.")
+        #expect(rig.store.drainNotice == "This phone's inbox can't be read.")
+        rig.store.dismissDrainNotice()
+        #expect(rig.store.drainNotice == nil)
+    }
+
+    @Test("a clean pass clears a stale notice — the notice describes the LAST pass")
+    func cleanPassClearsTheNotice() async throws {
+        let rig = try StoreRig()
+        defer { rig.cleanup() }
+        rig.store.noteDrain(notice: "1 capture couldn't be imported.")
+        // The phone drains on every activation, so a condition that still holds says so
+        // again within seconds; one that does not must stop being on screen.
+        rig.store.noteDrain(notice: nil)
+        #expect(rig.store.drainNotice == nil)
+    }
+
+    @Test("a notice is not an ingest — the two signals do not move each other")
+    func noticeAndIngestAreIndependent() async throws {
+        let rig = try StoreRig()
+        defer { rig.cleanup() }
+        rig.store.noteDrain(notice: "something")
+        #expect(rig.store.ingestGeneration == 0)
+        rig.store.noteIngest()
+        #expect(rig.store.drainNotice == "something")
+    }
+
+    // MARK: - How many collections there are (098 · P6)
+
+    @Test("the collection count is the whole flattened tree, Unsorted included")
+    func collectionCountCountsTheTree() async throws {
+        let rig = try StoreRig()
+        defer { rig.cleanup() }
+        // Before a bootstrap there is no tree, and the answer is zero rather than a crash:
+        // `BrowseEmptyState` reads it in exactly that state on a failed launch.
+        #expect(rig.store.collectionCount == 0)
+
+        await rig.store.bootstrap()
+        let flattened = BrowseCollectionTree.flattened(rig.store.collections).count
+        #expect(rig.store.collectionCount == flattened)
+        // A fresh library is Unsorted and nothing else, which is what makes
+        // `BrowseEmptyState.emptyLibrary` decidable without a second read.
+        #expect(rig.store.collectionCount == 1)
+    }
+
+    @Test("a nested collection is counted, so depth cannot hide a filed library")
+    func collectionCountIncludesChildren() async throws {
+        let rig = try StoreRig()
+        defer { rig.cleanup() }
+        await rig.store.bootstrap()
+        let services = try #require(rig.store.services)
+
+        let parent = try await services.createCollection(name: "Textures")
+        _ = try await services.createCollection(name: "Concrete", parent: parent.id)
+        await rig.store.refreshCollections()
+
+        // Unsorted + Textures + Concrete. A count of top-level nodes would say 2 and make
+        // a library with everything nested one level down read as "nothing saved yet".
+        #expect(rig.store.collectionCount == 3)
+    }
+
     // MARK: - The two unconditional stores (098 · finding 14)
 
     @Test("a refresh that finds the same tree does not invalidate the views reading it")

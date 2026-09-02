@@ -49,19 +49,35 @@ public final class CaptureExportController {
         case ready(URL)
         /// The share sheet has been dismissed and there are captures the user could now
         /// retire (096 · 3B). `count` is how many actually reached the manifest — not how
-        /// many were pending, which is a superset.
-        case sent(Int)
+        /// many were pending, which is a superset — and `skipped` is the rest of that
+        /// superset: what the archive could not carry (098 · P6).
+        ///
+        /// **`skipped` is on this case and not on `.failed`, because the export SUCCEEDED.**
+        /// 458 left it unsaid: `Summary.skipped` existed and the phone threw it away, so a
+        /// send of four captures that carried three drew "Sent 3" and a count that stayed
+        /// at four, with nothing anywhere to connect the two numbers. Naming it here is
+        /// what makes the difference readable at the moment it is on screen.
+        case sent(count: Int, skipped: Int)
         case failed(String)
     }
 
-    /// Where an export landed, and which captures are in it.
+    /// Where an export landed, which captures are in it, and how many it left behind.
     public struct Written: Sendable, Equatable {
         public let url: URL
         public let exported: [UUID]
+        /// Captures the archive could not carry: `InboxArchive.Summary.skipped`, which is
+        /// a record the funnel refused, one whose payload had gone missing, and one whose
+        /// `.json` would not decode at all (098 · finding 8).
+        ///
+        /// **Defaulted to zero, and the default is a claim.** A caller that does not pass
+        /// it is saying its write left nothing behind — which is what a test rig with a
+        /// hand-built list is entitled to say, and what the app is not.
+        public let skipped: Int
 
-        public init(url: URL, exported: [UUID]) {
+        public init(url: URL, exported: [UUID], skipped: Int = 0) {
             self.url = url
             self.exported = exported
+            self.skipped = skipped
         }
     }
 
@@ -90,11 +106,26 @@ public final class CaptureExportController {
 
     public private(set) var phase: Phase = .idle
 
-    /// Pending captures on this device, or `nil` before the first count.
+    /// Pending captures on this device, or `nil` before the first count — and `nil` again
+    /// when a count fails, which is what ``pendingFailure`` is for.
     ///
     /// Drives whether the export control is shown at all: an empty inbox has nothing to
     /// offer, and a button that always says "0" is chrome apologising for itself.
     public private(set) var pending: Int?
+
+    /// Why the last count failed, as a sentence, or `nil` when it did not (098 · P6).
+    ///
+    /// **This is the swallow 459 pinned rather than fixed.** ``refresh()`` was
+    /// `pending = (try? pendingCount()) ?? 0`, and zero hides the send control — so a phone
+    /// whose inbox directory could not be enumerated offered no way to send the captures
+    /// sitting in it, and nothing anywhere said why. The test that pinned it said the fix
+    /// was a screen and screens were P6's; this is P6.
+    ///
+    /// Two properties rather than a `Result`, because they answer different questions and
+    /// the UI asks them separately: `pending` decides whether there is a control, and this
+    /// decides whether there is a notice. `nil` on both at once is the state before the
+    /// first count, which draws neither.
+    public private(set) var pendingFailure: String?
 
     /// The ids that reached the last export's manifest, and therefore the only ones the
     /// clear control may retire.
@@ -104,6 +135,10 @@ public final class CaptureExportController {
     /// either would take a capture out of the pending set on the strength of a send it was
     /// not in — which is how "nothing is lost" quietly stops being true.
     private var exported: [UUID] = []
+
+    /// What the last export could not carry. Held beside ``exported`` and reset with it,
+    /// because the two are one answer about one run: `.sent` reads both.
+    private var skipped = 0
 
     /// Where export folders go. Injectable so a test can watch a real directory rather
     /// than the process's own caches, and because the one thing every export shares is
@@ -138,14 +173,24 @@ public final class CaptureExportController {
     /// Re-count what is waiting to be sent, and safe to call on every appearance —
     /// which is what keeps the control honest after a share.
     ///
-    /// **A count that throws becomes zero, and zero hides the control.** That is the
-    /// behaviour this move inherited and it is pinned by a test rather than fixed here:
-    /// showing "the inbox could not be read" is a screen, and screens are 098 · P6's. What
-    /// the pin buys is that the next person to change it has to change a test that says
-    /// out loud what today's app does — a phone whose inbox directory cannot be
-    /// enumerated offers no way to send the captures sitting in it.
+    /// **A count that throws is now said out loud** (098 · P6). It used to become zero, and
+    /// zero hides the control — see ``pendingFailure`` for what that cost and why the
+    /// behaviour was pinned by a test for a phase rather than fixed where it was found.
+    ///
+    /// The success path clears the failure as well as setting the count: this runs on every
+    /// activation and after every export, so a transient failure un-says itself the moment
+    /// the directory can be read again, without anything having to remember to.
     public func refresh() {
-        pending = (try? pendingCount()) ?? 0
+        do {
+            pending = try pendingCount()
+            pendingFailure = nil
+        } catch {
+            // The count is `nil` rather than 0 on purpose: 0 is a real answer that an empty
+            // inbox gives, and a screen that cannot tell "nothing to send" from "could not
+            // look" is the screen this change exists to remove.
+            pending = nil
+            pendingFailure = Self.inboxUnreadableMessage
+        }
     }
 
     /// Write the archive, with the inbox to ourselves.
@@ -166,12 +211,14 @@ public final class CaptureExportController {
         do {
             let written = try await write(exportsParent, Self.folderName(now), now)
             exported = written.exported
+            skipped = written.skipped
             phase = .ready(written.url)
         } catch {
             // The ids from a previous export are dropped on a failure, deliberately: a
             // "Clear" offered after a failed send would retire captures on the strength of
             // a transfer that did not happen.
             exported = []
+            skipped = 0
             phase = .failed(Self.message(for: error))
         }
         refresh()
@@ -187,7 +234,7 @@ public final class CaptureExportController {
     /// once, at the point where the user has just watched the transfer and is the only
     /// party who knows.
     public func finish() {
-        phase = exported.isEmpty ? .idle : .sent(exported.count)
+        phase = exported.isEmpty ? .idle : .sent(count: exported.count, skipped: skipped)
     }
 
     /// Retire the last export's captures — the user asserting the Mac has them (096 · 3B).
@@ -209,6 +256,7 @@ public final class CaptureExportController {
             guard let self else { return }
             await retireIDs(ids)
             exported = []
+            skipped = 0
             phase = .idle
             refresh()
         }
@@ -218,6 +266,7 @@ public final class CaptureExportController {
     /// safe answer, and the one a user picks when they are not sure the transfer worked.
     public func keep() {
         exported = []
+        skipped = 0
         phase = .idle
     }
 
@@ -235,6 +284,17 @@ public final class CaptureExportController {
         formatter.dateFormat = "yyyy-MM-dd HHmm"
         return "Atelier \(formatter.string(from: now))"
     }
+
+    /// What an inbox that will not enumerate says (098 · P6).
+    ///
+    /// **It does not say "try again", and it does not name a cause.** The only ways to
+    /// reach it are a container that has gone away and a directory the process cannot
+    /// read, and a phone cannot tell those apart without asking questions it has no way to
+    /// ask — the same restraint `BrowseFailure` shows for the library. What it does say is
+    /// the fact the user would otherwise infer wrongly from a missing control: the captures
+    /// are still there.
+    public static let inboxUnreadableMessage =
+        "Your waiting captures couldn't be counted, so nothing can be sent. They're still here."
 
     /// What a failed export says. Three sentences, and the third is everything else —
     /// see ``CaptureExportFailure``.

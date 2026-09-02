@@ -74,27 +74,7 @@ struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
-/// What an export says when it could not write anything.
-///
-/// A toast rather than a screen: the failure modes are "nothing to send" and "nothing
-/// readable", neither of which is worth taking the user off the grid for, and the captures
-/// are still in the inbox either way.
-struct ExportFailureNotice: View {
-    let message: String
-
-    var body: some View {
-        Text(message)
-            .font(MobileTheme.Typography.body)
-            .foregroundStyle(MobileTheme.Colors.warning)
-            .padding(.horizontal, MobileTheme.Spacing.lg)
-            .padding(.vertical, MobileTheme.Spacing.md)
-            .cardChrome()
-            .padding(MobileTheme.Spacing.lg)
-            .accessibilityIdentifier("export.failure")
-    }
-}
-
-/// The offer to retire what was just sent (096 · 3B).
+/// The offer to retire what was just sent (096 · 3B), and what the send left behind.
 ///
 /// **Why this exists at all.** Nothing on the phone ever left the inbox: `InboxArchive`
 /// deletes nothing after an export — deliberately, since the phone cannot know whether the
@@ -112,6 +92,8 @@ struct ExportFailureNotice: View {
 /// `inbox/sent/` and stay on disk.
 struct ExportSentNotice: View {
     let count: Int
+    /// Waiting captures the archive could not carry (098 · P6). Zero on nearly every send.
+    let skipped: Int
     let onClear: () -> Void
     let onKeep: () -> Void
 
@@ -120,6 +102,24 @@ struct ExportSentNotice: View {
             Text("Sent \(count) \(count == 1 ? "capture" : "captures")")
                 .font(MobileTheme.Typography.body)
                 .foregroundStyle(MobileTheme.Colors.inkPrimary)
+            // **The number the phone used to throw away** (458). `InboxArchive.Summary`
+            // has always known how many records the funnel refused, how many had lost
+            // their payload and how many `.json` files would not decode; the controller
+            // kept `exported` and dropped the rest, so a send of four that carried three
+            // read "Sent 3" beside a count that stayed at four, with nothing on screen
+            // connecting the two numbers. The user's next question is exactly that gap.
+            //
+            // In `warning` and on its own line, because it is the one part of a successful
+            // send that did not succeed — and it is drawn only when it happened, so the
+            // ordinary send is the same two lines it has always been.
+            if skipped > 0 {
+                Text(
+                    "\(skipped) \(skipped == 1 ? "capture couldn't" : "captures couldn't") "
+                    + "be read and stayed here.")
+                    .font(MobileTheme.Typography.caption)
+                    .foregroundStyle(MobileTheme.Colors.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text("Once your Mac has imported them, clear them so the next send only carries what's new.")
                 .font(MobileTheme.Typography.caption)
                 .foregroundStyle(MobileTheme.Colors.inkSecondary)

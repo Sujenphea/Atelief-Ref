@@ -84,6 +84,23 @@ public final class BrowseStore {
     /// controller needs it. Set once bootstrap has resolved it.
     public private(set) var libraryRoot: URL?
 
+    /// What the last drain pass is worth telling the user, or `nil` (098 · P6).
+    ///
+    /// **Why the store holds it.** The drain is not a screen and has no view of its own;
+    /// the thing it changes is this library, and every screen that would show the notice is
+    /// already observing this object for ``ingestGeneration``. A second observable for one
+    /// optional string would be a second lifetime to get wrong.
+    ///
+    /// The sentence is decided by `DrainSummary.userNotice` in `AtelierIngestion`, which
+    /// this package deliberately does not link — so it arrives as a `String?` through
+    /// ``noteDrain(notice:)``, the same shape ``noteIngest()`` has and for the same reason.
+    ///
+    /// **Assigned unconditionally by a pass, including to `nil`.** The notice describes the
+    /// LAST pass, not the history: a quarantine reported at launch and then not reproduced
+    /// is a stale alarm, and the phone drains on every activation, so a condition that
+    /// still holds will say so again within seconds.
+    public private(set) var drainNotice: String?
+
     /// Bumped once per drain pass that put something new in the library (096 · 4).
     ///
     /// A counter rather than a notification or a callback into the feed, because there is
@@ -148,6 +165,28 @@ public final class BrowseStore {
     /// a screen that may not be on top of the stack.
     public func noteIngest() {
         ingestGeneration &+= 1
+    }
+
+    /// A drain pass finished; this is what it is worth saying, or `nil` for the ordinary
+    /// pass (098 · P6). See ``drainNotice``.
+    public func noteDrain(notice: String?) {
+        drainNotice = notice
+    }
+
+    /// The user has read it. Separate from ``noteDrain(notice:)`` so that dismissing is not
+    /// spelled as "a pass with nothing to say", which is a different fact.
+    public func dismissDrainNotice() {
+        drainNotice = nil
+    }
+
+    /// How many collections the library holds, Unsorted included.
+    ///
+    /// Off the tree the switcher already loaded, so it costs no read. Its one consumer is
+    /// ``BrowseEmptyState/resolve(isUnsorted:itemCount:subcollectionCount:libraryCollectionCount:)``,
+    /// which uses it to tell a phone that has never been shared to from one whose Unsorted
+    /// is merely tidy.
+    public var collectionCount: Int {
+        BrowseCollectionTree.flattened(collections).count
     }
 
     /// Re-read the collection tree — after a switch, so a collection made on the Mac

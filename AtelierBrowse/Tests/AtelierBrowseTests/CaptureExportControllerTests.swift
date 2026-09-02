@@ -41,6 +41,8 @@ private final class Rig {
     var writeFailure: Error?
     /// The ids the next successful write reports as having reached the manifest.
     var exportedIDs: [UUID] = [UUID(), UUID()]
+    /// What the next successful write reports as having been left behind.
+    var skipped = 0
     /// Whether a write parks on ``writeGate``.
     var writeHoldsOpen = false
 
@@ -99,7 +101,7 @@ private final class Rig {
         if let writeFailure { throw writeFailure }
         return CaptureExportController.Written(
             url: parent.appendingPathComponent(folder, isDirectory: true),
-            exported: exportedIDs)
+            exported: exportedIDs, skipped: skipped)
     }
 
     func retire(_ ids: [UUID]) async {
@@ -131,31 +133,58 @@ struct CaptureExportControllerTests {
         #expect(rig.countCalls == 1)
     }
 
-    @Test("an inbox that cannot be read counts ZERO, and zero hides the control")
-    func unreadableInboxCountsZero() {
+    @Test("an inbox that cannot be read has NO count, and says why (098 · P6)")
+    func unreadableInboxHasNoCount() {
         let rig = Rig()
         rig.pending = 4
         rig.controller.refresh()
         #expect(rig.controller.pending == 4)
+        #expect(rig.controller.pendingFailure == nil)
 
-        // The behaviour this move inherited, pinned rather than changed. A directory that
-        // will not enumerate makes the count throw, the throw becomes 0, and 0 is what
-        // `CollectionScreen` reads as "there is nothing to send" — so the control
-        // disappears from a phone with four captures still owed to a Mac. Nothing else in
-        // the app reports the failure. Surfacing it is a screen and screens are 098 · P6's;
-        // what this test buys is that the next person to touch it has to argue with a
-        // sentence rather than rediscover the swallow.
+        // This test used to assert `pending == 0` and explain, at length, that the swallow
+        // was inherited and that surfacing it was a screen and screens were P6's. This is
+        // P6. Zero was the wrong answer for one reason: an empty inbox gives it too, so the
+        // control vanished from a phone with four captures still owed to a Mac and nothing
+        // anywhere said so.
         rig.pending = nil
         rig.controller.refresh()
-        #expect(rig.controller.pending == 0)
+        #expect(rig.controller.pending == nil)
+        #expect(rig.controller.pendingFailure == CaptureExportController.inboxUnreadableMessage)
     }
 
-    @Test("an empty inbox counts zero too — the same number for two different reasons")
+    @Test("a readable inbox un-says the failure, with nothing having to remember to")
+    func refreshClearsTheFailure() {
+        let rig = Rig()
+        rig.pending = nil
+        rig.controller.refresh()
+        #expect(rig.controller.pendingFailure != nil)
+
+        // `refresh()` runs on every activation and after every export, so a transient
+        // failure clears itself the moment the directory reads again.
+        rig.pending = 2
+        rig.controller.refresh()
+        #expect(rig.controller.pending == 2)
+        #expect(rig.controller.pendingFailure == nil)
+    }
+
+    @Test("an empty inbox counts zero — and zero is now distinguishable from a failure")
     func emptyInboxCountsZero() {
         let rig = Rig()
         rig.pending = 0
         rig.controller.refresh()
         #expect(rig.controller.pending == 0)
+        #expect(rig.controller.pendingFailure == nil)
+    }
+
+    @Test("the failure sentence names no cause and promises no retry")
+    func failureSentenceIsRestrained() {
+        let sentence = CaptureExportController.inboxUnreadableMessage
+        #expect(!sentence.isEmpty)
+        for word in ["try again", "retry", "permission", "disk", "restart"] {
+            #expect(!sentence.lowercased().contains(word))
+        }
+        // What it MUST say: the captures did not go anywhere.
+        #expect(sentence.contains("still here"))
     }
 
     // MARK: - Export
@@ -258,7 +287,7 @@ struct CaptureExportControllerTests {
         rig.exportedIDs = second
         await rig.controller.export()
         rig.controller.finish()
-        #expect(rig.controller.phase == .sent(1))
+        #expect(rig.controller.phase == .sent(count: 1, skipped: 0))
 
         await rig.controller.retire()
         #expect(rig.retired == [second])
@@ -275,7 +304,59 @@ struct CaptureExportControllerTests {
         rig.pending = 5
         await rig.controller.export()
         rig.controller.finish()
-        #expect(rig.controller.phase == .sent(3))
+        #expect(rig.controller.phase == .sent(count: 3, skipped: 0))
+    }
+
+    @Test("what the archive could not carry reaches the offer beside what it did")
+    func finishNamesWhatWasLeftBehind() async {
+        let rig = Rig()
+        rig.exportedIDs = [UUID(), UUID(), UUID()]
+        rig.skipped = 1
+        rig.pending = 4
+        await rig.controller.export()
+        rig.controller.finish()
+        // 458: `Summary.skipped` existed and the phone threw it away, so a send of four
+        // that carried three showed "Sent 3" beside a count that stayed at 4 with nothing
+        // connecting them.
+        #expect(rig.controller.phase == .sent(count: 3, skipped: 1))
+    }
+
+    @Test("a failed export drops the skip count with the ids")
+    func failureDropsTheSkipCount() async {
+        let rig = Rig()
+        rig.skipped = 2
+        await rig.controller.export()
+        rig.controller.finish()
+        // A first export left a skip count behind; the second failed. Neither number may
+        // survive into an offer about a transfer that did not happen.
+        rig.writeFailure = Rig.Unreadable()
+        await rig.controller.export()
+        guard case .failed = rig.controller.phase else {
+            Issue.record("expected .failed, got \(rig.controller.phase)")
+            return
+        }
+        rig.controller.finish()
+        #expect(rig.controller.phase == .idle)
+    }
+
+    @Test("Keep and Clear both forget the skip count")
+    func keepAndClearForgetTheSkipCount() async {
+        for clear in [true, false] {
+            let rig = Rig()
+            rig.skipped = 3
+            await rig.controller.export()
+            rig.controller.finish()
+            #expect(rig.controller.phase == .sent(count: 2, skipped: 3))
+
+            if clear { await rig.controller.retire() } else { rig.controller.keep() }
+            #expect(rig.controller.phase == .idle)
+
+            // A second export that skips nothing must not inherit the first one's 3.
+            rig.skipped = 0
+            await rig.controller.export()
+            rig.controller.finish()
+            #expect(rig.controller.phase == .sent(count: 2, skipped: 0))
+        }
     }
 
     @Test("finishing an export that carried nothing goes straight back to idle")

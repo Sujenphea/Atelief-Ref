@@ -17,9 +17,14 @@
 // distinction no caller has ever drawn. The mapping to `os` is the app's, one `switch`
 // wide, which is also where a future app that is not `os.Logger`-shaped would differ.
 //
-// **Nothing here reaches the user**, which is the Mac's conclusion and 093 § 7's: an
-// unreadable inbox and a quarantined capture are both conditions a person has no lever
-// for, and the captures are still on disk either way.
+// **``reportLines`` reaches no user**, which is the Mac's conclusion: a count of what a
+// pass did is a diagnostic, and a phone that logs one per foreground is a phone whose log
+// nobody reads. That rule used to be stated here as a rule about the whole file, on the
+// ground that an unreadable inbox and a quarantined capture are conditions a person has no
+// lever for. Both halves of that are still true and the conclusion did not survive
+// 098 · P6: the test is not whether the user can act, it is whether the app would otherwise
+// misrepresent itself. ``userNotice`` is the second function on this type, it answers that
+// question, and it says no for four of the six fields. Its own doc carries the argument.
 
 import Foundation
 
@@ -111,5 +116,59 @@ extension DrainSummary {
         }
 
         return lines
+    }
+}
+
+// MARK: - What a person is told
+
+extension DrainSummary {
+
+    /// The one sentence this pass is worth putting on a screen, or `nil` — which is nearly
+    /// always (098 · P6).
+    ///
+    /// **This file's header used to say nothing here reaches the user, and that was the
+    /// right rule for a report of COUNTS.** What changed is the question. 093 § 7 lists
+    /// empty and error states among the things it deliberately did not design; 098 brings
+    /// them into scope, and 093 § 1 had already named the one drain fate that belongs on a
+    /// screen, in the paragraph defending the word "Saved" on the share sheet's card:
+    ///
+    /// > The only exception is host-side quarantine after three failures (092 · S3), which
+    /// > is a bug and belongs on the surface that can show it.
+    ///
+    /// So the test is not "can the user do something about it" — for both of these the
+    /// answer is no. It is **"does the app otherwise lie about it"**, and for exactly two
+    /// of the six fields it does:
+    ///
+    ///   · ``inboxUnreadable`` — nothing is arriving and nothing can be sent, and every
+    ///     surface says the opposite: the grid shows what is already in the library, the
+    ///     send control reads the same directory and so silently disappears
+    ///     (`CaptureExportController.refresh()`), and the receipt the share extension
+    ///     showed said "Saved". A phone in this state looks like a phone with nothing to
+    ///     do.
+    ///   · ``quarantined`` — the capture is in `inbox/failed/`, which no export reads. It
+    ///     is gone as far as the Mac is concerned, and the user was told it was saved.
+    ///
+    /// And for the other four it does not. ``ingested``, ``retrying`` and
+    /// ``skippedIncomplete`` are the ordinary shape of a pass, and a notice per foreground
+    /// is how a notice stops being read. ``skippedExhausted`` is the interesting one and it
+    /// is deliberately silent: the drain has given up, but the record is still pending, the
+    /// export still sends it and `InboxRetirement` still retires it — the phone said
+    /// "Saved" and the capture will still reach the Mac, so nothing was misrepresented.
+    /// That fate is the whole reason `.retainForExport` exists (098 · finding 1b).
+    ///
+    /// **One sentence, not a list.** When the inbox could not be enumerated the counts
+    /// beside it describe a pass that never ran, so the unreadable case wins outright
+    /// rather than being stacked with a quarantine that may be from an earlier pass's
+    /// leftovers. ``reportLines`` still emits both, because a log is where the whole truth
+    /// goes.
+    public var userNotice: String? {
+        if inboxUnreadable {
+            return "This phone's inbox can't be read, so new shares aren't arriving."
+        }
+        if quarantined > 0 {
+            let captures = quarantined == 1 ? "capture" : "captures"
+            return "\(quarantined) \(captures) couldn't be imported and won't reach your Mac."
+        }
+        return nil
     }
 }

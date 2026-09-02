@@ -10,13 +10,17 @@
 // produces, at WHAT level, and in WHAT order. The wording itself is asserted literally,
 // because the wording is the thing that moved and a paraphrase is a silent change to the
 // only record two apps keep of a pass.
+//
+// The last group is `userNotice` (098 · P6), which is the other direction: not what the log
+// records but what the phone puts on a screen, and its interesting cases are the four fates
+// that produce NOTHING.
 
 import Foundation
 import Testing
 
 @testable import AtelierIngestion
 
-@Suite("DrainSummary.reportLines: one wording, both apps (098 · finding 5)")
+@Suite("DrainSummary: what a pass logs, and what it says out loud (098 · 5, P6)")
 struct DrainReportTests {
 
     // MARK: - Silence
@@ -179,5 +183,69 @@ struct DrainReportTests {
     func levelOrdering() {
         #expect(DrainReportLevel.notice < DrainReportLevel.error)
         #expect(DrainReportLevel.allCases == [.notice, .error])
+    }
+
+    // MARK: - What a person is told (098 · P6)
+
+    @Test("the ordinary pass says nothing to anybody")
+    func ordinaryPassIsSilent() {
+        #expect(DrainSummary().userNotice == nil)
+        #expect(DrainSummary(ingested: 12).userNotice == nil)
+        #expect(DrainSummary(skippedIncomplete: 2, retrying: 1).userNotice == nil)
+    }
+
+    @Test("an exhausted-but-retained capture is deliberately silent")
+    func exhaustedIsSilent() {
+        // The one fate that is loud in the log and silent on screen. The drain has given
+        // up; the record is still pending, the export still sends it, and the "Saved" the
+        // share sheet showed is still true. See ``DrainSummary/userNotice``.
+        #expect(DrainSummary(skippedExhausted: 4).userNotice == nil)
+        #expect(DrainSummary(skippedExhausted: 4).reportLines.count == 1)
+    }
+
+    @Test("an unreadable inbox is said out loud, because every other surface says nothing")
+    func unreadableInboxIsSaid() {
+        #expect(
+            DrainSummary(inboxUnreadable: true).userNotice
+                == "This phone's inbox can't be read, so new shares aren't arriving.")
+    }
+
+    @Test("a quarantined capture is named, and its number agrees with the log")
+    func quarantineIsSaid() {
+        #expect(
+            DrainSummary(quarantined: 1).userNotice
+                == "1 capture couldn't be imported and won't reach your Mac.")
+        #expect(
+            DrainSummary(quarantined: 3).userNotice
+                == "3 captures couldn't be imported and won't reach your Mac.")
+    }
+
+    @Test("an unreadable inbox wins over a quarantine — the counts beside it never ran")
+    func unreadableWinsOverQuarantine() {
+        let summary = DrainSummary(quarantined: 2, inboxUnreadable: true)
+        #expect(summary.userNotice == "This phone's inbox can't be read, so new shares aren't arriving.")
+        // The log still carries both, which is the difference between a notice and a report.
+        #expect(summary.reportLines.count == 2)
+    }
+
+    @Test("the notice is pure: reading it twice gives the same sentence")
+    func noticeIsPure() {
+        let summary = DrainSummary(quarantined: 2)
+        #expect(summary.userNotice == summary.userNotice)
+    }
+
+    @Test("every notice is one sentence and never names a count the user cannot check")
+    func noticeShape() {
+        // A notice is read on a phone, over a grid, once. Two conditions can produce one,
+        // and both are asserted here as a SHAPE rather than only as a literal: one
+        // sentence, ending in a full stop, short enough for the card that draws it.
+        for summary in [
+            DrainSummary(inboxUnreadable: true), DrainSummary(quarantined: 7),
+        ] {
+            let notice = try! #require(summary.userNotice)
+            #expect(notice.hasSuffix("."))
+            #expect(!notice.contains("\n"))
+            #expect(notice.count <= 90)
+        }
     }
 }
