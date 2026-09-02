@@ -377,6 +377,13 @@ public enum ShareCapture {
     /// Filtered to http(s) here rather than at the fetch, because a `javascript:` or
     /// `data:` src reaching a URLSession is a decision, not an accident — and this is the
     /// side of the boundary that tests can see.
+    ///
+    /// **This filter is not the wall** (098 · finding 2). It is a scheme check over a
+    /// string, and it was the ONLY thing standing between a page-chosen URL and a
+    /// `URLSession` until P5. What each candidate then has to pass is
+    /// ``fetchableURL(for:through:)`` — the same ``SSRFGuard`` the Mac's fetches use — which
+    /// re-checks the scheme itself, because a security boundary that trusts its caller to
+    /// have filtered is not one.
     public static func mediaCandidates(for capture: PageCapture) -> [String] {
         [capture.mediaURL, capture.mediaURLFallback]
             .compactMap { $0 }
