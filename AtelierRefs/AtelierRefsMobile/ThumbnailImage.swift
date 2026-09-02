@@ -3,100 +3,103 @@
 // The Mac's grid decodes off the main thread at the cell's own pixel bucket
 // (`IngestionModel.thumbnailURL(for:)`'s note, and `ThumbnailPipeline`), so the render
 // path never pays a disk read or a lazy decode at first draw. The phone needs the same
-// property for the same reason and gets a much smaller version of it: the tiers on
-// disk are already small JPEGs, so there is no pyramid to choose from and no eviction
-// policy to design — `CGImageSourceCreateThumbnailAtIndex` to the cell's pixel size,
-// an `NSCache` keyed by path and size, and nothing else.
+// property for the same reason and gets a much smaller version of it: the tiers on disk
+// are already small JPEGs, so there is no pyramid to choose from — a decode straight to
+// the cell's pixel size, a bounded cache, and nothing else.
+//
+// **What is in this file is now only the wiring** (098 · finding 15). The cache itself is
+// `AtelierBrowse.DecodeCache` — keyed, byte- and count-bounded, ONE decode per key however
+// many views ask, cancellation observed before a decode starts and before an insert. The
+// version that lived here had none of the last two, and it also re-implemented two things
+// that already existed elsewhere in the program: `ImageDecoding`'s option dictionary,
+// option for option, and `DecodedThumbnail`'s `bytesPerRow * height`. Both are asked for
+// by name now, so the phone and the Mac's thumbnail pipeline cannot decode differently or
+// charge differently for the same file.
 //
 // `AsyncImage` is deliberately not used: it is built around `URLSession`, and a
-// content-addressed file on disk is not a network resource. It also gives no control
-// over decode size, which is the one thing that matters when a screen holds a dozen
-// live bitmaps.
+// content-addressed file on disk is not a network resource. It also gives no control over
+// decode size, which is the one thing that matters when a screen holds a dozen live
+// bitmaps.
 
+import AtelierBrowse
+import AtelierIngestion
 import SwiftUI
-import ImageIO
 import UIKit
 
-/// A decoded-thumbnail cache, keyed by `path#pixels`.
+/// What a decode is asked for: a file, at a pixel size.
 ///
-/// `@unchecked Sendable` over an `NSCache`, which is itself thread-safe — the
-/// unchecked part is the promise that nothing else here is mutable, and nothing is.
-final class ThumbnailCache: @unchecked Sendable {
-    static let shared = ThumbnailCache()
+/// A struct rather than the interpolated `"\(path)#\(pixels)"` the old cache keyed on.
+/// The string had to be built twice per tile — once for the cache and once for the
+/// SwiftUI `task(id:)` — and two spellings of one key is how a cache quietly stops
+/// hitting.
+/// `nonisolated` because this target defaults its isolation to the main actor, and a
+/// main-actor-isolated `Hashable` conformance cannot satisfy a `Sendable` type parameter
+/// — which is what a cache key crossing into an actor is.
+nonisolated struct ThumbnailKey: Hashable, Sendable {
+    let url: URL
+    let maxPixel: Int
+}
 
-    private let cache = NSCache<NSString, UIImage>()
-
-    /// The ceiling on decoded bytes held at once — **96 MB**.
-    ///
-    /// **A count limit alone stopped being a bound once the detail screen shared this
-    /// cache.** The original reasoning was that these are display tiers and a phone
-    /// screen holds a dozen, so 240 was generous rather than dangerous. That describes
-    /// what is VISIBLE; the cache retains 240 whatever is on screen, and it now holds
-    /// two populations four times apart in size:
-    ///
-    ///   · a grid tile is the 512 tier decoded to a column width — ~570px on a 2-column
-    ///     phone layout, so roughly 1.3 MB of RGBA;
-    ///   · a detail image is the 1280 tier decoded to the full screen width — ~1170px,
-    ///     so roughly 5.5 MB.
-    ///
-    /// 240 of the second is well over a gigabyte. Nothing but `NSCache`'s own
-    /// memory-pressure eviction stood between a browse-heavy session and that, and
-    /// relying on pressure eviction alone is how a scroll ends up decoding, evicting
-    /// and re-decoding the same tiles.
-    ///
-    /// 96 MB holds several screenfuls of tiles plus a handful of detail images — the
-    /// working set of actually paging around a library — and leaves the rest to be
-    /// re-decoded, which is cheap because the files on disk are already small JPEGs.
-    private static let byteBudget = 96 * 1024 * 1024
-
-    private init() {
-        // The count limit stays as the coarse bound; the cost limit is the real one.
-        // `NSCache` enforces whichever is reached first, and they answer different
-        // questions — 240 caps how many keys can pile up, `byteBudget` caps what those
-        // keys can weigh, which is the number that actually matters on a phone.
-        cache.countLimit = 240
-        cache.totalCostLimit = Self.byteBudget
-    }
-
-    /// What one decoded image weighs, for the cost limit above.
-    ///
-    /// `bytesPerRow * height` — the bitmap's real allocation, not a guess from the
-    /// point size, so a wide panorama and a tall skyscraper at the same `maxPixel` are
-    /// charged what they each actually cost. A `UIImage` with no backing `CGImage`
-    /// (nothing here produces one) is charged nothing rather than crashing the accounting.
-    private static func cost(of image: UIImage) -> Int {
-        guard let cgImage = image.cgImage else { return 0 }
-        return cgImage.bytesPerRow * cgImage.height
-    }
+/// The app's decoded-thumbnail cache: one ``DecodeCache`` over `ImageDecoding`.
+nonisolated enum ThumbnailCache {
+    /// The budgets are `DecodeBudget`'s, with 440's argument for them carried there.
+    static let shared = DecodeCache<ThumbnailKey, UIImage>(
+        // `bytesPerRow * height` of the decoded bitmap — the real allocation, not a guess
+        // from the point size, so a wide panorama and a tall skyscraper at the same pixel
+        // size are charged what they each actually cost. Asked of `DecodedThumbnail`
+        // rather than restated; a `UIImage` with no backing `CGImage` (nothing here
+        // produces one) is charged nothing rather than crashing the accounting.
+        cost: { image in image.cgImage.map { DecodedThumbnail(image: $0).byteCost } ?? 0 },
+        decode: { key in
+            let image = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+                // Decode straight to size — the full-resolution bitmap is never
+                // materialised, the same property `ThumbnailGenerator` relies on when it
+                // writes these files. `cacheImmediately` defaults to `true` on this
+                // overload, which is what keeps the pixel decode off the main thread
+                // instead of deferring it to first draw.
+                guard let decoded = try? ImageDecoding.decodedThumbnail(
+                    from: key.url, maxPixelSize: key.maxPixel) else { return nil }
+                return UIImage(cgImage: decoded.image)
+            }.value
+            TileBodyLog.recordDecode()
+            return image
+        })
 
     /// The image at `url`, decoded so its longest edge is at most `maxPixel`, or `nil`
-    /// when the file is absent or unreadable — which is a normal outcome, not an error:
-    /// a library whose thumbnails have not been generated yet has rows and no files.
-    func image(at url: URL?, maxPixel: Int) async -> UIImage? {
+    /// when the file is absent or unreadable — which is a normal outcome, not an error: a
+    /// library whose thumbnails have not been generated yet has rows and no files.
+    static func image(at url: URL?, maxPixel: Int) async -> UIImage? {
+        // Forces the observer below into existence on the first decode of the launch.
+        // A `static let` is lazy and thread-safe, so this is one atomic load per tile and
+        // there is nothing to remember to call at startup.
+        _ = memoryWarningObserver
         guard let url else { return nil }
-        let key = "\(url.path)#\(maxPixel)" as NSString
-        if let hit = cache.object(forKey: key) { return hit }
-        let decoded = await Task.detached(priority: .userInitiated) {
-            Self.decode(url, maxPixel: maxPixel)
-        }.value
-        if let decoded { cache.setObject(decoded, forKey: key, cost: Self.cost(of: decoded)) }
-        return decoded
+        return await shared.value(for: ThumbnailKey(url: url, maxPixel: maxPixel))
     }
 
-    /// Decode straight to size — the full-resolution bitmap is never materialised, the
-    /// same property `ThumbnailGenerator` relies on when it writes these files.
-    private nonisolated static func decode(_ url: URL, maxPixel: Int) -> UIImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(
-            source, 0, options as CFDictionary) else { return nil }
-        return UIImage(cgImage: image)
-    }
+    /// Drop the whole cache when the system says it is short.
+    ///
+    /// **This is the one thing `NSCache` did for free** and the one thing the explicit
+    /// LRU in `DecodeCache` does not: it purges itself under memory pressure. The trade
+    /// was deliberate — `NSCache`'s eviction rules are unspecified, which makes 440's byte
+    /// bound a claim no test can make — and this is the other half of it, in the target
+    /// that already has UIKit and can hear the notification.
+    ///
+    /// Dropping everything rather than trimming: the app is being told it is about to be
+    /// killed, the files on disk are small JPEGs, and re-decoding a screenful is cheap
+    /// next to being jetsammed with a backlog of captures half drained.
+    /// A `Bool` rather than the `NSObjectProtocol` token `addObserver` hands back: the
+    /// token is not `Sendable` and there is nothing to do with it anyway — this observer
+    /// lives for the process, exactly like the cache it purges.
+    private nonisolated static let memoryWarningObserver: Bool = {
+        _ = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil, queue: .main
+        ) { _ in
+            Task { await shared.purge() }
+        }
+        return true
+    }()
 }
 
 /// A tile's image: the decoded thumbnail, or nothing.
@@ -128,20 +131,49 @@ struct ThumbnailImage: View {
                 Color.clear
             }
         }
-        .task(id: taskKey) {
-            image = await ThumbnailCache.shared.image(at: url, maxPixel: maxPixel)
+        // Re-decode when the file OR the bucket changes. Cancelling this task now
+        // cancels the decode's INSERT as well — see `DecodeCache.value(for:)`.
+        .task(id: key) {
+            image = await ThumbnailCache.image(at: url, maxPixel: maxPixel)
         }
     }
 
-    /// Re-decode when the file OR the bucket changes; the bucket is rounded so a
-    /// rotation that nudges the width by a point does not throw the cache away.
-    private var taskKey: String {
-        "\(url?.path ?? "")#\(maxPixel)"
+    private var key: ThumbnailKey? {
+        url.map { ThumbnailKey(url: $0, maxPixel: maxPixel) }
     }
 
+    /// The bucket is rounded so a rotation that nudges the width by a point does not
+    /// throw the cache entry away — `DecodeSize`, where it is tested.
     private var maxPixel: Int {
-        let pixels = Int((width * displayScale).rounded(.up))
-        // Round up to a 128 bucket so a handful of widths share cache entries.
-        return max(128, ((pixels + 127) / 128) * 128)
+        DecodeSize.maxPixel(width: Double(width), scale: Double(displayScale))
+    }
+}
+
+/// The art's stable dark ground with a thumbnail on it.
+///
+/// One recipe rather than four: the grid tile draws it for an image, a video and a link or
+/// post with a card image, and the detail screen draws the same thing at the width it is
+/// given. `mediaBackdrop` is behind every one of them so a light image and a dark one sit
+/// on the same tone instead of the image's own edges reading as chrome — 093 § 6's second
+/// reason for dark-only.
+struct MediaThumbnail: View {
+    let url: URL?
+    /// The decode target in points, when the caller knows it — a grid column does.
+    /// `nil` means "as wide as the space you are given", which is the detail screen: it
+    /// has no column width to hand down and must measure.
+    var width: CGFloat?
+
+    var body: some View {
+        ZStack {
+            MobileTheme.Colors.mediaBackdrop
+            if let width {
+                ThumbnailImage(url: url, width: width)
+            } else {
+                GeometryReader { geometry in
+                    ThumbnailImage(url: url, width: geometry.size.width)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                }
+            }
+        }
     }
 }

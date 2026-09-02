@@ -73,24 +73,62 @@ struct MasonryGridView: View {
     }
 }
 
-/// The laziness gate's instrument (093 § 3).
+/// The laziness gate's instrument (093 § 3), and since 098 · P3 the decode counter too.
 ///
-/// Off unless `-atelier-log-tile-bodies` is on the command line, so it costs one
-/// already-computed `Bool` per cell in a normal run. It counts tiles that actually came
-/// on screen: if the stacks are lazy, a 2,000-item collection reports tens at launch;
-/// if they are not, it reports 2,000 before a finger has touched the glass.
-enum TileBodyLog {
-    nonisolated(unsafe) private static var count = 0
+/// **Entirely `#if DEBUG`.** The state, the lock and the `print` were not, which put a
+/// `nonisolated(unsafe)` static, an `NSLock` and a `print` per tile into a shipping
+/// binary for the sake of a diagnostic nobody can turn on there. The type keeps its shape
+/// in Release — the two calls compile to nothing — so the call sites stay readable rather
+/// than being wrapped in `#if` at every use.
+///
+/// Off unless ``argument`` is on the command line, so a debug run costs one
+/// already-computed `Bool` per cell.
+///
+/// `nonisolated` because this target defaults its isolation to the main actor and the
+/// decode counter is called from inside the cache's detached decode. The lock is what
+/// makes that safe and is the reason there is one.
+nonisolated enum TileBodyLog {
+    #if DEBUG
+    /// The launch argument that turns both counters on. Named, following
+    /// `FixtureLibrary.argument` and `LibraryLocation.overrideArgument`, because a
+    /// launch-argument string spelled at its one use site is a string nothing can find.
+    static let argument = "-atelier-log-tile-bodies"
+
+    static let isEnabled = CommandLine.arguments.contains(argument)
+
+    nonisolated(unsafe) private static var bodies = 0
+    nonisolated(unsafe) private static var decodes = 0
     private static let lock = NSLock()
 
-    static let isEnabled = CommandLine.arguments.contains("-atelier-log-tile-bodies")
-
+    /// A tile came on screen. If the stacks are lazy, a 2,000-item collection reports tens
+    /// at launch; if they are not, it reports 2,000 before a finger has touched the glass.
     static func record() {
         guard isEnabled else { return }
         lock.lock()
-        count += 1
-        let current = count
+        bodies += 1
+        let current = bodies
         lock.unlock()
         print("atelier.tile-body \(current)")
     }
+
+    /// A thumbnail was actually DECODED — a cache miss that was not coalesced into another
+    /// viewer's decode (098 · finding 15).
+    ///
+    /// The number 098 leaves to a device: a fling over the 2,010-item fixture with this on
+    /// says whether the coalescing the `DecodeCache` provides is ever hit, and what a
+    /// scroll really costs in decodes rather than in tile bodies. The two lines are
+    /// interleaved on purpose — bodies against decodes over the same fling is the ratio,
+    /// and reading it off one log is what makes it one measurement.
+    static func recordDecode() {
+        guard isEnabled else { return }
+        lock.lock()
+        decodes += 1
+        let current = decodes
+        lock.unlock()
+        print("atelier.tile-decode \(current)")
+    }
+    #else
+    static func record() {}
+    static func recordDecode() {}
+    #endif
 }
