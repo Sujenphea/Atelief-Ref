@@ -485,6 +485,71 @@ struct InboxWriterTests {
         #expect(staged.isEmpty)
     }
 
+    // The two ways a rewrite fails, neither of which had a test: the suite covered
+    // `write`'s four typed failures and left the entry point the DRAIN uses — which is
+    // now on the write-ahead stamp's path, once per record per pass (098 · finding 1a) —
+    // asserted only on its happy path.
+
+    /// A file where `.staging/` has to be: the shape a container going read-only takes,
+    /// and the one the drain reads as "this attempt cannot be committed".
+    @Test("a rewrite with no staging directory is the typed unavailable failure")
+    func rewriteWithoutStagingFails() throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+        let writer = InboxWriter(libraryRoot: root)
+        let id = UUID()
+        var record = try writer.write(
+            .sample(), payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
+
+        try FileManager.default.removeItem(at: layout.staging)
+        try Data("in the way".utf8).write(to: layout.staging)
+
+        record.attempts = 1
+        let error = try failure { try writer.rewrite(record) }
+        #expect(error.shape == .inboxUnavailable(path: layout.directory.path))
+        #expect(!error.underlying.isEmpty)
+
+        // The record on disk is untouched — the count did not move, which is exactly
+        // what the drain's terminal fate is deciding about.
+        #expect(try readRecord(at: layout.recordURL(for: id)).attempts == 0)
+    }
+
+    /// **A rewrite whose destination has gone SUCCEEDS, and writes the record back.**
+    /// Asserted because it is surprising and because nothing had ever asked: the doc
+    /// says `replaceItemAt` is used "because `moveItem` refuses" an existing
+    /// destination, which reads as though the call needs one, and it does not — an
+    /// absent original is replaced by a rename onto empty space.
+    ///
+    /// Today it is unreachable rather than harmless. The only caller is the drain's
+    /// attempt stamp; the only thing that removes a pending record under it is a
+    /// retirement or an export, and `InboxExclusion` (096 · 4) serialises those against
+    /// a pass. If that exclusion ever went, a record retired mid-pass would come back
+    /// with a higher count and be exported again — which the archive's blob-hash dedup
+    /// would then collapse on import, so it is a re-send rather than a loss. Pinned
+    /// here so a change to it is a decision.
+    @Test("a rewrite whose record has vanished re-creates it")
+    func rewriteWithNoDestinationRecreatesTheRecord() throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+        let writer = InboxWriter(libraryRoot: root)
+        let id = UUID()
+        var record = try writer.write(
+            .sample(), payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
+
+        try FileManager.default.removeItem(at: layout.recordURL(for: id))
+        #expect(try layout.pendingRecordURLs().isEmpty)
+
+        record.attempts = 1
+        try writer.rewrite(record)
+
+        #expect(try readRecord(at: layout.recordURL(for: id)) == record)
+        #expect(try layout.pendingRecordURLs().count == 1)
+        // Nothing left in staging for a later pass to trip over, either way.
+        let staged = try FileManager.default.contentsOfDirectory(
+            at: layout.staging, includingPropertiesForKeys: nil)
+        #expect(staged.isEmpty)
+    }
+
     @Test("a payload that fails to land leaves no record behind")
     func aFailedPayloadNeverProducesARecord() throws {
         let root = try makeRoot()

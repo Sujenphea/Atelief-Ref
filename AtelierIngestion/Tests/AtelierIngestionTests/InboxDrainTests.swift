@@ -384,6 +384,162 @@ struct InboxDrainTests {
         #expect(!exists(layout.recordURL(for: id)))
     }
 
+    // MARK: - A record that carries its bytes inside itself
+    //
+    // The writer strips an inline `image` when it has written a sidecar, so a record
+    // with base64 in it and no `.bin` beside it comes from a producer that handed over
+    // no bytes to strip — the HTTP funnel's shape, in an inbox. `makeInput`'s no-payload
+    // switch has three arms and only the middle one (`.content`) had ever been run.
+
+    @Test("a record whose image is inline drains through the no-payload path")
+    func inlineImageRecordDrains() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        // `.sample()` carries `image:` base64; passing no payload is what keeps it —
+        // `strippingInlineImage` only drops it when a sidecar was written.
+        let id = UUID()
+        try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: PayloadSource?.none, id: id, capturedAt: Self.capturedAt)
+        #expect(try readRecord(at: layout.recordURL(for: id)).payloadFile == nil)
+
+        #expect(await drain(env).drainOnce() == DrainSummary(ingested: 1))
+
+        let items = try await env.services.collectionItems(
+            in: env.collectionID, includeArchived: false)
+        let asset = try #require(items.first?.asset)
+        #expect(asset.kind == .image)
+        #expect(asset.width == 16)
+        #expect(env.blobFiles().count == 1)
+        #expect(!exists(layout.recordURL(for: id)))
+    }
+
+    @Test("a record carrying both content and an inline image drains as content")
+    func inlineContentWithImageRecordDrains() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        try InboxWriter(libraryRoot: env.root).write(
+            CaptureRequest(
+                image: CaptureFixtures.pngBase64(width: 20, height: 20),
+                provenance: ProvenanceDTO(
+                    platform: "web", originalURL: "https://ex.com/p", title: "P"),
+                collectionId: env.collectionID,
+                kind: "link",
+                payload: AssetPayload(link: LinkPayload(url: "https://ex.com/p"))),
+            payload: PayloadSource?.none, id: id, capturedAt: Self.capturedAt)
+
+        #expect(await drain(env).drainOnce() == DrainSummary(ingested: 1))
+
+        let items = try await env.services.collectionItems(
+            in: env.collectionID, includeArchived: false)
+        let asset = try #require(items.first?.asset)
+        // A link with a card image: the kind is the content's, and the bytes are its
+        // picture — which is the whole distinction between this arm and the one above.
+        #expect(asset.kind == .link)
+        #expect(asset.blobHash != nil)
+        #expect(env.blobFiles().count == 1)
+        #expect(!exists(layout.recordURL(for: id)))
+    }
+
+    // MARK: - When the stamp itself cannot be written
+    //
+    // `.staging/` is replaced by a FILE, so `InboxWriter.rewrite` fails at its first
+    // step — the shape a full or read-only container takes, and the only way the
+    // write-ahead stamp can fail. Running the record anyway is the retry-forever the
+    // counter exists to end: the count could never rise, so every future pass would
+    // find exactly what this one found.
+
+    /// Break the staging directory of `layout` the way a container going read-only
+    /// would: a regular file where the directory has to be.
+    private func breakStaging(_ layout: InboxLayout) throws {
+        try FileManager.default.removeItem(at: layout.staging)
+        try Data("in the way".utf8).write(to: layout.staging)
+    }
+
+    @Test("a stamp that cannot be committed is terminal, not a retry")
+    func unstampableRecordIsTerminalUnderDiscard() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
+        try breakStaging(layout)
+
+        #expect(await drain(env).drainOnce() == DrainSummary(quarantined: 1))
+
+        // Quarantined with the count that WOULD have been committed — the re-encode at
+        // the destination is what makes `failed/` honest about how far it got.
+        #expect(try readRecord(at: layout.failedRecordURL(for: id)).attempts == 1)
+        #expect(exists(layout.failed.appendingPathComponent("\(id.uuidString).bin")))
+        #expect(!exists(layout.recordURL(for: id)))
+        // It never ran: the coordinator was never handed anything.
+        #expect(env.blobFiles().isEmpty)
+    }
+
+    /// The phone's half. A full disk is a condition that heals, and quarantine here
+    /// would take a perfectly good capture out of the export because of it — so the
+    /// record stays pending, at its own count, and a later pass tries again.
+    @Test("under .retainForExport an un-stampable record stays pending at its count")
+    func unstampableRecordStaysPendingUnderRetention() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(width: 24, height: 18), id: id,
+            capturedAt: Self.capturedAt)
+        try breakStaging(layout)
+
+        #expect(await retainingDrain(env).drainOnce()
+            == DrainSummary(skippedExhausted: 1))
+        #expect(exists(layout.recordURL(for: id)))
+        #expect(try readRecord(at: layout.recordURL(for: id)).attempts == 0)
+        #expect(!exists(layout.failed))
+
+        // The disk recovers, and the capture drains as if nothing had happened.
+        try FileManager.default.removeItem(at: layout.staging)
+        #expect(await retainingDrain(env).drainOnce() == DrainSummary(ingested: 1))
+        #expect(exists(layout.ingestedRecordURL(for: id)))
+    }
+
+    /// The quarantine's fallback: if the re-encode cannot be WRITTEN at the
+    /// destination, the original file is moved instead — a stale count beats a lost
+    /// capture. Forced by putting a directory where the record has to go, and visible
+    /// because the two paths disagree about the count: the re-encode would say 1 (the
+    /// attempt that could not be committed), and the moved original says 0.
+    @Test("a quarantine that cannot re-encode moves the record instead")
+    func quarantineFallsBackToMovingTheRecord() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let fileManager = FileManager.default
+
+        let id = UUID()
+        try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
+        try breakStaging(layout)
+        // A directory at the record's destination: `Data.write` cannot land on it, and
+        // `InboxLayout.replacingMove` clears it first, so the move can.
+        try fileManager.createDirectory(
+            at: layout.failedRecordURL(for: id), withIntermediateDirectories: true)
+
+        #expect(await drain(env).drainOnce() == DrainSummary(quarantined: 1))
+
+        #expect(!exists(layout.recordURL(for: id)))
+        #expect(try readRecord(at: layout.failedRecordURL(for: id)).attempts == 0)
+    }
+
     // MARK: - The target collection (092 · S3, settling 091's open question 2)
 
     @Test("a record with no collection lands in Unsorted, like an untargeted capture")

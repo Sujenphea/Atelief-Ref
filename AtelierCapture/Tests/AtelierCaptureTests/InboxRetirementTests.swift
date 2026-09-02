@@ -305,4 +305,123 @@ struct InboxRetirementTests {
         #expect(try layout.pendingRecordURLs().map(\.lastPathComponent)
             == [InboxLayout.recordFileName(for: neighbour.id)])
     }
+
+    // MARK: - A retirement that could not happen (098, the failure sweep)
+    //
+    // `Summary.failed` has existed since 096 · 3B and no test had ever produced a
+    // non-zero one. It is the count that says a capture is still waiting after the user
+    // pressed Clear — the one number here whose being wrong is silent — so both routes
+    // to it are forced: the move that will not move, and the delete that will not
+    // delete.
+
+    /// A regular FILE where `sent/` has to be, so the directory cannot be created and
+    /// no move into it can land. The capture stays exactly where it was, which is the
+    /// safe direction: it will simply be exported again, and re-import dedups.
+    @Test("a capture that cannot be moved to sent/ is counted as failed, not lost")
+    func aRefusedMoveIsCountedAndTheCaptureSurvives() throws {
+        let layout = try Self.makeLayout()
+        defer { try? FileManager.default.removeItem(at: layout.directory) }
+        let writer = InboxWriter(layout: layout)
+        let record = try writer.write(Self.request(), payload: Data([0xFF, 0xD8]))
+        try Data("in the way".utf8).write(to: layout.sent)
+
+        let summary = InboxRetirement.retire([record.id], in: layout)
+
+        #expect(summary == InboxRetirement.Summary(retired: 0, failed: 1))
+        let fileManager = FileManager.default
+        #expect(fileManager.fileExists(atPath: layout.recordURL(for: record.id).path))
+        #expect(fileManager.fileExists(atPath: layout.payloadURL(for: record.id).path))
+        #expect(try layout.pendingRecordURLs().count == 1)
+    }
+
+    /// The payload moves first, so a payload that will not move must stop the
+    /// retirement where it stands rather than retiring a record away from bytes still
+    /// sitting in the inbox. Forced by making the payload's DESTINATION a directory
+    /// that cannot be cleared: it has a file inside it, so `removeItem` in
+    /// `replacingMove` fails and so does the move.
+    @Test("a payload that will not move leaves the record pending too")
+    func aRefusedPayloadMoveStopsTheRetirement() throws {
+        let layout = try Self.makeLayout()
+        defer { try? FileManager.default.removeItem(at: layout.directory) }
+        let writer = InboxWriter(layout: layout)
+        let record = try writer.write(Self.request(), payload: Data([0xFF, 0xD8]))
+
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: layout.sent, withIntermediateDirectories: true)
+        let destination = layout.sentPayloadURL(for: record.id)
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        // A non-empty directory cannot be replaced by a rename, and `chflags`-free.
+        try fileManager.createDirectory(
+            at: destination.appendingPathComponent("occupied", isDirectory: true),
+            withIntermediateDirectories: true)
+        try Data("stuck".utf8).write(
+            to: destination.appendingPathComponent("occupied/file"))
+        // Read-only, so the contents cannot be removed either.
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: destination.path)
+        defer {
+            try? fileManager.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: destination.path)
+        }
+
+        let summary = InboxRetirement.retire([record.id], in: layout)
+
+        #expect(summary == InboxRetirement.Summary(retired: 0, failed: 1))
+        // The record did NOT move: retiring it away from bytes still in the inbox is
+        // the one outcome the ordering exists to prevent.
+        #expect(fileManager.fileExists(atPath: layout.recordURL(for: record.id).path))
+        #expect(fileManager.fileExists(atPath: layout.payloadURL(for: record.id).path))
+    }
+
+    /// The other fate's failure: an ingested record that will not delete. Forced by
+    /// making `ingested/` itself read-only, so the unlink inside it is refused.
+    @Test("an ingested capture that will not delete is counted as failed")
+    func aRefusedDeleteIsCounted() throws {
+        let layout = try Self.makeLayout()
+        defer { try? FileManager.default.removeItem(at: layout.directory) }
+        let writer = InboxWriter(layout: layout)
+        let record = try writer.write(Self.request(), payload: Data([0xFF, 0xD8]))
+        try InboxFixtures.retain(record, in: layout)
+
+        let fileManager = FileManager.default
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: layout.ingested.path)
+        defer {
+            try? fileManager.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: layout.ingested.path)
+        }
+
+        let summary = InboxRetirement.retire([record.id], in: layout)
+
+        #expect(summary == InboxRetirement.Summary(retired: 0, failed: 1))
+        // Still there, and still exportable — which is why a failure here is a count
+        // and not an error the user has to understand.
+        #expect(fileManager.fileExists(atPath: layout.ingestedRecordURL(for: record.id).path))
+    }
+
+    /// One pass, both fates, one of each broken: the counts are per capture and neither
+    /// number absorbs the other.
+    @Test("a pass that half worked reports both numbers")
+    func aMixedPassReportsBothCounts() throws {
+        let layout = try Self.makeLayout()
+        defer { try? FileManager.default.removeItem(at: layout.directory) }
+        let writer = InboxWriter(layout: layout)
+        let moved = try writer.write(Self.request("twitter"), payload: Data([0x01]))
+        let stuck = try writer.write(Self.request("pinterest"), payload: Data([0x02]))
+        try InboxFixtures.retain(stuck, in: layout)
+
+        let fileManager = FileManager.default
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: layout.ingested.path)
+        defer {
+            try? fileManager.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: layout.ingested.path)
+        }
+
+        let summary = InboxRetirement.retire([moved.id, stuck.id], in: layout)
+
+        #expect(summary == InboxRetirement.Summary(retired: 1, failed: 1))
+        #expect(fileManager.fileExists(atPath: layout.sentRecordURL(for: moved.id).path))
+        #expect(fileManager.fileExists(atPath: layout.ingestedRecordURL(for: stuck.id).path))
+    }
 }

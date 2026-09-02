@@ -305,6 +305,86 @@ struct InboxArchiveTests {
             atPath: rig.root.appendingPathComponent(ArchiveLayout.manifestFilename).path))
     }
 
+    // MARK: - What goes wrong at the filesystem (098, the failure sweep)
+
+    /// The copy failing is a different branch from the payload being missing, and
+    /// nothing had ever reached it. Forced with a file sitting at the destination the
+    /// allocator will pick — which is deterministic, because the name is derived from
+    /// the blob hash, so a first export names it for us.
+    @Test("a payload that cannot be copied is skipped; the rest still export")
+    func aFailedCopyIsSkipped() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let doomed = try rig.captureImage(width: 8, height: 8, url: "https://example.com/a")
+        _ = try rig.captureImage(width: 9, height: 9, url: "https://example.com/b")
+        let fileManager = FileManager.default
+
+        // Run once to learn the name the allocator gives the first capture's file, then
+        // start again with something in the way of exactly that path.
+        _ = try rig.export()
+        let file = try #require(try rig.manifest().collections.first?.items.first?.file)
+        try fileManager.removeItem(at: rig.root)
+        let occupied = rig.root.appendingPathComponent(file)
+        try fileManager.createDirectory(
+            at: occupied.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("in the way".utf8).write(to: occupied)
+
+        let summary = try rig.export()
+
+        #expect(summary.captures == 1)
+        #expect(summary.files == 1)
+        #expect(summary.skipped == 1)
+        #expect(summary.skippedIDs == [doomed.id])
+        #expect(!summary.exported.contains(doomed.id))
+        #expect(try rig.manifest().assets.count == 1)
+    }
+
+    /// The manifest is the commit marker, so a run that cannot write it must throw
+    /// rather than return a summary describing a folder no reader will accept.
+    @Test("a manifest that cannot be written is a throw, not a quiet success")
+    func aFailedManifestWriteThrows() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        _ = try rig.captureImage(width: 8, height: 8, url: "https://example.com/a")
+        let fileManager = FileManager.default
+
+        // A directory where the manifest has to go.
+        try fileManager.createDirectory(at: rig.root, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: rig.root.appendingPathComponent(ArchiveLayout.manifestFilename),
+            withIntermediateDirectories: true)
+
+        #expect(throws: (any Error).self) { _ = try rig.export() }
+
+        // The bytes were copied before the manifest was attempted — which is what makes
+        // the folder visibly incomplete rather than plausibly whole.
+        #expect(throws: (any Error).self) {
+            try LibraryArchiveReader.parse(rig.root, schemaVersion: "v19")
+        }
+    }
+
+    /// A record carrying base64 image bytes inside itself, with no sidecar. The share
+    /// extension never writes one (091 · D2 keeps the image out of memory), so this is
+    /// another producer's shape in an inbox — and the export refuses it rather than
+    /// inventing a file for it. The branch had no test.
+    @Test("a record with inline bytes and no sidecar is skipped by name")
+    func inlineImageRecordIsSkipped() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let kept = try rig.captureImage(width: 8, height: 8, url: "https://example.com/kept")
+        // `.sample()` carries `image:`; with no payload the writer has nothing to strip
+        // it in favour of, so the base64 stays in the record.
+        let inline = try rig.writer.write(.sample(), payload: PayloadSource?.none)
+        #expect(inline.payloadFile == nil)
+
+        let summary = try rig.export()
+
+        #expect(summary.captures == 1)
+        #expect(summary.skipped == 1)
+        #expect(summary.skippedIDs == [inline.id])
+        #expect(summary.exported == [kept.id])
+    }
+
     // MARK: - Ingested is not sent (096 · 4)
 
     /// The failure this exists to prevent, stated as the thing that must not happen: the

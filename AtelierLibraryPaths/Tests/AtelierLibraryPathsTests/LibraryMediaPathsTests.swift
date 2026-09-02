@@ -55,6 +55,39 @@ struct LibraryMediaPathsTests {
         #expect(LibraryMediaPaths.shardDirectory(under: parent, hash: "abc") == nil)
     }
 
+    // MARK: - MIME to extension (098, the failure sweep)
+    //
+    // Untested until now, and it is what names every blob and every file in an export
+    // archive: `AssetExport.filename` asks it, `MediaStore` asks it, and an answer that
+    // changed would rename files the database already points at. It delegates to
+    // `UTType`, so what is pinned is the ANSWER for the formats this program handles,
+    // not the mechanism.
+
+    @Test(
+        "the MIME types this program handles name their files",
+        arguments: [
+            ("image/jpeg", "jpeg"), ("image/png", "png"), ("image/heic", "heic"),
+            ("image/gif", "gif"), ("image/webp", "webp"), ("video/mp4", "mp4"),
+            ("video/quicktime", "mov"),
+        ])
+    func fileExtensionsForKnownTypes(testCase: (mime: String, expected: String)) {
+        #expect(LibraryMediaPaths.fileExtension(forMIMEType: testCase.mime)
+            == testCase.expected)
+    }
+
+    /// An unknown or malformed type yields the EMPTY string and not a fallback, which is
+    /// what makes `blobFileName` produce a bare hash: a file whose name claims an
+    /// extension the bytes do not have is worse than one with none.
+    @Test(
+        "an unknown MIME type yields no extension at all",
+        arguments: ["application/x-atelier-nonsense", "", "not a mime type", "image/"])
+    func fileExtensionForUnknownTypes(mime: String) {
+        #expect(LibraryMediaPaths.fileExtension(forMIMEType: mime).isEmpty)
+        #expect(LibraryMediaPaths.blobFileName(
+            hash: "abcd", fileExtension: LibraryMediaPaths.fileExtension(forMIMEType: mime))
+            == "abcd")
+    }
+
     // MARK: - File names
 
     @Test("a blob's file name is the hash plus the extension")
