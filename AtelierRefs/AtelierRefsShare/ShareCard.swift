@@ -14,6 +14,7 @@
 // The curation the copy enforced is kept below rather than lost: this names the subset one
 // card needs, so nothing here reaches for a token that means nothing in an extension.
 
+import AtelierCapture
 import AtelierTokens
 import SwiftUI
 
@@ -82,14 +83,54 @@ enum ShareTheme {
 
 /// Which card is on screen, or none (093 § 1).
 ///
-/// Two cases, not five. `InboxWriter` has four typed failures and
-/// `LibraryLocation` a fifth kind of one, and 093 collapses every one of them into
-/// this single `.failed`: they are all a lost capture, none leaves anything partial,
-/// and the typed payloads (`path:`, `id:`) are for whoever reads the log, not for
+/// Two cases, not six. `InboxWriter` has five typed failures and `LibraryLocation` a sixth
+/// kind of one, and 093 collapses them: they are all a lost capture, none leaves anything
+/// partial, and the typed payloads (`path:`, `id:`) are for whoever reads the log, not for
 /// someone holding a phone.
+///
+/// **The failure splits in two, and only because the ADVICE differs** (098 · finding 7).
+/// The collapse was right about the diagnosis and wrong about the sentence: "Try sharing
+/// again" is the correct thing to say about a disk that was momentarily full, and it is
+/// the wrong thing to say about a file that is bigger than the cap, where sharing again
+/// reaches the same cap with the same file and gets the same card. 093 § 1 wants a receipt
+/// that tells the truth in one line, and one of those two lines was a lie. Doc 093 § 1
+/// recorded an 82 MiB share on a simulator, so this is not hypothetical.
+///
+/// It is still not five cases. The split is on what the user can DO, which is exactly two
+/// things: try it again, or send something smaller.
 enum ShareCard: Equatable {
     case saved
-    case failed
+    case failed(Failure)
+
+    /// What a failed share can be told, which is not the same question as what went wrong.
+    enum Failure: Equatable {
+        /// A condition a second attempt might not meet: a full disk, an unreadable
+        /// container, a provisioning bug. Re-sharing is the retry.
+        case generic
+        /// `InboxWriteError.payloadTooLarge` — the share is over
+        /// `InboxWriter.maximumPayloadBytes`, and no number of retries changes that.
+        case tooLarge
+    }
+
+    /// The card an error renders as.
+    ///
+    /// One `switch` rather than a check at each `catch`, so the two call sites in
+    /// `ShareViewController` cannot classify the same error differently. Untested, like
+    /// everything in this target — the shape it matches on, `InboxWriteError`, is tested
+    /// where it is thrown.
+    static func failed(for error: any Error) -> ShareCard {
+        guard let write = error as? InboxWriteError, case .payloadTooLarge = write else {
+            return .failed(.generic)
+        }
+        return .failed(.tooLarge)
+    }
+
+    /// Whether this card is a failure — the one thing the view branches on besides its
+    /// text, and worth a name rather than a `!= .saved` that a third case would break.
+    var isFailure: Bool {
+        if case .failed = self { return true }
+        return false
+    }
 }
 
 /// The card's state, owned by `ShareViewController` and read by the SwiftUI view.
@@ -132,10 +173,10 @@ struct ShareCardView: View {
             Text(message(card))
                 .font(ShareTheme.Typography.body)
                 .foregroundStyle(
-                    card == .saved
-                        ? ShareTheme.Colors.inkPrimary : ShareTheme.Colors.warning)
+                    card.isFailure
+                        ? ShareTheme.Colors.warning : ShareTheme.Colors.inkPrimary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if card == .failed {
+            if card.isFailure {
                 dismissButton
             }
         }
@@ -166,6 +207,12 @@ struct ShareCardView: View {
     /// hundred milliseconds later hits again, and re-sharing is the retry the user
     /// already knows. This is the dismissal, and the failure card needs one precisely
     /// because it does not auto-dismiss: completing the request is the user's move.
+    ///
+    /// **That argument holds for both failures and lands differently on each** (098 ·
+    /// finding 7). An in-extension retry button hits the same condition either way, so
+    /// there is still no button. But the reason there is no button — "a second attempt
+    /// hits again" — is precisely why `.tooLarge` must not be told to share again, and
+    /// ``message(_:)`` now says so. The doc and the copy agree.
     private var dismissButton: some View {
         Button(action: onDismiss) {
             Image(systemName: "xmark")
@@ -188,12 +235,18 @@ struct ShareCardView: View {
     ///
     /// Success names the destination, mirroring the Mac's capture toast
     /// (`ContentView.swift:257`), because the collection is the one fact the user
-    /// cannot otherwise discover — nothing else in this flow mentions one. Failure
-    /// names the gesture that IS the retry, per 093.
+    /// cannot otherwise discover — nothing else in this flow mentions one.
+    ///
+    /// A generic failure names the gesture that IS the retry, per 093. `.tooLarge` names
+    /// the only thing that would work instead, because the retry cannot: the file is over
+    /// the cap and will be over the cap again. Neither line quotes the limit — a number of
+    /// bytes on a receipt is for the log, and the log has it (`adopt` and `InboxWriter`
+    /// both record the size and the cap).
     private func message(_ card: ShareCard) -> String {
         switch card {
         case .saved: "Saved to Unsorted"
-        case .failed: "Couldn't save. Try sharing again."
+        case .failed(.generic): "Couldn't save. Try sharing again."
+        case .failed(.tooLarge): "Couldn't save — that file is too big. Try a smaller one."
         }
     }
 }
@@ -207,7 +260,14 @@ struct ShareCardView: View {
 
 #Preview("Failed") {
     let model = ShareCardModel()
-    model.card = .failed
+    model.card = .failed(.generic)
+    return ShareCardView(model: model, onDismiss: {})
+        .background(Color.gray)
+}
+
+#Preview("Too large") {
+    let model = ShareCardModel()
+    model.card = .failed(.tooLarge)
     return ShareCardView(model: model, onDismiss: {})
         .background(Color.gray)
 }

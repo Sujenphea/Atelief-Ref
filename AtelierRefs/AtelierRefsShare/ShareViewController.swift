@@ -148,7 +148,7 @@ final class ShareViewController: UIViewController {
                     types=[\(arrived.types, privacy: .public)] \
                     \(arrived.content, privacy: .private)
                     """)
-                model.card = .failed
+                model.card = .failed(.generic)
                 return
             }
             // The adopted copy is this process's to clean up, on every path out of
@@ -190,8 +190,13 @@ final class ShareViewController: UIViewController {
             // the rest, and that IS the fix: an over-cap share now fails on a card that
             // does not auto-dismiss, instead of getting this process jetsammed and
             // leaving a share sheet that appeared to work and did nothing (091 · D2).
+            //
+            // It is also the one failure whose CARD differs, which is why the routing is
+            // `ShareCard.failed(for:)` and not `.failed` (098 · finding 7): "Try sharing
+            // again" is advice that cannot work for an 82 MiB share, and 093 § 1's whole
+            // claim for this surface is a receipt that tells the truth in one line.
             ShareLog.share.error("capture failed: \(String(describing: error), privacy: .public)")
-            model.card = .failed
+            model.card = .failed(for: error)
         }
     }
 
