@@ -176,8 +176,8 @@ final class ShareViewController: UIViewController {
                 """)
             await confirmAndDismiss()
         } catch {
-            // One card for every typed failure: `InboxWriteError`'s five and
-            // `LibraryLocationError`'s two, the latter of which
+            // One card for every typed failure: `InboxWriteError`'s six (it was five until
+            // P1 added `payloadEmpty`) and `LibraryLocationError`'s two, the latter of which
             // 093 § 7 flags as the one hole worth closing early — a provisioning bug
             // has to render somewhere, and this is the only surface that exists. The
             // payloads stay in the log, where the vocabulary belongs — and this is the
@@ -185,7 +185,7 @@ final class ShareViewController: UIViewController {
             // `underlying` describing the error it caught (403). The card says a share
             // was lost; this line is the only thing that can say a disk was full.
             //
-            // The fifth case is `payloadTooLarge`, thrown by `harvest` before a byte is
+            // One of the six is `payloadTooLarge`, thrown by `harvest` before a byte is
             // copied and by the writer before a byte is staged. It renders here like
             // the rest, and that IS the fix: an over-cap share now fails on a card that
             // does not auto-dismiss, instead of getting this process jetsammed and
