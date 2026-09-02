@@ -457,6 +457,48 @@ struct PageHarvestTests {
         // No URL: a script that failed early, and everything downstream keys off it.
         #expect(PageHarvest.harvest(fromResults: ["title": "no url here"]) == nil)
     }
+
+    /// 098 · P5 gave `PagePreprocessor.js` four more caps — `videos`, `metas`, every
+    /// string's LENGTH, and `data:` — and each of them produces the same thing on this side
+    /// of the boundary: an ABSENT key. That is what the JS's "never emit null, omit the
+    /// key" rule has always produced, so the decode path was already built for it; this
+    /// asserts it rather than assuming it, because a cap that fired on a real page and
+    /// yielded a nil harvest would be a lost capture and not a shortened one.
+    @Test("A snapshot the caps stripped to almost nothing is still a page")
+    func toleratesATruncatedHarvest() throws {
+        // Every optional field gone: the title was too long, so was the canonical, every
+        // meta's content was, and every image was a `data:` URL the script dropped.
+        let bare = try #require(
+            PageHarvest.harvest(fromResults: ["url": "https://example.com/post/1"]))
+        #expect(bare.url == "https://example.com/post/1")
+        #expect(bare.title == nil)
+        #expect(bare.canonical == nil)
+        #expect(bare.metas.isEmpty)
+        #expect(bare.media.isEmpty)
+        // And it still classifies: a page with nothing but a URL is a `.web` capture whose
+        // provenance is that URL, which is the tier-1 outcome tier 2 degrades to.
+        let capture = PageExtractor.capture(from: bare)
+        #expect(capture.provenance.originalURL == "https://example.com/post/1")
+        #expect(capture.mediaURL == nil)
+
+        // A meta whose content was dropped, and an image whose alt was — the key is absent
+        // on each, and neither takes anything else with it.
+        let partial = try #require(PageHarvest.harvest(fromResults: [
+            "url": "https://example.com/post/2",
+            "metas": [["key": "og:description"], ["key": "og:title", "content": "kept"]],
+            "images": [["src": "https://example.com/a.jpg", "width": 900, "height": 600]],
+            "videos": [["poster": "https://example.com/p.jpg"]],
+        ]))
+        #expect(partial.metas == ["og:title": "kept"])
+        #expect(partial.media.map(\.src)
+            == ["https://example.com/a.jpg", "https://example.com/p.jpg"])
+        #expect(partial.media[0].alt == nil)
+        #expect(partial.media[0].articleIndex == nil)
+        // A video that lost its dimensions with its source still reports zeroes, not nil —
+        // `Media.area` is arithmetic and a missing dimension must not become a crash.
+        #expect(partial.media[1].width == 0)
+        #expect(partial.media[1].height == 0)
+    }
 }
 
 /// The Swift half of the cross-language rewrite contract (096 review 1A).

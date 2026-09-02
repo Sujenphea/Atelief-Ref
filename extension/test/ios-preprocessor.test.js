@@ -14,6 +14,13 @@
 // containing `<article>` (which is how the Swift extractor scopes a tweet's media to the
 // focal tweet rather than a reply's). Those are rules, and rules break.
 //
+// **098 · P5 made the caps the point.** `images` was capped at 80 and nothing else was:
+// `videos` and `metas` were unbounded, no string had a length, and a `data:` src — which is
+// not a reference to bytes but the bytes themselves — was filtered only in Swift, on the far
+// side of the boundary the whole cap exists to protect. A page with eighty inline base64
+// images shipped megabytes across XPC into a ~120 MB process to be discarded on arrival. The
+// cases below are what those caps now cost and what they now refuse.
+//
 // The DOM is a hand-rolled stub rather than jsdom, matching this suite's zero-dependency
 // rule. Only what the file actually touches is implemented, so a stub that drifts fails
 // loudly with an undefined function rather than quietly returning nothing.
@@ -231,6 +238,216 @@ test("a page that throws still completes, with the URL it managed to read", () =
 });
 
 // ---------------------------------------------------------------------------
+// The caps (098 · P5): what a page cannot make this snapshot do
+// ---------------------------------------------------------------------------
+//
+// Every case here is a page being unreasonable. None of them is hypothetical in the way
+// that matters: the snapshot crosses XPC into a process with an observed ~120 MB ceiling
+// and no second chance — `SupportsWebPage` means Safari sends the page item INSTEAD OF a
+// URL, so a snapshot the extension cannot receive is a LOST capture rather than a tier-1
+// degrade (`AtelierRefsShare/Info.plist:49-53`).
+
+/** A string of `n` characters — a stand-in for whatever a page decided to put in an
+ * attribute. Built by repetition, so a megabyte costs nothing here. */
+function long(n) {
+  return "x".repeat(n);
+}
+
+const MAX_TEXT = 2048;
+
+test("the video count is capped, keeping DOM order", () => {
+  const many = [];
+  for (let i = 0; i < 50; i += 1) {
+    many.push(element({ poster: `https://example.com/p${i}.jpg`, src: null,
+                        videoWidth: 640, videoHeight: 360 }));
+  }
+
+  const result = snapshot({ videos: many });
+
+  assert.equal(result.videos.length, 20);
+  assert.equal(result.videos[0].poster, "https://example.com/p0.jpg");
+  assert.equal(result.videos[19].poster, "https://example.com/p19.jpg");
+});
+
+test("the meta count is capped, keeping DOM order", () => {
+  const many = [];
+  for (let i = 0; i < 500; i += 1) {
+    many.push(element({ property: `og:x${i}`, content: "v" }));
+  }
+
+  const result = snapshot({ metas: many });
+
+  assert.equal(result.metas.length, 100);
+  // Order, because `PageHarvest.build` takes the FIRST occurrence of a key — a cap that
+  // kept the last hundred would hand Swift a different og:title than the page declared.
+  assert.equal(result.metas[0].key, "og:x0");
+  assert.equal(result.metas[99].key, "og:x99");
+});
+
+test("an inline data: image is dropped here, not shipped across XPC to be dropped there", () => {
+  const inline = "data:image/png;base64," + long(4_000_000);
+  const result = snapshot({
+    images: [
+      img(inline, 1200, 900),
+      img("https://example.com/hero.jpg", 1200, 900),
+    ],
+  });
+
+  assert.deepEqual(result.images.map((i) => i.src), ["https://example.com/hero.jpg"]);
+});
+
+test("a data: src is dropped whatever its case, and however short", () => {
+  // Short enough to pass the length cap, so this pins the `data:` rule itself rather than
+  // the rule that happens to catch most of them.
+  const result = snapshot({
+    images: [img("DATA:image/gif;base64,R0lGOD", 1200, 900)],
+    videos: [element({ poster: "data:image/png;base64,AAAA",
+                       src: "data:video/mp4;base64,AAAA",
+                       videoWidth: 640, videoHeight: 360 })],
+  });
+
+  assert.deepEqual(result.images, []);
+  // Neither a poster nor a source survived, so the video contributes nothing at all.
+  assert.deepEqual(result.videos, []);
+});
+
+test("a blob: video source still survives — Swift decides that one", () => {
+  // The counterpart to the case above, and the reason `data:` is not simply "a scheme this
+  // file dislikes": a blob: URL is a short string NAMING bytes the page holds, and dropping
+  // it would be deciding what is fetchable, which is Swift's job. A data: URL IS the bytes.
+  const result = snapshot({
+    videos: [element({ poster: null, currentSrc: "blob:https://example.com/1",
+                       videoWidth: 1280, videoHeight: 720 })],
+  });
+
+  assert.equal(result.videos[0].src, "blob:https://example.com/1");
+});
+
+test("an over-long src is dropped, and takes only its own image with it", () => {
+  const result = snapshot({
+    images: [
+      img("https://example.com/" + long(MAX_TEXT), 1200, 900),
+      img("https://example.com/hero.jpg", 1200, 900),
+    ],
+  });
+
+  assert.deepEqual(result.images.map((i) => i.src), ["https://example.com/hero.jpg"]);
+});
+
+test("a src exactly at the cap is kept — the boundary is not off by one", () => {
+  const exact = "https://example.com/" + long(MAX_TEXT - "https://example.com/".length);
+  assert.equal(exact.length, MAX_TEXT);
+
+  const result = snapshot({ images: [img(exact, 1200, 900)] });
+
+  assert.equal(result.images.length, 1);
+  assert.equal(result.images[0].src.length, MAX_TEXT);
+});
+
+test("an over-long alt is omitted, and the image is still reported", () => {
+  const result = snapshot({
+    images: [element({ src: "https://example.com/hero.jpg", naturalWidth: 1200,
+                       naturalHeight: 900, alt: long(MAX_TEXT + 1) })],
+  });
+
+  assert.equal(result.images.length, 1);
+  // Omitted, never null — the whole share fails to load if a null reaches the plist.
+  assert.ok(!("alt" in result.images[0]));
+});
+
+test("an over-long meta content is dropped and its key survives", () => {
+  const result = snapshot({
+    metas: [
+      element({ property: "og:description", content: long(MAX_TEXT + 1) }),
+      element({ property: "og:title", content: "hello" }),
+    ],
+  });
+
+  assert.equal(result.metas.length, 2);
+  assert.equal(result.metas[0].key, "og:description");
+  assert.ok(!("content" in result.metas[0]));
+  assert.equal(result.metas[1].content, "hello");
+});
+
+test("an over-long title or canonical is dropped, and the capture survives it", () => {
+  const result = snapshot({
+    url: "https://example.com/post/1",
+    title: long(MAX_TEXT + 1),
+    canonical: "https://example.com/" + long(MAX_TEXT),
+  });
+
+  assert.ok(!("title" in result));
+  assert.ok(!("canonical" in result));
+  // The one field that must NOT be dropped: `PageHarvest.harvest(fromResults:)` returns nil
+  // for a snapshot with no URL, and a page share has no URL item to fall back to.
+  assert.equal(result.url, "https://example.com/post/1");
+});
+
+test("the page's own URL is NOT capped — dropping it would lose the whole capture", () => {
+  const enormous = "https://example.com/?q=" + long(MAX_TEXT * 4);
+
+  const result = snapshot({ url: enormous });
+
+  assert.equal(result.url, enormous);
+});
+
+test("a page claiming a million images is scanned a bounded number of times", () => {
+  // Every one below the icon floor, so nothing is ever pushed and the OUTPUT cap can never
+  // stop the loop — only the scan cap can. Without it this is a share sheet that spins.
+  let reads = 0;
+  const tiny = img("https://example.com/pixel.gif", 1, 1);
+  const proxy = new Proxy({ length: 1_000_000 }, {
+    get(target, key) {
+      if (key in target) return target[key];
+      if (typeof key === "string" && /^\d+$/.test(key)) {
+        reads += 1;
+        return tiny;
+      }
+      return undefined;
+    },
+  });
+
+  const result = snapshot({ images: proxy });
+
+  assert.deepEqual(result.images, []);
+  assert.equal(reads, 2000, "the scan stops at MAX_SCAN, not at the DOM's claim");
+});
+
+test("no value is null even when every cap fires at once", () => {
+  // The null discipline is the rule this file exists for most, and every new cap is a new
+  // way to produce an absent value — so it is re-asserted over a page that trips all of
+  // them rather than only over the empty page the earlier case uses.
+  const result = snapshot({
+    url: "https://example.com/x",
+    title: long(MAX_TEXT + 1),
+    canonical: long(MAX_TEXT + 1),
+    metas: [element({ property: "og:title", content: long(MAX_TEXT + 1) })],
+    images: [
+      img("data:image/png;base64,AAAA", 1200, 900),
+      element({ src: "https://example.com/a.jpg", naturalWidth: 400, naturalHeight: 400,
+                alt: long(MAX_TEXT + 1) }),
+    ],
+    videos: [element({ poster: "data:image/png;base64,AAAA",
+                       currentSrc: "https://example.com/v.mp4",
+                       videoWidth: 640, videoHeight: 360 })],
+  });
+
+  const nulls = [];
+  (function walk(value, path) {
+    if (value === null) return nulls.push(path);
+    if (Array.isArray(value)) return value.forEach((v, i) => walk(v, `${path}[${i}]`));
+    if (value && typeof value === "object") {
+      for (const key of Object.keys(value)) walk(value[key], `${path}.${key}`);
+    }
+  })(result, "snapshot");
+
+  assert.deepEqual(nulls, [], `null is not plist-representable; found at: ${nulls}`);
+  // And the page still yielded something usable: the one image that broke no rule.
+  assert.deepEqual(result.images.map((i) => i.src), ["https://example.com/a.jpg"]);
+  assert.equal(result.videos[0].src, "https://example.com/v.mp4");
+});
+
+// ---------------------------------------------------------------------------
 // The two readers, over one DOM (096 review 7A)
 // ---------------------------------------------------------------------------
 
@@ -250,7 +467,9 @@ test("a page that throws still completes, with the URL it managed to read", () =
 //      the whole share unloadable (422);
 //   4. the browser rasterizes a video frame to a canvas; the phone will not (tainted for
 //      cross-origin video, and a data-URL frame is an image's worth of bytes crossing XPC);
-//   5. the phone reports `videoWidth`/`videoHeight` as 0 rather than omitting a video.
+//   5. the phone reports `videoWidth`/`videoHeight` as 0 rather than omitting a video;
+//   6. the phone caps `videos`, `metas` and every string's LENGTH, and drops a `data:` src
+//      in the page rather than in Swift — 098 · P5, for the same XPC reason as 1 and 2.
 //
 // That is the problem. Every divergence is justified, so nothing looks wrong, and there was
 // no mechanism that would notice a SIXTH one arriving by accident. `harvestSignals` is
@@ -398,12 +617,13 @@ test("the phone's images are the browser's, minus exactly the documented caps", 
   const phone = snapshot(description);
   const browser = browserHarvest(description);
 
-  // Divergences 1 and 2, stated as an equation rather than as prose. Anything the phone
-  // drops that this filter does not explain is a sixth divergence, and it fails here.
+  // Divergences 1, 2 and 6, stated as an equation rather than as prose. Anything the phone
+  // drops that this filter does not explain is a SEVENTH divergence, and it fails here.
   const MIN_SIDE = 100;
   const MAX_IMAGES = 80;
   const expected = browser.images
     .filter((i) => i.src && i.width >= MIN_SIDE && i.height >= MIN_SIDE)
+    .filter((i) => !/^data:/i.test(i.src) && i.src.length <= MAX_TEXT)
     .slice(0, MAX_IMAGES);
 
   assert.deepEqual(phone.images.map((i) => i.src), expected.map((i) => i.src));
