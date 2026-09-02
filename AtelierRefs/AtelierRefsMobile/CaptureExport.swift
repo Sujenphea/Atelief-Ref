@@ -10,10 +10,12 @@
 //
 // **"Pending" means pending EXPORT.** Since a drained record moves to `inbox/ingested/`
 // rather than being deleted, the set this controller counts and sends is the union of
-// `inbox/` and `inbox/ingested/` — which is exactly what `InboxArchive.pendingRecords(in:)`
+// `inbox/` and `inbox/ingested/` — which is exactly what `InboxArchive.pending(in:)`
 // reads. Counting only the pending directory would make the toolbar's number fall to zero
 // the moment the drain ran and quietly withdraw the send control from a phone with three
-// captures still owed to the Mac.
+// captures still owed to the Mac. And it is that call's RECORDS that are counted, not the
+// `.json` files beside them: one file that will not decode is one capture the export can
+// never carry, and the button used to promise it anyway, forever (098 · finding 8).
 //
 // **The inbox is taken exclusively.** A drain pass moves records between those same two
 // directories, so one running underneath an archive write would let a payload move out from
@@ -31,7 +33,11 @@
 //
 // **Where the folder goes.** Caches, under a timestamped name. It is a copy of bytes the
 // inbox still holds, so the system is free to reclaim it; it exists for as long as it takes
-// the user to hand it somewhere.
+// the user to hand it somewhere. Exactly one exists: `InboxArchive.writeExport` clears
+// every sibling under `Exports/` before it writes (098 · finding 4). The old code removed
+// only a folder of the same name, which is the same name only within the same minute, so
+// two sends a minute apart left two complete copies of every capture — free while the
+// inbox still owned those bytes, and the sole owner of them the moment "Clear" ran.
 
 import AtelierArchive
 import AtelierBrowse
@@ -87,22 +93,27 @@ final class CaptureExport {
         self.exclusion = exclusion
     }
 
-    /// Re-count what is waiting to be sent. Cheap — two directory listings — and safe to
-    /// call on every appearance, which is what keeps the control honest after a share.
+    /// Re-count what is waiting to be sent, and safe to call on every appearance —
+    /// which is what keeps the control honest after a share.
     ///
     /// **Both directories**, per the note at the top of this file: a record the drain has
     /// ingested has left `inbox/` for `inbox/ingested/` and is still owed to the Mac.
     ///
-    /// Counted rather than decoded. `InboxArchive.pendingRecords(in:)` is the authority on
-    /// what will actually be sent and it dedups ids across the two sets, so a hand-edited
-    /// inbox holding one id in both places would be counted twice here and sent once. That
-    /// is not a state the drain can produce — retention MOVES a record — and paying a
-    /// decode of every record on every activation to be exact about it would spend a real
-    /// cost on an impossible one.
+    /// **Decoded, not counted** (098 · finding 8). This used to count `.json` FILES,
+    /// which is a different number from the one the export produces in two ways: a record
+    /// that will not decode is never sent, and an id present in both directories is sent
+    /// once. The first is not hypothetical — one corrupt file made the button say "Send 4"
+    /// on a phone that could only ever send three, forever, with no control anywhere that
+    /// could clear it. `InboxArchive.pending(in:)` is the authority on what will be sent,
+    /// so the button asks IT rather than approximating it.
+    ///
+    /// It costs a read and a decode of every waiting record per activation, against a
+    /// directory listing before. That is bounded by the number of captures the user has
+    /// not yet sent — a few hundred at the outside, of ~350-byte files — and it buys a
+    /// number that cannot be wrong. The drain's ingested-site sweep is what stops the
+    /// corrupt file being there next time; this is what stops it lying in the meantime.
     func refresh() {
-        let waiting = (try? layout.pendingRecordURLs().count) ?? 0
-        let drained = (try? layout.ingestedRecordURLs().count) ?? 0
-        pending = waiting + drained
+        pending = (try? InboxArchive.pending(in: layout).records.count) ?? 0
     }
 
     /// Write the archive, off the main actor and with the inbox to ourselves.
@@ -203,22 +214,30 @@ final class CaptureExport {
         // Capture-time order, the same order the drain walks (405) — so a folder opened on
         // the Mac reads in the order the user actually saved things. Asked for by name
         // rather than spelled here, so the Mac-side round-trip test exercises THIS order.
-        let records = try InboxArchive.pendingRecords(in: layout)
+        // The pair carries what would not decode alongside it, so the manifest's `skipped`
+        // and the count on the button describe the same inbox (098 · finding 8).
+        let pending = try InboxArchive.pending(in: layout)
 
-        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Exports", isDirectory: true)
-            .appendingPathComponent(Self.folderName(now), isDirectory: true)
-        // A fresh folder every run: writing into a previous export would leave last time's
-        // files beside this time's manifest, which is the one thing a manifest must never
-        // be wrong about.
-        try? FileManager.default.removeItem(at: root)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-
-        let summary = try InboxArchive.write(
-            records: records, layout: layout, to: root,
-            appVersion: appVersion, exportedAt: now)
-        return Written(url: root, exported: summary.exported)
+        // The folder lifecycle belongs to the package that owns the format (098 · finding
+        // 4): it clears EVERY sibling under `Exports/`, not just a folder of this minute's
+        // name, so two sends a minute apart cannot leave two complete copies of every
+        // capture in Caches for "Clear" to orphan.
+        let export = try InboxArchive.writeExport(
+            pending, layout: layout, under: Self.exportsDirectory,
+            folderName: Self.folderName(now), appVersion: appVersion, now: now)
+        return Written(url: export.folder, exported: export.summary.exported)
     }
+
+    /// Where exports go: `Caches/Exports/`, owned entirely by this controller.
+    ///
+    /// A copy of bytes the inbox still holds, so the system is free to reclaim it, and
+    /// excluded from backup by `MobileIngest.makeDrain` for the same reason the derived
+    /// media directories are — it is regenerable from the inbox in one tap. Spelled here
+    /// rather than there because this is what owns the directory; the drain's backup
+    /// hygiene only borrows the path.
+    nonisolated static let exportsDirectory = FileManager.default
+        .urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Exports", isDirectory: true)
 
     /// `Atelier 2026-08-17 1830` — sortable, and it says what it is on a Mac desktop where
     /// it will sit beside whatever else was AirDropped that day.

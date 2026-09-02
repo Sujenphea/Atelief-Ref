@@ -155,9 +155,28 @@ enum FixtureLibrary {
         }
     }
 
-    /// How many captures the fixture leaves waiting. Three, so the count is legibly
-    /// plural and a test can assert a number rather than "some".
-    static let pendingCaptures = 3
+    /// The launch argument that overrides ``pendingCaptures``, e.g.
+    /// `-seed-pending-captures 50`.
+    static let pendingCapturesArgument = "-seed-pending-captures"
+
+    /// How many captures the fixture leaves waiting. Three by default, so the count is
+    /// legibly plural and a UI test can assert a number rather than "some".
+    ///
+    /// Overridable because the other consumer of a seeded library is a MEASUREMENT, not
+    /// an assertion: `MobileIngest.maxConcurrent` is 2 on an argument and no device has
+    /// ever drained a backlog behind it (098 · finding 3). That measurement wants fifty
+    /// captures and `-atelier-log-ingest-timing`, and three is exactly the number that
+    /// makes a drain look free. A value that will not parse, or is not positive, is
+    /// ignored rather than argued with — this is a debug seam behind three guards and a
+    /// typo should seed the ordinary fixture, not nothing.
+    static var pendingCaptures: Int {
+        guard let index = CommandLine.arguments.firstIndex(of: pendingCapturesArgument),
+            CommandLine.arguments.indices.contains(index + 1),
+            let value = Int(CommandLine.arguments[index + 1]),
+            value > 0
+        else { return 3 }
+        return value
+    }
 
     /// Both display tiers for one fixture asset, drawn rather than shipped — a bundled
     /// JPEG would be a resource to keep in sync with a hash computed here.

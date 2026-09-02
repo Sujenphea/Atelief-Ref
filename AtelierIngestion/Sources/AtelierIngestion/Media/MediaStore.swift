@@ -57,13 +57,25 @@ public struct MediaStore: Sendable {
     /// is swallowed — this is hygiene, not correctness.
     public func excludeDerivedFromBackup() {
         for directory in [layout.thumbnails, layout.cache] {
-            try? FileManager.default.createDirectory(
-                at: directory, withIntermediateDirectories: true)
-            var url = directory
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            try? url.setResourceValues(values)
+            Self.excludeFromBackup(directory)
         }
+    }
+
+    /// Mark one directory excluded from backups, creating it first because the flag
+    /// needs an existing URL. Best-effort: this is hygiene, not correctness.
+    ///
+    /// `static` and public because the phone has a third directory with exactly this
+    /// property and no store to reach it through — `Caches/Exports/`, which holds a
+    /// second copy of bytes the inbox already has and is regenerable in one tap
+    /// (098 · finding 4, `CaptureExport.exportsDirectory`). One spelling of "create it,
+    /// then flag it" rather than a fourth copy of these five lines.
+    public static func excludeFromBackup(_ directory: URL) {
+        try? FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        var url = directory
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
     }
 
     // MARK: - Errors
