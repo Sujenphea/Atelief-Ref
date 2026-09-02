@@ -10,7 +10,9 @@
 // `AtelierServer`'s TestSupport is what only a server needs: the wired
 // `ServerTestEnv` (a real migrated library, so it needs AtelierIngestion), and
 // the synthesized MP4 (AVAssetWriter — the video path is an HTTP-streamed upload
-// with no inbox counterpart).
+// with no inbox counterpart). The richer image builders — JPEG, HEIC, an EXIF
+// rotation, a truncated JPEG — are `FixtureImages` beside this (457); `png()` is
+// one of them under the name every capture suite already uses.
 
 import CoreGraphics
 import Foundation
@@ -23,22 +25,14 @@ import AtelierCore
 /// Deterministic bytes and wire values shared by every capture-contract suite.
 public enum CaptureFixtures {
     /// A valid `width × height` PNG (deterministic solid fill).
+    ///
+    /// `FixtureImages.solidColorImage` under the name the capture suites use; PNG is
+    /// lossless, so the bytes are a function of the size and a round trip through the
+    /// inbox can compare them. Non-throwing because a `CGContext` of a positive size
+    /// does not fail on any host this runs on, and sixty call sites should not `try`.
     public static func png(width: Int = 16, height: Int = 16) -> Data {
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let ctx = CGContext(
-            data: nil, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        ctx.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.8, alpha: 1))
-        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        let image = ctx.makeImage()!
-
-        let data = NSMutableData()
-        let dest = CGImageDestinationCreateWithData(
-            data, UTType.png.identifier as CFString, 1, nil)!
-        CGImageDestinationAddImage(dest, image, nil)
-        CGImageDestinationFinalize(dest)
-        return data as Data
+        try! FixtureImages.solidColorImage(
+            width: width, height: height, red: 51, green: 128, blue: 204, format: .png)
     }
 
     /// The base64 of a valid PNG — the `image` field of a well-formed request.
@@ -91,21 +85,36 @@ extension CaptureRequest {
     /// A well-formed MEDIA-LESS capture (003 · C3) — a `tweet` / `link` / `color` with
     /// no bytes anywhere. The inbox path's other half (092 · S2): these produce a
     /// record with no payload sidecar, so the writer matrix needs one per kind.
+    ///
+    /// `originalURL` and `title` are parameters (457) so a suite asserting provenance
+    /// crosses verbatim can name the URL it expects back, rather than building the
+    /// request by hand beside this one.
     public static func sampleContent(
         kind: String = "link",
         payload: AssetPayload = AssetPayload(
             link: LinkPayload(url: "https://ex.com/p", title: "P")),
         platform: String = "web",
+        originalURL: String? = "https://ex.com/p",
+        title: String? = "P",
         collectionId: UUID? = nil
     ) -> CaptureRequest {
         CaptureRequest(
             provenance: ProvenanceDTO(
                 platform: platform,
-                originalURL: "https://ex.com/p",
-                title: "P"),
+                originalURL: originalURL,
+                title: title),
             collectionId: collectionId,
             kind: kind,
             payload: payload)
+    }
+
+    /// A media-less `link` capture of `url` and nothing else — no title, the shape
+    /// `ShareCapture.draft(for: .link)` produces from a share sheet.
+    public static func sampleLink(_ url: String, platform: String = "web") -> CaptureRequest {
+        sampleContent(
+            kind: AssetKind.link.rawValue,
+            payload: AssetPayload(link: LinkPayload(url: url)),
+            platform: platform, originalURL: url, title: nil)
     }
 
     public func jsonData() -> Data { try! JSONEncoder().encode(self) }

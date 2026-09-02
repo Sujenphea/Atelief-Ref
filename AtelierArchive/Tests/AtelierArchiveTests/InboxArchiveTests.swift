@@ -6,8 +6,8 @@
 //
 //  Driven through the REAL `InboxWriter`, because that is what puts records in an inbox on
 //  a phone: a fixture that hand-wrote JSON would be testing this file against a spelling
-//  of the record format rather than against the format. The payloads are real JPEGs made
-//  with ImageIO, since the whole point of `probe` is reading a container's header.
+//  of the record format rather than against the format. The payloads are real JPEGs from
+//  `FixtureImages` (457), since the whole point of `probe` is reading a container's header.
 //
 //  The claim the last test makes is the one that matters: what this writes,
 //  `LibraryArchiveReader` reads. Those two have never met before — one is the phone's
@@ -16,12 +16,10 @@
 //
 
 import AtelierCapture
+import AtelierCaptureTestSupport
 import AtelierCore
-import CoreGraphics
 import Foundation
-import ImageIO
 import Testing
-import UniformTypeIdentifiers
 
 @testable import AtelierArchive
 
@@ -104,7 +102,7 @@ struct InboxArchiveTests {
         _ = try rig.writer.write(
             CaptureRequest(
                 provenance: ProvenanceDTO(platform: "web", originalURL: "https://example.com/t")),
-            payload: try Rig.jpeg(width: 8, height: 8),
+            payload: try FixtureImages.solidImage(width: 8, height: 8, format: .jpeg),
             capturedAt: when)
 
         let records = try InboxArchive.pendingRecords(in: rig.layout)
@@ -119,7 +117,7 @@ struct InboxArchiveTests {
     func identicalBytesShareAFile() throws {
         let rig = try Rig()
         defer { rig.cleanup() }
-        let bytes = try Rig.jpeg(width: 12, height: 12)
+        let bytes = try FixtureImages.solidImage(width: 12, height: 12, format: .jpeg)
         _ = try rig.captureImage(bytes: bytes, url: "https://example.com/1")
         _ = try rig.captureImage(bytes: bytes, url: "https://example.com/2")
 
@@ -261,12 +259,12 @@ struct InboxArchiveTests {
         let older = try rig.writer.write(
             CaptureRequest(provenance: ProvenanceDTO(
                 platform: "web", originalURL: "https://example.com/older")),
-            payload: try Rig.jpeg(width: 8, height: 8),
+            payload: try FixtureImages.solidImage(width: 8, height: 8, format: .jpeg),
             capturedAt: base)
         let newer = try rig.writer.write(
             CaptureRequest(provenance: ProvenanceDTO(
                 platform: "web", originalURL: "https://example.com/newer")),
-            payload: try Rig.jpeg(width: 9, height: 9),
+            payload: try FixtureImages.solidImage(width: 9, height: 9, format: .jpeg),
             capturedAt: base.addingTimeInterval(60))
         try rig.retain(older)
 
@@ -381,6 +379,32 @@ struct InboxArchiveTests {
 
     // MARK: - The handshake
 
+    /// The rule is the reader's (`LibraryArchiveReaderRefusalTests` pins it for a
+    /// Mac-written archive); this pins that a PHONE-written one is subject to it — that
+    /// `InboxArchive.write` puts the phone's schema version where the reader looks, so a
+    /// phone on a newer build than the Mac sends a folder the Mac declines whole, before
+    /// a record is read, rather than half-imports. Today's behaviour, without a
+    /// format-version field of the inbox's own yet (098, the test batch).
+    @Test("An archive from a schema newer than the reader's is refused, not half-read")
+    func newerSchemaIsRefused() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        _ = try rig.captureImage(width: 8, height: 8, url: "https://example.com/newer")
+        let records = try InboxArchive.pendingRecords(in: rig.layout)
+        _ = try InboxArchive.write(
+            records: records, layout: rig.layout, to: rig.root,
+            appVersion: "9.9-test", schemaVersion: "v99",
+            exportedAt: Date(timeIntervalSince1970: 1_700_000_000))
+
+        #expect(throws: ArchiveReadError.refused(.schemaTooNew("v99"))) {
+            try LibraryArchiveReader.parse(rig.root, schemaVersion: "v19")
+        }
+        // The same folder reads on a build that has caught up.
+        #expect(throws: Never.self) {
+            try LibraryArchiveReader.parse(rig.root, schemaVersion: "v99")
+        }
+    }
+
     @Test("What the phone writes, the Mac's reader reads")
     func theReaderReadsIt() throws {
         let rig = try Rig()
@@ -420,9 +444,7 @@ struct InboxArchiveTests {
         let writer: InboxWriter
 
         init() throws {
-            let base = FileManager.default.temporaryDirectory
-                .appendingPathComponent("InboxArchiveTests", isDirectory: true)
-                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let base = try InboxFixtures.temporaryLibraryRoot(suite: "InboxArchiveTests")
             libraryRoot = base.appendingPathComponent("library", isDirectory: true)
             root = base.appendingPathComponent("export", isDirectory: true)
             try FileManager.default.createDirectory(
@@ -437,7 +459,9 @@ struct InboxArchiveTests {
 
         @discardableResult
         func captureImage(width: Int, height: Int, url: String) throws -> InboxRecord {
-            try captureImage(bytes: try Self.jpeg(width: width, height: height), url: url)
+            try captureImage(
+                bytes: try FixtureImages.solidImage(width: width, height: height, format: .jpeg),
+                url: url)
         }
 
         @discardableResult
@@ -449,12 +473,7 @@ struct InboxArchiveTests {
 
         @discardableResult
         func captureLink(_ url: String) throws -> InboxRecord {
-            try writer.write(
-                CaptureRequest(
-                    provenance: ProvenanceDTO(platform: "web", originalURL: url),
-                    kind: AssetKind.link.rawValue,
-                    payload: AssetPayload(link: LinkPayload(url: url))),
-                payload: PayloadSource?.none)
+            try writer.write(.sampleLink(url), payload: PayloadSource?.none)
         }
 
         func payloadURL(_ record: InboxRecord) -> URL {
@@ -462,29 +481,13 @@ struct InboxArchiveTests {
         }
 
         /// What a retaining `InboxDrain` leaves behind (096 · 4): the capture's files under
-        /// `inbox/ingested/`, out of the pending set and still on disk.
-        ///
-        /// Performed by hand because the drain lives in `AtelierIngestion`, which this
-        /// package does not depend on and should not start to for a fixture. The move it
-        /// mimics — record first, payload second — is pinned against the real drain by
-        /// `InboxDrainTests`; `movingPayload: false` reproduces the state a crash between
-        /// those two moves leaves behind.
+        /// `inbox/ingested/`, out of the pending set and still on disk — `InboxFixtures
+        /// .retain`, which executes the drain's own `retentionMoves(for:)` (457), so this
+        /// suite cannot drift from the drain's order. `movingPayload: false` reproduces
+        /// the state a crash between the two moves leaves behind.
         @discardableResult
         func retain(_ record: InboxRecord, movingPayload: Bool = true) throws -> InboxRecord {
-            let fileManager = FileManager.default
-            try fileManager.createDirectory(
-                at: layout.ingested, withIntermediateDirectories: true)
-            try fileManager.moveItem(
-                at: layout.recordURL(for: record.id),
-                to: layout.ingestedRecordURL(for: record.id))
-            let payload = layout.payloadURL(for: record.id)
-            if movingPayload, fileManager.fileExists(atPath: payload.path) {
-                try fileManager.moveItem(
-                    at: payload,
-                    to: layout.ingested.appendingPathComponent(
-                        InboxLayout.payloadFileName(for: record.id)))
-            }
-            return record
+            try InboxFixtures.retain(record, in: layout, movingPayload: movingPayload)
         }
 
         func export() throws -> InboxArchive.Summary {
@@ -500,25 +503,6 @@ struct InboxArchiveTests {
                 ArchiveManifest.self,
                 from: Data(contentsOf: root.appendingPathComponent(
                     ArchiveLayout.manifestFilename)))
-        }
-
-        /// A real JPEG of the requested size — `probe` reads a container's header, so a
-        /// fixture has to be one.
-        static func jpeg(width: Int, height: Int) throws -> Data {
-            let context = CGContext(
-                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-            context.setFillColor(
-                red: CGFloat(width % 7) / 7, green: 0.4, blue: 0.6, alpha: 1)
-            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            let image = context.makeImage()!
-            let data = NSMutableData()
-            let destination = CGImageDestinationCreateWithData(
-                data, UTType.jpeg.identifier as CFString, 1, nil)!
-            CGImageDestinationAddImage(destination, image, nil)
-            CGImageDestinationFinalize(destination)
-            return data as Data
         }
     }
 }

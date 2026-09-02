@@ -26,11 +26,7 @@ struct InboxWriterTests {
     /// A fresh throwaway Library root. Nothing under it exists yet — the writer
     /// creating the inbox on first use is part of what is under test.
     private func makeRoot() throws -> URL {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("InboxWriterTests", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        return root
+        try InboxFixtures.temporaryLibraryRoot(suite: "InboxWriterTests")
     }
 
     private func exists(_ url: URL) -> Bool {
@@ -82,6 +78,23 @@ struct InboxWriterTests {
         #expect(try Data(contentsOf: layout.payloadURL(for: id)) == bytes)
         #expect(exists(layout.recordURL(for: id)))
         #expect(try readRecord(at: layout.recordURL(for: id)) == record)
+    }
+
+    /// The record is a format on disk read across app versions, and a newer writer will
+    /// add a key before every reader has learned it. Pinned as today's behaviour — the
+    /// keyed decoder ignores what it was not asked for — without adding a format-version
+    /// field yet (098, the test batch).
+    @Test("a record carrying keys this build does not know still decodes")
+    func unknownKeysAreTolerated() throws {
+        let record = InboxRecord(capturedAt: Self.capturedAt, request: .sampleContent())
+        var object = try #require(
+            JSONSerialization.jsonObject(with: InboxRecord.makeEncoder().encode(record))
+                as? [String: Any])
+        object["futureField"] = "from a build that has not shipped yet"
+        object["futureObject"] = ["nested": 1]
+        let data = try JSONSerialization.data(withJSONObject: object)
+
+        #expect(try InboxRecord.makeDecoder().decode(InboxRecord.self, from: data) == record)
     }
 
     @Test("the base64 image field is dropped when the same bytes went to the sidecar")

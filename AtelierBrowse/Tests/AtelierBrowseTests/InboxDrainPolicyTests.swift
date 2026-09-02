@@ -35,29 +35,14 @@ import Foundation
 import Testing
 
 @testable import AtelierBrowse
+import AtelierCaptureTestSupport
 
 // MARK: - Harness
-
-/// A gate any number of bodies can park on, opened once. `open()` is idempotent and may
-/// be called before `wait()`, so a test never has to sequence the two.
-@MainActor
-private final class Gate {
-    private var continuations: [CheckedContinuation<Void, Never>] = []
-    private(set) var isOpen = false
-
-    func wait() async {
-        if isOpen { return }
-        await withCheckedContinuation { continuations.append($0) }
-    }
-
-    func open() {
-        guard !isOpen else { return }
-        isOpen = true
-        let waiting = continuations
-        continuations = []
-        for continuation in waiting { continuation.resume() }
-    }
-}
+//
+// The gate a pass or an export body parks on is `AtelierCaptureTestSupport.Gate` (457):
+// `open()` is synchronous, which is what lets the ordering claims below read a trace
+// immediately after opening it, and idempotent, so a test never has to sequence `open()`
+// and `wait()`.
 
 /// A policy over a counting pass, plus the knobs a test drives it with.
 @MainActor

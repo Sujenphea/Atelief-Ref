@@ -11,7 +11,7 @@
 import Foundation
 import Testing
 
-import AtelierCapture
+import AtelierCaptureTestSupport
 import AtelierCore
 import AtelierLibraryPaths
 @testable import AtelierBrowse
@@ -223,10 +223,7 @@ struct TempBrowseLibrary {
     let library: BrowseLibrary
 
     init() throws {
-        root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AtelierBrowseTests", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        root = try InboxFixtures.temporaryLibraryRoot(suite: "AtelierBrowseTests")
         services = try AppServices.open(libraryRoot: root)
         library = BrowseLibrary(root: root, services: services)
     }

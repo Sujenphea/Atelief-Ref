@@ -22,7 +22,6 @@
 // (091 · D1) survives contact with a UI is by the UI not being handed the verb. The app
 // wires the drain from beside this seam rather than through it.
 
-import AtelierCapture
 import AtelierCore
 import AtelierLibraryPaths
 import Foundation

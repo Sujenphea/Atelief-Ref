@@ -8,16 +8,14 @@ import Foundation
 import Testing
 
 @testable import AtelierCapture
+import AtelierCaptureTestSupport
 
 @Suite("InboxRetirement: taking a capture out of the pending set (096 3B)")
 struct InboxRetirementTests {
 
     /// A throwaway inbox, cleaned up by the caller's `defer`.
     static func makeLayout() throws -> InboxLayout {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        return InboxLayout(libraryRoot: root)
+        try InboxFixtures.makeLayout(suite: "InboxRetirementTests")
     }
 
     static func request(_ platform: String = "web") -> CaptureRequest {

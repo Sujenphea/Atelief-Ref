@@ -16,9 +16,11 @@
 // on it would have made this package macOS-only too, for a path join. It is no longer
 // macOS-only (`.change-log/452`), and the dependency is still not worth taking: this is
 // a leaf that joins strings, and it should not pull in an ingest pipeline to do it.
-// `AtelierCapture.LibraryMediaPaths`
-// already computes that path on both platforms; it is the same move S4a made when the
-// drain needed the phone to know where blobs live.
+// `AtelierLibraryPaths.LibraryMediaPaths` already computes that path on both platforms
+// (it lived in AtelierCapture until 096 review 4A); it is the same move S4a made when
+// the drain needed the phone to know where blobs live. AtelierCapture is still linked,
+// for the inbox half: `InboxArchive` reads `InboxRecord`s through `InboxLayout` and
+// decodes them through `CaptureDecoder`.
 
 import PackageDescription
 
@@ -52,6 +54,10 @@ let package = Package(
                 .product(name: "AtelierCore", package: "AtelierCore"),
                 .product(name: "AtelierCapture", package: "AtelierCapture"),
                 .product(name: "AtelierLibraryPaths", package: "AtelierLibraryPaths"),
+                // The shared fixtures (457): the JPEG builder the inbox-archive suite
+                // had copied verbatim, the temp-root maker, and the retention fixture
+                // that executes the drain's own move order.
+                .product(name: "AtelierCaptureTestSupport", package: "AtelierCapture"),
             ]),
     ]
 )

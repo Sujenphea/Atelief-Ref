@@ -20,7 +20,6 @@
 //  panel, or a bookmark.
 //
 
-import AtelierCapture
 import AtelierCore
 import AtelierLibraryPaths
 import Foundation

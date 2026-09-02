@@ -1246,7 +1246,7 @@ struct InboxDrainTests {
             return await drain.drainOnce()
         }
         box.arm(pass)
-        await gate.open()
+        gate.open()
         let summary = await pass.value
 
         // The record that was in flight is finished and counted: cancellation stops
@@ -1777,21 +1777,3 @@ private struct RaceObservations: Sendable {
     }
 }
 
-/// A latch a task can park on until a test opens it. `wait()` ignores cancellation on
-/// purpose: it is what holds a task at the starting line WHILE it is being cancelled.
-private actor Gate {
-    private var isOpen = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func wait() async {
-        if isOpen { return }
-        await withCheckedContinuation { waiters.append($0) }
-    }
-
-    func open() {
-        isOpen = true
-        let waiting = waiters
-        waiters = []
-        for continuation in waiting { continuation.resume() }
-    }
-}

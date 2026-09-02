@@ -382,10 +382,7 @@ struct ShareCaptureTests {
 
     @Test("a draft written by InboxWriter lands as the two files the drain expects")
     func draftRoundTripsThroughTheWriter() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ShareCaptureTests", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let root = try InboxFixtures.temporaryLibraryRoot(suite: "ShareCaptureTests")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let layout = InboxLayout(libraryRoot: root)

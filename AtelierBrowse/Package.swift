@@ -35,12 +35,17 @@ import PackageDescription
 // would have been a manifest, a CI row and a `Package.resolved` bought with nothing.
 //
 // The dependency line is the boundary: AtelierCore for the domain types and the read
-// surface, AtelierCapture for the library root and the media paths. **No AtelierIngestion**
-// — it builds for iOS as of `.change-log/452`, so the old parenthetical here (that it
-// imports AppKit) is no longer the reason; the reason is that `InboxDrainPolicy` is generic
-// over what a pass returns precisely so this package never has to name `DrainSummary`, and
-// linking an entire ingest pipeline to type one closure would undo that. No SwiftUI, no
-// UIKit — so every decision below is testable without a device.
+// surface, AtelierLibraryPaths for the library root and the media paths. **No
+// AtelierCapture** on the library target since 457: the root and the paths moved out of
+// it in 096 review 4A (`.change-log/448`), and no source file here used a Capture symbol
+// after that — the dependency outlived its reason by nine changelogs. The TEST target
+// links `AtelierCaptureTestSupport` for the shared temp-root maker and `Gate`, and that
+// is all it takes from that package. **No AtelierIngestion** — it builds for iOS as of
+// `.change-log/452`, so the old parenthetical here (that it imports AppKit) is no longer
+// the reason; the reason is that `InboxDrainPolicy` is generic over what a pass returns
+// precisely so this package never has to name `DrainSummary`, and linking an entire
+// ingest pipeline to type one closure would undo that. No SwiftUI, no UIKit — so every
+// decision below is testable without a device.
 let package = Package(
     name: "AtelierBrowse",
     platforms: [
@@ -63,7 +68,6 @@ let package = Package(
             name: "AtelierBrowse",
             dependencies: [
                 .product(name: "AtelierCore", package: "AtelierCore"),
-                .product(name: "AtelierCapture", package: "AtelierCapture"),
                 .product(name: "AtelierLibraryPaths", package: "AtelierLibraryPaths"),
             ]
         ),
@@ -72,8 +76,10 @@ let package = Package(
             dependencies: [
                 "AtelierBrowse",
                 .product(name: "AtelierCore", package: "AtelierCore"),
-                .product(name: "AtelierCapture", package: "AtelierCapture"),
                 .product(name: "AtelierLibraryPaths", package: "AtelierLibraryPaths"),
+                // The shared fixtures (457): the temp-root maker every suite's rig uses,
+                // and the `Gate` the policy tests park a pass on.
+                .product(name: "AtelierCaptureTestSupport", package: "AtelierCapture"),
             ]
         )
     ],

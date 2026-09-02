@@ -18,9 +18,18 @@ import PackageDescription
 //
 // The boundary that keeps this reusable: **zero product dependencies beyond
 // AtelierCore, and nothing about transport.** No FlyingFox, no sockets, no
-// AppKit/UIKit, no filesystem. It cannot know whether the capture arrived over a
-// socket or was found in a directory, which is the property that lets iOS link
-// it into a memory-capped share extension that must not link GRDB.
+// AppKit/UIKit. The decoder cannot know whether the capture arrived over a socket or
+// was found in a directory; the inbox half (`InboxLayout` / `InboxWriter` /
+// `InboxRetirement`, 092 · S2 and after) does touch the filesystem, and only the one
+// directory it is handed. That is the property that lets iOS link it into a
+// memory-capped share extension.
+//
+// **GRDB is on that extension's link line, through AtelierCore** — an earlier version
+// of this header said it must not be, and `.change-log/395` corrected it: `AtelierCore`
+// depends on GRDB for its own persistence and this package depends on AtelierCore for
+// the domain types, so the library links. The invariant that holds is a behaviour, not
+// a link line: the extension never OPENS a database (091 · D2), and its footprint is
+// measured against the ~120 MB ceiling (423) rather than inferred from what it links.
 //
 // What deliberately did NOT come with it: `CaptureResponse` — the HTTP reply.
 // A capture written to the inbox has nobody to answer, so the reply is a

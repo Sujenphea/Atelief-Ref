@@ -20,41 +20,26 @@ import Foundation
 import Testing
 
 @testable import AtelierCapture
+import AtelierCaptureTestSupport
 
 @Suite("InboxLayout: what the inbox's enumerations can and cannot see (096 4)")
 struct InboxLayoutTests {
 
     /// A throwaway inbox, cleaned up by the caller's `defer`.
     static func makeLayout() throws -> InboxLayout {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        return InboxLayout(libraryRoot: root)
+        try InboxFixtures.makeLayout(suite: "InboxLayoutTests")
     }
 
     static func request(_ platform: String = "web") -> CaptureRequest {
         CaptureRequest(provenance: ProvenanceDTO(platform: platform))
     }
 
-    /// What a retaining `InboxDrain` leaves behind, performed by hand because the drain
-    /// lives in a package this one does not depend on (and must not: `AtelierCapture` is
-    /// what the share extension links). The move it performs is pinned against the real
-    /// drain by `InboxDrainTests`; here it is only a fixture.
+    /// What a retaining `InboxDrain` leaves behind — `InboxFixtures.retain`, which
+    /// executes the same `retentionMoves(for:)` the drain does (457), so this suite and
+    /// the drain cannot disagree about the order.
     @discardableResult
     static func retain(_ record: InboxRecord, in layout: InboxLayout) throws -> InboxRecord {
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(at: layout.ingested, withIntermediateDirectories: true)
-        try fileManager.moveItem(
-            at: layout.recordURL(for: record.id),
-            to: layout.ingestedRecordURL(for: record.id))
-        let payload = layout.payloadURL(for: record.id)
-        if fileManager.fileExists(atPath: payload.path) {
-            try fileManager.moveItem(
-                at: payload,
-                to: layout.ingested.appendingPathComponent(
-                    InboxLayout.payloadFileName(for: record.id)))
-        }
-        return record
+        try InboxFixtures.retain(record, in: layout)
     }
 
     // MARK: - What the drain sees
