@@ -61,12 +61,37 @@ done
 
 FAILED=()
 PASSED=()
+WARNED=()
+
+# A stage that exits with this code has NOT failed: it found something a reader
+# should see that no code change can clear (today: a drift fixture past its
+# staleness window, which only a fresh live capture fixes). Opt-in per stage via
+# `run_warnable_stage` — a plain `run_stage` still treats every non-zero exit as
+# a failure, so a genuine error can never be downgraded into a warning by a tool
+# that happens to exit 2.
+readonly WARN_STATUS=2
 
 run_stage() {
     local name="$1"; shift
     printf '\n\033[1m▶ %s\033[0m\n' "${name}"
     if "$@"; then
         PASSED+=("${name}")
+    else
+        FAILED+=("${name}")
+        printf '\033[31m✗ %s FAILED\033[0m\n' "${name}"
+    fi
+}
+
+run_warnable_stage() {
+    local name="$1"; shift
+    printf '\n\033[1m▶ %s\033[0m\n' "${name}"
+    local status=0
+    "$@" || status=$?
+    if [[ ${status} -eq 0 ]]; then
+        PASSED+=("${name}")
+    elif [[ ${status} -eq ${WARN_STATUS} ]]; then
+        WARNED+=("${name}")
+        printf '\033[33m⚠ %s — warning, not a failure\033[0m\n' "${name}"
     else
         FAILED+=("${name}")
         printf '\033[31m✗ %s FAILED\033[0m\n' "${name}"
@@ -117,7 +142,15 @@ app_target() {
 }
 
 extension_tests() {
-    (cd "${REPO_ROOT}/extension" && node --test && npm run drift-check)
+    # The node suite is a hard failure, always. drift-check separates its arms:
+    # 1 is real drift (a parser disagrees with a fixture, or the host tables
+    # disagree) and 2 is only a stale fixture. Its code is passed through
+    # untouched so the summary can tell those apart — see WARN_STATUS.
+    (
+        cd "${REPO_ROOT}/extension" || exit 1
+        node --test || exit 1
+        npm run drift-check
+    )
 }
 
 # --- Run --------------------------------------------------------------------
@@ -134,7 +167,7 @@ run_stage "App target" app_target
 # The extension is node, not Swift — nothing to compile-check, so it is a
 # full-mode stage only.
 if [[ "${MODE}" == "full" ]]; then
-    run_stage "Extension" extension_tests
+    run_warnable_stage "Extension" extension_tests
 fi
 
 # --- Summary ----------------------------------------------------------------
@@ -144,10 +177,16 @@ printf '\n\033[1m── summary ──\033[0m\n'
 # bash 3.2, which is what macOS ships — and the empty case here is the all-passed
 # case, so the naive form fails only on success. Hence the `+` expansions.
 for name in ${PASSED[@]+"${PASSED[@]}"}; do printf '\033[32m  ✓ %s\033[0m\n' "${name}"; done
+for name in ${WARNED[@]+"${WARNED[@]}"}; do printf '\033[33m  ⚠ %s\033[0m\n' "${name}"; done
 for name in ${FAILED[@]+"${FAILED[@]}"}; do printf '\033[31m  ✗ %s\033[0m\n' "${name}"; done
 
 if [[ ${#FAILED[@]} -gt 0 ]]; then
     printf '\n\033[31m%d stage(s) failed.\033[0m\n' "${#FAILED[@]}"
     exit 1
+fi
+if [[ ${#WARNED[@]} -gt 0 ]]; then
+    printf '\n\033[32mAll %d stages passed\033[0m\033[33m, %d with a warning above.\033[0m\n' \
+        "$(( ${#PASSED[@]} + ${#WARNED[@]} ))" "${#WARNED[@]}"
+    exit 0
 fi
 printf '\n\033[32mAll %d stages passed.\033[0m\n' "${#PASSED[@]}"

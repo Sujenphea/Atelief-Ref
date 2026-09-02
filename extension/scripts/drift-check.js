@@ -208,7 +208,20 @@ function main() {
   if (stale && !failed) {
     console.log("\nReminder: a fixture is past its staleAfterDays — re-capture before relying on live sweeps.");
   }
-  process.exit(failed || stale ? 1 : 0);
+  // TWO ARMS, TWO EXIT CODES. They used to share `1`, and that cost the repo a
+  // gate: a fixture aged past its window on 2026-08-28 and every `verify.sh full`
+  // from then on was red while printing "No drift — every check that COULD run
+  // satisfied its invariants" one line above. Nobody saw it, because `fast` mode
+  // does not run this stage at all.
+  //
+  //   1 — DRIFT. A parser disagrees with a committed fixture, or the two host
+  //       tables disagree. A code change fixes it. Always a hard failure.
+  //   2 — STALE. A fixture is past its `staleAfterDays`. Only a fresh live
+  //       capture from a logged-in session clears it, so no automated run can,
+  //       and a gate that can only rot is not a gate. Reported, never fatal.
+  //
+  // Drift wins when both are true: the actionable signal is the one to surface.
+  process.exit(failed ? 1 : stale ? 2 : 0);
 }
 
 main();
