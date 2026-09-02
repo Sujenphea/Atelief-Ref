@@ -19,6 +19,7 @@
 		IA0000000000000000000005 /* AtelierCapture in Frameworks */ = {isa = PBXBuildFile; productRef = IA0000000000000000000004 /* AtelierCapture */; };
 		IA0000000000000000000009 /* AtelierCapture in Frameworks */ = {isa = PBXBuildFile; productRef = IA0000000000000000000008 /* AtelierCapture */; };
 		JA0000000000000000000003 /* AtelierBrowse in Frameworks */ = {isa = PBXBuildFile; productRef = JA0000000000000000000002 /* AtelierBrowse */; };
+		JA0000000000000000000005 /* AtelierBrowse in Frameworks */ = {isa = PBXBuildFile; productRef = JA0000000000000000000004 /* AtelierBrowse */; };
 		KA0000000000000000000003 /* AtelierArchive in Frameworks */ = {isa = PBXBuildFile; productRef = KA0000000000000000000002 /* AtelierArchive */; };
 		KA0000000000000000000005 /* AtelierArchive in Frameworks */ = {isa = PBXBuildFile; productRef = KA0000000000000000000004 /* AtelierArchive */; };
 		LA0000000000000000000003 /* AtelierTokens in Frameworks */ = {isa = PBXBuildFile; productRef = LA0000000000000000000002 /* AtelierTokens */; };
@@ -154,6 +155,7 @@
 				HA0000000000000000000003 /* Sparkle in Frameworks */,
 				KA0000000000000000000003 /* AtelierArchive in Frameworks */,
 				LA0000000000000000000003 /* AtelierTokens in Frameworks */,
+				JA0000000000000000000005 /* AtelierBrowse in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -254,6 +256,7 @@
 				HA0000000000000000000002 /* Sparkle */,
 				KA0000000000000000000002 /* AtelierArchive */,
 				LA0000000000000000000002 /* AtelierTokens */,
+				JA0000000000000000000004 /* AtelierBrowse */,
 			);
 			productName = AtelierRefs;
 			productReference = 9907786E2FF364EF00718815 /* AtelierRefs.app */;
@@ -1099,6 +1102,10 @@
 			productName = AtelierCapture;
 		};
 		JA0000000000000000000002 /* AtelierBrowse */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AtelierBrowse;
+		};
+		JA0000000000000000000004 /* AtelierBrowse */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AtelierBrowse;
 		};
