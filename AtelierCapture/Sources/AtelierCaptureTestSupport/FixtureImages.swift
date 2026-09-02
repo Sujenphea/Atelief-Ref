@@ -31,6 +31,9 @@ public enum FixtureImages {
         case png
         case jpeg
         case heic
+        /// GIF — here because it is the one format a phone shares that carries
+        /// something the library does not keep: frames (098 · finding 12).
+        case gif
 
         /// The UTType whose identifier drives `CGImageDestination`.
         public var utType: UTType {
@@ -38,6 +41,7 @@ public enum FixtureImages {
             case .png: return .png
             case .jpeg: return .jpeg
             case .heic: return .heic
+            case .gif: return .gif
             }
         }
     }
@@ -129,6 +133,104 @@ public enum FixtureImages {
     public static func heicImage(width: Int, height: Int) throws -> Data {
         let image = try makeCGImage(width: width, height: height)
         return try encode(image, format: .heic, orientation: nil)
+    }
+
+    // MARK: - The formats a phone shares (098 · finding 12)
+
+    /// The payload shapes a share sheet on a phone can hand over, as one list.
+    ///
+    /// It lives here because two suites in two packages sweep over it — the drain in
+    /// `AtelierIngestion` and the export in `AtelierArchive` — and a second copy of
+    /// "these are the formats, and this is what each one must say afterwards" is the
+    /// kind of copy that stays green while one of them stops covering a case. Every
+    /// case is 40 × 30 as STORED, so a suite can assert one pair of numbers.
+    ///
+    /// ``heic`` is the case that can be unavailable: HEIC ENCODING is not present in
+    /// every environment, so ``bytes()`` throws there and the caller is expected to say
+    /// so out loud rather than pass quietly.
+    public enum PhoneFormat: String, CaseIterable, Sendable, CustomStringConvertible {
+        /// The web's lossless default, and what every fixture in this repo used to be.
+        case png
+        /// The web's lossy default, and what a share sheet hands over most often.
+        case jpeg
+        /// What the camera roll actually holds on this decade's iPhones.
+        case heic
+        /// A photograph taken sideways: 40 × 30 of stored pixels, EXIF orientation 6,
+        /// and therefore 30 × 40 to look at. The only case where the two disagree.
+        case rotatedJPEG
+        /// The one format that carries something the library does not keep.
+        case gif
+
+        public var description: String { rawValue }
+
+        /// The bytes, or a throw when this host cannot encode the format.
+        public func bytes() throws -> Data {
+            switch self {
+            case .png: try FixtureImages.solidImage(width: 40, height: 30, format: .png)
+            case .jpeg: try FixtureImages.solidImage(width: 40, height: 30, format: .jpeg)
+            case .heic: try FixtureImages.heicImage(width: 40, height: 30)
+            case .rotatedJPEG:
+                try FixtureImages.orientedImage(
+                    pixelWidth: 40, pixelHeight: 30, orientation: 6)
+            case .gif: try FixtureImages.animatedGIF(width: 40, height: 30, frames: 3)
+            }
+        }
+
+        /// The dimensions in the container's header, before any EXIF transform — what a
+        /// header read reports.
+        public var storedSize: (width: Int, height: Int) { (40, 30) }
+
+        /// The dimensions after the EXIF transform — what will actually be drawn, and
+        /// what a full decode reports.
+        public var displaySize: (width: Int, height: Int) {
+            self == .rotatedJPEG ? (30, 40) : (40, 30)
+        }
+
+        public var mimeType: String {
+            switch self {
+            case .png: "image/png"
+            case .jpeg, .rotatedJPEG: "image/jpeg"
+            case .heic: "image/heic"
+            case .gif: "image/gif"
+            }
+        }
+    }
+
+    // MARK: - GIF
+
+    /// A `width × height` animated GIF of `frames` frames, each a different flat colour,
+    /// at 100 ms per frame.
+    ///
+    /// It exists to be asserted against rather than to be pretty: the point of the
+    /// fixture is that it carries MORE than one image, so a test can say what the
+    /// library keeps of it (the container, byte for byte, in the blob) and what it does
+    /// not (the animation, in a thumbnail that is one still JPEG).
+    public static func animatedGIF(width: Int, height: Int, frames: Int = 3) throws -> Data {
+        let output = NSMutableData()
+        guard frames > 0, let destination = CGImageDestinationCreateWithData(
+            output as CFMutableData, UTType.gif.identifier as CFString, frames, nil) else {
+            throw FixtureError.encodingFailed(.gif)
+        }
+
+        CGImageDestinationSetProperties(destination, [
+            kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0],
+        ] as CFDictionary)
+
+        for frame in 0 ..< frames {
+            let shade = CGFloat(frame + 1) / CGFloat(frames + 1)
+            let image = try makeFilledCGImage(width: width, height: height) { context in
+                context.setFillColor(red: shade, green: 1 - shade, blue: 0.4, alpha: 1)
+                context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            }
+            CGImageDestinationAddImage(destination, image, [
+                kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 0.1],
+            ] as CFDictionary)
+        }
+
+        guard CGImageDestinationFinalize(destination) else {
+            throw FixtureError.encodingFailed(.gif)
+        }
+        return output as Data
     }
 
     // MARK: - Degenerate inputs

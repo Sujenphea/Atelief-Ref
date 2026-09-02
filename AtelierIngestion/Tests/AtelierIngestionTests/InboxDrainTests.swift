@@ -36,6 +36,7 @@
 // the assertions written so that no interleaving can change any of them.
 
 import Foundation
+import ImageIO
 import Testing
 
 import AtelierCapture
@@ -216,6 +217,144 @@ struct InboxDrainTests {
             return
         }
         #expect(url == layout.payloadURL(for: id))
+    }
+
+    // MARK: - The formats a phone actually shares (098 · finding 12)
+    //
+    // Every payload in this file until now was `CaptureFixtures.png()` or the string
+    // "not an image". A phone shares neither: it shares HEIC out of its own camera roll,
+    // JPEG off the web, an EXIF-rotated photo held sideways, and the occasional GIF. The
+    // drain is a seam between two processes and a format is exactly the kind of thing
+    // that crosses it wrong, so the whole path — writer, funnel, pipeline, retention —
+    // runs once per format.
+
+    /// The formats, and what each must say afterwards, come from
+    /// `FixtureImages.PhoneFormat` — the archive suite sweeps the same list from the
+    /// other end of the handoff, and a second copy here is a copy that stops covering a
+    /// case without anything going red.
+    typealias PayloadFormat = FixtureImages.PhoneFormat
+
+    /// Run `body` with a format's bytes, or record a LOUD skip when this host cannot
+    /// encode them.
+    ///
+    /// HEIC encoding is not available everywhere, and the existing convention for that
+    /// in this repo is `guard let … else { return }` — a test that passes without
+    /// running. `withKnownIssue` reports it instead: the run says a case did not
+    /// execute, and says which, which is the difference between a gap and a lie.
+    /// `isIntermittent` because on a host that CAN encode HEIC (every one so far) no
+    /// issue is recorded and that must not itself be a failure.
+    private func withPayload(
+        _ format: PayloadFormat, _ body: (Data) async throws -> Void
+    ) async throws {
+        guard let bytes = try? format.bytes() else {
+            withKnownIssue(
+                "\(format) could not be encoded on this host, so the case did not run",
+                isIntermittent: true
+            ) {
+                Issue.record("no \(format) encoder available")
+            }
+            return
+        }
+        try await body(bytes)
+    }
+
+    @Test(
+        "every format a phone shares drains to an asset with its own dimensions",
+        arguments: PayloadFormat.allCases)
+    func everyFormatDrains(format: PayloadFormat) async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        try await withPayload(format) { bytes in
+            let id = UUID()
+            try InboxWriter(libraryRoot: env.root).write(
+                .sample(collectionId: env.collectionID),
+                payload: bytes, id: id, capturedAt: Self.capturedAt)
+
+            #expect(await drain(env).drainOnce() == DrainSummary(ingested: 1))
+
+            let items = try await env.services.collectionItems(
+                in: env.collectionID, includeArchived: false)
+            let asset = try #require(items.first?.asset)
+            // Post-transform, which for the rotated case is the swap: 40 × 30 stored,
+            // 30 × 40 displayed, and the library records what will be drawn.
+            #expect(asset.width == format.displaySize.width)
+            #expect(asset.height == format.displaySize.height)
+            #expect(asset.mimeType == format.mimeType)
+            #expect(asset.kind == .image)
+            #expect(asset.fileSize == bytes.count)
+            // The blob is the ORIGINAL container, byte for byte — the export ships these
+            // bytes to the Mac, so anything the phone re-encoded would be lost quality
+            // the Mac could never get back.
+            let blob = try #require(env.blobFiles().first)
+            #expect(try Data(contentsOf: blob) == bytes)
+            #expect(!exists(layout.recordURL(for: id)))
+        }
+    }
+
+    /// The same sweep under the phone's policy, because retention is the phone's half
+    /// and the phone is where these formats come from.
+    @Test(
+        "every format survives a retaining drain with its bytes",
+        arguments: PayloadFormat.allCases)
+    func everyFormatSurvivesRetention(format: PayloadFormat) async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        try await withPayload(format) { bytes in
+            let id = UUID()
+            try InboxWriter(libraryRoot: env.root).write(
+                .sample(collectionId: env.collectionID),
+                payload: bytes, id: id, capturedAt: Self.capturedAt)
+
+            #expect(await retainingDrain(env).drainOnce() == DrainSummary(ingested: 1))
+
+            #expect(exists(layout.ingestedRecordURL(for: id)))
+            // The payload under `ingested/` is the original, unchanged: this is the copy
+            // `InboxArchive` sends.
+            #expect(try Data(contentsOf: layout.ingestedPayloadURL(for: id)) == bytes)
+        }
+    }
+
+    /// **The GIF's fate, stated rather than discovered.** An animated GIF ingests as an
+    /// ordinary image. The blob keeps every frame — it is the container, copied — so the
+    /// bytes the Mac receives animate; the THUMBNAILS do not, because they are JPEGs of
+    /// the first frame, and the phone's grid draws a thumbnail. Nothing here changes
+    /// that; it asserts it, so that a later change to the thumbnail stage cannot quietly
+    /// decide otherwise.
+    @Test("an animated GIF keeps its frames in the blob and loses them in the tiers")
+    func animatedGIFKeepsItsFramesOnlyInTheBlob() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+
+        let bytes = try FixtureImages.animatedGIF(width: 40, height: 30, frames: 3)
+        try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: bytes, capturedAt: Self.capturedAt)
+
+        #expect(await drain(env).drainOnce() == DrainSummary(ingested: 1))
+
+        // Three frames went in.
+        let source = try #require(CGImageSourceCreateWithData(bytes as CFData, nil))
+        #expect(CGImageSourceGetCount(source) == 3)
+
+        // The blob is the same three frames, byte for byte.
+        let blob = try #require(env.blobFiles().first)
+        #expect(try Data(contentsOf: blob) == bytes)
+        #expect(blob.pathExtension == "gif")
+        let stored = try #require(CGImageSourceCreateWithURL(blob as CFURL, nil))
+        #expect(CGImageSourceGetCount(stored) == 3)
+
+        // Every thumbnail tier is a single-frame JPEG. This is where the animation stops.
+        let tiers = env.thumbnailFiles()
+        #expect(!tiers.isEmpty)
+        for tier in tiers {
+            #expect(tier.pathExtension == "jpg")
+            let thumbnail = try #require(CGImageSourceCreateWithURL(tier as CFURL, nil))
+            #expect(CGImageSourceGetCount(thumbnail) == 1)
+        }
     }
 
     // MARK: - Media-less records

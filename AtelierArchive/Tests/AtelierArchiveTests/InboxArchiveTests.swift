@@ -19,6 +19,7 @@ import AtelierCapture
 import AtelierCaptureTestSupport
 import AtelierCore
 import Foundation
+import ImageIO
 import Testing
 
 @testable import AtelierArchive
@@ -109,6 +110,114 @@ struct InboxArchiveTests {
 
         #expect(records.count == 1)
         #expect(records.first?.capturedAt == when)
+    }
+
+    // MARK: - The formats a phone actually shares (098 · finding 12)
+    //
+    // Every payload in this suite is a JPEG. A phone shares HEIC out of its camera roll,
+    // PNG and JPEG off the web, photographs taken sideways, and GIFs — and this file's
+    // `probe` reads a container's HEADER, which is precisely the part of a file that
+    // differs between them. The list is `FixtureImages.PhoneFormat`, shared with the
+    // drain's sweep in AtelierIngestion so the two ends of the handoff cover the same
+    // formats by construction.
+
+    /// Run `body` with a format's bytes, or record a LOUD skip when this host cannot
+    /// encode them (HEIC). The convention it replaces — `guard let … else { return }` —
+    /// is a test that passes without running.
+    private func withPayload(
+        _ format: FixtureImages.PhoneFormat, _ body: (Data) throws -> Void
+    ) throws {
+        guard let bytes = try? format.bytes() else {
+            withKnownIssue(
+                "\(format) could not be encoded on this host, so the case did not run",
+                isIntermittent: true
+            ) {
+                Issue.record("no \(format) encoder available")
+            }
+            return
+        }
+        try body(bytes)
+    }
+
+    @Test(
+        "every format a phone shares exports with its header's dimensions and MIME",
+        arguments: FixtureImages.PhoneFormat.allCases)
+    func everyFormatExports(format: FixtureImages.PhoneFormat) throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+
+        try withPayload(format) { bytes in
+            let record = try rig.captureImage(bytes: bytes, url: "https://example.com/a")
+
+            let summary = try rig.export()
+
+            #expect(summary.captures == 1)
+            #expect(summary.files == 1)
+            #expect(summary.skipped == 0)
+            let asset = try #require(try rig.manifest().assets.first)
+            #expect(asset.mimeType == format.mimeType)
+            #expect(asset.fileSize == bytes.count)
+            #expect(asset.blobHash
+                == (try ContentHasher.hash(contentsOf: rig.payloadURL(record))))
+
+            // **The STORED dimensions, not the display ones**, and it is worth saying why
+            // that is right rather than a bug: `probe` reads
+            // `kCGImagePropertyPixelWidth` out of the header without decoding, and the
+            // reader's only requirement is that both are positive. The file that crosses
+            // is the ORIGINAL container, EXIF and all, so the Mac re-ingests it through
+            // the same pipeline the phone used and its asset gets the transformed size.
+            // The manifest's numbers are a completeness check, not the final geometry.
+            #expect(asset.width == format.storedSize.width)
+            #expect(asset.height == format.storedSize.height)
+
+            // The bytes in the folder are the bytes from the inbox, unchanged.
+            let file = try #require(try rig.manifest().collections.first?.items.first?.file)
+            #expect(try Data(contentsOf: rig.root.appendingPathComponent(file)) == bytes)
+        }
+    }
+
+    /// The sweep from the phone's other state: the capture has been through the local
+    /// pipeline and is parked under `ingested/`. Same formats, same answers — the export
+    /// reads the original payload either way.
+    @Test(
+        "every format exports from ingested/ as it does from the pending set",
+        arguments: FixtureImages.PhoneFormat.allCases)
+    func everyFormatExportsAfterRetention(format: FixtureImages.PhoneFormat) throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+
+        try withPayload(format) { bytes in
+            let record = try rig.captureImage(bytes: bytes, url: "https://example.com/a")
+            try rig.retain(record)
+
+            let summary = try rig.export()
+
+            #expect(summary.captures == 1)
+            #expect(summary.exported == [record.id])
+            let asset = try #require(try rig.manifest().assets.first)
+            #expect(asset.mimeType == format.mimeType)
+            #expect(asset.width == format.storedSize.width)
+        }
+    }
+
+    /// The GIF's fate at this end, stated: the archive copies the container, so every
+    /// frame crosses. Nothing on the phone re-encodes it, and the Mac is what decides
+    /// what to keep of it.
+    @Test("an animated GIF crosses with all of its frames")
+    func animatedGIFCrossesWhole() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let bytes = try FixtureImages.animatedGIF(width: 40, height: 30, frames: 3)
+        _ = try rig.captureImage(bytes: bytes, url: "https://example.com/a")
+
+        _ = try rig.export()
+
+        let file = try #require(try rig.manifest().collections.first?.items.first?.file)
+        let copied = rig.root.appendingPathComponent(file)
+        #expect(copied.pathExtension == "gif")
+        let source = try #require(
+            CGImageSourceCreateWithURL(copied as CFURL, nil))
+        #expect(CGImageSourceGetCount(source) == 3)
     }
 
     // MARK: - Sharing and skipping
