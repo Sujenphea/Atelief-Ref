@@ -44,20 +44,37 @@ final class CollectionNode: NSObject {
 
     /// Build the root→leaf node tree from the flat folder list, Unsorted pinned
     /// first among the roots, each sibling group in manual order.
+    ///
+    /// **A PROJECTION of ``BrowseCollectionTree/tree(_:unsortedID:)``, not a fourth
+    /// builder (099 · 5A).** It used to group by parent and recurse itself, which made
+    /// it the last of four spellings of the same walk and — with `FolderNode.tree`,
+    /// now deleted — one of the two that carried **no cycle guard**. Two rows sharing
+    /// an id, one of them naming the other as its parent, sent this function into
+    /// unbounded recursion; the package's builder drops a node already on the current
+    /// path and returns. `CollectionTargets.destinationTree` had that guard and this
+    /// one did not, for no reason anybody chose. See
+    /// `CollectionTargetsTests.sidebarTreeIsCycleSafe`.
+    ///
+    /// What stays here is the projection and only the projection: `CollectionNode` is
+    /// an `NSObject` with id-based equality, because `NSOutlineView` diffs by identity
+    /// and must keep expansion state across a reload — a value type cannot do that job,
+    /// and a `Sendable` package struct must not be an `NSObject`. So the ORDER is the
+    /// package's and the IDENTITY is AppKit's, which is the split that lets both be
+    /// right.
+    ///
+    /// The Unsorted pin is no longer applied here either: ``BrowseCollectionTree/roots(_:unsortedID:)``
+    /// pins it while ordering the roots, so the post-hoc `remove`/`insert` this used to
+    /// do would have been a second chance to disagree.
     static func tree(from folders: [Collection], unsortedID: UUID) -> [CollectionNode] {
-        let byParent = Dictionary(grouping: folders, by: { $0.parentCollectionID })
-        func nodes(under parent: UUID?) -> [CollectionNode] {
-            (byParent[parent] ?? [])
-                .sorted(by: BrowseCollectionTree.byManualOrder)
-                .map { CollectionNode(
-                    id: $0.id, name: $0.name, isUnsorted: $0.id == unsortedID,
-                    children: nodes(under: $0.id)) }
+        func project(_ nodes: [BrowseCollectionNode]) -> [CollectionNode] {
+            nodes.map {
+                CollectionNode(
+                    id: $0.collection.id, name: $0.collection.name,
+                    isUnsorted: $0.collection.id == unsortedID,
+                    children: project($0.children))
+            }
         }
-        var roots = nodes(under: nil)
-        if let i = roots.firstIndex(where: { $0.isUnsorted }), i != 0 {
-            roots.insert(roots.remove(at: i), at: 0)
-        }
-        return roots
+        return project(BrowseCollectionTree.tree(folders, unsortedID: unsortedID))
     }
 }
 

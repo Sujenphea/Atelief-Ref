@@ -1,4 +1,4 @@
-# 458 — the gate tells its two arms apart
+# 464 — the gate tells its two arms apart
 
 P0 ran `./scripts/verify.sh full` — the first time anything on this branch had — and
 found the Extension stage red. It had been red since **2026-08-28**, and nothing in the

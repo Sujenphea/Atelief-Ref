@@ -1,4 +1,4 @@
-# 457 — the packages get their foundations
+# 463 — the packages get their foundations
 
 [099 · P0](../.docs/099-mac-backlog-plan.md#p0--package-foundations) — the first phase of
 the Mac backlog, on `feat/mac-backlog` in its own worktree. Six behavioural items across
@@ -302,7 +302,7 @@ aged past its 14-day window on **2026-08-28**, three days before this branch was
 had seen it.
 
 The phase stopped and reported rather than committing, which is what the plan's rules say
-to do. The user chose to split the two signals; that is [458](458-the-gate-tells-its-two-arms-apart.md),
+to do. The user chose to split the two signals; that is [464](464-the-gate-tells-its-two-arms-apart.md),
 committed immediately before this entry. Staleness is now exit 2 and a `⚠` stage; real
 drift is still exit 1 and still fatal. The fixture is still stale and the reminder still
 prints — what changed is that a calendar fact no longer masks a drift failure.

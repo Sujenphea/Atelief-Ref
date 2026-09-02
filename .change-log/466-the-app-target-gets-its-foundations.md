@@ -1,7 +1,7 @@
-# 460 — the app target gets its foundations
+# 466 — the app target gets its foundations
 
 [099 · P1](../.docs/099-mac-backlog-plan.md#p1--app-target-foundations) — the app
-half of what [457](457-the-packages-get-their-foundations.md) built in the packages.
+half of what [463](463-the-packages-get-their-foundations.md) built in the packages.
 Seven items, `AtelierRefs/` plus the two package files the items themselves name and
 `scripts/verify.sh`. None of 098 · P4's four files were touched.
 
@@ -59,7 +59,7 @@ fails at the one build that ships. Adding three dozen guards without adding that
 would have been adding an untested claim.
 
 `App target (Release)` is a plain `run_stage`, not the `run_warnable_stage`
-[458](458-the-gate-tells-its-two-arms-apart.md) added: a Release build failure is a
+[464](464-the-gate-tells-its-two-arms-apart.md) added: a Release build failure is a
 real failure, and the warn opt-in stays the Extension stage's alone. Build only, never
 test — the test targets are debug-configured and there is nothing to run; what is
 checked is that the app's sources still form a program without `DEBUG`. It is a
@@ -68,7 +68,7 @@ compile is not that. `ci.yml` was left alone (9C).
 
 ## 2A — the export bridge is filled, and both bridges are made to agree
 
-457 closed by saying so plainly: `AtelierExport.TextStyle` had gained
+463 closed by saying so plainly: `AtelierExport.TextStyle` had gained
 `fontFamily` / `weight` / `alignment`, `MoodboardRenderer` honoured them, and **no
 bridge filled them**, so every export was still Helvetica regular flush left and
 byte-identical to before the renderer changed. This phase filled
@@ -409,7 +409,7 @@ Two lines fix it, and they are the lesson the neighbouring file had already lear
 
 **This is outside P1's items and is declared as such.** It was fixed rather than
 reported-and-left because rule 1 requires the gate at exit 0 and the alternative was
-re-running until it passed, which is how a flaky gate becomes a gate nobody reads (458,
+re-running until it passed, which is how a flaky gate becomes a gate nobody reads (464,
 in its own words). Two tests pin it: one constructs three colours with exactly equal
 counts given in descending hex order, so a stable sort of the input would give the wrong
 answer and only a real tie-break gives the right one; the other feeds the same pixels in
@@ -442,7 +442,7 @@ All 13 stages passed, 1 with a warning above.
 Exit 0. **Thirteen stages, not twelve** — `App target (Release)` is this phase's, and it
 is the one that compiles the other side of every `#if DEBUG` the phase added. `App
 target` at TEST SUCCEEDED over the whole app suite. `⚠ Extension` is the stale Instagram
-fixture 458 split out; it is not this phase's, and no code here touches `extension/`.
+fixture 464 split out; it is not this phase's, and no code here touches `extension/`.
 
 The run above is the SECOND. The first is written up under "the gate found a flake"
 above: `✗ AtelierIngestion`, on a nondeterminism older than this branch.

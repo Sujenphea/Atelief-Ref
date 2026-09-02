@@ -346,10 +346,11 @@ Effort M.*
 
 **Verify:** `verify.sh` full.
 
-## P7 — rebase onto 098 · P4, and the tree that lives in Browse
+## P7 — rebase onto 098 · P4, and the tree that lives in Browse · **done** ([467](../.change-log/467-four-builders-and-the-numbers-that-collided.md))
 
-*Decision 5A. Runs when 098 · P4 has landed on `feat/ios-ingest`; if it has not by the
-end of P6, this phase waits and the user decides. Effort S.*
+*Decision 5A. Scheduled after P6; the user resequenced it to run after P1 (issue 19A),
+because 098 closed and every later phase would otherwise have been written against a tree
+32 commits stale. Effort S.*
 
 - `git rebase feat/ios-ingest`; conflicts resolved; changelog numbers renumbered
   where the two sessions collided; `verify.sh` full on the result.
@@ -359,7 +360,15 @@ end of P6, this phase waits and the user decides. Effort S.*
   confirmed to read `MasonryColumns`' constants (P4's work); if P4 left a copy, it
   goes.
 
-**Verify:** `verify.sh` full.
+**Done:** rebased onto `395e471`, three conflicts (`AtelierArchive/Package.swift`,
+`AppServices.swift`, the phone's `LibraryStore.swift`). 098 · P4 had already collapsed
+`CollectionTargets.destinationTree` into `BrowseCollectionTree.tree` and left no duplicate
+of `MasonryColumns`' constants, so 5A's remaining half was the two builders in the app
+target. **P2's brief is rewritten** — see 467's *P2's ground truth* section: the macOS
+target does not exist, 098's `-seed-fixture-library` shape replaces the planned
+`-ui-test-seed <name>`, the Mac has **zero** accessibility identifiers to assert on, and
+098's gate is `ci.yml`-only so P2's `verify.sh` stage is neither superseded nor in
+conflict.
 
 ## P8 — the detail page's post: the pile, the chip, the Post row
 
@@ -506,16 +515,16 @@ supplied. 12A's rule applies to each. Effort M each.*
 
 | Phase | State | Changelog |
 |---|---|---|
-| P0 | done | [457](../.change-log/457-the-packages-get-their-foundations.md) |
-| 17A | done — the gate's two arms split | [458](../.change-log/458-the-gate-tells-its-two-arms-apart.md) |
-| P0b | done — 20k warm 1,535 → 59 ms, cold 1,676 → 303 ms, 41 MB resident | [459](../.change-log/459-the-corpus-goes-resident.md) |
-| P1 | done — 16A's reaper half reported, not built | [460](../.change-log/460-the-app-target-gets-its-foundations.md) |
-| P2 | not started | — |
+| P0 | done | [463](../.change-log/463-the-packages-get-their-foundations.md) |
+| 17A | done — the gate's two arms split | [464](../.change-log/464-the-gate-tells-its-two-arms-apart.md) |
+| P0b | done — 20k warm 1,535 → 59 ms, cold 1,676 → 303 ms, 41 MB resident | [465](../.change-log/465-the-corpus-goes-resident.md) |
+| P1 | done — 16A's reaper half reported, not built | [466](../.change-log/466-the-app-target-gets-its-foundations.md) |
+| P2 | not started — **brief rewritten by P7**, see [467](../.change-log/467-four-builders-and-the-numbers-that-collided.md) | — |
 | P3 | not started | — |
 | P4 | not started | — |
 | P5 | not started | — |
 | P6 | not started | — |
-| P7 | waits for 098 · P4 | — |
+| P7 | done — rebased onto `395e471`; 5A closed; 457–460 → 463–466 | [467](../.change-log/467-four-builders-and-the-numbers-that-collided.md) |
 | P8 | not started | — |
 | P9 | not started | — |
 | P10 | not started | — |
@@ -546,13 +555,14 @@ exited 1 anyway, and had done since August. P0 stopped and reported rather than 
 **Issue 17, decided by the user: split the signals (17A).** Drift is exit 1 and still
 fatal; staleness is exit 2 and renders as a `⚠` stage. The opt-in is per stage — only
 `Extension` takes it, so no other stage can have a real failure downgraded. The window is
-still 14 days and the reminder still prints. [458](../.change-log/458-the-gate-tells-its-two-arms-apart.md)
+still 14 days and the reminder still prints. [464](../.change-log/464-the-gate-tells-its-two-arms-apart.md)
 carries it and states the cost plainly: the failure mode moved from "a gate nobody can
 pass" to "a warning nobody reads", and only the second is survivable.
 
 **The gate for every phase from here is `verify.sh full` at exit 0**, which now means
-twelve stages passed, possibly with warnings named in the summary. A phase still does not
-commit without it.
+**thirteen** stages passed, possibly with warnings named in the summary — P1 added
+`App target (Release)` (8A), so `fast` is eleven and `full` is thirteen. A phase still
+does not commit without it.
 
 Two things this left for later. Re-capturing the Instagram fixture is still worth doing on
 its own merits — the fixture is genuinely stale and live sweeps may genuinely be broken —

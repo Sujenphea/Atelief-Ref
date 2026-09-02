@@ -18,6 +18,12 @@
 //  named `CollectionTargets.galleryRoots` name `BrowseCollectionTree.roots` instead;
 //  `destinationTree` keeps its name because it still exists, as a one-line forward.
 //
+//  **099 · 5A finished the count at one.** The two builders 098 left standing —
+//  `FolderNode.tree`, dead, and `CollectionNode.tree`, the sidebar's, neither with a
+//  cycle guard — are gone and forwarded respectively. The last section below asserts
+//  the sidebar's projection against the destination tree node for node, and feeds it
+//  the corrupt cycle that used to recurse without bound.
+//
 
 import AtelierBrowse
 import AtelierCore
@@ -317,5 +323,80 @@ struct CollectionTargetsTests {
         // coordinator treats it as a reorder, not a reparent.
         #expect(CollectionTargets.canReparent(
             child.id, into: parent.id, folders: [parent, child], unsortedID: unsortedID))
+    }
+
+    // MARK: - The sidebar's tree is the same tree (099 · 5A)
+    //
+    // `CollectionNode.tree` is the `NSOutlineView`'s node tree. Until 5A it grouped by
+    // parent and recursed on its own — the last of FOUR spellings of this walk, and one
+    // of the two that had no cycle guard. It is a projection of
+    // ``BrowseCollectionTree/tree(_:unsortedID:)`` now, so these assert the projection
+    // rather than a re-implementation: same order, same guard.
+
+    @Test("the sidebar tree is the destination tree, node for node")
+    func sidebarTreeMatchesDestinationTree() {
+        // The two Mac renderings of the one ordering. If they could disagree, the
+        // sidebar and the Move menu would list the same library differently — which is
+        // the drift 027 · G2 named and 5A closed by construction.
+        let unsorted = collection("Unsorted", id: unsortedID, sortIndex: 9)
+        let refs = collection("Refs")
+        let type = collection("Type", parent: refs.id)
+        let serif = collection("Serif", parent: type.id, sortIndex: 1)
+        let sans = collection("Sans", parent: type.id)
+        let folders = [serif, unsorted, type, sans, refs]
+
+        let sidebar = CollectionNode.tree(from: folders, unsortedID: unsortedID)
+        let destinations = CollectionTargets.destinationTree(
+            folders: folders, unsortedID: unsortedID)
+
+        func names(_ nodes: [CollectionNode]) -> [String] {
+            nodes.flatMap { [$0.name] + names($0.children) }
+        }
+        func names(_ nodes: [DestinationTreeNode]) -> [String] {
+            nodes.flatMap { [$0.collection.name] + names($0.children) }
+        }
+        #expect(names(sidebar) == names(destinations))
+        #expect(names(sidebar) == ["Unsorted", "Refs", "Type", "Sans", "Serif"])
+        // Unsorted is pinned by the package's `roots`, not by a post-hoc move here —
+        // it sorts LAST on every other rule and is still first.
+        #expect(sidebar.first?.isUnsorted == true)
+    }
+
+    @Test("the sidebar tree terminates on a corrupt parent cycle")
+    func sidebarTreeIsCycleSafe() {
+        // Two rows naming each other as parent. Neither is a root, so the tree is
+        // empty — but building it must RETURN. This shape terminated even before 5A;
+        // it is here because it is the cycle a reader pictures, and pinning it stops
+        // the next reader from thinking it is the dangerous one.
+        let a = collection("A", id: uuid(101), parent: uuid(102))
+        let b = collection("B", id: uuid(102), parent: uuid(101))
+        #expect(CollectionNode.tree(from: [a, b], unsortedID: unsortedID).isEmpty)
+
+        // THIS is the one the guard is for: a back edge reachable from a root. `C` is
+        // the root's child, `D` is C's child, and a second row spells C again with D as
+        // its parent — so descending reaches C, then D, then C, forever. Measured
+        // against the pre-5A walk this recursed without bound (2,000 levels deep and
+        // still going, in a harness that capped it); in the test process it would take
+        // the stack and the whole run with it. The package's guard drops a node already
+        // on the current path, so the descent stops at the repeat.
+        let root = collection("Unsorted", id: unsortedID)
+        let c = collection("C", id: uuid(103), parent: unsortedID)
+        let d = collection("D", id: uuid(104), parent: uuid(103))
+        let backEdge = collection("C again", id: uuid(103), parent: uuid(104))
+
+        let tree = CollectionNode.tree(
+            from: [root, c, d, backEdge], unsortedID: unsortedID)
+
+        // It returned at all — that is the assertion. The shape it returned is the
+        // path down to the repeat: Unsorted → C → D, and D's "child" C is dropped.
+        #expect(tree.count == 1)
+        #expect(tree[0].children.map(\.name) == ["C"])
+        #expect(tree[0].children[0].children.map(\.name) == ["D"])
+        #expect(tree[0].children[0].children[0].children.isEmpty)
+    }
+
+    /// A stable id, so a cycle fixture reads the same on every run.
+    private func uuid(_ n: Int) -> UUID {
+        UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", n))!
     }
 }

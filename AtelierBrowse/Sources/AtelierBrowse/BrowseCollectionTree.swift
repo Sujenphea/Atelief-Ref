@@ -5,13 +5,20 @@
 // navigation container, it is a picker — so on the phone the grid is the root, its
 // title is the switcher, and tapping the title presents THIS.
 //
-// The ordering is not re-decided here. It is `CollectionTargets`'
-// (`CollectionTargets.swift:19`, `:35`, `:58`): Unsorted pinned first, then siblings by
-// persisted `sortIndex` with `(name, id)` as a stable tiebreak, recursively, cycle-safe.
-// Restated rather than imported because that file belongs to the macOS app target — see
-// the manifest — and the tests below assert the RULES (Unsorted first, sortIndex before
-// name, a cycle terminates) rather than a fixture's spelling, so a drift has to be a
-// disagreement about the rule rather than about a name.
+// The ordering is not re-decided here. It was `CollectionTargets`': Unsorted pinned
+// first, then siblings by persisted `sortIndex` with `(name, id)` as a stable tiebreak,
+// recursively, cycle-safe. Restated here rather than imported because that file belonged
+// to the macOS app target, which 092 · S5 could not link.
+//
+// **That reason expired, and this is now the only place the walk is written (099 · 5A).**
+// The Mac links this package as of 098 · P4: `CollectionTargets.destinationTree` became a
+// one-line forward to ``BrowseCollectionTree/tree(_:unsortedID:)`` and `DestinationTreeNode`
+// an alias for ``BrowseCollectionNode``; 099 · 5A deleted the dead `FolderNode.tree` and
+// turned the sidebar's `CollectionNode.tree` into a projection of this one. Four spellings,
+// two of them without a cycle guard, are one spelling with the guard. The tests below still
+// assert the RULES (Unsorted first, sortIndex before name, a cycle terminates) rather than a
+// fixture's, and `CollectionTargetsTests` asserts the same rules through the Mac's two
+// projections — so a drift would have to be a disagreement about the rule.
 
 import AtelierCore
 import Foundation

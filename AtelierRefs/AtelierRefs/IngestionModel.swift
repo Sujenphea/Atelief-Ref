@@ -22,32 +22,15 @@ import Combine
 import OSLog
 import SwiftUI
 
-/// A node in the display folder tree, computed from the flat `[Collection]`.
-/// `children == nil` marks a leaf (hides the `OutlineGroup` disclosure).
-struct FolderNode: Identifiable, Hashable {
-    let id: UUID
-    let name: String
-    var children: [FolderNode]?
-
-    /// Build the root-to-leaf tree from a flat collection list. Roots have a
-    /// `nil` parent; children are grouped by `parentCollectionID`, ordered by
-    /// name. Empty child sets collapse to `nil` so leaves show no triangle.
-    static func tree(from collections: [Collection]) -> [FolderNode] {
-        let byParent = Dictionary(grouping: collections, by: { $0.parentCollectionID })
-        func nodes(under parent: UUID?) -> [FolderNode]? {
-            guard let kids = byParent[parent], !kids.isEmpty else { return nil }
-            return kids
-                // Manual order (043 · 2B): persisted `sortIndex`, tie-broken by
-                // `(name, id)` so equal indices (unmigrated fixtures) stay stable.
-                .sorted {
-                    ($0.sortIndex, $0.name, $0.id.uuidString)
-                        < ($1.sortIndex, $1.name, $1.id.uuidString)
-                }
-                .map { FolderNode(id: $0.id, name: $0.name, children: nodes(under: $0.id)) }
-        }
-        return nodes(under: nil) ?? []
-    }
-}
+// `FolderNode` and `IngestionModel.folderTree` were deleted here (099 · 5A). They
+// were the SwiftUI `OutlineGroup` sidebar's tree, and that sidebar became an
+// `NSOutlineView` at 208 — after which nothing read `folderTree` and nothing
+// named `FolderNode` outside its own declaration. A fourth spelling of "group the
+// flat `[Collection]` by parent and sort each sibling group" is not free even when
+// nothing calls it: it was the ONE of the four that ordered roots without pinning
+// Unsorted, so anyone who revived it would have got a different sidebar from every
+// other surface, and it had no cycle guard. The three live spellings are now one —
+// see ``CollectionNode/tree(from:unsortedID:)``.
 
 /// The `@MainActor` view model behind ``LibraryView``: owns the Library
 /// (`MediaStore` + `AppServices` + `IngestCoordinator`), the folder tree, the
@@ -58,7 +41,10 @@ final class IngestionModel: ObservableObject {
     // MARK: - Folder tree
 
     /// Every collection (folder) in the Library, flat. The display tree is
-    /// derived via ``folderTree``.
+    /// derived from it by ``CollectionNode/tree(from:unsortedID:)`` (the sidebar)
+    /// and ``CollectionTargets/destinationTree(folders:unsortedID:)`` (every
+    /// destination list) — both of which are ``BrowseCollectionTree/tree(_:unsortedID:)``
+    /// since 099 · 5A.
     @Published private(set) var folders: [Collection] = []
     /// The folder imports/browsing target. Defaults to the protected Unsorted
     /// folder (guaranteed by the v2 migration).
@@ -393,9 +379,6 @@ final class IngestionModel: ObservableObject {
 
     /// The protected default import target (available before the Library opens).
     var unsortedFolderID: UUID { Collection.unsortedID }
-
-    /// The display tree derived from ``folders``.
-    var folderTree: [FolderNode] { FolderNode.tree(from: folders) }
 
     /// Look up a folder's name (for menus / titles).
     func name(for id: UUID) -> String {
@@ -1828,7 +1811,7 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Folder actions
 
-    /// Reload the flat folder list (drives ``folderTree``).
+    /// Reload the flat folder list (drives every tree derived from ``folders``).
     func refreshFolders() async {
         guard let services else { return }
         do {

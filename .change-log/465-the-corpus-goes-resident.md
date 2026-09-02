@@ -1,7 +1,7 @@
-# 459 — the corpus goes resident
+# 465 — the corpus goes resident
 
 [099 · P0b](../.docs/099-mac-backlog-plan.md#p0b--the-semantic-corpus-cache-conditional-on-p0s-number)
-— the phase [457](457-the-packages-get-their-foundations.md)'s measurement gate scheduled.
+— the phase [463](463-the-packages-get-their-foundations.md)'s measurement gate scheduled.
 P0 timed `semanticSearchAssets` at **1,547 ms warm over 20,000 vectors**, fifteen times the
 ~100 ms the plan set as the point where a cache earns its memory, and dead linear at ~77 µs
 per vector. So: a `Sendable` resident corpus in `AtelierCore`, keyed by model version,
@@ -13,7 +13,7 @@ with the same signature and does not know anything changed.
 ## The numbers, before and after
 
 Debug build, one machine, `ATELIER_SCALE_N=<N> swift test --filter ScaleHarness`. **Before**
-is the tree at `d9e149e` re-measured in this session; it reproduced 457's independent run to
+is the tree at `0632320` re-measured in this session; it reproduced 463's independent run to
 within 3% at every N, so the baseline is not in question. **After** is the median of seven
 runs per N, because the new numbers are not as stable as the old ones — see the last section.
 
@@ -268,7 +268,7 @@ All 12 stages passed, 1 with a warning above.
 ```
 
 Exit 0, `App target` at **TEST SUCCEEDED**. `⚠ Extension` is
-[458](458-the-gate-tells-its-two-arms-apart.md)'s stale Instagram fixture, exit 2 — not a
+[464](464-the-gate-tells-its-two-arms-apart.md)'s stale Instagram fixture, exit 2 — not a
 failure and not this phase's.
 
 **It took three runs, and neither of the first two failed on anything this phase wrote.**
