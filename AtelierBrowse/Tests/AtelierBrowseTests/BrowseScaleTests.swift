@@ -71,6 +71,88 @@ struct BrowseScaleTests {
         print("  14A: read \(items.count) items in \(String(format: "%.3f", elapsed))s")
     }
 
+    /// The `.newest` variant of the same read, which the `.manual` case above does not
+    /// cover (098 · finding 13).
+    ///
+    /// `.manual` orders by `manual_order, id`, and `collection_item` has an index that
+    /// covers exactly that — so the measurement above is of a read SQLite can satisfy by
+    /// walking an index in order. `.newest` orders by `asset.created_at DESC, asset.id
+    /// DESC`, which is a column on the JOINED table: SQLite materialises the join and
+    /// sorts it in a temporary B-tree. That is a different shape and a different cost
+    /// curve, it is the mode a user gets by setting one on the Mac, and nothing had ever
+    /// timed it.
+    @Test("the newest-order read of a five-thousand-item collection stays one pass")
+    func largeCollectionInNewestOrder() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+        try await Self.seed(fixture, count: Self.itemCount)
+        try await fixture.services.setCollectionSortMode(
+            .newest, for: BrowseLibrary.rootCollectionID)
+
+        let started = ContinuousClock.now
+        let items = try await fixture.library.items(in: BrowseLibrary.rootCollectionID)
+        let elapsed = Self.seconds(since: started)
+
+        #expect(items.count == Self.itemCount)
+        // Descending capture time, which is the order `seed` inserted them in reverse of
+        // — so a read that quietly fell back to manual order would come back backwards.
+        let dates = items.map(\.asset.createdAt)
+        #expect(dates == dates.sorted(by: >))
+        print("  13: read \(items.count) items in .newest order in "
+            + "\(String(format: "%.3f", elapsed))s")
+        #expect(
+            elapsed < Self.readBudget,
+            """
+            reading \(Self.itemCount) items in .newest order took \(elapsed)s, over the \
+            \(Self.readBudget)s ceiling — the sort has probably left SQLite
+            """)
+    }
+
+    /// The read the item screen actually makes, against the read it used to make.
+    ///
+    /// `ItemScreen` resolved a tapped tile with `items(in:).first { }` — the whole join,
+    /// measured at 0.293 s for 5,000 rows in `.change-log/450`, to keep one row. This is
+    /// the ceiling on the replacement, and it is stated as a FRACTION of the collection
+    /// read taken on the same machine in the same run rather than as an absolute: an
+    /// absolute number on a CI runner of unknown load says nothing, while "one row must
+    /// cost a small part of five thousand" is the actual claim and it survives a slow
+    /// afternoon.
+    @Test("resolving one item costs a small fraction of reading the collection")
+    func oneItemDoesNotReadTheCollection() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+        try await Self.seed(fixture, count: Self.itemCount)
+
+        // Warm, for the same reason the concurrency test warms: the first read of a fresh
+        // pool pays page-cache misses that have nothing to do with either shape.
+        let all = try await fixture.library.items(in: BrowseLibrary.rootCollectionID)
+        let wanted = try #require(all.last).item.id
+
+        let wholeStart = ContinuousClock.now
+        _ = try await fixture.library.items(in: BrowseLibrary.rootCollectionID)
+        let whole = Self.seconds(since: wholeStart)
+
+        // A hundred of them, so the number is not one sample of a sub-millisecond event.
+        let oneStart = ContinuousClock.now
+        for _ in 0..<100 {
+            _ = try await fixture.library.item(wanted, in: BrowseLibrary.rootCollectionID)
+        }
+        let hundred = Self.seconds(since: oneStart)
+        let one = hundred / 100
+
+        print("  13: one item \(String(format: "%.4f", one))s "
+            + "against \(String(format: "%.3f", whole))s for \(all.count)")
+        #expect(
+            one < whole / 20,
+            """
+            one item cost \(one)s against \(whole)s for the whole collection — the \
+            single-row read is not using the primary key
+            """)
+        // And an absolute floor under it too, generous by two orders of magnitude, so the
+        // ratio cannot pass merely because the collection read also got slow.
+        #expect(one < 0.05, "one item took \(one)s — over the 50 ms ceiling")
+    }
+
     /// The second half of the same question. A screen push loads a collection while the
     /// previous one is still alive — by design, and `LibraryStore`'s header argues for it —
     /// so the cost that matters is not one read but the reads a navigation stack holds at

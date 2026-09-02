@@ -140,6 +140,66 @@ struct MasonryColumnsTests {
         #expect(MasonryColumns.phoneColumns(isLandscape: true) == 3)
     }
 
+    // MARK: - What the partition costs (098 · finding 14)
+
+    /// `MasonryGridView.body` calls ``MasonryColumns/distribute(_:columns:)`` INLINE, so
+    /// the partition is re-run on every body evaluation of the grid — including the ones
+    /// an unconditional `@Observable` store write triggers when nothing has changed.
+    ///
+    /// Memoising it in view state was considered and refused: the memo's key would be the
+    /// array itself, which is the same O(n) walk the partition is, plus a retained copy.
+    /// The honest alternative was to find out what the walk costs, and this is that.
+    /// A ceiling rather than a target — an order of magnitude above what this machine
+    /// does — so only a change of shape trips it: an O(n log n) sort appearing inside the
+    /// decomposition, or a per-element allocation that is not the element itself.
+    ///
+    /// 20,000 is the review's number and it is far past any real collection; if the walk
+    /// is cheap there it is cheap on Unsorted.
+    @Test("partitioning twenty thousand items stays an O(n) walk")
+    func distributionAtTwentyThousand() {
+        let items = Array(0 ..< 20_000)
+
+        // Ten evaluations, because ONE body evaluation is not the unit of interest — a
+        // reload that fires three of them is (098 · finding 14), and a single sample of a
+        // sub-millisecond event is noise.
+        let started = ContinuousClock.now
+        var total = 0
+        for _ in 0 ..< 10 {
+            let columns = MasonryColumns.distribute(items, columns: 2)
+            total += columns.reduce(0) { $0 + $1.count }
+        }
+        let elapsed = Self.seconds(since: started)
+
+        #expect(total == 200_000)
+        print("  14: 10 partitions of 20,000 items in "
+            + "\(String(format: "%.4f", elapsed))s "
+            + "(\(String(format: "%.4f", elapsed / 10))s each)")
+        #expect(
+            elapsed < 1.0,
+            """
+            ten partitions of 20,000 items took \(elapsed)s — the decomposition has \
+            gained something worse than a linear walk
+            """)
+    }
+
+    @Test("three columns cost the same walk as two")
+    func distributionIsIndependentOfColumnCount() {
+        // The partition is `C` strides over `n`, so it is O(n) whatever `C` is — the
+        // landscape grid must not be measurably worse than the portrait one.
+        let items = Array(0 ..< 20_000)
+        for columns in [2, 3] {
+            let started = ContinuousClock.now
+            _ = MasonryColumns.distribute(items, columns: columns)
+            let elapsed = Self.seconds(since: started)
+            #expect(elapsed < 1.0, "\(columns) columns took \(elapsed)s")
+        }
+    }
+
+    private static func seconds(since start: ContinuousClock.Instant) -> TimeInterval {
+        let (s, attoseconds) = start.duration(to: ContinuousClock.now).components
+        return TimeInterval(s) + TimeInterval(attoseconds) / 1e18
+    }
+
     // MARK: - Fixtures
 
     private func asset(width: Int?, height: Int?) -> Asset {

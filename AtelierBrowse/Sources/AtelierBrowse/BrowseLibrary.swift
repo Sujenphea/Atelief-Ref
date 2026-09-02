@@ -35,11 +35,6 @@ public struct BrowseLibrary: Sendable {
     /// this type; the read methods below are the whole API.
     private let services: AppServices
 
-    /// Open (or create, and migrate) the library rooted at `root`.
-    public init(root: URL) throws {
-        try self.init(root: root, services: AppServices.open(libraryRoot: root))
-    }
-
     /// Compose over an already-open `AppServices` — how the tests drive this without
     /// re-opening a pool over a library they just seeded.
     public init(root: URL, services: AppServices) {
@@ -67,6 +62,76 @@ public struct BrowseLibrary: Sendable {
     /// (`NavModel.swift:51`–`:53`) — is a second mechanism and a preference the phone
     /// has not yet earned (093 § 2).
     public static let rootCollectionID = Collection.unsortedID
+
+    // MARK: - One screen
+
+    /// Everything one grid screen needs, from ONE read of the collection.
+    ///
+    /// The collection itself is in here because the screen needs its name AND because
+    /// the items read needs its `sortMode`; see ``BrowseLibrary/feed(for:)`` for why
+    /// that makes it the one read that cannot be concurrent with the others.
+    public struct Feed: Sendable, Equatable {
+        public let collection: Collection
+        /// In the collection's own persisted order, archived items excluded.
+        public let items: [CollectionItemDetail]
+        /// Direct children, in manual order.
+        public let subcollections: [Collection]
+
+        public init(
+            collection: Collection,
+            items: [CollectionItemDetail],
+            subcollections: [Collection]
+        ) {
+            self.collection = collection
+            self.items = items
+            self.subcollections = subcollections
+        }
+    }
+
+    /// One screen's contents: the collection, its items and its direct children.
+    ///
+    /// **One collection read, not two** (098 · finding 13). The screen used to ask this
+    /// type three questions concurrently — `collection(id:)`, `items(in:)`,
+    /// `subcollections(of:)` — and `items(in:)` opened with a `getCollection` of its own
+    /// to find the sort mode. So every reload read the collection row twice, once for a
+    /// name and once for an enum, and the second read was invisible at the call site.
+    ///
+    /// **The shape is a dependency, not a preference.** The order the items come back in
+    /// is a property OF the collection (007 · G4 — the Mac writes it and the phone must
+    /// not override it), so the sort mode has to be in hand before the items request can
+    /// be built. What CAN overlap still does: once the collection is read, the items and
+    /// the children go out together and the latency is the slower one rather than their
+    /// sum (009 · 16A). Three reads, two of them concurrent, where there were four.
+    ///
+    /// `.notFound` if the collection is absent — which is the screen's error state and
+    /// not an empty grid, because "this folder is gone" and "this folder is empty" are
+    /// different sentences.
+    public func feed(for collectionID: UUID) async throws -> Feed {
+        let collection = try await services.getCollection(id: collectionID)
+        async let itemsRead = services.collectionItems(
+            in: collectionID, sort: collection.sortMode, includeArchived: false)
+        async let childrenRead = services.childCollections(of: collectionID)
+        let (items, children) = try await (itemsRead, childrenRead)
+        return Feed(
+            collection: collection,
+            items: items,
+            subcollections: children.sorted(by: BrowseCollectionTree.byManualOrder))
+    }
+
+    /// ONE membership of a collection, by the pair of ids a navigation value carries;
+    /// `nil` when that collection has no such item, `.notFound` when the collection
+    /// itself is gone.
+    ///
+    /// The detail screen's read. It used to be ``items(in:)`` plus a `first { }`, which
+    /// is the whole P14 join — 0.293 s at 5,000 rows (`.change-log/450`) — to keep one
+    /// row and drop the rest, paid on every tap. Archived items are excluded here for
+    /// the same reason they are excluded from the grid: an item hidden from the
+    /// collection must not still be reachable by deep-linking its id.
+    public func item(_ itemID: UUID, in collectionID: UUID) async throws
+        -> CollectionItemDetail? {
+        try await services.collectionItem(
+            in: collectionID, id: itemID, includeArchived: false)
+    }
 
     // MARK: - Items
 

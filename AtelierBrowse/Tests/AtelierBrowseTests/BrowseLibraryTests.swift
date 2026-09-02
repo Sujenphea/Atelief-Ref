@@ -105,6 +105,176 @@ struct BrowseLibraryTests {
         #expect(detail.source.platform == .web)
     }
 
+    // MARK: - One screen, one collection read (098 · 13)
+
+    @Test("the feed answers exactly what the three separate reads answered")
+    func feedMatchesTheSeparateReads() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        try await fixture.ingest(hashSeed: 1, capturedAt: date(2026, 1, 1))
+        try await fixture.ingest(hashSeed: 2, capturedAt: date(2026, 1, 2))
+        let child = try await fixture.services.createCollection(
+            name: "Concrete", parent: BrowseLibrary.rootCollectionID)
+
+        let feed = try await fixture.library.feed(for: BrowseLibrary.rootCollectionID)
+        #expect(feed.collection
+            == (try await fixture.library.collection(id: BrowseLibrary.rootCollectionID)))
+        #expect(feed.items
+            == (try await fixture.library.items(in: BrowseLibrary.rootCollectionID)))
+        #expect(feed.subcollections.map(\.id) == [child.id])
+    }
+
+    @Test("the feed honours the collection's OWN sort mode, read once")
+    func feedHonoursSortMode() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        // The reason the collection read cannot be concurrent with the items read: the
+        // ORDER is a property of the collection, so the sort mode has to be in hand
+        // before the items request exists. If `feed` ever stopped reading it first this
+        // would come back in manual order.
+        let first = try await fixture.ingest(hashSeed: 1, capturedAt: date(2024, 1, 1))
+        let second = try await fixture.ingest(hashSeed: 2, capturedAt: date(2025, 1, 1))
+        let third = try await fixture.ingest(hashSeed: 3, capturedAt: date(2026, 1, 1))
+
+        #expect(try await fixture.library.feed(for: BrowseLibrary.rootCollectionID)
+            .items.map(\.asset.id) == [first, second, third])
+
+        try await fixture.services.setCollectionSortMode(
+            .newest, for: BrowseLibrary.rootCollectionID)
+        #expect(try await fixture.library.feed(for: BrowseLibrary.rootCollectionID)
+            .items.map(\.asset.id) == [third, second, first])
+    }
+
+    @Test("the feed hides archived items and keeps the collection's name")
+    func feedHidesArchived() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        let made = try await fixture.services.createCollection(name: "Textures")
+        let result = try await fixture.services.ingest(
+            AssetDraft(
+                kind: .image, blobHash: String(format: "%064x", 9), mimeType: "image/jpeg",
+                width: 4, height: 4, fileSize: 1, downloadState: .downloaded),
+            from: SourceDraft(
+                platform: .web, originalURL: "https://example.com/archived",
+                capturedAt: Date()),
+            into: made.id)
+        _ = try await fixture.services.archive([result.asset.id])
+
+        let feed = try await fixture.library.feed(for: made.id)
+        #expect(feed.collection.name == "Textures")
+        #expect(feed.items.isEmpty)
+        #expect(feed.subcollections.isEmpty)
+    }
+
+    @Test("an empty collection is an empty feed, not a throw")
+    func feedOfAnEmptyCollection() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        let made = try await fixture.services.createCollection(name: "Empty")
+        let feed = try await fixture.library.feed(for: made.id)
+        #expect(feed.items.isEmpty)
+        #expect(feed.subcollections.isEmpty)
+        #expect(feed.collection.id == made.id)
+    }
+
+    @Test("a feed for a collection that is gone is a typed not-found")
+    func feedOfAnUnknownCollection() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        await #expect(throws: AtelierError.self) {
+            _ = try await fixture.library.feed(for: UUID())
+        }
+    }
+
+    @Test("subcollections come back in manual order, not the flat list's name order")
+    func feedSubcollectionOrder() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        let parent = try await fixture.services.createCollection(name: "Refs")
+        let zephyr = try await fixture.services.createCollection(
+            name: "Zephyr", parent: parent.id)
+        let alpha = try await fixture.services.createCollection(
+            name: "Alpha", parent: parent.id)
+
+        // Creation order is the manual order; `listCollections` would have sorted these
+        // by name, which is exactly the difference this read exists to preserve.
+        let feed = try await fixture.library.feed(for: parent.id)
+        #expect(feed.subcollections.map(\.id) == [zephyr.id, alpha.id])
+        #expect(feed.subcollections.map(\.id)
+            == (try await fixture.library.subcollections(of: parent.id)).map(\.id))
+    }
+
+    // MARK: - One item
+
+    @Test("one item resolves to the same row the whole feed carries")
+    func itemMatchesTheFeed() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        try await fixture.ingest(hashSeed: 1, capturedAt: date(2026, 1, 1))
+        try await fixture.ingest(hashSeed: 2, capturedAt: date(2026, 1, 2))
+        let feed = try await fixture.library.feed(for: BrowseLibrary.rootCollectionID)
+        let wanted = try #require(feed.items.last)
+
+        let one = try await fixture.library.item(
+            wanted.item.id, in: BrowseLibrary.rootCollectionID)
+        #expect(one == wanted)
+    }
+
+    @Test("an item id nothing owns is nil — the screen's 'no longer here'")
+    func itemAbsent() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+        try await fixture.ingest(hashSeed: 1, capturedAt: date(2026, 1, 1))
+
+        #expect(try await fixture.library.item(
+            UUID(), in: BrowseLibrary.rootCollectionID) == nil)
+    }
+
+    @Test("an archived item is not reachable by deep-linking its id")
+    func itemArchivedIsHidden() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        let asset = try await fixture.ingest(hashSeed: 1, capturedAt: date(2026, 1, 1))
+        let feed = try await fixture.library.feed(for: BrowseLibrary.rootCollectionID)
+        let membership = try #require(feed.items.first).item.id
+        _ = try await fixture.services.archive([asset])
+
+        // The grid hides it; a route pushed before the archive must not still open it.
+        #expect(try await fixture.library.item(
+            membership, in: BrowseLibrary.rootCollectionID) == nil)
+    }
+
+    @Test("an item id from another collection is nil in this one")
+    func itemFromAnotherCollection() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        let other = try await fixture.services.createCollection(name: "Other")
+        try await fixture.ingest(hashSeed: 1, capturedAt: date(2026, 1, 1))
+        let mine = try #require(
+            try await fixture.library.feed(for: BrowseLibrary.rootCollectionID).items.first)
+
+        #expect(try await fixture.library.item(mine.item.id, in: other.id) == nil)
+    }
+
+    @Test("an item in a collection that is gone is a typed not-found")
+    func itemInAnUnknownCollection() async throws {
+        let fixture = try TempBrowseLibrary()
+        defer { fixture.cleanup() }
+
+        await #expect(throws: AtelierError.self) {
+            _ = try await fixture.library.item(UUID(), in: UUID())
+        }
+    }
+
     // MARK: - Media paths
 
     @Test("the grid tile's thumbnail is the 512 tier under the library root")
