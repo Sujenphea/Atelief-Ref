@@ -757,6 +757,22 @@ can review.
   `CaptureRequest(kind: "link", …)`, and the host resolves og-tags at drain time
   via the existing `PageResolver` (cookie-less by design,
   `PageResolver.swift:10`).
+
+  > **Corrected 2026-09-02 ([098](098-ios-companion-completion-plan.md) · "also found",
+  > landed in [462](../.change-log/462-the-name-on-the-home-screen.md)).** The second
+  > half of that sentence was never true on either platform, and it was copied into
+  > `ShareCapture.swift`'s own doc comment from here. **No drain resolves og-tags.**
+  > `InboxDrain.makeInput` routes a `link` record to `remoteContent`
+  > (`InboxDrain.swift:708`–`:712`); `PageResolver` is called only from the Mac's PASTE
+  > path, which an inbox record never takes. So a tier-1 link share carries the URL and
+  > whatever title the share sheet supplied, and nothing else — on the Mac as well as on
+  > the phone.
+  >
+  > What landed instead is a read-side fallback with no network:
+  > `BrowseFormat.linkTitle` shows the source's title, else the site's host name, else
+  > the raw URL, so a bare link tile reads `example.com` rather than a full URL with its
+  > tracking parameters (098 · P3). Mac-side enrichment after import is a follow-up
+  > outside that pass.
 - Tier 2 (share from Safari): `NSExtensionJavaScriptPreprocessingFile` returns a
   DOM-scraped dictionary → richer `ProvenanceDTO` + a direct media URL. The
   extractors in `extension/src/extractors/` are the reference; port the smallest
@@ -925,6 +941,20 @@ Two things S5 found that this plan had assumed otherwise:
 - **Consequently there is still no drain on iOS**, so a capture made on the phone is not
   visible on the phone until the Mac has ingested it and it has come back. S6's problem;
   the empty state says so.
+
+  > **Retired 2026-09-02 ([098](098-ios-companion-completion-plan.md) · P6, in
+  > [462](../.change-log/462-the-name-on-the-home-screen.md)).** True when it was
+  > written, false since [454](../.change-log/454-the-phone-drains-its-own-inbox.md):
+  > 096 · 4 gave the phone its own `InboxDrain` caller (`MobileIngest.makeDrain`) behind
+  > its own scheduler, running at launch and on every foreground, so **a share appears in
+  > the phone's grid without a Mac ever being opened**. The record is retained rather than
+  > deleted (`InboxDrain.Retention.retainForExport`), because the phone is a waypoint and
+  > the capture is still owed to the Mac.
+  >
+  > The empty state no longer says it either. It said "a capture made on the phone stays
+  > invisible here" until 454 rewrote the sentence, and 098 · P6 replaced the one
+  > remaining sentence with four (`BrowseEmptyState`), none of which mentions the Mac's
+  > ingest.
 
 Still open after S5, and none of it blocking S6: tier 2, the footprint measurement, a
 shared cross-platform token target (there are now two hand-copied token files on iOS),

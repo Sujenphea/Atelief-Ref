@@ -167,10 +167,20 @@ and not without a decision recorded separately.
    last-used default, or a picker in the extension UI (costs the extension a
    read-only view of the collection tree, which conflicts with D2's "no SQLite in the
    extension"). Leaning: fixed Inbox, sorted later on the Mac.
-3. **Does the phone need the analysis stack?** Vision / NaturalLanguage /
-   `PerceptualHash` all exist on iOS and would port, but running them on-device costs
-   battery for derived data the Mac recomputes anyway. Leaning: skip on iOS, let the
-   Mac analyze on import.
+3. ~~**Does the phone need the analysis stack?**~~ **Answered by the user, 2026-09-02:
+   NO** ([098](098-ios-companion-completion-plan.md) · Decisions, recorded in
+   [462](../.change-log/462-the-name-on-the-home-screen.md)). The lean below was taken
+   as the decision: Vision / NaturalLanguage / `PerceptualHash` stay off the phone, and
+   the Mac analyses on import.
+
+   The reason is stronger now than when this was written, because the transport settled
+   the way it did. The phone's export sends the inbox RECORD and its ORIGINAL payload
+   (091 · D4, [416](../.change-log/416-the-inbox-is-what-the-phone-has-to-send.md)), so
+   a capture is ingested on the Mac from the original bytes and gets the Mac's full
+   analysis regardless of what the phone did. On-device analysis would spend battery
+   producing derived data that never crosses, on the platform with a jetsam ceiling and
+   a drain already halved to `maxConcurrent = 2` to stay under it. The phone narrows
+   even its thumbnail tiers for the same reason (`MobileIngest.thumbnailTiers`).
 4. **Deployment target.** The packages pin `.macOS("26.0")` on the reasoning that
    nothing older ever runs them; the iOS floor should be audited from the APIs
    actually used rather than assumed.
@@ -191,4 +201,7 @@ and not without a decision recorded separately.
 **Settled since this doc was written.** Open question 2 (which collection a share
 lands in) is answered in 092 · S3: `Collection.unsortedID`, the same default the
 capture endpoint already uses — no new Inbox-collection concept, and nothing about
-the collection tree crosses the process boundary.
+the collection tree crosses the process boundary. Open questions 1 and 3 are answered
+above, in place. Open question 4 (the deployment target) settled itself in the build:
+every package that ships in an iOS process declares `.iOS("26.0")` and CI cross-builds
+each of them at `arm64-apple-ios26.0` (`.github/workflows/ci.yml` · `ios-packages`).

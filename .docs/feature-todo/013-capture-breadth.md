@@ -4,6 +4,11 @@
 > **Safari extension** (single-capture) and **clipboard watcher** are in;
 > screenshot hotkey and an iOS share-sheet companion were considered and **not
 > selected** — recorded below so the map stays closed.
+>
+> **Amended 2026-09-02:** the iOS companion was reversed, selected and shipped
+> ([091](../091-ios-companion-overview.md)–[093](../093-ios-visual-design.md),
+> [098](../098-ios-companion-completion-plan.md)). See "Not selected" below, which now
+> carries the correction rather than being rewritten.
 
 ## Status (re-verified against the tree 2026-08-10)
 
@@ -95,6 +100,21 @@ work).
   multi-Mac sync being a non-goal ([081](../081-backup-plan.md) note). Revisit only if mobile capture
   becomes a real habit.
 
+  > **Reversed and built, 2026-08 → 2026-09-02
+  > ([098](../098-ios-companion-completion-plan.md) · P6, in
+  > [462](../../.change-log/462-the-name-on-the-home-screen.md)).** It was revisited,
+  > selected and shipped: [091](../091-ios-companion-overview.md) took the decision,
+  > [092](../092-ios-companion-plan.md) planned S0–S6, [093](../093-ios-visual-design.md)
+  > designed it and [098](../098-ios-companion-completion-plan.md) finished it. There is
+  > an `AtelierRefsMobile` app, an `AtelierRefsShare` extension with a Safari page
+  > snapshot (tier 2), an inbox the phone drains into its own library, and an archive
+  > folder handed to the Mac through the system share sheet — which is the "transport"
+  > this line costed and declined: 091 · D4 answered it with AirDrop of a folder the
+  > Mac's existing importer already reads, not with sync.
+  >
+  > The rest of this section stands. The screenshot hotkey is still not selected, and
+  > nothing here about Safari or the clipboard watcher changed.
+
 ## Schema / migration impact
 
 **None.** `clipboard` rides the existing platform/source model; Safari reuses the
@@ -140,6 +160,8 @@ K3 was independent of K1/K2, which is why it went first.
 
 - Safari single-capture + clipboard watcher in scope; bulk stays Chrome-only;
   screenshot hotkey + iOS companion explicitly not selected (user, 2026-07-13).
+  **The iOS half of that was reversed and built** — see the note above; the screenshot
+  hotkey stands as not selected.
 
 ## Open questions
 

@@ -4,6 +4,17 @@
 > HEAD `bb841bd`) and a v1 that is *finished* rather than *landed*. Planned against the
 > code, not the earlier docs: every claim below was read at the file cited today.
 >
+> **CLOSED 2026-09-02.** All six phases landed, in order, one changelog each:
+> **P1** [457](../.change-log/457-one-spelling-of-each-rule.md) ·
+> **P2** [458](../.change-log/458-the-fate-a-capture-gets.md) ·
+> **P3** [459](../.change-log/459-the-phone-hands-over-its-logic.md) ·
+> **P4** [460](../.change-log/460-the-mac-stops-keeping-its-own-copy.md) ·
+> **P5** [461](../.change-log/461-the-wall-around-a-page-chosen-url.md) ·
+> **P6** [462](../.change-log/462-the-name-on-the-home-screen.md).
+> Every finding below is marked with the phase that carried it and is done unless it
+> says otherwise. What no agent could do is at the end, under "Left to the user", which
+> P6 extended with everything the six phases found and could not finish.
+>
 > **Amended 2026-09-02, same day.** The first draft of this doc was written unattended and
 > took its own decisions. It was then re-reviewed with the user, section by section
 > (architecture, code quality, tests, performance), against four independent read-only
@@ -356,9 +367,10 @@ head-of-line chunking stay unmeasured until the timing from finding 3 runs on a 
 
 ### Also found, decided without a question
 
-- **Tier-1 link shares never get og-tags, on either platform**, though `ShareCapture.swift:58-60`
+- **Tier-1 link shares never get og-tags, on either platform**, though `ShareCapture.swift`
   and 092 · S4b say the drain enriches: `InboxDrain.makeInput` routes a `link` to
-  `remoteContent` (`InboxDrain.swift:560-563`) and `PageResolver` is only called from the
+  `remoteContent` (`InboxDrain.swift:708`–`:712` — the citation this doc first gave,
+  `:560-563`, was stale) and `PageResolver` is only called from the
   Mac's paste path. The phone tile shows the raw URL. **Decision:** `BrowseFormat.title`
   falls back to the host name for a bare link, no network (Phase 3); the two docs are
   corrected (Phase 6); Mac-side enrichment after import is a follow-up outside this pass.
@@ -378,13 +390,14 @@ head-of-line chunking stay unmeasured until the timing from finding 3 runs on a 
   `AccentColor = inkPrimary`, a `UILaunchScreen` dictionary on a `LaunchBackground` colour
   set at `canvasOuter`, verified by reading the keys back out of the built product
   (Phase 6).
-- **Doc drift:** 092 · "Where this stands" still says the phone has no drain; 013 still
+- **Doc drift:** 092 · "Where this stands" still says the phone has no drain;
+  `feature-todo/013` still
   records the iOS companion as "not selected"; 091 open question 3 (the analysis stack)
   and 093 open question 1 (one write in browse) are closed above. Amended in Phase 6.
 
 ---
 
-## P1 — package foundation
+## P1 — package foundation · **done** ([457](../.change-log/457-one-spelling-of-each-rule.md))
 
 Findings 2 (the move), 3 (gate, comments), 8 (the writer), 10 (the seam), 12
 (consolidation, the extractor), the stale manifests, and the DRY batch that lives in
@@ -413,7 +426,7 @@ packages. No app-target change.
 **Verify:** `swift test` in `AtelierCore`, `AtelierCapture`, `AtelierLibraryPaths`,
 `AtelierBrowse`, `AtelierArchive`, `AtelierIngestion`; both iOS targets build.
 
-## P2 — drain fates and export correctness
+## P2 — drain fates and export correctness · **done** ([458](../.change-log/458-the-fate-a-capture-gets.md))
 
 Findings 1, 4, 8 (the rest), 3 (timing), 12 (formats), and the test batch.
 
@@ -437,7 +450,7 @@ Findings 1, 4, 8 (the rest), 3 (timing), 12 (formats), and the test batch.
 `AtelierLibraryPaths` suites; `AtelierRefsTests` on the Mac (`InboxArchiveImportTests` is
 the only test that runs both ends of the export); both iOS targets build.
 
-## P3 — the browse seam, and the phone's logic where tests reach it
+## P3 — the browse seam, and the phone's logic where tests reach it · **done** ([459](../.change-log/459-the-phone-hands-over-its-logic.md))
 
 Findings 9, 11 (package half), 13, 14, 15, the link-title fallback, and the code-quality
 batch.
@@ -457,7 +470,7 @@ batch.
 **Verify:** `AtelierCore`, `AtelierBrowse`, `AtelierTokens` suites; the iOS app builds;
 the UI test bundle still compiles.
 
-## P4 — the Mac adopts the browse package
+## P4 — the Mac adopts the browse package · **done** ([460](../.change-log/460-the-mac-stops-keeping-its-own-copy.md))
 
 Findings 5, 6, 11 (the integration), 12 (the Mac suite's copy).
 
@@ -473,7 +486,7 @@ Findings 5, 6, 11 (the integration), 12 (the Mac suite's copy).
 **Verify:** the full `AtelierRefsTests`; the Mac app builds; `xcodebuild -list` after
 every pbxproj write; `AtelierBrowse` and `AtelierIngestion` suites.
 
-## P5 — the share extension
+## P5 — the share extension · **done** ([461](../.change-log/461-the-wall-around-a-page-chosen-url.md))
 
 Findings 2 (the fetch), 7, and the preprocessor caps.
 
@@ -488,7 +501,7 @@ Findings 2 (the fetch), 7, and the preprocessor caps.
 **Verify:** `AtelierCapture` suite; `node --test` in `extension/`; the share extension and
 the app build for the simulator.
 
-## P6 — surfaces, the UI tests in CI, and the docs
+## P6 — surfaces, the UI tests in CI, and the docs · **done** ([462](../.change-log/462-the-name-on-the-home-screen.md))
 
 Findings 10 (the rest), the app's name and icon, the surfaces in scope, the doc drift.
 
@@ -503,7 +516,7 @@ Findings 10 (the rest), the app's name and icon, the surfaces in scope, the doc 
 - `ci.yml`: `build-for-testing` on the mobile scheme; a simulator job running
   `SwitcherUITests` and `ExportUITests`.
 - 092 · "Where this stands" amended; 013's "not selected" note amended; 091 · Q3 and
-  093 · Q1 closed; `ShareCapture.swift:58-60` and 092 · S4b corrected about links; this
+  093 · Q1 closed; `ShareCapture.swift`'s `.link` doc and 092 · S4b corrected about links; this
   doc's status closed.
 
 **Verify:** both iOS targets build; `SwitcherUITests` and `ExportUITests` pass on a local
@@ -513,20 +526,76 @@ simulator; `xcodebuild -list`; every doc cross-link resolves.
 
 ## Left to the user, and blocking nothing here
 
+Extended by P6 with everything the six phases found and could not finish. Everything
+here needs **a device, a signing identity, or a judgement**; nothing here is blocked on
+code, and nothing above is blocked on it.
+
+### It needs a device
+
 - **T0** ([097](097-tier3-t0-protocol.md)) — the focal-post session. Tier 3 waits on it.
-- **`sujenphea.AtelierRefsMobileUITests` as an App ID with App Groups** (446, 097). P6
-  makes the test correct; this is what makes it run signed.
 - **Tier 2 on an auth-walled page, on hardware** — the one thing tier 2 exists for and
-  the one thing a loopback fixture cannot stand in for.
+  the one thing a loopback fixture cannot stand in for. The simulator test is gated off
+  by default (`ATELIER_RUN_SAFARI_TESTS`) and needs the App ID below before it can run
+  signed at all.
 - **`MobileIngest.maxConcurrent`** — a drain of a seeded backlog on a device with
-  `-atelier-log-ingest-timing`, width 2 against 4.
-- **A fling over the 2,010-item fixture** with the decode counter on, to decide whether
-  the `DecodeCache` coalescing is ever hit.
+  `-seed-fixture-library -seed-pending-captures 50 -atelier-log-ingest-timing`, width 2
+  against 4. The flag, the sink and the 50-capture seed all landed in P2 and have
+  produced **no numbers**; the width is exactly as unmeasured as 454 left it.
+- **A fling over the 2,010-item fixture** with `-atelier-log-tile-bodies`, to decide
+  whether the `DecodeCache`'s coalescing is ever hit. The only evidence today is eight
+  decodes for eight tiles on a nine-item fixture (P3).
 - **The jetsam claim** — a crash mid-ingest on a device, then a launch: the record's
-  `attempts` reads 1.
-- **093 open question 2** — `successDismissDelay`, set once on a device.
+  `attempts` reads 1. P2 asserts it from inside a live ingest on a host, which proves
+  what is on disk at that instant and nothing about what iOS does to a process.
+- **The 64 MP cap has never refused a real image** (P2). Its tests are synthetic
+  headers; no genuine 48 MP HEIC has been through it. The intended outcome — a capture
+  that fails three times, stays in the pending set and is decoded fine on the Mac — has
+  no UI and has not been watched happen.
+- **`writeExport`'s deletions have never been watched** (P2). The stale-sibling,
+  fresh-parent and refuse-before-clearing cases are host tests against a temp directory;
+  nothing has looked at a real `Caches/Exports/` before and after a second send.
+- **The ingested-site sweep is O(ingested) per pass** (P2), unmeasured on a device. On a
+  phone with two hundred un-cleared captures that is two hundred small reads twice per
+  foreground.
+- **The extension's `URLSession` glue** (P5): that `didWriteData` reaches a session
+  delegate for a task created by the async `download(for:)`, and that
+  `didFinishDownloadingTo` staying empty is harmless for it. Both degrade safely if
+  wrong, but "degrades safely" is a reading of the API, not an observation. And
+  `SSRFGuard`'s synchronous resolution now sits inside the share's eight-second budget
+  with no device number for what that costs.
+- **The memory-warning purge has never fired** (P3). `DecodeCache.purge()` is tested;
+  the observer that calls it is registered and has never been triggered.
+- **093 open question 2** — `successDismissDelay`, a feel judgement to be set once on a
+  device.
+
+### It needs a signing identity
+
+- **`sujenphea.AtelierRefsMobileUITests` as an App ID with App Groups** (446, 097). P6
+  made `Tier2ShareUITests` correct — it resolves the group from its own bundle and reads
+  pending ∪ ingested — and this is what makes it run at all. Until then it skips.
 - **App Store presence** — a privacy manifest, version numbers, screenshots. 093 § 7
-  excluded it and this pass does too.
+  excluded it and this pass does too. P6 gave the app a name, an icon, an accent and a
+  launch colour, which is identity and not a submission.
+- **A phone-specific app icon**, if one is ever wanted. P6 reused the Mac's 1024 rather
+  than inventing a mark, deliberately: that is a design call and it is the user's.
+
+### It needs a judgement, and the code is ready either way
+
+- **Mac-side og-tag enrichment of an imported link.** No drain on either platform
+  resolves og-tags — 092 · S4b and `ShareCapture.swift` both said one did and both are
+  corrected. `BrowseFormat.linkTitle`'s host-name fallback is the read-side answer; a
+  write-side one is a new pass.
+- **A streaming storage stage in the pipeline** (finding 3A), which waits on the timing
+  measurement above.
+- **The retention chore.** 093 open question 1 closed as *no* — the Mac stays the
+  curation surface — and the cost is that Unsorted grows and clearing it is Mac work.
+  Nobody has measured that chore; measuring it is what would re-open the question.
+- **`twitter.js` still derives a handle from any first path segment** (P1). The Swift
+  and JS extractors now answer differently for `x.com/home`; the drift gate covers hosts
+  and not this rule, and tier 3 is outside this pass.
+- **`ThumbnailPipelineTests` / `ThumbnailWindowPrefetcherTests` flaked once** in a full
+  Mac run taken immediately after a clean build (P4). Passed alone and in every later
+  run; not investigated, and worth a look by whoever next sees them fail.
 
 ## Out of scope, named so it is not mistaken for this
 
@@ -537,4 +606,6 @@ multi-library, undo-of-delete, the one code `TODO` in `twitter.js`, and the defe
 capture work — is a different product surface and is not touched by any phase above.
 Also out: phone search, iPad, a write action in browse, the analysis stack on the phone,
 Mac-side og-tag enrichment of imported links, and a streaming storage stage in the
-pipeline (waits on the timing from P2).
+pipeline (waits on the timing from P2). The last two are on the "left to the user" list
+above as judgements rather than as work; the first four are decisions and are closed —
+091 · Q3 and 093 · Q1 are struck through in their own docs.

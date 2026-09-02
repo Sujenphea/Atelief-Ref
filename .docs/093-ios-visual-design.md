@@ -458,6 +458,15 @@ are.
   stack and that the 298pt panel reflows below the media. Which of 041's sections
   survive, whether the pager and the fan/pile come along, and what a phone does
   with zoom are all downstream of data reads S5 has not wired.
+
+  > **Designed and built 2026-09-02** ([098](098-ios-companion-completion-plan.md) · P6,
+  > in [462](../.change-log/462-the-name-on-the-home-screen.md)). All three 041 sections
+  > survive, in the Mac's order, below the media: Data (saved date, dimensions), Source
+  > (platform, author, title, Visit), Details (name, note, collection). Every value is
+  > worded by `BrowseFormat`, which the Mac also uses since 098 · P4, so there is one
+  > rule per fact rather than two. Memberships are a label / value row and not the Mac's
+  > removable chips, because open question 1 above closed as *no* and what is left once
+  > the verbs go is a fact. The pager, the fan/pile and zoom are still not designed.
 - **Search.** The Mac keeps a search field permanently in the panel toolbar
   (`AppShellView.swift:156`–`:161`). Whether the phone has search *at all* in v1
   is a scope question for S5, not a look question.
@@ -466,6 +475,19 @@ are.
   rather than a fallback, so that a provisioning bug fails where it is fixable.
   Something has to render that, and today nothing does. It is the one hole here
   worth closing early in S4b rather than late.
+
+  > **Designed and built 2026-09-02** ([098](098-ios-companion-completion-plan.md) · P6,
+  > in [462](../.change-log/462-the-name-on-the-home-screen.md)). Five of them: an empty
+  > library, an empty collection, a failed drain, a failed export, and the missing App
+  > Group this bullet flagged — which lands on `FailureNotice` through
+  > `BrowseFailure.message(for:)`, one sentence per failure class.
+  >
+  > Two shapes. A screen with nothing else on it takes the whole panel; a condition that
+  > arrives while the grid is still worth looking at takes a card at the bottom on
+  > `cardChrome()`. Which of four nothings an empty grid is showing is decided in the
+  > package (`BrowseEmptyState`) and drawn in the app, and none of the four names a
+  > control — §5's argument about affordances the phone does not have, applied to the one
+  > screen where a user would go looking for one.
 - **iPad.** Everything above assumes a phone. An iPad has room for the sidebar and
   would re-open §2 entirely. v1 is an iPhone app that runs on iPad.
 - **Any re-run of [037](037-grid-bakeoff-protocol.md)–[039](039-grid-bakeoff-gate-results.md)
@@ -473,14 +495,33 @@ are.
   is needed to choose — the fallback is a rollback, not a bake-off.
 - **App icon, launch screen, App Store presence.**
 
+  > **The first two, 2026-09-02** ([098](098-ios-companion-completion-plan.md) · P6, in
+  > [462](../.change-log/462-the-name-on-the-home-screen.md)) — as identity rather than
+  > as design. The app is called *AtelierRefs* on the home screen, wears the Mac's 1024
+  > mark (a phone-specific one is still undesigned and is the user's call), tints its
+  > UIKit surfaces `inkPrimary` instead of system blue, and launches on a `canvasOuter`
+  > ground rather than the `systemBackground` black that flashed for one frame. App Store
+  > presence — a privacy manifest, version numbers, screenshots — is still out.
+
 ## Open questions
 
-1. **Should v1 browse have exactly one write — "move to collection"?** 091 · D1
-   says read-only, and §1 sends every share to Unsorted, which puts the entire
-   sorting cost on the Mac. One write on the phone would let the pile clear itself
-   where the collection is actually on screen. This trades a stated invariant
-   against a chore whose size nobody has measured yet, and it is a product call, so
-   it is the user's rather than this doc's.
+1. ~~**Should v1 browse have exactly one write — "move to collection"?**~~
+   **Answered by the user, 2026-09-02: NO** ([098](098-ios-companion-completion-plan.md)
+   · Decisions, recorded in [462](../.change-log/462-the-name-on-the-home-screen.md)).
+   The Mac stays the curation surface and 091 · D1's read-only invariant stands, so the
+   archive import gains no membership-change conflict class and the phone's browse seam
+   is never handed a verb.
+
+   The original question is preserved: §1 sends every share to Unsorted, which puts the
+   sorting cost on the Mac, and nobody has measured that chore. It can be re-opened by
+   measuring it. What this closes is the decision, not the observation.
+
+   Two things landed downstream of the *no*. The item detail draws memberships as a
+   label / value row rather than as the Mac's removable chips — take the three verbs away
+   and what is left is a fact (`ItemDetailScreen.detailsSection`, 098 · P6). And every
+   empty screen is worded so that it names no control at all, which
+   `BrowseEmptyStateTests.noPhantomVerbs` asserts: the emptiest screen in the app is
+   exactly where a user would look for the verb this question was about.
 2. **How long the confirmation card stays before auto-dismissing.** The Mac's
    toast TTL is 6 s (`ToastQueue.swift:60`), which is far too long for a process
    that is supposed to get out of the way; something under a second is the right

@@ -55,8 +55,22 @@ import AtelierCore
 /// there until `InboxWriter` copies them into the inbox, so the extension holds an
 /// image's worth of nothing.
 public enum SharedItem: Equatable, Sendable {
-    /// A web URL — a media-less `link` capture. The Mac resolves og-tags at drain
-    /// time through the existing `PageResolver`, so nothing is fetched here.
+    /// A web URL — a media-less `link` capture. Nothing is fetched here, and nothing
+    /// fetches it later either.
+    ///
+    /// **This used to say the Mac resolves og-tags at drain time through `PageResolver`,
+    /// and that was never true** (098 · "also found"). It was copied from 092 · S4b, which
+    /// said the same thing, and both have been corrected. `InboxDrain.makeInput` routes a
+    /// `link` record to `remoteContent` (`InboxDrain.swift:708`–`:712`); `PageResolver` is
+    /// reached only from the Mac's PASTE path, which an inbox record never takes. So a
+    /// tier-1 link carries this URL and whatever title the share sheet supplied, on both
+    /// platforms, for the life of the capture.
+    ///
+    /// What exists instead is a read-side fallback with no network: `BrowseFormat.linkTitle`
+    /// shows the title, else the URL's host, else the raw URL, so a bare link is recognised
+    /// by its site rather than rendered as a query string (098 · P3). Mac-side enrichment
+    /// after import is a follow-up outside that pass — and is why tier 2 exists at all:
+    /// a page shared from Safari brings its own DOM and needs no resolver.
     case link(url: String, title: String? = nil)
     /// Image bytes — on disk or, when a provider offered no file representation, in
     /// memory — with the page or media URL they came from when the share carried one
