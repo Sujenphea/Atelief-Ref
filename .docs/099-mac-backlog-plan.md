@@ -278,6 +278,43 @@ were asserting residency against an `NSCache`, which documents that it does not 
 it. Production keeps `NSCache`; the two suites get a `ThumbnailStore` seam and a
 deterministic store behind it. **No production behaviour changed.**
 
+## 22A — the capture token leaves the main actor · **done** ([471](../.change-log/471-the-token-leaves-the-main-actor-at-launch.md))
+
+*Unplanned. Authorised by the user after P2c reported the blocker and stopped. No decision
+in the table above covers it. Effort S.*
+
+[470](../.change-log/470-the-second-cache-takes-the-same-seam.md) diagnosed the UI stage's
+hang and left the fix as a judgement for the user: `IngestionModel.bootstrap()` blocked the
+main actor at every launch on a synchronous `SecItemCopyMatching` against a login-keychain
+item whose ACL is bound to the reading binary's code signature. The user took the option
+470 had argued for on its own merits — **take the blocking read off the launch path,
+because it is a hang a real user can hit and not only a test** — together with a DEBUG
+launch argument so the smoke suite stops starting an endpoint none of its flows asserts.
+
+**What forced the hop was not the caller, and that is the finding.** The app target
+compiles with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so `CaptureTokenStore`'s statics
+were *implicitly* `@MainActor`: the store WAS main-actor code, and the obvious fix —
+awaiting it from a background task — would have hopped **onto** the main actor and blocked
+it in the same place. And because the target also sets `SWIFT_APPROACHABLE_CONCURRENCY =
+YES` (`nonisolated(nonsending)` by default, SE-0461), `nonisolated` plus `async` still runs
+on the caller's actor. **`@concurrent` is the load-bearing token**, and it is measured
+rather than asserted: deleting it fails exactly one test, the one that watches which thread
+the store ran on.
+
+**Production behaviour DID change, deliberately.** The app no longer blocks its main thread
+on `securityd` at launch — this entry does not get to say "nothing changed", and does not.
+Everything the token itself does is identical: same service, same first-run mint, same G6
+migration, same value returned.
+
+`-skip-capture-endpoint` is DEBUG-only (8A), spelled the way 098's `-seed-fixture-library`
+is, and goes **last** in `SmokeUITests.launch()` behind the `-key value` trap that file
+already documents. The keychain prompt itself is not retired — only the data-protection
+keychain would do that, and that is a migration of every existing user's token, not a flag.
+
+**The gate is green, and P2c's commit follows immediately against this same gate run** —
+the two were verified together, which is how [471](../.change-log/471-the-token-leaves-the-main-actor-at-launch.md)
+describes it.
+
 ## P3 — the per-window read model
 
 *Decisions 1A, 6A (collapse), 13A, 14A (app). The largest phase. Effort L.*
@@ -565,6 +602,7 @@ supplied. 12A's rule applies to each. Effort M each.*
 | P1 | done — 16A's reaper half reported, not built | [466](../.change-log/466-the-app-target-gets-its-foundations.md) |
 | P2 | done — target, seeder, four identifiers, three flows, a 14th gate stage | [468](../.change-log/468-the-mac-gets-a-window-a-keystroke-and-an-order.md) |
 | P2b | done — unplanned (20A); the two thumbnail suites stop asserting residency against `NSCache` | [469](../.change-log/469-the-cache-that-was-never-promised.md) |
+| 22A | done — unplanned; the keychain read leaves the main actor (`@concurrent`, not merely `nonisolated`), and the UI suite stops starting an endpoint it never asserts | [471](../.change-log/471-the-token-leaves-the-main-actor-at-launch.md) |
 | P3 | not started | — |
 | P4 | not started | — |
 | P5 | not started | — |

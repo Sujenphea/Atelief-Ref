@@ -232,13 +232,29 @@ final class SmokeUITests: XCTestCase {
     /// onboarding sheet without the app knowing a test exists. But a bare flag before it
     /// would swallow it as a VALUE (`-seed-fixture-library` would be read as the key and
     /// `-AtelierDidCompleteOnboarding` as its string), and the sheet would cover every
-    /// flow below. Bare flags last.
+    /// flow below. Bare flags last — **both** of them, and the second one is why this
+    /// paragraph is worth re-reading before adding a third.
+    ///
+    /// `-skip-capture-endpoint` (099 · 22A, `AtelierRefs/Debug/CaptureEndpointFlag.swift`)
+    /// is the newer of the two. Nothing in this suite asserts anything about the browser
+    /// extension — a window, a Settings scene and a sidebar order is the whole of it — but
+    /// starting the endpoint reads the capture token out of the LOGIN keychain, whose ACL
+    /// is bound to the reading binary's code signature. This stage signs ad-hoc and must
+    /// (see the header), so every rebuild is a new cdhash, macOS raises a `SecurityAgent`
+    /// prompt, and an unattended `xcodebuild` never answers it: all three flows failed
+    /// with "process main thread busy for 30.0s" until this flag existed. 22A also took
+    /// that read off the main actor, so the app can no longer HANG on it — but the prompt
+    /// still appears, and a flow waiting on a dialog nobody will click still times out.
+    /// The Settings row this suite asserts (`settings.capture.endpoint`) renders whether
+    /// or not the endpoint is running; only its foreground style depends on that, so the
+    /// flag costs this suite no coverage.
     @MainActor
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = [
             "-AtelierDidCompleteOnboarding", "YES",
             "-seed-fixture-library",
+            "-skip-capture-endpoint",
         ]
         app.launchEnvironment["ATELIER_LIBRARY_ROOT"] = "uitest-fixture"
         app.launch()

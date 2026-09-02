@@ -934,7 +934,22 @@ final class IngestionModel: ObservableObject {
     private func startCaptureEndpoint(
         coordinator: IngestCoordinator, services: AppServices
     ) async {
-        let token = loadOrCreateCaptureToken()
+        // 099 · 22A — the UI stage asks for no endpoint at all. Nothing the smoke
+        // flows assert needs one, and starting it reads the login keychain, whose
+        // ACL an ad-hoc-signed rebuild cannot satisfy without a prompt. DEBUG-only
+        // (8A), so a shipped app has no argument that reaches this line.
+        #if DEBUG
+        if CaptureEndpointFlag.isRequested() { return }
+        #endif
+
+        // **`await`, and that is the fix** (099 · 22A). This was a synchronous
+        // `SecItemCopyMatching` on the main actor, at every launch, inside
+        // `bootstrap()` — so a keychain that stopped to ask the user anything hung
+        // the window server behind it. `loadOrCreate` is `@concurrent`, so the
+        // round trip happens on the global executor and the main actor is free
+        // while it does. The suspension point is new; the sequencing is not, since
+        // `bootstrap()` already awaited this whole function.
+        let token = await CaptureTokenStore.loadOrCreate()
         self.captureToken = token
 
         let routes = CaptureRoutes(
@@ -1044,17 +1059,6 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Load the persisted capture token from the Keychain, generating and storing
-    /// one on first run. Migrates any legacy UserDefaults token once (G6).
-    private func loadOrCreateCaptureToken() -> String {
-        if let existing = CaptureTokenStore.load() {
-            return existing
-        }
-        let token = CaptureToken.generate()
-        _ = CaptureTokenStore.save(token)
-        return token
-    }
-
     /// Copy the capture token to the pasteboard (for pasting into the extension),
     /// and raise a toast confirming it.
     ///
@@ -1076,7 +1080,9 @@ final class IngestionModel: ObservableObject {
         guard let coordinator, let services else { return }
         Task {
             await captureServer?.stop()
-            _ = CaptureTokenStore.save(CaptureToken.generate())
+            // Off the main actor too (099 · 22A) — the same blocking keychain call,
+            // reached from a button instead of from launch.
+            await CaptureTokenStore.regenerate()
             // `startCaptureEndpoint` reloads the persisted token, republishes
             // `captureToken`, and rebinds the server auth.
             await startCaptureEndpoint(coordinator: coordinator, services: services)

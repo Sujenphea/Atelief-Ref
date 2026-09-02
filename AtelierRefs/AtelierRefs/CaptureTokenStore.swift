@@ -17,11 +17,44 @@
 //  no tests, for a type whose failure mode is "capture stops working after a
 //  restart and nothing says why".
 //
+//  **Every call here BLOCKS, and none of it may run on the main actor** (099 · 22A).
+//  `SecItemCopyMatching` is a synchronous XPC round trip to `securityd`, and on the
+//  file-based login keychain it can stop to put a dialog on the screen — a locked
+//  keychain, or an ACL that does not recognise the calling binary's code signature.
+//  The window server is waiting on the main thread while that happens, so the app
+//  is not slow, it is HUNG. That is not hypothetical: it is what
+//  `IngestionModel.bootstrap()` did at every launch until 22A, and what pinned the
+//  UI stage's three smoke flows at "process main thread busy for 30.0s"
+//  ([470](../../.change-log/470-the-second-cache-takes-the-same-seam.md) diagnosed
+//  it; this file is half the fix).
+//
+//  **Two build settings, not one, put it on the main actor** — and the second is
+//  the one that is easy to miss:
+//
+//    1. The app target compiles with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`,
+//       so an unannotated type is *implicitly* `@MainActor`. These statics were
+//       never `nonisolated`; they were main-actor-isolated by the build setting.
+//       Hence the `nonisolated` on the enum below — without it, awaiting this type
+//       from a background task would hop ONTO the main actor and block it there,
+//       which is the opposite of the fix.
+//    2. The app target also sets `SWIFT_APPROACHABLE_CONCURRENCY = YES`, which
+//       turns on `nonisolated(nonsending)`-by-default (SE-0461): a plain
+//       `nonisolated async` function runs on its CALLER's actor. So `nonisolated`
+//       plus `async` is still the main actor when the caller is. `@concurrent` is
+//       what actually guarantees the global executor, and that is why
+//       ``loadOrCreate(service:defaults:)`` and ``regenerate(service:)`` carry it.
+//
+//  The rule this leaves: the three primitives are synchronous and stay so, because
+//  a test needs to drive them (a `defer` teardown cannot `await`) and because off
+//  the main actor a blocking keychain call is exactly the right thing. The two
+//  `@concurrent` entry points are the ONLY ones the app calls.
+//
 
+import AtelierServer
 import Foundation
 import Security
 
-enum CaptureTokenStore {
+nonisolated enum CaptureTokenStore {
     /// Legacy UserDefaults key (pre-Keychain). Read once for migration, then deleted.
     static let legacyDefaultsKey = "AtelierCaptureToken"
 
@@ -30,6 +63,80 @@ enum CaptureTokenStore {
     static let productionService = "so.atelier.refs.capture-token"
 
     private static let account = "capture-token"
+
+    /// A `UserDefaults` that is allowed to cross an isolation boundary.
+    ///
+    /// `UserDefaults` is documented thread-safe, and this app already relies on that
+    /// in as many words — `IngestionModel.startCaptureEndpoint`'s `consentGranted`
+    /// closure says "reads UserDefaults directly (thread-safe, no actor hop)". What
+    /// it is NOT is `Sendable`: Foundation never marked it, so handing one to a
+    /// `@concurrent` function is *"sending 'defaults' risks causing data races"* and
+    /// the build stops.
+    ///
+    /// The alternatives were worse. A retroactive `extension UserDefaults:
+    /// @unchecked Sendable` makes that claim for every `UserDefaults` in the module,
+    /// on Foundation's behalf, from an app target. Taking a suite NAME instead of an
+    /// instance would push construction inside the boundary and take the injection
+    /// seam away — and that seam is what `loadOrCreateRunsOffTheMainThread` uses to
+    /// see which thread the store ran on. So the unchecked claim is made here, once,
+    /// about one value, next to the reason it is true.
+    struct SendableDefaults: @unchecked Sendable {
+        let wrapped: UserDefaults
+
+        init(_ wrapped: UserDefaults) { self.wrapped = wrapped }
+
+        /// The production default — the same `UserDefaults.standard` the synchronous
+        /// primitives take.
+        static let standard = SendableDefaults(.standard)
+    }
+
+    // MARK: - What the app calls (099 · 22A)
+
+    /// The launch path's entry point: load the persisted token, minting and storing
+    /// one on first run — **on the global executor, never on the caller's actor**.
+    ///
+    /// `@concurrent` is load-bearing and not decoration. Without it this function
+    /// would inherit its caller's isolation (see the header's point 2), the caller
+    /// is ``IngestionModel/startCaptureEndpoint(coordinator:services:)`` on the main
+    /// actor, and `await`ing it would block the main thread on `securityd` exactly
+    /// as the synchronous call it replaced did. `CaptureTokenStoreTests`
+    /// `loadOrCreateRunsOffTheMainThread` asserts that, and fails if the attribute
+    /// is removed.
+    ///
+    /// The behaviour is byte-for-byte what `IngestionModel.loadOrCreateCaptureToken()`
+    /// did before it moved here: the same service, the same G6 legacy migration, the
+    /// same `CaptureToken.generate()` on first run, the same token returned.
+    @concurrent
+    static func loadOrCreate(
+        service: String = productionService,
+        defaults: SendableDefaults = .standard
+    ) async -> String {
+        if let existing = load(service: service, defaults: defaults.wrapped) {
+            return existing
+        }
+        let minted = CaptureToken.generate()
+        _ = save(minted, service: service)
+        return minted
+    }
+
+    /// Mint a fresh token and store it, replacing whatever is there — off the main
+    /// actor, for the same reason ``loadOrCreate(service:defaults:)`` is.
+    ///
+    /// This is the Settings "Regenerate Token…" path
+    /// (``IngestionModel/regenerateCaptureToken()``), which was doing its own
+    /// blocking `save` on the main actor. That one is a user-initiated action rather
+    /// than a launch, so it could not hang a window that had not opened yet — but it
+    /// is the same blocking XPC call behind the same dialog, and there is no reason
+    /// for the second-worst version of the bug to survive the fix for the worst.
+    @concurrent
+    @discardableResult
+    static func regenerate(service: String = productionService) async -> String {
+        let minted = CaptureToken.generate()
+        _ = save(minted, service: service)
+        return minted
+    }
+
+    // MARK: - The primitives (synchronous, blocking, off-main only)
 
     /// Load the persisted token, migrating from UserDefaults if needed. Returns
     /// `nil` when neither Keychain nor legacy storage has a value.
