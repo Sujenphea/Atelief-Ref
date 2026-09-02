@@ -101,6 +101,34 @@
 // `InboxRecord.attempts` and re-commits the record through `InboxWriter`, and the
 // third one moves the capture to `inbox/failed/`, where nothing enumerates it and
 // a human can still find it.
+//
+// **And the attempt is stamped BEFORE the record runs, not after it fails** (098 ·
+// finding 1a). Stamping on the way out counts the failures the coordinator REPORTED,
+// which is every failure a Mac has: a process that dies mid-ingest is a crash, and a
+// crash is not the case the counter was written for. On a phone it is the ordinary
+// case. Jetsam takes the app while a 4000 px share is decoding, the record is still
+// pending at `attempts: 0`, and the next launch runs it again — the same decode, the
+// same kill, at every launch and every foreground, with no UI anywhere that can break
+// the loop. So `attempts` counts ATTEMPTS STARTED. The count is committed before the
+// coordinator is handed the input and the record that ran carries it, which costs one
+// small atomic re-commit per record per pass and buys a bound that survives the process
+// going away between two lines. A record whose ingest was CANCELLED had the count put
+// back (see ``InboxDrain/resolve(_:outcome:into:restoringTo:)``), because backgrounding
+// a phone must never spend a share's budget.
+//
+// **What "out of the way" means depends on who owns the library** — the same question
+// ``InboxDrain/Retention`` already answers for success, asked again for failure (098 ·
+// finding 1b). On the Mac, `inbox/failed/` is out of the way: the capture was going
+// here, it did not arrive, and a human can go and look. On the phone it is destruction.
+// `InboxArchive` does not read `failed/`, so a capture the phone could not ingest —
+// which is exactly the capture whose ORIGINAL BYTES the Mac still wants, since the Mac
+// may well decode what this device could not — would be dropped from every future
+// export by a fate the user never saw. So under ``Retention/retainForExport`` an
+// exhausted record stays in the pending set with its count, the pass reports it as
+// ``DrainSummary/skippedExhausted`` and spends no work on it, and the export still
+// sends it. Only a MALFORMED record — a `payloadFile` the layout refuses, a `.json`
+// that will not parse — is quarantined under both policies, because there is nothing
+// there for an export to send either.
 
 import Foundation
 import AtelierCapture
@@ -113,10 +141,11 @@ import AtelierLibraryPaths
 /// from side effects — "this pass ingested one and skipped one" is a single
 /// comparison, and a pass that quietly did a fourth thing fails it.
 ///
-/// The four counts are the four terminal fates of a record: it ingested, it was
-/// not ready and was left alone, it was moved out of the way for good, or it
-/// failed and will be tried again. A record whose ingest was cancelled mid-pass is
-/// deliberately in none of them — see ``InboxDrain/drainOnce()``.
+/// The five counts are the five fates of a record: it ingested, it was not ready and
+/// was left alone, it was moved out of the way for good, it failed and will be tried
+/// again, or it is out of attempts on a host that keeps it anyway. A record whose
+/// ingest was cancelled mid-pass is deliberately in none of them — see
+/// ``InboxDrain/drainOnce()``.
 public struct DrainSummary: Equatable, Sendable {
     /// Records the coordinator ingested (including 18A dedups — a dedup IS a
     /// successful ingest, and the capture is just as done with).
@@ -130,6 +159,21 @@ public struct DrainSummary: Equatable, Sendable {
     /// Records that failed and were re-committed with a higher `attempts`, to be
     /// picked up again next pass.
     public var retrying: Int
+    /// Records left pending because they are out of attempts, on a host that keeps
+    /// them anyway (098 · finding 1b).
+    ///
+    /// Only ``InboxDrain/Retention/retainForExport`` produces this: under
+    /// ``InboxDrain/Retention/discardWhenIngested`` an exhausted record is
+    /// ``quarantined`` instead, which is the fate 092 · S3 shipped and the Mac still
+    /// has. It counts two things that a pass must not spend work on and must not
+    /// destroy — a record whose attempts ran out, and one whose attempt count could
+    /// not be committed at all — because the phone's export is the consumer that
+    /// still wants those bytes and `inbox/failed/` is not a place it reads.
+    ///
+    /// Not a *terminal* fate in the way ``quarantined`` is: the record is still in the
+    /// pending set, `InboxArchive` still sends it, and `InboxRetirement` still retires
+    /// it. What ended is the drain's interest in it.
+    public var skippedExhausted: Int
 
     /// The inbox itself could not be enumerated, so the four counts above say
     /// nothing about what is waiting in it.
@@ -145,13 +189,14 @@ public struct DrainSummary: Equatable, Sendable {
 
     public init(
         ingested: Int = 0, skippedIncomplete: Int = 0,
-        quarantined: Int = 0, retrying: Int = 0,
+        quarantined: Int = 0, retrying: Int = 0, skippedExhausted: Int = 0,
         inboxUnreadable: Bool = false
     ) {
         self.ingested = ingested
         self.skippedIncomplete = skippedIncomplete
         self.quarantined = quarantined
         self.retrying = retrying
+        self.skippedExhausted = skippedExhausted
         self.inboxUnreadable = inboxUnreadable
     }
 }
@@ -265,8 +310,16 @@ public struct InboxDrain: Sendable {
     /// coordinator will run for it. The pairing is the point: outcomes come back
     /// index-aligned with the inputs, so the record each outcome resolves must be
     /// carried alongside rather than looked up again.
+    ///
+    /// ``record`` is the record as it now stands ON DISK — with this pass's attempt
+    /// already stamped and committed (see ``InboxDrain/spendAttempt(_:into:)``), which
+    /// is what makes a crash between here and the outcome cost an attempt rather than
+    /// nothing. ``previousAttempts`` is the count before that stamp, carried so a
+    /// CANCELLED record can have it put back: cancellation is the app being
+    /// backgrounded, and a share must not lose a third of its budget to that.
     private struct Ready {
         let record: InboxRecord
+        let previousAttempts: Int
         let input: IngestInput
     }
 
@@ -366,8 +419,8 @@ public struct InboxDrain: Sendable {
                 quarantineUnparsedRecord(at: url, into: &pass)
 
             case .record(let record):
-                guard let input = prepare(record, into: &pass) else { continue }
-                chunk.append(Ready(record: record, input: input))
+                guard let ready = prepare(record, into: &pass) else { continue }
+                chunk.append(ready)
                 if chunk.count >= width {
                     await run(chunk, into: &pass)
                     chunk.removeAll(keepingCapacity: true)
@@ -381,7 +434,79 @@ public struct InboxDrain: Sendable {
             await run(chunk, into: &pass)
         }
 
+        sweepIngestedSite(into: &pass)
         return pass.summary
+    }
+
+    /// Look once at `inbox/ingested/` and take out what no export could ever send
+    /// (098 · finding 8).
+    ///
+    /// **Only under ``Retention/retainForExport``**, because only there does that
+    /// directory exist or mean anything: a Mac deletes an ingested record and must
+    /// never grow the directory, let alone walk it.
+    ///
+    /// The retaining drain moves a record into `ingested/` and then never looks at it
+    /// again — which is right, that is what takes it out of the pending set — and the
+    /// consequence was that nothing looked at it EVER again. `InboxArchive` reads that
+    /// directory on every export, and two states there make the export fail or
+    /// under-report forever with no way out: a `.json` that will not decode (counted as
+    /// unreadable, never sent, never resolvable), and a record whose payload is absent
+    /// from both sites (skipped by the funnel, silently, every single time). A user
+    /// pressing Send sees the same wrong number for the life of the device.
+    ///
+    /// So the pass ends by walking the directory once and quarantining exactly those
+    /// two. It re-ingests nothing — the whole reason a record is here is that it has
+    /// already ingested — and it touches no record it can read whose bytes it can find.
+    ///
+    /// **What it costs.** One `contentsOfDirectory` plus a read and decode per ingested
+    /// record, on a pass that has just done the same for the pending set. That is the
+    /// same work `InboxArchive.pendingRecords(in:)` does on every activation of the
+    /// export control, so it is a cost this program already pays at a comparable
+    /// cadence; a cheaper sweep (stat-only, or one record per pass) would either miss
+    /// the undecodable case or make "forever" mean "eventually", which is the property
+    /// being fixed. Cancellation stops it between records, and it is last in the pass
+    /// so cancelling it costs no ingest.
+    private func sweepIngestedSite(into pass: inout Pass) {
+        guard retention == .retainForExport else { return }
+        guard let urls = try? layout.ingestedRecordURLs() else { return }
+
+        let fileManager = FileManager.default
+        for url in urls {
+            if Task.isCancelled { return }
+
+            guard let record = readRecord(at: url) else {
+                // Same fate and the same code path as an unparseable record in the
+                // pending set: there is nowhere to put an attempt count on a record
+                // that will not parse, so quarantine is the only terminal state there
+                // is — and here it is not even a failure to ingest, since the capture
+                // reached the library already. What is being reclaimed is the export.
+                quarantineUnparsedRecord(at: url, into: &pass)
+                continue
+            }
+
+            // A media-less capture is complete without bytes — a shared link is the
+            // link — so "no payload" is only a defect for a record that names one.
+            guard record.payloadFile != nil else { continue }
+
+            // Both sites, in the order `InboxArchive.payloadSite` asks: beside the
+            // record under `ingested/`, or still in the top level where an interrupted
+            // retention left them. A `payloadFile` the layout REFUSES resolves to
+            // nothing at either site and is therefore also gone, which is the right
+            // answer — the bytes under that name, if any, belong to another capture and
+            // are not this record's to carry off.
+            let sites = [
+                layout.payloadURL(for: record),
+                layout.ingestedPayloadURL(for: record.id),
+            ]
+            let present = sites.compactMap { $0 }
+                .contains { fileManager.fileExists(atPath: $0.path) }
+            guard !present else { continue }
+
+            // No bytes anywhere: the export skips this record on every run and cannot
+            // ever stop. The payload is nil because there is, by the line above,
+            // nothing to move.
+            quarantine(record, from: url, payload: nil, into: &pass)
+        }
     }
 
     /// Read every pending `.json` ONCE and put them in the order the pass runs them.
@@ -415,8 +540,9 @@ public struct InboxDrain: Sendable {
     }
 
     /// Everything that has to be decided about a record before the coordinator sees
-    /// it: the input to run, or `nil` if the record was resolved here instead.
-    private func prepare(_ record: InboxRecord, into pass: inout Pass) -> IngestInput? {
+    /// it: the record to run and the input to run for it, or `nil` if the record was
+    /// resolved here instead.
+    private func prepare(_ record: InboxRecord, into pass: inout Pass) -> Ready? {
         // A `payloadFile` the layout refuses — anything that is not the exact
         // name the writer produces for this record's id — is quarantined on
         // sight, with `attempts` untouched. A rejected name is malformed, not
@@ -439,8 +565,19 @@ public struct InboxDrain: Sendable {
             return nil
         }
 
+        // Out of attempts before this pass even began — the record was stamped and the
+        // process went away, or a previous pass spent the last one on a host that keeps
+        // exhausted records. Either way it costs nothing here: no read, no decode, no
+        // coordinator slot. This is the check that makes ``DrainSummary/skippedExhausted``
+        // cheap enough to leave a record in the pending set forever.
+        guard record.attempts < Self.maxAttempts else {
+            terminalFailure(record, into: &pass)
+            return nil
+        }
+
+        let input: IngestInput
         do {
-            return try makeInput(for: record, payload: layout.payloadURL(for: record))
+            input = try makeInput(for: record, payload: layout.payloadURL(for: record))
         } catch {
             // A `CaptureDecodeError` — an unknown platform, a media-less capture with
             // no payload. Treated as retryable rather than quarantined on sight: the
@@ -448,9 +585,21 @@ public struct InboxDrain: Sendable {
             // platforms between the version that wrote this record and the version
             // reading it, so "this host does not understand it yet" is a state that
             // can resolve. Three passes, then out of the way.
-            transientFailure(record, into: &pass)
+            //
+            // The attempt is spent HERE rather than being counted on the way out,
+            // exactly as it is for a record that reaches the coordinator: this failure
+            // is deterministic and the stamp is what stops it repeating forever.
+            if let stamped = spendAttempt(record, into: &pass) {
+                failed(stamped, into: &pass)
+            }
             return nil
         }
+
+        // The write-ahead stamp: committed before the coordinator is handed anything,
+        // so a process that dies inside the ingest has already paid for the attempt.
+        guard let stamped = spendAttempt(record, into: &pass) else { return nil }
+        return Ready(
+            record: stamped, previousAttempts: record.attempts, input: input)
     }
 
     /// Run one chunk through the coordinator and resolve every record in it.
@@ -465,7 +614,8 @@ public struct InboxDrain: Sendable {
             resolve(
                 item.record,
                 outcome: index < outcomes.count ? outcomes[index] : nil,
-                into: &pass)
+                into: &pass,
+                restoringTo: item.previousAttempts)
         }
     }
 
@@ -485,19 +635,42 @@ public struct InboxDrain: Sendable {
     /// inputs — and is treated exactly like `.cancelled`, since "we were told
     /// nothing about this record" and "this record was not attempted" have the same
     /// correct response.
-    func resolve(_ record: InboxRecord, outcome: IngestOutcome?, into pass: inout Pass) {
+    ///
+    /// `record` is the record AS COMMITTED for this run — its `attempts` already
+    /// carries the write-ahead stamp. `restoringTo` is the count before that stamp and
+    /// is what a cancelled record is put back to; it is optional so a test can drive
+    /// one outcome without also describing a stamp that never happened.
+    func resolve(
+        _ record: InboxRecord, outcome: IngestOutcome?, into pass: inout Pass,
+        restoringTo previousAttempts: Int? = nil
+    ) {
         switch outcome {
         case .ingested?:
             settle(record, into: &pass)
             pass.summary.ingested += 1
         case .failed?:
-            transientFailure(record, into: &pass)
+            failed(record, into: &pass)
         case .cancelled?, .none:
             // The capture was not attempted, so it does not spend an attempt and is
             // not counted — it is simply still in the inbox, which is the honest
-            // record of it.
-            break
+            // record of it. The stamp made before the run is therefore put back.
+            restoreAttempts(of: record, to: previousAttempts)
         }
+    }
+
+    /// Undo a write-ahead stamp for a record that never ran.
+    ///
+    /// Best-effort, and deliberately so: if the re-commit fails, the record keeps the
+    /// spent count. That is a lie in the safe direction — the capture is still pending,
+    /// still whole, and still has attempts left — and the alternative is a drain that
+    /// reports a failure for a record nothing was wrong with. Nothing is written when
+    /// the count is already the one on disk, so a caller that passes no previous count
+    /// (a test driving one outcome) touches the filesystem not at all.
+    private func restoreAttempts(of record: InboxRecord, to previousAttempts: Int?) {
+        guard let previousAttempts, previousAttempts != record.attempts else { return }
+        var restored = record
+        restored.attempts = previousAttempts
+        try? writer.rewrite(restored)
     }
 
     /// Turn one record into the input the coordinator runs.
@@ -579,24 +752,71 @@ public struct InboxDrain: Sendable {
 
     // MARK: - Resolving a record
 
-    /// Spend one attempt: stamp the count and re-commit, or quarantine on the third.
-    private func transientFailure(_ record: InboxRecord, into pass: inout Pass) {
+    /// Spend one attempt BEFORE the record runs: stamp the count and re-commit it.
+    ///
+    /// Returns the record as it now stands on disk, or `nil` when the count could not
+    /// be committed — which is terminal and is counted here, because running a record
+    /// whose attempt cannot be recorded is precisely the retry-forever the counter
+    /// exists to end: the count can never rise, so the next pass would find exactly
+    /// what this one found. (A full disk is the shape that produces it, and a full disk
+    /// is a condition that can heal — under ``Retention/retainForExport`` the record
+    /// stays pending with its old count and a later pass, on a disk with room, tries
+    /// again.)
+    ///
+    /// The re-commit is `InboxWriter.rewrite`, never a bare `Data.write`: it stages and
+    /// replaces atomically, so a pass interrupted inside it cannot leave the drain a
+    /// half-written record to read as corrupt on the next launch.
+    private func spendAttempt(_ record: InboxRecord, into pass: inout Pass) -> InboxRecord? {
         var stamped = record
         stamped.attempts += 1
-
-        guard stamped.attempts < Self.maxAttempts else {
-            quarantine(stamped, into: &pass)
-            return
-        }
-
         do {
             try writer.rewrite(stamped)
-            pass.summary.retrying += 1
+            return stamped
         } catch {
-            // The stamp itself would not commit. Retrying anyway would retry forever,
-            // since the count can never rise — so this is terminal, and quarantine is
-            // where terminal goes.
-            quarantine(stamped, into: &pass)
+            terminalFailure(stamped, into: &pass)
+            return nil
+        }
+    }
+
+    /// The coordinator failed a record whose attempt has already been stamped: decide
+    /// whether the count now on disk was the last one.
+    ///
+    /// No increment happens here — that is the whole point of the stamp having moved.
+    /// A record that comes back `.failed` at ``maxAttempts`` has had its three runs and
+    /// goes to whichever terminal fate ``retention`` names; below that it is simply
+    /// pending again, at the higher count the write-ahead already committed.
+    private func failed(_ record: InboxRecord, into pass: inout Pass) {
+        if record.attempts >= Self.maxAttempts {
+            terminalFailure(record, into: &pass)
+        } else {
+            pass.summary.retrying += 1
+        }
+    }
+
+    /// The drain is done with this record and it is not a success: where it goes
+    /// depends on who owns the library (098 · finding 1b).
+    ///
+    /// **Quarantine is destruction on a waypoint.** `InboxArchive` reads `inbox/` and
+    /// `inbox/ingested/` and nothing else, so moving a capture to `failed/` on the
+    /// phone removes it from every future export — silently, on a device with no
+    /// screen that shows `failed/`, for a capture whose ORIGINAL bytes the Mac may
+    /// well decode perfectly. So the retaining host keeps it: still pending, still
+    /// counted, and skipped by ``prepare(_:into:)`` on every later pass at the cost of
+    /// one read and one decode.
+    ///
+    /// The Mac keeps the fate 092 · S3 shipped, and for the reason it shipped with:
+    /// there IS no consumer downstream of a Mac's inbox, so a record that will never
+    /// ingest is only in the way, and `failed/` is where a human goes to find it.
+    ///
+    /// This is only for a record that RAN and lost. A malformed one — a refused
+    /// `payloadFile`, a `.json` that will not parse — calls ``quarantine(_:into:)``
+    /// directly under both policies, because an export cannot send that either.
+    private func terminalFailure(_ record: InboxRecord, into pass: inout Pass) {
+        switch retention {
+        case .discardWhenIngested:
+            quarantine(record, into: &pass)
+        case .retainForExport:
+            pass.summary.skippedExhausted += 1
         }
     }
 
@@ -606,6 +826,14 @@ public struct InboxDrain: Sendable {
     /// One function so the summary line above it stays true for both. `ingested` counts
     /// the fate, not the filesystem operation — a capture that reached the library is
     /// ingested whether the record was unlinked or parked.
+    ///
+    /// The record parked under `ingested/` carries the attempt this pass stamped before
+    /// running it, so a capture that ingested first time reads `attempts: 1` there. That
+    /// is what "attempts started" means and it is left alone deliberately: undoing it
+    /// would be a second atomic re-commit on the phone's ordinary success path, to
+    /// correct a number whose only reader is the drain, which will never look at this
+    /// record again. Nothing downstream reads it — `InboxArchive` sends the request and
+    /// the bytes, `InboxRetirement` moves or deletes by id.
     private func settle(_ record: InboxRecord, into pass: inout Pass) {
         switch retention {
         case .discardWhenIngested: discard(record)
@@ -673,20 +901,34 @@ public struct InboxDrain: Sendable {
     /// call sites, which is three chances for a future fourth one to move a capture
     /// out of the inbox without saying so in the summary.
     private func quarantine(_ record: InboxRecord, into pass: inout Pass) {
+        // The SOURCE is resolved through the record, not through the bare name: a
+        // record quarantined BECAUSE its `payloadFile` was refused must not have that
+        // name honoured on the way out, or quarantine becomes the thing that carries
+        // off a sibling capture.
+        quarantine(
+            record, from: layout.recordURL(for: record.id),
+            payload: layout.payloadURL(for: record), into: &pass)
+    }
+
+    /// The same move, from wherever the record actually is.
+    ///
+    /// `origin` is a parameter because the ingested-site sweep quarantines records that
+    /// are under `inbox/ingested/` rather than in the pending set
+    /// (``sweepIngestedSite(into:)``), and a second copy of the re-encode-or-move
+    /// discipline for that one caller is how the two would drift.
+    private func quarantine(
+        _ record: InboxRecord, from origin: URL, payload: URL?, into pass: inout Pass
+    ) {
         pass.summary.quarantined += 1
         pass.failedDirectory.prepare()
 
         // The payload moves first, mirroring the writer: whatever is in `failed/`
         // should be a whole capture, not a record whose bytes are still elsewhere.
-        // The SOURCE is resolved through the record, not through the bare name: a
-        // record quarantined BECAUSE its `payloadFile` was refused must not have that
-        // name honoured on the way out, or quarantine becomes the thing that carries
-        // off a sibling capture. The destination is the layout's own mirror of it.
-        if let from = layout.payloadURL(for: record) {
-            InboxLayout.replacingMove(from, to: layout.failedPayloadURL(for: record.id))
+        // The destination is the layout's own mirror of it.
+        if let payload {
+            InboxLayout.replacingMove(payload, to: layout.failedPayloadURL(for: record.id))
         }
 
-        let origin = layout.recordURL(for: record.id)
         let destination = layout.failedRecordURL(for: record.id)
         if let encoded = try? InboxRecord.makeEncoder().encode(record),
             (try? encoded.write(to: destination, options: .atomic)) != nil {
@@ -703,13 +945,24 @@ public struct InboxDrain: Sendable {
     /// extension — because that is the only thing left to go on, and leaving the
     /// bytes behind would leak them silently. The name comes from the enumeration, so
     /// it is a plain component by construction.
+    ///
+    /// **Both sites are considered**, and only the first that exists moves. A record
+    /// enumerated out of `inbox/ingested/` has its bytes beside it there; a retention
+    /// interrupted between its two moves leaves them in the top level instead
+    /// (`InboxLayout.retentionMoves(for:)` states that order). The pending site is
+    /// asked first, which is the order `InboxArchive.payloadSite` asks in and for the
+    /// same reason — an interrupted retention is a real state and the top-level copy is
+    /// the one that was left behind.
     private func quarantineUnparsedRecord(at url: URL, into pass: inout Pass) {
         pass.failedDirectory.prepare()
 
         let stem = url.deletingPathExtension().lastPathComponent
         let payloadName = "\(stem).\(InboxLayout.payloadExtension)"
-        if let from = layout.payloadURL(named: payloadName),
-            FileManager.default.fileExists(atPath: from.path),
+        let sites = [
+            layout.payloadURL(named: payloadName), layout.ingestedURL(named: payloadName),
+        ]
+        if let from = sites.compactMap({ $0 })
+            .first(where: { FileManager.default.fileExists(atPath: $0.path) }),
             let to = layout.failedURL(named: payloadName) {
             InboxLayout.replacingMove(from, to: to)
         }

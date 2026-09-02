@@ -484,6 +484,167 @@ struct InboxDrainTests {
         #expect(staged.isEmpty)
     }
 
+    // MARK: - The stamp lands before the run (098 · finding 1a)
+    //
+    // The counter used to be written only when the coordinator REPORTED a failure, which
+    // counts every failure a Mac has and none of the ones a phone has: jetsam takes the
+    // process mid-decode, the record is still pending at `attempts: 0`, and the same
+    // capture is re-run at every launch and every foreground forever. A test cannot kill
+    // its own process, so the two halves are asserted separately — the first proves what
+    // the drain leaves on disk WHILE a record is running (which is exactly what a kill
+    // would leave), and the rest replay that residue.
+
+    /// The state a jetsam kill leaves behind, read at the only instant it exists: from
+    /// inside the ingest, before any outcome has been resolved.
+    @Test("a crash mid-ingest has already spent the attempt")
+    func theStampIsCommittedBeforeTheCoordinatorRuns() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let watcher = IngestWatcher()
+        let observed = ObservedRecord()
+
+        let id = UUID()
+        try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(width: 20, height: 20), id: id,
+            capturedAt: Self.capturedAt)
+
+        watcher.onFirstIngest {
+            observed.record(
+                try? InboxRecord.makeDecoder().decode(
+                    InboxRecord.self,
+                    from: Data(contentsOf: layout.recordURL(for: id))))
+        }
+        #expect(await drain(env, width: 1, watching: watcher).drainOnce()
+            == DrainSummary(ingested: 1))
+
+        // One attempt, committed, while the capture was still being ingested.
+        #expect(try #require(observed.recorded).attempts == 1)
+        // And the record it was read from is a whole record, not a torn one: the stamp
+        // goes through `InboxWriter.rewrite`, which stages and replaces atomically.
+        #expect(try #require(observed.recorded).id == id)
+    }
+
+    /// The residue replayed. Each pass in the sequence writes what the pass above
+    /// proves an interrupted one leaves, and the fourth is where the budget is gone —
+    /// with no failure ever reported by anyone, which is the point: three crashes and
+    /// three reported failures cost a capture the same three attempts.
+    @Test(
+        "three interrupted passes reach the terminal fate",
+        arguments: [InboxDrain.Retention.discardWhenIngested, .retainForExport])
+    func threeInterruptedPassesReachTheTerminalFate(
+        retention: InboxDrain.Retention
+    ) async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let writer = InboxWriter(libraryRoot: env.root)
+
+        let id = UUID()
+        var record = try writer.write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(width: 20, height: 20), id: id,
+            capturedAt: Self.capturedAt)
+        for attempt in 1...InboxDrain.maxAttempts {
+            record.attempts = attempt
+            try writer.rewrite(record)
+        }
+
+        let drain = InboxDrain(
+            libraryRoot: env.root, coordinator: env.coordinator, retention: retention)
+        let summary = await drain.drainOnce()
+
+        switch retention {
+        case .discardWhenIngested:
+            #expect(summary == DrainSummary(quarantined: 1))
+            #expect(!exists(layout.recordURL(for: id)))
+            #expect(exists(layout.failedRecordURL(for: id)))
+            #expect(try readRecord(at: layout.failedRecordURL(for: id)).attempts
+                == InboxDrain.maxAttempts)
+        case .retainForExport:
+            #expect(summary == DrainSummary(skippedExhausted: 1))
+            #expect(exists(layout.recordURL(for: id)))
+            #expect(!exists(layout.failed))
+        }
+        // Neither host ingested it: the budget was gone before the payload was read.
+        #expect(env.blobFiles().isEmpty)
+    }
+
+    /// A record left mid-flight by a crash is picked up at the count it carries, not at
+    /// zero — the property that makes three crashes cost three attempts rather than
+    /// infinitely many.
+    @Test("a crash residue resumes at its stamped count")
+    func crashResidueResumesAtItsCount() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let writer = InboxWriter(libraryRoot: env.root)
+
+        let id = UUID()
+        var record = try writer.write(
+            .sample(collectionId: env.collectionID),
+            payload: Data("not an image".utf8), id: id, capturedAt: Self.capturedAt)
+        record.attempts = 1
+        try writer.rewrite(record)
+
+        // The second attempt is spent on this pass, not the first.
+        #expect(await drain(env).drainOnce() == DrainSummary(retrying: 1))
+        #expect(try readRecord(at: layout.recordURL(for: id)).attempts == 2)
+        // Which leaves exactly one, and the pass after it is terminal.
+        #expect(await drain(env).drainOnce() == DrainSummary(quarantined: 1))
+    }
+
+    /// The rule the stamp must not have broken: backgrounding a phone cancels the pass,
+    /// and a cancelled record must come back to the count it had. Driven through
+    /// `resolve` for the reason the cancellation section below gives at length — the
+    /// coordinator produces `.cancelled` only in a window a test cannot open — with the
+    /// stamp written by hand first, because that is what the pass would have committed.
+    @Test("a cancelled record gives back the attempt the stamp spent")
+    func cancelledRecordSpendsNothingAfterTheStamp() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let writer = InboxWriter(libraryRoot: env.root)
+
+        let id = UUID()
+        var stamped = try writer.write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
+        stamped.attempts = 1
+        try writer.rewrite(stamped)
+
+        var pass = InboxDrain.Pass(layout: layout)
+        drain(env).resolve(stamped, outcome: .cancelled, into: &pass, restoringTo: 0)
+
+        #expect(pass.summary == DrainSummary())
+        #expect(try readRecord(at: layout.recordURL(for: id)).attempts == 0)
+        #expect(exists(layout.payloadURL(for: id)))
+        #expect(try layout.pendingRecordURLs().count == 1)
+    }
+
+    /// And the restore is not a blanket rewrite: an outcome that arrived for a record
+    /// whose count was never moved touches nothing at all.
+    @Test("a restore with nothing to give back writes nothing")
+    func restoringAnUnstampedRecordIsANoOp() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        let written = try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
+
+        var pass = InboxDrain.Pass(layout: layout)
+        drain(env).resolve(written, outcome: nil, into: &pass, restoringTo: 0)
+
+        #expect(try readRecord(at: layout.recordURL(for: id)) == written)
+        let staged = try FileManager.default.contentsOfDirectory(
+            at: layout.staging, includingPropertiesForKeys: nil)
+        #expect(staged.isEmpty)
+    }
+
     // MARK: - The dedup property that makes a crash cheap
 
     @Test("re-draining a capture that already ingested is a no-op, not a duplicate")
@@ -1032,11 +1193,14 @@ struct InboxDrainTests {
         #expect(!exists(layout.ingested))
     }
 
-    /// Retention is about SUCCESS. A capture that exhausts its attempts is still garbage on
-    /// a phone, and `failed/` is still where a human goes to find it — retaining it into
-    /// `ingested/` would put it in front of the export instead.
-    @Test("a retaining drain still quarantines into failed/, never into ingested/")
-    func retainingDrainStillQuarantines() async throws {
+    /// Retention is about SUCCESS, and a capture that exhausts its attempts never
+    /// reaches `ingested/` — but on a phone it does not reach `failed/` either (098 ·
+    /// finding 1b). `InboxArchive` reads the pending set and `ingested/`, so a
+    /// quarantine here would take the capture out of every future export, on a device
+    /// with no screen that shows `failed/`, for bytes the Mac may well decode. It stays
+    /// pending, out of the drain's way and in front of the export.
+    @Test("under .retainForExport an exhausted capture stays exportable")
+    func exhaustedCaptureStaysExportableUnderRetention() async throws {
         let env = try await makeTempPipeline()
         defer { env.cleanup() }
         let layout = inbox(env)
@@ -1054,11 +1218,113 @@ struct InboxDrainTests {
         #expect(!exists(layout.ingested))
 
         #expect(await drain.drainOnce() == DrainSummary(retrying: 1))
+        // The third run is the last one, and it is where the two policies part.
+        #expect(await drain.drainOnce() == DrainSummary(skippedExhausted: 1))
+
+        #expect(exists(layout.recordURL(for: id)))
+        #expect(exists(layout.payloadURL(for: id)))
+        #expect(try readRecord(at: layout.recordURL(for: id)).attempts
+            == InboxDrain.maxAttempts)
+        #expect(!exists(layout.failed))
+        #expect(!exists(layout.ingested))
+
+        // And it stays that way, for nothing: no ingest, no move, no fourth attempt.
+        #expect(await drain.drainOnce() == DrainSummary(skippedExhausted: 1))
+        #expect(try layout.pendingRecordURLs().count == 1)
+        #expect(env.blobFiles().isEmpty)
+    }
+
+    /// The Mac's half of the same fixture, so the pair reads as one difference. This is
+    /// the behaviour 092 · S3 shipped and it must not have moved: there is no consumer
+    /// downstream of a Mac's inbox, so a capture that will never ingest is only in the
+    /// way, and `failed/` is where a human goes to find it.
+    @Test("under .discardWhenIngested an exhausted capture still quarantines")
+    func exhaustedCaptureQuarantinesUnderDiscard() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: Data("not an image".utf8), id: id, capturedAt: Self.capturedAt)
+
+        let drain = drain(env)
+        #expect(await drain.drainOnce() == DrainSummary(retrying: 1))
+        #expect(await drain.drainOnce() == DrainSummary(retrying: 1))
         #expect(await drain.drainOnce() == DrainSummary(quarantined: 1))
 
+        #expect(!exists(layout.recordURL(for: id)))
         #expect(exists(layout.failed.appendingPathComponent("\(id.uuidString).json")))
         #expect(exists(layout.failed.appendingPathComponent("\(id.uuidString).bin")))
         #expect(!exists(layout.ingested))
+    }
+
+    /// A malformed record is malformed under both policies: there is nothing for an
+    /// export to send either, so the retaining host quarantines it too. The two rules
+    /// have to be told apart — "out of attempts" is kept, "will never be a capture" is
+    /// not — and this is the pair that says which is which.
+    @Test("a retaining drain still quarantines a record that will never be a capture")
+    func retainingDrainQuarantinesTheMalformed() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        try FileManager.default.createDirectory(
+            at: layout.directory, withIntermediateDirectories: true)
+        try InboxRecord.makeEncoder().encode(
+            InboxRecord(
+                id: id, capturedAt: Self.capturedAt,
+                request: .sample(collectionId: env.collectionID),
+                payloadFile: "../escape.bin")
+        ).write(to: layout.recordURL(for: id))
+
+        #expect(await retainingDrain(env).drainOnce() == DrainSummary(quarantined: 1))
+        #expect(exists(layout.failed.appendingPathComponent("\(id.uuidString).json")))
+        #expect(!exists(layout.recordURL(for: id)))
+    }
+
+    /// The cost claim in ``DrainSummary/skippedExhausted``'s own doc, asserted: a record
+    /// the drain has given up on is skipped BEFORE anything reads its payload or asks
+    /// the coordinator for a slot. The fixture is a perfectly good capture — it would
+    /// ingest on sight — so the only thing that can be stopping it is the count.
+    @Test("a skipped-exhausted record costs no coordinator run")
+    func skippedExhaustedRecordIsNeverRun() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let watcher = IngestWatcher()
+
+        let id = UUID()
+        var record = try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(width: 30, height: 20), id: id,
+            capturedAt: Self.capturedAt)
+        // The residue of three interrupted passes — the shape
+        // `theStampIsCommittedBeforeTheCoordinatorRuns` proves the drain writes.
+        record.attempts = InboxDrain.maxAttempts
+        try InboxWriter(libraryRoot: env.root).rewrite(record)
+
+        let drain = InboxDrain(
+            layout: layout,
+            coordinator: IngestCoordinator(
+                pipeline: IngestPipeline(
+                    store: env.store, services: env.services,
+                    timing: { [watcher] timing in watcher.observed(timing) }),
+                maxConcurrent: 1),
+            retention: .retainForExport)
+
+        #expect(await drain.drainOnce() == DrainSummary(skippedExhausted: 1))
+
+        // Nothing ran: no ingest was observed, no blob was written, no asset exists.
+        #expect(watcher.ingestOrder.isEmpty)
+        #expect(env.blobFiles().isEmpty)
+        #expect(try await env.services.collectionItems(
+            in: env.collectionID, includeArchived: false).isEmpty)
+        // And the capture is still whole, still pending, still exportable.
+        #expect(exists(layout.recordURL(for: id)))
+        #expect(exists(layout.payloadURL(for: id)))
     }
 
     /// The interrupted-move contract, forced rather than raced. `inbox/ingested` is made a
@@ -1158,6 +1424,165 @@ struct InboxDrainTests {
         #expect(await retainingDrain(env).drainOnce() == DrainSummary(quarantined: 1))
         #expect(!exists(layout.ingested))
         #expect(layout.ingestedURL(named: "../escape.bin") == nil)
+    }
+
+    // MARK: - The ingested site is swept once a pass (098 · finding 8)
+    //
+    // Nothing had ever looked at `inbox/ingested/` after the move that created it. Two
+    // states there are permanent: a record that will not decode, and a record whose
+    // payload is gone from both sites. `InboxArchive` reads that directory on every
+    // export, so either one is a wrong count and a skipped capture for the life of the
+    // device, with no control anywhere that can clear it.
+
+    @Test("an ingested record that will not decode is quarantined")
+    func corruptIngestedRecordIsQuarantined() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+        let fileManager = FileManager.default
+
+        let id = UUID()
+        try fileManager.createDirectory(
+            at: layout.ingested, withIntermediateDirectories: true)
+        try Data("{ not a record".utf8).write(to: layout.ingestedRecordURL(for: id))
+        try Data("bytes nobody can name".utf8).write(
+            to: layout.ingested.appendingPathComponent(
+                InboxLayout.payloadFileName(for: id)))
+
+        #expect(await retainingDrain(env).drainOnce() == DrainSummary(quarantined: 1))
+
+        // Both halves left `ingested/`, so the export stops seeing it — and they are in
+        // `failed/`, which is where a whole capture a human might want goes.
+        #expect(try layout.ingestedRecordURLs().isEmpty)
+        #expect(exists(layout.failed.appendingPathComponent("\(id.uuidString).json")))
+        #expect(exists(layout.failed.appendingPathComponent("\(id.uuidString).bin")))
+    }
+
+    @Test("an ingested record whose payload is gone from both sites is quarantined")
+    func ingestedRecordWithoutBytesIsQuarantined() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        let record = try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
+        try InboxFixtures.retain(record, in: layout)
+        try FileManager.default.removeItem(at: layout.ingestedPayloadURL(for: id))
+
+        #expect(await retainingDrain(env).drainOnce() == DrainSummary(quarantined: 1))
+
+        #expect(try layout.ingestedRecordURLs().isEmpty)
+        #expect(exists(layout.failedRecordURL(for: id)))
+        // The record is re-encoded at the destination, so what is in `failed/` is the
+        // record that was swept and not a stale copy of it.
+        #expect(try readRecord(at: layout.failedRecordURL(for: id)).id == id)
+    }
+
+    @Test("a good ingested record is left alone, pass after pass")
+    func goodIngestedRecordSurvivesTheSweep() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(width: 24, height: 18), id: id,
+            capturedAt: Self.capturedAt)
+
+        let drain = retainingDrain(env)
+        #expect(await drain.drainOnce() == DrainSummary(ingested: 1))
+        #expect(await drain.drainOnce() == DrainSummary())
+        #expect(await drain.drainOnce() == DrainSummary())
+
+        #expect(exists(layout.ingestedRecordURL(for: id)))
+        #expect(exists(layout.ingestedPayloadURL(for: id)))
+        #expect(!exists(layout.failed))
+    }
+
+    /// A media-less capture is complete without bytes — a shared link is the link — so
+    /// "no payload" must not be read as "payload missing".
+    @Test("an ingested media-less record is not swept")
+    func ingestedMediaLessRecordSurvivesTheSweep() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        try InboxWriter(libraryRoot: env.root).write(
+            Self.contentRequest(kind: "link", collectionId: env.collectionID),
+            payload: PayloadSource?.none, id: id, capturedAt: Self.capturedAt)
+
+        let drain = retainingDrain(env)
+        #expect(await drain.drainOnce() == DrainSummary(ingested: 1))
+        #expect(await drain.drainOnce() == DrainSummary())
+        #expect(exists(layout.ingestedRecordURL(for: id)))
+        #expect(!exists(layout.failed))
+    }
+
+    /// The residue of a crash between the retention's two moves: the record has moved,
+    /// the bytes have not. `InboxArchive` reads that as a whole capture, so the sweep
+    /// must not take it away — the payload is present, at the OTHER site.
+    @Test("a half-finished retention is not swept away")
+    func halfFinishedRetentionSurvivesTheSweep() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        let record = try InboxWriter(libraryRoot: env.root).write(
+            .sample(collectionId: env.collectionID),
+            payload: CaptureFixtures.png(), id: id, capturedAt: Self.capturedAt)
+        try InboxFixtures.retain(record, in: layout, movingPayload: false)
+
+        #expect(await retainingDrain(env).drainOnce() == DrainSummary())
+        #expect(exists(layout.ingestedRecordURL(for: id)))
+        #expect(exists(layout.payloadURL(for: id)))
+        #expect(!exists(layout.failed))
+    }
+
+    /// A Mac deletes an ingested record and never grows the directory, so it has no
+    /// business walking one — a `ingested/` on a discarding host is somebody else's
+    /// inbox mounted in the same place, or a leftover from a policy this host does not
+    /// have, and either way it is not this drain's to tidy.
+    @Test("a discarding drain never looks in ingested/")
+    func discardingDrainDoesNotSweep() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        let id = UUID()
+        try FileManager.default.createDirectory(
+            at: layout.ingested, withIntermediateDirectories: true)
+        try Data("{ not a record".utf8).write(to: layout.ingestedRecordURL(for: id))
+
+        #expect(await drain(env).drainOnce() == DrainSummary())
+        #expect(exists(layout.ingestedRecordURL(for: id)))
+        #expect(!exists(layout.failed))
+    }
+
+    /// The sweep runs after the pending set, so a capture retained by THIS pass is seen
+    /// by it — and survives, because it is whole. The case exists because it is the
+    /// common one: every successful pass on a phone ends with the sweep reading the
+    /// records it has just written.
+    @Test("a record retained by this pass survives the sweep it lands in")
+    func retainedThisPassSurvivesItsOwnSweep() async throws {
+        let env = try await makeTempPipeline()
+        defer { env.cleanup() }
+        let layout = inbox(env)
+
+        for offset in 0..<3 {
+            try InboxWriter(libraryRoot: env.root).write(
+                .sample(collectionId: env.collectionID),
+                payload: CaptureFixtures.png(width: 20 + offset, height: 20),
+                capturedAt: Self.capturedAt.addingTimeInterval(Double(offset)))
+        }
+
+        #expect(await retainingDrain(env).drainOnce() == DrainSummary(ingested: 3))
+        #expect(try layout.ingestedRecordURLs().count == 3)
+        #expect(!exists(layout.failed))
     }
 
     // MARK: - Cancellation (R2 · issue 9A)
@@ -1626,6 +2051,26 @@ private final class Latch: @unchecked Sendable {
     }
 
     func set(_ newValue: Bool) {
+        lock.lock()
+        value = newValue
+        lock.unlock()
+    }
+}
+
+/// One record a synchronous, `Sendable` closure can read off disk and a test can look
+/// at afterwards — the inbox as it stood in the middle of a pass, which is the only
+/// place the write-ahead stamp is observable without killing the process.
+private final class ObservedRecord: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: InboxRecord?
+
+    var recorded: InboxRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func record(_ newValue: InboxRecord?) {
         lock.lock()
         value = newValue
         lock.unlock()
