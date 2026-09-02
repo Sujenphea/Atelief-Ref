@@ -30,6 +30,7 @@
 // library, which holds only what the Mac has synced back — so a drain that deleted the
 // record would destroy the only copy the export has.
 
+import AtelierCapture
 import AtelierCore
 import AtelierIngestion
 import Foundation
@@ -40,7 +41,21 @@ import os
 /// no lever for (an unreadable container, a quarantined capture), which 093 § 7 and the
 /// Mac's scheduler both settle the same way — the log, not a notice.
 nonisolated enum MobileLog {
-    static let subsystem = "sujenphea.AtelierRefsMobile"
+    /// This process's own bundle identifier, with the build's spelling as the fallback.
+    ///
+    /// **The fallback is a constant and not a literal** (098 · finding 7). It was
+    /// `"sujenphea.AtelierRefsMobile"` hand-spelled here, beside a second hand-spelling
+    /// of this app's identifier in `AtelierRefsShare/ShareLog.swift` — two strings, in
+    /// two targets, describing one `PRODUCT_BUNDLE_IDENTIFIER`, and an edit to that
+    /// setting would have rotted both without breaking or warning anything. P5 adopted
+    /// ``CompanionBundle`` on the extension's side and left this one, which lives in a
+    /// file that phase could not edit; this is the other half.
+    ///
+    /// `Bundle.main.bundleIdentifier` is preferred over the constant for the reason
+    /// `ShareLog` gives: it is what this process actually IS, where the constant is only
+    /// what it is supposed to be. `CompanionBundleTests` reads both identifiers back out
+    /// of `project.pbxproj`, so the constant cannot drift from the build in silence.
+    static let subsystem = Bundle.main.bundleIdentifier ?? CompanionBundle.app
     /// Everything on the capture path: the drain's cadence and what a pass found.
     static let capture = Logger(subsystem: subsystem, category: "capture")
 }

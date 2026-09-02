@@ -3,15 +3,15 @@
 <plist version="1.0">
 <dict>
 	<!--
-	  This file exists for exactly one key. `GENERATE_INFOPLIST_FILE` is still YES —
-	  the launch screen, scene manifest and orientations continue to arrive as
+	  This file exists for the keys `INFOPLIST_KEY_*` cannot carry. `GENERATE_INFOPLIST_FILE`
+	  is still YES — the scene manifest and the orientations continue to arrive as
 	  `INFOPLIST_KEY_*` build settings and are merged over this base, the same
 	  arrangement the macOS app (`../Info.plist`) and `AtelierRefsShare` already use.
-	  The key is here rather than a seventh `INFOPLIST_KEY_*` because that mechanism
-	  covers only the Info.plist keys Xcode knows: `INFOPLIST_KEY_AtelierAppGroupIdentifier`
-	  was accepted by the build without complaint and dropped from the generated
-	  plist, which is a silent failure the app would have reported at runtime as
-	  `appGroupIdentifierMissing` (092 · S4b).
+	  The App Group key is here rather than a seventh `INFOPLIST_KEY_*` because that
+	  mechanism covers only the Info.plist keys Xcode knows:
+	  `INFOPLIST_KEY_AtelierAppGroupIdentifier` was accepted by the build without
+	  complaint and dropped from the generated plist, which is a silent failure the app
+	  would have reported at runtime as `appGroupIdentifierMissing` (092 · S4b).
 
 	  092 · S1 (decision 2) — the App Group whose container holds the Library, read by
 	  `LibraryLocation.appGroupIdentifier()`. Fed by the same $(ATELIER_APP_GROUP)
@@ -31,5 +31,35 @@
 	-->
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
+	<!--
+	  093 § 6 again, one frame earlier. `INFOPLIST_KEY_UILaunchScreen_Generation = YES`
+	  generated an EMPTY `UILaunchScreen` dictionary, which means `systemBackground` —
+	  and `systemBackground` under `UIUserInterfaceStyle = Dark` is pure `#000000`. So
+	  every cold launch drew one black frame before `canvasOuter` `#131313` painted:
+	  a flash, on the ground tone the whole app is committed to, in the first thing
+	  anybody sees. A launch screen is not a screen here, it is the colour the app
+	  starts as, so it names the colour.
+
+	  `UIColorName` rather than a `UIImageName` or a storyboard: there is nothing to
+	  draw. The value is an asset-catalog colour set (`Assets.xcassets/LaunchBackground`)
+	  because that is the only form this key takes — UIKit resolves it through
+	  `UIColor(named:)` in the LAUNCH process, which has no Swift of ours running in it
+	  and therefore cannot read `Tokens.Colors.canvasOuter`. That makes the colour set a
+	  second spelling of `0x131313` (`AtelierTokens/Palette.swift:26`), which is why it
+	  is written there in hex rather than as decimal components: the two are meant to be
+	  comparable by eye.
+
+	  `INFOPLIST_KEY_UILaunchScreen_Generation` is REMOVED from both configurations, not
+	  set alongside this: the generated keys are merged OVER this file, so leaving it on
+	  would put the empty dictionary back and the flash with it. Written here rather than
+	  as `INFOPLIST_KEY_UILaunchScreen_UIColorName` so the value sits next to the two
+	  paragraphs that say why it is that value — a build setting is a string with its
+	  argument removed, which is the same case the App Group key above makes.
+	-->
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
 </dict>
 </plist>
