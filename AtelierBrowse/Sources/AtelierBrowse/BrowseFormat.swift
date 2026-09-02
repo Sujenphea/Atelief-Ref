@@ -67,9 +67,11 @@ public enum BrowseFormat {
         nonBlank(name) ?? nonBlank(sourceTitle)
     }
 
-    /// A trimmed value, or `nil` when it is absent, empty, or whitespace only.
+    /// A trimmed value, or `nil` when it is absent, empty, or whitespace only —
+    /// `TextRules.nonBlank`, which is the one statement of that rule (457). Kept as an
+    /// entry point because the app's tiles and detail screen call it by this name; it
+    /// decides nothing of its own.
     public static func nonBlank(_ value: String?) -> String? {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (trimmed?.isEmpty ?? true) ? nil : trimmed
+        TextRules.nonBlank(value)
     }
 }

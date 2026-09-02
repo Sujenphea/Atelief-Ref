@@ -25,6 +25,25 @@ public final class AppServices: Sendable {
         self.database = try LibraryDatabase(path: databasePath)
     }
 
+    /// Open (or create, and migrate) the library rooted at `libraryRoot` — the database
+    /// at ``databaseURL(in:)``.
+    ///
+    /// The one composition of ``AtelierCore/databaseFileName`` with a root (457). Every
+    /// host that opens a library has a ROOT — `LibraryLocation` hands one out, `blobs/`
+    /// and `thumbnails/` hang off it — and three of them had spelled the join to the
+    /// database file by hand. Three spellings of one path is how a phone and a Mac end
+    /// up opening two different files under one root.
+    public static func open(libraryRoot: URL) throws -> AppServices {
+        try AppServices(databasePath: databaseURL(in: libraryRoot).path)
+    }
+
+    /// `<libraryRoot>/library.sqlite` — where ``open(libraryRoot:)`` opens. Pure path
+    /// arithmetic, exposed so a caller that only needs to LOOK (a storage scan, a test
+    /// asserting where the file went) asks the same authority the opener does.
+    public static func databaseURL(in libraryRoot: URL) -> URL {
+        libraryRoot.appendingPathComponent(AtelierCore.databaseFileName, isDirectory: false)
+    }
+
     /// Compose over an existing store (tests / future wiring). `internal` (A2).
     init(database: LibraryDatabase) {
         self.database = database

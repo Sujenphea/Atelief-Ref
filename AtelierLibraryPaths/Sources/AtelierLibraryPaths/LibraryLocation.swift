@@ -253,6 +253,8 @@ public enum LibraryLocation {
             .map { $0 + 1 }
             .flatMap { arguments.indices.contains($0) ? arguments[$0] : nil }
         let raw = fromArgument ?? environment[overrideEnvironmentKey]
+        // Spelled here rather than `AtelierCore.TextRules.nonBlank`: this package has no
+        // dependencies by charter (see the manifest), and a leaf cannot import the rule.
         let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed?.isEmpty ?? true) ? nil : trimmed
     }

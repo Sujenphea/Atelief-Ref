@@ -126,9 +126,7 @@ public struct SearchRules: Sendable, Equatable, Hashable, Codable {
     /// Trim and collapse an empty/whitespace-only query to `nil` (mirrors what
     /// `searchAssets` does to `text`, so a saved blank text ≠ a real filter).
     private static func normalizeText(_ text: String?) -> String? {
-        guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmed.isEmpty else { return nil }
-        return trimmed
+        TextRules.nonBlank(text)
     }
 
     /// Distinct values, first-seen order preserved (deterministic — `Set` would

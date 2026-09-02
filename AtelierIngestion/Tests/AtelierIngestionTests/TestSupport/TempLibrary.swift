@@ -96,8 +96,7 @@ func makeTempPipeline(maxConcurrent: Int = 4) async throws -> TempPipeline {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
     let store = MediaStore(root: root)
-    let dbPath = root.appendingPathComponent("library.sqlite").path
-    let services = try AppServices(databasePath: dbPath)
+    let services = try AppServices.open(libraryRoot: root)
     let collection = try await services.createCollection(name: "Test Collection")
 
     let pipeline = IngestPipeline(store: store, services: services)

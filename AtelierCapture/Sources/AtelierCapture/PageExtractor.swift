@@ -208,11 +208,13 @@ public enum PageExtractor {
             rawMetadata: .object(metadata))
     }
 
-    /// A title worth recording. Deferred to ``ShareCapture`` so tier 1 and tier 2 cannot
-    /// disagree about what an empty title is, and truncated because `og:description` on a
-    /// long post is a paragraph and `title` is a label.
+    /// A title worth recording. Emptiness is `TextRules.nonBlank`'s decision — the same
+    /// one tier 1 makes in ``ShareCapture/sharedItem(image:urlString:title:)`` — so the
+    /// two tiers cannot disagree about what an empty title is; the truncation is this
+    /// file's, because `og:description` on a long post is a paragraph and `title` is a
+    /// label.
     private static func normalized(_ raw: String?) -> String? {
-        guard let title = ShareCapture.normalizedTitle(raw) else { return nil }
+        guard let title = TextRules.nonBlank(raw) else { return nil }
         guard title.count > maximumTitleLength else { return title }
         return String(title.prefix(maximumTitleLength)).trimmingCharacters(
             in: .whitespacesAndNewlines) + "…"

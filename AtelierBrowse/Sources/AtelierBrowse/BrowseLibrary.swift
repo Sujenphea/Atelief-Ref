@@ -38,12 +38,7 @@ public struct BrowseLibrary: Sendable {
 
     /// Open (or create, and migrate) the library rooted at `root`.
     public init(root: URL) throws {
-        try self.init(
-            root: root,
-            services: AppServices(
-                databasePath: root
-                    .appendingPathComponent(AtelierCore.databaseFileName)
-                    .path))
+        try self.init(root: root, services: AppServices.open(libraryRoot: root))
     }
 
     /// Compose over an already-open `AppServices` — how the tests drive this without

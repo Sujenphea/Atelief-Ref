@@ -24,6 +24,7 @@
 // whole extension avoiding. The poster is still harvested, so a video post yields its
 // poster rather than nothing.
 
+import AtelierCore
 import Foundation
 
 /// The raw snapshot the preprocessing script returns, before any classification.
@@ -169,8 +170,8 @@ public struct PageHarvest: Equatable, Sendable {
     /// - **A `data:` src is skipped.** It is an inlined image the page already holds, and
     ///   nothing downstream can fetch it — on the phone that matters more than in the
     ///   browser, because the fetch happens in a process with a memory ceiling.
-    /// - **An empty title is no title**, matching `ShareCapture.normalizedTitle(_:)`
-    ///   rather than inventing a second emptiness rule.
+    /// - **An empty title is no title**, by `TextRules.nonBlank` — the same rule tier 1
+    ///   applies in `ShareCapture.sharedItem`, rather than a second emptiness rule.
     public static func build(from raw: RawPageSignals) -> PageHarvest {
         var metas: [String: String] = [:]
         for meta in raw.metas ?? [] {
@@ -202,21 +203,14 @@ public struct PageHarvest: Equatable, Sendable {
         }
 
         return PageHarvest(
-            url: nonBlank(raw.url), title: nonBlank(raw.title),
-            canonical: nonBlank(raw.canonical), metas: metas, media: media)
+            url: TextRules.nonBlank(raw.url), title: TextRules.nonBlank(raw.title),
+            canonical: TextRules.nonBlank(raw.canonical), metas: metas, media: media)
     }
 
     /// A src worth keeping: present, non-blank, and not an inlined `data:` URL.
     private static func usable(_ src: String?) -> String? {
-        guard let src = nonBlank(src), !src.hasPrefix("data:") else { return nil }
+        guard let src = TextRules.nonBlank(src), !src.hasPrefix("data:") else { return nil }
         return src
-    }
-
-    private static func nonBlank(_ value: String?) -> String? {
-        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmed.isEmpty
-        else { return nil }
-        return trimmed
     }
 
     // MARK: - Decoding

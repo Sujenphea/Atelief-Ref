@@ -227,8 +227,7 @@ struct TempBrowseLibrary {
             .appendingPathComponent("AtelierBrowseTests", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        services = try AppServices(
-            databasePath: root.appendingPathComponent(AtelierCore.databaseFileName).path)
+        services = try AppServices.open(libraryRoot: root)
         library = BrowseLibrary(root: root, services: services)
     }
 

@@ -220,19 +220,6 @@ public enum ShareCapture {
         return raw
     }
 
-    /// A title worth recording, or nil — the one place emptiness is decided.
-    ///
-    /// A sharing app that supplies `""`, or a line of spaces, has supplied no title;
-    /// storing one would put a blank string where the Mac expects either a title or
-    /// nothing. Trimming rather than merely testing, because a title arriving with a
-    /// trailing newline is the same title.
-    static func normalizedTitle(_ raw: String?) -> String? {
-        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmed.isEmpty
-        else { return nil }
-        return trimmed
-    }
-
     /// What a share amounts to, given what the extension managed to pull out of its
     /// item providers — or nil when there is nothing capturable (406, issue 11).
     ///
@@ -245,7 +232,9 @@ public enum ShareCapture {
     ///     would throw away the actual picture.
     ///   • **The URL must be a web URL**, per ``webURLString(_:)``. A `file://` is
     ///     dropped rather than becoming provenance, on both branches.
-    ///   • **An empty title is no title**, per ``normalizedTitle(_:)``.
+    ///   • **An empty title is no title**, per `TextRules.nonBlank` — a sharing app that
+    ///     supplies `""`, or a line of spaces, has supplied no title, and storing one
+    ///     would put a blank string where the Mac expects either a title or nothing.
     ///   • **Neither one means nil**, which the caller renders as a lost capture. The
     ///     extension's activation rule should make it unreachable, which is exactly why
     ///     it is decided somewhere a test can reach.
@@ -253,7 +242,7 @@ public enum ShareCapture {
         image: PayloadSource?, urlString: String?, title: String? = nil
     ) -> SharedItem? {
         let webURL = webURLString(urlString)
-        let title = normalizedTitle(title)
+        let title = TextRules.nonBlank(title)
         if let image {
             return .image(bytes: image, sourceURL: webURL, title: title)
         }
@@ -319,7 +308,7 @@ public enum ShareCapture {
         ProvenanceDTO(
             platform: platform(forURLString: urlString).rawValue,
             originalURL: urlString,
-            title: normalizedTitle(title),
+            title: TextRules.nonBlank(title),
             rawMetadata: .object([capturedViaKey: .string(capturedViaValue)]))
     }
 
