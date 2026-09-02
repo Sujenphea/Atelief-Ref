@@ -218,21 +218,35 @@ struct ContentView: View {
 
     // MARK: - Root
 
-    @ViewBuilder
     private var root: some View {
-        switch store.phase {
-        case .loading:
-            LoadingNotice()
-        case .failed(let message):
-            FailureNotice(message: message)
-        case .ready:
-            CollectionScreen(
-                store: store,
-                collectionID: store.rootCollectionID,
-                isRoot: true,
-                onSwitchCollection: { isShowingSwitcher = true },
-                export: export)
+        Group {
+            switch store.phase {
+            case .loading:
+                LoadingNotice()
+            case .failed(let message):
+                FailureNotice(message: message)
+            case .ready:
+                CollectionScreen(
+                    store: store,
+                    collectionID: store.rootCollectionID,
+                    isRoot: true,
+                    onSwitchCollection: { isShowingSwitcher = true },
+                    export: export)
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // **The app's ground, painted opaque** (093 § 4). Both other screens paint
+        // `panel` for themselves; the loading and failure states painted nothing, so a
+        // library that would not open drew an orange sentence on the navigation
+        // controller's own `#000000` — a colour this app does not have.
+        //
+        // `canvasOuter` and not `panel`, and INSIDE the stack rather than on it: it is the
+        // launch screen's colour (`Info.plist` · `UILaunchScreen`), so the first frame the
+        // app draws is the tone the launch image already was, and only content brings
+        // `panel` with it. On the `NavigationStack` it would be painted over — the
+        // navigation controller's view is opaque, which is the whole reason the black was
+        // showing in the first place.
+        .background(MobileTheme.Colors.canvasOuter)
     }
 
     @ViewBuilder
