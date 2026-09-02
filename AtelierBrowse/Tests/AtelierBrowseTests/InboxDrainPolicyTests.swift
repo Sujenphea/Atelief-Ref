@@ -709,7 +709,18 @@ struct InboxDrainPolicyExclusionTests {
         let rig = Rig()
         let first = rig.startExport("a", parks: true)
         let second = rig.startExport("b")
-        #expect(await rig.waitUntil { rig.policy.exportsHolding == 2 })
+        // Both conditions in ONE wait, and this is not tidiness. `exclusively(_:)`
+        // increments `exportsHolding` BEFORE it creates the work task, so a count of 2 is
+        // reached while "a"'s body may still be waiting to be scheduled — asserting
+        // `happened("a start")` on the next line was a race, and it lost roughly one run
+        // in three once this suite grew from 82 tests to 150 and the machine had more to
+        // do. Nothing about the policy changed; the test's premise had a gap in it (098 ·
+        // P3). What is being set up is the same and is now actually established: two
+        // exports queued, the first one INSIDE its body, before either is released.
+        #expect(await rig.waitUntil {
+            rig.policy.exportsHolding == 2 && rig.happened("a start")
+        })
+        #expect(rig.policy.exportsHolding == 2)
         #expect(rig.happened("a start"))
 
         rig.exportGate.open()
