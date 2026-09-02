@@ -550,7 +550,14 @@ extension AppServices {
     /// `asset_tag` join cascades), matching ``removeTag(_:from:source:)``.
     @discardableResult
     public func deleteAssets(_ assetIDs: [UUID]) async throws -> [BlobRef] {
-        try await write { db in try Self.performDelete(assetIDs, in: db) }
+        let orphans = try await write { db in try Self.performDelete(assetIDs, in: db) }
+        // The second of the two writers the resident corpus is invalidated from
+        // (099 · P0b). `asset_embedding.asset_id` CASCADEs, so a delete takes rows
+        // out of the corpus's source table without ever naming it — which is
+        // precisely why the invalidation has to be spelled at the two public
+        // entry points rather than left to whoever remembers the cascade.
+        corpusCache.invalidate()
+        return orphans
     }
 
     /// The delete cascade, shared by ``deleteAssets(_:)`` and the recoverable

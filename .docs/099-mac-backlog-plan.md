@@ -507,7 +507,7 @@ supplied. 12A's rule applies to each. Effort M each.*
 |---|---|---|
 | P0 | done | [457](../.change-log/457-the-packages-get-their-foundations.md) |
 | 17A | done — the gate's two arms split | [458](../.change-log/458-the-gate-tells-its-two-arms-apart.md) |
-| P0b | **running** — 20k measured at 1,547 ms, 15× the ~100 ms threshold | — |
+| P0b | done — 20k warm 1,535 → 59 ms, cold 1,676 → 303 ms, 41 MB resident | [459](../.change-log/459-the-corpus-goes-resident.md) |
 | P1 | not started | — |
 | P2 | not started | — |
 | P3 | not started | — |

@@ -243,11 +243,18 @@ extension AppServices {
     /// deferred to the launch orphan-GC, so ``restoreDeletedAssets(_:)`` finds the
     /// bytes still on disk. A delete that is never undone is reclaimed next launch.
     public func deleteAssetsRecoverable(_ assetIDs: [UUID]) async throws -> DeletedAssetsBackup {
-        try await write { db in
+        let backup = try await write { db in
             let backup = try Self.captureBackup(assetIDs, in: db)
             _ = try Self.performDelete(assetIDs, in: db)
             return backup
         }
+        // The delete half of 099 · P0b's two-writer invalidation. The RESTORE half
+        // deliberately does not invalidate: `DeletedAssetsBackup` carries no
+        // embedding rows (they are derived, and `captureBackup` never reads them),
+        // so ⌘Z brings the asset back UN-embedded and the backfill re-embeds it
+        // through `upsertEmbedding`, which invalidates on its own.
+        corpusCache.invalidate()
+        return backup
     }
 
     /// Snapshot the full graph the delete will remove (set-based reads).

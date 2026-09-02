@@ -15,7 +15,8 @@
 // `write {}` / `read {}` to the pool — `database` stays private to
 // `AppServices.swift` precisely so that rule is still the compiler's to enforce.
 
-import Accelerate
+// Accelerate is no longer imported here: the dot products moved to
+// `EmbeddingCorpus.swift` with the matrix they run over (099 · P0b).
 import Foundation
 import GRDB
 
@@ -295,7 +296,7 @@ extension AppServices {
     ) async throws -> AssetEmbedding {
         let encoded = AssetEmbedding.encode(vector)
         let embeddedAt = Date()
-        return try await write { db in
+        let written = try await write { db in
             guard try Asset.exists(db, key: Self.key(assetID)) else {
                 throw AtelierError.notFound(entity: "asset", id: assetID)
             }
@@ -313,6 +314,14 @@ extension AppServices {
             if exists { try row.update(db) } else { try row.insert(db) }
             return row
         }
+        // One of the TWO writers that can change what the resident corpus holds
+        // (099 · P0b). AFTER the commit, not inside it: an invalidation issued
+        // before the write lands would let a reader in the pre-commit snapshot
+        // re-publish the very corpus this is clearing, and nothing would clear it
+        // a second time. See ``EmbeddingCorpusCache`` for the window this leaves
+        // and why it is survivable.
+        corpusCache.invalidate()
+        return written
     }
 
     /// The next analysis marker: greater than any issued before. Read inside the
@@ -436,12 +445,34 @@ extension AppServices {
     ///   applied in SQL FIRST (8A) so cosine ranks only in-scope candidates — a
     ///   nearer match outside the scope never displaces a real one.
     ///
-    /// Ranking is Swift-side brute-force cosine (SQLite has no vector index): load
-    /// the in-scope `(id, vector)` pairs, dot-product each against the query
-    /// (vectors are L2-normalized, so dot == cosine), take the top `limit`. This is
-    /// bounded for library-scale collections (≤ tens of thousands); a vector index
-    /// / ANN is the escape hatch if profiling ever demands it. NOT keyset-pageable
-    /// (relevance order isn't the recency cursor's order) — `limit` only.
+    /// Ranking is Swift-side brute-force cosine (SQLite has no vector index), in
+    /// three steps, and **the split between them is the whole of 099 · P0b**:
+    ///
+    /// 1. **Scope, in SQL, live.** The predicates below narrow to the in-scope
+    ///    asset IDS — no vectors. This runs on every call against the current
+    ///    snapshot, so membership, the archive shelf and every filter are as
+    ///    fresh as they ever were. Nothing about them is cached, ever.
+    /// 2. **Vectors, from memory.** ``EmbeddingCorpusCache`` holds one contiguous
+    ///    row-major matrix of every embedding at this `(modelVersion, width)`,
+    ///    loaded once and reused. The two sets are intersected by id.
+    /// 3. **Top-k by partial selection.** A bounded heap (``TopKSelector``), not a
+    ///    sort of the whole corpus followed by a `prefix`.
+    ///
+    /// The ORDER is unchanged and must stay so: score descending, then id
+    /// ascending, so equal scores rank deterministically.
+    ///
+    /// What step 1 being live buys, and it is the property that matters: **a
+    /// stale corpus cannot resurrect a deleted or archived asset.** It is not
+    /// consulted about what exists. The worst a stale corpus can do is rank an
+    /// asset against a vector one re-embed old, or miss an asset embedded in the
+    /// last few microseconds — and the invalidation from the two writers closes
+    /// even that.
+    ///
+    /// Memory: **2 KB per embedded asset, resident** (512 × Float32), so ~40 MB
+    /// at 20,000. Unbounded by design — see ``EmbeddingCorpusCache``.
+    ///
+    /// Still NOT keyset-pageable (relevance order isn't the recency cursor's
+    /// order) — `limit` only.
     public func semanticSearchAssets(
         queryVector: [Float],
         modelVersion: Int,
@@ -461,13 +492,20 @@ extension AppServices {
         let distinctCollectionIDs = Array(Set(collectionIDs))
         let distinctColorBuckets = Array(Set(colorBuckets)).sorted()
 
+        let dimensions = queryVector.count
+        let cache = corpusCache
+
         return try await read { db in
             // 1. In-scope candidates (8A). These structured predicates mirror the
             //    same filters in `searchAssets` (platform / collection membership /
             //    tag set semantics) — kept as focused SQL here rather than sharing
             //    the FTS query builder, since this path has no text arms.
+            //
+            //    It selects IDS ONLY now. Selecting `e.vector` alongside them was
+            //    the 77 µs per asset P0 measured: 20,000 BLOBs read, copied and
+            //    decoded to answer a query that keeps fifty of them.
             var sql = """
-                SELECT e.asset_id AS asset_id, e.vector AS vector
+                SELECT e.asset_id AS asset_id
                 FROM asset_embedding e
                 JOIN asset a ON a.id = e.asset_id
                 """
@@ -543,34 +581,29 @@ extension AppServices {
             conditions.append("a.archived_at IS NULL")
             sql += "\n                WHERE " + conditions.joined(separator: " AND ")
 
-            let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+            let candidateKeys = try String.fetchAll(
+                db, sql: sql, arguments: StatementArguments(args))
+            guard !candidateKeys.isEmpty else { return [] }
 
-            // 2. Cosine = dot product (both sides L2-normalized). Query normalization
-            //    only scales all scores by |query|, which doesn't change the ranking,
-            //    so a non-unit query still orders correctly. Skip any dimension
-            //    mismatch defensively (a stale-shape vector never crashes the sort).
-            let dims = queryVector.count
-            var scored: [(id: UUID, score: Float)] = []
-            scored.reserveCapacity(rows.count)
-            for row in rows {
-                guard let idString: String = row["asset_id"],
-                      let id = UUID(uuidString: idString),
-                      let data: Data = row["vector"] else { continue }
-                let vector = AssetEmbedding.vectorFloats(data)
-                guard vector.count == dims else { continue }
-                var score: Float = 0
-                vDSP_dotpr(queryVector, 1, vector, 1, &score, vDSP_Length(dims))
-                scored.append((id, score))
+            // 2. The resident corpus, loaded on a miss INSIDE this same read, so
+            //    the vectors and the candidate set come from one snapshot rather
+            //    than two — the single-transaction guarantee the un-cached query
+            //    had, kept.
+            let corpus = try cache.corpus(modelVersion: modelVersion, dimensions: dimensions) {
+                try Self.loadEmbeddingCorpus(
+                    db, modelVersion: modelVersion, dimensions: dimensions)
             }
-            // Nearest first; ascending-id tiebreak so equal scores are deterministic.
-            scored.sort {
-                $0.score != $1.score ? $0.score > $1.score
-                    : $0.id.uuidString < $1.id.uuidString
-            }
-            let topIDs = scored.prefix(clampedLimit).map(\.id)
+
+            // 3. Cosine = dot product (both sides L2-normalized). Query
+            //    normalization only scales all scores by |query|, which doesn't
+            //    change the ranking, so a non-unit query still orders correctly.
+            //    Nearest first, ascending-id tiebreak, top `clampedLimit` — the
+            //    same order the full sort produced, selected without one.
+            let topIDs = corpus.topMatches(
+                query: queryVector, candidateKeys: candidateKeys, limit: clampedLimit)
             guard !topIDs.isEmpty else { return [] }
 
-            // 3. Hydrate details and restore the ranked order (the IN fetch is
+            // 4. Hydrate details and restore the ranked order (the IN fetch is
             //    unordered; the dictionary reorders by rank).
             let keys = topIDs.map(Self.key)
             let request = Asset
@@ -581,6 +614,52 @@ extension AppServices {
             let byID = Dictionary(uniqueKeysWithValues: details.map { ($0.asset.id, $0) })
             return topIDs.compactMap { byID[$0] }
         }
+    }
+
+    /// Read every embedding at `modelVersion` whose vector is exactly
+    /// `dimensions` floats wide into one resident matrix (099 · P0b).
+    ///
+    /// **A cursor, not `fetchAll`.** `fetchAll` would hold 20,000 live `Data`
+    /// blobs — 40 MB of them — at the same moment as the 40 MB matrix they are
+    /// being copied into, doubling the peak for no reason. Streamed, one blob is
+    /// alive at a time.
+    ///
+    /// **The width filter is in SQL** (`length(vector) = dimensions * 4`) rather
+    /// than in Swift, so a library holding two vector shapes under one model
+    /// version — a half-finished re-embed at a new width — loads only the rows a
+    /// query of THIS width could have scored. That is exactly what the un-cached
+    /// path did per row, moved to where it costs nothing.
+    ///
+    /// The `COUNT(*)` in front saves the matrix from growing by doubling through
+    /// twenty reallocations and copies of up to 40 MB. It deliberately does NOT
+    /// repeat the width filter: `model_version` alone is answerable from
+    /// `index_asset_embedding_on_model_version` without touching a row, while
+    /// `length(vector)` would drag the whole table through a second pass to
+    /// sharpen a number that only has to be an upper bound.
+    ///
+    /// This reads `asset_embedding`, never `asset`: what EXISTS is decided by the
+    /// live candidate query in ``semanticSearchAssets(queryVector:modelVersion:platform:tagIDs:tagMatch:collectionIDs:favoritesOnly:colorBuckets:colorMatch:minimumColorCoverage:limit:)``,
+    /// which is why a row here for a since-deleted asset could never surface one.
+    private static func loadEmbeddingCorpus(
+        _ db: Database, modelVersion: Int, dimensions: Int
+    ) throws -> EmbeddingCorpus {
+        let byteWidth = dimensions * 4
+        let expected = try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM asset_embedding WHERE model_version = ?
+            """, arguments: [modelVersion]) ?? 0
+        var builder = EmbeddingCorpusBuilder(
+            modelVersion: modelVersion, dimensions: dimensions, expectedRows: expected)
+        let cursor = try Row.fetchCursor(db, sql: """
+            SELECT asset_id, vector FROM asset_embedding
+            WHERE model_version = ? AND length(vector) = ?
+            """, arguments: [modelVersion, byteWidth])
+        while let row = try cursor.next() {
+            guard let key: String = row["asset_id"], let vector: Data = row["vector"] else {
+                continue
+            }
+            builder.append(key: key, vector: vector)
+        }
+        return builder.finish()
     }
 
     /// Decode a candidate row (shared by the two backfill queries).

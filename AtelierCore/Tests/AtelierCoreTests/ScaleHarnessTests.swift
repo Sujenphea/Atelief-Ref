@@ -81,16 +81,27 @@ struct ScaleHarnessTests {
         let reordered = try await services.collectionItems(in: c.id, includeArchived: false)
         #expect(reordered.map(\.asset.id) == reversed)
 
-        // Semantic search (15A). The measurement gate: `semanticSearchAssets`
-        // decodes EVERY in-scope 512-float vector, scores it, fully sorts, then
-        // takes `prefix(limit)`. Nothing here is indexed, so the cost is linear in
-        // the corpus and the sort is `n log n` over the whole of it — which is why
-        // the number below, not an argument, decides whether a resident corpus
-        // cache is worth building (099 · P0b: the threshold is ~100 ms at 20k).
+        // Semantic search (15A, then 099 · P0b). P0 measured this decoding EVERY
+        // in-scope 512-float BLOB per query, scoring it, fully sorting, then
+        // taking `prefix(limit)` — 1,547 ms at 20,000, fifteen times the ~100 ms
+        // threshold, which is what scheduled P0b.
+        //
+        // The three timings below now mean three different things, and the
+        // difference IS the measurement:
+        //
+        //   • COLD — the first query of the process. Pays the corpus load: one
+        //     pass over `asset_embedding` building a 2 KB × N resident matrix.
+        //     For a user who searches once per launch this is the real number.
+        //   • WARM — every query after it. Intersects the live candidate ids with
+        //     the resident matrix, dot-products, and tops-k by partial selection.
+        //   • SCOPED — the same, with a collection conjunct in the pre-filter.
         //
         // Seeded before the archive block for the same reason the reorder is: an
         // archived asset is excluded at the candidate stage, so scoring after it
         // would measure three quarters of the library and flatter the number.
+        //
+        // Every `upsertEmbedding` invalidates, so the loop below leaves the cache
+        // cold — which is exactly what the cold timing wants.
         let dims = 512
         let embedSeedStart = ContinuousClock.now
         for i in 0..<n {
@@ -109,10 +120,10 @@ struct ScaleHarnessTests {
         let semanticElapsed = ContinuousClock.now - semanticStart
         #expect(semantic.count == min(50, n))
 
-        // A second, warm run: the first pays SQLite's page-cache misses for a
-        // table it has never read. Both numbers go in the changelog, because the
-        // one a user feels is the warm one and the one a cold launch pays is the
-        // other.
+        // A second, warm run: the first pays the corpus load (and, before P0b,
+        // SQLite's page-cache misses for a table it had never read). Both numbers
+        // go in the changelog, because the one a user feels repeatedly is the warm
+        // one and the one a cold launch pays is the other.
         let semanticWarmStart = ContinuousClock.now
         let semanticWarm = try await services.semanticSearchAssets(
             queryVector: query, modelVersion: 1, limit: 50)
@@ -126,6 +137,13 @@ struct ScaleHarnessTests {
             queryVector: query, modelVersion: 1, collectionIDs: [c.id], limit: 50)
         let semanticScopedElapsed = ContinuousClock.now - semanticScopedStart
         #expect(semanticScoped.count == min(50, n))
+
+        // What the speed cost in memory, reported rather than asserted — 099 · P0b
+        // states the number and this is where it comes from.
+        let resident = services.corpusCache.resident
+        #expect(resident?.count == n)
+        let residentRows = resident?.count ?? 0
+        let residentMB = Double(resident?.approximateBytes ?? 0) / 1_048_576
 
         // The shelf (023 · A). Archive a QUARTER of the library, then time the
         // three reads the shelf changes:
@@ -170,11 +188,12 @@ struct ScaleHarnessTests {
           collectionItems: \(ms(listElapsed)) ms  (\(items.count) rows)
           search 'swatch': \(ms(searchElapsed)) ms  (page of \(hits.count))
           setGridOrder:    \(ms(orderElapsed)) ms  (\(reversed.count) rows reversed, chunks of 500)
-        [scale] semantic (15A) dims=512, corpus=\(n)
+        [scale] semantic (15A / P0b) dims=512, corpus=\(n)
           seed embeddings: \(ms(embedSeedElapsed)) ms  (\(ms(embedSeedElapsed) / Double(n)) ms/asset)
-          semanticSearch:  \(ms(semanticElapsed)) ms  (cold, library-wide, top \(semantic.count))
+          semanticSearch:  \(ms(semanticElapsed)) ms  (COLD — includes the corpus load, library-wide, top \(semantic.count))
           semanticSearch:  \(ms(semanticWarmElapsed)) ms  (warm, library-wide)
           semanticSearch:  \(ms(semanticScopedElapsed)) ms  (warm, scoped to one collection)
+          resident corpus: \(residentRows) rows, \(residentMB) MB  (2 KB per vector)
         [scale] archived=\(shelf.count) of \(n)
           archive:         \(ms(archiveElapsed)) ms  (one UPDATE)
           shelfAssets:     \(ms(shelfElapsed)) ms  (\(shelf.count) rows, no cursor)

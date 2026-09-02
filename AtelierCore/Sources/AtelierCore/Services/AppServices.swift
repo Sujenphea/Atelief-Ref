@@ -32,15 +32,33 @@ import GRDB
 
 /// The public, `Sendable` write surface over the internal ``LibraryDatabase``.
 ///
-/// `final class … Sendable` (A3): the only stored property is the `Sendable`
-/// store; no in-memory mutable state. All mutations are `async` and serialized
-/// by the underlying `DatabasePool` writer (WAL).
+/// `final class … Sendable` (A3): both stored properties are `Sendable` and both
+/// are `let`. All mutations are `async` and serialized by the underlying
+/// `DatabasePool` writer (WAL).
+///
+/// **One of them is a cache, and that is new** (099 · P0b). This class carried no
+/// in-memory state at all until the semantic corpus arrived, and the property
+/// below is the single exception: a mutex-guarded slot holding the embedding
+/// matrix meaning-search ranks over. It is not a general memoization layer and
+/// must not become one — it caches DERIVED numbers, never rows, and the queries
+/// that decide what a user may SEE still run live against SQLite on every call.
+/// See ``EmbeddingCorpusCache``.
 public final class AppServices: Sendable {
     /// The internal store. Never exposed — only the funnel touches its pool, and
     /// `private` here means only THIS file can, which is why the funnel grew a
     /// third door (``writeWithoutTransaction(_:)``) rather than widening this
     /// when the surface was split across files.
     private let database: LibraryDatabase
+
+    /// The resident embedding corpus (099 · P0b), loaded on the first meaning
+    /// search and invalidated by the two writers that can change it —
+    /// ``upsertEmbedding(assetID:modelVersion:contentHash:vector:)`` and the
+    /// asset delete. `internal`, not `private`, because the reader lives in
+    /// `AppServices+Analysis.swift` and the two invalidation sites in
+    /// `+Analysis.swift` and `+Collections.swift` / `+Assets.swift`; unlike
+    /// `database` there is no invariant that widening spends, because a cache
+    /// reachable from another file in the package cannot bypass a transaction.
+    let corpusCache = EmbeddingCorpusCache()
 
     /// Open (or create) a library at `databasePath`, migrated to the latest
     /// schema.
