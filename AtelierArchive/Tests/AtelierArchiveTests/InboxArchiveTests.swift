@@ -377,6 +377,208 @@ struct InboxArchiveTests {
         #expect(try InboxArchive.pendingRecords(in: rig.layout).isEmpty)
     }
 
+    // MARK: - What could not be read is counted (098 · finding 8)
+
+    /// The defect: `pendingRecords` dropped an undecodable `.json` with a `try?` and the
+    /// phone counted `.json` FILES, so a single corrupt record made the control say one
+    /// more than the manifest would ever contain — permanently, with no screen that could
+    /// show it and no control that could clear it.
+    @Test("a corrupt record among good ones is counted, and the good ones still export")
+    func corruptRecordIsCountedNotDropped() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let kept = try rig.captureImage(width: 8, height: 8, url: "https://example.com/a")
+        try rig.writeCorruptRecord()
+
+        let pending = try InboxArchive.pending(in: rig.layout)
+        #expect(pending.records.map(\.id) == [kept.id])
+        #expect(pending.unreadable == 1)
+
+        let summary = try rig.export()
+        #expect(summary.captures == 1)
+        #expect(summary.unreadable == 1)
+        #expect(summary.skipped == 1)
+        #expect(summary.skippedIDs.isEmpty)
+        #expect(summary.exported == [kept.id])
+        #expect(try rig.manifest().assets.count == 1)
+    }
+
+    /// An inbox of nothing but corrupt files is `nothingToExport`, not a folder claiming
+    /// to be an export of nothing — and the count says why rather than saying zero.
+    @Test("an inbox of nothing but corrupt records reports honestly")
+    func allCorruptInboxReportsHonestly() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        try rig.writeCorruptRecord()
+        try rig.writeCorruptRecord()
+
+        let pending = try InboxArchive.pending(in: rig.layout)
+        #expect(pending.records.isEmpty)
+        #expect(pending.unreadable == 2)
+
+        #expect(throws: InboxArchive.WriteError.nothingToExport) { _ = try rig.export() }
+    }
+
+    /// An undecodable record parked under `ingested/` is the same case and the one that
+    /// bit: it is invisible to the pending enumeration, so nothing but this ever looked
+    /// at it.
+    @Test("an unreadable record under ingested/ is counted too")
+    func unreadableIngestedRecordIsCounted() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        _ = try rig.captureImage(width: 8, height: 8, url: "https://example.com/a")
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: rig.layout.ingested, withIntermediateDirectories: true)
+        try Data("{ not a record".utf8).write(
+            to: rig.layout.ingestedRecordURL(for: UUID()))
+
+        #expect(try InboxArchive.pending(in: rig.layout).unreadable == 1)
+        #expect(try rig.export().unreadable == 1)
+    }
+
+    /// `skipped` is one answer made of two halves, and a caller reading only one of them
+    /// would under-report. Both kinds in one run, so the arithmetic is asserted rather
+    /// than assumed.
+    @Test("skipped is exactly the unreadable plus the named")
+    func skippedIsTheSumOfItsHalves() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        _ = try rig.captureImage(width: 8, height: 8, url: "https://example.com/kept")
+        let doomed = try rig.captureImage(width: 9, height: 9, url: "https://example.com/gone")
+        try FileManager.default.removeItem(at: rig.payloadURL(doomed))
+        try rig.writeCorruptRecord()
+
+        let summary = try rig.export()
+
+        #expect(summary.captures == 1)
+        #expect(summary.unreadable == 1)
+        #expect(summary.skippedIDs == [doomed.id])
+        #expect(summary.skipped == summary.unreadable + summary.skippedIDs.count)
+        #expect(summary.skipped == 2)
+    }
+
+    /// The other half of 098 · finding 1b, from the export's side: a capture the phone's
+    /// drain gave up on stays in the pending set, and the whole reason it stays there is
+    /// that the Mac may decode what this device could not.
+    @Test("a capture the phone could not ingest is still sent")
+    func exhaustedCaptureIsStillSent() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        var record = try rig.captureImage(
+            width: 12, height: 12, url: "https://example.com/exhausted")
+        // What a retaining drain leaves behind once the attempts are gone: the record
+        // pending, at the count that exhausted, with its bytes beside it.
+        record.attempts = 3
+        try rig.writer.rewrite(record)
+
+        let summary = try rig.export()
+
+        #expect(summary.captures == 1)
+        #expect(summary.files == 1)
+        #expect(summary.skipped == 0)
+        #expect(summary.exported == [record.id])
+        #expect(try rig.manifest().assets.first?.width == 12)
+    }
+
+    // MARK: - The folder an export lives in (098 · finding 4)
+
+    /// The leak: the phone removed a folder of the same NAME, which is the same name only
+    /// within one minute. Two sends a minute apart left two complete copies of every
+    /// capture, and Clear then made the abandoned one their only owner.
+    @Test("writeExport clears every sibling, not just its own name")
+    func writeExportClearsStaleSiblings() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let record = try rig.captureImage(width: 8, height: 8, url: "https://example.com/a")
+        let fileManager = FileManager.default
+
+        let stale = rig.exportsParent.appendingPathComponent(
+            "Atelier 2026-08-17 1830", isDirectory: true)
+        try fileManager.createDirectory(at: stale, withIntermediateDirectories: true)
+        try Data("last time's bytes".utf8).write(
+            to: stale.appendingPathComponent("payload.jpg"))
+
+        let export = try rig.writeExport(folderName: "Atelier 2026-08-17 1831")
+
+        #expect(!fileManager.fileExists(atPath: stale.path))
+        #expect(export.folder.lastPathComponent == "Atelier 2026-08-17 1831")
+        #expect(export.summary.exported == [record.id])
+        // Exactly one folder under the parent: the one that was just handed out.
+        #expect(try fileManager.contentsOfDirectory(
+            at: rig.exportsParent, includingPropertiesForKeys: nil)
+            .map(\.lastPathComponent) == ["Atelier 2026-08-17 1831"])
+        #expect(fileManager.fileExists(atPath: export.summary.manifestURL.path))
+    }
+
+    @Test("writeExport creates the parent when there has never been an export")
+    func writeExportCreatesAFreshParent() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        _ = try rig.captureImage(width: 8, height: 8, url: "https://example.com/a")
+        #expect(!FileManager.default.fileExists(atPath: rig.exportsParent.path))
+
+        let export = try rig.writeExport(folderName: "Atelier 2026-08-17 1830")
+
+        #expect(FileManager.default.fileExists(atPath: export.folder.path))
+        #expect(export.summary.captures == 1)
+    }
+
+    /// A file where a folder would be is litter this directory's meaning does not allow
+    /// for — it is "the current export" and nothing else — so it goes with the rest.
+    @Test("writeExport clears a non-directory sibling too")
+    func writeExportClearsAStrayFile() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        _ = try rig.captureImage(width: 8, height: 8, url: "https://example.com/a")
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: rig.exportsParent, withIntermediateDirectories: true)
+        let stray = rig.exportsParent.appendingPathComponent(".DS_Store")
+        try Data("stray".utf8).write(to: stray)
+
+        let export = try rig.writeExport(folderName: "Atelier 2026-08-17 1830")
+
+        #expect(!fileManager.fileExists(atPath: stray.path))
+        #expect(try fileManager.contentsOfDirectory(
+            at: rig.exportsParent, includingPropertiesForKeys: nil).count == 1)
+        #expect(export.summary.captures == 1)
+    }
+
+    /// Refused BEFORE anything is deleted: an empty inbox must not cost the user the
+    /// folder they may still be holding a share sheet over.
+    @Test("writeExport refuses an empty inbox without touching what is there")
+    func writeExportRefusesBeforeClearing() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        let fileManager = FileManager.default
+        let previous = rig.exportsParent.appendingPathComponent(
+            "Atelier 2026-08-17 1830", isDirectory: true)
+        try fileManager.createDirectory(at: previous, withIntermediateDirectories: true)
+
+        #expect(throws: InboxArchive.WriteError.nothingToExport) {
+            _ = try rig.writeExport(folderName: "Atelier 2026-08-17 1831")
+        }
+        #expect(fileManager.fileExists(atPath: previous.path))
+    }
+
+    /// The unreadable count reaches the summary through this entry point too — the phone
+    /// only ever calls this one, so a fold that happened only in `write` would be a fold
+    /// that never happened.
+    @Test("writeExport carries the unreadable count into its summary")
+    func writeExportCarriesTheUnreadableCount() throws {
+        let rig = try Rig()
+        defer { rig.cleanup() }
+        _ = try rig.captureImage(width: 8, height: 8, url: "https://example.com/a")
+        try rig.writeCorruptRecord()
+
+        let export = try rig.writeExport(folderName: "Atelier 2026-08-17 1830")
+
+        #expect(export.summary.captures == 1)
+        #expect(export.summary.unreadable == 1)
+        #expect(export.summary.skipped == 1)
+    }
+
     // MARK: - The handshake
 
     /// The rule is the reader's (`LibraryArchiveReaderRefusalTests` pins it for a
@@ -440,6 +642,10 @@ struct InboxArchiveTests {
     struct Rig {
         let libraryRoot: URL
         let root: URL
+        /// The stand-in for `Caches/Exports/`: the directory `writeExport` owns and
+        /// clears. Deliberately NOT created by the rig — "there has never been an
+        /// export" is a case.
+        let exportsParent: URL
         let layout: InboxLayout
         let writer: InboxWriter
 
@@ -447,6 +653,7 @@ struct InboxArchiveTests {
             let base = try InboxFixtures.temporaryLibraryRoot(suite: "InboxArchiveTests")
             libraryRoot = base.appendingPathComponent("library", isDirectory: true)
             root = base.appendingPathComponent("export", isDirectory: true)
+            exportsParent = base.appendingPathComponent("Exports", isDirectory: true)
             try FileManager.default.createDirectory(
                 at: libraryRoot, withIntermediateDirectories: true)
             layout = InboxLayout(libraryRoot: libraryRoot)
@@ -490,12 +697,37 @@ struct InboxArchiveTests {
             try InboxFixtures.retain(record, in: layout, movingPayload: movingPayload)
         }
 
+        /// A `.json` in the pending set that will never decode into a record — the state
+        /// `pending(in:)` used to drop with a `try?` and nothing else in the program
+        /// could see. Returns the name it was written under.
+        @discardableResult
+        func writeCorruptRecord() throws -> String {
+            let id = UUID()
+            try FileManager.default.createDirectory(
+                at: layout.directory, withIntermediateDirectories: true)
+            try Data("{ not a record".utf8).write(to: layout.recordURL(for: id))
+            return InboxLayout.recordFileName(for: id)
+        }
+
+        /// The whole read-and-write an export is, through the low-level writer — the
+        /// shape every assertion about the manifest is made against.
         func export() throws -> InboxArchive.Summary {
-            let records = try InboxArchive.pendingRecords(in: layout)
+            let pending = try InboxArchive.pending(in: layout)
             return try InboxArchive.write(
-                records: records, layout: layout, to: root,
+                records: pending.records, layout: layout, to: root,
                 appVersion: "1.0-test", schemaVersion: "v19",
-                exportedAt: Date(timeIntervalSince1970: 1_700_000_000))
+                exportedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                unreadable: pending.unreadable)
+        }
+
+        /// The same run through the entry point the phone actually calls, which owns the
+        /// folder lifecycle as well (098 · finding 4).
+        func writeExport(folderName: String) throws -> InboxArchive.Export {
+            try InboxArchive.writeExport(
+                try InboxArchive.pending(in: layout), layout: layout,
+                under: exportsParent, folderName: folderName,
+                appVersion: "1.0-test", schemaVersion: "v19",
+                now: Date(timeIntervalSince1970: 1_700_000_000))
         }
 
         func manifest() throws -> ArchiveManifest {

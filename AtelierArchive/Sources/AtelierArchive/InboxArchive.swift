@@ -31,6 +31,20 @@
 // a moment; the alternative is a second set of entry initializers taking raw fields, which
 // is a second definition of the format's contents. The golden-file tests pin one of those.
 //
+// **The folder an export lives in is this file's too, since 098 · finding 4.**
+// ``InboxArchive/writeExport(_:layout:under:folderName:appVersion:schemaVersion:now:)``
+// clears the parent, creates the timestamped folder, writes and returns both. It used to
+// be four lines in the phone's controller that removed a folder of the same name — the
+// same name only within the same minute — so two sends a minute apart left two complete
+// copies of every capture in Caches, and "Clear" then made the abandoned one the sole
+// owner of those bytes. An export owns its parent: one export exists at a time.
+//
+// **And what it could not read is a number, not a silence** (098 · finding 8).
+// ``InboxArchive/pending(in:)`` returns the records AND the count of `.json` files that
+// would not decode into one; ``InboxArchive/Summary/skipped`` folds that count in and
+// ``InboxArchive/Summary/skippedIDs`` names the records the funnel refused. A capture the
+// export is not carrying is now something the program can say out loud.
+//
 // **The provenance is the drain's, exactly.** Each record goes through
 // `CaptureDecoder.decodeFileInput` / `.decodeInput` — the same funnel the Mac's drain runs
 // (092 · S0's whole point) — so a capture that travels by archive arrives with the
@@ -54,8 +68,30 @@ public nonisolated enum InboxArchive {
         public var captures: Int = 0
         /// Payload files copied. Lower than ``captures`` when a capture is media-less.
         public var files: Int = 0
-        /// Records the funnel refused, or whose payload file was missing.
+        /// Everything the run did not send: ``unreadable`` plus ``skippedIDs``.
+        ///
+        /// One number because it is one answer to one question — "how many captures did
+        /// this run leave behind" — and the two halves are separately available for a
+        /// caller that wants to say more. The invariant `skipped == unreadable +
+        /// skippedIDs.count` is pinned by a test.
         public var skipped: Int = 0
+        /// Records the funnel refused, or whose payload file was missing, BY NAME
+        /// (098 · finding 8).
+        ///
+        /// The count alone said one capture was left behind and said nothing about
+        /// which, which is exactly the fact a person looking at a stuck "Send 3" needs.
+        /// Named rather than logged because this is a package with no logger, and the
+        /// only caller that can say anything to anyone is the app.
+        public var skippedIDs: [UUID] = []
+        /// `.json` files in the inbox that would not decode at all (098 · finding 8).
+        ///
+        /// These never became records, so they have no id to be named by and cannot be
+        /// in ``skippedIDs``; they are counted here and folded into ``skipped`` so that
+        /// the number a button shows and the number of entries in the manifest cannot
+        /// disagree. Before this they were dropped silently by
+        /// ``pendingRecords(in:)``'s `try?`, and one of them made "Send 4" a permanent
+        /// lie on a phone that could only ever send 3.
+        public var unreadable: Int = 0
         /// The ids that actually reached the manifest, in the order they were written
         /// (096 · 3B).
         ///
@@ -70,13 +106,59 @@ public nonisolated enum InboxArchive {
 
         public init(
             captures: Int = 0, files: Int = 0, skipped: Int = 0,
+            skippedIDs: [UUID] = [], unreadable: Int = 0,
             exported: [UUID] = [], manifestURL: URL
         ) {
             self.captures = captures
             self.files = files
             self.skipped = skipped
+            self.skippedIDs = skippedIDs
+            self.unreadable = unreadable
             self.exported = exported
             self.manifestURL = manifestURL
+        }
+
+        /// Leave a capture behind, counting it and naming it in one step — so a future
+        /// fourth `continue` in the write loop cannot move one and forget the other.
+        mutating func skip(_ id: UUID) {
+            skipped += 1
+            skippedIDs.append(id)
+        }
+    }
+
+    /// The records an export would send, and the files it could not read (098 · finding 8).
+    ///
+    /// The pair is one value because they are one reading of the inbox and a caller that
+    /// has the first without the second reports a number it cannot justify — which is the
+    /// defect this closes: the phone counted `.json` FILES, `pendingRecords(in:)` silently
+    /// dropped the ones that would not decode, and the two numbers were allowed to differ
+    /// forever with nothing in the program able to notice.
+    public struct Pending: Sendable, Equatable {
+        /// What will be written, in the order it should be written.
+        public var records: [InboxRecord]
+        /// How many `.json` files across the two sites would not decode into one.
+        ///
+        /// A count and not a list of URLs: nothing downstream can do anything with the
+        /// path (the drain's sweep is what quarantines these — 098 · finding 8), and the
+        /// only question this answers is how many captures the export is not carrying.
+        public var unreadable: Int
+
+        public init(records: [InboxRecord] = [], unreadable: Int = 0) {
+            self.records = records
+            self.unreadable = unreadable
+        }
+    }
+
+    /// What a whole export produced: the folder to hand to a share sheet, and the run.
+    public struct Export: Sendable {
+        /// The timestamped folder, freshly created, with the manifest inside it.
+        public let folder: URL
+        /// The run — `exported` is what the caller may retire.
+        public let summary: Summary
+
+        public init(folder: URL, summary: Summary) {
+            self.folder = folder
+            self.summary = summary
         }
     }
 
@@ -138,13 +220,42 @@ public nonisolated enum InboxArchive {
     /// place it showed was the `created_at` the Mac ended up storing: every phone capture
     /// dated 2054 and pinned to the top of Newest forever. 092 · S6c caught it.
     public static func pendingRecords(in layout: InboxLayout) throws -> [InboxRecord] {
+        try pending(in: layout).records
+    }
+
+    /// ``pendingRecords(in:)``, plus the count of what would not read (098 · finding 8).
+    ///
+    /// **The `try?` used to be the end of the story.** A `.json` that will not decode was
+    /// dropped here without a sound, so an export wrote a manifest of three captures while
+    /// the control above it said four — the phone counted files, this counted records, and
+    /// nothing in the program could see both numbers. Now the drop is a number, it is
+    /// folded into ``Summary/skipped``, and the phone counts what this returns.
+    ///
+    /// It is deliberately still a DROP and not a throw: one unreadable file must not stop
+    /// the other captures from being sent, which is the same judgement ``write`` makes for
+    /// a record the funnel refuses. Getting the file out of the way is the drain's job
+    /// (`InboxDrain`'s ingested-site sweep), not the export's — an export is something the
+    /// user asked for and must not be a filesystem tidy-up.
+    public static func pending(in layout: InboxLayout) throws -> Pending {
         let decoder = InboxRecord.makeDecoder()
         let urls = try layout.pendingRecordURLs() + layout.ingestedRecordURLs()
         var seen: Set<UUID> = []
-        return urls
-            .compactMap { try? decoder.decode(InboxRecord.self, from: Data(contentsOf: $0)) }
-            .filter { seen.insert($0.id).inserted }
-            .sorted { ($0.capturedAt, $0.id.uuidString) < ($1.capturedAt, $1.id.uuidString) }
+        var records: [InboxRecord] = []
+        var unreadable = 0
+        records.reserveCapacity(urls.count)
+
+        for url in urls {
+            guard let record = try? decoder.decode(
+                InboxRecord.self, from: Data(contentsOf: url)) else {
+                unreadable += 1
+                continue
+            }
+            // A duplicate id is not unreadable — it is the same capture, read twice.
+            if seen.insert(record.id).inserted { records.append(record) }
+        }
+
+        records.sort { ($0.capturedAt, $0.id.uuidString) < ($1.capturedAt, $1.id.uuidString) }
+        return Pending(records: records, unreadable: unreadable)
     }
 
     /// Write `records` into `root` as an archive.
@@ -158,13 +269,19 @@ public nonisolated enum InboxArchive {
     ///     does, and doing it here would be a second opinion about order.
     ///   - layout: resolves each record's payload file.
     ///   - root: the archive folder, created if absent.
+    ///   - unreadable: how many `.json` files the caller could not decode into records
+    ///     at all (``Pending/unreadable``), folded into ``Summary/skipped`` so the
+    ///     manifest and the count the caller shows describe the same inbox. Defaulted
+    ///     because a caller that hands over a list it built itself is claiming there was
+    ///     nothing it could not read.
     public static func write(
         records: [InboxRecord],
         layout: InboxLayout,
         to root: URL,
         appVersion: String,
         schemaVersion: String = AppServices.schemaVersion,
-        exportedAt: Date
+        exportedAt: Date,
+        unreadable: Int = 0
     ) throws -> Summary {
         guard !records.isEmpty else { throw WriteError.nothingToExport }
 
@@ -181,7 +298,11 @@ public nonisolated enum InboxArchive {
         }
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
+        // The unreadable files start the skip count: they are captures this run is not
+        // carrying, they have no id to be named by, and a caller that adds them itself
+        // afterwards is a caller that can forget to.
         var summary = Summary(
+            skipped: unreadable, unreadable: unreadable,
             manifestURL: root.appendingPathComponent(ArchiveLayout.manifestFilename))
         var names = ExportNameAllocator()
         var sources: [ArchiveManifest.SourceEntry] = []
@@ -193,7 +314,7 @@ public nonisolated enum InboxArchive {
 
         for record in records {
             guard let capture = decode(record, layout: layout) else {
-                summary.skipped += 1
+                summary.skip(record.id)
                 continue
             }
 
@@ -201,7 +322,7 @@ public nonisolated enum InboxArchive {
             var file: String?
             if let payload = capture.payloadURL {
                 guard let probed = probe(payload) else {
-                    summary.skipped += 1
+                    summary.skip(record.id)
                     continue
                 }
                 blob = probed
@@ -220,7 +341,7 @@ public nonisolated enum InboxArchive {
                         try fileManager.copyItem(
                             at: payload, to: directory.appendingPathComponent(name))
                     } catch {
-                        summary.skipped += 1
+                        summary.skip(record.id)
                         continue
                     }
                     byHash[probed.hash] = name
@@ -290,6 +411,68 @@ public nonisolated enum InboxArchive {
                 items: memberships)])
         try manifest.write(to: summary.manifestURL)
         return summary
+    }
+
+    // MARK: - A whole export
+
+    /// The folder lifecycle an export needs, in the package that owns the format
+    /// (098 · finding 4): clear the parent, make the timestamped folder, write into it,
+    /// hand back the folder and the run.
+    ///
+    /// **Why the parent is CLEARED and not just the folder.** The phone wrote into
+    /// `Caches/Exports/Atelier <date> <time>/` and removed only a folder of the same
+    /// name, which is the same name only within one minute. Send at 18:30 and again at
+    /// 18:31 and both folders survive; each one holds a full copy of every capture's
+    /// bytes. That is free while the inbox still owns those bytes — the copies are hard
+    /// facts about the same files on the same volume — right up until "Clear" retires the
+    /// captures and deletes the ingested payloads, at which point every abandoned export
+    /// folder becomes the sole owner of a complete copy of the user's captures, in Caches,
+    /// unreachable from any screen. So an export owns its parent directory: exactly one
+    /// export exists at a time, and the folder handed to the share sheet is the only one.
+    ///
+    /// Everything in the parent goes, not only directories. A stray file there is either
+    /// something this program left or something nothing put there on purpose, and the
+    /// directory's whole meaning is "the current export"; a tidy-up that skipped files
+    /// would leave the one kind of litter it could not explain.
+    ///
+    /// **Clearing before writing, not after.** A failed write leaves an empty parent and
+    /// no folder, which is honest — the previous export was stale the moment this one was
+    /// asked for, and the captures themselves are still in the inbox, which is the only
+    /// copy that was ever load-bearing.
+    ///
+    /// `folderName` is the caller's because naming is presentation: the string is what a
+    /// person reads on a Mac desktop beside whatever else was AirDropped that day, and
+    /// this package has no locale, no formatter and no opinion about it.
+    ///
+    /// - Throws: ``WriteError`` from ``write(records:layout:to:appVersion:schemaVersion:exportedAt:unreadable:)``,
+    ///   or a `FileManager` error if the folder cannot be made.
+    public static func writeExport(
+        _ pending: Pending,
+        layout: InboxLayout,
+        under parent: URL,
+        folderName: String,
+        appVersion: String,
+        schemaVersion: String = AppServices.schemaVersion,
+        now: Date
+    ) throws -> Export {
+        // Refused before anything is deleted: an empty inbox must not cost the user the
+        // folder they are still holding a share sheet over.
+        guard !pending.records.isEmpty else { throw WriteError.nothingToExport }
+
+        let fileManager = FileManager.default
+        if let existing = try? fileManager.contentsOfDirectory(
+            at: parent, includingPropertiesForKeys: nil) {
+            for item in existing { try? fileManager.removeItem(at: item) }
+        }
+
+        let folder = parent.appendingPathComponent(folderName, isDirectory: true)
+        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        let summary = try write(
+            records: pending.records, layout: layout, to: folder,
+            appVersion: appVersion, schemaVersion: schemaVersion, exportedAt: now,
+            unreadable: pending.unreadable)
+        return Export(folder: folder, summary: summary)
     }
 
     // MARK: - One record
