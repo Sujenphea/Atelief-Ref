@@ -50,36 +50,31 @@ struct GridTile: View {
     private var content: some View {
         switch detail.asset.content {
         case .image, .video:
-            ZStack {
-                MobileTheme.Colors.mediaBackdrop
-                ThumbnailImage(url: thumbnailURL, width: width)
-            }
+            MediaThumbnail(url: thumbnailURL, width: width)
         case .color(let hex):
             Color(hexString: hex) ?? MobileTheme.Colors.mediaBackdrop
         case .link(let link):
             if link.imageBlobHash != nil {
-                ZStack {
-                    MobileTheme.Colors.mediaBackdrop
-                    ThumbnailImage(url: thumbnailURL, width: width)
-                }
+                MediaThumbnail(url: thumbnailURL, width: width)
             } else {
+                // The host, not the URL, when a link has no title — which on this phone is
+                // EVERY tier-1 link, because nothing enriches one (098 · "also found":
+                // `ShareCapture.swift` and 092 · S4b both say the drain adds og-tags and
+                // neither `InboxDrain.makeInput` nor `PageResolver` does it on iOS).
                 TextCard(
                     glyph: "link",
-                    title: BrowseFormat.nonBlank(link.title) ?? link.url,
-                    subtitle: BrowseFormat.nonBlank(link.description))
+                    title: BrowseFormat.linkTitle(link.title, url: link.url),
+                    subtitle: TextRules.nonBlank(link.description))
             }
         case .tweet(let tweet):
             if tweet.cardImageBlobHash != nil {
-                ZStack {
-                    MobileTheme.Colors.mediaBackdrop
-                    ThumbnailImage(url: thumbnailURL, width: width)
-                }
+                MediaThumbnail(url: thumbnailURL, width: width)
             } else {
                 TextCard(
                     glyph: "text.bubble",
                     title: BrowseFormat.author(
                         name: tweet.authorName, handle: tweet.authorHandle) ?? "Post",
-                    subtitle: BrowseFormat.nonBlank(tweet.text))
+                    subtitle: TextRules.nonBlank(tweet.text))
             }
         case .unknown:
             MobileTheme.Colors.mediaBackdrop

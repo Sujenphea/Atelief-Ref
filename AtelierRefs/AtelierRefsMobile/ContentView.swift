@@ -16,6 +16,7 @@
 import AtelierBrowse
 import AtelierCore
 import AtelierIngestion
+import AtelierTokens
 import SwiftUI
 
 /// Everything the stack can push. A small enum of IDs rather than the model objects
@@ -154,10 +155,16 @@ struct ContentView: View {
         scheduler.start()
     }
 
+    /// The Info.plist key carrying the marketing version. Named rather than spelled at
+    /// its one use site, following `FixtureLibrary.argument` and
+    /// `LibraryLocation.appGroupIdentifierKey`: a plist key inline in an expression is a
+    /// string nothing can find, and this one crosses to a Mac inside every manifest.
+    static let shortVersionKey = "CFBundleShortVersionString"
+
     /// What the manifest records as the writing app — the same string the Mac's own
     /// exports carry, read from the bundle rather than spelled here.
     static var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+        Bundle.main.object(forInfoDictionaryKey: shortVersionKey) as? String ?? "0"
     }
 
     /// The share sheet is presented for exactly one phase, and dismissing it has to put the
@@ -383,16 +390,7 @@ private struct SubcollectionBar: View {
                             .foregroundStyle(MobileTheme.Colors.inkPrimary)
                             .padding(.horizontal, MobileTheme.Spacing.md)
                             .frame(minHeight: MobileTheme.touchTarget)
-                            .background(
-                                RoundedRectangle(
-                                    cornerRadius: MobileTheme.Radius.chip, style: .continuous)
-                                    .fill(MobileTheme.Colors.field))
-                            .overlay(
-                                RoundedRectangle(
-                                    cornerRadius: MobileTheme.Radius.chip, style: .continuous)
-                                    .strokeBorder(MobileTheme.Colors.hairline, lineWidth: 1))
-                            .contentShape(
-                                RoundedRectangle(cornerRadius: MobileTheme.Radius.chip))
+                            .fieldChrome(cornerRadius: MobileTheme.Radius.chip)
                     }
                     .buttonStyle(.plain)
                 }

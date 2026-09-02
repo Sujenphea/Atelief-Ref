@@ -16,6 +16,7 @@
 // worse copy of the thing every iOS user already knows.
 
 import AtelierBrowse
+import AtelierTokens
 import SwiftUI
 import UIKit
 
@@ -87,12 +88,7 @@ struct ExportFailureNotice: View {
             .foregroundStyle(MobileTheme.Colors.warning)
             .padding(.horizontal, MobileTheme.Spacing.lg)
             .padding(.vertical, MobileTheme.Spacing.md)
-            .background(
-                RoundedRectangle(cornerRadius: MobileTheme.Radius.card, style: .continuous)
-                    .fill(MobileTheme.Colors.surface))
-            .shadow(
-                color: MobileTheme.Elevation.color,
-                radius: MobileTheme.Elevation.radius, y: MobileTheme.Elevation.y)
+            .cardChrome()
             .padding(MobileTheme.Spacing.lg)
             .accessibilityIdentifier("export.failure")
     }
@@ -148,12 +144,7 @@ struct ExportSentNotice: View {
         .buttonStyle(.plain)
         .padding(.horizontal, MobileTheme.Spacing.lg)
         .padding(.vertical, MobileTheme.Spacing.md)
-        .background(
-            RoundedRectangle(cornerRadius: MobileTheme.Radius.card, style: .continuous)
-                .fill(MobileTheme.Colors.surface))
-        .shadow(
-            color: MobileTheme.Elevation.color,
-            radius: MobileTheme.Elevation.radius, y: MobileTheme.Elevation.y)
+        .cardChrome()
         .padding(MobileTheme.Spacing.lg)
         .accessibilityIdentifier("export.sent")
     }

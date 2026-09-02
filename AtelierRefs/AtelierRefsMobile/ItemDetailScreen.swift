@@ -56,22 +56,15 @@ struct ItemDetailScreen: View {
                     .aspectRatio(1, contentMode: .fit)
             case .image, .video, .link, .tweet, .unknown:
                 if imageURL != nil {
-                    ZStack {
-                        MobileTheme.Colors.mediaBackdrop
-                        GeometryReader { geometry in
-                            ThumbnailImage(url: imageURL, width: geometry.size.width)
-                                .frame(width: geometry.size.width, height: geometry.size.height)
-                        }
-                    }
-                    .aspectRatio(aspect, contentMode: .fit)
+                    // No width to hand down here — the media area is as wide as the
+                    // screen, so `MediaThumbnail` measures itself.
+                    MediaThumbnail(url: imageURL)
+                        .aspectRatio(aspect, contentMode: .fit)
                 } else {
                     EmptyView()
                 }
             }
         }
-        // `mediaBackdrop` is the art's stable dark ground (`Tokens.Hex.mediaBackdrop`), so a
-        // light image and a dark one sit on the same tone instead of the image's own
-        // edges reading as chrome — 093 § 6's second reason for dark-only.
         .clipShape(RoundedRectangle(cornerRadius: MobileTheme.Radius.card, style: .continuous))
         .padding(.top, MobileTheme.Spacing.md)
     }
@@ -97,7 +90,7 @@ struct ItemDetailScreen: View {
                 name: detail.source.authorName, handle: detail.source.authorHandle) {
                 DetailRow("Author", author)
             }
-            if let sourceTitle = BrowseFormat.nonBlank(detail.source.title) {
+            if let sourceTitle = TextRules.nonBlank(detail.source.title) {
                 DetailRow("Title", sourceTitle)
             }
             if let url = sourceURL {
@@ -111,8 +104,8 @@ struct ItemDetailScreen: View {
     /// it as has content. Omitted entirely when there is nothing to show.
     @ViewBuilder
     private var detailsSection: some View {
-        let name = BrowseFormat.nonBlank(detail.asset.name)
-        let note = BrowseFormat.nonBlank(detail.asset.note)
+        let name = TextRules.nonBlank(detail.asset.name)
+        let note = TextRules.nonBlank(detail.asset.note)
         if name != nil || note != nil {
             DetailSection("Details") {
                 if let name { DetailRow("Name", name) }
@@ -126,7 +119,7 @@ struct ItemDetailScreen: View {
     }
 
     private var sourceURL: URL? {
-        guard let raw = BrowseFormat.nonBlank(detail.source.originalURL),
+        guard let raw = TextRules.nonBlank(detail.source.originalURL),
               let url = URL(string: raw),
               url.scheme == "http" || url.scheme == "https" else { return nil }
         return url
@@ -196,13 +189,7 @@ private struct VisitButton: View {
             // 093 § 5: the label keeps its token size, and the hit area is stated at
             // Apple's minimum rather than the padding being inflated to reach it.
             .frame(minHeight: MobileTheme.touchTarget)
-            .background(
-                RoundedRectangle(cornerRadius: MobileTheme.Radius.field, style: .continuous)
-                    .fill(MobileTheme.Colors.field))
-            .overlay(
-                RoundedRectangle(cornerRadius: MobileTheme.Radius.field, style: .continuous)
-                    .strokeBorder(MobileTheme.Colors.hairline, lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: MobileTheme.Radius.field))
+            .fieldChrome()
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Open the original source")

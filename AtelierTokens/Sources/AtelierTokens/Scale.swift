@@ -84,12 +84,48 @@ extension Tokens {
     public static let touchTarget: CGFloat = 44
 }
 
-// MARK: - Shadow convenience
+// MARK: - Chrome
 
 extension View {
     /// Apply an ``Tokens/Elevation`` token as a drop shadow. The AppKit seam that has to
     /// flip the y sign for an unflipped axis stays where AppKit is.
     public func elevation(_ e: Tokens.Elevation) -> some View {
         shadow(color: e.color, radius: e.radius, y: e.y)
+    }
+
+    /// A raised card: a rounded ``Tokens/Colors/surface`` fill under the content, lifted
+    /// by ``Tokens/Elevation/floating``.
+    ///
+    /// The recipe was spelled three times in the companion app — both export notices and
+    /// the share extension's card — as five lines of `background(RoundedRectangle(…))`
+    /// plus a `.shadow` reading three values off a mirror of the elevation token. Which is
+    /// how the phone came to have a `MobileTheme.Elevation` that restated `floating`'s
+    /// colour, radius and y as three separate constants: the call sites could not use
+    /// ``elevation(_:)`` because they were applying it beside a background rather than to
+    /// one, so they took the token apart. This is that composition, named.
+    ///
+    /// `cornerRadius` is a parameter rather than fixed at ``Tokens/Radius/card`` because
+    /// the two names in that enum record what a call site IS; a caller drawing a cover or
+    /// a panel says so.
+    public func cardChrome(cornerRadius: CGFloat = Tokens.Radius.card) -> some View {
+        background(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(Tokens.Colors.surface))
+            .elevation(.floating)
+    }
+
+    /// An inset field or chip: a rounded ``Tokens/Colors/field`` fill, a
+    /// ``Tokens/Colors/hairline`` border, and a matching `contentShape` so the hit area is
+    /// the shape rather than the label's bounding box.
+    ///
+    /// The `contentShape` is the part worth having in one place. It is what 093 § 5's rule
+    /// depends on — visual size stays on the tokens and the hit area is stated separately —
+    /// and it is the line a hand-copied recipe drops, which produces a chip that looks
+    /// right and is only tappable on its text.
+    public func fieldChrome(cornerRadius: CGFloat = Tokens.Radius.field) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return background(shape.fill(Tokens.Colors.field))
+            .overlay(shape.strokeBorder(Tokens.Colors.hairline, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
     }
 }

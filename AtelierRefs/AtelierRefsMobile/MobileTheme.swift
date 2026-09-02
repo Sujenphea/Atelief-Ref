@@ -19,8 +19,20 @@
 //   no pairing token on the phone.
 // - `Motion.toast` — the phone shows no toasts; the share extension's card does, and it
 //   asks for that token itself.
-// - `Elevation.hover` — nothing here floats that high; `floating` is what the export
-//   control's sheet lift uses.
+//
+// Also absent as of 098 · P3, and for a duller reason — nothing here ever read them:
+// `Radius.cover`, `Radius.panel`, `Motion.snappy`, `Colors.hairlineStrong` and
+// `Typography.pageTitle` were forwarded on the theory that a phone would want them, and
+// three slices later each had exactly zero readers. A forwarder with no reader is not a
+// curation, it is a list of tokens someone might reach for; the list above is only
+// information while every line in it is a decision. They are one `Tokens.` away if a
+// screen ever needs them.
+//
+// The whole `Elevation` enum went the same way, but that one WAS read: it restated
+// `Tokens.Elevation.floating`'s colour, radius and y as three separate constants because
+// its call sites applied a shadow beside a background rather than to one, which
+// `.elevation()` cannot do. `AtelierTokens.cardChrome()` is that composition, so the call
+// sites use the token whole and the mirror has nothing left to be.
 //
 // Also absent, and not a curation: the Mac's `Theme.NS` mirrors, `CALayer.applyElevation`
 // (it flips the shadow's y sign for AppKit's unflipped axis; UIKit's is flipped) and
@@ -59,8 +71,6 @@ enum MobileTheme {
         static let inkSecondary = Tokens.Colors.inkSecondary
         /// Borders and dividers.
         static let hairline = Tokens.Colors.hairline
-        /// A stronger hairline for interactive borders.
-        static let hairlineStrong = Tokens.Colors.hairlineStrong
         /// The app's ONE alarm colour, and the system orange rather than a hex — it has
         /// to stay legible under Increase Contrast and the accessibility colour filters.
         static let warning = Tokens.Colors.warning
@@ -87,23 +97,11 @@ enum MobileTheme {
         static let field = Tokens.Radius.field
         static let tile = Tokens.Radius.tile
         static let card = Tokens.Radius.card
-        static let cover = Tokens.Radius.cover
-        static let panel = Tokens.Radius.panel
     }
 
     /// Durations and damping, not platform behaviours, so they cross unchanged.
     enum Motion {
-        static let snappy = Tokens.Motion.snappy
         static let gentle = Tokens.Motion.gentle
-    }
-
-    /// `Tokens.Elevation.floating` — a bar or card riding over content it did not lay
-    /// out. Spelled out as three values rather than used through `.elevation()` because
-    /// the call sites here apply it to a `.shadow` directly.
-    enum Elevation {
-        static let color = Tokens.Elevation.floating.color
-        static let radius = Tokens.Elevation.floating.radius
-        static let y = Tokens.Elevation.floating.y
     }
 
     /// `.plain`-family controls drop the system's own dimming, so the app draws it — a
@@ -114,7 +112,6 @@ enum MobileTheme {
     /// size — which is what makes Dynamic Type work, and 093 § 4 notes that reasoning was
     /// written for a Mac and pays off far more on a phone.
     enum Typography {
-        static let pageTitle = Tokens.Typography.pageTitle
         static let sectionTitle = Tokens.Typography.sectionTitle
         static let row = Tokens.Typography.row
         static let bodyEmphasis = Tokens.Typography.bodyEmphasis

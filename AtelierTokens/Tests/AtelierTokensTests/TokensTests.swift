@@ -20,6 +20,31 @@ import Testing
 
 @testable import AtelierTokens
 
+@Suite("Tokens: what the chrome modifiers rest on")
+struct ChromeTokenTests {
+
+    @Test("chip and field round the same, which is what lets one modifier serve both")
+    func chipAndFieldAgree() {
+        // `fieldChrome()` defaults to `Radius.field` and the collection switcher's chips
+        // pass `Radius.chip`. The enum says the two names record what a call site IS
+        // rather than two measurements — so if they ever stop being the same number, the
+        // shared modifier stops being the right shape for one of them and the default
+        // above has to be reconsidered rather than silently inherited.
+        #expect(Tokens.Radius.chip == Tokens.Radius.field)
+    }
+
+    @Test("the floating elevation is one value, not three the phone can copy apart")
+    func floatingIsWhole() {
+        // `MobileTheme.Elevation` used to restate `floating.color`, `.radius` and `.y` as
+        // three constants, because its call sites applied a shadow beside a background
+        // rather than to one. `cardChrome()` is the composition that removed the reason.
+        #expect(Tokens.Elevation.floating.radius == 14)
+        #expect(Tokens.Elevation.floating.y == 5)
+        #expect(Tokens.Elevation.floating.opacity == 0.35)
+        #expect(Tokens.Elevation.floating != Tokens.Elevation.hover)
+    }
+}
+
 @Suite("Tokens: the arithmetic under the palette")
 struct TokensTests {
 
