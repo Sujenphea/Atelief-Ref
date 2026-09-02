@@ -112,6 +112,23 @@ struct AppShellView: View {
         .onChange(of: nav.sidebarSelection) { _, _ in
             DispatchQueue.main.async { syncActiveCollection() }
         }
+        // A write asked to be LOOKED at (099 · P3 / 6A). The undo inverses used to
+        // assign `model.selectedFolderID` themselves, which is this view's decision,
+        // not the model's: undoing a move raised in another collection repointed the
+        // shared feed at the move's source, so the grid on screen fell back to its
+        // "Loading collection" skeleton (`CollectionView.isLoaded`) and the next
+        // paste landed somewhere nobody was looking. The model now publishes an
+        // intent and the window honours it by NAVIGATING — which is what the user
+        // asked for when they pressed ⌘Z, and what makes the restored items visible.
+        //
+        // The model already suppresses an intent for the collection it has loaded, so
+        // the ordinary undo (same collection, same window) publishes nothing and this
+        // never fires.
+        .onChange(of: model.focusIntent) { _, intent in
+            guard let intent else { return }
+            guard nav.sidebarSelection != .collection(intent.collectionID) else { return }
+            nav.openCollection(intent.collectionID)
+        }
     }
 
     // MARK: - Pending restore

@@ -50,26 +50,33 @@ final class IngestionModel: ObservableObject {
     /// folder (guaranteed by the v2 migration).
     @Published var selectedFolderID: UUID = Collection.unsortedID
 
-    // MARK: - Selected folder contents
+    // MARK: - Selected folder contents (099 · 1A — owned by the read model)
 
-    /// The selected folder's DIRECT items (decision F5). Rebuilds the O(1)
-    /// selection/drag indexes (below) on every assignment — a load, a move, a
-    /// reorder — so the marquee/drag hot path never rescans `items` per cell.
-    @Published private(set) var items: [CollectionItemDetail] = [] {
-        didSet { rebuildItemDerivations() }
-    }
-    /// The collection `items` currently belong to — the identity a view checks to
-    /// know whether the shared array is ITS data yet. `nil` until the first load
-    /// resolves. Because `items` is a SINGLE shared array (not partitioned per
-    /// collection), a freshly-pushed `CollectionView` would otherwise render the
-    /// PREVIOUS collection's items during the async reload gap (the "flash of the
-    /// last collection" on switch). Set only when `items` is published for a
-    /// collection, so a view whose `collectionID` doesn't match shows a loading
-    /// skeleton instead of stale content. An in-place reload (move/delete within
-    /// the same folder) keeps this equal, so it never flashes a skeleton.
-    @Published private(set) var loadedCollectionID: UUID?
+    /// This window's feed (099 · 1A). The single owner of `items`, `subfolders`,
+    /// `loadedCollectionID`, `contentsVersion` and every index derived from them.
+    ///
+    /// This model no longer STORES any of that; the properties below are computed
+    /// forwards, so the ~300 `model.items` / `model.displayItems` / `model.detailRun`
+    /// call sites did not have to churn in the same commit that moved the storage.
+    /// A publish here is republished as this object's own (see ``observeContents()``),
+    /// which is why every `@ObservedObject var model: IngestionModel` still repaints
+    /// on a reload.
+    ///
+    /// It is `let` and there is one of it because this is the MAIN window's model.
+    /// P4's saved-search grid and P6's palette build their own with a different
+    /// ``CollectionFeed`` and never touch this one.
+    let contents: CollectionReadModel
+
+    /// The selected folder's DIRECT items (decision F5).
+    var items: [CollectionItemDetail] { contents.items }
+    /// The collection ``items`` currently belong to — the identity a view checks to
+    /// know whether the array is ITS data yet. `nil` until the first load resolves,
+    /// which is what makes a freshly-pushed `CollectionView` show a loading skeleton
+    /// rather than the PREVIOUS collection's items during the async reload gap. An
+    /// in-place reload keeps this equal, so it never flashes a skeleton.
+    var loadedCollectionID: UUID? { contents.loadedCollectionID }
     /// The selected folder's immediate subfolders (navigable).
-    @Published private(set) var subfolders: [Collection] = []
+    var subfolders: [Collection] { contents.subfolders }
 
     // MARK: - Selected item (inspector)
 
@@ -88,9 +95,6 @@ final class IngestionModel: ObservableObject {
     /// selection (only ``CollectionView`` today) observes ``selectionStore``.
     var selection: GridSelection { selectionStore.selection }
 
-    /// Keeps the `selectedAssetIDs` cache in step with the store — the Combine
-    /// replacement for the old `selection.didSet`.
-    private var selectionCancellable: AnyCancellable?
     // NOTE (036 §3 B1): the detail-overlay's `previewImage` + `selectedTags` moved
     // OFF this god-object into `DetailSession` / `AssetTagsStore`, so opening or
     // stepping the overlay no longer fires `@Published` writes here (each of which
@@ -130,11 +134,6 @@ final class IngestionModel: ObservableObject {
     /// repeat batch into the same folder still trips `onChange`.
     @Published private(set) var lastCaptureBatch: CaptureBatch?
     private var captureBatchToken = 0
-
-    /// A selection to apply once a target collection finishes loading (011-B4 · 12A
-    /// Jump). Deterministic, not a timer: `loadContents` applies it against the
-    /// freshly loaded items, then clears it.
-    private var pendingSelection: (collectionID: UUID, assetIDs: Set<UUID>)?
 
     /// The most recent reversible destructive verb (delete / remove / move),
     /// published so the shell raises ONE "…— Undo" toast (034 P1 — the unified
@@ -187,7 +186,7 @@ final class IngestionModel: ObservableObject {
     /// pushed screen's `.task` won't re-fire, so reload here to apply the pending
     /// selection either way.
     func requestJumpSelection(assetIDs: [UUID], in collectionID: UUID) {
-        pendingSelection = (collectionID, Set(assetIDs))
+        contents.stageJumpSelection(assetIDs: assetIDs, in: collectionID)
         if collectionID == selectedFolderID { loadContents(of: collectionID) }
     }
 
@@ -306,10 +305,6 @@ final class IngestionModel: ObservableObject {
     /// while a scan of a large library is still walking files.
     let libraryStats = LibraryStatsController()
 
-    /// Monotonic id for ``loadContents(of:)`` so a slow read can never clobber a
-    /// newer one (fast folder switch, or a mutation-triggered reload).
-    private var contentsLoadID = 0
-
     /// Coalesces detail-open view signals into batched `recordViews` writes
     /// (007 G4). Flushed by `flushViewBumps()` on detail-close and by a short
     /// debounce timer.
@@ -341,17 +336,6 @@ final class IngestionModel: ObservableObject {
     /// steps that is neither the lead nor the route. `CollectionDetailHost` keeps it
     /// in step with `DetailSession`.
     var detailShownItemID: UUID?
-
-    /// Per-asset view-count deltas that have been PERSISTED (`recordViews`) but not
-    /// yet reflected in the local ``items`` (036 §3 B4). This is exactly
-    /// `DB.view_count − items.viewCount` for every asset, so the invariant
-    /// `items.viewCount + pendingReorderBumps == DB.view_count` holds at all times.
-    /// It exists to survive a "skip when unchanged" reorder: when a flush's bumps
-    /// don't move any item, its `items` publish is skipped, but the delta must NOT
-    /// be lost — a LATER flush needs it to compute an order identical to what a real
-    /// reload would produce. Cleared whenever ``loadContents(of:)`` re-syncs `items`
-    /// to the database truth, and consumed by ``applyDeferredMostViewedReorder()``.
-    private var pendingReorderBumps: [UUID: Int] = [:]
 
     /// Downloads a bare image URL (drag/paste with no bytes) off-main. Stateless +
     /// injectable; the default uses the shared session (tests inject a stub one).
@@ -385,274 +369,76 @@ final class IngestionModel: ObservableObject {
         folders.first { $0.id == id }?.name ?? "Folder"
     }
 
-    /// The LEAD item's detail — what the full-window detail overlay shows and
-    /// what the tag editor mutates — resolved from the loaded ``items`` by the
-    /// `selection.lead` membership id (stable across a contents reload). `nil`
-    /// when there is no cursor, which auto-dismisses the overlay.
-    var leadItem: CollectionItemDetail? {
-        guard let lead = selection.lead else { return nil }
-        return items.first { $0.item.id == lead }
-    }
+    // MARK: - The feed, forwarded (099 · 1A)
+
+    /// Every property below is a computed forward onto ``contents``. They exist so
+    /// the move of the feed into ``CollectionReadModel`` did not have to rewrite the
+    /// ~300 call sites that read them, and they are deliberately NOT storage: there
+    /// is one feed, it lives in the read model, and these are windows onto it.
+
+    /// The LEAD item's detail — what the full-window detail overlay shows and what
+    /// the tag editor mutates — resolved from the loaded ``items`` by the
+    /// `selection.lead` membership id (stable across a contents reload). `nil` when
+    /// there is no cursor, which auto-dismisses the overlay.
+    var leadItem: CollectionItemDetail? { contents.leadItem }
 
     /// The asset ids of the current selection, in feed order — the boundary from
-    /// membership-id selection to the asset-id verbs (move / copy / remove /
-    /// delete / drag payload). Empty when nothing is selected. Served from a cache
-    /// rebuilt on every `items`/`selection` change: a marquee re-render rebuilds
-    /// each visible cell's `.draggable` payload, and every selected cell reads
-    /// this — recomputing the filter per cell was O(visible × N) per tick.
-    var selectedAssetIDs: [UUID] { cachedSelectedAssetIDs }
+    /// membership-id selection to the asset-id verbs (move / copy / remove / delete
+    /// / drag payload). Empty when nothing is selected. Served from a cache rebuilt
+    /// on every `items`/`selection` change: a marquee re-render rebuilds each
+    /// visible cell's `.draggable` payload, and every selected cell reads this —
+    /// recomputing the filter per cell was O(visible × N) per tick.
+    var selectedAssetIDs: [UUID] { contents.selectedAssetIDs }
 
-    // MARK: - Derived selection/drag indexes (009 · N6 perf)
-
-    /// `item.id → asset.id` for O(1) single-cell drag/action scope, replacing an
-    /// `items.first { … }` linear scan run per visible cell each marquee tick.
-    private var assetIDByItemID: [UUID: UUID] = [:]
-    /// The current selection's asset ids in feed order (see `selectedAssetIDs`).
-    private var cachedSelectedAssetIDs: [UUID] = []
-
-    /// The loaded feed bucketed by originating post (307 · carousel grouping) —
-    /// what makes "these four tiles are one Instagram carousel" answerable. Built
-    /// here rather than in the view because a `CollectionView` body re-runs on
-    /// every selection change and the bucketing is O(N) over the whole feed. This
-    /// is the ONLY build site; the grid host mirrors it through the configuration.
-    private(set) var postGroups = PostGroups()
+    /// The loaded feed bucketed by originating post (307 · carousel grouping).
+    var postGroups: PostGroups { contents.postGroups }
 
     /// Whether the grid collapses each multi-image post to one tile (307). Mirrored
-    /// from `GridViewPreferences` (which persists it) so the derivation can run
-    /// where `items` lives; setting it re-derives, which also bumps `itemsVersion`
-    /// and so invalidates the masonry layout cache — the display list changed even
-    /// though `items` did not.
-    ///
-    /// `@Published` for the same reason `items` is: the derived values it feeds
-    /// (``displayItems``, ``itemsVersion``) are deliberately plain, so this is the
-    /// TRIGGER that has to re-run `CollectionView`'s body. Without it the toggle
-    /// re-derives the display list into a model nobody re-reads, and the grid keeps
-    /// showing the previous one until some unrelated publish happens to flush it.
-    @Published var groupCarousels = true {
-        didSet { if groupCarousels != oldValue { rebuildItemDerivations() } }
+    /// from `GridViewPreferences` (which persists it); setting it re-derives, which
+    /// also bumps ``itemsVersion`` and so invalidates the masonry layout cache.
+    var groupCarousels: Bool {
+        get { contents.groupCarousels }
+        set { contents.groupCarousels = newValue }
     }
 
-    /// Representative ids of the posts currently OPENED in place (307) — their
-    /// members show as their own tiles until the chip is clicked again. Pruned on
-    /// every derivation so a representative that left the feed can't keep a post
-    /// wedged open.
-    ///
-    /// `@Published` because ``CollectionView`` reads it straight into the grid
-    /// configuration, and the chip click is the one interaction that deliberately
-    /// does NOT touch the selection (the chip-zone branch of `gridCellMouseDown`,
-    /// which toggles and returns) — so there is no other
-    /// publish riding along to invalidate the body.
-    @Published private(set) var expandedPosts: Set<UUID> = []
+    /// Representative ids of the posts currently OPENED in place (307).
+    var expandedPosts: Set<UUID> { contents.expandedPosts }
 
-    /// Open or close the post behind the tile `itemID` — what the carousel chip does.
-    /// A no-op for an ungrouped tile, so callers don't have to check first.
-    func toggleExpansion(forItem itemID: UUID) {
-        guard groupCarousels, postGroups.memberCount(forItem: itemID) > 1 else { return }
-        let lead = postGroups.members(forItem: itemID).first ?? itemID
-        if expandedPosts.contains(lead) {
-            expandedPosts.remove(lead)
-        } else {
-            expandedPosts.insert(lead)
-        }
-        rebuildItemDerivations()
-    }
-
-    /// The feed AS THE GRID SHOWS IT: `items` with every multi-image post collapsed
-    /// to its first member when grouping is on, otherwise `items` verbatim.
-    ///
-    /// This — not `items` — is what the grid renders and what the selection store
-    /// orders. It is an array of the SAME element type, never longer than `items`,
-    /// so the grid keeps one item per cell per selectable id and every index-based
-    /// subsystem is untouched. Actions widen back to real members at the boundary via
-    /// ``PostGroups/expand(_:)``.
-    ///
-    /// Its ORDER is the grid's order, and since 309 it is not merely a subsequence
-    /// of `items`: an opened post's members are gathered into a contiguous run at
-    /// the tile's slot. Nothing downstream resolves a tile through its index in
-    /// `items` — layout, selection order, marquee and the reorder solve are all
-    /// index-based over THIS list — so display order is the order they all mean.
-    /// Only the persisted order (`manual_order`) is still `items`' business, and it
-    /// is written by ``reorderItems(movingAssetIDs:insertAt:)`` alone: opening a
-    /// post rearranges nothing on disk.
-    private(set) var displayItems: [CollectionItemDetail] = []
-    /// Membership ids of ``displayItems``, for O(1) "is this tile on screen?".
-    private var displayItemIDs: Set<UUID> = []
+    /// The feed AS THE GRID SHOWS IT: ``items`` with every multi-image post
+    /// collapsed to its first member when grouping is on, otherwise `items` verbatim.
+    var displayItems: [CollectionItemDetail] { contents.displayItems }
 
     /// The feed AS THE DETAIL PAGE WALKS IT (069): every image, in the grid's order,
     /// with each post's images together and in the post's own order.
-    ///
-    /// The overlay stepped `items` raw until 069 — so its prev/next read the feed order
-    /// 309 had already stopped using for the grid, and a post whose images a reorder had
-    /// scattered was walked in pieces. This is ``displayItems``' sibling: same
-    /// derivation site, same invalidation, differing only in that a post contributes all
-    /// its images rather than one tile. The page is paging through IMAGES, so it is the
-    /// one list that opens every post.
-    private(set) var detailRun: [CollectionItemDetail] = []
-    /// Position in ``detailRun`` by membership id — the overlay resolves the shown item
-    /// to its pager index on every body pass, which was an `items.firstIndex` scan.
-    private var detailRunIndexByItem: [UUID: Int] = [:]
+    var detailRun: [CollectionItemDetail] { contents.detailRun }
+
+    /// Monotonic token bumped whenever `items` changes (a load / move / reorder), so
+    /// the grid's masonry layout cache (011-B1 · 14A) can key off cheap integer
+    /// equality instead of re-deriving aspects on every re-render.
+    var itemsVersion: Int { contents.itemsVersion }
+
+    /// Open or close the post behind the tile `itemID` — what the carousel chip does.
+    func toggleExpansion(forItem itemID: UUID) { contents.toggleExpansion(forItem: itemID) }
 
     /// Where `id` sits in ``detailRun``, or `nil` when it isn't in the loaded feed.
-    func detailRunIndex(of id: UUID) -> Int? { detailRunIndexByItem[id] }
-
-    /// The item ids a TILE stands for, in feed order (307): a collapsed post's whole
-    /// membership, or just the item itself when it is ungrouped, opened, or grouping
-    /// is off. The ordered counterpart of ``widenedForAction(_:)``, used where the
-    /// sequence matters — reordering, which must keep a post's images together.
-    private func itemsRepresented(by displayItemID: UUID) -> [UUID] {
-        guard groupCarousels else { return [displayItemID] }
-        let members = postGroups.members(forItem: displayItemID)
-        guard let lead = members.first, lead == displayItemID,
-              !expandedPosts.contains(lead) else { return [displayItemID] }
-        return members
-    }
+    func detailRunIndex(of id: UUID) -> Int? { contents.detailRunIndex(of: id) }
 
     /// The tile that STANDS FOR `id` in the current display list (307).
-    ///
-    /// `id` itself when it is on screen; otherwise its post's representative. The
-    /// detail overlay steps through ALL items — including carousel members the grid
-    /// is hiding — and syncs the cursor back on close, so without this the grid's
-    /// lead could land on an id that isn't in the reducer's `order` at all, leaving
-    /// arrow-key navigation with nothing to resolve against.
-    func displayTile(for id: UUID) -> UUID {
-        if displayItemIDs.contains(id) { return id }
-        return postGroups.members(forItem: id).first ?? id
-    }
+    func displayTile(for id: UUID) -> UUID { contents.displayTile(for: id) }
 
-    /// Monotonic token bumped whenever `items` changes (a load / move / reorder),
-    /// so the grid's masonry layout cache (011-B1 · 14A) can key off cheap
-    /// integer equality instead of hashing the item ids or re-deriving aspects on
-    /// every re-render — the marquee's selection churn re-renders the grid many
-    /// times per second with `items` unchanged, and each of those must be a memo
-    /// hit, not an O(N) re-layout.
-    private(set) var itemsVersion = 0
-
-    /// Rebuild the item-keyed indexes after `items` changes (a load / mutation);
-    /// the selection cache depends on `items` too, so refresh it here as well.
-    private func rebuildItemDerivations() {
-        itemsVersion &+= 1
-        postGroups = PostGroups(items: items)
-        // Drop expansions whose representative has left the feed (a delete, a move,
-        // a collection switch) — otherwise a stale id would keep re-opening nothing,
-        // and the set would grow for the life of the process. Assigned only when it
-        // actually changes: `expandedPosts` is `@Published`, and the common case (an
-        // empty set, every load) must not fire a publish from inside a derivation.
-        let live = expandedPosts.filter { postGroups.memberCount(forItem: $0) > 1 }
-        if live != expandedPosts { expandedPosts = live }
-        displayItems = groupCarousels
-            ? postGroups.collapsed(items, expanding: expandedPosts)
-            : items
-        displayItemIDs = Set(displayItems.map { $0.item.id })
-        // The detail page's run (069) — derived HERE so it shares the display list's
-        // invalidation exactly. A post contributes all its images (the page pages
-        // through images), but at its tile's slot and in the post's order, so the page
-        // and the grid can't tell different stories about where a carousel is.
-        detailRun = groupCarousels ? postGroups.fullRun(items) : items
-        detailRunIndexByItem = Dictionary(
-            detailRun.enumerated().map { ($0.element.item.id, $0.offset) },
-            uniquingKeysWith: { first, _ in first })
-        // Push the DISPLAYED order to the selection store (the reducer's `order`
-        // argument) — replaces the old hoisted `itemOrder`. It has to be the display
-        // list, not `items`: ⇧-range, arrow nav and the marquee all resolve hits
-        // through this order, so a hidden carousel member in it would let a range
-        // select a tile that isn't on screen.
-        selectionStore.setOrder(displayItems.map { $0.item.id })
-        // Keyed over ALL items, not just the displayed ones: an action on a collapsed
-        // tile expands to its hidden members and still needs their asset ids.
-        assetIDByItemID = Dictionary(
-            items.map { ($0.item.id, $0.asset.id) }, uniquingKeysWith: { first, _ in first })
-        // Items changed, selection didn't — rebuild the cache against the store's
-        // CURRENT (settled) selection. Safe to read here: no `willSet` is in
-        // flight, unlike inside the `$selection` sink below.
-        rebuildSelectedAssetIDs(for: selectionStore.selection)
-    }
-
-    /// Rebuild the selected-asset-id cache after `items` or `selection` changes.
-    /// Preserves feed order (mirrors the old `items.filter { … }.map` exactly).
-    ///
-    /// Takes the selection EXPLICITLY rather than reading `self.selection`: when
-    /// driven by the `$selection` sink, `@Published` fires on `willSet`, so the
-    /// store's stored `selection` still holds the OLD value at that instant — the
-    /// computed `self.selection` would read stale. The sink passes the NEW value.
-    private func rebuildSelectedAssetIDs(for selection: GridSelection) {
-        cachedSelectedAssetIDs = assetIDs(for: widenedForAction(selection.ids))
-    }
-
-    /// Widen ids to whole posts for an action — but only where the grid is actually
-    /// HIDING members (307).
-    ///
-    /// A collapsed tile stands for its post, so it must widen. An OPENED post shows
-    /// every member as its own tile, and those tiles have to act individually —
-    /// otherwise opening a carousel to delete one bad frame would delete all four,
-    /// which is precisely the thing someone opens a post to avoid.
-    private func widenedForAction(_ ids: Set<UUID>) -> Set<UUID> {
-        guard groupCarousels else { return ids }
-        var result = Set<UUID>()
-        result.reserveCapacity(ids.count)
-        for id in ids {
-            let members = postGroups.members(forItem: id)
-            guard let lead = members.first, !expandedPosts.contains(lead) else {
-                result.insert(id)
-                continue
-            }
-            result.formUnion(members)
-        }
-        return result
-    }
-
-    /// ``widenedForAction(_:)`` as a seam for the readers that never leave
-    /// MEMBERSHIP-id space — ⌘C, the two exports, and Quick Look, all of which take
-    /// a `Set<CollectionItem.id>` rather than asset ids.
-    ///
-    /// Every asset-id verb already widens on its way through ``selectedAssetIDs`` or
-    /// ``actionTargets(forCellItemID:)``, so those callers never see this. The item-id
-    /// readers had no such funnel and so quietly skipped the widening entirely: ⌘C on a
-    /// tile reading ⧉4 copied one image, and Space previewed one. Exposing the rule —
-    /// rather than letting each surface re-derive "which ids does this act on" — is the
-    /// same argument ``assetIDs(for:)`` makes one line down.
-    ///
-    /// An empty set widens to an empty set, which the exports rely on: they read empty
-    /// as "no selection, take the whole collection".
-    func itemIDsForAction(_ ids: Set<UUID>) -> Set<UUID> { widenedForAction(ids) }
+    /// The post-widening rule as a seam for the readers that never leave
+    /// MEMBERSHIP-id space — ⌘C, the two exports, and Quick Look.
+    func itemIDsForAction(_ ids: Set<UUID>) -> Set<UUID> { contents.itemIDsForAction(ids) }
 
     /// The asset behind a membership id, or `nil` when the item has left the loaded
     /// feed. O(1) off the same index the drag/action scope uses.
-    ///
-    /// For the single-item verbs that must act on the TILE rather than on its post —
-    /// Set as Cover, where the cover wanted is the post's own cover, i.e. the
-    /// representative the collapsed tile is already showing. Widening there and taking
-    /// `.first` would pick the post's earliest member in FEED order, which a reorder or
-    /// a partial move can drift away from carousel image #1.
-    func assetID(forItem itemID: UUID) -> UUID? { assetIDByItemID[itemID] }
+    func assetID(forItem itemID: UUID) -> UUID? { contents.assetID(forItem: itemID) }
 
-    /// The asset ids for `itemIDs`, in feed order — THE action boundary (307).
-    ///
-    /// Callers pass ids already widened through ``PostGroups/expand(_:)``, so a
-    /// selection holding one collapsed tile yields all four of its assets. Doing the
-    /// widening here (and in ``actionTargets(forCellItemID:)``) rather than in each
-    /// verb is what makes delete / move / remove / drag fan out consistently instead
-    /// of each remembering to. Walks `items`, not `displayItems`: the hidden members
-    /// are exactly what we are widening to.
-    private func assetIDs(for itemIDs: Set<UUID>) -> [UUID] {
-        items.compactMap { itemIDs.contains($0.item.id) ? $0.asset.id : nil }
-    }
-
-    /// The asset ids a batch action should act on for a right-click on the cell
-    /// whose membership id is `itemID` (Finder scope, 009 · 7A): the WHOLE
-    /// selection when that cell is part of it, else just that one cell — the
-    /// selection is left untouched either way.
-    ///
-    /// The rule itself is the pure ``gridActionTargets(isSelected:selectedAssetIDs:cellAssetID:)``
-    /// (036 §4 C4), so the container-level context menu and this model seam can
-    /// never diverge on scope, and the rule is unit-tested off the main actor.
+    /// The asset ids a batch action should act on for a right-click on the cell whose
+    /// membership id is `itemID` (Finder scope, 009 · 7A): the WHOLE selection when
+    /// that cell is part of it, else just that one cell.
     func actionTargets(forCellItemID itemID: UUID) -> [UUID] {
-        gridActionTargets(
-            isSelected: selection.ids.contains(itemID),
-            selectedAssetIDs: selectedAssetIDs,
-            // A collapsed carousel tile stands for its whole post (307), so an
-            // UNSELECTED right-click widens too — otherwise "Delete" on a tile
-            // reading ⧉4 would remove one image and leave the tile behind.
-            cellAssetIDs: assetIDs(for: widenedForAction([itemID])))
+        contents.actionTargets(forCellItemID: itemID)
     }
 
     /// Build the drag payload for a drag that starts on the cell `itemID`
@@ -690,7 +476,8 @@ final class IngestionModel: ObservableObject {
     }
 
     init() {
-        observeSelection()
+        contents = CollectionReadModel(selectionStore: selectionStore)
+        observeContents()
         Task { await bootstrap() }
     }
 
@@ -708,7 +495,20 @@ final class IngestionModel: ObservableObject {
         self.snapshotsDirectory = snapshotsDirectory
         self.selectedFolderID = services.unsortedFolderID
         self.isReady = true
-        observeSelection()
+        contents = CollectionReadModel(selectionStore: selectionStore)
+        openFeed(on: services)
+        observeContents()
+    }
+
+    /// Point the window's read model at an open library and subscribe it to this
+    /// model's change stream. Called by both inits' library-open path — the real one
+    /// from ``bootstrap()``, the test one immediately, because a test's library is
+    /// already open when it hands it over.
+    private func openFeed(on services: AppServices) {
+        contents.feed = .collection(services) { [weak self] id in
+            self?.sortMode(for: id) ?? .manual
+        }
+        contents.follow(libraryChanged)
     }
 
     /// The library's `snapshots/` directory, for the marker files that survive a
@@ -716,17 +516,28 @@ final class IngestionModel: ObservableObject {
     /// test init above.
     private var snapshotsDirectory: URL?
 
-    /// Rebuild the `selectedAssetIDs` cache whenever the store publishes a new
-    /// selection — the Combine replacement for the old `selection.didSet`. The
-    /// closure receives the NEW value (see ``rebuildSelectedAssetIDs(for:)`` on
-    /// why we must not re-read `self.selection` here). `@Published` emits the
-    /// current value on subscribe, so the cache is seeded (empty) immediately.
-    private func observeSelection() {
-        selectionCancellable = selectionStore.$selection
-            .sink { [weak self] newSelection in
-                self?.rebuildSelectedAssetIDs(for: newSelection)
-            }
+    /// Republish the read model's changes as this object's own, and mirror its
+    /// errors into the alert channel.
+    ///
+    /// Nested `ObservableObject`s do not compose on their own: SwiftUI subscribes to
+    /// the object a view names, and every one of the hundreds of views in this app
+    /// names `IngestionModel`. Forwarding `objectWillChange` is what keeps
+    /// `model.items` a live read for all of them after the storage moved — a view
+    /// repaints on a reload exactly as often as it did when `items` was `@Published`
+    /// here, because the read model publishes at precisely the same moments.
+    private func observeContents() {
+        contentsCancellable = contents.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+        // The read model owns its own failure sentence (the feed knows which noun it
+        // is about); this model owns the alert. One direction only — the read model
+        // never reads back — so there is no cycle and no second source of truth.
+        contentsErrorCancellable = contents.$lastError
+            .compactMap { $0 }
+            .sink { [weak self] message in self?.lastError = message }
     }
+
+    private var contentsCancellable: AnyCancellable?
+    private var contentsErrorCancellable: AnyCancellable?
 
     // MARK: - Bootstrap
 
@@ -776,6 +587,7 @@ final class IngestionModel: ObservableObject {
             self.coordinator = coordinator
             self.selectedFolderID = services.unsortedFolderID
             self.isReady = true
+            openFeed(on: services)
 
             // Backup hygiene (008 H2): keep regenerable thumbnails/cache out of
             // Time Machine / iCloud. Idempotent, cheap; safe to run every launch.
@@ -1016,20 +828,47 @@ final class IngestionModel: ObservableObject {
 
     // MARK: - Capture feedback
 
+    /// At most one reload per collection per ``ingestReloadInterval`` (099 · 13A).
+    private var ingestReloads = Coalescer<UUID?>()
+
+    /// The floor between two reloads of the same collection driven by ingest.
+    ///
+    /// 500 ms is the plan's number and it is a floor, not a debounce: the FIRST
+    /// batch of a burst still reloads immediately (see ``Coalescer/admit(_:interval:at:)``),
+    /// so a capture the user just watched arrive appears at once and only the
+    /// forty behind it collapse.
+    private let ingestReloadInterval: Duration = .milliseconds(500)
+
     /// Bring the live UI back in step with a library some producer OTHER than the
-    /// user just wrote to: refresh the tree's counts, and reload the visible
-    /// folder if it may have received something.
+    /// user just wrote to.
     ///
     /// `collectionID` is the collection that received the items; `nil` means the
     /// producer cannot say — an inbox pass resolves each record's own target and
-    /// reports only counts — in which case the visible folder is reloaded
-    /// unconditionally. That is a wasted query when the drain landed elsewhere,
-    /// and it is the honest response to not knowing: the alternative is a grid
-    /// that silently omits a capture the user just watched arrive.
-    private func refreshAfterIngest(touching collectionID: UUID?) {
-        Task { await refreshFolders() }
-        if collectionID == nil || collectionID == selectedFolderID {
-            loadContents(of: selectedFolderID)
+    /// reports only counts — in which case every feed reloads. That is a wasted
+    /// query when the drain landed elsewhere, and it is the honest response to not
+    /// knowing: the alternative is a grid that silently omits a capture the user
+    /// just watched arrive.
+    ///
+    /// **Throttled, because this is the one reload site a producer can fire in a
+    /// tight loop.** It used to reload on EVERY capture batch, so a sweep landing
+    /// forty images ran forty full `collectionItems` reads of the same collection —
+    /// and 071's harness prices one of those at 65 ms over 2,000 rows and 640 ms
+    /// over 20,000. Every other reload in this file is user-paced and publishes
+    /// straight through.
+    func refreshAfterIngest(touching collectionID: UUID?) {
+        let scope: ContentScope = collectionID.map { .collection($0) } ?? .unknown
+        switch ingestReloads.admit(
+            collectionID, interval: ingestReloadInterval, at: .now) {
+        case .run:
+            Task { await publishChange(scope) }
+        case .held:
+            break                       // an earlier signal already owes the reload
+        case .hold(let after):
+            Task {
+                try? await Task.sleep(for: after)
+                ingestReloads.release(collectionID, at: .now)
+                await publishChange(scope)
+            }
         }
     }
 
@@ -1715,114 +1554,151 @@ final class IngestionModel: ObservableObject {
     /// (reorder / remove / move) reads a known state without racing the async
     /// `loadContents` reload.
     func setItemsForTesting(_ items: [CollectionItemDetail]) {
-        self.items = items
+        contents.setItemsForTesting(items)
     }
     #endif
 
-    // MARK: - Undoable write workers (shared by verbs + their inverses)
+    // MARK: - The write funnel (099 · 6A)
 
-    /// Rename a folder, then refresh. No undo re-registration (the ping-pong
-    /// installs the mirror).
-    private func applyRename(id: UUID, to name: String) async {
-        guard let services else { return }
-        do {
-            _ = try await services.renameCollection(id: id, to: name)
-            await refreshFolders()
-            loadContents(of: selectedFolderID)
-        } catch { lastError = Self.message(for: error) }
-    }
-
-    /// Reparent and/or reposition a folder, then refresh. `index` is the destination
-    /// slot (nil = append); it flows straight to `moveCollection` (043 · Phase C).
-    private func applyMoveFolder(id: UUID, toParent parent: UUID?, index: Int? = nil) async {
-        guard let services else { return }
-        do {
-            try await services.moveCollection(id: id, toParent: parent, index: index)
-            await refreshFolders()
-            loadContents(of: selectedFolderID)
-        } catch { lastError = Self.message(for: error) }
-    }
-
-    /// Set `folder`'s grid order to `desired`.
+    /// Which read models a write invalidates.
     ///
-    /// **The membership pre-read is gone** (099 · 14A). This used to read the
-    /// WHOLE collection — every membership row joined to its asset and source,
-    /// decoded in full — in front of every drag, to strip ids that were no longer
-    /// members so `setGridOrder` would not throw `.notFound` and roll the batch
-    /// back. `AppServices.setGridOrder` now IGNORES a non-member by contract
-    /// (`AppServices+Collections.swift`: the `WHERE … AND asset_id IN (…)` simply
-    /// matches no row), which is exactly what the pre-read was computing, and it
-    /// computes it inside the statement that was going to run anyway.
+    /// It names COLLECTIONS rather than a single id because most of these writes
+    /// touch two: the F3 Unsorted invariant means `removeAssets` can re-home an
+    /// asset that has just lost its last membership, and `addAssets` into a real
+    /// collection evicts it FROM Unsorted. Before this, every verb reloaded exactly
+    /// one folder — `selectedFolderID` — so a window sitting on Unsorted while a
+    /// move happened elsewhere kept showing rows that were no longer there.
+    enum ContentScope: Equatable {
+        /// These collections' contents changed. A read model reloads if it is
+        /// showing any of them, and does nothing otherwise.
+        case collections([UUID])
+        /// Something changed and the producer cannot say where — an asset delete
+        /// (it could have been a member of anything), an inbox drain that resolves
+        /// each record's own target, a folder rename (whose name shows in every
+        /// feed's subfolder strip). Every read model reloads.
+        case unknown
+        /// Only the folder tree changed; no feed's rows did.
+        case treeOnly
+
+        /// One collection.
+        static func collection(_ id: UUID) -> ContentScope { .collections([id]) }
+    }
+
+    /// Something in the library changed. `nil` means the producer cannot say which
+    /// collection; a read model reloads on a `nil` or on its own id.
     ///
-    /// Two consequences, both intended and both documented at the service:
-    /// positions are indices into `desired`, so a dropped id leaves a GAP and only
-    /// the relative order is meaningful; and a `.notFound` can still arrive, for a
-    /// missing COLLECTION, which is a different mistake and worth surfacing.
-    private func applyOrder(folder: UUID, desired: [UUID]) async {
-        guard let services, !desired.isEmpty else { return }
-        do {
-            try await services.setGridOrder(collectionID: folder, orderedAssetIDs: desired)
-        } catch { lastError = Self.message(for: error) }
-    }
+    /// This is the seam that replaced 47 in-model reload calls (26 `loadContents`,
+    /// 21 `refreshFolders`). A write used to reach into the ONE feed and reload it;
+    /// now it states what changed and every window decides for itself, which is the
+    /// only way a second window — P4's saved-search grid, P6's palette — can stay
+    /// correct without every verb learning about it.
+    let libraryChanged = PassthroughSubject<UUID?, Never>()
 
-    /// Persist a reorder, then focus + reload the folder (reorder verb + inverse).
-    private func applyReorder(folder: UUID, order: [UUID]) async {
-        await applyOrder(folder: folder, desired: order)
-        selectedFolderID = folder
-        loadContents(of: folder)
-    }
-
-    /// Drop memberships from `folder` and refresh.
+    /// A collection this model would LIKE the window to be looking at, published
+    /// after a write that moved things somewhere the user cannot see.
     ///
-    /// It used to take a `message` to publish on the primary run only. The verb's
-    /// ``announceUndoable(_:)`` says the same sentence with an Undo button, so the
-    /// parameter only existed to say it twice.
-    private func applyRemove(assetIDs: [UUID], from folder: UUID) async {
-        guard let services else { return }
-        do {
-            try await services.removeAssets(assetIDs, from: folder)
-            await refreshFolders()
-            selectedFolderID = folder
-            loadContents(of: folder)
-        } catch { lastError = Self.message(for: error) }
+    /// An intent, never a mutation. The undo inverses used to assign
+    /// `selectedFolderID` directly, which is navigation state: undoing a move while
+    /// looking at a different collection silently repointed the shared feed at the
+    /// move's source, so the visible grid fell back to its loading skeleton
+    /// (`CollectionView.isLoaded` compares `loadedCollectionID` to its own id) and
+    /// the next import landed in a folder nobody was looking at. The window now
+    /// decides — see `AppShellView`'s `.onChange(of: model.focusIntent)`.
+    ///
+    /// Carries a monotonic token for the reason ``lastCaptureBatch`` does: two
+    /// undos of the same verb are two intents, and `onChange` compares values.
+    @Published private(set) var focusIntent: FocusIntent?
+
+    /// A request to look at a collection, and the token that makes a repeat of the
+    /// same request a new event.
+    struct FocusIntent: Equatable {
+        let collectionID: UUID
+        let token: Int
     }
 
-    /// Re-add memberships to `folder` and restore their prior order — the inverse
-    /// of ``applyRemove``.
-    private func applyRestoreMemberships(assetIDs: [UUID], to folder: UUID, order: [UUID]) async {
-        guard let services else { return }
-        do {
-            try await services.addAssets(assetIDs, to: folder)
-            await applyOrder(folder: folder, desired: order)
-            await refreshFolders()
-            selectedFolderID = folder
-            loadContents(of: folder)
-        } catch { lastError = Self.message(for: error) }
+    private var focusToken = 0
+
+    /// Ask the window to look at `id`. A no-op if it is already the loaded feed —
+    /// the overwhelmingly common case (a verb and its inverse both run against the
+    /// collection the user is in), and worth short-circuiting so an ordinary undo
+    /// publishes nothing at all.
+    private func requestFocus(on id: UUID) {
+        guard id != loadedCollectionID else { return }
+        focusToken &+= 1
+        focusIntent = FocusIntent(collectionID: id, token: focusToken)
     }
 
-    /// Move memberships `source → target`, then focus + reload the source (move
-    /// verb + redo).
-    private func applyMoveAssets(_ assetIDs: [UUID], from source: UUID, to target: UUID) async {
-        guard let services else { return }
-        do {
-            try await services.moveAssets(assetIDs, from: source, to: target)
-            await refreshFolders()
-            selectedFolderID = source
-            loadContents(of: source)
-        } catch { lastError = Self.message(for: error) }
+    /// Announce a change: refresh the folder tree, then tell every read model what
+    /// to reload.
+    ///
+    /// The tree refresh is unconditional because every scope can move a count, a
+    /// name or a parent, and `folders` is what the sidebar, every destination menu
+    /// and every breadcrumb read.
+    func publishChange(_ scope: ContentScope) async {
+        await refreshFolders()
+        switch scope {
+        case .treeOnly:
+            break
+        case .unknown:
+            libraryChanged.send(nil)
+        case .collections(let ids):
+            // De-duplicated, because most scopes name a pair that is frequently one
+            // collection twice (a move out of Unsorted into Unsorted cannot happen,
+            // but a remove FROM Unsorted names it as both the target and the F3
+            // re-home destination).
+            for id in Set(ids) { libraryChanged.send(id) }
+        }
     }
 
-    /// Move memberships back `target → source` and restore the source order — the
-    /// inverse of ``applyMoveAssets``.
-    private func applyMoveBack(_ assetIDs: [UUID], from target: UUID, to source: UUID, order: [UUID]) async {
-        guard let services else { return }
-        do {
-            try await services.moveAssets(assetIDs, from: target, to: source)
-            await applyOrder(folder: source, desired: order)
-            await refreshFolders()
-            selectedFolderID = source
-            loadContents(of: source)
-        } catch { lastError = Self.message(for: error) }
+    /// Run ONE library write and tell every window what it changed.
+    ///
+    /// This is the whole of what the eight `apply*` workers and the two `perform`
+    /// overloads were. They differed in four ways and agreed on the rest: whether
+    /// they refreshed the tree, which collection they reloaded, whether they moved
+    /// the selected folder, and — in the two that reloaded a folder the window was
+    /// not showing — whether they were right to. Those became two parameters and a
+    /// deleted mistake.
+    ///
+    /// - Parameters:
+    ///   - focus: a collection to ASK the window to show, or `nil` (the default,
+    ///     and every verb that runs where the user already is). Published only when
+    ///     the write succeeded: a failed undo should not navigate anywhere.
+    ///   - scope: what the write invalidated.
+    ///   - body: the write itself, against an open library.
+    /// - Returns: whether the write completed.
+    ///
+    /// **The change is published even when `body` throws.** A multi-statement body
+    /// can fail halfway — ``moveMemberships(_:from:to:home:restoring:)`` moves the
+    /// memberships and then restores their order — and a reload to the database truth
+    /// is the only honest response to "some of that landed". It costs one read on a
+    /// path that has already failed.
+    @discardableResult
+    private func performWrite(
+        focus: UUID? = nil,
+        reload scope: ContentScope,
+        _ body: @escaping (AppServices) async throws -> Void
+    ) async -> Bool {
+        guard let services else { return false }
+        var thrown: Error?
+        do { try await body(services) } catch { thrown = error }
+        await publishChange(scope)
+        if let thrown {
+            lastError = Self.message(for: thrown)
+            return false
+        }
+        if let focus { requestFocus(on: focus) }
+        return true
+    }
+
+    /// The collections a membership write touches: its own target, plus Unsorted.
+    ///
+    /// Unsorted is in every one of them because of F3. `addAssets` into a real
+    /// collection evicts the asset from Unsorted; `removeAssets` re-homes an asset
+    /// that has just lost its last membership INTO Unsorted. Neither is visible from
+    /// the verb's arguments, and both are exactly the kind of second collection a
+    /// per-verb reload of "the selected folder" could never have covered.
+    private func membershipScope(_ ids: UUID...) -> ContentScope {
+        .collections(ids + [unsortedFolderID])
     }
 
     // MARK: - Folder actions
@@ -1843,15 +1719,24 @@ final class IngestionModel: ObservableObject {
     /// finds its row already in the tree — selecting it before the refresh would
     /// leave the outline unable to resolve the row.
     func createFolder(name: String, parent: UUID?, onCreated: ((Collection) -> Void)? = nil) {
-        guard let services else { return }
+        guard services != nil else { return }
         Task {
-            do {
-                let created = try await services.createCollection(name: name, parent: parent)
-                await refreshFolders()
-                onCreated?(created)
+            var created: Collection?
+            // `.unknown`: a new SUBFOLDER appears in its parent's subfolder strip,
+            // which is part of that feed and not of the tree.
+            await performWrite(reload: .unknown) { services in
+                created = try await services.createCollection(name: name, parent: parent)
+            }
+            guard let created else { return }
+            onCreated?(created)
+            // 259 — select-on-create. `onCreated` is a NAVIGATION hook: the sidebar
+            // coordinator selects the row it has just made, and the window's own
+            // deferred sync has not run yet. This is the ONE write that still loads a
+            // collection directly, and it earns it because the caller has just said
+            // which — without it the new collection shows the "Loading collection"
+            // skeleton until some unrelated event happens to reload it.
+            if selectedFolderID != loadedCollectionID {
                 loadContents(of: selectedFolderID)
-            } catch {
-                lastError = Self.message(for: error)
             }
         }
     }
@@ -1860,11 +1745,11 @@ final class IngestionModel: ObservableObject {
     func renameFolder(id: UUID, to name: String) {
         guard id != unsortedFolderID, services != nil else { return }
         let oldName = folders.first { $0.id == id }?.name
-        enqueueUndoable { await self.applyRename(id: id, to: name) }
+        enqueueUndoable { await self.rename(id, to: name) }
         if let oldName, oldName != name {
             registerReversible("Rename",
-                primary: { self.enqueueUndoable { await self.applyRename(id: id, to: name) } },
-                inverse: { self.enqueueUndoable { await self.applyRename(id: id, to: oldName) } })
+                primary: { self.enqueueUndoable { await self.rename(id, to: name) } },
+                inverse: { self.enqueueUndoable { await self.rename(id, to: oldName) } })
             announceUndoable("Renamed “\(oldName)” to “\(name)”.")
         }
     }
@@ -1872,8 +1757,21 @@ final class IngestionModel: ObservableObject {
     /// Delete a folder and its whole subtree. Rejected for Unsorted.
     func deleteFolder(id: UUID) {
         guard id != unsortedFolderID else { return }
-        perform(after: id == selectedFolderID) { services in
-            try await services.deleteCollection(id: id)
+        // Repairing the import target is NOT navigation, which is why it stays here
+        // while the undo inverses' `selectedFolderID` writes became focus intents:
+        // the id is about to stop existing, and every verb that reads
+        // `selectedFolderID` would target a dead collection. Where to LOOK after a
+        // delete is still the window's call — `NavModel.reconcile(using:)` falls a
+        // deleted sidebar selection back to Home on the tree refresh below.
+        let wasTarget = id == selectedFolderID
+        Task {
+            let deleted = await performWrite(reload: .unknown) { services in
+                try await services.deleteCollection(id: id)
+            }
+            // Only on success: a delete that threw leaves the folder there, and
+            // repointing the target away from a collection that still exists would
+            // be a second bug wearing the first one's fix.
+            if deleted, wasTarget { selectedFolderID = unsortedFolderID }
         }
     }
 
@@ -1886,18 +1784,14 @@ final class IngestionModel: ObservableObject {
         let old = folders.first { $0.id == id }
         let oldParent = old?.parentCollectionID
         let oldIndex = old?.sortIndex
-        enqueueUndoable { await self.applyMoveFolder(id: id, toParent: parent, index: index) }
+        enqueueUndoable { await self.reparent(id, to: parent, index: index) }
         if oldParent != parent || index != nil {
             registerReversible("Move Folder",
                 primary: {
-                    self.enqueueUndoable {
-                        await self.applyMoveFolder(id: id, toParent: parent, index: index)
-                    }
+                    self.enqueueUndoable { await self.reparent(id, to: parent, index: index) }
                 },
                 inverse: {
-                    self.enqueueUndoable {
-                        await self.applyMoveFolder(id: id, toParent: oldParent, index: oldIndex)
-                    }
+                    self.enqueueUndoable { await self.reparent(id, to: oldParent, index: oldIndex) }
                 })
             announceUndoable("Moved “\(old?.name ?? "collection")”.")
         }
@@ -1910,99 +1804,39 @@ final class IngestionModel: ObservableObject {
         moveFolder(id: dragged, toParent: parent, index: index)
     }
 
-    /// Run a folder mutation, refresh the tree, and (optionally, when the
-    /// selected folder was affected) fall back to Unsorted + reload contents.
-    /// Thrown `AtelierError`s land in ``lastError``.
-    private func perform(
-        after selectionInvalidated: Bool = false,
-        _ body: @escaping (AppServices) async throws -> Void
-    ) {
-        guard let services else { return }
-        Task {
-            do {
-                try await body(services)
-                await refreshFolders()
-                if selectionInvalidated {
-                    selectedFolderID = unsortedFolderID
-                }
-                loadContents(of: selectedFolderID)
-            } catch {
-                lastError = Self.message(for: error)
-            }
+    /// Rename a folder (the verb, its redo and its inverse — the ping-pong installs
+    /// the mirror, so this registers nothing).
+    ///
+    /// `.unknown` rather than the renamed folder: a collection's name is drawn by
+    /// every feed that has it as a SUBFOLDER, and `subfolders` is a read
+    /// (`childCollections`) rather than a projection of `folders`, so a sibling
+    /// window's chip stays stale until its own feed reloads.
+    private func rename(_ id: UUID, to name: String) async {
+        await performWrite(reload: .unknown) { services in
+            _ = try await services.renameCollection(id: id, to: name)
         }
     }
 
-    /// ``perform(after:_:)`` for a write whose target is KNOWN — reload that folder
-    /// rather than `selectedFolderID`. The two differ whenever the add was triggered
-    /// from a pane that isn't the last-loaded collection, which is precisely when
-    /// reloading the selection shows the user nothing.
-    private func perform(
-        reloading folder: UUID, _ body: @escaping (AppServices) async throws -> Void
-    ) {
-        guard let services else { return }
-        Task {
-            do {
-                try await body(services)
-                await refreshFolders()
-                loadContents(of: folder)
-            } catch {
-                lastError = Self.message(for: error)
-            }
+    /// Reparent and/or reposition a folder. `index` is the destination slot (nil =
+    /// append); it flows straight to `moveCollection` (043 · Phase C). Same scope as
+    /// ``rename(_:to:)``, for the same reason.
+    private func reparent(_ id: UUID, to parent: UUID?, index: Int?) async {
+        await performWrite(reload: .unknown) { services in
+            try await services.moveCollection(id: id, toParent: parent, index: index)
         }
     }
 
     // MARK: - Folder contents
 
-    /// Load the DIRECT items + immediate subfolders of `id` (decision F5).
+    /// Load the DIRECT items + immediate subfolders of `id` (decision F5) into this
+    /// window's read model.
+    ///
+    /// The load itself — the race guard, the selection prune, the pending Jump — is
+    /// ``CollectionReadModel/load(_:)``. This forward stays because navigation calls
+    /// it: `AppShellView.syncActiveCollection` is the one place that decides WHICH
+    /// collection this window shows, and it says so through the model it already has.
     func loadContents(of id: UUID) {
-        guard let services else { return }
-        contentsLoadID &+= 1
-        let loadID = contentsLoadID
-        let sort = sortMode(for: id)
-        Task {
-            do {
-                // The two reads are independent — run them concurrently so the
-                // reload latency is the slowest ONE, not their sum (009 · 16A).
-                async let itemsRead = services.collectionItems(in: id, sort: sort, includeArchived: false)
-                async let subfoldersRead = services.childCollections(of: id)
-                let loadedItems = try await itemsRead
-                let loadedSubfolders = try await subfoldersRead
-                // A newer load has superseded this one — the reads can finish out
-                // of order, so a stale read must NOT overwrite the current
-                // folder's content. Bail before publishing anything.
-                guard loadID == contentsLoadID else { return }
-                items = loadedItems
-                // A genuine reload IS the database truth — including every persisted
-                // `view_count`. So any locally-tracked, not-yet-baked view deltas are
-                // now redundant: clear them, or the next Most-Viewed reorder would
-                // double-count them on top of counts the reload already carries
-                // (036 §3 B4).
-                pendingReorderBumps.removeAll(keepingCapacity: true)
-                // Stamp WHICH collection the shared `items` now belong to, so a
-                // freshly-pushed view for a different collection renders a skeleton
-                // instead of this (still-stale-until-now) content mid-switch.
-                loadedCollectionID = id
-                subfolders = loadedSubfolders
-                // Prune the selection to ids that survive the reloaded set
-                // (folder switch, move-away, or delete). A removed lead falls back
-                // to `nil`; the detail overlay's own state now lives in
-                // `DetailSession`, so its auto-dismiss-on-delete is driven by the
-                // host observing this reload (036 §3 B1), not by clearing model
-                // state here.
-                selectionStore.prune(to: items.map { $0.item.id })
-                // Apply a pending Jump selection (011-B4 · 12A) against the freshly
-                // loaded items, then clear it — deterministic, no timing hack.
-                if let pending = pendingSelection, pending.collectionID == id {
-                    let jumped = jumpSelection(in: items, assetIDs: pending.assetIDs)
-                    if !jumped.isEmpty { selectionStore.replace(jumped) }
-                    pendingSelection = nil
-                }
-                contentsVersion &+= 1
-            } catch {
-                guard loadID == contentsLoadID else { return }
-                lastError = Self.message(for: error)
-            }
-        }
+        contents.load(id)
     }
 
     // MARK: - Sort (007 G4)
@@ -2018,18 +1852,17 @@ final class IngestionModel: ObservableObject {
     /// the contents in the new order. Drag-reorder is meaningful only in
     /// `.manual`, so the grid disables it in the other modes.
     func setSortMode(_ mode: SortMode, for id: UUID) {
-        guard let services, sortMode(for: id) != mode else { return }
+        guard services != nil, sortMode(for: id) != mode else { return }
         if let index = folders.firstIndex(where: { $0.id == id }) {
             folders[index].sortMode = mode
         }
         loadContents(of: id)
         Task {
-            do {
+            // On failure the optimistic cache above is a lie, so `publishChange`'s
+            // tree refresh resyncs it to the truth and the collection reloads in the
+            // order that actually persisted.
+            await performWrite(reload: .collection(id)) { services in
                 try await services.setCollectionSortMode(mode, for: id)
-            } catch {
-                lastError = Self.message(for: error)
-                await refreshFolders()          // resync the cache to the truth
-                loadContents(of: id)
             }
         }
     }
@@ -2051,7 +1884,7 @@ final class IngestionModel: ObservableObject {
 
     /// Write any pending view bumps now (the 3s debounce, or a detail-close). One
     /// batched `recordViews` through the funnel; unknown/deleted ids are skipped by
-    /// core. Each DISTINCT drained id folds into ``pendingReorderBumps`` as +1 — the
+    /// core. Each DISTINCT drained id folds into the read model's view delta as +1 — the
     /// exact `view_count` increment core applies per asset per batch — so a later
     /// Most-Viewed reorder reproduces the database order without a reload.
     ///
@@ -2072,7 +1905,7 @@ final class IngestionModel: ObservableObject {
         // Fold to +1 per distinct id: core coalesces a batch to one `view_count`
         // bump per asset, so the local delta must too (raw per-open counts would
         // over-bump vs the database and diverge on the next real reload).
-        for id in ids { pendingReorderBumps[id, default: 0] += 1 }
+        contents.foldViewDelta(ids)
         let folder = selectedFolderID
         let reorders = sortMode(for: folder) == .mostViewed
         let reorderNow = reorders && !isDetailPresented
@@ -2087,7 +1920,7 @@ final class IngestionModel: ObservableObject {
                 // to the database (which lacks the failed bump) and clears the
                 // accumulator, so local order can't drift (036 §3 B4).
                 if reorders { loadContents(of: folder) }
-                else { for id in ids { pendingReorderBumps[id]? -= 1 } }
+                else { contents.unfoldViewDelta(ids) }
             }
         }
     }
@@ -2096,25 +1929,13 @@ final class IngestionModel: ObservableObject {
     /// detail host in the close animation's completion, so the just-viewed item
     /// rises AFTER the overlay fade rather than churning the grid under it.
     ///
-    /// Pure and local: it bumps a copy of ``items`` by ``pendingReorderBumps`` and
-    /// stable-sorts with core's exact Most-Viewed tiebreak (``mostViewedReorder``).
-    /// When the order is unchanged (the common case — the viewed item was already
-    /// at the top) it publishes NOTHING and keeps the accumulator, so a later flush
-    /// still has the deltas. When it moves, `items` is replaced once (the bumped
-    /// `view_count`s baked in, so `items` again equals the database truth) and the
-    /// accumulator clears. A no-op when the folder isn't Most-Viewed or nothing is
-    /// pending.
+    /// The sort mode is this model's (it reads the folder cache); the reorder itself
+    /// is the read model's, beside the array and the delta it is about — see
+    /// ``CollectionReadModel/applyMostViewedReorder()``. A no-op when the folder
+    /// isn't Most-Viewed or nothing is pending.
     func applyDeferredMostViewedReorder() {
-        guard sortMode(for: selectedFolderID) == .mostViewed,
-              !pendingReorderBumps.isEmpty else { return }
-        switch mostViewedReorder(items: items, bumps: pendingReorderBumps) {
-        case .unchanged:
-            break                                   // keep the accumulator; no publish
-        case .reordered(let newItems):
-            items = newItems                         // one publish; view_counts now baked in
-            contentsVersion &+= 1
-            pendingReorderBumps.removeAll(keepingCapacity: true)
-        }
+        guard sortMode(for: selectedFolderID) == .mostViewed else { return }
+        contents.applyMostViewedReorder()
     }
 
     // MARK: - Reorder (drag-to-reorder)
@@ -2131,48 +1952,41 @@ final class IngestionModel: ObservableObject {
     func reorderItems(movingAssetIDs: [UUID], insertAt slot: Int) {
         guard sortMode(for: selectedFolderID) == .manual, services != nil else { return }
         let currentIDs = items.map { $0.asset.id }
-        // `slot` is an index among the TILES the grid drew, i.e. into `displayItems`
-        // — so the reorder has to be solved in display space and only then widened
-        // back to every item (307). Solving it directly against `items` treats "after
-        // the 3rd tile" as "after the 3rd IMAGE", which with carousels collapsed
-        // lands a drop near the start of the feed instead of where it was dropped.
-        let displayIDs = displayItems.map { $0.item.id }
-        let movingAssetSet = Set(movingAssetIDs)
-        // The dragged payload is asset ids covering whole posts; map them back to the
-        // tiles that stand for them, de-duplicated but kept in display order.
-        var seen = Set<UUID>()
-        let movingTiles = displayIDs.filter { tileID in
-            let representsDragged = itemsRepresented(by: tileID).contains { memberID in
-                guard let assetID = assetIDByItemID[memberID] else { return false }
-                return movingAssetSet.contains(assetID)
-            }
-            return representsDragged && seen.insert(tileID).inserted
-        }
-        guard let newTileOrder = reorderedIDs(
-            ids: displayIDs, movingIDs: movingTiles, insertAt: slot)
-        else { return }
-        // Widen back: each tile contributes the items it stands for, in feed order,
-        // which also keeps a post's images contiguous after a move.
-        let newOrder = newTileOrder
-            .flatMap { itemsRepresented(by: $0) }
-            .compactMap { assetIDByItemID[$0] }
-        guard !newOrder.isEmpty else { return }
-
-        // Optimistic local reorder — rebuild `items` in the new order.
-        // uniquingKeysWith (not uniqueKeysWithValues) so a duplicate asset id in
-        // a folder degrades instead of trapping (G3).
-        let byAssetID = keyedByAssetID(items) { $0.asset.id }
-        items = newOrder.compactMap { byAssetID[$0] }
-        contentsVersion &+= 1
+        // The display-space solve and the optimistic republish are the read model's:
+        // they are arithmetic over the feed and its derived tile list, and both belong
+        // beside the array they rewrite. A feed with no memberships answers `nil`
+        // here without touching anything (057 — a saved search has no manual order),
+        // which is 14A's reorder path confirmed through the seam rather than at it.
+        guard let newOrder = contents.applyReorder(
+            movingAssetIDs: movingAssetIDs, insertAt: slot) else { return }
 
         // Undoable: the inverse restores the exact prior order (id-based). The
         // write is serialized + reloads to the persisted truth either way.
         let folder = selectedFolderID
-        enqueueUndoable { await self.applyReorder(folder: folder, order: newOrder) }
+        enqueueUndoable { await self.setOrder(folder, to: newOrder) }
         registerReversible("Reorder",
-            primary: { self.enqueueUndoable { await self.applyReorder(folder: folder, order: newOrder) } },
-            inverse: { self.enqueueUndoable { await self.applyReorder(folder: folder, order: currentIDs) } })
+            primary: { self.enqueueUndoable { await self.setOrder(folder, to: newOrder) } },
+            inverse: { self.enqueueUndoable { await self.setOrder(folder, to: currentIDs) } })
         announceUndoable("Reordered \(Self.itemCount(movingAssetIDs.count)).")
+    }
+
+    /// Persist `folder`'s grid order, then focus + reload it (the reorder verb and
+    /// its inverse are the same write with a different array).
+    ///
+    /// **The membership pre-read is gone** (099 · 14A, done in P1). This used to read
+    /// the WHOLE collection — every membership row joined to its asset and source,
+    /// decoded in full — in front of every drag, to strip ids that were no longer
+    /// members so `setGridOrder` would not throw `.notFound` and roll the batch back.
+    /// `AppServices.setGridOrder` now IGNORES a non-member by contract, which is
+    /// exactly what the pre-read was computing, inside the statement that was going to
+    /// run anyway. Positions are indices into the given array, so a dropped id leaves
+    /// a GAP and only the relative order is meaningful; a `.notFound` can still
+    /// arrive, for a missing COLLECTION, which is a different mistake.
+    private func setOrder(_ folder: UUID, to order: [UUID]) async {
+        guard !order.isEmpty else { return }
+        await performWrite(focus: folder, reload: .collection(folder)) { services in
+            try await services.setGridOrder(collectionID: folder, orderedAssetIDs: order)
+        }
     }
 
     // MARK: - Selection + inspector
@@ -2403,10 +2217,12 @@ final class IngestionModel: ObservableObject {
         // Capture the folder's order so undo restores the removed items' positions.
         let priorOrder = items.map { $0.asset.id }
         let message = "Removed \(Self.itemCount(assetIDs.count)) from “\(name(for: folder))”."
-        enqueueUndoable { await self.applyRemove(assetIDs: assetIDs, from: folder) }
+        enqueueUndoable { await self.dropMemberships(assetIDs, from: folder) }
         registerReversible("Remove",
-            primary: { self.enqueueUndoable { await self.applyRemove(assetIDs: assetIDs, from: folder) } },
-            inverse: { self.enqueueUndoable { await self.applyRestoreMemberships(assetIDs: assetIDs, to: folder, order: priorOrder) } })
+            primary: { self.enqueueUndoable { await self.dropMemberships(assetIDs, from: folder) } },
+            inverse: { self.enqueueUndoable {
+                await self.restoreMemberships(assetIDs, to: folder, order: priorOrder)
+            } })
         announceUndoable(message)
     }
 
@@ -2428,8 +2244,7 @@ final class IngestionModel: ObservableObject {
         if let collectionID, collectionID == loadedCollectionID, let shown = detailShownItemID {
             armDetailStep(for: shown)
         }
-        Task { await refreshFolders() }
-        loadContents(of: selectedFolderID)
+        Task { await publishChange(.unknown) }
     }
 
     /// MOVE assets out of the current folder into `targetID` — the atomic triage
@@ -2451,10 +2266,23 @@ final class IngestionModel: ObservableObject {
         // Capture the source order so undo restores the moved items' positions.
         let priorOrder = items.map { $0.asset.id }
         let message = "Moved \(Self.itemCount(assetIDs.count)) to “\(name(for: targetID))”."
-        enqueueUndoable { await self.applyMoveAssets(assetIDs, from: source, to: targetID) }
+        enqueueUndoable {
+            await self.moveMemberships(assetIDs, from: source, to: targetID, home: source)
+        }
         registerReversible("Move",
-            primary: { self.enqueueUndoable { await self.applyMoveAssets(assetIDs, from: source, to: targetID) } },
-            inverse: { self.enqueueUndoable { await self.applyMoveBack(assetIDs, from: targetID, to: source, order: priorOrder) } })
+            primary: {
+                self.enqueueUndoable {
+                    await self.moveMemberships(
+                        assetIDs, from: source, to: targetID, home: source)
+                }
+            },
+            inverse: {
+                self.enqueueUndoable {
+                    await self.moveMemberships(
+                        assetIDs, from: targetID, to: source,
+                        home: source, restoring: priorOrder)
+                }
+            })
         announceUndoable(message)
     }
 
@@ -2516,30 +2344,73 @@ final class IngestionModel: ObservableObject {
     private func applyAdd(
         _ assetIDs: [UUID], to target: UUID, record: AddedMemberships
     ) async {
-        guard let services else { return }
-        do {
-            let before = Set(try await services.collectionItems(in: target, includeArchived: false).map(\.asset.id))
+        await performWrite(reload: membershipScope(target)) { services in
+            let before = Set(try await services.collectionItems(
+                in: target, includeArchived: false).map(\.asset.id))
             try await services.addAssets(assetIDs, to: target)
-            let after = Set(try await services.collectionItems(in: target, includeArchived: false).map(\.asset.id))
+            let after = Set(try await services.collectionItems(
+                in: target, includeArchived: false).map(\.asset.id))
             // In the given order, so the undo reads deterministically in a test.
             record.assetIDs = assetIDs.filter { after.contains($0) && !before.contains($0) }
-            await refreshFolders()
-            loadContents(of: selectedFolderID)
-        } catch { lastError = Self.message(for: error) }
+        }
     }
 
     /// Drop exactly the memberships ``applyAdd(_:to:record:)`` created — the inverse.
     ///
     /// Does NOT touch the source: an add never removed anything, so there is nothing
     /// to put back. An asset left with no memberships at all is re-homed to Unsorted by
-    /// `removeAssets` (F3), which is precisely where the forward pass evicted it from.
+    /// `removeAssets` (F3), which is precisely where the forward pass evicted it from —
+    /// and why Unsorted is in the scope.
     private func applyUnadd(_ record: AddedMemberships, from target: UUID) async {
-        guard let services, !record.assetIDs.isEmpty else { return }
-        do {
+        guard !record.assetIDs.isEmpty else { return }
+        await performWrite(reload: membershipScope(target)) { services in
             try await services.removeAssets(record.assetIDs, from: target)
-            await refreshFolders()
-            loadContents(of: selectedFolderID)
-        } catch { lastError = Self.message(for: error) }
+        }
+    }
+
+    /// Drop `assetIDs`' memberships of `folder` — the Remove verb and its redo.
+    ///
+    /// It used to take a `message` to publish on the primary run only. The verb's
+    /// ``announceUndoable(_:)`` says the same sentence with an Undo button, so the
+    /// parameter only existed to say it twice.
+    private func dropMemberships(_ assetIDs: [UUID], from folder: UUID) async {
+        await performWrite(focus: folder, reload: membershipScope(folder)) { services in
+            try await services.removeAssets(assetIDs, from: folder)
+        }
+    }
+
+    /// Re-add memberships to `folder` and restore their prior order — the inverse of
+    /// ``dropMemberships(_:from:)``.
+    private func restoreMemberships(
+        _ assetIDs: [UUID], to folder: UUID, order: [UUID]
+    ) async {
+        await performWrite(focus: folder, reload: membershipScope(folder)) { services in
+            try await services.addAssets(assetIDs, to: folder)
+            guard !order.isEmpty else { return }
+            try await services.setGridOrder(collectionID: folder, orderedAssetIDs: order)
+        }
+    }
+
+    /// Move memberships `from → to`.
+    ///
+    /// The verb and its inverse are the same write with the two collections swapped,
+    /// which is why they are one function rather than the two that used to drift.
+    /// What does NOT swap is `home`: the collection the user raised the verb from, so
+    /// it is both the focus intent and — on the inverse, which is the only direction
+    /// with an order to put back — the collection whose grid order `restoring`
+    /// belongs to. Passing it explicitly is the difference between undoing a move and
+    /// writing the source's order onto the target.
+    private func moveMemberships(
+        _ assetIDs: [UUID], from source: UUID, to target: UUID,
+        home: UUID, restoring order: [UUID]? = nil
+    ) async {
+        await performWrite(
+            focus: home, reload: .collections([source, target, unsortedFolderID])
+        ) { services in
+            try await services.moveAssets(assetIDs, from: source, to: target)
+            guard let order, !order.isEmpty else { return }
+            try await services.setGridOrder(collectionID: home, orderedAssetIDs: order)
+        }
     }
 
     /// The asset ids a keyboard command (Delete / Remove / ⌘D) acts on: the whole
@@ -2558,7 +2429,7 @@ final class IngestionModel: ObservableObject {
     private var keyboardActionTargets: [UUID] {
         selection.isSelecting
             ? selectedAssetIDs
-            : (leadItem.map { assetIDs(for: widenedForAction([$0.item.id])) } ?? [])
+            : (leadItem.map { contents.actionTargets(forCellItemID: $0.item.id) } ?? [])
     }
 
     /// The assets `M` / `A` file (024 · K3) — **deliberately the same answer ⌫ and ⌘D
@@ -2659,11 +2530,11 @@ final class IngestionModel: ObservableObject {
     /// Set the flag and reload, so the grid stars repaint. Shared by the verb and
     /// its inverse (no undo re-registration — the ping-pong installs the mirror).
     private func applyFavorite(_ isFavorite: Bool, to assetIDs: [UUID]) async {
-        guard let services else { return }
-        do {
+        // `.unknown`: a star is a property of the ASSET, so it repaints in every feed
+        // the asset appears in, not only the one the ⌘D was pressed in.
+        await performWrite(reload: .unknown) { services in
             try await services.setFavorite(isFavorite, for: assetIDs)
-            loadContents(of: selectedFolderID)
-        } catch { lastError = Self.message(for: error) }
+        }
     }
 
     // MARK: - The archive shelf (023 · A3)
@@ -2734,15 +2605,15 @@ final class IngestionModel: ObservableObject {
     /// VISIBLE changed, and that is what the grid, the counts and the gallery
     /// covers all render from.
     private func applyArchived(_ archived: Bool, to assetIDs: [UUID]) async {
-        guard let services else { return }
-        do {
+        // `.unknown` for ``applyFavorite(_:to:)``'s reason: archiving hides the asset
+        // at the READ, in every collection that holds it, not only this one.
+        await performWrite(reload: .unknown) { services in
             if archived {
                 _ = try await services.archive(assetIDs)
             } else {
                 _ = try await services.unarchive(assetIDs)
             }
-            reloadAfterMembershipChange()
-        } catch { lastError = Self.message(for: error) }
+        }
     }
 
     /// Whether ⌫ has a container to remove from here (022 · D2). False in Unsorted,
@@ -2959,8 +2830,8 @@ final class IngestionModel: ObservableObject {
                 // media nothing references. This marker is the record of that, and
                 // it is the whole reason the next launch bothers to look.
                 self.markBlobSweepPending()
-                await self.refreshFolders()
-                self.loadContents(of: self.selectedFolderID)
+                // `.unknown`: a deleted asset can have been a member of anything.
+                await self.publishChange(.unknown)
                 let message = "Deleted \(Self.itemCount(count))."
                 // Register the undo now that the backup is in hand (id-based).
                 self.registerReversible("Delete",
@@ -2976,30 +2847,25 @@ final class IngestionModel: ObservableObject {
     /// Restore a captured delete (undo). Blobs were never reaped, so byte-backed
     /// assets come back with their media.
     private func applyRestore(_ backup: DeletedAssetsBackup) async {
-        guard let services else { return }
-        do {
-            try await services.restoreDeletedAssets(backup)
-            await refreshFolders()
-            loadContents(of: selectedFolderID)
-            notify("Restored \(Self.itemCount(backup.assets.count)).")
-        } catch { lastError = Self.message(for: error) }
+        let count = backup.assets.count
+        if await performWrite(reload: .unknown, { try await $0.restoreDeletedAssets(backup) }) {
+            notify("Restored \(Self.itemCount(count)).")
+        }
     }
 
     /// Re-delete after a restore (redo). Reuses the plain delete and does NOT reap
     /// (deferred to the launch GC), so a subsequent undo can restore again.
     private func applyDeleteAgain(_ assetIDs: [UUID], count: Int) async {
-        guard let services else { return }
-        do {
+        let deleted = await performWrite(reload: .unknown) { services in
             _ = try await services.deleteAssets(assetIDs)
-            // The redo orphans blobs exactly as the original delete did (it, too,
-            // defers reaping so a second ⌘Z still restores), so it marks too —
-            // otherwise a delete → undo → redo sequence leaves orphans behind a
-            // marker that the undo's sweep has already cleared (099 · 16A).
-            markBlobSweepPending()
-            await refreshFolders()
-            loadContents(of: selectedFolderID)
-            notify("Deleted \(Self.itemCount(count)).")
-        } catch { lastError = Self.message(for: error) }
+        }
+        guard deleted else { return }
+        // The redo orphans blobs exactly as the original delete did (it, too, defers
+        // reaping so a second ⌘Z still restores), so it marks too — otherwise a
+        // delete → undo → redo sequence leaves orphans behind a marker that the
+        // undo's sweep has already cleared (099 · 16A).
+        markBlobSweepPending()
+        notify("Deleted \(Self.itemCount(count)).")
     }
 
     /// Record that a delete has left unreferenced blobs on disk, so the next
@@ -3138,24 +3004,6 @@ final class IngestionModel: ObservableObject {
         }
     }
 
-    /// Run an asset mutation that changes the current folder's contents, then
-    /// refresh the tree + reload the folder and publish `body`'s message as a notice.
-    /// Thrown `AtelierError`s land in ``lastError``. (The folder-scoped `perform`
-    /// also resets the selected folder; asset mutations never need that.)
-    private func mutateContents(_ body: @escaping (AppServices) async throws -> String) {
-        guard let services else { return }
-        Task {
-            do {
-                let message = try await body(services)
-                await refreshFolders()
-                loadContents(of: selectedFolderID)
-                notify(message)
-            } catch {
-                lastError = Self.message(for: error)
-            }
-        }
-    }
-
     /// "1 item" / "N items" for notice + confirmation copy.
     private static func itemCount(_ n: Int) -> String {
         "\(n) item\(n == 1 ? "" : "s")"
@@ -3165,7 +3013,7 @@ final class IngestionModel: ObservableObject {
 
     /// Bumped whenever the selected folder's ``items`` change, so a dependent
     /// view can rebuild (via SwiftUI `.id`) to reflect the new set.
-    @Published private(set) var contentsVersion = 0
+    var contentsVersion: Int { contents.contentsVersion }
 
     /// The direct root collections (drives the Collections gallery, 004-P2).
     var rootCollections: [Collection] {
@@ -3223,10 +3071,16 @@ final class IngestionModel: ObservableObject {
 
     /// Set a collection's cover (gallery "Set as Cover" context action).
     func setCollectionCover(collectionID: UUID, assetID: UUID) {
-        perform { services in
-            try await services.setCollectionCover(collectionID: collectionID, assetID: assetID)
+        Task {
+            // `.treeOnly`: a cover is a property OF the collection, drawn by the
+            // gallery card and the sidebar row. No feed's rows changed, so the reload
+            // the old `perform` did here was always wasted.
+            await performWrite(reload: .treeOnly) { services in
+                try await services.setCollectionCover(
+                    collectionID: collectionID, assetID: assetID)
+            }
+            await refreshCollectionCovers()
         }
-        Task { await refreshCollectionCovers() }
     }
 
     // MARK: - Spaces (005-E2)
@@ -3562,8 +3416,7 @@ final class IngestionModel: ObservableObject {
             into: target, at: Date())
         Task {
             _ = await importInputs([input])
-            await refreshFolders()
-            if selectedFolderID == target { loadContents(of: target) }
+            await publishChange(.collection(target))
         }
     }
 
@@ -3605,8 +3458,7 @@ final class IngestionModel: ObservableObject {
         let folder = inputs.allSatisfy { $0.collectionID == first } ? first : selectedFolderID
         Task {
             _ = await importInputs(inputs, undecoded: undecoded)
-            await refreshFolders()
-            loadContents(of: folder)
+            await publishChange(.collection(folder))
         }
     }
 
@@ -3820,11 +3672,13 @@ final class IngestionModel: ObservableObject {
     /// there landed in an off-screen folder and read as "nothing happened". Callers
     /// pass the same resolved target their drop / ⌘V paths use.
     func addColor(hex: String, into folder: UUID) {
-        perform(reloading: folder) { services in
-            _ = try await services.ingestContent(
-                .color(hex: hex),
-                from: SourceDraft(platform: .localPaste, capturedAt: Date()),
-                into: folder)
+        Task {
+            await performWrite(reload: .collection(folder)) { services in
+                _ = try await services.ingestContent(
+                    .color(hex: hex),
+                    from: SourceDraft(platform: .localPaste, capturedAt: Date()),
+                    into: folder)
+            }
         }
     }
 
@@ -3838,11 +3692,13 @@ final class IngestionModel: ObservableObject {
     func addLink(url raw: String, into folder: UUID) {
         guard isReady else { return }
         guard let url = Self.webURL(fromUserInput: raw) else {
-            perform(reloading: folder) { services in
-                _ = try await services.ingestContent(
-                    .link(url: raw),
-                    from: SourceDraft(platform: .web, originalURL: raw, capturedAt: Date()),
-                    into: folder)
+            Task {
+                await performWrite(reload: .collection(folder)) { services in
+                    _ = try await services.ingestContent(
+                        .link(url: raw),
+                        from: SourceDraft(platform: .web, originalURL: raw, capturedAt: Date()),
+                        into: folder)
+                }
             }
             return
         }

@@ -1,7 +1,8 @@
 # 071 · Grid scale — windowed collection reads
 
 **Kind:** plan
-**Status:** proposed, not started
+**Status:** Phase 0a **done** (099 · P3, [472](../.change-log/472-the-feed-gets-a-model-of-its-own.md));
+§6 not started, and §6.1 is now a decision with evidence rather than a hypothesis.
 **Relates to:** 036 (AppKit grid), 037 (grid bake-off), 038 (grid spike), 056
 (production ship overview), 011-B1 (masonry frame math), 307/309 (post grouping)
 
@@ -131,6 +132,38 @@ Run at N = 5,000 / 20,000, release.
 
 *Decides:* whether §6.1 (narrow row) is worth doing on its own, or is only
 useful as the enabler for §6.2 (windowing).
+
+> **Done — 099 · P3** ([472](../.change-log/472-the-feed-gets-a-model-of-its-own.md)).
+> `ScaleHarnessTests` now runs all four probes over one warm snapshot at every N.
+> Release build, milliseconds:
+>
+> | N | total (warm) | query (scan) | row decode | struct decode | publish | `raw_metadata` | §6.1 narrow |
+> |---:|---:|---:|---:|---:|---:|---:|---:|
+> | 2,000 | 58.99 | 1.21 | 4.86 | 52.06 | 0.44 | 12.86 | 5.95 |
+> | 5,000 | 145.79 | 3.44 | 10.85 | 131.43 | 0.83 | 32.52 | 14.96 |
+> | 10,000 | 297.67 | 8.71 | 24.98 | 263.20 | 2.07 | 63.47 | 32.01 |
+> | 20,000 | 639.25 | 20.19 | 54.53 | 525.40 | 4.73 | 128.03 | 72.88 |
+>
+> **§3's hypothesis holds: struct decode is 82 % of the read and the scan is 3 %.**
+> The narrow row would be an **8.8×** win at 20,000 (72.88 ms against 639.25) *at its
+> cheapest shape* — the probe leaves `raw_metadata` as an undecoded `String`, i.e. the
+> §6.3 fallback rather than the carried column.
+>
+> **But `raw_metadata` is only a fifth of it** (20–22 % at every N), so P3's gate —
+> "build the summary row only if `rawMetadata` decode dominates" — was NOT met and the
+> row was NOT built. Two findings for whoever resumes this:
+>
+> 1. The 128 ms at 20,000 is spent decoding **two-byte `{}` blobs** — 6.4 µs each. That
+>    is `JSONValue.fromDatabaseValue` constructing a fresh `JSONDecoder` per row, not
+>    JSON parsing. A shared decoder (or a lazily-decoded `JSONValue`) collects most of a
+>    fifth of the read without touching a call site, and it is a far smaller change than
+>    §6.1.
+> 2. This corpus is lean, exactly as §3 warned. A real library's `raw_metadata` is
+>    fatter, so 128 ms is a floor. Re-measure against a real export before quoting it.
+>
+> The COLD totals reproduce §1's table closely except at the top: 64.70 / 152.25 /
+> 307.17 / **631.14** against 64.75 / 149.29 / 305.98 / **750.05**. Any threshold
+> argument should be re-measured on the machine making it.
 
 **0b — settle the scroll question.** The bake-off harness already exists and is
 scriptable: `GridBakeoffWindow` behind `-grid-bakeoff`, with

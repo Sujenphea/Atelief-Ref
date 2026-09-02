@@ -362,9 +362,29 @@ keychain would do that, and that is a migration of every existing user's token, 
 the two were verified together, which is how [471](../.change-log/471-the-token-leaves-the-main-actor-at-launch.md)
 describes it.
 
-## P3 — the per-window read model
+## P3 — the per-window read model · **done** ([472](../.change-log/472-the-feed-gets-a-model-of-its-own.md))
 
 *Decisions 1A, 6A (collapse), 13A, 14A (app). The largest phase. Effort L.*
+
+**Landed as specified, with one deliberate omission and one count corrected.**
+`CollectionReadModel` owns the feed and every derivation; `IngestionModel` keeps
+computed forwards (not storage) so ~300 call sites did not churn, and republishes the
+read model's `objectWillChange` as its own. The eight `apply*` workers, both `perform`
+overloads and the dead `mutateContents` collapsed into one
+`performWrite(focus:reload:_:)`. **The reload-site count was 67, not 69** (69 predates
+P1 and P7); **47 of them — 26 `loadContents` + 21 `refreshFolders` — are the
+collection-feed reloads this phase replaced**: 41 became `publishChange(_:)`, six survive
+deliberately (bootstrap ×2, `requestJumpSelection`, `createFolder`'s select-on-create,
+`setSortMode`'s optimistic reload, `flushViewBumps`' failure fallback), and the 20
+space/backup/sweep refreshes were never in scope.
+
+**071 · Phase 0a ran, and closed its own gate negatively.** At 20,000 rows the read
+splits 3.2 % query / 8.5 % row decode / **82.2 % struct decode** / 0.7 % publish, of
+which `raw_metadata` is 128 ms — **20 % of the total, not a majority**. 071 §3's
+hypothesis (decode dominates the scan) is confirmed by 26×; the narrower gate this
+phase was given (`rawMetadata` dominates) is not met, so **§6.1's narrow summary row
+was NOT built**. The numbers, and the two things they do warrant, are in the changelog
+and in [071](071-grid-scale-paging-plan.md)'s status block.
 
 - **`CollectionReadModel`** (`@MainActor final class`, `ObservableObject`): owns
   `items`, `subfolders`, `loadedCollectionID`, `contentsVersion`, and the derived
