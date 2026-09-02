@@ -299,7 +299,14 @@ struct InboxDrainPolicyPhaseTests {
         for phase in ScenePhaseKind.allCases {
             let rig = Rig()
             rig.policy.scenePhaseChanged(to: phase)
-            if await rig.waitUntil(timeout: 0.3, { rig.passes == 1 }) {
+            // Read synchronously, with no await between the call and the read. The claim
+            // IS synchronous — `gateClosesWithoutSuspending` below is the case that
+            // proves it — so a phase that drains has already claimed the inbox by the
+            // time this line runs, and one that does not never will. The previous
+            // spelling waited up to 0.3 s for `passes == 1`, which asks a loaded machine
+            // to schedule an unstructured task inside a deadline and fails the whole
+            // suite when it does not.
+            if rig.policy.isDraining {
                 draining.append(phase)
                 await rig.settle()
             }

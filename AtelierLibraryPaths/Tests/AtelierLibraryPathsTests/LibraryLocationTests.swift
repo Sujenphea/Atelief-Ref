@@ -57,21 +57,45 @@ struct LibraryLocationTests {
 
     // MARK: - macOS default root
     //
-    // These two touch the REAL `~/Library/Application Support/ref-atelier/` — the
-    // same directory the shipping app opens — because `swift test` is unsandboxed
-    // and there is no way to assert the macOS contract without asking for it. That
-    // is deliberate: `defaultRoot()` is idempotent and creates a directory the app
-    // creates anyway, so the side effect is a no-op on any machine that has ever
-    // run AtelierRefs. Everything that can be proven over a temp base is, below.
+    // The contract is `<Application Support>/ref-atelier/` and there is no seam that
+    // can be asked about it without asking for it: `defaultRoot()` creates what it
+    // returns. Every case that needs it therefore goes through
+    // ``withoutLeavingDefaultRoot(_:)``, which removes the directory afterwards IF it
+    // was not there before — so the assertion is the real one and a `swift test` run
+    // leaves a developer's home exactly as it found it (098, the flake sweep). On a
+    // machine that has ever run AtelierRefs the directory exists and nothing is
+    // touched; on a CI runner it is created and cleaned up.
+
+    /// Run `body`, then delete `<Application Support>/ref-atelier/` if this process is
+    /// what brought it into existence.
+    ///
+    /// Only ever removes a directory it watched appear, and only when it is EMPTY —
+    /// `removeItem` is not asked to recurse, so a real library that appeared between
+    /// the two reads (another process, a developer opening the app mid-run) survives.
+    private func withoutLeavingDefaultRoot<T>(_ body: () throws -> T) rethrows -> T {
+        let root = (try? applicationSupport)?
+            .appendingPathComponent("ref-atelier", isDirectory: true)
+        let existedBefore = root.map { isDirectory($0) } ?? true
+        defer {
+            if let root, !existedBefore,
+                (try? FileManager.default.contentsOfDirectory(
+                    at: root, includingPropertiesForKeys: nil))?.isEmpty == true {
+                try? FileManager.default.removeItem(at: root)
+            }
+        }
+        return try body()
+    }
 
     @Test("on macOS the default root is still <Application Support>/ref-atelier/")
     func defaultRootIsUnderApplicationSupport() throws {
         let expected = try applicationSupport
             .appendingPathComponent("ref-atelier", isDirectory: true)
-        let root = try LibraryLocation.defaultRoot()
-
-        #expect(root == expected)
-        #expect(isDirectory(root))
+        try withoutLeavingDefaultRoot {
+            let root = try LibraryLocation.defaultRoot()
+            #expect(root == expected)
+            // Created, not merely named: this is the directory the app opens.
+            #expect(isDirectory(root))
+        }
     }
 
     // MARK: - The platform-free seam
@@ -217,8 +241,11 @@ struct LibraryLocationTests {
         let (bundle, base) = try makeBundle(identifier: "group.sujenphea.AtelierRefs.dev")
         defer { try? FileManager.default.removeItem(at: base) }
 
-        #expect(try LibraryLocation.defaultRoot(bundle: bundle)
-            == (try LibraryLocation.defaultRoot()))
+        try withoutLeavingDefaultRoot {
+            let viaBundle = try LibraryLocation.defaultRoot(bundle: bundle)
+            let viaDefault = try LibraryLocation.defaultRoot()
+            #expect(viaBundle == viaDefault)
+        }
     }
 
     // MARK: - The override branch, unchanged
@@ -275,9 +302,12 @@ struct LibraryLocationTests {
     func noOverrideIsDefaultRoot() throws {
         #expect(LibraryLocation.overrideValue(arguments: ["AtelierRefs"], environment: [:]) == nil)
 
-        let root = try LibraryLocation.resolvedRoot(arguments: ["AtelierRefs"], environment: [:])
-
-        #expect(root == (try LibraryLocation.defaultRoot()))
+        try withoutLeavingDefaultRoot {
+            let root = try LibraryLocation.resolvedRoot(
+                arguments: ["AtelierRefs"], environment: [:])
+            let expected = try LibraryLocation.defaultRoot()
+            #expect(root == expected)
+        }
     }
 
     @Test("the argument beats the environment variable")
