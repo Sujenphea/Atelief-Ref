@@ -102,6 +102,14 @@ struct ExportSentNotice: View {
             Text("Sent \(count) \(count == 1 ? "capture" : "captures")")
                 .font(MobileTheme.Typography.body)
                 .foregroundStyle(MobileTheme.Colors.inkPrimary)
+                // **On the headline and not on the card** (098 · P6). It was on the `VStack`
+                // below, and SwiftUI propagates a container's accessibility identifier down
+                // over its children: every element inside this card reported `export.sent`,
+                // so `export.clear` and `export.keep` did not exist at runtime although
+                // both are spelled in this file. 098 · finding 10 called them "identifiers
+                // [that] already exist"; they existed and were unreachable, which is what
+                // happens to an identifier no test has ever queried.
+                .accessibilityIdentifier("export.sent")
             // **The number the phone used to throw away** (458). `InboxArchive.Summary`
             // has always known how many records the funnel refused, how many had lost
             // their payload and how many `.json` files would not decode; the controller
@@ -146,6 +154,5 @@ struct ExportSentNotice: View {
         .padding(.vertical, MobileTheme.Spacing.md)
         .cardChrome()
         .padding(MobileTheme.Spacing.lg)
-        .accessibilityIdentifier("export.sent")
     }
 }

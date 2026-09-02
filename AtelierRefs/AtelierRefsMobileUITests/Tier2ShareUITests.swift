@@ -37,8 +37,13 @@
 //
 //  It also runs against the DEFAULT library root, not the `-library-root` fixture: the
 //  share extension is a separate process and never sees the app's launch arguments, so it
-//  writes where `LibraryLocation.defaultRoot()` says. A test that seeded a throwaway root
-//  would be counting a different inbox than the one being written to.
+//  writes where `LibraryLocation.defaultRoot(bundle:)` says. A test that seeded a throwaway
+//  root would be counting a different inbox than the one being written to.
+//
+//  **It is opt-in, and it had never run.** Until 098 · P6 this failed at its first line
+//  with `appGroupIdentifierMissing`: it resolved the container through `Bundle.main`, which
+//  in a UI test is the XCTRunner. That is fixed below; what remains is a signing
+//  requirement nobody has satisfied — see ``runArgument``.
 //
 
 import AtelierCapture
@@ -51,6 +56,46 @@ final class Tier2ShareUITests: XCTestCase {
     override func setUp() {
         super.setUp()
         continueAfterFailure = false
+    }
+
+    // MARK: - Whether this runs at all
+
+    /// The environment variable that opts this test in (098 · finding 10).
+    ///
+    /// **Off by default, in the only test here that is.** Two reasons, and the first is
+    /// the one that matters: this test reads the App Group container, which means the
+    /// runner bundle needs `sujenphea.AtelierRefsMobileUITests` registered as an App ID
+    /// with the App Groups capability — and nobody has registered it (446, 097, and 098's
+    /// "left to the user"). Until someone does, an unsigned run fails at
+    /// ``appGroupIdentifier`` with a provisioning error that says nothing about tier 2.
+    /// The second is that it drives Safari: a CI runner with no network, a slow simulator,
+    /// or an iOS release that moves the share sheet's anchors again all make it red for
+    /// reasons that are not the code's.
+    ///
+    /// A skip rather than a disabled test, because a skip is visible in the report and
+    /// says what to do about it, where a commented-out test says nothing to anyone.
+    static let runArgument = "ATELIER_RUN_SAFARI_TESTS"
+
+    static var isRequested: Bool {
+        guard let value = ProcessInfo.processInfo.environment[runArgument] else { return false }
+        return !value.isEmpty && value != "0"
+    }
+
+    /// The App Group's library root, resolved from THIS bundle.
+    ///
+    /// **`Bundle(for: Self.self)` and not the default** (098 · finding 10, and 455 found
+    /// it). `LibraryLocation.defaultRoot()` defaults to `Bundle.main`, which in a UI test
+    /// is the XCTRunner — an Apple-signed bundle with no `AtelierAppGroupIdentifier` key —
+    /// so every read below threw `appGroupIdentifierMissing` before Safari was ever
+    /// launched. The runner's `Bundle.main` is not this target's bundle; the class's is.
+    ///
+    /// P1 added `LibraryLocation.appGroupIdentifier(bundle:)` / `defaultRoot(bundle:)` for
+    /// exactly this, host-tested over a bundle written to a temp directory. This passes
+    /// the parameter rather than re-deriving the container path from the identifier, which
+    /// is what the first version of this fix did and what left the default silently wrong
+    /// for the next runner.
+    private func libraryRoot() throws -> URL {
+        try LibraryLocation.defaultRoot(bundle: Bundle(for: Self.self))
     }
 
     /// **The one span nothing else can reach, and it only exists on a device.**
@@ -66,6 +111,14 @@ final class Tier2ShareUITests: XCTestCase {
     /// and the sheet's row is labelled by the HOST APP, not the extension.
     @MainActor
     func testASafariShareLandsACaptureInTheInbox() throws {
+        try XCTSkipUnless(
+            Self.isRequested,
+            """
+            Set \(Self.runArgument)=1 to run the tier-2 Safari test. \
+            It drives another app and needs an App ID for this bundle (098 · "left to the \
+            user"); a default run must not depend on either.
+            """)
+
         let server = try PageFixtureServer(html: Self.fixtureHTML(port:), image: Self.jpeg())
         try server.start()
         defer { server.stop() }
@@ -161,24 +214,43 @@ final class Tier2ShareUITests: XCTestCase {
     ///
     /// **Read-only, and it reads the DEFAULT root** — the share extension is a separate
     /// process and never sees this target's launch arguments, so it writes where
-    /// `LibraryLocation.defaultRoot()` says. A test that seeded a throwaway root with
-    /// `-library-root` would be counting a different inbox than the one being written to,
-    /// which is the trap the header above already records for `pendingCount()`.
+    /// `LibraryLocation.defaultRoot(bundle:)` says. A test that seeded a throwaway root
+    /// with `-library-root` would be counting a different inbox than the one being written
+    /// to, which is the trap the header above already records for `pendingCount()`.
     ///
-    /// `LibraryLocation` resolves the App Group from THIS bundle's
-    /// `AtelierAppGroupIdentifier`, which is why the target carries an Info.plist for one
-    /// key and an entitlements file for one capability. Both are fed from
-    /// `$(ATELIER_APP_GROUP)`, so the container this runner is granted and the one it asks
-    /// for cannot disagree.
+    /// The bundle is ``libraryRoot()``'s, not `Bundle.main` — see its note. It resolves the
+    /// App Group from THIS bundle's `AtelierAppGroupIdentifier`, which is why the target
+    /// carries an Info.plist for one key and an entitlements file for one capability. Both
+    /// are fed from `$(ATELIER_APP_GROUP)`, so the container this runner is granted and the
+    /// one it asks for cannot disagree.
     private func inboxRecords() throws -> [InboxRecord] {
-        let layout = InboxLayout(libraryRoot: try LibraryLocation.defaultRoot())
+        let layout = InboxLayout(libraryRoot: try libraryRoot())
         let decoder = InboxRecord.makeDecoder()
+        // **Pending UNION ingested** (098 · finding 10). This read only
+        // `pendingRecordURLs()`, which was correct when it was written and stopped being
+        // correct at `.change-log/454`: the app drains its own inbox at launch now, and
+        // `pendingCount()` below LAUNCHES the app — twice, once before the share and once
+        // after — so by the time this looks, the record it is looking for has already
+        // moved to `inbox/ingested/`. The test would have failed by construction the first
+        // time it could run at all. This is the same union `InboxArchive.pending(in:)`
+        // reads, and for the same reason: a drained record is still owed to the Mac.
+        //
         // An absent inbox is an empty inbox, not a failure — nothing has ever been shared
         // on a fresh simulator, and that is the normal state of the `before` reading.
-        return (try? layout.pendingRecordURLs())?.compactMap { url in
-            guard let data = try? Data(contentsOf: url) else { return nil }
-            return try? decoder.decode(InboxRecord.self, from: data)
-        } ?? []
+        let urls = ((try? layout.pendingRecordURLs()) ?? [])
+            + ((try? layout.ingestedRecordURLs()) ?? [])
+        var records: [InboxRecord] = []
+        var seen: Set<UUID> = []
+        for url in urls {
+            guard let data = try? Data(contentsOf: url),
+                  let record = try? decoder.decode(InboxRecord.self, from: data)
+            else { continue }
+            // A record caught mid-move is in both directories. Deduping by id is what
+            // `InboxArchive.pending(in:)` does, and it is why "exactly one new record"
+            // below is a fair assertion rather than a race.
+            if seen.insert(record.id).inserted { records.append(record) }
+        }
+        return records
     }
 
     // MARK: - Safari

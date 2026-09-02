@@ -50,12 +50,7 @@ final class ExportUITests: XCTestCase {
             "sending produced no share sheet")
         attach(app, named: "export-share-sheet")
 
-        // Out of the sheet without sending anywhere — the archive is written either way.
-        if app.buttons["Close"].exists {
-            app.buttons["Close"].tap()
-        } else {
-            app.swipeDown(velocity: .fast)
-        }
+        dismissShareSheet(app)
 
         // **The captures are still waiting.** An export copies; it does not consume. A user
         // who cancels the share sheet, or AirDrops to a Mac that is asleep, has lost
@@ -66,6 +61,63 @@ final class ExportUITests: XCTestCase {
         XCTAssertTrue(
             send.label.contains("\(pending)"),
             "the waiting count changed after an export: \(send.label)")
+    }
+
+    // MARK: - The offer the share sheet leaves behind (096 · 3B)
+
+    func testClearingAfterASendRemovesTheControl() {
+        let app = launch()
+        let send = app.buttons["export.send"]
+        XCTAssertTrue(send.waitForExistence(timeout: 20))
+        send.tap()
+        XCTAssertTrue(waitForShareSheet(in: app, timeout: 90), "sending produced no share sheet")
+        dismissShareSheet(app)
+
+        // **The offer.** Nothing on the phone ever left the inbox before 096 · 3B, so every
+        // export re-sent every capture ever made. `UIActivityViewController`'s completion
+        // cannot tell a successful AirDrop from a cancelled one and the Mac says nothing
+        // back (091 · D4), so the only party who knows is asked — once, here.
+        let clear = app.buttons["export.clear"]
+        XCTAssertTrue(
+            clear.waitForExistence(timeout: 30),
+            "dismissing the share sheet did not offer to retire what was sent")
+        attach(app, named: "export-sent-offer")
+        clear.tap()
+
+        // Clear retires the ids that reached the manifest — all three of them — so the
+        // pending set empties and the control withdraws, which is the resting state 093 § 2
+        // designed. This is the ONE thing in the app that makes the count go down, and
+        // nothing else in the suite drives it.
+        XCTAssertTrue(
+            waitForDisappearance(of: send, timeout: 30),
+            "the captures were retired and the send control is still there")
+        XCTAssertTrue(
+            waitForDisappearance(of: clear, timeout: 10),
+            "the offer stayed up after it was answered")
+    }
+
+    func testKeepingAfterASendLeavesTheCountAlone() {
+        let app = launch()
+        let send = app.buttons["export.send"]
+        XCTAssertTrue(send.waitForExistence(timeout: 20))
+        send.tap()
+        XCTAssertTrue(waitForShareSheet(in: app, timeout: 90), "sending produced no share sheet")
+        dismissShareSheet(app)
+
+        let keep = app.buttons["export.keep"]
+        XCTAssertTrue(keep.waitForExistence(timeout: 30), "no offer to answer")
+        keep.tap()
+
+        // **Keep is the safe answer and it must cost nothing.** The captures stay pending
+        // and go out again next time; a re-import collapses on blob hash (091 · D4). The
+        // count is the assertion, not the control's presence: a Keep that quietly retired
+        // one record would leave the control up and only the number would say so.
+        XCTAssertTrue(
+            waitForDisappearance(of: keep, timeout: 10), "the offer stayed up after Keep")
+        XCTAssertTrue(send.waitForExistence(timeout: 10), "the send control went away")
+        XCTAssertTrue(
+            send.label.contains("\(pending)"),
+            "Keep changed the waiting count: \(send.label)")
     }
 
     /// Whether a share sheet is up, by any of the marks one leaves.
@@ -86,6 +138,26 @@ final class ExportUITests: XCTestCase {
             },
             object: nil)
         return XCTWaiter().wait(for: [up], timeout: timeout) == .completed
+    }
+
+    /// Out of the system share sheet without sending anywhere — the archive is written
+    /// either way, and the offer is what this file is about.
+    ///
+    /// Shared by the two cases below and the one above, which each learned it separately.
+    private func dismissShareSheet(_ app: XCUIApplication) {
+        if app.buttons["Close"].exists {
+            app.buttons["Close"].tap()
+        } else {
+            app.swipeDown(velocity: .fast)
+        }
+    }
+
+    /// Wait for an element to go away. `waitForExistence` has no negative form, and
+    /// `!exists` read once is a race against an animation.
+    private func waitForDisappearance(of element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let gone = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in !element.exists }, object: nil)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
     }
 
     // MARK: - Fixtures

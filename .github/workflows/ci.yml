@@ -6,14 +6,17 @@ name: CI
 # also gates the SWIFT share extension's host table — see the `extension` job),
 # an xcodebuild build-and-test of the app target (the SwiftUI layer isn't
 # SPM-tested, so the build is its compile-proof and AtelierRefsTests carries its
-# unit coverage), and an xcodebuild build of the two iOS targets.
+# unit coverage), a build of the two iOS targets — `build-for-testing` for the
+# phone app, so its UI-test bundle compiles too — and a simulator run of the two
+# runnable iOS UI suites (098 · finding 10).
 #
 # Toolchain: the app targets macOS 26 / Xcode 26 (deployment target 26.5), so the
-# app job needs a runner with that SDK. The `ios-packages` and `ios-app` jobs need
-# the same Xcode for their iPhoneOS 26 SDK. Swift packages + the extension build on
-# any recent macOS runner. If GitHub-hosted images don't yet ship Xcode 26, point
-# the `app`, `ios-packages` and `ios-app` jobs at a self-hosted macOS 26 runner
-# (change `runs-on`).
+# app job needs a runner with that SDK. The `ios-packages`, `ios-app` and
+# `ios-ui-tests` jobs need the same Xcode for their iPhoneOS 26 SDK, and the last
+# two also need an iPhone 17 simulator on the image. Swift packages + the extension
+# build on any recent macOS runner. If GitHub-hosted images don't yet ship Xcode 26,
+# point the `app`, `ios-packages`, `ios-app` and `ios-ui-tests` jobs at a
+# self-hosted macOS 26 runner (change `runs-on`).
 
 on:
   push:
@@ -118,7 +121,7 @@ jobs:
         run: npm run drift-check
 
   ios-app:
-    name: iOS app + share extension (xcodebuild build)
+    name: iOS app + share extension (xcodebuild)
     # The gap this closes: until now NOTHING in CI compiled `AtelierRefsMobile`
     # (1,837 lines) or `AtelierRefsShare` (951). `ios-packages` above builds the
     # PACKAGES those targets link, and the `app` job below builds the Mac scheme
@@ -126,16 +129,23 @@ jobs:
     # went green, and the largest untested surface in the project was also the
     # least verified.
     #
-    # Build-only, and deliberately so: it is the same argument `ios-packages`
-    # makes one job up. A test bundle needs a booted simulator host and the UI
-    # tests in `AtelierRefsMobileUITests` need a real share sheet (and, for
-    # `Tier2ShareUITests`, Safari), so THE COMPILE IS THE GATE. What it catches is
-    # what it is for: a refactor that breaks the extension's process code, which is
-    # the one file in this repo with no unit test host at all.
+    # **`build-for-testing` on the mobile scheme, `build` on the extension**
+    # (098 · finding 10). `xcodebuild build` compiles the app and NOT its test
+    # bundle, so 700 lines of `AtelierRefsMobileUITests` had no gate anywhere: a
+    # rename in the app broke a UI test and nothing said so until someone ran the
+    # suite by hand. `build-for-testing` compiles the bundle too. The share
+    # extension has no test bundle, so it stays on `build`.
     #
-    # `generic/platform=iOS Simulator` rather than a named device: a build needs no
-    # booted simulator, and pinning `name=iPhone 16` would make this job fail the
-    # day the runner image retires that device rather than the day the code breaks.
+    # What the compile catches is what it is for: a refactor that breaks the
+    # extension's process code, which is the one file in this repo with no unit
+    # test host at all.
+    #
+    # `generic/platform=iOS Simulator` for the extension: a build needs no booted
+    # simulator, and pinning a device would make this job fail the day the runner
+    # image retires it rather than the day the code breaks. `build-for-testing`
+    # cannot take a generic destination — a test bundle is built for a concrete
+    # simulator — so that row names one, and names the same one `ios-ui-tests`
+    # runs on.
     #
     # Both schemes explicitly, though building the app would drag the extension in
     # as an embedded dependency. Two rows means a failure names which target broke
@@ -144,17 +154,61 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scheme: [AtelierRefsMobile, AtelierRefsShare]
+        include:
+          - scheme: AtelierRefsMobile
+            action: build-for-testing
+            destination: platform=iOS Simulator,name=iPhone 17
+          - scheme: AtelierRefsShare
+            action: build
+            destination: generic/platform=iOS Simulator
     steps:
       - uses: actions/checkout@v4
       - name: Show Xcode
         run: xcodebuild -version
-      - name: Build ${{ matrix.scheme }}
+      - name: ${{ matrix.action }} ${{ matrix.scheme }}
         run: |
-          xcodebuild build \
+          xcodebuild ${{ matrix.action }} \
             -project AtelierRefs/AtelierRefs.xcodeproj \
             -scheme ${{ matrix.scheme }} \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination '${{ matrix.destination }}' \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO
+
+  ios-ui-tests:
+    name: iOS UI tests (simulator, Switcher + Export)
+    # 098 · finding 10: "the UI tests never run anywhere". Nine cases across two
+    # suites — the taps nothing else can make (the navigation title is a control, a
+    # parent row expands to its children, choosing a collection retitles the grid, a
+    # tile pushes its detail, an empty collection says WHICH nothing it is) and the
+    # export's whole offer (the count, the share sheet, the captures surviving it,
+    # Clear, Keep).
+    #
+    # **`Tier2ShareUITests` is excluded, and it also excludes itself.** It drives
+    # Safari over a loopback page and reads the App Group container, which needs
+    # `sujenphea.AtelierRefsMobileUITests` registered as an App ID with the App
+    # Groups capability — nobody has (446, 097, and 098's "left to the user"), so it
+    # cannot pass here however patient this job is. It carries an `XCTSkipUnless` on
+    # `ATELIER_RUN_SAFARI_TESTS`, so even a naive `xcodebuild test` on this scheme
+    # skips rather than fails; the `-only-testing:` rows are belt as well as braces,
+    # and they also keep a CI run off the network.
+    #
+    # **The simulator is pinned, and that is a trade.** A test run needs a concrete
+    # device, and a device the runner image drops makes this job red for a reason
+    # that is not the code. iPhone 17 ships on the image that carries Xcode 26; when
+    # it does not, this line and the `ios-app` row above move together.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Xcode
+        run: xcodebuild -version
+      - name: Switcher + Export UI tests
+        run: |
+          xcodebuild test \
+            -project AtelierRefs/AtelierRefs.xcodeproj \
+            -scheme AtelierRefsMobile \
+            -destination 'platform=iOS Simulator,name=iPhone 17' \
+            -only-testing:AtelierRefsMobileUITests/SwitcherUITests \
+            -only-testing:AtelierRefsMobileUITests/ExportUITests \
             -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO
 

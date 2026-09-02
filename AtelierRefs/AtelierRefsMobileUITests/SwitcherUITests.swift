@@ -121,7 +121,51 @@ final class SwitcherUITests: XCTestCase {
                 app.staticTexts[section].waitForExistence(timeout: 5),
                 "the detail screen is missing its \(section) section")
         }
+
+        // The nine facts 098 · P6 completes the screen with. The two that were missing are
+        // asserted by name; the rest are the labels 041 fixes.
+        for label in ["Saved", "Dimensions", "Platform", "Author", "Collection", "Note"] {
+            XCTAssertTrue(
+                app.staticTexts[label].exists, "the detail screen has no \(label) row")
+        }
+        XCTAssertTrue(
+            app.staticTexts["Unsorted"].exists,
+            "the Collection row does not name the collection the item is in")
+
+        // **The navigation bar has a title.** It was `title ?? ""`, so an item with neither
+        // a name nor a source title pushed a screen with a bare bar; the fixture's captures
+        // all carry a provenance title, so this asserts the ordinary case rather than the
+        // fallback — which `BrowseFormatTests` covers over every kind and platform.
+        XCTAssertTrue(
+            app.navigationBars["U1"].waitForExistence(timeout: 5),
+            "the detail screen has no title")
+
         attach(app, named: "item-detail")
+    }
+
+    // MARK: - The screens with nothing on them (093 § 7, 098 · P6)
+
+    func testAnEmptyCollectionSaysWhichNothingItIs() {
+        let app = launch()
+        switcherButton(app).tap()
+        XCTAssertTrue(app.navigationBars["Collections"].waitForExistence(timeout: 5))
+
+        // "Type" is seeded with no items and no children (`FixtureLibrary.Names.type`).
+        app.buttons["Type"].firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["Type"].waitForExistence(timeout: 5))
+
+        let notice = app.staticTexts["notice.empty"]
+        XCTAssertTrue(
+            notice.waitForExistence(timeout: 5), "an empty collection drew no sentence")
+        // The sentence is the COLLECTION's, not Unsorted's. Before 098 · P6 every empty grid
+        // said "Anything you share arrives in Unsorted", which in a collection reached off
+        // the switcher answers a question about somewhere else.
+        XCTAssertTrue(
+            app.staticTexts["This collection is empty"].exists,
+            "the empty collection is wearing another collection's sentence")
+        XCTAssertFalse(
+            app.staticTexts["Nothing here yet"].exists, "the old one-size sentence is back")
+        attach(app, named: "empty-collection")
     }
 
     // MARK: - Fixtures

@@ -36,7 +36,7 @@ struct LoadingNotice: View {
             .controlSize(.large)
             .tint(MobileTheme.Colors.inkSecondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityIdentifier("notice.loading")
+            .accessibilityIdentifier(NoticeID.loading)
     }
 }
 
@@ -63,10 +63,10 @@ struct FailureNotice: View {
                 .font(MobileTheme.Typography.body)
                 .foregroundStyle(MobileTheme.Colors.warning)
                 .multilineTextAlignment(.center)
+                .accessibilityIdentifier(NoticeID.failure)
         }
         .padding(MobileTheme.Spacing.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityIdentifier("notice.failure")
     }
 }
 
@@ -88,6 +88,7 @@ struct EmptyNotice: View {
             Text(state.title)
                 .font(MobileTheme.Typography.bodyEmphasis)
                 .foregroundStyle(MobileTheme.Colors.inkPrimary)
+                .accessibilityIdentifier(NoticeID.empty)
             Text(state.detail)
                 .font(MobileTheme.Typography.body)
                 .foregroundStyle(MobileTheme.Colors.inkSecondary)
@@ -95,7 +96,6 @@ struct EmptyNotice: View {
         }
         .padding(MobileTheme.Spacing.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityIdentifier("notice.empty")
     }
 }
 
@@ -130,7 +130,19 @@ struct WarningNotice: View {
 }
 
 /// The identifiers the notices carry, spelled once (098 · P3's rule for string keys).
+///
+/// **Every one of them sits on a LEAF, never on the card or the stack** — a lesson this
+/// phase learned from `ExportSentNotice`, whose `export.clear` and `export.keep` were
+/// spelled in the source and did not exist at runtime, because the container's
+/// `export.sent` propagates down over its children. An identifier on a `VStack` renames
+/// everything inside it.
 enum NoticeID {
+    /// The whole panel, while the library or a collection is being read.
+    static let loading = "notice.loading"
+    /// The whole panel, when the library could not be opened or read.
+    static let failure = "notice.failure"
+    /// The whole panel, on the heading of an empty grid.
+    static let empty = "notice.empty"
     /// An export that could not write anything. Auto-dismisses.
     static let exportFailure = "export.failure"
     /// The inbox could not be counted, so the send control is not there to be missed.
