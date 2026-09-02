@@ -1989,6 +1989,53 @@ public final class AppServices: Sendable {
         }
     }
 
+    /// ONE membership of `collectionID`, by the membership's own id — the same
+    /// P14 join ``collectionItems(in:sort:includeArchived:)`` runs, with a
+    /// primary-key predicate and no ORDER BY. `nil` when there is no such
+    /// membership IN THIS COLLECTION.
+    ///
+    /// **Why this exists rather than filtering the collection read.** The phone's
+    /// item screen resolves a tapped tile from a pair of ids, and it used to do
+    /// that by reading the whole collection and keeping one row — 0.293 s at
+    /// 5,000 items (`.change-log/450`), paid on every tap, to throw 4,999 rows
+    /// away. The join is identical; what changes is that SQLite is told which row
+    /// is wanted, so the two indexed lookups it already has (`collection_item`'s
+    /// primary key, then the asset and source primary keys) do the whole job.
+    ///
+    /// **The collection id is not decoration.** A membership id is unique on its
+    /// own, so the predicate could have been the id alone — and then a route
+    /// carrying a stale collection would silently resolve an item that is no
+    /// longer in the collection the screen says it is showing. The pair is what
+    /// the navigation value carries (`BrowseRoute.item`), so the pair is what is
+    /// asked.
+    ///
+    /// `includeArchived` is not defaulted, for the reason
+    /// ``collectionItems(in:sort:includeArchived:)`` gives at length: browse
+    /// passes `false`, and an archived asset hidden at the READ is what lets
+    /// unarchiving put it back exactly where it was. An absent collection is
+    /// `.notFound`, not `nil` — "this collection is gone" and "this item is gone
+    /// from it" are different sentences and the caller shows different screens.
+    public func collectionItem(
+        in collectionID: UUID, id itemID: UUID, includeArchived: Bool
+    ) async throws -> CollectionItemDetail? {
+        try await read { db in
+            guard try Collection.exists(db, key: Self.key(collectionID)) else {
+                throw AtelierError.notFound(entity: "collection", id: collectionID)
+            }
+            var assetJoin = CollectionItem.asset.including(required: Asset.source)
+            if !includeArchived {
+                assetJoin = assetJoin.filter(Column("archived_at") == nil)
+            }
+            let request = CollectionItem
+                .filter(Column("id") == Self.key(itemID))
+                .filter(Column("collection_id") == Self.key(collectionID))
+                .including(required: assetJoin)
+            return try CollectionItemRow.fetchOne(db, request).map {
+                CollectionItemDetail(item: $0.item, asset: $0.asset, source: $0.source)
+            }
+        }
+    }
+
     /// The archive shelf itself (023 · A) — every archived asset with its
     /// provenance, most recently archived first.
     ///
