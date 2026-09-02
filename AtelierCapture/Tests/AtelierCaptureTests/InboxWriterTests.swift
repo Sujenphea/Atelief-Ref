@@ -278,6 +278,80 @@ struct InboxWriterTests {
                 == InboxWriter.maximumPayloadBytes)
     }
 
+    // MARK: - The floor (457)
+    //
+    // Beside the cap because it is the cap's mirror: the same check, the same moment
+    // (before anything is created), the same shape of refusal. An empty payload is not
+    // a media-less capture — that is spelled by passing no payload — it is a provider
+    // that handed over nothing and called it an image.
+
+    @Test("an empty Data payload is refused before the inbox exists")
+    func emptyDataIsRefused() throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+        let id = UUID()
+
+        let error = try failure {
+            try InboxWriter(libraryRoot: root).write(
+                .sample(), payload: Data(), id: id, capturedAt: Self.capturedAt)
+        }
+        #expect(error.shape == .payloadEmpty)
+        #expect(error.underlying.isEmpty)
+
+        // Nothing created — not even the inbox directory, since the refusal is
+        // decided before the first `createDirectory`.
+        #expect(!exists(layout.directory))
+        #expect(!exists(layout.recordURL(for: id)))
+        #expect(!exists(layout.payloadURL(for: id)))
+    }
+
+    @Test("a zero-byte file payload is refused, and the source is left where it was")
+    func emptyFileIsRefused() throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+        let id = UUID()
+        let source = try makeSparseFile(root, named: "empty.bin", count: 0)
+        #expect(InboxWriter.payloadSize(of: .fileURL(source)) == 0)
+
+        let error = try failure {
+            try InboxWriter(libraryRoot: root).write(
+                .sample(), payload: .fileURL(source), id: id, capturedAt: Self.capturedAt)
+        }
+        #expect(error.shape == .payloadEmpty)
+
+        #expect(!exists(layout.directory))
+        #expect(!exists(layout.recordURL(for: id)))
+        #expect(exists(source))
+    }
+
+    /// The floor is one byte: a payload that small is a bad share, but it is the
+    /// pipeline's job to say so, not the writer's.
+    @Test("a one-byte payload is accepted — the writer does not judge content")
+    func oneByteIsAccepted() throws {
+        let root = try makeRoot()
+        let layout = InboxLayout(libraryRoot: root)
+        let id = UUID()
+
+        let record = try InboxWriter(libraryRoot: root).write(
+            .sample(), payload: Data([0x00]), id: id, capturedAt: Self.capturedAt)
+
+        #expect(record.payloadFile == "\(id.uuidString).bin")
+        #expect(layout.isComplete(record))
+    }
+
+    /// Passing NO payload is still how a media-less capture is spelled; the floor is
+    /// about a payload that is present and empty, and must not have changed that.
+    @Test("no payload at all is still a media-less capture, not an empty one")
+    func absentPayloadIsNotEmpty() throws {
+        let root = try makeRoot()
+        let id = UUID()
+
+        let record = try InboxWriter(libraryRoot: root).write(
+            .sampleContent(), payload: PayloadSource?.none, id: id, capturedAt: Self.capturedAt)
+
+        #expect(record.payloadFile == nil)
+    }
+
     @Test("the Data fallback is capped too, by the same constant")
     func overCapDataIsRefused() throws {
         let root = try makeRoot()
@@ -681,6 +755,8 @@ extension InboxWriteError {
         /// The whole case is a contract — nothing in it is a system string — so this
         /// one is its own shape rather than a shape minus something (406).
         case payloadTooLarge(bytes: Int, limit: Int)
+        /// Likewise its own shape: no payload, nothing caught (457).
+        case payloadEmpty
     }
 
     var shape: Shape {
@@ -690,21 +766,22 @@ extension InboxWriteError {
         case .recordEncodingFailed(let id, _): .recordEncodingFailed(id: id)
         case .recordWriteFailed(let path, _): .recordWriteFailed(path: path)
         case .payloadTooLarge(let bytes, let limit): .payloadTooLarge(bytes: bytes, limit: limit)
+        case .payloadEmpty: .payloadEmpty
         }
     }
 
     /// What the writer caught, from whichever case is carrying it. Asserted non-empty
     /// and never asserted equal: the text is `localizedDescription`'s, not ours.
     ///
-    /// `payloadTooLarge` caught nothing — the writer decided it — so it has no
-    /// `underlying` to expose and yields `""`. A test asserting non-empty on that case
-    /// would be asserting that the writer invented a sentence.
+    /// `payloadTooLarge` and `payloadEmpty` caught nothing — the writer decided them —
+    /// so they have no `underlying` to expose and yield `""`. A test asserting non-empty
+    /// on either would be asserting that the writer invented a sentence.
     var underlying: String {
         switch self {
         case .inboxUnavailable(_, let underlying), .payloadWriteFailed(_, let underlying),
             .recordEncodingFailed(_, let underlying), .recordWriteFailed(_, let underlying):
             underlying
-        case .payloadTooLarge: ""
+        case .payloadTooLarge, .payloadEmpty: ""
         }
     }
 }

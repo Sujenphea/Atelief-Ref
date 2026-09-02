@@ -1,4 +1,5 @@
-// AtelierCapture tests — where the Library root comes from (092 · S1, moved S4a).
+// AtelierLibraryPaths tests — where the Library root comes from (092 · S1, moved S4a
+// and again in 096 review 4A).
 //
 // These moved here with the type, unchanged apart from the module they import: the
 // seam is the same seam, and an assertion that had to change would have meant the
@@ -14,6 +15,13 @@
 // takes its raw value as a parameter and the container-to-root step is
 // `libraryRoot(under:)`, and both are exercised here on macOS. What is left untested
 // until an iOS target exists is four lines of container lookup.
+//
+// The third, since 457, is the BUNDLE the identifier is read from. `Bundle.main` in a
+// UI test is the XCTest runner, so the read takes a bundle, defaulted to `.main`; the
+// cases below write a bundle to a temp directory — a directory with an `Info.plist` is
+// one — and read a present, an absent and a blank key out of it. The default is pinned
+// too: on this host `.main` carries no key, and `appGroupIdentifier()` must say exactly
+// what `appGroupIdentifier(bundle: .main)` says.
 
 import Foundation
 import Testing
@@ -131,6 +139,86 @@ struct LibraryLocationTests {
             key: LibraryLocation.appGroupIdentifierKey)) {
             _ = try LibraryLocation.appGroupIdentifier(rawValue: "  \n ")
         }
+    }
+
+    // MARK: - The bundle the identifier is read from (457)
+
+    /// A bundle on disk whose Info.plist carries `value` under the App Group key, or
+    /// carries no such key when `value` is nil. Flat — `Info.plist` at the bundle's
+    /// root, the iOS shape — because that is the shape the share extension's and the
+    /// UI-test bundle's plists take; a `Contents/` bundle reads the same way.
+    private func makeBundle(identifier value: String?) throws -> (bundle: Bundle, base: URL) {
+        let base = try makeTempBase()
+        let url = base.appendingPathComponent("Fixture.bundle", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        var plist: [String: Any] = ["CFBundleIdentifier": "test.fixture"]
+        if let value { plist[LibraryLocation.appGroupIdentifierKey] = value }
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            .write(to: url.appendingPathComponent("Info.plist"))
+        let bundle = try #require(Bundle(url: url))
+        return (bundle, base)
+    }
+
+    @Test("a bundle carrying the key resolves its identifier")
+    func bundleWithIdentifier() throws {
+        let (bundle, base) = try makeBundle(identifier: "group.sujenphea.AtelierRefs.dev")
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        #expect(try LibraryLocation.appGroupIdentifier(bundle: bundle)
+            == "group.sujenphea.AtelierRefs.dev")
+    }
+
+    @Test("a bundle without the key is the typed error — the runner's shape")
+    func bundleWithoutIdentifier() throws {
+        let (bundle, base) = try makeBundle(identifier: nil)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        #expect(throws: LibraryLocationError.appGroupIdentifierMissing(
+            key: LibraryLocation.appGroupIdentifierKey)) {
+            _ = try LibraryLocation.appGroupIdentifier(bundle: bundle)
+        }
+    }
+
+    @Test("a bundle whose value is blank is treated as missing, as the raw parse is")
+    func bundleWithBlankIdentifier() throws {
+        let (bundle, base) = try makeBundle(identifier: " \n")
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        #expect(throws: LibraryLocationError.appGroupIdentifierMissing(
+            key: LibraryLocation.appGroupIdentifierKey)) {
+            _ = try LibraryLocation.appGroupIdentifier(bundle: bundle)
+        }
+    }
+
+    /// The default is `.main` and nothing else — pinned by asking both ways on a host
+    /// where `.main` is the test runner and carries no key. What `.main` resolves to is
+    /// not this test's to change; that it is still the default is.
+    @Test("no bundle argument means Bundle.main, whatever Bundle.main says")
+    func defaultBundleIsMain() {
+        let viaDefault = Result { try LibraryLocation.appGroupIdentifier() }
+        let viaMain = Result { try LibraryLocation.appGroupIdentifier(bundle: .main) }
+
+        switch (viaDefault, viaMain) {
+        case let (.success(a), .success(b)):
+            #expect(a == b)
+        case let (.failure(a as LibraryLocationError), .failure(b as LibraryLocationError)):
+            #expect(a == b)
+            #expect(a == .appGroupIdentifierMissing(key: LibraryLocation.appGroupIdentifierKey))
+        default:
+            Issue.record("the default and the explicit .main read disagreed: \(viaDefault) vs \(viaMain)")
+        }
+    }
+
+    /// On macOS the base is Application Support whoever asks, so a bundle that DOES
+    /// carry an identifier changes nothing — the parameter is for the iOS branch, and
+    /// the macOS root must not have moved by a byte.
+    @Test("on macOS defaultRoot(bundle:) ignores the bundle")
+    func defaultRootIgnoresBundleOnMacOS() throws {
+        let (bundle, base) = try makeBundle(identifier: "group.sujenphea.AtelierRefs.dev")
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        #expect(try LibraryLocation.defaultRoot(bundle: bundle)
+            == (try LibraryLocation.defaultRoot()))
     }
 
     // MARK: - The override branch, unchanged

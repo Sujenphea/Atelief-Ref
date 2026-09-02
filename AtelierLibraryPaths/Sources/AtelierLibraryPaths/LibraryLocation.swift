@@ -1,21 +1,19 @@
-// AtelierCapture — the default on-disk Library location (chunk 5; 092 · S1, moved S4a)
+// AtelierLibraryPaths — the default on-disk Library location (chunk 5; 092 · S1, moved
+// S4a to AtelierCapture and again in 096 review 4A to here — see the manifest for why).
 //
 // Resolves the app's single Library root and ensures it exists, so the app hook has
 // one place to build its `LibraryLayout` + `MediaStore` + `AppServices`. The root is
 // always `<base>/ref-atelier/`; what differs per platform is only the BASE.
 //
-// **Why this is in AtelierCapture and not AtelierIngestion**, where S1 built it: this
-// seam exists so the iOS share extension can find the library root, and in
-// `AtelierIngestion` it could not. That package imported AppKit
-// (`Input/DirectInputReader.swift`) and did not build for iOS at all — `.change-log/452`
-// has since split that file, but at the time the one
+// **Why this left AtelierIngestion**, where S1 built it: this seam exists so the iOS
+// share extension can find the library root, and in `AtelierIngestion` it could not.
+// That package imported AppKit (`Input/DirectInputReader.swift`) and did not build for
+// iOS at all — `.change-log/452` has since split that file, but at the time the one
 // caller the App Group branch below was written for had no way to reach
-// ``LibraryLocation/defaultRoot()``. Nothing was broken by that — the seam simply had
-// no caller on its own platform. This package is transport-free and platform-free by
-// construction, already builds for iOS 26, and is already on the extension's link
-// line; it is where ``InboxLayout`` went in S2 for the same reason, and the AppKit
-// boundary has now pulled a type out of AtelierIngestion twice. The macOS callers
-// import AtelierCapture and resolve exactly the root they always did.
+// ``LibraryLocation/defaultRoot(bundle:)``. Nothing was broken by that — the seam simply
+// had no caller on its own platform. A zero-dependency leaf that the extension, the
+// companion, the UI-test runner and the Mac all link is where it ended up, and the Mac
+// callers resolve exactly the root they always did.
 //
 // On macOS the base is Application Support. In a sandboxed app `FileManager` returns
 // the per-app container's Application Support
@@ -36,9 +34,19 @@
 // out (092 · S1).
 //
 // The seam is shaped so almost all of it is testable without an iOS toolchain:
-// `libraryRoot(under:)` and `appGroupIdentifier(rawValue:)` are platform-free and both
-// platforms route through them, leaving only the container lookup and the
-// data-protection call inside `#if os(iOS)`.
+// `libraryRoot(under:)`, `appGroupIdentifier(rawValue:)` and `appGroupIdentifier(bundle:)`
+// are platform-free and both platforms route through them, leaving only the container
+// lookup and the data-protection call inside `#if os(iOS)`.
+//
+// **Which bundle** (457; 098 · finding 10). The identifier is read from a bundle's
+// Info.plist, and the bundle is a PARAMETER defaulted to `.main`, not a hard-coded
+// `.main`: a UI test's `Bundle.main` is the XCTest runner, whose plist carries no such
+// key, so `Tier2ShareUITests` could never resolve the App Group its own bundle had been
+// given (455 recorded the failure). A caller that is not the app passes its own bundle;
+// every caller that is the app — the companion, the share extension — passes nothing and
+// gets exactly what it always got. The default is what keeps the app's behaviour
+// unchanged, and the parameter is what makes it testable over a bundle written to a
+// temp directory.
 //
 // **And that residue is untested, deliberately** (R6 · issue 12). Three things have
 // run exactly once each, by hand, on a simulator during S4b-i and never since: the
@@ -73,7 +81,7 @@ import Foundation
 
 /// A typed failure resolving the iOS App Group container. Both cases mean the same
 /// class of bug — the App Group is not wired up — and both are fatal by design: see
-/// ``LibraryLocation/defaultRoot()``. `Equatable` so tests assert the exact case.
+/// ``LibraryLocation/defaultRoot(bundle:)``. `Equatable` so tests assert the exact case.
 public enum LibraryLocationError: Error, Equatable {
     /// The calling process's own bundle carries no
     /// ``LibraryLocation/appGroupIdentifierKey`` value, or carries a blank one.
@@ -99,25 +107,35 @@ public enum LibraryLocation {
     /// three can read from. (The plist and build-setting wiring is 092 · S4b.)
     public static let appGroupIdentifierKey = "AtelierAppGroupIdentifier"
 
-    /// The App Group identifier from `Bundle.main`'s Info.plist.
+    /// The App Group identifier from `bundle`'s Info.plist — `Bundle.main` unless a
+    /// caller says otherwise (457).
     ///
     /// `Bundle.main` in an app extension is the EXTENSION's bundle, not the host app's
     /// — an extension gets no reading of its container app's plist — so the share
     /// extension needs its own copy of ``appGroupIdentifierKey``, fed by the same build
-    /// setting. Two plists, one build setting, one identifier (092 · S4b).
+    /// setting. Two plists, one build setting, one identifier (092 · S4b). And
+    /// `Bundle.main` in a UI test is the test RUNNER, which has no plist of ours at all
+    /// — so a test passes `Bundle(for: Self.self)` and reads its own.
     ///
-    /// Takes the raw value as a parameter — defaulted to the real `Bundle.main` read —
-    /// so the failure paths are exercisable on macOS, where there is no App Group to
-    /// misconfigure.
+    /// The read is here and the parse is ``appGroupIdentifier(rawValue:)``; this only
+    /// looks the key up and hands the value on, so the two cannot disagree about what a
+    /// blank value means.
+    public static func appGroupIdentifier(bundle: Bundle = .main) throws -> String {
+        try appGroupIdentifier(
+            rawValue: bundle.object(forInfoDictionaryKey: appGroupIdentifierKey) as? String)
+    }
+
+    /// The App Group identifier a raw Info.plist value amounts to.
+    ///
+    /// Takes the raw value as a parameter, with no default, so the failure paths are
+    /// exercisable on macOS, where there is no App Group to misconfigure. The bundle read
+    /// that feeds it is ``appGroupIdentifier(bundle:)``.
     ///
     /// Throws ``LibraryLocationError/appGroupIdentifierMissing(key:)`` when the key is
     /// absent or blank. A whitespace-only value is treated as absent for the same
     /// reason the `-library-root` override treats it that way: it is a misconfiguration
     /// that would otherwise resolve to something plausible-looking and wrong.
-    public static func appGroupIdentifier(
-        rawValue: String? = Bundle.main
-            .object(forInfoDictionaryKey: LibraryLocation.appGroupIdentifierKey) as? String
-    ) throws -> String {
+    public static func appGroupIdentifier(rawValue: String?) throws -> String {
         let trimmed = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let trimmed, !trimmed.isEmpty else {
             throw LibraryLocationError.appGroupIdentifierMissing(key: appGroupIdentifierKey)
@@ -142,6 +160,11 @@ public enum LibraryLocation {
     /// container's `ref-atelier/` on iOS — created if it does not yet exist, and
     /// returned as a directory URL.
     ///
+    /// `bundle` is where the App Group identifier is read from on iOS, and is not
+    /// consulted on macOS, where the base is Application Support whoever asks. It
+    /// defaults to `.main` so every app caller resolves exactly what it always did; a
+    /// UI test passes its own (457).
+    ///
     /// Throws if the base can't be resolved or the directory can't be created
     /// (surfaced by the caller as an "open library failed" state).
     ///
@@ -149,17 +172,17 @@ public enum LibraryLocation {
     /// Support. Falling back would "work" in the app and silently give the extension a
     /// second, invisible root; what the user would see is captures that vanish. A
     /// missing container is a provisioning bug and should fail where it is fixable.
-    public static func defaultRoot() throws -> URL {
-        let root = try libraryRoot(under: defaultBase())
+    public static func defaultRoot(bundle: Bundle = .main) throws -> URL {
+        let root = try libraryRoot(under: defaultBase(bundle: bundle))
         try protectAtRest(root)
         return root
     }
 
     /// The container the Library lives inside — the only genuinely platform-specific
-    /// step.
-    private static func defaultBase() throws -> URL {
+    /// step. `bundle` matters only on iOS; see ``defaultRoot(bundle:)``.
+    private static func defaultBase(bundle: Bundle) throws -> URL {
         #if os(iOS)
-        let identifier = try appGroupIdentifier()
+        let identifier = try appGroupIdentifier(bundle: bundle)
         guard let container = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: identifier) else {
             throw LibraryLocationError.appGroupContainerUnavailable(identifier: identifier)
@@ -199,11 +222,11 @@ public enum LibraryLocation {
     public static let overrideEnvironmentKey = "ATELIER_LIBRARY_ROOT"
 
     /// The Library root to actually open: an override when one is supplied,
-    /// otherwise ``defaultRoot()``.
+    /// otherwise ``defaultRoot(bundle:)`` over `Bundle.main`.
     ///
     /// The override is a THROWAWAY-library escape hatch for performance work and
     /// tests — it must never be reachable by accident, so with no argument and no
-    /// environment variable this is exactly ``defaultRoot()``, byte for byte.
+    /// environment variable this is exactly ``defaultRoot(bundle:)``, byte for byte.
     ///
     /// The value is interpreted two ways, because the app is sandboxed and an
     /// arbitrary absolute path is NOT writable from inside its container:

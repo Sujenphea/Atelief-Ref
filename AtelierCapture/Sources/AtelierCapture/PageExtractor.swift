@@ -87,8 +87,17 @@ public enum PageExtractor {
             [url, harvest.canonical], where: { pathSegments($0).count > 1 && pathSegments($0)[1] == "status" })
             ?? url
         let segments = pathSegments(postURL)
-        let handle = segments.first.map { "@" + $0 }
-        let tweetID = segments.count > 2 && segments[1] == "status" ? segments[2] : nil
+        // A handle exists only on a status page, `/<handle>/status/<id>` (457; 098 ·
+        // finding 12). Until then the first path segment of ANY X URL became the
+        // author: sharing `x.com/home` recorded `@home`, `/explore` recorded `@explore`,
+        // and a profile page recorded its owner as the author of a capture with no
+        // post. `twitter.js:61` still does that — the browser extension is always handed
+        // a post link by its right-click context, so the feed case never reaches it there.
+        // `i` is X's reserved namespace (`/i/status/<id>`, `/i/bookmarks`), never an
+        // account, so it is not a handle even on a status page.
+        let isStatus = segments.count > 2 && segments[1] == "status"
+        let handle = isStatus && segments[0] != "i" ? "@" + segments[0] : nil
+        let tweetID = isStatus ? segments[2] : nil
 
         let hasArticles = harvest.media.contains { ($0.articleIndex ?? -1) >= 0 }
         let focal = hasArticles

@@ -83,6 +83,51 @@ struct PageExtractorTests {
         #expect(capture.mediaURL == "https://pbs.twimg.com/card_img/generic.jpg")
     }
 
+    /// The bug 098 · finding 12 named: the first path segment of ANY X URL became the
+    /// author, so sharing the feed recorded `@home`. A handle exists only on a status
+    /// page; everything else is a page with no post and no author.
+    @Test(
+        "A non-status X page yields no handle and no tweet id",
+        arguments: [
+            "https://x.com/home",
+            "https://x.com/i/bookmarks",
+            "https://x.com/explore",
+            "https://x.com/ada",
+            "https://x.com/ada/with_replies",
+            "https://x.com/search?q=stairs",
+            "https://x.com/",
+        ])
+    func twitterNonStatusPageHasNoHandle(url: String) {
+        let capture = PageExtractor.capture(from: PageHarvest(url: url, title: "X"))
+
+        #expect(capture.provenance.platform == "twitter")
+        #expect(capture.provenance.authorHandle == nil, "\(url)")
+        #expect(rawMetadata(capture)["tweetId"] == nil, "\(url)")
+    }
+
+    /// `i` is X's reserved namespace, not an account: `/i/status/<id>` is a real
+    /// permalink shape (notifications link to it) and carries a tweet id but no author.
+    @Test("An /i/status/ permalink keeps its tweet id and yields no handle")
+    func twitterReservedNamespaceIsNotAHandle() {
+        let capture = PageExtractor.capture(from: PageHarvest(
+            url: "https://x.com/i/status/4242"))
+
+        #expect(capture.provenance.authorHandle == nil)
+        #expect(rawMetadata(capture)["tweetId"] == "4242")
+    }
+
+    /// The other direction of the same rule: a feed URL with a status canonical is a
+    /// status page, and the handle comes from the candidate that is one.
+    @Test("A status canonical behind a feed URL still yields the handle")
+    func twitterHandleFromCanonicalStatus() {
+        let capture = PageExtractor.capture(from: PageHarvest(
+            url: "https://x.com/home", canonical: "https://x.com/ada/status/77"))
+
+        #expect(capture.provenance.originalURL == "https://x.com/ada/status/77")
+        #expect(capture.provenance.authorHandle == "@ada")
+        #expect(rawMetadata(capture)["tweetId"] == "77")
+    }
+
     @Test("A video tweet yields its poster, since there is no still on the server")
     func twitterVideoPoster() {
         let capture = PageExtractor.capture(from: PageHarvest(
@@ -121,6 +166,35 @@ struct PageExtractorTests {
         #expect(capture.mediaURL == "https://i.pinimg.com/originals/hero.jpg")
         #expect(capture.mediaURLFallback == "https://i.pinimg.com/736x/hero.jpg")
         #expect(rawMetadata(capture)["pinId"] == "8675309")
+    }
+
+    /// The rule stated in `largestMedia`'s own comment: `max(by:)` returns the LAST
+    /// maximal element, and a page whose images all report 0×0 (lazy-loaded, never laid
+    /// out) would then yield its footer logo. Ties go to DOM order.
+    @Test("largestMedia breaks a tie by DOM order, not by last-wins")
+    func largestMediaTieGoesToDOMOrder() {
+        let unlaidOut = PageHarvest(media: [
+            .init(kind: .image, src: "https://i.pinimg.com/736x/first.jpg"),
+            .init(kind: .image, src: "https://i.pinimg.com/736x/second.jpg"),
+            .init(kind: .image, src: "https://i.pinimg.com/736x/footer-logo.jpg"),
+        ])
+        #expect(PageExtractor.largestMedia(unlaidOut, matching: "i.pinimg.com")?.src
+            == "https://i.pinimg.com/736x/first.jpg")
+
+        let equal = PageHarvest(media: [
+            .init(kind: .image, src: "https://i.pinimg.com/736x/a.jpg", width: 500, height: 500),
+            .init(kind: .image, src: "https://i.pinimg.com/736x/b.jpg", width: 500, height: 500),
+        ])
+        #expect(PageExtractor.largestMedia(equal, matching: "i.pinimg.com")?.src
+            == "https://i.pinimg.com/736x/a.jpg")
+
+        // And a strictly larger later image still wins — the tie rule is not first-wins.
+        let later = PageHarvest(media: [
+            .init(kind: .image, src: "https://i.pinimg.com/736x/small.jpg", width: 100, height: 100),
+            .init(kind: .image, src: "https://i.pinimg.com/736x/big.jpg", width: 101, height: 100),
+        ])
+        #expect(PageExtractor.largestMedia(later, matching: "i.pinimg.com")?.src
+            == "https://i.pinimg.com/736x/big.jpg")
     }
 
     // MARK: - Instagram
@@ -225,6 +299,30 @@ struct PageExtractorTests {
         let title = try #require(capture.provenance.title)
         #expect(title.count == PageExtractor.maximumTitleLength + 1)   // + the ellipsis
         #expect(title.hasSuffix("…"))
+    }
+
+    /// The count is in Characters, not scalars: `String.count` and `prefix` are
+    /// grapheme-aware, so a flag (two scalars) is one character and the cut never lands
+    /// inside one. Pinned with a grapheme-heavy title exactly at and one over the limit,
+    /// because the ASCII case above cannot tell the two countings apart.
+    @Test("Truncation counts graphemes: a title of flags is cut between flags")
+    func truncationIsGraphemeAware() throws {
+        let flag = "🇬🇧"
+        let atLimit = String(repeating: flag, count: PageExtractor.maximumTitleLength)
+        let over = atLimit + flag
+
+        let kept = PageExtractor.capture(from: PageHarvest(
+            url: "https://example.com/x", metas: ["og:title": atLimit]))
+        #expect(kept.provenance.title == atLimit)
+
+        let cut = PageExtractor.capture(from: PageHarvest(
+            url: "https://example.com/x", metas: ["og:title": over]))
+        let title = try #require(cut.provenance.title)
+        #expect(title == atLimit + "…")
+        #expect(title.count == PageExtractor.maximumTitleLength + 1)
+        // Every scalar pair survived intact — no orphaned regional indicator.
+        #expect(title.dropLast().unicodeScalars.count
+            == PageExtractor.maximumTitleLength * 2)
     }
 
     @Test("A blank title is no title")

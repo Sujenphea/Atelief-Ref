@@ -59,9 +59,38 @@ struct ShareCaptureTests {
             "https://notpinterest.com/pin/1",
             "https://x.com.example.net/phish",
             "https://cosmos.so.example.net/",
+            // A lookalike SUFFIX: the listed domain with more after it (457).
+            "https://x.co/",
+            "https://x.comm/",
+            "https://pinterest.com.au/pin/1",
+            "https://sub.x.com.evil.net/",
+            // Userinfo: the listed host before an `@` is not the host (457).
+            "https://x.com@evil.com/",
+            "https://x.com:443@evil.net/",
+            // An IDN host is its punycode, which is not a listed domain (457).
+            "https://xn--80ak6aa92e.com/",
+            "https://пример.рф/a",
+            // A percent-encoded dot decodes into a lookalike suffix, not into x.com.
+            "https://x.com%2Eevil.net/",
         ])
     func unmappedHostsAreWeb(urlString: String) {
         #expect(ShareCapture.platform(forURLString: urlString) == .web)
+    }
+
+    /// The other side of the userinfo case: the HOST is what is read, so credentials in
+    /// front of a real x.com do not hide it.
+    @Test("userinfo in front of a mapped host does not unmap it")
+    func userinfoBeforeMappedHost() {
+        #expect(ShareCapture.platform(forURLString: "https://user:pw@x.com/ada/status/1") == .twitter)
+    }
+
+    /// Foundation IDNA-maps a fullwidth `ｘ.com` to `x.com` before the host is read —
+    /// which is what every browser does with it, so it IS x.com and the mapping is
+    /// pinned rather than argued with. A visually confusable host that does NOT map
+    /// (Cyrillic `х`) stays punycode and stays `.web`, in the case above.
+    @Test("an IDN host that maps to a listed domain is that domain")
+    func idnMappingToMappedHost() {
+        #expect(ShareCapture.platform(forURLString: "https://ｘ.com/ada/status/1") == .twitter)
     }
 
     @Test("a scheme-less host still resolves — canonicalURL supplies https://")

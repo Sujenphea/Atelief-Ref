@@ -46,6 +46,14 @@
 // a share sheet that silently did nothing, which is the one failure mode 091 · D2 says
 // must not happen, because the user cannot tell it from success.
 //
+// **And a floor** (457; 098 · finding 8): a payload of zero bytes is refused the same
+// way. A provider that hands over an empty file is a share that already failed, and a
+// record written for it is worse than a refusal — it is complete on sight (the sidecar
+// exists), so the drain runs it, the pipeline reads zero bytes and reports
+// `.unreadableSource`, three passes later it is quarantined, and in the meantime every
+// export reads its header and skips it. Two wedges from one empty file; the card that
+// says "that one didn't save" is the honest answer, and it is the cheap one.
+//
 // Foundation only. No AppKit, no UIKit, no GRDB use, and no knowledge of the Library
 // beyond the inbox directory it was handed.
 
@@ -89,7 +97,7 @@ public enum PayloadSource: Equatable, Sendable {
 /// **Every case also carries `underlying`, and that is not decoration.** The typed
 /// case says WHICH step failed; `underlying` is the only thing that says why. This
 /// code runs in a share extension: no debugger, no test host, one error card that
-/// deliberately collapses all six typed failures into "that one didn't save"
+/// deliberately collapses every typed failure into "that one didn't save"
 /// (093 § 1), and a single `logger.error` line. Without the caught error's own words,
 /// a full disk, a data-protection denial on a locked device and a missing App Group
 /// container are one indistinguishable `payloadWriteFailed(path:)` — the same string
@@ -127,6 +135,15 @@ public enum InboxWriteError: Error, Equatable {
     /// holding a sentence this enum invented would be the opposite of what R1 added it
     /// for.
     case payloadTooLarge(bytes: Int, limit: Int)
+    /// The payload is zero bytes and was refused before anything was created (457).
+    ///
+    /// No payload, and the second case with no `underlying`, for the reason
+    /// ``payloadTooLarge(bytes:limit:)`` has none: nothing was caught, the writer
+    /// decided this, and there is nothing to say about an empty file beyond that it
+    /// is one. A media-less capture is spelled by passing NO payload, never an empty
+    /// one — so this is always a provider that handed over nothing and called it an
+    /// image.
+    case payloadEmpty
 
     /// Render a caught error into the `underlying` text, the same way at all four
     /// sites.
@@ -260,13 +277,19 @@ public struct InboxWriter: Sendable {
     ) throws -> InboxRecord {
         let fileManager = FileManager.default
 
-        // Before anything is created. An over-cap share is a fact about what was
-        // handed over, not about the container it was headed for, and refusing it
-        // first means a doomed write never brings an inbox into existence.
-        if let payload, let size = InboxWriter.payloadSize(of: payload),
-           size > InboxWriter.maximumPayloadBytes {
-            throw InboxWriteError.payloadTooLarge(
-                bytes: size, limit: InboxWriter.maximumPayloadBytes)
+        // Before anything is created. An over-cap or empty share is a fact about what
+        // was handed over, not about the container it was headed for, and refusing it
+        // first means a doomed write never brings an inbox into existence. A size that
+        // cannot be read is neither — see ``payloadSize(of:)`` — and falls through to
+        // the copy, whose own failure is the better-typed answer.
+        if let payload, let size = InboxWriter.payloadSize(of: payload) {
+            if size == 0 {
+                throw InboxWriteError.payloadEmpty
+            }
+            if size > InboxWriter.maximumPayloadBytes {
+                throw InboxWriteError.payloadTooLarge(
+                    bytes: size, limit: InboxWriter.maximumPayloadBytes)
+            }
         }
 
         do {
