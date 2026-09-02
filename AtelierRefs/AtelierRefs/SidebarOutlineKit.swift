@@ -183,6 +183,19 @@ final class SidebarCell: NSTableCellView {
     private let label = NSTextField(labelWithString: "")
     private let chevron = SidebarChevronButton()
 
+    /// The accessibility-identifier prefix this outline's rows carry (099 · P2), or
+    /// `nil` for an outline no test drives.
+    ///
+    /// A per-CELL value rather than a shared constant because both sidebar trees are
+    /// this class — the collections tree and the flat Spaces list — and a UI test that
+    /// asks for "the rows" has to be able to say which tree it means. `NSOutlineView`
+    /// reuses cells only within one outline, so a value fixed at init is safe.
+    ///
+    /// The identifiers land on ``label`` and ``chevron``, never on the cell: an
+    /// identifier on the container would name the row and leave the control inside it
+    /// unaddressable, which is the failure 098 hit on the phone.
+    private let accessibilityPrefix: String?
+
     /// Fired by the chevron button only. The row's own click never toggles.
     var onToggle: (() -> Void)?
 
@@ -209,7 +222,8 @@ final class SidebarCell: NSTableCellView {
     private static let chevronInset =
         headerGlyphCenter - SidebarMetrics.outlineOverhang - chevronButton / 2
 
-    init(identifier: NSUserInterfaceItemIdentifier) {
+    init(identifier: NSUserInterfaceItemIdentifier, accessibilityPrefix: String? = nil) {
+        self.accessibilityPrefix = accessibilityPrefix
         super.init(frame: .zero)
         self.identifier = identifier
         label.font = .systemFont(ofSize: 13)              // Theme.Typography.row, snug
@@ -251,6 +265,12 @@ final class SidebarCell: NSTableCellView {
 
     func configure(name: String, expandable: Bool, expanded: Bool) {
         label.stringValue = name
+        // Re-stamped on every configure, not set once at init: cells are recycled, so a
+        // row that keeps a previous occupant's identifier is worse than having none.
+        if let accessibilityPrefix {
+            label.setAccessibilityIdentifier(accessibilityPrefix + name)
+            chevron.setAccessibilityIdentifier(accessibilityPrefix + name + ".disclosure")
+        }
         chevron.isHidden = !expandable
         chevron.isEnabled = expandable
         setExpanded(expanded)

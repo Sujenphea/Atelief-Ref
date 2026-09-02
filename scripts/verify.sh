@@ -18,7 +18,8 @@
 #                               Seconds. Catches the class of break above.
 #   ./scripts/verify.sh         the full CI matrix: package tests, the
 #                               extension's node tests + drift check, the app's
-#                               build-and-test, and a Release BUILD of the app
+#                               build-and-test, the macOS UI smoke suite
+#                               (099 · P2), and a Release BUILD of the app
 #                               (099 · 8A — the only stage that compiles the
 #                               `#if DEBUG` guards' other side).
 #
@@ -143,6 +144,52 @@ app_target() {
     return ${status}
 }
 
+# 099 · P2 (decision 10A) — the macOS smoke target.
+#
+# **A second app stage, not a second `-only-testing` on the first.** A UI failure
+# and a unit failure have nothing to do with each other: one means a window, a
+# keystroke or an element identifier moved, the other means a value is wrong. One
+# summary line covering both would tell a reader neither, and this gate's whole
+# job is to say which thing broke.
+#
+# **It cannot take `CODE_SIGNING_ALLOWED=NO`**, which every other app stage here
+# does. A UI-test bundle ships a RUNNER app whose executable is `lipo`-extracted
+# from Xcode's `XCTRunner.app`, and an unsigned arm64 binary is killed by the
+# kernel before it can connect: `Early unexpected exit … Test crashed with signal
+# kill before establishing connection`, with no compile error and no test output
+# to explain it. Ad-hoc (`CODE_SIGN_IDENTITY=-`) is the smallest signature that
+# launches, needs no keychain identity and no provisioning profile, and still
+# applies the app's entitlements — so the app under test is sandboxed exactly as
+# it ships, which is what makes the fixture library's RELATIVE root
+# (`ATELIER_LIBRARY_ROOT=uitest-fixture`, resolved inside the container) the same
+# path in the test as in the wild. The cost is that this stage does not share
+# build products with the two stages that sign differently.
+#
+# A plain `run_stage`: a UI failure is a real failure. The suite is scoped to
+# smoke deliberately (099 · risks) — three flows, no layout assertions — because
+# the thing being defended against is a Mac app that no longer launches, not a
+# pixel.
+app_ui_tests() {
+    local log
+    log="$(mktemp -t verify-app-ui)"
+    local status=0
+    xcodebuild test \
+        -project "${REPO_ROOT}/AtelierRefs/AtelierRefs.xcodeproj" \
+        -scheme AtelierRefs \
+        -destination 'platform=macOS' \
+        -only-testing:AtelierRefsUITests \
+        -skipPackagePluginValidation \
+        CODE_SIGN_IDENTITY=- \
+        CODE_SIGN_STYLE=Manual \
+        PROVISIONING_PROFILE_SPECIFIER= \
+        > "${log}" 2>&1 || status=$?
+
+    grep -E "error:|BUILD (SUCCEEDED|FAILED)|TEST (SUCCEEDED|FAILED)|Test Case .* failed" \
+        "${log}" | tail -20
+    [[ ${status} -ne 0 ]] && echo "  (full log: ${log})"
+    return ${status}
+}
+
 # 099 · 8A. `Debug/`, `CanvasRenderer/Spike/` and `-library-root` are now behind
 # `#if DEBUG`, and a `#if DEBUG` guard is only ever checked by a build that does
 # NOT define DEBUG. Every other stage here — `swift test`, the app's own
@@ -196,10 +243,12 @@ done
 
 run_stage "App target" app_target
 
-# Release is a full-mode stage: it is a second whole-app compile, and `fast` is
-# meant to stay in the seconds. The guards it checks are not the kind that change
-# between one edit and the next.
+# Both extra app stages are full-mode. The UI suite launches the app three times
+# and Release is a second whole-app compile; `fast` is meant to stay in the
+# seconds. Neither checks the kind of thing that changes between one edit and the
+# next — a window that opens, and guards on the other side of `#if DEBUG`.
 if [[ "${MODE}" == "full" ]]; then
+    run_stage "App target (UI)" app_ui_tests
     run_stage "App target (Release)" app_release_build
 fi
 

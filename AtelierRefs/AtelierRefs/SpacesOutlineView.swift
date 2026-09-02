@@ -423,6 +423,10 @@ final class SpacesOutlineCoordinator: NSObject, NSOutlineViewDataSource,
             }
             return cell
         }
+        // No `accessibilityPrefix` (099 · P2): the three smoke flows drive the
+        // COLLECTIONS tree, and an identifier nothing reads is a name to keep in sync
+        // for no reader. P6's palette is the flow that will want one, and this is where
+        // `sidebar.space.` goes when it does.
         let cell = ov.makeView(withIdentifier: Self.columnID, owner: self) as? SidebarCell
             ?? SidebarCell(identifier: Self.columnID)
         cell.onToggle = nil                               // flat list — nothing toggles

@@ -234,6 +234,18 @@ first half waits in P7 for the same reason.
 
 **Verify:** `verify.sh` full; `xcodebuild -list`.
 
+**Done** ([468](../.change-log/468-the-mac-gets-a-window-a-keystroke-and-an-order.md)).
+Two bullets above were written before 098 landed and 467 replaced them: the seeder's
+argument is **`-seed-fixture-library`**, 098's spelling and its three guards, not
+`-ui-test-seed <name>`; and the Mac target had **zero** accessibility identifiers, so
+adding the four the flows need was most of the phase. Both flows that touch the app —
+⌘, and the sidebar's disclosure — needed `app.activate()` first: on macOS a key event
+goes to the frontmost app, and a click into an inactive window is eaten by activating it
+unless the view accepts the first mouse (`NSTableView` does, `NSButton` does not). The
+`verify.sh` stage is `App target (UI)` and signs **ad-hoc**, because a UI-test runner
+built with `CODE_SIGNING_ALLOWED=NO` is SIGKILLed before it connects. `full` is now
+fourteen stages.
+
 ## P3 — the per-window read model
 
 *Decisions 1A, 6A (collapse), 13A, 14A (app). The largest phase. Effort L.*
@@ -519,7 +531,7 @@ supplied. 12A's rule applies to each. Effort M each.*
 | 17A | done — the gate's two arms split | [464](../.change-log/464-the-gate-tells-its-two-arms-apart.md) |
 | P0b | done — 20k warm 1,535 → 59 ms, cold 1,676 → 303 ms, 41 MB resident | [465](../.change-log/465-the-corpus-goes-resident.md) |
 | P1 | done — 16A's reaper half reported, not built | [466](../.change-log/466-the-app-target-gets-its-foundations.md) |
-| P2 | not started — **brief rewritten by P7**, see [467](../.change-log/467-four-builders-and-the-numbers-that-collided.md) | — |
+| P2 | done — target, seeder, four identifiers, three flows, a 14th gate stage | [468](../.change-log/468-the-mac-gets-a-window-a-keystroke-and-an-order.md) |
 | P3 | not started | — |
 | P4 | not started | — |
 | P5 | not started | — |
@@ -560,9 +572,9 @@ carries it and states the cost plainly: the failure mode moved from "a gate nobo
 pass" to "a warning nobody reads", and only the second is survivable.
 
 **The gate for every phase from here is `verify.sh full` at exit 0**, which now means
-**thirteen** stages passed, possibly with warnings named in the summary — P1 added
-`App target (Release)` (8A), so `fast` is eleven and `full` is thirteen. A phase still
-does not commit without it.
+**fourteen** stages passed, possibly with warnings named in the summary — P1 added
+`App target (Release)` (8A) and P2 added `App target (UI)` (10A), so `fast` is eleven and
+`full` is fourteen. A phase still does not commit without it.
 
 Two things this left for later. Re-capturing the Instagram fixture is still worth doing on
 its own merits — the fixture is genuinely stale and live sweeps may genuinely be broken —

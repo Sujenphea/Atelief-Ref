@@ -58,6 +58,13 @@
 			remoteGlobalIDString = B10000000000000000000003;
 			remoteInfo = AtelierRefsMobile;
 		};
+		MU0000000000000000000008 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 990778662FF364EF00718815 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9907786D2FF364EF00718815;
+			remoteInfo = AtelierRefs;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -81,6 +88,7 @@
 		AA0000000000000000000001 /* Config/Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Release.xcconfig; sourceTree = "<group>"; };
 		B10000000000000000000001 /* AtelierRefsMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AtelierRefsMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		UT0000000000000000000001 /* AtelierRefsMobileUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtelierRefsMobileUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		MU0000000000000000000001 /* AtelierRefsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtelierRefsUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -140,6 +148,11 @@
 				UT000000000000000000000C /* Exceptions for "AtelierRefsMobileUITests" folder in "AtelierRefsMobileUITests" target */,
 			);
 			path = AtelierRefsMobileUITests;
+			sourceTree = "<group>";
+		};
+		MU0000000000000000000002 /* AtelierRefsUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AtelierRefsUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -206,6 +219,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		MU0000000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -214,6 +234,7 @@
 			children = (
 				990778702FF364EF00718815 /* AtelierRefs */,
 				9907787E2FF364F000718815 /* AtelierRefsTests */,
+				MU0000000000000000000002 /* AtelierRefsUITests */,
 				B10000000000000000000002 /* AtelierRefsMobile */,
 				99205374302EE7DC00992742 /* AtelierRefsShare */,
 				AA0000000000000000000001 /* Config/Release.xcconfig */,
@@ -229,6 +250,7 @@
 				B10000000000000000000001 /* AtelierRefsMobile.app */,
 				99205373302EE7DC00992742 /* AtelierRefsShare.appex */,
 				UT0000000000000000000001 /* AtelierRefsMobileUITests.xctest */,
+				MU0000000000000000000001 /* AtelierRefsUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -376,6 +398,29 @@
 			productReference = UT0000000000000000000001 /* AtelierRefsMobileUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		MU0000000000000000000003 /* AtelierRefsUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = MU0000000000000000000009 /* Build configuration list for PBXNativeTarget "AtelierRefsUITests" */;
+			buildPhases = (
+				MU0000000000000000000004 /* Sources */,
+				MU0000000000000000000005 /* Frameworks */,
+				MU0000000000000000000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				MU0000000000000000000007 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				MU0000000000000000000002 /* AtelierRefsUITests */,
+			);
+			name = AtelierRefsUITests;
+			packageProductDependencies = (
+			);
+			productName = AtelierRefsUITests;
+			productReference = MU0000000000000000000001 /* AtelierRefsUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -402,6 +447,10 @@
 					UT0000000000000000000003 = {
 						CreatedOnToolsVersion = 26.6;
 						TestTargetID = B10000000000000000000003;
+					};
+					MU0000000000000000000003 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = 9907786D2FF364EF00718815;
 					};
 				};
 			};
@@ -437,6 +486,7 @@
 				B10000000000000000000003 /* AtelierRefsMobile */,
 				99205372302EE7DC00992742 /* AtelierRefsShare */,
 				UT0000000000000000000003 /* AtelierRefsMobileUITests */,
+				MU0000000000000000000003 /* AtelierRefsUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -471,6 +521,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		UT0000000000000000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		MU0000000000000000000006 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -515,6 +572,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		MU0000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -532,6 +596,11 @@
 			isa = PBXTargetDependency;
 			target = B10000000000000000000003 /* AtelierRefsMobile */;
 			targetProxy = UT0000000000000000000008 /* PBXContainerItemProxy */;
+		};
+		MU0000000000000000000007 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9907786D2FF364EF00718815 /* AtelierRefs */;
+			targetProxy = MU0000000000000000000008 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -955,6 +1024,48 @@
 			};
 			name = Release;
 		};
+		MU000000000000000000000A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = L25247V6JG;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sujenphea.AtelierRefsUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = AtelierRefs;
+			};
+			name = Debug;
+		};
+		MU000000000000000000000B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = L25247V6JG;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sujenphea.AtelierRefsUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = AtelierRefs;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1008,6 +1119,15 @@
 			buildConfigurations = (
 				UT000000000000000000000A /* Debug */,
 				UT000000000000000000000B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		MU0000000000000000000009 /* Build configuration list for PBXNativeTarget "AtelierRefsUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				MU000000000000000000000A /* Debug */,
+				MU000000000000000000000B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

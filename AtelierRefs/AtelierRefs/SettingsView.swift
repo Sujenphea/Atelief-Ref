@@ -81,6 +81,10 @@ struct SettingsView: View {
                 Text(CaptureCopy.endpoint(port: model.capturePort))
                     .textSelection(.enabled)
                     .foregroundStyle(model.captureEndpointRunning ? .primary : .secondary)
+                    // 099 · P2 — the ⌘, flow's proof that the second window is THIS
+                    // scene and not a second main window. On the leaf `Text`, not on
+                    // the `LabeledContent` around it.
+                    .accessibilityIdentifier(AccessibilityID.settingsCaptureEndpoint)
             }
             LabeledContent("Pairing token") {
                 HStack(spacing: 8) {

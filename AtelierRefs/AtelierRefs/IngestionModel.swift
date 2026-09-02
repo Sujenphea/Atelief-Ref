@@ -739,6 +739,16 @@ final class IngestionModel: ObservableObject {
             // argument / `ATELIER_LIBRARY_ROOT` is supplied — the throwaway-library
             // escape hatch used by the grid bake-off, never hit in normal launches.
             let root = try LibraryLocation.resolvedRoot()
+            // 099 · P2 — the macOS UI-test fixture, behind three guards (see
+            // ``FixtureLibrary``): DEBUG, the launch argument, and a root that is
+            // an override. It WIPES, so it runs here — before the layout, the
+            // pending restore and the first connection — and its refusal is
+            // deliberately not caught: a seed that was asked for and not performed
+            // must fail the launch loudly, rather than leave a UI test asserting
+            // against whatever library happened to already be there.
+            #if DEBUG
+            if FixtureLibrary.isRequested { try await FixtureLibrary.seed(at: root) }
+            #endif
             self.libraryRoot = root
             let layout = LibraryLayout(root: root)
             let store = MediaStore(layout: layout)

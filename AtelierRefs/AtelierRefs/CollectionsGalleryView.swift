@@ -203,6 +203,11 @@ struct CollectionsGalleryView: View {
                         collectionCard(collection)
                     }
                     .buttonStyle(.plain)
+                    // 099 · P2 — the launch flow asserts a NAMED card is on Home. The
+                    // Button is the accessibility leaf here: SwiftUI has already merged
+                    // the fan, the title and the count into its label, so there is no
+                    // child left for an identifier to shadow.
+                    .accessibilityIdentifier(AccessibilityID.homeCollectionCard(collection.name))
                     .modifier(CardSelectionGestures(
                         selectable: !isUnsorted,
                         onCommand: { apply(.commandClick(collection.id)) },

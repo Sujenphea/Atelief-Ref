@@ -553,7 +553,9 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
         if isDraftNode(node) || isRenaming(node) {
             if let committed = edit?.committedName {
                 let cell = ov.makeView(withIdentifier: Self.columnID, owner: self) as? SidebarCell
-                    ?? SidebarCell(identifier: Self.columnID)
+                    ?? SidebarCell(
+                        identifier: Self.columnID,
+                        accessibilityPrefix: AccessibilityID.sidebarCollectionRowPrefix)
                 // The phantom draft row has no children; a renamed one keeps its
                 // chevron so a parent doesn't blink flat between commit and reload.
                 let expandable = !isDraftNode(node) && !children(of: node).isEmpty
@@ -578,7 +580,9 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
             return cell
         }
         let cell = ov.makeView(withIdentifier: Self.columnID, owner: self) as? SidebarCell
-            ?? SidebarCell(identifier: Self.columnID)
+            ?? SidebarCell(
+                identifier: Self.columnID,
+                accessibilityPrefix: AccessibilityID.sidebarCollectionRowPrefix)
         // The chevron BUTTON toggles; the row click navigates (025 · S1).
         cell.onToggle = { [weak self] in self?.toggleExpansion(of: node) }
         cell.configure(
