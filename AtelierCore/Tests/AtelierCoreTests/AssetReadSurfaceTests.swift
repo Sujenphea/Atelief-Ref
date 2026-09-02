@@ -35,6 +35,8 @@ struct AssetReadSurfaceTests {
         // ── Browsing. These HIDE archived items. ─────────────────────────────
         "collectionItems":
             "the grid. Hides archived unless the caller passes includeArchived: true (the backup writer, which copies the library rather than viewing it).",
+        "collectionItem":
+            "one membership of one collection, for a detail screen opened from a tile (098 \u{00B7} 13). The same join as collectionItems with a primary-key predicate, so it takes the same non-defaulted includeArchived and answers it the same way — a row hidden from the grid must not be reachable by deep-linking its id.",
         "searchAssets":
             "keyword search. Hides archived via a WHERE conjunct, never a post-filter — a post-filter shortens pages.",
         "semanticSearchAssets":

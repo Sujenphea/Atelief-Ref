@@ -34,6 +34,16 @@ import PackageDescription
 // reach it* — is what actually decided it, and a new package for one dependency-free type
 // would have been a manifest, a CI row and a `Package.resolved` bought with nothing.
 //
+// **And it is not only the cadence either (098 · P3).** `BrowseStore`, `CollectionFeed`,
+// `BrowseFailure`, `CaptureExportController` and `DecodeCache` were `AtelierRefsMobile`
+// files until 098 · finding 9 counted what that cost: "every line of the phone app
+// target's logic is untested". None of them imports SwiftUI or UIKit; what actually kept
+// them in the app was `CommandLine.arguments`, a debug fixture seed, three calls into
+// `InboxArchive`, and `UIImage`. All five are injected now — a root closure, a preparation
+// hook, three I/O closures and a type parameter — and the app target holds the four
+// adapters that supply them. The charter sentence above is what decided each one; the
+// test count is what it bought.
+//
 // The dependency line is the boundary: AtelierCore for the domain types and the read
 // surface, AtelierLibraryPaths for the library root and the media paths. **No
 // AtelierCapture** on the library target since 457: the root and the paths moved out of
