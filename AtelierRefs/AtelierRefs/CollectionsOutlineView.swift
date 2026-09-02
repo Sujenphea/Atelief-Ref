@@ -17,6 +17,7 @@
 //
 
 import AppKit
+import AtelierBrowse
 import AtelierCore
 import SwiftUI
 import UniformTypeIdentifiers
@@ -47,7 +48,7 @@ final class CollectionNode: NSObject {
         let byParent = Dictionary(grouping: folders, by: { $0.parentCollectionID })
         func nodes(under parent: UUID?) -> [CollectionNode] {
             (byParent[parent] ?? [])
-                .sorted(by: CollectionTargets.byManualOrder)
+                .sorted(by: BrowseCollectionTree.byManualOrder)
                 .map { CollectionNode(
                     id: $0.id, name: $0.name, isUnsorted: $0.id == unsortedID,
                     children: nodes(under: $0.id)) }

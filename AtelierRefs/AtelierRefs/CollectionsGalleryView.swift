@@ -43,6 +43,7 @@
 //
 
 import AppKit
+import AtelierBrowse
 import AtelierCore
 import SwiftUI
 
@@ -490,8 +491,9 @@ struct CollectionsGalleryView: View {
 
     private var orderedRoots: [Collection] {
         // The ONE definition of collection ordering (009 · 6B) — shared with the
-        // Move/Add menus and the sidebar rows so they can never drift apart.
-        CollectionTargets.galleryRoots(model.folders, unsortedID: model.unsortedFolderID)
+        // Move/Add menus, the sidebar rows and, since 098 · finding 6, the phone's
+        // switcher, so they can never drift apart.
+        BrowseCollectionTree.roots(model.folders, unsortedID: model.unsortedFolderID)
     }
 
     private func coverURL(for id: UUID) -> URL? {

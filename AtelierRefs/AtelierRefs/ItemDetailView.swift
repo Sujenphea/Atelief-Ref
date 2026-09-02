@@ -18,6 +18,7 @@
 import AVKit
 import AppKit
 import AtelierArchive
+import AtelierBrowse
 import AtelierCore
 import AtelierIngestion
 // For `AVPlayerItem.publisher(for: \.status)` — the poster placeholder's gate.
@@ -1740,9 +1741,10 @@ private struct DataSection: View {
 
     var body: some View {
         DetailSection("Data") {
-            DetailRow("Saved", DetailFormat.savedDate(asset.createdAt))
-            if let w = asset.width, let h = asset.height {
-                DetailRow("Dimensions", "\(w)px x \(h)px")
+            DetailRow("Saved", BrowseFormat.savedDate(asset.createdAt))
+            if let dimensions = BrowseFormat.dimensions(
+                width: asset.width, height: asset.height) {
+                DetailRow("Dimensions", dimensions)
             }
         }
     }
@@ -1761,20 +1763,22 @@ private struct SourceSection: View {
     let onOpenSource: (() -> Void)?
 
     /// "Name (@handle)" when both are present; whichever exists otherwise.
+    ///
+    /// ``BrowseFormat/author(name:handle:)`` since 098 · finding 6, and the one place
+    /// in this pass where adopting the package CHANGED what the Mac renders. The rule
+    /// was copied for the phone in 093 § 2 and copied wrong: this file trimmed
+    /// `.whitespaces`, the package trims `.whitespacesAndNewlines`. An `authorName` of
+    /// `"Ada\n"` — which a page extractor can produce from a wrapped byline — was a
+    /// blank-looking row here and an absent row there, from the same database. The
+    /// stricter rule wins on both, because a name that is nothing but a newline is not
+    /// a name, and a trailing one has no business inside a `Text`.
     private var author: String? {
-        let name = source.authorName?.trimmingCharacters(in: .whitespaces)
-        let handle = source.authorHandle?.trimmingCharacters(in: .whitespaces)
-        switch (name?.isEmpty == false ? name : nil, handle?.isEmpty == false ? handle : nil) {
-        case let (n?, h?): return "\(n) (\(h))"
-        case let (n?, nil): return n
-        case let (nil, h?): return h
-        default: return nil
-        }
+        BrowseFormat.author(name: source.authorName, handle: source.authorHandle)
     }
 
     var body: some View {
         DetailSection("Source") {
-            DetailRow("Platform", DetailFormat.platform(source.platform))
+            DetailRow("Platform", BrowseFormat.platform(source.platform))
             if let author { DetailRow("Author", author) }
             if let title = source.title, !title.isEmpty {
                 DetailRow("Title", title)
@@ -2452,26 +2456,10 @@ private struct DetailKeyCatcher: NSViewRepresentable {
     }
 }
 
-/// Value formatting for the detail sidebar.
-private enum DetailFormat {
-    /// `dd/MM/yyyy` — the Figma "Saved" format (041), locale-independent.
-    static func savedDate(_ date: Date) -> String {
-        let c = Calendar.current.dateComponents([.day, .month, .year], from: date)
-        return String(format: "%02d/%02d/%04d", c.day ?? 0, c.month ?? 0, c.year ?? 0)
-    }
-
-    /// A human-facing label for a capture platform.
-    static func platform(_ platform: Platform) -> String {
-        switch platform {
-        case .twitter: "Twitter / X"
-        case .pinterest: "Pinterest"
-        case .instagram: "Instagram"
-        case .cosmos: "Cosmos"
-        case .rednote: "rednote"
-        case .web: "Web"
-        case .clipboard: "Clipboard"
-        case .localPaste: "Pasted"
-        case .localDrag: "Dragged in"
-        }
-    }
-}
+// `DetailFormat` was here (098 · finding 6). Its two functions — the locale-independent
+// `dd/MM/yyyy` "Saved" format and the nine platform labels, five of which a `rawValue`
+// would get wrong — are `BrowseFormat.savedDate` / `.platform`, which 093 § 2 copied out
+// of this file line for line while citing it. The package's header said the copies existed
+// because 092 · S5 could not edit this target; Tokens and Archive both did, two slices
+// later, and this app links `AtelierBrowse` as of P4. The wording is the same wording; it
+// is now spelled once.

@@ -19,6 +19,7 @@
 //  and its `GridWindowingTests` were retired with the SwiftUI grid — 189.)
 //
 
+import AtelierBrowse
 import AtelierCore
 import CoreGraphics
 
@@ -42,22 +43,21 @@ struct MasonryFrames: Equatable {
 /// Round-robin fixed-column masonry placement (011-B1). Pure so the frames are
 /// unit-tested without a running view.
 enum MasonryLayout {
-    /// Aspect ratios below this read as a tall skyscraper; above ``maxAspect`` as
-    /// a wide panorama. Clamping caps a freak image so `columnWidth / aspect`
-    /// can't blow a column's height unbounded (or go to ~0). See ``aspect(for:)``.
-    static let minAspect: Double = 0.25
-    static let maxAspect: Double = 4.0
-
-    /// The column width that packs `columns` columns with `spacing` gaps into
-    /// `availableWidth`. At least 1 to stay drawable (mirrors the old
-    /// `uniformCellSide`). `columns` clamps to ≥ 1.
-    static func columnWidth(
-        availableWidth: CGFloat, columns: Int, spacing: CGFloat
-    ) -> CGFloat {
-        let cols = CGFloat(max(1, columns))
-        let width = (availableWidth - (cols - 1) * spacing) / cols
-        return max(1, width)
-    }
+    /// The aspect clamp and the column width are ``MasonryColumns``' (098 · finding 6).
+    ///
+    /// They were `static let minAspect` / `maxAspect` and a `columnWidth` function here
+    /// until 093 § 3 restated all three inside `AtelierBrowse` for the phone, with a
+    /// comment citing the line numbers in this file. That package's header gave the
+    /// reason — 092 · S5 could not edit the macOS app — and that reason expired two
+    /// slices later. The Mac links `AtelierBrowse` as of 098 · P4, so the numbers live
+    /// in one place and the citations are no longer a promise anybody has to keep.
+    ///
+    /// **What did NOT move is the solver below.** The phone's grid is an `HStack` of
+    /// `LazyVStack`s and computes no frame at all; this one must, because the marquee
+    /// hit-tests offscreen cells a windowed render never materialises. Only the
+    /// constants and the width arithmetic are shared — which is exactly the part that
+    /// would drift silently, because a disagreement about a clamp is invisible until
+    /// somebody compares two screens side by side.
 
     /// Lay `aspects` (each `w/h`) into `columns` round-robin columns spanning
     /// `availableWidth`, with `spacing` between cells both ways, starting at
@@ -83,8 +83,8 @@ enum MasonryLayout {
     ) -> MasonryFrames {
         let cols = max(1, columns)
         let contentWidth = availableWidth - leadingInset - trailingInset
-        let colWidth = columnWidth(
-            availableWidth: contentWidth, columns: cols, spacing: spacing)
+        let colWidth = CGFloat(MasonryColumns.columnWidth(
+            availableWidth: contentWidth, columns: cols, spacing: spacing))
         let strideX = colWidth + spacing
 
         // Each column's running pen-y (the next cell's top), seeded at the inset.
@@ -116,14 +116,17 @@ enum MasonryLayout {
 }
 
 /// The display aspect ratio (`w/h`) to lay a grid cell out with, CLAMPED to
-/// `[MasonryLayout.minAspect, MasonryLayout.maxAspect]` (011-B1 · 6A). A
+/// `[MasonryColumns.minAspect, MasonryColumns.maxAspect]` (011-B1 · 6A). A
 /// media-less kind (no intrinsic dims), a zero/negative dimension, or a
 /// NaN-inducing ratio falls back to a square `1`; the clamp caps a panorama /
 /// skyscraper so one freak image can't blow a column's height (cell height is
-/// `columnWidth / aspect`). Built on ``SpaceLayout/aspect(_:)`` so the raw `w/h`
-/// derivation lives in ONE place (6A DRY).
+/// `columnWidth / aspect`).
+///
+/// A one-line forward to ``MasonryColumns/aspect(_:)`` since 098 · finding 6. That
+/// function is this one with ``SpaceLayout/aspect(_:)`` inlined — same guard, same
+/// fallback, same clamp — and it was written by copying this one. The name survives
+/// because two grid hosts, the contact sheet and the bake-off grid all call it, and
+/// because `CollectionItemDetail` is a macOS-app type the package cannot name.
 func aspect(for detail: CollectionItemDetail) -> Double {
-    let raw = SpaceLayout.aspect(detail.asset)
-    guard raw.isFinite, raw > 0 else { return 1 }
-    return min(max(raw, MasonryLayout.minAspect), MasonryLayout.maxAspect)
+    MasonryColumns.aspect(detail.asset)
 }

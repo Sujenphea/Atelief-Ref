@@ -73,6 +73,26 @@ struct BrowseFormatTests {
         #expect(BrowseFormat.author(name: "  ", handle: "") == nil)
     }
 
+    @Test("a newline is trimmed like any other whitespace — the drift 098 · finding 6 found")
+    func authorTrimsNewlines() {
+        // This function and the Mac's `SourceSection.author` (`ItemDetailView.swift:1762`)
+        // were the same rule spelled twice, and had already drifted: this one trims
+        // `.whitespacesAndNewlines` through `TextRules.nonBlank`, the Mac's trimmed
+        // `.whitespaces`. So `"Ada\n"` was `"Ada"` on the phone and `"Ada\n"` — a name
+        // followed by a blank line inside a `Text` — on the Mac, from one database row.
+        // A page extractor producing a wrapped byline is all it takes.
+        //
+        // P4 deleted the Mac's copy and pointed it here, so the stricter rule is now the
+        // only rule. These cases are what "stricter" means.
+        #expect(BrowseFormat.author(name: "Ada\n", handle: nil) == "Ada")
+        #expect(BrowseFormat.author(name: "\nAda", handle: "@ada\n") == "Ada (@ada)")
+        #expect(BrowseFormat.author(name: "\n", handle: "@ada") == "@ada")
+        #expect(BrowseFormat.author(name: "\n", handle: "\r\n") == nil)
+        // A newline INSIDE a value is not whitespace at an edge and is left alone: it is
+        // data, and silently rewriting it would be a different function.
+        #expect(BrowseFormat.author(name: "Ada\nLovelace", handle: nil) == "Ada\nLovelace")
+    }
+
     // MARK: - A bare link (098 · "also found")
 
     @Test("a link with a title keeps it, host or no host")

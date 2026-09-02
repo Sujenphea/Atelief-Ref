@@ -8,7 +8,18 @@
 //  one-level `moveTargets` split), and stable (name,id) ordering so the surfaces
 //  can never drift apart.
 //
+//  **Since 098 · finding 6 these assert the package's implementation.** The ordering,
+//  the recursion and the cycle guard moved to ``BrowseCollectionTree`` — where 093 § 2
+//  had already restated them for the phone's switcher — and `CollectionTargets` kept
+//  only what the phone has no surface for. Not one assertion below changed: they were
+//  written against the RULES (Unsorted first, `sortIndex` before name, id breaks a tie,
+//  a corrupt parent loop terminates), and the rules are the same rules, so what these
+//  now prove is that both platforms get them from the same lines. The three cases that
+//  named `CollectionTargets.galleryRoots` name `BrowseCollectionTree.roots` instead;
+//  `destinationTree` keeps its name because it still exists, as a one-line forward.
+//
 
+import AtelierBrowse
 import AtelierCore
 import Foundation
 import Testing
@@ -38,7 +49,7 @@ struct CollectionTargetsTests {
         let alpha = collection("Alpha")
         let child = collection("Child", parent: alpha.id)
 
-        let roots = CollectionTargets.galleryRoots(
+        let roots = BrowseCollectionTree.roots(
             [zed, unsorted, alpha, child], unsortedID: unsortedID)
 
         #expect(roots.map(\.name) == ["Unsorted", "Alpha", "Zed"])
@@ -51,7 +62,7 @@ struct CollectionTargetsTests {
         let first = collection("Same", id: idA)
         let second = collection("Same", id: idB)
 
-        let roots = CollectionTargets.galleryRoots([second, first], unsortedID: unsortedID)
+        let roots = BrowseCollectionTree.roots([second, first], unsortedID: unsortedID)
 
         #expect(roots.map(\.id) == [idA, idB])
     }

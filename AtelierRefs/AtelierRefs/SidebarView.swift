@@ -13,7 +13,7 @@
 //
 //  Selection drives the detail panel via ``NavModel/sidebarSelection``; the tree /
 //  spaces are read from the shared ``IngestionModel`` (the one ordering source is
-//  `CollectionTargets.galleryRoots`, Unsorted pinned).
+//  `BrowseCollectionTree.roots`, Unsorted pinned).
 //
 
 import AtelierCore

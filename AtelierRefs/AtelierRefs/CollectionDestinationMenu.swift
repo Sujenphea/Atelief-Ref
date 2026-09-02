@@ -29,6 +29,7 @@
 //
 
 import AppKit
+import AtelierBrowse
 import AtelierCore
 import Foundation
 

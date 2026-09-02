@@ -8,34 +8,22 @@
 //  ordering rules can never drift apart (DRY). Pure + SwiftUI-free, so the split
 //  and ordering are unit-tested directly.
 //
+//  **The ordering and the tree are ``BrowseCollectionTree``'s since 098 · finding 6.**
+//  093 § 2 restated `galleryRoots`, `byManualOrder` and `destinationTree` — the same
+//  algorithm and the same cycle guard — inside `AtelierBrowse` for the phone's switcher,
+//  because 092 · S5 could not edit this target. Later slices could, and did. What is left
+//  here is what is genuinely the Mac's: the flatten into an indented `MoveTargetNode`
+//  list, the reparent gate, the outline-drop router and the alphabetical `folderMoveTargets`
+//  — none of which the phone has a surface for. ``DestinationTreeNode`` is now the
+//  package's node under the Mac's name, so the two renderers keep the spelling they were
+//  written against and there is exactly one tree in the program.
+//
 
+import AtelierBrowse
 import AtelierCore
 import Foundation
 
 nonisolated enum CollectionTargets {
-    /// The root collections ordered for the home gallery (004-P2): the protected
-    /// Unsorted folder pinned FIRST, then the rest by `(name, id)` — a stable,
-    /// deterministic order (id breaks a duplicate-name tie).
-    static func galleryRoots(_ folders: [Collection], unsortedID: UUID) -> [Collection] {
-        let roots = folders.filter { $0.parentCollectionID == nil }
-        let unsorted = roots.filter { $0.id == unsortedID }
-        let rest = roots
-            .filter { $0.id != unsortedID }
-            // Manual order (043 · 2B): persisted `sortIndex`, tie-broken by
-            // `(name, id)` so equal indices (unmigrated fixtures) stay stable.
-            .sorted { byManualOrder($0, $1) }
-        return unsorted + rest
-    }
-
-    /// The shared sibling-order comparator (043 · 2B): persisted `sortIndex`
-    /// first, then `(name, id)` as a stable tiebreak. Used wherever one sibling
-    /// group is displayed in manual order (gallery roots, a collection's
-    /// subfolders); the flat cross-tree `folderMoveTargets` list stays alphabetical
-    /// because `sortIndex` is only meaningful within a single parent.
-    static func byManualOrder(_ a: Collection, _ b: Collection) -> Bool {
-        (a.sortIndex, a.name, a.id.uuidString) < (b.sortIndex, b.name, b.id.uuidString)
-    }
-
     /// The WHOLE collection hierarchy as a RECURSIVE tree — **the one destination
     /// ordering** (027 · G2 / 026 · I1). Roots in gallery order (Unsorted pinned
     /// first, then manual `sortIndex`), each parent's children in manual order.
@@ -54,22 +42,16 @@ nonisolated enum CollectionTargets {
     /// Cycle-safe: a corrupt `parentCollectionID` loop can't recurse forever
     /// because a node already on the current path is dropped (mirroring
     /// ``descendantIDs``'s `visited` guard).
+    ///
+    /// One line since 098 · finding 6: the ordering, the recursion and the cycle guard
+    /// are ``BrowseCollectionTree/tree(_:unsortedID:)``'s. This name stays because
+    /// "destination" is what the two renderers below call the thing, and because the
+    /// unsorted id is passed explicitly here — the Mac reads it off the live model,
+    /// while the phone defaults to `Collection.unsortedID`.
     static func destinationTree(
         folders: [Collection], unsortedID: UUID
     ) -> [DestinationTreeNode] {
-        let childrenByParent = Dictionary(grouping: folders, by: { $0.parentCollectionID })
-        func build(_ siblings: [Collection], onPath: Set<UUID>) -> [DestinationTreeNode] {
-            siblings.map { c in
-                var path = onPath
-                path.insert(c.id)
-                let children = (childrenByParent[c.id] ?? [])
-                    .filter { !path.contains($0.id) }
-                    .sorted(by: byManualOrder)
-                return DestinationTreeNode(
-                    collection: c, children: build(children, onPath: path))
-            }
-        }
-        return build(galleryRoots(folders, unsortedID: unsortedID), onPath: [])
+        BrowseCollectionTree.tree(folders, unsortedID: unsortedID)
     }
 
     /// ``destinationTree`` FLATTENED with a depth per row, for the SwiftUI
@@ -114,7 +96,8 @@ nonisolated enum CollectionTargets {
     /// order — `sortIndex`, tie-broken by `(name, id)`. The order the outline view
     /// renders and the drop router indexes against.
     static func orderedChildren(of parent: UUID?, in folders: [Collection]) -> [Collection] {
-        folders.filter { $0.parentCollectionID == parent }.sorted(by: byManualOrder)
+        folders.filter { $0.parentCollectionID == parent }
+            .sorted(by: BrowseCollectionTree.byManualOrder)
     }
 
     /// Resolve an `NSOutlineView` drop into a concrete move (043 · Phase C · 12A).
@@ -206,11 +189,13 @@ nonisolated struct MoveTargetNode: Equatable, Identifiable {
 /// ordered children (027 · G2). The nested shape an `NSMenu` needs; the flat
 /// ``MoveTargetNode`` list is this tree flattened, so the two renderings can only
 /// ever agree.
-nonisolated struct DestinationTreeNode: Equatable, Identifiable {
-    var collection: Collection
-    var children: [DestinationTreeNode]
-    var id: UUID { collection.id }
-}
+///
+/// ``BrowseCollectionNode`` under the Mac's name since 098 · finding 6. It was a
+/// struct here with the identical three members — the package's copy was written from
+/// it — and an alias rather than a rename because `DestinationTreeNode` is the word
+/// four files and two test suites use for the thing, and because "destination" says
+/// what the Mac uses the tree FOR, which the phone's switcher does not do at all.
+typealias DestinationTreeNode = BrowseCollectionNode
 
 /// A tiny memo for a screen's destination hierarchy (012 · CQ 1A). Historically
 /// the SwiftUI context menu built EAGERLY for each visible cell, so every cell
