@@ -143,9 +143,17 @@ nonisolated struct ThumbnailRequest: Sendable {
     var key: ThumbnailKey { ThumbnailKey(hash: hash, bucket: bucket) }
 }
 
-// MARK: - Where decoded bitmaps live (099 · P2b)
+// MARK: - Where decoded bitmaps live (099 · P2b, P2c)
 
-/// The pipeline's cache seam: a keyed, cost-bounded box of decoded bitmaps.
+/// The cache seam for decoded bitmaps: a keyed, budgeted box of `CGImage`s.
+///
+/// **Two caches stand on this, not one.** ``ThumbnailPipeline`` (small bitmaps,
+/// many of them, a byte budget only) and ``DetailImageCache`` (full-res bitmaps,
+/// few of them, a byte AND count budget) hold exactly the same thing under
+/// exactly the same key shape — `"hash#bucket"` — and had exactly the same bug.
+/// The name is the pipeline's because the pipeline got here first (P2b); the
+/// contract is not thumbnail-specific and P2c deliberately widened this protocol
+/// rather than writing a second one that says the same three sentences.
 ///
 /// **Why this is a protocol and not just the `NSCache` it used to be.** An
 /// `NSCache` is the right thing for the app — it hands memory back to the system
@@ -173,19 +181,25 @@ nonisolated struct ThumbnailRequest: Sendable {
 /// `store(_:for:)` is written against:**
 ///
 ///  1. `costLimit` is a byte budget. `0` means unbounded.
-///  2. An entry whose cost exceeds the *whole* budget is **refused outright**,
-///     not admitted-then-evicted. This is `NSCache`'s real behaviour and it is
-///     the reason ``ThumbnailPipeline/store(_:for:)`` clamps; see the measurement
-///     recorded there and in `.change-log/284`.
+///  1b. `countLimit` is an entry-count budget. `0` means unbounded. Only
+///     ``DetailImageCache`` sets one (five full-res bitmaps); the thumbnail
+///     pipeline deliberately does not — 036 §1.4 measured a count limit
+///     thrashing where a byte limit did not.
+///  2. An entry whose cost exceeds the *whole* byte budget is **refused
+///     outright**, not admitted-then-evicted. This is `NSCache`'s real behaviour
+///     and it is the reason ``ThumbnailPipeline/store(_:for:)`` clamps; see the
+///     measurement recorded there and in `.change-log/284`.
 ///  3. Anything else may be evicted whenever the store likes. A store is
 ///     permitted to keep everything; none is required to.
 ///
-/// Implementations must be thread-safe and must never call back into the
-/// pipeline: ``ThumbnailPipeline/prefetch(_:)`` and its `pump` read the store
+/// Implementations must be thread-safe and must never call back into their
+/// caller: ``ThumbnailPipeline/prefetch(_:)`` and its `pump` read the store
 /// while holding the pipeline's lock.
 nonisolated protocol ThumbnailStore: AnyObject, Sendable {
     /// The byte budget. `0` means no limit.
     var costLimit: Int { get }
+    /// The entry-count budget. `0` means no limit.
+    var countLimit: Int { get }
     /// The bitmap stored under `key`, if the store still has it.
     func image(forKey key: String) -> CGImage?
     /// Offer `image` to the store at `cost` bytes. May be refused (rule 2) or
@@ -193,12 +207,17 @@ nonisolated protocol ThumbnailStore: AnyObject, Sendable {
     func insert(_ image: CGImage, forKey key: String, cost: Int)
 }
 
-/// The production store: an `NSCache`, cost-bounded, with **no count limit**.
+/// The production store: an `NSCache`, cost-bounded, and by default with **no
+/// count limit**.
 ///
-/// Cost, NOT count: `ThumbnailCache`'s `countLimit = 512` is what thrashes at
-/// target scale (036 §1.4), so no `countLimit` is set here on purpose and
-/// ``countLimit`` is exposed so a test can say that out loud without asserting
-/// on residency.
+/// Cost, NOT count, for thumbnails: `ThumbnailCache`'s `countLimit = 512` is what
+/// thrashes at target scale (036 §1.4), so the pipeline leaves `countLimit` at
+/// its `0` default on purpose and ``countLimit`` is exposed so a test can say
+/// that out loud without asserting on residency.
+///
+/// ``DetailImageCache`` is the one caller that asks for a count budget, and it
+/// has the opposite problem: five full-res bitmaps, each big enough that the byte
+/// budget alone would let a handful of panoramas fill it (036 §3 B2).
 nonisolated final class NSCacheThumbnailStore: ThumbnailStore, @unchecked Sendable {
     /// `NSCache` needs a class value. `Box` also lets a real byte cost be charged
     /// instead of a meaningless count limit. `nonisolated` because it is built on
@@ -212,13 +231,16 @@ nonisolated final class NSCacheThumbnailStore: ThumbnailStore, @unchecked Sendab
 
     let costLimit: Int
 
-    init(costLimit: Int) {
+    /// - Parameter countLimit: `0` (the default, and what the thumbnail pipeline
+    ///   takes) means no count limit at all. ``DetailImageCache`` passes five.
+    init(costLimit: Int, countLimit: Int = 0) {
         self.costLimit = costLimit
         cache.totalCostLimit = costLimit
+        cache.countLimit = countLimit
     }
 
-    /// `NSCache`'s count limit, for the configuration test. `0` is "no limit",
-    /// which is the whole point of this cache.
+    /// `NSCache`'s count limit, read back for the configuration tests. `0` is
+    /// "no limit", which is the whole point of this cache for thumbnails.
     var countLimit: Int { cache.countLimit }
 
     func image(forKey key: String) -> CGImage? {

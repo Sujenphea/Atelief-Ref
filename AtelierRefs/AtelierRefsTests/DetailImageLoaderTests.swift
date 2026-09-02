@@ -16,6 +16,8 @@
 //     preload the visible load promoted to current.
 //   • `DetailImageCacheTests` — the count-AND-cost LRU actually evicts on both
 //     axes, with a roomy-budget control so eviction is attributable to the limit.
+//   • `DetailImageCacheConfigurationTests` — the budgets the app ships with, and
+//     that the default initialiser still reaches a real `NSCache`.
 //
 //  The probe's decode re-checks `Task.isCancelled` after unblocking, so a cancelled
 //  in-flight decode is OBSERVABLE (returns nil → not cached) — which is what makes
@@ -54,6 +56,27 @@ private nonisolated func makeImage(side: Int) -> CGImage {
 }
 
 private func url(_ hash: String) -> URL { URL(fileURLWithPath: "/tmp/atelier-detail-test/\(hash)") }
+
+//  Every cache below is a `DetailImageCache.pinned(…)` — a cache over a
+//  `PinnedThumbnailStore` rather than the production `NSCache` (099 · P2c). The
+//  sole exception is `DetailImageCacheConfigurationTests`, which is ABOUT the
+//  production cache and therefore says nothing about what it holds.
+//
+//  Eight assertions in this file say "this key is still cached", either directly
+//  (`loader.cached(…) != nil`, `resident(8, in: roomy) == 8`) or through a
+//  `displayImage` return value, which IS a cache read: it awaits the decode and
+//  then re-reads the cache. `cacheHitDoesNotReDecode`'s `callCount == 1` is one
+//  too — a second decode is what an eviction between the two calls would cause.
+//  Against an `NSCache` all of that is a bet, not an assertion —
+//  it "incorporates various auto-eviction policies" and a caller "should not rely
+//  on a cache to store" anything. The same bet failed fifteen thumbnail tests one
+//  gate run in four (`.change-log/469`); these have never been seen to fail, which
+//  says only that their insert-then-read windows are shorter.
+//
+//  The app is unchanged and still caches detail images in an `NSCache` at 384 MB
+//  and five entries. `DetailImageCacheConfigurationTests` at the foot of this file
+//  is what pins that, and it deliberately asserts the budgets and the decode —
+//  never residency.
 
 /// Stands in for ImageIO. Records decodes by hash and can BLOCK chosen hashes on a
 /// semaphore; a blocked decode re-checks `Task.isCancelled` after release, so a
@@ -243,7 +266,7 @@ struct DetailDisplayDecodeTests {
 struct DetailImageLoaderCoreTests {
 
     private func loader(_ probe: DecodeProbe) -> DetailImageLoader {
-        DetailImageLoader(cache: DetailImageCache(), decode: probe.decode)
+        DetailImageLoader(cache: .pinned(), decode: probe.decode)
     }
 
     @Test("N concurrent requests for one key decode EXACTLY once")
@@ -356,6 +379,21 @@ struct DetailImageLoaderCoreTests {
 
 // MARK: - Cache eviction
 
+/// Both budgets, on a store that keeps what it is given.
+///
+/// The `< 8` arms were never at risk — auto-eviction can only make "fewer than
+/// eight survived" more true — but that is exactly why each has a roomy control
+/// arm, and the control arm is `resident(8, in: roomy) == 8`, which against an
+/// `NSCache` is the same sentence that read `residentUnderRoomyBudget → 0` in
+/// 469's failure text. A store that had silently dropped everything would pass
+/// the tight arm and fail the roomy one; a store that keeps what it is given
+/// makes the pair say what it means.
+///
+/// The cost of that, stated plainly: these two tests now exercise
+/// ``PinnedThumbnailStore``'s implementation of the budgets rather than
+/// `NSCache`'s. `PinnedThumbnailStoreTests` checks it against the written
+/// contract, and `.change-log/284` holds the measurement that says `NSCache`
+/// agrees — but nothing here would catch `NSCache` changing its mind.
 @Suite("DetailImageCache: count-AND-cost bounded LRU")
 struct DetailImageCacheTests {
 
@@ -378,23 +416,65 @@ struct DetailImageCacheTests {
         let cost = makeImage(side: side).bytesPerRow * side
         #expect(cost > 1_000_000)
 
-        let tight = DetailImageCache(totalCostLimit: cost * 2, countLimit: 100)
+        let tight = DetailImageCache.pinned(totalCostLimit: cost * 2, countLimit: 100)
         insert(8, side: side, into: tight)
         #expect(resident(8, in: tight) < 8)
 
-        let roomy = DetailImageCache(totalCostLimit: cost * 64, countLimit: 100)
+        let roomy = DetailImageCache.pinned(totalCostLimit: cost * 64, countLimit: 100)
         insert(8, side: side, into: roomy)
         #expect(resident(8, in: roomy) == 8)
     }
 
     @Test("the count budget evicts; a roomy count does not")
     func countEviction() {
-        let tight = DetailImageCache(totalCostLimit: 1 << 30, countLimit: 3)
+        let tight = DetailImageCache.pinned(totalCostLimit: 1 << 30, countLimit: 3)
         insert(8, side: 64, into: tight)
         #expect(resident(8, in: tight) < 8)
 
-        let roomy = DetailImageCache(totalCostLimit: 1 << 30, countLimit: 100)
+        let roomy = DetailImageCache.pinned(totalCostLimit: 1 << 30, countLimit: 100)
         insert(8, side: 64, into: roomy)
         #expect(resident(8, in: roomy) == 8)
+    }
+}
+
+// MARK: - The production configuration (099 · P2c)
+
+/// The detail cache as the app builds it, checked for the things about it that
+/// are DECISIONS rather than defaults — **without** asserting that it holds
+/// anything.
+///
+/// Residency is the one claim `NSCache` will not honour, and asserting it is
+/// what this phase exists to stop doing. What is left is still worth pinning:
+/// the two budgets are the numbers 036 §3 B2 chose, and the default initialiser
+/// every production call site takes still reaches a real cache and a real decode
+/// rather than a test double.
+@Suite("DetailImageCache: the production configuration")
+struct DetailImageCacheConfigurationTests {
+
+    @Test("the shipped budgets are still 384 MB and five entries")
+    func productionBudgets() {
+        #expect(detailImageCacheCostLimit == 384 * 1024 * 1024)
+        #expect(detailImageCacheCountLimit == 5)
+        // The count is five because {prev, current, next} is three plus one step
+        // of back-step hysteresis; if that ever stops being true, so does the
+        // preload window this cache was sized for.
+        #expect(detailImageCacheCountLimit > 3)
+
+        let cache = DetailImageCache()
+        #expect(cache.costLimit == detailImageCacheCostLimit)
+        #expect(cache.countLimit == detailImageCacheCountLimit)
+    }
+
+    @Test("a loader built the production way reaches a real NSCache and a real decode")
+    func productionLoaderUsesNSCache() async {
+        let probe = DecodeProbe()
+        let loader = DetailImageLoader(cache: DetailImageCache(), decode: probe.decode)
+
+        _ = await loader.displayImage(hash: "a", url: url("a"), targetLongSidePx: nil)
+
+        // NOT `loader.cached(…) != nil`, and not the return value either — both
+        // are cache reads, which is the assertion this phase is about not making
+        // against an `NSCache`. The decode having run is the guaranteed part.
+        #expect(probe.callCount("a") == 1)
     }
 }

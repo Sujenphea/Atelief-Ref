@@ -278,6 +278,53 @@ were asserting residency against an `NSCache`, which documents that it does not 
 it. Production keeps `NSCache`; the two suites get a `ThumbnailStore` seam and a
 deterministic store behind it. **No production behaviour changed.**
 
+## P2c — the detail-image cache stops asserting residency
+
+*Unplanned. Issue 21A, authorised by the user immediately after P2b. No decision in the
+table above covers it. Effort S.*
+
+P2b's changelog closed by naming what it had deliberately left: `DetailImageCache` is a
+second `NSCache`, and its tests make the same bet against it that fifteen thumbnail tests
+were making — `resident(8, in: roomy) == 8` is word-for-word `costBasedEviction`'s
+sentence. **Neither suite has ever been observed to fail.** That is not evidence they
+cannot: their insert-then-read windows are microseconds of straight-line code where the
+thumbnail suites' were seconds across task hops, which narrows the window rather than
+closing it. The user took it as its own small phase (21A) on the grounds that the seam
+that fixes it was already built and paid for.
+
+The instruction that shapes this phase is *reuse*: if `DetailImageCache` can be expressed
+through `ThumbnailStore` / `PinnedThumbnailStore`, it must be, because a second protocol
+saying the same three sentences is exactly the duplication this plan exists to remove.
+
+**Verify:** the evidence is structural, not a green run — no assertion in the affected
+suites may read residency from an `NSCache`. Then ≥10 consecutive runs of those suites, a
+tally that is *consistent with* the bug rather than a refutation of it, and `verify.sh`
+full.
+
+**Written, NOT committed — the gate is red on a stage this phase does not touch**
+([470](../.change-log/470-the-second-cache-takes-the-same-seam.md)). Ten assertions across
+eight tests were residency-dependent — two more than 469 predicted, in a suite it did not
+name (`DetailSessionTests`, where a neighbour preload skips only on a cache hit, so
+`probe.buckets("prev") == [3072]` is a cache read wearing a probe's clothes). The existing
+seam fitted: `DetailImageCache` is now the `DetailImageKey`-shaped face of a
+`ThumbnailStore`, and the protocol gained one rule (1b, a count budget) rather than a
+twin. **No production behaviour changed.**
+
+**`✗ App target (UI)` blocks the commit, and the diff is not the cause.** All three smoke
+flows hang the app's main thread for 30 s inside `SecItemCopyMatching` —
+`IngestionModel.bootstrap` → `loadOrCreateCaptureToken` → `CaptureTokenStore.readKeychain`
+— on a **login-keychain** item whose ACL is bound to the reading binary's code signature.
+The UI stage is the one stage that signs ad-hoc (468, and it must), so every rebuild of
+the app presents a new signature, macOS raises a `SecurityAgent` confirmation, and an
+unattended `xcodebuild` never answers it. With every change of this phase stashed — a tree
+identical to `f91f29d` — a fresh-`derivedDataPath` rebuild of **HEAD fails all three flows
+the same way**, while re-using the already-authorised binary passes. So this blocks
+**every** future phase that touches an app-target file, until either the prompt is
+answered at the machine or `CaptureTokenStore` stops doing a blocking, cdhash-scoped
+keychain read on the main actor at launch. The second is a production change and no
+decision here authorises it; **the user decides.** The other thirteen stages pass,
+`App target` included.
+
 ## 22A — the capture token leaves the main actor · **done** ([471](../.change-log/471-the-token-leaves-the-main-actor-at-launch.md))
 
 *Unplanned. Authorised by the user after P2c reported the blocker and stopped. No decision
@@ -602,6 +649,7 @@ supplied. 12A's rule applies to each. Effort M each.*
 | P1 | done — 16A's reaper half reported, not built | [466](../.change-log/466-the-app-target-gets-its-foundations.md) |
 | P2 | done — target, seeder, four identifiers, three flows, a 14th gate stage | [468](../.change-log/468-the-mac-gets-a-window-a-keystroke-and-an-order.md) |
 | P2b | done — unplanned (20A); the two thumbnail suites stop asserting residency against `NSCache` | [469](../.change-log/469-the-cache-that-was-never-promised.md) |
+| P2c | done — unplanned (21A); `DetailImageCache` takes the same seam, 10 assertions across 8 tests. Committed after 22A cleared the `App target (UI)` blocker, on the same gate run | [470](../.change-log/470-the-second-cache-takes-the-same-seam.md) |
 | 22A | done — unplanned; the keychain read leaves the main actor (`@concurrent`, not merely `nonisolated`), and the UI suite stops starting an endpoint it never asserts | [471](../.change-log/471-the-token-leaves-the-main-actor-at-launch.md) |
 | P3 | not started | — |
 | P4 | not started | — |

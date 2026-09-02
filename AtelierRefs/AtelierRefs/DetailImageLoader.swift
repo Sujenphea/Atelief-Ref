@@ -165,39 +165,72 @@ nonisolated struct DetailImageKey: Hashable, Sendable {
     }
 }
 
+/// The detail cache's byte budget: ~384 MB, charging the real decoded byte size.
+/// This is what caps the pathological case — five 12-megapixel photos are ~240 MB
+/// (the count budget governs there), but a 40-megapixel panorama is ~160 MB each,
+/// so the byte budget evicts down to ~2 resident giants before memory runs away.
+nonisolated let detailImageCacheCostLimit = 384 * 1024 * 1024
+
+/// The detail cache's entry-count budget. {prev, current, next} is three, so five
+/// bounds the working set with one step of back-step hysteresis left over.
+nonisolated let detailImageCacheCountLimit = 5
+
 /// Process-wide LRU for decoded full-res detail images.
 ///
 /// Count-AND-cost bounded, unlike the thumbnail cache (036 §4 C1) which is
 /// cost-only: full-res images are FEW and LARGE, so both limits earn their keep.
-/// `countLimit = 5` bounds the working set — {prev, current, next} is three, so
-/// five leaves one step of back-step hysteresis. `totalCostLimit ≈ 384 MB` charges
-/// the real decoded byte size, which is what actually caps the pathological case:
-/// five 12-megapixel photos are ~240 MB (count governs), but a 40-megapixel
-/// panorama is ~160 MB each so the byte budget evicts down to ~2 resident giants
-/// before memory runs away. Both numbers are the plan's and hold up against real
-/// full-res sizes.
+/// Both numbers are the plan's and hold up against real full-res sizes; see
+/// ``detailImageCacheCostLimit`` and ``detailImageCacheCountLimit``.
 ///
-/// `@unchecked Sendable`: `NSCache` is internally thread-safe, so the loader actor
-/// can hand it to the off-actor decode task to fill.
+/// **Where the bitmaps actually live (099 · P2c).** This type is the
+/// ``DetailImageKey``-shaped face of a ``ThumbnailStore`` — the same seam the
+/// thumbnail pipeline got in P2b, for the same reason. In the app the store is an
+/// ``NSCacheThumbnailStore``, i.e. the `NSCache` that used to be an ivar here, at
+/// the same two budgets: **nothing about what ships changed.** What the seam buys
+/// is that a test can supply a store which *keeps what it is given*, which an
+/// `NSCache` explicitly does not promise ("incorporates various auto-eviction
+/// policies"; a caller "should not rely on a cache to store" anything). **Ten
+/// assertions across eight tests** — eight in `DetailImageLoaderTests`, two in
+/// `DetailSessionTests` — were betting on that promise. It is the same bet that
+/// failed fifteen thumbnail tests one gate run in four; see `.change-log/469`.
+///
+/// `@unchecked Sendable`: the store is `Sendable` and thread-safe on its own, so
+/// the loader actor can hand this to the off-actor decode task to fill.
 nonisolated final class DetailImageCache: @unchecked Sendable {
-    private final class Box {
-        let image: CGImage
-        init(_ image: CGImage) { self.image = image }
+    private let store: ThumbnailStore
+
+    /// The store the decoded bitmaps live in. The app passes none of these — see
+    /// the convenience initialiser below, which is what every production call
+    /// site and ``DetailImageLoader/shared`` reach.
+    init(store: ThumbnailStore) {
+        self.store = store
     }
 
-    private let cache = NSCache<NSString, Box>()
-
-    init(totalCostLimit: Int = 384 * 1024 * 1024, countLimit: Int = 5) {
-        cache.totalCostLimit = totalCostLimit
-        cache.countLimit = countLimit
+    /// The production shape: an `NSCache` at 384 MB and five entries, exactly as
+    /// it was before the store became a seam.
+    convenience init(
+        totalCostLimit: Int = detailImageCacheCostLimit,
+        countLimit: Int = detailImageCacheCountLimit
+    ) {
+        self.init(store: NSCacheThumbnailStore(
+            costLimit: totalCostLimit, countLimit: countLimit))
     }
+
+    /// The store's byte budget, so a test can pin the production configuration
+    /// without asserting the one thing `NSCache` will not promise.
+    var costLimit: Int { store.costLimit }
+    /// The store's entry-count budget, for the same reason.
+    var countLimit: Int { store.countLimit }
 
     func image(for key: DetailImageKey) -> CGImage? {
-        cache.object(forKey: key.cacheKey as NSString)?.image
+        store.image(forKey: key.cacheKey)
     }
 
     func insert(_ image: CGImage, cost: Int, for key: DetailImageKey) {
-        cache.setObject(Box(image), forKey: key.cacheKey as NSString, cost: max(0, cost))
+        // `max(0, cost)` as it always was: a negative cost is undefined behaviour
+        // for `NSCache`, and the decoder's `byteCost` is only as trustworthy as
+        // the image it measured.
+        store.insert(image, forKey: key.cacheKey, cost: max(0, cost))
     }
 }
 

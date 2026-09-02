@@ -808,6 +808,26 @@ struct PinnedThumbnailStoreTests {
         #expect(roomy.count == 5)
     }
 
+    @Test("the count budget evicts oldest-first, and only when it must")
+    func countBudgetEvictsOldestFirst() {
+        // Contract rule 1b, added in P2c because `DetailImageCache` carries a
+        // count limit of five where the pipeline carries none. Same oldest-first
+        // order as the byte budget: whichever budget bites first governs.
+        let store = PinnedThumbnailStore(countLimit: 3)
+        for i in 0..<5 { store.insert(makeImage(side: 128), forKey: "k\(i)", cost: 1) }
+        #expect(store.countLimit == 3)
+        #expect(store.count == 3)
+        #expect(store.image(forKey: "k0") == nil)
+        #expect(store.image(forKey: "k1") == nil)
+        #expect(store.image(forKey: "k4") != nil)
+        // A roomy count evicts nothing, and `0` is unbounded — the default the
+        // scheduling suites take.
+        let roomy = PinnedThumbnailStore(countLimit: 100)
+        for i in 0..<5 { roomy.insert(makeImage(side: 128), forKey: "k\(i)", cost: 1) }
+        #expect(roomy.count == 5)
+        #expect(PinnedThumbnailStore().countLimit == 0)
+    }
+
     @Test("an entry costing more than the WHOLE budget is refused outright")
     func oversizedIsRefused() {
         // Contract rule 2, and the exact `NSCache` behaviour
@@ -837,12 +857,13 @@ struct PinnedThumbnailStoreTests {
     }
 }
 
-/// The production store, checked for the two things about it that are decisions
+/// The production store, checked for the things about it that are decisions
 /// rather than defaults — **without** asserting that it holds anything.
 ///
 /// Residency is the one claim `NSCache` will not honour, and asserting it here
 /// is what made fifteen tests flake. What is left is still worth pinning: the
-/// budget is the number that was asked for, and there is no count limit.
+/// budget is the number that was asked for, the pipeline gets no count limit,
+/// and a caller that asks for one (``DetailImageCache``) gets exactly it.
 @Suite("NSCacheThumbnailStore: cost, NOT count")
 struct NSCacheThumbnailStoreTests {
 
@@ -856,8 +877,22 @@ struct NSCacheThumbnailStoreTests {
     func noCountLimit() {
         // 036 §1.4: the `ThumbnailCache` this replaced was `countLimit = 512`
         // with no cost, which is what thrashes a 2000-item collection while the
-        // byte footprint stays unknowable. `0` is `NSCache` for "no limit".
+        // byte footprint stays unknowable. `0` is `NSCache` for "no limit", and
+        // it is the DEFAULT, so the pipeline gets it by not asking.
         #expect(NSCacheThumbnailStore(costLimit: 1 << 20).countLimit == 0)
+        let pipelineStore = NSCacheThumbnailStore(costLimit: thumbnailCacheCostLimit(
+            physicalMemory: 16 << 30))
+        #expect(pipelineStore.countLimit == 0)
+    }
+
+    @Test("a count limit is set only when one is asked for (099 · P2c)")
+    func countLimitWhenAsked() {
+        // `DetailImageCache` is the one caller that asks. It is the same store
+        // class, so the parameter has to actually reach the `NSCache` — otherwise
+        // the detail cache would silently ship unbounded by count.
+        let store = NSCacheThumbnailStore(costLimit: 1 << 20, countLimit: 5)
+        #expect(store.countLimit == 5)
+        #expect(store.costLimit == 1 << 20)
     }
 
     @Test("a pipeline built the production way gets an NSCache-backed store")

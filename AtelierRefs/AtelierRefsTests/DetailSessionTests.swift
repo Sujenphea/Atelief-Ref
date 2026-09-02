@@ -199,6 +199,18 @@ private nonisolated func sizingProbeImage() -> CGImage {
     return ctx.makeImage()!
 }
 
+/// Every loader below is built over a `DetailImageCache.pinned()` rather than the
+/// production `NSCache` (099 · P2c).
+///
+/// Most of this suite asserts on the decode PROBE, which records what was asked
+/// for and is not a cache read — but two assertions are cache reads wearing a
+/// probe's clothes. In `zoomUpgradesCurrentToNative` the second
+/// `updateDisplayTarget` re-runs `preloadAndRetain`, and
+/// `DetailImageLoader.preload` starts a decode only when
+/// `cache.image(for: key) == nil`; so `probe.buckets("prev") == [3072]` says "the
+/// neighbour warmed in the first cycle is STILL CACHED in the second". Against an
+/// `NSCache` an eviction in between turns that into `[3072, 3072]` and the test
+/// fails for a reason that has nothing to do with the sizing rule it is about.
 @MainActor
 @Suite("DetailSession B3 sizing (036 §3 B3)")
 struct DetailSessionSizingTests {
@@ -239,7 +251,7 @@ struct DetailSessionSizingTests {
     func fitDecodeAndNeighborPreload() async throws {
         let services = try await services()
         let probe = SizingProbe()
-        let loader = DetailImageLoader(cache: DetailImageCache(), decode: probe.decode)
+        let loader = DetailImageLoader(cache: .pinned(), decode: probe.decode)
         let feed = [imageDetail(hash: "prev"), imageDetail(hash: "cur"), imageDetail(hash: "next")]
         let session = makeSession(services, loader)
 
@@ -261,7 +273,7 @@ struct DetailSessionSizingTests {
     func zoomUpgradesCurrentToNative() async throws {
         let services = try await services()
         let probe = SizingProbe()
-        let loader = DetailImageLoader(cache: DetailImageCache(), decode: probe.decode)
+        let loader = DetailImageLoader(cache: .pinned(), decode: probe.decode)
         let feed = [imageDetail(hash: "prev"), imageDetail(hash: "cur"), imageDetail(hash: "next")]
         let session = makeSession(services, loader)
 
@@ -283,7 +295,7 @@ struct DetailSessionSizingTests {
     func previewViewportSkipsAllDecode() async throws {
         let services = try await services()
         let probe = SizingProbe()
-        let loader = DetailImageLoader(cache: DetailImageCache(), decode: probe.decode)
+        let loader = DetailImageLoader(cache: .pinned(), decode: probe.decode)
         let feed = [imageDetail(hash: "prev"), imageDetail(hash: "cur"), imageDetail(hash: "next")]
         let session = makeSession(services, loader)
 
@@ -303,7 +315,7 @@ struct DetailSessionSizingTests {
     func antiStormDeDup() async throws {
         let services = try await services()
         let probe = SizingProbe()
-        let loader = DetailImageLoader(cache: DetailImageCache(), decode: probe.decode)
+        let loader = DetailImageLoader(cache: .pinned(), decode: probe.decode)
         let feed = [imageDetail(hash: "cur")]   // no neighbours — isolate the current decode
         let session = makeSession(services, loader)
 

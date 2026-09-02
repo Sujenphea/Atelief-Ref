@@ -2,7 +2,9 @@
 //  PinnedThumbnailStore.swift
 //  AtelierRefsTests
 //
-//  099 · P2b — the store the thumbnail suites are allowed to assert against.
+//  099 · P2b — the store the thumbnail suites are allowed to assert against,
+//  and since P2c the detail-image suites too (see `DetailImageCache.pinned`
+//  at the foot of this file).
 //
 //  `ThumbnailPipelineTests` and `ThumbnailWindowPrefetcherTests` used to run
 //  against the production `NSCache`, and roughly one gate run in four the two
@@ -41,32 +43,49 @@
 //  what a thumbnail cache should do in a shipping app. What changed is that the
 //  tests no longer bet on it not happening.
 //
+//  **P2c.** ``DetailImageCache`` had the identical bet in ten assertions across
+//  eight tests, and was named in 469 as the follow-up. Not one of them had ever
+//  been seen to fail — their insert-then-read windows are microseconds of
+//  straight-line code where the thumbnail suites' were seconds across task hops,
+//  which narrows the window rather than closing it. It takes the same seam now,
+//  so this store grew the one thing that cache has and the pipeline does not: a
+//  count budget
+//  (contract rule 1b). Nothing about the detail cache's production shape moved
+//  either — same `NSCache`, same 384 MB, same five entries.
+//
 
 import CoreGraphics
 import Foundation
 
 @testable import AtelierRefs
 
-/// A ``ThumbnailStore`` that evicts only when the byte budget makes it, and
-/// never of its own accord.
+/// A ``ThumbnailStore`` that evicts only when a budget makes it, and never of
+/// its own accord.
 ///
-/// `costLimit == 0` means unbounded, which is what the scheduling tests want:
-/// they are about coalescing, promotion and cancellation, and a budget they did
-/// not ask for is one more thing that could explain a miss.
+/// `costLimit == 0` and `countLimit == 0` both mean unbounded, which is what the
+/// scheduling tests want: they are about coalescing, promotion and cancellation,
+/// and a budget they did not ask for is one more thing that could explain a miss.
 ///
-/// Thread-safe by its own lock, and it never calls back into the pipeline — the
+/// Thread-safe by its own lock, and it never calls back into its caller — the
 /// pipeline reads its store while holding its own lock (`prefetch`, `pump`), so
 /// re-entrancy here would be a deadlock there.
 nonisolated final class PinnedThumbnailStore: ThumbnailStore, @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [String: (image: CGImage, cost: Int)] = [:]
-    /// Insertion order, oldest first — the eviction order when the budget bites.
+    /// Insertion order, oldest first — the eviction order when a budget bites.
     private var order: [String] = []
     private var charged = 0
 
     let costLimit: Int
+    let countLimit: Int
 
-    init(costLimit: Int = 0) { self.costLimit = costLimit }
+    /// - Parameter countLimit: contract rule 1b. `0` is unbounded, which is what
+    ///   the thumbnail suites take; ``DetailImageCache``'s tests pass five, or
+    ///   whatever number the case under test is about.
+    init(costLimit: Int = 0, countLimit: Int = 0) {
+        self.costLimit = costLimit
+        self.countLimit = countLimit
+    }
 
     func image(forKey key: String) -> CGImage? {
         lock.lock()
@@ -90,11 +109,19 @@ nonisolated final class PinnedThumbnailStore: ThumbnailStore, @unchecked Sendabl
         entries[key] = (image, charge)
         order.append(key)
         charged += charge
-        guard costLimit > 0 else { return }
-        while charged > costLimit, !order.isEmpty {
+        while overBudget, !order.isEmpty {
             let oldest = order.removeFirst()
             if let dropped = entries.removeValue(forKey: oldest) { charged -= dropped.cost }
         }
+    }
+
+    /// Whether either budget is currently exceeded. `lock` must be held.
+    ///
+    /// Both budgets evict from the same oldest-first order, so a store carrying
+    /// both (``DetailImageCache``'s shape) behaves the way its two `NSCache`
+    /// limits do: whichever bites first is the one that governs.
+    private var overBudget: Bool {
+        (costLimit > 0 && charged > costLimit) || (countLimit > 0 && entries.count > countLimit)
     }
 
     /// How many entries are resident. Test support.
@@ -102,5 +129,22 @@ nonisolated final class PinnedThumbnailStore: ThumbnailStore, @unchecked Sendabl
         lock.lock()
         defer { lock.unlock() }
         return entries.count
+    }
+}
+
+// MARK: - The detail cache over a pinned store (099 · P2c)
+
+extension DetailImageCache {
+    /// A ``DetailImageCache`` whose bitmaps live in a ``PinnedThumbnailStore`` —
+    /// the only detail cache a test may read a residency assertion out of.
+    ///
+    /// Unbounded on both axes by default, for the reason `pinnedPipeline` is:
+    /// `DetailImageLoaderTests` and `DetailSessionTests` are about coalescing,
+    /// promotion, cancellation and which buckets were asked for, and a budget
+    /// none of them set is one more reason a lookup could miss. The two tests
+    /// that ARE about the budgets pass their own.
+    static func pinned(totalCostLimit: Int = 0, countLimit: Int = 0) -> DetailImageCache {
+        DetailImageCache(store: PinnedThumbnailStore(
+            costLimit: totalCostLimit, countLimit: countLimit))
     }
 }
