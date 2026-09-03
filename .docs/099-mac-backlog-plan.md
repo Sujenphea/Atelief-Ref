@@ -243,8 +243,10 @@ adding the four the flows need was most of the phase. Both flows that touch the 
 goes to the frontmost app, and a click into an inactive window is eaten by activating it
 unless the view accepts the first mouse (`NSTableView` does, `NSButton` does not). The
 `verify.sh` stage is `App target (UI)` and signs **ad-hoc**, because a UI-test runner
-built with `CODE_SIGNING_ALLOWED=NO` is SIGKILLed before it connects. `full` is now
-fourteen stages.
+built with `CODE_SIGNING_ALLOWED=NO` is SIGKILLed before it connects. `full` was
+fourteen stages — **amended 2026-09-03: the UI stage was removed from the gate again
+(issue 23D, [474](../.change-log/474-the-gate-stops-claiming-a-window.md)); `full` is
+thirteen and the suite runs by hand as `verify.sh ui`.**
 
 ## P2b — the thumbnail suites' intermittent failure
 
