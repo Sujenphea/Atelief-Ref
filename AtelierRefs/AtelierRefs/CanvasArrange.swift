@@ -20,7 +20,7 @@ import CoreGraphics
 /// spacing", [6A]).
 enum CanvasArrange {
 
-    /// The ten arrange operations: 6 aligns + 2 distributes + tidy + reflow.
+    /// The eleven arrange operations: 6 aligns + 2 distributes + tidy + reflow + grid.
     /// `allCases` drives the table-driven kernel tests and the bar's op wiring, so a
     /// new op is added in exactly one place.
     enum Operation: CaseIterable {
@@ -32,8 +32,11 @@ enum CanvasArrange {
         // Tidy up (066): snap the selection into clean rows at a uniform gap.
         case tidyUp
         // Reflow into grid: repack the selection the way a bulk add flows it in —
-        // the ONE op that resizes (see ``reflowGrid(_:)``).
+        // one of the two ops that resize (see ``reflowGrid(_:)``).
         case reflowGrid
+        // A TRUE uniform grid (076's T3, 099 · P12): one cell size for every tile,
+        // aspect discarded. The other resizing op — see ``uniformGrid(_:gap:)``.
+        case arrangeGrid
 
         /// The undo action name shown in the ⌘Z menu — carried by the op so the
         /// model doesn't scatter string literals.
@@ -49,6 +52,7 @@ enum CanvasArrange {
             case .distributeVertical: "Distribute Vertically"
             case .tidyUp: "Tidy Up"
             case .reflowGrid: "Reflow Into Grid"
+            case .arrangeGrid: "Arrange Into Grid"
             }
         }
 
@@ -73,9 +77,10 @@ enum CanvasArrange {
     }
 
     /// Apply `op` to `rects`, returning a new index-aligned array (the caller zips
-    /// results back to ids by index). Pure: for every op but one, sizes are preserved
-    /// and only the relevant origin coordinate moves. ``Operation/reflowGrid`` is the
-    /// exception and resizes deliberately — see ``reflowGrid(_:)`` — so callers must
+    /// results back to ids by index). Pure: for every op but two, sizes are preserved
+    /// and only the relevant origin coordinate moves. ``Operation/reflowGrid`` and
+    /// ``Operation/arrangeGrid`` are the exceptions and resize deliberately — see
+    /// ``reflowGrid(_:)`` and ``uniformGrid(_:gap:)`` — so callers must
     /// carry the returned `size` through, not just the origin. Below
     /// `op.minimumCount` it returns `rects` unchanged, so callers can invoke it
     /// safely on any selection.
@@ -102,6 +107,8 @@ enum CanvasArrange {
             return tidy(rects)
         case .reflowGrid:
             return reflowGrid(rects)
+        case .arrangeGrid:
+            return uniformGrid(rects, gap: gridSpacing)
         }
     }
 
@@ -407,6 +414,71 @@ enum CanvasArrange {
     ///
     /// Not ``tidyGap(_:rows:)``'s smallest-observed gap: see ``reflowGrid(_:)``.
     static let gridSpacing: CGFloat = 16
+
+    // MARK: - A true uniform grid (076 · T3, 099 · P12)
+
+    /// The side of one cell in a uniform grid. Square, and the same number as
+    /// ``gridRowHeight`` — a reflowed block and an arranged one line up on their row
+    /// pitch, which is what stops the two verbs from producing visibly different
+    /// boards.
+    ///
+    /// Fixed rather than derived from the selection, for ``gridRowHeight``'s reason and
+    /// with more force: a derived side (the median area's square root, say) changes
+    /// under its own output, because pass one makes every tile the same size and pass
+    /// two therefore measures something else.
+    static let gridCellSide: CGFloat = gridRowHeight
+
+    /// Force every rect into ONE cell size and lay the cells out in a square-ish grid.
+    ///
+    /// **This is the verb [076](../../.docs/076-spaces-tidy-wraps-plan.md) called
+    /// "Grid" and deferred as T3, and it is a different thing from
+    /// ``reflowGrid(_:)``.** Reflow normalises the HEIGHT and lets each width follow
+    /// the picture's aspect, so its rows justify and its cells are uneven — the
+    /// justified-rows reading of "uniform grid". This one takes the other reading:
+    /// every tile becomes `gridCellSide × gridCellSide`, aspect discarded, columns
+    /// aligned down the board. 076 called it destructive to the tiles' sizes and it is;
+    /// that is the point, and ⌘Z is one keystroke away.
+    ///
+    /// **The column count is `ceil(√n)` — derived from the COUNT, not the geometry.**
+    /// Tidy and reflow both derive a wrap bound from total area, and both needed care
+    /// to keep that bound stable under their own output. Here there is nothing to
+    /// stabilise: `n` does not change, so the grid's shape does not either, and
+    /// idempotence stops being an argument and becomes arithmetic. Square-ish rather
+    /// than 16:9 because the cells are square, so a square grid is the block that
+    /// wastes the least screen.
+    ///
+    /// Idempotent, and the three steps are worth naming since they are what the
+    /// `allCases` test asserts: after one pass every rect is exactly one cell, so the
+    /// resize on pass two is the identity; `n` is unchanged, so the column count is;
+    /// and ``tidyRows(_:)`` over the output re-clusters exactly the rows just laid out
+    /// — a row's members share a top edge, its band is one cell tall, and the next row
+    /// starts at `+ side + gap`, which is at or below the band's bottom and so never
+    /// inside it, even at `gap == 0`.
+    ///
+    /// Order comes from ``tidyRows(_:)``, as reflow's does: the shape is discarded, the
+    /// reading sequence is kept. Anchored on the INPUT box's top-left so the block
+    /// arranges where it already sits. A negative gap is clamped, like ``pack(_:axis:gap:)``'s.
+    static func uniformGrid(_ rects: [CGRect], gap: CGFloat = gridSpacing) -> [CGRect] {
+        guard rects.count >= 2 else { return rects }
+        let gap = max(0, gap)
+        let order = tidyRows(rects).flatMap { $0 }
+        let box = boundingBox(rects)
+        let side = gridCellSide
+        // `rects.count >= 2`, so the square root is at least √2 and the count at least
+        // 2 — no zero-column loop is reachable.
+        let columns = max(1, Int(Double(rects.count).squareRoot().rounded(.up)))
+
+        var result = rects
+        for (position, index) in order.enumerated() {
+            let column = position % columns
+            let row = position / columns
+            result[index] = CGRect(
+                x: box.minX + CGFloat(column) * (side + gap),
+                y: box.minY + CGFloat(row) * (side + gap),
+                width: side, height: side)
+        }
+        return result
+    }
 
     // MARK: - Pack at an exact gap (066)
 

@@ -1018,6 +1018,11 @@ public final class CanvasEngine {
             layer.frame = guide.isVertical
                 ? CGRect(x: origin.x, y: 0, width: 1, height: viewportSize.height)
                 : CGRect(x: 0, y: origin.y, width: viewportSize.width, height: 1)
+            // Set every time rather than only at creation: the pool recycles layers
+            // between guides, so a layer that drew an equal-spacing line last tick
+            // would keep its alpha for an alignment line this one (099 · P12).
+            layer.backgroundColor = guide.kind == .equalSpacing
+                ? CanvasChrome.equalSpacingGuide : CanvasChrome.snapGuide
             layer.zPosition = Self.chromeZ
         }
     }

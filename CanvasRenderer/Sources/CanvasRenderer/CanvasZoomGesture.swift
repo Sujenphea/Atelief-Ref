@@ -73,3 +73,77 @@ public struct CanvasZoomGesture: Equatable, Sendable {
     /// trace: no sync, no camera write, no notification.
     public var hasMoved: Bool { totalFactor != 1 }
 }
+
+/// What one scroll-wheel event means (099 · P12).
+///
+/// A wheel event is two different gestures wearing one `NSEvent`: bare, it pans;
+/// with ⌘ held, it zooms about the cursor. Naming the decision as a value — rather
+/// than branching inside `scrollWheel(with:)` — is what makes it testable at all: a
+/// `swift test` process cannot synthesize an `NSEvent`, which is the same reason the
+/// pinch's bracket lives on ``CanvasEngine`` rather than on the view (086).
+public enum CanvasScrollIntent: Equatable, Sendable {
+    /// Move the camera by a screen-space delta.
+    case pan(CGSize)
+    /// Multiply the camera's scale about the cursor.
+    case zoom(CGFloat)
+}
+
+extension CanvasZoomGesture {
+
+    /// Per-unit exponent for a PRECISE (trackpad) scroll delta.
+    ///
+    /// Precise deltas arrive in screen points and in the tens per event, so the
+    /// exponent is small: a 100pt two-finger sweep lands on `e ≈ 2.72×`, which is
+    /// about one full zoom step for a deliberate gesture.
+    public static let preciseWheelExponent: CGFloat = 0.01
+
+    /// Per-unit exponent for a LINE-BASED (mouse wheel) scroll delta.
+    ///
+    /// A notch reports 1 line on most mice and 3 on some, so this is chosen to keep
+    /// BOTH usable: 1.05× and 1.16× respectively. Tuned against the line count rather
+    /// than the notch because AppKit gives us the former and never the latter.
+    public static let lineWheelExponent: CGFloat = 0.05
+
+    /// The largest exponent a single event may contribute, either way.
+    ///
+    /// A wheel delta is hardware-reported and unbounded; without this a spurious
+    /// 10,000-point event would produce `e^100`, which overflows to infinity and is
+    /// then silently discarded by ``accumulate(_:)`` — a zoom that does nothing at
+    /// all. Clamping instead means a huge event zooms a lot, which is at least the
+    /// direction the user asked for. `1.6` is ~5× per event.
+    public static let maxWheelExponent: CGFloat = 1.6
+
+    /// The multiplicative factor one wheel event contributes.
+    ///
+    /// **Exponential, not linear**, and that is the load-bearing choice. Zoom composes
+    /// by multiplication (``accumulate(_:)`` takes a product), so the only rule under
+    /// which scrolling up by `d` and back down by `d` returns to the scale you started
+    /// at is `f(-d) == 1 / f(d)` — which `exp` gives for free and `1 + kd` does not.
+    /// A linear factor drifts smaller on every up-down pair, and the drift is
+    /// invisible per event and obvious after a minute of use.
+    ///
+    /// Returns `1` (a no-op factor) for a non-finite delta, so a garbage event cannot
+    /// reach the transform.
+    public static func wheelZoomFactor(
+        scrollDeltaY delta: CGFloat, precise: Bool
+    ) -> CGFloat {
+        guard delta.isFinite else { return 1 }
+        let perUnit = precise ? preciseWheelExponent : lineWheelExponent
+        let exponent = min(max(delta * perUnit, -maxWheelExponent), maxWheelExponent)
+        return CGFloat(exp(Double(exponent)))
+    }
+
+    /// What a scroll event should do: pan when bare, zoom about the cursor with ⌘.
+    ///
+    /// ⌘ rather than a preference, because it is what every canvas tool on this
+    /// platform uses and because the bare wheel must stay a pan — that is the gesture
+    /// the board has always had, and re-binding it would be a regression wearing a
+    /// feature's name.
+    public static func scrollIntent(
+        commandHeld: Bool, scrollDeltaX dx: CGFloat, scrollDeltaY dy: CGFloat,
+        precise: Bool
+    ) -> CanvasScrollIntent {
+        guard commandHeld else { return .pan(CGSize(width: dx, height: dy)) }
+        return .zoom(wheelZoomFactor(scrollDeltaY: dy, precise: precise))
+    }
+}

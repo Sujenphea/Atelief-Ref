@@ -563,4 +563,173 @@ struct CanvasTidyPackTests {
             }
         }
     }
+
+    // MARK: - A true uniform grid (076 · T3, 099 · P12)
+
+    /// The distinction 076 drew and 351 deliberately did not build: reflow keeps each
+    /// tile's aspect and justifies rows (uneven cells); this forces ONE cell size.
+    /// Every test here that names a size is really asserting that difference.
+
+    @Test("every cell comes out identical — the whole point of the verb")
+    func gridMakesEveryCellIdentical() {
+        let out = CanvasArrange.apply(.arrangeGrid, to: Self.mixedScatter)
+        #expect(out.count == Self.mixedScatter.count)
+        for r in out {
+            #expect(approx(r.width, CanvasArrange.gridCellSide))
+            #expect(approx(r.height, CanvasArrange.gridCellSide))
+        }
+        // The input really did carry several sizes, so this is doing work.
+        #expect(Set(Self.mixedScatter.map(\.width)).count > 1)
+        #expect(Set(out.map(\.width)).count == 1)
+    }
+
+    /// The one that separates the two grid ops. Feed a panorama and a square through
+    /// both: reflow keeps them different widths, arrangeGrid does not.
+    @Test("arrangeGrid discards the aspect where reflow preserves it")
+    func gridDiscardsAspectUnlikeReflow() {
+        let mixed = [
+            CGRect(x: 0, y: 0, width: 640, height: 200),   // 3.2:1
+            CGRect(x: 700, y: 0, width: 200, height: 200), // 1:1
+        ]
+        let reflowed = CanvasArrange.apply(.reflowGrid, to: mixed)
+        #expect(!approx(reflowed[0].width, reflowed[1].width))
+
+        let gridded = CanvasArrange.apply(.arrangeGrid, to: mixed)
+        #expect(approx(gridded[0].width, gridded[1].width))
+        #expect(approx(gridded[0].height, gridded[1].height))
+    }
+
+    @Test("arranging twice changes nothing the second time — the design constraint")
+    func gridIsStableUnderItsOwnOutput() {
+        let cases: [[CGRect]] = [
+            Self.mixedScatter,                                       // 24, wraps
+            [rect(0, 0), rect(70, 3), rect(2, 60), rect(74, 62)],    // a small 2x2
+            [rect(0, 0), rect(8, 60), rect(3, 140)],                 // a column
+            [rect(0, 0), rect(300, 1)],                              // a pair
+        ]
+        for rects in cases {
+            var previous = CanvasArrange.apply(.arrangeGrid, to: rects)
+            for _ in 0..<4 {
+                let next = CanvasArrange.apply(.arrangeGrid, to: previous)
+                for (a, b) in zip(previous, next) { #expect(a == b) }
+                previous = next
+            }
+        }
+    }
+
+    @Test("the column count is ceil(sqrt(n)) — derived from the count, not the geometry")
+    func gridColumnsFollowTheCount() {
+        // The stability argument rests on this: n does not change under the op, so the
+        // shape cannot either. A geometry-derived bound would need tidy's whole
+        // area-invariance argument to say the same thing.
+        for (n, columns) in [(2, 2), (3, 2), (4, 2), (5, 3), (9, 3), (10, 4), (16, 4), (17, 5)] {
+            let input = (0..<n).map { rect(CGFloat($0) * 300, 0) }
+            let out = CanvasArrange.uniformGrid(input, gap: 10)
+            let distinctX = Set(out.map(\.minX)).count
+            #expect(distinctX == min(columns, n), "n = \(n)")
+            let rows = Set(out.map(\.minY)).count
+            #expect(rows == (n + columns - 1) / columns, "n = \(n)")
+        }
+    }
+
+    @Test("the gap between cells is exactly the one asked for, both ways")
+    func gridUsesTheGivenGap() {
+        for gap: CGFloat in [0, 7, 24, 120] {
+            // Nine tiles → 3 x 3, so both a horizontal and a vertical step exist.
+            let out = CanvasArrange.uniformGrid(
+                (0..<9).map { rect(CGFloat($0) * 300, 0) }, gap: gap)
+            let step = CanvasArrange.gridCellSide + gap
+            let xs = Set(out.map(\.minX)).sorted()
+            let ys = Set(out.map(\.minY)).sorted()
+            #expect(xs.count == 3 && ys.count == 3)
+            for (a, b) in zip(xs, xs.dropFirst()) { #expect(approx(b - a, step)) }
+            for (a, b) in zip(ys, ys.dropFirst()) { #expect(approx(b - a, step)) }
+        }
+    }
+
+    @Test("a negative gap is clamped, never allowed to overlap the layout")
+    func gridClampsANegativeGap() {
+        let negative = CanvasArrange.uniformGrid(Self.mixedScatter, gap: -50)
+        let zero = CanvasArrange.uniformGrid(Self.mixedScatter, gap: 0)
+        for (a, b) in zip(negative, zero) { #expect(a == b) }
+    }
+
+    @Test("the block arranges where it already sits — anchored on the input top-left")
+    func gridAnchorsOnTheInputTopLeft() {
+        let shifted = Self.mixedScatter.map { $0.offsetBy(dx: 4_000, dy: -2_500) }
+        let out = CanvasArrange.uniformGrid(shifted, gap: 16)
+        let inputBox = shifted.reduce(shifted[0]) { $0.union($1) }
+        #expect(approx(out.map(\.minX).min()!, inputBox.minX))
+        #expect(approx(out.map(\.minY).min()!, inputBox.minY))
+    }
+
+    @Test("the shape goes, the reading sequence stays")
+    func gridPreservesReadingOrder() {
+        // The same contract reflow makes: whatever order the tiles read in before, they
+        // read in after — through the wrap, not just within one row.
+        let out = CanvasArrange.uniformGrid(Self.mixedScatter, gap: 16)
+        #expect(readingOrder(out) == readingOrder(
+            CanvasArrange.apply(.reflowGrid, to: Self.mixedScatter)))
+        #expect(Set(readingOrder(out)) == Set(Self.mixedScatter.indices))
+    }
+
+    @Test("no tile is lost, doubled, or left where it was")
+    func gridLosesNoTile() {
+        let out = CanvasArrange.uniformGrid(Self.mixedScatter, gap: 16)
+        #expect(out.count == Self.mixedScatter.count)
+        // Every cell lands on its own origin — a doubled index would collide.
+        #expect(Set(out.map { "\($0.minX),\($0.minY)" }).count == out.count)
+    }
+
+    @Test("a degenerate rect becomes a cell like any other — no division, no NaN")
+    func gridHandlesDegenerateRects() {
+        let degenerate = [rect(0, 0, 0, 0), rect(50, 0, 10, 0), rect(90, 0, 100, 50)]
+        let out = CanvasArrange.uniformGrid(degenerate, gap: 16)
+        #expect(out.allSatisfy { $0.width.isFinite && $0.height.isFinite })
+        #expect(out.allSatisfy { approx($0.width, CanvasArrange.gridCellSide) })
+        let twice = CanvasArrange.uniformGrid(out, gap: 16)
+        for (a, b) in zip(out, twice) { #expect(a == b) }
+    }
+
+    @Test("the op path and the gap path are the same algorithm")
+    func gridOpPathUsesTheDefaultGap() {
+        // `arrange(.arrangeGrid)` and `arrangeGrid(gap:)` must not be able to disagree
+        // about anything but the number.
+        let viaOp = CanvasArrange.apply(.arrangeGrid, to: Self.mixedScatter)
+        let viaGap = CanvasArrange.uniformGrid(
+            Self.mixedScatter, gap: CanvasArrange.gridSpacing)
+        for (a, b) in zip(viaOp, viaGap) { #expect(a == b) }
+    }
+
+    @Test("arrangeGrid is a no-op below two, like every other arrange op")
+    func gridBelowTwoIsANoOp() {
+        let one = [rect(7, 9)]
+        #expect(CanvasArrange.apply(.arrangeGrid, to: one) == one)
+        #expect(CanvasArrange.uniformGrid(one, gap: 16) == one)
+        #expect(CanvasArrange.uniformGrid([], gap: 16).isEmpty)
+        #expect(CanvasArrange.Operation.arrangeGrid.minimumCount == 2)
+        #expect(CanvasArrange.Operation.arrangeGrid.isDistribute == false)
+        #expect(CanvasArrange.Operation.arrangeGrid.actionName == "Arrange Into Grid")
+    }
+
+    @Test("the cell side mirrors SpaceLayout's row height — the copies must not drift")
+    func gridCellSideMirrorsSpaceLayout() {
+        // A fourth mirrored constant beside the three above. It is `gridRowHeight` by
+        // definition here, and `gridRowHeight` is `SpaceLayout.rowHeight`; asserting
+        // both links means either one breaking is caught where it broke.
+        #expect(CanvasArrange.gridCellSide == CanvasArrange.gridRowHeight)
+        #expect(CanvasArrange.gridCellSide == CGFloat(SpaceLayout.rowHeight))
+    }
+
+    @Test("reflow and tidy are untouched by arrangeGrid existing")
+    func siblingsRemainThemselves() {
+        // Additive, like reflow was. The way this could go wrong invisibly is by
+        // teaching one of the other two to force a cell, so pin both.
+        let tidied = CanvasArrange.apply(.tidyUp, to: Self.mixedScatter)
+        for (before, after) in zip(Self.mixedScatter, tidied) {
+            #expect(approx(before.width, after.width) && approx(before.height, after.height))
+        }
+        let reflowed = CanvasArrange.apply(.reflowGrid, to: Self.mixedScatter)
+        #expect(Set(reflowed.map(\.width)).count > 1, "reflow must still vary its widths")
+    }
 }

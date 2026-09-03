@@ -231,6 +231,103 @@ struct SpaceArrangeTests {
         #expect(model.undoActionName == "Add Frame")
     }
 
+    // MARK: - Uniform grid integration (099 · P12)
+
+    /// The model contract for the SECOND resizing op. Reflow proved the whole rect
+    /// round-trips; what this adds is that the gap the user typed reaches the kernel,
+    /// and that the undo name is the op's own rather than a literal beside it.
+    @Test("arrangeGrid persists one square cell each, at the gap it was given")
+    func arrangeGridRoundTripsSizesAtTheGivenGap() async throws {
+        let (model, _) = try await makeModel()
+        let rects = [CGRect(x: 0, y: 0, width: 100, height: 50),     // 2:1
+                     CGRect(x: 300, y: 20, width: 60, height: 120),  // 1:2
+                     CGRect(x: 600, y: 400, width: 80, height: 80)]  // 1:1
+        let ids = await seed(model, rects)
+        selectAll(model, ids)
+        let before = Dictionary(uniqueKeysWithValues: ids.map { ($0, item(model, $0)) })
+
+        model.arrangeGrid(gap: 40)
+        await model.waitForWrites()
+        await model.load()
+
+        let side = Double(CanvasArrange.gridCellSide)
+        for id in ids {
+            let now = item(model, id)
+            // EVERY cell the same, aspect discarded — the distinction from reflow,
+            // which would have left these three at three different widths.
+            #expect(now.w == side && now.h == side)
+            #expect(now.z == before[id]!.z)   // z never reaches the kernel
+        }
+        // Three tiles → 2 columns → the third wraps to a second row one step down.
+        let placed = ids.map { item(model, $0) }
+        #expect(Set(placed.map(\.y)).count == 2)
+        #expect(Set(placed.map(\.x)).count == 2)
+        #expect(placed.map(\.x).max()! - placed.map(\.x).min()! == side + 40)
+        #expect(model.undoActionName == "Arrange Into Grid")
+
+        // One undo restores position AND size for all three.
+        model.undo()
+        await model.waitForWrites()
+        await model.load()
+        for id in ids {
+            let now = item(model, id), was = before[id]!
+            #expect(now.w == was.w && now.h == was.h)
+            #expect(now.x == was.x && now.y == was.y)
+        }
+        #expect(model.undoActionName == "Add Frame")
+    }
+
+    @Test("arranging an already-arranged selection writes nothing and adds no undo entry")
+    func arrangeGridTwiceRegistersOneUndo() async throws {
+        let (model, _) = try await makeModel()
+        let ids = await seed(model, [CGRect(x: 0, y: 0, width: 100, height: 50),
+                                     CGRect(x: 300, y: 20, width: 60, height: 120),
+                                     CGRect(x: 600, y: 400, width: 80, height: 80)])
+        selectAll(model, ids)
+
+        model.arrangeGrid(gap: 24)
+        await model.waitForWrites()
+        let settled = Dictionary(uniqueKeysWithValues: ids.map { ($0, item(model, $0)) })
+        let revision = model.renderRevision
+
+        model.arrangeGrid(gap: 24)   // idempotent → no edits → no write, no redraw signal
+        await model.waitForWrites()
+        #expect(model.renderRevision == revision)
+        for id in ids {
+            let now = item(model, id), was = settled[id]!
+            #expect(now.x == was.x && now.y == was.y && now.w == was.w && now.h == was.h)
+        }
+        model.undo()
+        await model.waitForWrites()
+        #expect(model.undoActionName == "Add Frame")
+    }
+
+    /// A DIFFERENT gap is a real edit, not a no-op — the guard above drops unchanged
+    /// placements, and a gap that only affects x/y must survive it.
+    @Test("re-arranging at a new gap moves the tiles and registers its own undo")
+    func arrangeGridAtANewGapIsAnEdit() async throws {
+        let (model, _) = try await makeModel()
+        let ids = await seed(model, [CGRect(x: 0, y: 0, width: 100, height: 50),
+                                     CGRect(x: 300, y: 20, width: 60, height: 120),
+                                     CGRect(x: 600, y: 400, width: 80, height: 80)])
+        selectAll(model, ids)
+
+        // `reload: false` on the forward edit, so `items` has to be re-read explicitly
+        // — the in-memory mirror the canvas draws from is the tile, not this list.
+        model.arrangeGrid(gap: 0)
+        await model.waitForWrites()
+        await model.load()
+        let tight = ids.map { item(model, $0).x }.max()!
+
+        model.arrangeGrid(gap: 100)
+        await model.waitForWrites()
+        await model.load()
+        let loose = ids.map { item(model, $0).x }.max()!
+
+        #expect(loose - tight == 100)
+        #expect(model.undoActionName == "Arrange Into Grid")
+    }
+
     // MARK: - No-op guard
 
     @Test("aligning already-aligned items registers no undo entry")

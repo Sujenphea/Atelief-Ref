@@ -867,7 +867,8 @@ struct SpaceView: View {
                 selectionCount: selectionCount,
                 gap: $gapValue,
                 onArrange: { space.arrange($0) },
-                onPack: { space.pack(axis: $0, gap: CGFloat(gapValue)) })
+                onPack: { space.pack(axis: $0, gap: CGFloat(gapValue)) },
+                onArrangeGrid: { space.arrangeGrid(gap: CGFloat(gapValue)) })
         case .zOrder:
             SpaceZOrderPopover(
                 onBringToFront: { space.bringSelectionToFront(); openGroup = nil },

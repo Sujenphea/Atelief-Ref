@@ -759,8 +759,79 @@ public final class CanvasHostView: NSView {
         return super.performKeyEquivalent(with: event)
     }
 
+    /// A bare wheel pans; ⌘-wheel zooms about the cursor (099 · P12).
+    ///
+    /// The zoom half goes through the SAME three engine calls the pinch brackets with
+    /// (086 · C7), not through `engine.zoom(by:aroundScreenPoint:)`. That is not
+    /// tidiness: while a gesture is open the LOD tier is frozen
+    /// (``CanvasEngine/isZoomGestureActive``), so a wheel sweep re-lays the layers it
+    /// already has and asks for its sharper thumbnails ONCE, at settle. Zooming
+    /// directly would request a decode per event and cancel it on the next one —
+    /// exactly the cost 086 measured and removed from the pinch.
+    ///
+    /// The phase switch mirrors ``magnify(with:)`` case for case, including the
+    /// implicit `.began`, because a wheel gesture has the same shape and the two
+    /// drifting apart is how one of them would quietly stop freezing. The `default`
+    /// branch is where they differ, and it has to: a mouse wheel reports no phase at
+    /// all, so one notch IS the whole gesture and is bracketed as one.
     public override func scrollWheel(with event: NSEvent) {
-        engine.pan(byScreenDelta: CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY))
+        let intent = CanvasZoomGesture.scrollIntent(
+            commandHeld: event.modifierFlags.contains(.command),
+            scrollDeltaX: event.scrollingDeltaX,
+            scrollDeltaY: event.scrollingDeltaY,
+            precise: event.hasPreciseScrollingDeltas)
+
+        switch intent {
+        case .pan(let delta):
+            engine.pan(byScreenDelta: delta)
+        case .zoom(let factor):
+            applyWheelZoom(factor, phase: event.phase,
+                           anchor: convert(event.locationInWindow, from: nil))
+        }
+    }
+
+    /// Route one wheel-zoom factor through the pinch bracket, per the event's phase.
+    ///
+    /// Split out of ``scrollWheel(with:)`` so the branch a real wheel takes is
+    /// reachable without an `NSEvent` — a `swift test` process cannot synthesize one,
+    /// which is why 086 put the pinch's own seam on the engine.
+    public func applyWheelZoom(_ factor: CGFloat, phase: NSEvent.Phase, anchor: CGPoint) {
+        switch phase {
+        case .began:
+            beginZoomGesture(anchorScreenPoint: anchor)
+            updateZoomGesture(by: factor)
+        case .changed:
+            // The same implicit begin `magnify(with:)` needs, for the same reason: a
+            // scroll already in flight when this view is installed delivers `.changed`
+            // with no `.began` in front of it.
+            if !engine.isZoomGestureActive { beginZoomGesture(anchorScreenPoint: anchor) }
+            updateZoomGesture(by: factor)
+        case .ended, .cancelled:
+            updateZoomGesture(by: factor)
+            endZoomGesture()
+        default:
+            zoomDiscretely(by: factor, aroundScreenPoint: anchor)
+        }
+    }
+
+    /// One discrete zoom, bracketed but WITHOUT a display link — a mouse-wheel notch,
+    /// and the momentum tail of a trackpad scroll after `.ended` has closed the
+    /// gesture.
+    ///
+    /// Bracketed rather than sent to ``zoom(by:aroundScreenPoint:)`` so the notch
+    /// still gets the gesture's shape: the tier is frozen across the commit and
+    /// re-derived once on the way out, so a notch that crosses an LOD boundary asks
+    /// for the new thumbnail exactly once instead of on the commit and again on the
+    /// re-tier.
+    ///
+    /// No link, because there is nothing to coalesce — the events are already one per
+    /// notch, and starting and invalidating a `CADisplayLink` per notch would cost
+    /// more than the coalescing could ever save.
+    public func zoomDiscretely(by factor: CGFloat, aroundScreenPoint anchor: CGPoint) {
+        endEditingText(commit: true)
+        engine.beginZoomGesture(anchorScreenPoint: anchor)
+        engine.updateZoomGesture(by: factor)
+        engine.endZoomGesture()
     }
 
     /// A pinch, bracketed as a gesture (018 · C7 · 086).

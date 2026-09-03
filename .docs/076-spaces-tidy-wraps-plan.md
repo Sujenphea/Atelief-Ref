@@ -5,7 +5,16 @@ wrap). Open question 1 answered: the bound is `sqrt(area × 16:9)`, quantised to
 100pt, with 1600 as a **floor** rather than only a degenerate fallback — the
 area formula derives narrower than a correct small row, so flooring confines the
 wrap to the many-item case. Open question 3 (a separate uniform **"Grid"** op,
-T3) is deliberately deferred pending use of the fixed Tidy.
+T3) was deferred pending use of the fixed Tidy — **and is now SHIPPED**, as
+`CanvasArrange.Operation.arrangeGrid` / `uniformGrid(_:gap:)`
+([099 · P12](099-mac-backlog-plan.md),
+[481](../.change-log/481-the-wheel-the-cell-and-the-rhythm.md)). It landed where
+this doc said it belonged: beside Tidy in the spacing group, as a different verb
+rather than a change to Tidy. Note that `.reflowGrid`
+([351](../.change-log/351-reflow-into-grid.md)) is the FIRST of the two readings
+in "What 'uniform grid' should mean" below — wrapped rows at one row height, each
+width following its aspect — and is **not** this one; 099 · P12 raised that as an
+open question and P12 settled it against reflow.
 
 > "Tidy function for large number of items condense into one row instead of a
 > uniform grid." Correct, and it is not a tuning problem — `tidy` has **no width

@@ -549,8 +549,8 @@ final class SpaceModel: ObservableObject {
     /// drag), and persist through the shared placement path as ONE undo step —
     /// forward `reload: false` (tiles already moved), undo/redo `reload: true`
     /// (051 · 3A / 13A). `z` is always carried from the live rect; `w`/`h` come back
-    /// from the kernel, which for every op but `.reflowGrid` hands them straight back
-    /// unchanged.
+    /// from the kernel, which for every op but `.reflowGrid` and `.arrangeGrid` hands
+    /// them straight back unchanged.
     func arrange(_ op: CanvasArrange.Operation) {
         applySelectionLayout(minimumCount: op.minimumCount, name: op.actionName) {
             CanvasArrange.apply(op, to: $0)
@@ -567,6 +567,24 @@ final class SpaceModel: ObservableObject {
     func pack(axis: CanvasArrange.Axis, gap: CGFloat) {
         applySelectionLayout(minimumCount: 2, name: "Set Gap") {
             CanvasArrange.pack($0, axis: axis, gap: gap)
+        }
+    }
+
+    /// Force the selection into a TRUE uniform grid at an exact `gap` (099 · P12) —
+    /// every tile one cell size, unlike `.reflowGrid`, which keeps each aspect.
+    ///
+    /// A second entry point for the same reason ``pack(axis:gap:)`` is one: the gap is
+    /// a runtime number and `CanvasArrange.Operation` is `CaseIterable`, so it cannot
+    /// carry one. The op still EXISTS as a case, though, unlike pack's — that is what
+    /// gives it an `actionName` for the ⌘Z menu, a `minimumCount` the panel gates on,
+    /// and a place in the four `allCases` kernel invariants. `arrange(.arrangeGrid)`
+    /// remains valid and uses the default gap; this is the same algorithm with the
+    /// user's number, and both share the one undo name so the menu cannot disagree
+    /// with itself about what was done.
+    func arrangeGrid(gap: CGFloat) {
+        let op = CanvasArrange.Operation.arrangeGrid
+        applySelectionLayout(minimumCount: op.minimumCount, name: op.actionName) {
+            CanvasArrange.uniformGrid($0, gap: gap)
         }
     }
 
@@ -597,8 +615,9 @@ final class SpaceModel: ObservableObject {
         for (index, entry) in entries.enumerated() {
             let r = arranged[index]
             // The WHOLE rect round-trips — origin AND size. Every op but
-            // `.reflowGrid` returns the size it was handed, so this is a no-op for
-            // them; reflow normalises tiles to a uniform row height, and writing only
+            // `.reflowGrid` and `.arrangeGrid` returns the size it was handed, so this
+            // is a no-op for them; reflow normalises tiles to a uniform row height and
+            // arrangeGrid to one square cell, and writing only
             // x/y (which this did until then) made it move tiles into a grid the
             // sizes no longer fitted. `z` never reaches the kernel (051 · 5A) and is
             // carried from the live placement.

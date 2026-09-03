@@ -51,19 +51,22 @@ struct CanvasArrangeTests {
 
     // MARK: - Cross-op invariants (over allCases)
 
-    @Test("every op preserves count; all but reflow preserve each rect's size",
+    @Test("every op preserves count; all but the two grids preserve each rect's size",
           arguments: Op.allCases)
     func preservesCountAndSize(_ op: Op) {
         for rects in fixtures {
             let out = CanvasArrange.apply(op, to: rects)
             #expect(out.count == rects.count)
-            // `.reflowGrid` is the ONE exception, by design: it normalises every tile to
-            // `gridRowHeight` and lets the width follow the aspect, which is how it can
-            // justify a row's bottom edge at all. Excluded here rather than weakening the
-            // invariant, because "an op moves an origin and nothing else" is still true of
-            // the other nine and is worth holding them to. What reflow DOES preserve —
-            // count above, and each tile's aspect — is asserted in `CanvasTidyPackTests`.
-            guard op != .reflowGrid else { continue }
+            // The two grid ops are the exceptions, by design, and they resize
+            // differently: `.reflowGrid` normalises every tile to `gridRowHeight` and
+            // lets the width follow the aspect, which is how it justifies a row's
+            // bottom edge; `.arrangeGrid` forces one square cell and discards the
+            // aspect entirely (099 · P12 / 076 · T3). Excluded here rather than
+            // weakening the invariant, because "an op moves an origin and nothing else"
+            // is still true of the other nine and is worth holding them to. What each
+            // one DOES preserve — count above, reflow's aspect, and arrangeGrid's
+            // uniform cell — is asserted in `CanvasTidyPackTests`.
+            guard op != .reflowGrid, op != .arrangeGrid else { continue }
             for (before, after) in zip(rects, out) {
                 #expect(approx(before.width, after.width))
                 #expect(approx(before.height, after.height))

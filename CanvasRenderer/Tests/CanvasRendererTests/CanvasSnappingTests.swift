@@ -248,3 +248,164 @@ struct MoveSnappingTests {
         #expect(guides.isEmpty)
     }
 }
+
+// MARK: - Equal spacing (099 · P12)
+
+/// A guide when the moved tile's gap to a neighbour equals that neighbour's gap to
+/// the next one along — the rhythm a board acquires once a few tiles are placed, and
+/// the thing alignment alone cannot express.
+///
+/// Every fixture here uses at least TWO static boxes, which is also why none of the
+/// 062 suites above changed: a rhythm needs a pair, and each of those tests offers a
+/// single neighbour.
+@Suite("Equal-spacing snapping (099 · P12)")
+struct EqualSpacingSnappingTests {
+
+    /// Two boxes in one band, 40 apart: x ∈ [0,100] and x ∈ [140,240], y ∈ [0,100].
+    /// The rhythm continues at 240 + 40 = 280 to the right, and at 0 − 40 = −40 (a
+    /// trailing edge) to the left.
+    private let run = [
+        CGRect(x: 0, y: 0, width: 100, height: 100),
+        CGRect(x: 140, y: 0, width: 100, height: 100),
+    ]
+    private let threshold: CGFloat = 6
+
+    /// A moving box, 100×100, sharing the run's band but level with none of its edges.
+    private func box(x: CGFloat, y: CGFloat = 20) -> CGRect {
+        CGRect(x: x, y: y, width: 100, height: 100)
+    }
+
+    @Test("a tile dropped where the rhythm continues snaps onto it")
+    func rhythmContinuesToTheRight() {
+        // 283 is 3 short of 280 + nothing; no edge or centre is within 6, so alignment
+        // has nothing to say and the rhythm is the only candidate.
+        let (offset, guides) = CanvasSnapping.snapOffset(
+            movingBox: box(x: 283), candidates: run, threshold: threshold)
+        #expect(offset.width == -3)
+        #expect(offset.height == 0)
+        #expect(guides == [SnapGuide(isVertical: true, position: 280, kind: .equalSpacing)])
+    }
+
+    @Test("the rhythm runs backwards too — a tile placed BEFORE the run")
+    func rhythmContinuesToTheLeft() {
+        // The trailing edge takes the gap: maxX → 0 − 40 = −40, so minX → −140.
+        let (offset, guides) = CanvasSnapping.snapOffset(
+            movingBox: box(x: -137), candidates: run, threshold: threshold)
+        #expect(offset.width == -3)
+        #expect(guides == [SnapGuide(isVertical: true, position: -40, kind: .equalSpacing)])
+    }
+
+    @Test("a column has a rhythm as well as a row")
+    func rhythmWorksVertically() {
+        let column = [
+            CGRect(x: 0, y: 0, width: 100, height: 100),
+            CGRect(x: 0, y: 140, width: 100, height: 100),
+        ]
+        let (offset, guides) = CanvasSnapping.snapOffset(
+            movingBox: CGRect(x: 20, y: 283, width: 100, height: 50),
+            candidates: column, threshold: threshold)
+        #expect(offset.height == -3)
+        #expect(offset.width == 0)
+        #expect(guides == [SnapGuide(isVertical: false, position: 280, kind: .equalSpacing)])
+    }
+
+    /// The test that fails if equal spacing is ever promoted from a fallback to a
+    /// competitor. `C` is out of the run's band, so it offers an ALIGNMENT target at
+    /// 282 but no rhythm; the rhythm's own target is 280. Both are in range from 283,
+    /// and the alignment — 1 away rather than 3, and sitting on an edge that really
+    /// exists — has to win.
+    @Test("an alignment in range beats a rhythm in range, even a nearer one")
+    func alignmentOutranksEqualSpacing() {
+        let candidates = run + [CGRect(x: 282, y: 500, width: 100, height: 100)]
+        let (offset, guides) = CanvasSnapping.snapOffset(
+            movingBox: box(x: 283), candidates: candidates, threshold: threshold)
+        #expect(offset.width == -1)
+        #expect(guides == [SnapGuide(isVertical: true, position: 282)])
+        #expect(guides.allSatisfy { $0.kind == .alignment })
+    }
+
+    /// The test that fails without the shared-band filter. The same two boxes are
+    /// still 40 apart, but the moving tile is nowhere near them vertically — so the
+    /// gap is arithmetic, not something anyone is looking at.
+    @Test("a rhythm needs a shared band, not just an arithmetic gap")
+    func rhythmNeedsASharedBand() {
+        let (offset, guides) = CanvasSnapping.snapOffset(
+            movingBox: box(x: 283, y: 500), candidates: run, threshold: threshold)
+        #expect(offset == .zero)
+        #expect(guides.isEmpty)
+    }
+
+    /// The test that fails if every pair is considered instead of adjacent ones. With
+    /// a third box at [300,400] the run's gaps are 40 and 60; the distance from A's
+    /// trailing edge to C's leading edge is 200, which is not a gap the user can see
+    /// because B is sitting in it.
+    @Test("only ADJACENT pairs make a rhythm — a gap with a box in it is not one")
+    func onlyAdjacentPairsCount() {
+        let three = run + [CGRect(x: 300, y: 0, width: 100, height: 100)]
+
+        // 400 + 200 = 600 is the phantom an all-pairs rule would offer.
+        let (phantom, phantomGuides) = CanvasSnapping.snapOffset(
+            movingBox: box(x: 603), candidates: three, threshold: threshold)
+        #expect(phantom == .zero)
+        #expect(phantomGuides.isEmpty)
+
+        // 400 + 60 is the real one, from the adjacent B→C pair.
+        let (real, realGuides) = CanvasSnapping.snapOffset(
+            movingBox: box(x: 463), candidates: three, threshold: threshold)
+        #expect(real.width == -3)
+        #expect(realGuides == [SnapGuide(isVertical: true, position: 460, kind: .equalSpacing)])
+    }
+
+    @Test("two overlapping boxes have no gap to repeat")
+    func overlapIsNotARhythm() {
+        let overlapping = [
+            CGRect(x: 0, y: 0, width: 100, height: 100),
+            CGRect(x: 60, y: 0, width: 100, height: 100),   // gap is −40
+        ]
+        // An all-gaps rule would offer 160 + (−40) = 120; a real one offers nothing.
+        let (offset, guides) = CanvasSnapping.snapOffset(
+            movingBox: box(x: 123), candidates: overlapping, threshold: threshold)
+        #expect(offset == .zero)
+        #expect(guides.isEmpty)
+    }
+
+    @Test("one neighbour cannot make a rhythm — which is why 062's suites are untouched")
+    func oneNeighbourIsNotARun() {
+        let (offset, guides) = CanvasSnapping.snapOffset(
+            movingBox: box(x: 283), candidates: [run[1]], threshold: threshold)
+        #expect(offset == .zero)
+        #expect(guides.isEmpty)
+    }
+
+    @Test("a rhythm out of range is left alone, like every other snap")
+    func outOfRangeRhythmIsIgnored() {
+        let (offset, guides) = CanvasSnapping.snapOffset(
+            movingBox: box(x: 300), candidates: run, threshold: threshold)
+        #expect(offset == .zero)
+        #expect(guides.isEmpty)
+    }
+
+    @Test("the nearest of two available rhythms wins")
+    func nearestRhythmWins() {
+        // Gaps of 40 (A→B) and 10 (B→C) both continue past C: at 350 + 10 = 360 and,
+        // from the A→B pair, nothing nearby. Dropping at 358 must take 360, not drift.
+        let uneven = [
+            CGRect(x: 0, y: 0, width: 100, height: 100),
+            CGRect(x: 140, y: 0, width: 100, height: 100),
+            CGRect(x: 250, y: 0, width: 100, height: 100),
+        ]
+        let (offset, guides) = CanvasSnapping.snapOffset(
+            movingBox: box(x: 358), candidates: uneven, threshold: threshold)
+        #expect(offset.width == 2)
+        #expect(guides == [SnapGuide(isVertical: true, position: 360, kind: .equalSpacing)])
+    }
+
+    @Test("a guide defaults to alignment, so every 062 call site still means what it did")
+    func kindDefaultsToAlignment() {
+        #expect(SnapGuide(isVertical: true, position: 10).kind == .alignment)
+        #expect(SnapGuide(isVertical: true, position: 10)
+                == SnapGuide(isVertical: true, position: 10, kind: .alignment))
+        #expect(SnapGuide(isVertical: true, position: 10)
+                != SnapGuide(isVertical: true, position: 10, kind: .equalSpacing))
+    }
+}

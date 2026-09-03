@@ -39,6 +39,14 @@ enum CanvasChrome {
     /// that must not be mistaken for selection, and now that selection is white,
     /// a white guide would be exactly that mistake.
     static let snapGuide = CGColor(red: 1.0, green: 0.2, blue: 0.55, alpha: 0.9)
+    /// An EQUAL-SPACING guide (099 · P12), the same magenta at two thirds the alpha.
+    ///
+    /// The same hue on purpose: both lines mean "snapped", and a second colour would
+    /// invite the reader to decode a palette mid-drag. The weaker alpha carries the
+    /// weaker claim — an alignment guide sits on an edge that is really there, while
+    /// this one marks a position inferred from two gaps, and it is a fallback to the
+    /// alignment it never overrides.
+    static let equalSpacingGuide = CGColor(red: 1.0, green: 0.2, blue: 0.55, alpha: 0.6)
     /// The resize handle: a white square with a DARK border. It kept its white fill
     /// and lost a blue border, and white-on-white is not a border — so the handle
     /// takes the same two-sided treatment as the grid's ring, dark inside light.

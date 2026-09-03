@@ -868,7 +868,7 @@ supplied. 12A's rule applies to each. Effort M each.*
 | P9 | done — the filmstrip built from nothing (`Palette.filmstrip` was DELETED in 352, not reserved); three X rows read through `JSONValue`, nothing stored; **F3b was already shipped** and is scoped, not built | [480](../.change-log/480-the-page-shows-its-neighbours.md) |
 | P10 | done — the query grew `colorMatch`, the bridge stopped pinning it, ⇧⌘C opens the picker; no wheel (085) | [478](../.change-log/478-the-colours-learn-to-say-and.md) |
 | P11 | done — the quoted photo is excluded by a per-photo `statusId`; the signal had to be HARVESTED first, and the named fixture was the wrong artifact. Extension green (638, no drift). Its two red Swift stages were **disk pressure, not contention** — P10 found the data volume at 100 %, 798 MB free (478). The drift-check hole is still open | [477](../.change-log/477-the-anchor-says-whose-photo-it-is.md) |
-| P12 | not started | — |
+| P12 | done — `reflowGrid` verdict: **NOT** the uniform grid (076 named the two readings and deferred this one as T3), so `.arrangeGrid` was added; ⌘-wheel zooms through the pinch bracket; equal-spacing snapping is a fallback behind alignment. **Membership preview REPORTED, not built** — 066 says nothing and 076's one use of the word means `tidyRows` clustering; the real definition is in `SpaceContent` and the resize half already ships. `App target` red on all three gate runs on a different 60.000 s hang each time — and **red on `cf5d501` with the work stashed**, on the same test, so it is inherited | [481](../.change-log/481-the-wheel-the-cell-and-the-rhythm.md) |
 | P13 | not started | — |
 | P14 | not started | — |
 | P15 | not started | — |

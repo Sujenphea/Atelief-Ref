@@ -3,7 +3,7 @@
 //  AtelierRefs
 //
 //  069 — everything that decides how much room sits between the selected items:
-//  distribute evenly, tidy into rows, or set an exact gap.
+//  distribute evenly, tidy into rows, reflow, grid, or set an exact gap.
 //
 //  Was `SpaceGapPopover` (066), which held only the numeric gap. The three ops
 //  belong together because they answer the SAME question with different amounts of
@@ -37,6 +37,9 @@ struct SpaceSpacingPopover: View {
     @Binding var gap: Double
     let onArrange: (CanvasArrange.Operation) -> Void
     let onPack: (CanvasArrange.Axis) -> Void
+    /// Grid takes the panel's own gap, like the pack buttons do — see the "Grid"
+    /// section below for why it reads the field rather than a constant.
+    let onArrangeGrid: () -> Void
 
     /// The field is focusABLE but not auto-focused.
     ///
@@ -51,9 +54,9 @@ struct SpaceSpacingPopover: View {
     /// from flinging the selection across the world.
     private static let range: ClosedRange<Double> = 0...2000
 
-    /// Only the distribute row gates further than the panel itself. Tidy, reflow and
-    /// the gap share the align threshold (≥2), which `.multi` already guarantees before
-    /// this panel can be opened at all — so they are never dead here.
+    /// Only the distribute row gates further than the panel itself. Tidy, reflow, grid
+    /// and the gap share the align threshold (≥2), which `.multi` already guarantees
+    /// before this panel can be opened at all — so they are never dead here.
     private var canDistribute: Bool {
         CanvasArrange.Operation.distributeHorizontal.isEnabled(selectionCount: selectionCount)
     }
@@ -102,6 +105,28 @@ struct SpaceSpacingPopover: View {
                 }
                 .buttonStyle(DialogButtonStyle())
                 .help("Resize the selection to one row height and repack it, like a fresh add")
+            }
+
+            Divider()
+
+            // A fourth section rather than a second button under "Reflow", for the
+            // reason Reflow got its own: these are different acts, not two strengths
+            // of one. Reflow keeps each picture's aspect and justifies the rows;
+            // Grid throws the aspect away and gives every tile the same square cell.
+            // 076 named that difference and deferred this half; the help string leads
+            // with the crop, since discarding the aspect is the surprising part.
+            //
+            // It reads the panel's own gap field, which is why it belongs HERE rather
+            // than in the bar's flat op list: `Operation` is `CaseIterable` and cannot
+            // carry a number, so the one surface that already holds the number is the
+            // one place the op can be offered at the user's spacing instead of a
+            // constant.
+            section("Grid") {
+                Button(action: onArrangeGrid) {
+                    Label("Fit into equal cells", systemImage: "square.grid.2x2.dashed")
+                }
+                .buttonStyle(DialogButtonStyle())
+                .help("Resize every item to one square cell and lay them out at the gap below")
             }
 
             Divider()

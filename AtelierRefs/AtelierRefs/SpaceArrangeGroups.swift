@@ -74,7 +74,7 @@ enum SpaceBarGroup: CaseIterable, Identifiable {
             [.alignLeft, .alignHorizontalCenter, .alignRight,
              .alignTop, .alignVerticalCenter, .alignBottom]
         case .spacing:
-            [.distributeHorizontal, .distributeVertical, .tidyUp, .reflowGrid]
+            [.distributeHorizontal, .distributeVertical, .tidyUp, .reflowGrid, .arrangeGrid]
         case .zOrder:
             []
         }
@@ -95,7 +95,7 @@ enum SpaceBarGroup: CaseIterable, Identifiable {
     var help: String {
         switch self {
         case .align: "Align the selection"
-        case .spacing: "Distribute, tidy, reflow or space the selection"
+        case .spacing: "Distribute, tidy, reflow, grid or space the selection"
         case .zOrder: "Order the selection front to back"
         }
     }
@@ -139,6 +139,11 @@ enum SpaceArrangeSymbols {
         // every tile the same height and lets its width follow the picture, so the
         // uneven cells are the distinction, not decoration.
         case .reflowGrid: "rectangle.grid.2x2"
+        // Tidy's SQUARES, because this is the op whose cells really are square — and
+        // `.dashed` because the cell, not the picture, is what decides the shape here.
+        // Against reflow's `rectangle.grid.2x2` the pair reads as it should: uneven
+        // cells there, even cells here.
+        case .arrangeGrid: "square.grid.2x2.dashed"
         }
     }
 }

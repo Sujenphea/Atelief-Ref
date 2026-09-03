@@ -20,12 +20,33 @@ import CoreGraphics
 /// A line the user is snapping to, in WORLD space. `isVertical` means a line of
 /// constant *x* (it runs top-to-bottom), which is what a horizontal drag snaps to.
 public struct SnapGuide: Equatable, Sendable {
+
+    /// Why this guide is being shown (099 · P12).
+    ///
+    /// The two kinds are different claims and the user has to be able to tell them
+    /// apart: ``alignment`` says *this edge is level with that one*, and points at a
+    /// line that exists on a neighbour. ``equalSpacing`` says *this gap matches that
+    /// gap*, and points at a line that exists nowhere — it is the position the moved
+    /// tile would have to take for a rhythm to continue. Drawing them identically
+    /// would make the second read as the first and be wrong, since there is no
+    /// neighbour edge there at all.
+    public enum Kind: Equatable, Sendable, CaseIterable {
+        /// An edge or centre lined up with a neighbour's edge or centre (062).
+        case alignment
+        /// The gap to a neighbour matches that neighbour's gap to the next (099 · P12).
+        case equalSpacing
+    }
+
     public let isVertical: Bool
     public let position: CGFloat
+    /// Defaulted so every 062-era call site — and every test that spells a guide out
+    /// — keeps meaning exactly what it meant: alignment is what a guide WAS.
+    public let kind: Kind
 
-    public init(isVertical: Bool, position: CGFloat) {
+    public init(isVertical: Bool, position: CGFloat, kind: Kind = .alignment) {
         self.isVertical = isVertical
         self.position = position
+        self.kind = kind
     }
 }
 
@@ -92,6 +113,11 @@ public enum CanvasSnapping {
     /// a tile can align its left edge to one neighbour and its centre to another.
     /// Returns a **delta to add** to the drag's raw offset, not a position, so the
     /// caller stays in charge of how the offset was derived.
+    ///
+    /// On an axis where nothing aligns, ``bestEqualSpacing(movingBox:candidates:vertical:threshold:)``
+    /// gets a turn (099 · P12): a tile that lands where it would continue a rhythm
+    /// snaps to it and says so with an ``SnapGuide/Kind/equalSpacing`` guide. Strictly
+    /// a fallback — see there for why it must never outvote an alignment.
     public static func snapOffset(
         movingBox: CGRect,
         candidates: [CGRect],
@@ -105,14 +131,102 @@ public enum CanvasSnapping {
             targets: targets(in: candidates, vertical: true), threshold: threshold) {
             offset.width = hit.delta
             guides.append(SnapGuide(isVertical: true, position: hit.target))
+        } else if let hit = bestEqualSpacing(
+            movingBox: movingBox, candidates: candidates,
+            vertical: true, threshold: threshold) {
+            offset.width = hit.delta
+            guides.append(
+                SnapGuide(isVertical: true, position: hit.edge, kind: .equalSpacing))
         }
         if let hit = bestAlignment(
             sources: [movingBox.minY, movingBox.midY, movingBox.maxY],
             targets: targets(in: candidates, vertical: false), threshold: threshold) {
             offset.height = hit.delta
             guides.append(SnapGuide(isVertical: false, position: hit.target))
+        } else if let hit = bestEqualSpacing(
+            movingBox: movingBox, candidates: candidates,
+            vertical: false, threshold: threshold) {
+            offset.height = hit.delta
+            guides.append(
+                SnapGuide(isVertical: false, position: hit.edge, kind: .equalSpacing))
         }
         return (offset, guides)
+    }
+
+    // MARK: - Equal spacing (099 · P12)
+
+    /// The adjustment that makes the moving box CONTINUE A RHYTHM: its gap to a
+    /// neighbour equal to that neighbour's gap to the next one along.
+    ///
+    /// The rule, on one axis: take the static boxes that share a band with the moving
+    /// one, order them, and look at each ADJACENT pair `(P, Q)` with a real gap `g`
+    /// between them. Two positions continue that rhythm — one past `Q` (the moving
+    /// box's leading edge at `Q.max + g`) and one before `P` (its trailing edge at
+    /// `P.min − g`). The nearest such position within `threshold` wins, and the guide
+    /// is drawn at the edge that landed on it.
+    ///
+    /// **Adjacent pairs, not all pairs.** Every pair would offer the gap between two
+    /// boxes with a third sitting between them — a distance the user never sees as a
+    /// gap, so a snap to it would look like the drag catching on nothing. Sorting and
+    /// walking consecutive pairs is also O(n log n) rather than O(n²).
+    ///
+    /// **A shared band is required**, for the same reason: two tiles at opposite ends
+    /// of the board have a horizontal gap arithmetically, but not one anybody is
+    /// looking at. Overlap on the CROSS axis is what makes "these three are a row" true
+    /// — and it is the same rule `tidyRows` uses to decide a row on the app side.
+    ///
+    /// Deliberately a FALLBACK, never a competitor: ``snapOffset(movingBox:candidates:threshold:)``
+    /// asks for it only on an axis where no alignment was in range. Alignment is the
+    /// stronger claim (there is a real edge under the line) and the older behaviour,
+    /// and letting a rhythm outvote it would change what 062 already promised.
+    static func bestEqualSpacing(
+        movingBox: CGRect, candidates: [CGRect], vertical: Bool, threshold: CGFloat
+    ) -> (delta: CGFloat, edge: CGFloat)? {
+        // Only boxes sharing a band with the moving one can form a visible rhythm.
+        let band = candidates.filter { overlapsCrossAxis($0, movingBox, vertical: vertical) }
+        guard band.count >= 2 else { return nil }
+
+        let ordered = band.sorted { leadingEdge($0, vertical) < leadingEdge($1, vertical) }
+        let movingLeading = leadingEdge(movingBox, vertical)
+        let movingTrailing = trailingEdge(movingBox, vertical)
+
+        var best: (delta: CGFloat, edge: CGFloat)?
+        func consider(_ target: CGFloat, from source: CGFloat) {
+            let delta = target - source
+            guard abs(delta) <= threshold else { return }
+            if best == nil || abs(delta) < abs(best!.delta) { best = (delta, target) }
+        }
+
+        for (p, q) in zip(ordered, ordered.dropFirst()) {
+            let gap = leadingEdge(q, vertical) - trailingEdge(p, vertical)
+            // A negative gap is an overlap, which is not a rhythm to extend. Zero is
+            // kept: flush-packed tiles are a rhythm, and a common one.
+            guard gap >= 0 else { continue }
+            // Continue past Q: the moving box's LEADING edge takes the same gap.
+            consider(trailingEdge(q, vertical) + gap, from: movingLeading)
+            // Continue before P: its TRAILING edge does.
+            consider(leadingEdge(p, vertical) - gap, from: movingTrailing)
+        }
+        return best
+    }
+
+    /// Whether two rects overlap on the axis a rhythm does NOT run along — strictly,
+    /// so boxes that merely touch are not treated as sharing a band.
+    private static func overlapsCrossAxis(
+        _ a: CGRect, _ b: CGRect, vertical: Bool
+    ) -> Bool {
+        vertical ? (a.minY < b.maxY && b.minY < a.maxY)
+                 : (a.minX < b.maxX && b.minX < a.maxX)
+    }
+
+    /// The rect's low edge on the rhythm's axis (`minX` for a horizontal rhythm).
+    private static func leadingEdge(_ rect: CGRect, _ vertical: Bool) -> CGFloat {
+        vertical ? rect.minX : rect.minY
+    }
+
+    /// The rect's high edge on the rhythm's axis (`maxX` for a horizontal rhythm).
+    private static func trailingEdge(_ rect: CGRect, _ vertical: Bool) -> CGFloat {
+        vertical ? rect.maxX : rect.maxY
     }
 
     /// The smallest in-range adjustment across every source×target pair, with the
