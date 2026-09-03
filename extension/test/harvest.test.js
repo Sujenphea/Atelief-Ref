@@ -98,6 +98,26 @@ test("articleIndex: carried through when the reader provides it, omitted otherwi
   assert.equal("articleIndex" in bare.media[0], false);
 });
 
+test("statusId: carried through when the reader provides it, omitted otherwise", () => {
+  // 099 · P11. The X extractor drops a focal-article photo whose permalink anchor names
+  // a status OTHER than the focal tweet's — a quoted tweet's. That decision is only as
+  // good as this carry-through, and the DOM read that produces it cannot be tested here
+  // (no jsdom, 026 · 9A), so the pure half is asserted instead.
+  const h = buildHarvest(raw({
+    images: [
+      { src: "https://pbs.twimg.com/media/OWN.jpg", width: 1, height: 1, alt: null, articleIndex: 0, statusId: "1" },
+      { src: "https://pbs.twimg.com/media/QUOTED.jpg", width: 1, height: 1, alt: null, articleIndex: 0, statusId: "2" },
+    ],
+  }));
+  assert.equal(h.media[0].statusId, "1");
+  assert.equal(h.media[1].statusId, "2");
+  // No anchor to read → the key is omitted, which the extractor reads as "keep".
+  const bare = buildHarvest(raw({
+    images: [{ src: "https://cdn/x.jpg", width: 1, height: 1, alt: null, articleIndex: 0, statusId: null }],
+  }));
+  assert.equal("statusId" in bare.media[0], false);
+});
+
 test("passthrough: url/title/canonical carried, defaults applied", () => {
   const h = buildHarvest(raw({ url: "https://cosmos.so/e/1", title: undefined, canonical: "https://cosmos.so/" }));
   assert.equal(h.url, "https://cosmos.so/e/1");

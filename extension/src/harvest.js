@@ -44,6 +44,30 @@ export function harvestSignals() {
     return article ? articles.indexOf(article) : -1;
   };
 
+  // The status id an element's enclosing permalink names, or null. X wraps each of a
+  // tweet's OWN photos in `<a href="/{handle}/status/{id}/photo/{n}">`, so the anchor
+  // states which status the photo belongs to — the one per-photo signal that separates
+  // a quoted tweet's photo from the quoter's own. `articleIndex` cannot: a quote
+  // renders INSIDE the quoter's <article> and has no <article> of its own (026 · 5A).
+  //
+  // The href shape is X's own, observed rather than assumed: `toStatusPermalink` was
+  // written because right-clicking a tweet's IMAGE hands the context menu a `linkUrl`
+  // of `…/status/{id}/photo/1`, and that linkUrl IS this anchor's href.
+  //
+  // Read as an ATTRIBUTE (X writes these relative) and walked by segment, so the
+  // absolute spelling parses identically. Null when there is no such anchor — the
+  // extractor treats "no signal" as KEEP, so a selector that stops matching degrades to
+  // today's behaviour (a quoted photo may leak) and never to 124's (a tweet's own
+  // photos dropped).
+  const statusIdOf = (el) => {
+    const anchor = el.closest('a[href*="/status/"]');
+    if (!anchor) return null;
+    const href = anchor.getAttribute("href") || "";
+    const segments = href.split(/[?#]/)[0].split("/").filter(Boolean);
+    const at = segments.indexOf("status");
+    return at >= 0 && segments[at + 1] ? segments[at + 1] : null;
+  };
+
   const images = [];
   for (const img of document.querySelectorAll("img")) {
     images.push({
@@ -52,6 +76,7 @@ export function harvestSignals() {
       height: img.naturalHeight || img.height || 0,
       alt: img.alt || null,
       articleIndex: articleIndexOf(img),
+      statusId: statusIdOf(img),
     });
   }
 
@@ -114,15 +139,19 @@ export function buildHarvest(raw) {
   }
 
   const media = [];
-  // Carry `articleIndex` through when the reader provided it (the X extractor uses it
-  // to scope to the focal tweet); absent in older fixtures, so it's added only when set.
-  const withArticle = (item, source) => {
+  // Carry the per-element scoping signals through when the reader provided them: the X
+  // extractor uses `articleIndex` to reach the focal tweet and `statusId` to reject a
+  // quoted tweet's photo INSIDE it. Both are absent in older fixtures (and `statusId` on
+  // every element that isn't inside a status permalink), so each is added only when set —
+  // an omitted key reads as "no signal", which every consumer treats as "don't scope".
+  const withScope = (item, source) => {
     if (source.articleIndex != null) item.articleIndex = source.articleIndex;
+    if (source.statusId != null) item.statusId = source.statusId;
     return item;
   };
   for (const img of raw.images || []) {
     if (!img.src || img.src.startsWith("data:")) continue;
-    media.push(withArticle({
+    media.push(withScope({
       kind: "image",
       src: img.src,
       width: img.width || 0,
@@ -132,13 +161,13 @@ export function buildHarvest(raw) {
   }
   for (const video of raw.videos || []) {
     if (video.frame) {
-      media.push(withArticle({
+      media.push(withScope({
         kind: "video-frame", src: video.frame,
         width: video.width || 0, height: video.height || 0, alt: null,
       }, video));
     }
     if (video.poster && !video.poster.startsWith("data:")) {
-      media.push(withArticle({
+      media.push(withScope({
         kind: "video-poster", src: video.poster,
         width: video.width || 0, height: video.height || 0, alt: null,
       }, video));
@@ -147,7 +176,7 @@ export function buildHarvest(raw) {
     // when it's an HLS manifest we can't ingest directly — it tells the SW to
     // resolve the downloadable MP4 (e.g. a Pinterest video pin).
     if (video.src && !video.src.startsWith("blob:") && !video.src.startsWith("data:")) {
-      media.push(withArticle({
+      media.push(withScope({
         kind: "video-src", src: video.src,
         width: video.width || 0, height: video.height || 0, alt: null,
       }, video));

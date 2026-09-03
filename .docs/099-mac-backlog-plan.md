@@ -645,6 +645,42 @@ photo only when its anchor's status id equals the focal `tweetId`. A case in
 `extractors.test.js` from the `x-conversation.js` fixture: the quoted photo excluded,
 the tweet's own photos kept. `npm run drift-check` unaffected.
 
+**Done** ([477](../.change-log/477-the-anchor-says-whose-photo-it-is.md)). The rule landed
+as described — a focal-article photo is kept only when its permalink anchor names the focal
+`tweetId` — but **two sentences above are wrong, and the phase is where they were found.**
+
+*"The per-photo status id … is already in the DOM"* is true of the page and false of the
+pipeline: a harvested media item is `{ kind, src, width, height, alt, articleIndex }`, and
+`mediaMatching` filters on `m.src`. No href was ever harvested, so the one-line filter this
+section describes could not be written. The phase is three files — `harvestSignals` reads
+`closest('a[href*="/status/"]')` into a per-photo `statusId`, `buildHarvest` carries it
+beside `articleIndex`, and `twitter.js` filters on it — which is the shape
+[026](026-tweet-single-capture-plan.md) · 5A specified for this exclusion in the first place.
+
+*"from the `x-conversation.js` fixture"* names the wrong artifact. That file is a synthetic
+**TweetDetail JSON** builder for the thread parser; it has no anchors and cannot produce a
+harvest. The `/status/<id>/photo/<n>` shape is committed in `x-thread-detail.json` (a LIVE
+capture, eighteen `expanded_url`s) and observed in `toStatusPermalink`'s own doc comment,
+which exists because right-clicking a tweet's image hands the context menu that exact href.
+
+The load-bearing decision is that the rule is **one-sided**: a photo is dropped only when it
+positively names a DIFFERENT status, so a stale selector leaks a quoted photo (today's
+state) instead of dropping the tweet's own (changelog 124's regression). The selector itself
+is on `drift-check.js`'s live-verify list, because no fixture in this repo can hold it.
+`npm run drift-check` was unaffected, as predicted: exit 2, staleness, no drift. **The
+second P11 item — the Instagram drift-check hole named in the gate section below — was NOT
+taken**; 477 is the TODO alone and says so.
+
+**The gate did not reach exit 0, on two Swift stages this diff cannot reach.** Three phases
+were building on the machine at once: `uptime` read load **16.85 / 24.62 / 23.96 on 8
+cores**. `CanvasRenderer` failed two **frame-budget** assertions (9.38 ms against 8.33 ms)
+and passes alone at 437 tests; `App target` failed a DIFFERENT set each run, every member a
+bounded wait — 60.000 s hang timeouts, and the `LibrarySearchModelTests` cluster whose
+`poll(timeout:)` default is 3 seconds. `App target (Release)`, the one stage that is a
+compile rather than a clock, was `✓` on both runs, and this diff carries no Swift, no
+`project.pbxproj`, and no file the Xcode project references. The App-target stage was re-run
+once, per the brief, and not chased. Both blocks are in 477 verbatim.
+
 ## P12 — Spaces: zoom, arrange, snapping
 
 *Effort M.*
@@ -760,7 +796,7 @@ supplied. 12A's rule applies to each. Effort M each.*
 | P8 | not started | — |
 | P9 | not started | — |
 | P10 | not started | — |
-| P11 | not started | — |
+| P11 | done — the quoted photo is excluded by a per-photo `statusId`; the signal had to be HARVESTED first, and the named fixture was the wrong artifact. Extension green (638, no drift); two Swift stages red under three-agent contention. The drift-check hole is still open | [477](../.change-log/477-the-anchor-says-whose-photo-it-is.md) |
 | P12 | not started | — |
 | P13 | not started | — |
 | P14 | not started | — |
@@ -809,6 +845,8 @@ and only the user can. And forcing the drift arm to prove it still fails turned 
 in the Instagram check itself: a fixture with every `items` array emptied **passes**, since
 the check reports counts as signals without asserting they are non-zero. The other checks
 were not probed for the same hole. **P11 owns it** — it is the phase that owns `extension/`.
+*(Still open: [477](../.change-log/477-the-anchor-says-whose-photo-it-is.md) took P11's TODO
+only, and says why the two are separate pieces of work.)*
 
 ### 18A — the undo-window reaper is withdrawn
 

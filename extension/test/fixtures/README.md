@@ -94,6 +94,19 @@ fixtures are stale (> 30d) and exits non-zero on any drift.
 - **X `Likes` queryId** observed `tl9f_I0xyREhFd5KMzuO7w` (2026-07-03); `Bookmarks`
   observed `iblrFnKr6PZUR-dWpfXG6g` (2026-08-13) — each op has its own.
   **queryIds rotate every ~2–4 weeks.**
+- **X's photo anchor is a live-DOM assumption no fixture can check.** Each of a tweet's
+  own photos is wrapped in `a[href*="/status/"]` whose href is
+  `/{handle}/status/{id}/photo/{n}`; `harvestSignals` reads it into a per-photo
+  `statusId`, and the X extractor drops a focal-article photo naming a DIFFERENT status
+  — a quoted tweet's (099 · P11). **No committed fixture can verify the selector**: it is
+  a DOM read and this suite has no jsdom (026 · 9A). The evidence for the shape is
+  `toStatusPermalink`'s live observation — right-clicking a tweet's image yields
+  `…/status/{id}/photo/1` as the context menu's `linkUrl`, which IS that anchor's href —
+  plus the `expanded_url`s in `x-thread-detail.json`, X's own per-photo URLs for a
+  status. If X stops wrapping photos in that anchor the rule goes QUIET (a quoted photo
+  leaks again) rather than dropping the tweet's own, which is the failure direction
+  changelog 124 was reverted for choosing the other way round. Re-verify by right-clicking
+  a quoted tweet's image and reading the linkUrl.
 - **X `TweetDetail` queryId is never hardcoded** — it is scraped from X's own bundle at
   sweep time. Verified live 2026-08-13: `api.*.js` **no longer exists**, the
   operation→queryId table now ships in `main.*.js`, and the scrape found it in the first

@@ -40,6 +40,27 @@ export function toStatusPermalink(url) {
   }
 }
 
+/**
+ * Does a harvested photo belong to the status `tweetId`?
+ *
+ * A quoted tweet renders INSIDE the quoter's `<article>` and has no `<article>` of its
+ * own, so scoping by `articleIndex === 0` cannot tell the quoted photo from the quoter's
+ * (026 · 5A). The per-photo signal that can is `statusId` — the status named by the
+ * photo's own permalink anchor, read in `harvestSignals`.
+ *
+ * **The rule is deliberately one-sided: a photo is dropped only when it positively names
+ * a DIFFERENT status.** No `statusId` (an older harvest, the phone's preprocessor, a
+ * render with no anchor) and no focal `tweetId` (a non-status URL) both mean keep.
+ * Changelog 124 reverted the previous attempt at this exclusion because its
+ * `[role="link"]` heuristic matched a tweet's OWN clickable photos and dropped them, so
+ * the failure direction is chosen here: the worst a stale selector can do is leak a
+ * quoted photo again, which is the state this started from.
+ */
+export function belongsToStatus(media, tweetId) {
+  if (!tweetId || !media || media.statusId == null) return true;
+  return media.statusId === tweetId;
+}
+
 export const twitter = {
   platform: "twitter",
 
@@ -76,7 +97,14 @@ export const twitter = {
     // tweet there is no still on the server, so the captured frame is the closest
     // thing to "the actual image"; the poster stays as a fetch fallback.
     const clicked = /pbs\.twimg\.com/.test(context.srcUrl || "") ? context.srcUrl : null;
-    const domPhoto = firstMedia(focal, /pbs\.twimg\.com\/media\//)?.src || null;
+    // The focal article's OWN photos, in DOM order. A quoted tweet renders inside that
+    // same article, and its photo's permalink anchor names the QUOTED status — so
+    // `belongsToStatus` is what separates them (026 · 5A). Computed once: the card is
+    // this list's head and `payload.media[]` is the whole of it, so a photo cannot be
+    // rejected from one and kept in the other.
+    const ownPhotos = mediaMatching(focal, /pbs\.twimg\.com\/media\//)
+      .filter((m) => belongsToStatus(m, tweetId));
+    const domPhoto = ownPhotos[0]?.src || null;
     const videoFrame = firstMediaOfKind(focal, "video-frame")?.src || null;
     const videoPoster =
       firstMedia(focal, /pbs\.twimg\.com\/(ext_tw_video_thumb|amplify_video_thumb|tweet_video_thumb)/)?.src || null;
@@ -95,11 +123,11 @@ export const twitter = {
     // the card blob; the rest ride as URL references (no extra network — decision 12A). A
     // video/text tweet has no /media/ photos, so this collapses to just the card (or
     // empty), matching the single-URL behaviour it replaces. Carried as a CLIENT HINT —
-    // `normalizeProvenance` drops it, so only `payload.media[]` reaches the wire. (A rare
-    // quoted-tweet photo inside the focal article can leak in; excluding it needs a
-    // per-photo status-id signal — a separate change, TODO — not the overbroad
-    // role="link" heuristic that dropped the tweet's OWN photos.)
-    const focalPhotos = mediaMatching(focal, /pbs\.twimg\.com\/media\//).map((m) => toOrigName(m.src));
+    // `normalizeProvenance` drops it, so only `payload.media[]` reaches the wire. A
+    // quoted tweet's photo inside the focal article is excluded by `belongsToStatus`
+    // above (099 · P11) — the per-photo status-id signal the old TODO asked for, not the
+    // overbroad role="link" heuristic that dropped the tweet's OWN photos.
+    const focalPhotos = ownPhotos.map((m) => toOrigName(m.src));
     const mediaUrls = [...new Set([mediaUrl, ...focalPhotos].filter(Boolean))].slice(0, 4);
 
     return {

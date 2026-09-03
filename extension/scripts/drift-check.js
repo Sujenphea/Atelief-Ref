@@ -135,7 +135,13 @@ function main() {
   console.log(`  Pinterest X-APP-VERSION (${baseline.markers.pinterest.appVersion}) — required`);
   if (igMarker) console.log(`  Instagram saved-feed route (${igMarker.route}) + next_max_id pagination`);
   console.log(`  X harvest DOM (harvest.js): focal <article> scoping + pbs.twimg.com/media/`);
-  console.log(`    photos — single-capture media[] collection relies on these\n`);
+  console.log(`    photos — single-capture media[] collection relies on these`);
+  // 026 · 9A asked for the quoted-exclusion selector to live on this list, because it is
+  // the one part of that rule no fixture can check: it is a DOM read and this suite has
+  // no jsdom. 099 · P11 shipped the rule, so here it is.
+  console.log(`  X photo anchor (harvest.js): a photo's <a href="/{handle}/status/{id}/photo/{n}">`);
+  console.log(`    — the per-photo statusId that excludes a QUOTED tweet's photo (099 · P11).`);
+  console.log(`    No fixture can check it: right-click a quoted photo and read the linkUrl.\n`);
 
   let failed = false;
   const awaiting = [];

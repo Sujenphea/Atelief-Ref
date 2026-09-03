@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import { toOrigName, toOriginals, canonicalPinterestHost } from "../src/extractors/base.js";
 import { extractProvenance, findExtractor, web } from "../src/extractors/registry.js";
-import { twitter, toStatusPermalink } from "../src/extractors/twitter.js";
+import { twitter, toStatusPermalink, belongsToStatus } from "../src/extractors/twitter.js";
 import { pinterest } from "../src/extractors/pinterest.js";
 import { instagram, toPostPermalink } from "../src/extractors/instagram.js";
 import { cosmos } from "../src/extractors/cosmos.js";
@@ -83,10 +83,13 @@ test("twitter: a right-clicked image is honored even if it's outside the focal t
 
 // MARK: - twitter multi-photo media[] (003 · C3 — single-capture backfill, decision 8A)
 
-/** A focal-article photo (articleIndex 0 by default). */
-const xphoto = (name, articleIndex = 0) => ({
+/** A focal-article photo (articleIndex 0 by default). `statusId` is the status its
+ * permalink anchor named, omitted when the reader had no anchor to read (buildHarvest
+ * omits the key rather than writing null, so the fixture does too). */
+const xphoto = (name, articleIndex = 0, statusId = null) => ({
   kind: "image", src: `https://pbs.twimg.com/media/${name}?format=jpg&name=small`,
   width: 900, height: 900, alt: null, articleIndex,
+  ...(statusId == null ? {} : { statusId }),
 });
 const orig = (name) => `https://pbs.twimg.com/media/${name}?format=jpg&name=orig`;
 
@@ -130,6 +133,78 @@ test("twitter: a text-only focal tweet → empty media[] (no image to reference)
   }));
   assert.equal(p.mediaUrl, null);
   assert.deepEqual(p.mediaUrls, []);
+});
+
+// MARK: - twitter quoted-tweet exclusion (099 · P11 — the per-photo status id)
+//
+// A quoted tweet renders INSIDE the quoter's <article>, so `articleIndex === 0` keeps
+// its photo. The photo's own permalink anchor names the QUOTED status, and that is the
+// signal that separates them. 124 reverted a `[role="link"]` version of this exclusion
+// because it dropped the tweet's OWN photos — which is why every case below asserts what
+// SURVIVES as well as what goes: a rule that drops everything must not pass here.
+
+const FOCAL = "1780000000000000000";
+const QUOTED = "1770000000000000009";
+
+test("belongsToStatus: drops only a photo that names a DIFFERENT status", () => {
+  assert.equal(belongsToStatus({ statusId: FOCAL }, FOCAL), true);
+  assert.equal(belongsToStatus({ statusId: QUOTED }, FOCAL), false);
+  // No signal → keep. An older harvest, the phone's preprocessor, a render with no
+  // anchor: none of them are evidence that the photo is somebody else's.
+  assert.equal(belongsToStatus({}, FOCAL), true);
+  // No focal id (a non-status URL) → nothing to compare against, so keep.
+  assert.equal(belongsToStatus({ statusId: QUOTED }, null), true);
+});
+
+test("twitter: a quoted tweet's photo is excluded, the tweet's OWN photos kept", () => {
+  const h = harvest({
+    url: `https://x.com/designer/status/${FOCAL}`,
+    media: [
+      xphoto("OWN1", 0, FOCAL),
+      xphoto("QUOTED", 0, QUOTED), // the quoted tweet's, inside the SAME article
+      xphoto("OWN2", 0, FOCAL),
+    ],
+  });
+  const p = twitter.extract(h);
+  // Excluded — the whole point.
+  assert.equal(p.mediaUrls.includes(orig("QUOTED")), false);
+  // Kept — the other half of the point. Both own photos, in DOM order, and the card is
+  // the tweet's own rather than the quoted one.
+  assert.deepEqual(p.mediaUrls, [orig("OWN1"), orig("OWN2")]);
+  assert.equal(p.mediaUrl, orig("OWN1"));
+});
+
+test("twitter: a quote tweet with no photo of its own → a text card, not the quoted image", () => {
+  // The card follows the same list, so a quoter who added nothing captures as text
+  // rather than borrowing an image whose provenance would be the quoter's permalink.
+  const p = twitter.extract(harvest({
+    url: `https://x.com/designer/status/${FOCAL}`,
+    media: [xphoto("QUOTED", 0, QUOTED)],
+  }));
+  assert.equal(p.mediaUrl, null);
+  assert.deepEqual(p.mediaUrls, []);
+});
+
+test("twitter: a harvest with no status ids keeps every focal photo", () => {
+  // Back-compat, and the phone: `PagePreprocessor.js` does not read the anchor, so its
+  // snapshots carry no `statusId` and must behave exactly as they did before P11.
+  const p = twitter.extract(harvest({
+    url: `https://x.com/designer/status/${FOCAL}`,
+    media: [xphoto("P1"), xphoto("P2")],
+  }));
+  assert.deepEqual(p.mediaUrls, [orig("P1"), orig("P2")]);
+});
+
+test("twitter: a right-clicked quoted photo is still honored — an explicit choice wins", () => {
+  // `context.srcUrl` is the user pointing at an image and asking for THAT one; the
+  // exclusion is about what the extractor collects on its own.
+  const h = harvest({
+    url: `https://x.com/designer/status/${FOCAL}`,
+    media: [xphoto("OWN1", 0, FOCAL), xphoto("QUOTED", 0, QUOTED)],
+  });
+  const p = twitter.extract(h, { srcUrl: "https://pbs.twimg.com/media/QUOTED?format=jpg&name=large" });
+  assert.equal(p.mediaUrl, orig("QUOTED"));
+  assert.deepEqual(p.mediaUrls, [orig("QUOTED"), orig("OWN1")]);
 });
 
 test("twitter: prefers the LIVE url over a stale canonical", () => {
