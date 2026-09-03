@@ -76,3 +76,31 @@ enum AccessibilityID {
     /// the first thing the Form draws and it is a plain leaf `Text`.
     static let settingsCaptureEndpoint = "settings.capture.endpoint"
 }
+
+// MARK: - The ⌘K switcher (099 · P5)
+
+extension AccessibilityID {
+
+    /// The switcher panel's query field. A single constant rather than a per-name
+    /// spelling because there is exactly one of them, and because the flow's whole
+    /// point is to type into it before it knows what it will find.
+    static let switcherField = "switcher.field"
+
+    /// One destination row in the switcher, by the name it shows.
+    ///
+    /// Per-name for ``homeCollectionCard(_:)``'s reason: the flow asserts that a
+    /// NAMED destination is offered, and a shared identifier would only let a test
+    /// count rows. On the row's `Button`, which SwiftUI has already merged into one
+    /// accessibility element — a leaf, per this file's header.
+    static func switcherRow(_ name: String) -> String { "switcher.row.\(name)" }
+
+    /// The collection pane's title, by the name it shows — what "the grid now shows
+    /// this collection" is asserted through.
+    ///
+    /// On the leaf `Text`, not the header row that contains it and the item count.
+    /// The header is also rendered HIDDEN off-screen to measure its natural height
+    /// (`CollectionView.headerContent`), and a hidden SwiftUI view is out of the
+    /// accessibility tree — so this still names one element, but a flow reading it
+    /// should say `.firstMatch` and not depend on that.
+    static func collectionTitle(_ name: String) -> String { "collection.title.\(name)" }
+}

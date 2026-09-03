@@ -16,7 +16,14 @@
 //  flakiest kind there is, and the reason to accept that cost is that a launch and a
 //  keystroke cannot be simulated any other way; anything that CAN be a `swift test`
 //  belongs there. That is also why there are no layout assertions here: nothing below
-//  reads a frame, a colour or a size. 099 · P5 and P6 add the ⌘K and palette flows.
+//  reads a frame, a colour or a size. 099 · P5 added the ⌘K flow; P6 adds the palette.
+//
+//  **Nothing runs this target automatically any more.** [474] took `App target (UI)`
+//  out of `verify.sh full` — the runner must sign ad-hoc, an ad-hoc signature's
+//  designated requirement is the exact cdhash, and every rebuild therefore loses the
+//  automation grant macOS gave the last one. `./scripts/verify.sh ui` runs it by
+//  hand. A flow added here is written, not gated, and the phase that adds one owes
+//  its changelog that sentence rather than the impression of coverage.
 //
 //  **The library under test is written by the app itself at launch** — see
 //  `AtelierRefs/Debug/FixtureLibrary.swift` — because this process has its own container
@@ -172,6 +179,72 @@ final class SmokeUITests: XCTestCase {
         attach(app, named: "sidebar-expanded")
     }
 
+    // MARK: - ⌘K
+
+    /// ⌘K opens the quick switcher, typing narrows it, and Return puts the named
+    /// collection's grid in the panel.
+    ///
+    /// **The target is the NESTED collection, deliberately.** `Concrete` is not in
+    /// the accessibility hierarchy at all until its parent is disclosed — the flow
+    /// above had to click a chevron to see it — so reaching it by typing four letters
+    /// is the one claim a switcher makes that the sidebar cannot: that a destination
+    /// is reachable without knowing where it lives.
+    ///
+    /// **This flow is NOT gated.** `verify.sh full` stopped running this target in
+    /// [474](../../.change-log/474-the-gate-stops-claiming-a-window.md), so nothing
+    /// runs it unless a person types `./scripts/verify.sh ui`. The ranking, the MRU
+    /// and the commit ordering all carry their weight in `swift test` instead —
+    /// `SwitcherRankingTests`, `SwitcherRecentsTests`, `SwitcherModelTests`,
+    /// `SwitcherNavigationTests` — and what is left here is the part no unit test can
+    /// make: that a real keystroke reaches a real panel in a real window.
+    @MainActor
+    func testCommandKGoesToTheNestedCollection() {
+        let app = launch()
+        XCTAssertTrue(
+            app.windows.firstMatch.waitForExistence(timeout: 60), "the app opened no window")
+        // The library, not just the window: ⌘K into a shell that is still
+        // bootstrapping offers a switcher with nothing in it.
+        XCTAssertTrue(
+            app.buttons[Fixture.homeCard(Fixture.textures)].waitForExistence(timeout: 60),
+            "the seeded library never appeared")
+
+        // Frontmost, then type — the rule the ⌘, flow paid for twice. A key event
+        // goes to whatever app is active, not to whatever `XCUIApplication` a test
+        // is holding.
+        bringToFront(app)
+        app.typeKey("k", modifierFlags: .command)
+
+        XCTAssertTrue(
+            app.textFields[Fixture.switcherField].waitForExistence(timeout: 30),
+            "⌘K opened no switcher panel")
+        // An empty query is the resting list, so every destination is offered before
+        // a single letter is typed.
+        XCTAssertTrue(
+            app.buttons[Fixture.switcherRow(Fixture.concrete)].waitForExistence(timeout: 15),
+            "the switcher did not offer the nested collection")
+
+        app.typeText(Fixture.concrete)
+        // …and typing narrows it: the parent is no longer offered, because the
+        // switcher matches the LEAF NAME rather than the path.
+        XCTAssertTrue(
+            waitForAbsence(
+                app.buttons[Fixture.switcherRow(Fixture.textures)], timeout: 15),
+            "typing “\(Fixture.concrete)” still offered “\(Fixture.textures)”")
+        attach(app, named: "switcher-open")
+
+        app.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
+
+        XCTAssertTrue(
+            app.staticTexts[Fixture.collectionTitle(Fixture.concrete)]
+                .firstMatch.waitForExistence(timeout: 30),
+            "Return did not put “\(Fixture.concrete)” in the panel")
+        // The panel is gone, which is also how the keyboard got back to the shell.
+        XCTAssertTrue(
+            waitForAbsence(app.textFields[Fixture.switcherField], timeout: 15),
+            "the switcher stayed up after committing")
+        attach(app, named: "switcher-committed")
+    }
+
     // MARK: - Fixtures
 
     /// The seeded library's names, and the identifiers the app puts on the elements that
@@ -192,6 +265,8 @@ final class SmokeUITests: XCTestCase {
         static let sidebarRowPrefix = "sidebar.collection."
         /// `AccessibilityID.settingsCaptureEndpoint`.
         static let settingsCaptureEndpoint = "settings.capture.endpoint"
+        /// `AccessibilityID.switcherField` (099 · P5).
+        static let switcherField = "switcher.field"
 
         /// `AccessibilityID.homeCollectionCard(_:)`.
         static func homeCard(_ name: String) -> String { "home.collection.\(name)" }
@@ -201,6 +276,10 @@ final class SmokeUITests: XCTestCase {
         static func sidebarDisclosure(_ name: String) -> String {
             sidebarRow(name) + ".disclosure"
         }
+        /// `AccessibilityID.switcherRow(_:)`.
+        static func switcherRow(_ name: String) -> String { "switcher.row.\(name)" }
+        /// `AccessibilityID.collectionTitle(_:)`.
+        static func collectionTitle(_ name: String) -> String { "collection.title.\(name)" }
     }
 
     /// Every collections-tree row, in the order the sidebar draws them.
@@ -288,6 +367,25 @@ final class SmokeUITests: XCTestCase {
             _ = element.waitForExistence(timeout: 0.2)
         }
         return element.exists && element.isHittable
+    }
+
+    /// Wait for an element to STOP existing — the mirror of `waitForExistence`,
+    /// which XCUITest does not ship (099 · P5).
+    ///
+    /// The switcher flow needs it twice, and both times the disappearance IS the
+    /// assertion: a row that stopped being offered because the query narrowed, and a
+    /// panel that closed because Return committed. `XCTNSPredicateExpectation` would
+    /// say the same thing in more lines and with a second waiting mechanism in the
+    /// file; this is `waitForHittable`'s loop with the condition inverted, and it is
+    /// still a poll on a state change rather than a settling delay.
+    @MainActor
+    private func waitForAbsence(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !element.exists { return true }
+            _ = element.waitForExistence(timeout: 0.2)
+        }
+        return !element.exists
     }
 
     @MainActor

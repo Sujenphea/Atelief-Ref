@@ -28,6 +28,10 @@ struct AppShellView: View {
     @State private var showSweeps = false
     /// Guards the one-shot load of the relaunch-seeded collection.
     @State private var didLoadSeededCollection = false
+    /// The ⌘K switcher's state (099 · P5). Owned by the SHELL rather than by a
+    /// pane, for ``NavModel/showSwitcher``'s reason: the panel opens from every
+    /// surface, including the ones that unmount each other.
+    @StateObject private var switcher = SwitcherModel()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,6 +42,12 @@ struct AppShellView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The ⌘K panel (099 · P5). In the shell's background, so it is raised from
+        // the WINDOW: the panel needs an `NSWindow` to be a child of, and the one
+        // thing every surface in this app shares is the one it is drawn in. Framed
+        // to ZERO — it is an anchor, not a layer, and a background that spans the
+        // window is a background that can be asked about a mouse.
+        .background { switcherPanel.frame(width: 0, height: 0) }
         .focusedSceneValue(\.navModel, nav)
         .focusedSceneValue(\.ingestionModel, model)
         // Publish the model as a focused OBJECT too (010 · Phase 1 undo): the Edit
@@ -159,6 +169,29 @@ struct AppShellView: View {
             .padding(.vertical, 8)
             .background(Theme.Colors.warning.opacity(0.12))
             .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - The ⌘K switcher (099 · P5)
+
+    /// The panel host. Zero-sized; it draws nothing and only owns a window.
+    private var switcherPanel: some View {
+        SwitcherPanelHost(isPresented: $nav.showSwitcher) {
+            SwitcherPanel(
+                model: switcher,
+                candidates: {
+                    SwitcherRanking.candidates(
+                        folders: model.folders,
+                        unsortedID: model.unsortedFolderID,
+                        spaces: model.spaces,
+                        savedSearches: model.smartCollections.searches)
+                },
+                recents: { model.switcherRecents.destinations },
+                // Close, remember, navigate — in that order, and the order is the
+                // requirement. ``NavModel/commitSwitcher(_:recents:)`` owns it, so
+                // that it is a test rather than a paragraph in a `ViewBuilder`.
+                onSelect: { nav.commitSwitcher($0, recents: model.switcherRecents) },
+                onDismiss: { nav.showSwitcher = false })
+        }
     }
 
     // MARK: - Detail panel

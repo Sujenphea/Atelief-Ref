@@ -106,7 +106,16 @@ struct CollectionDestinationList: View {
     /// top-to-bottom, and a ↓ at the last row that jumped back to Unsorted would file
     /// into the one collection the list pins ABOVE everything for being different. A
     /// `nil` cursor enters at the first row on ↓ and the last on ↑.
-    nonisolated static func step(from current: UUID?, in ids: [UUID], by delta: Int) -> UUID? {
+    ///
+    /// **Generic over the row's identity since 099 · P5**, so the ⌘K switcher walks
+    /// the same function this list does instead of a second copy of the same four
+    /// rules (``SwitcherModel/move(_:)``, whose rows are ``SidebarItem``s). Nothing
+    /// about the walk was ever collection-specific — it never looked at a
+    /// `Collection` — so the only thing that changed is the type it steps between,
+    /// and every existing call still infers `UUID`.
+    nonisolated static func step<Row: Equatable>(
+        from current: Row?, in ids: [Row], by delta: Int
+    ) -> Row? {
         guard !ids.isEmpty else { return nil }
         guard let current, let index = ids.firstIndex(of: current) else {
             return delta < 0 ? ids.last : ids.first

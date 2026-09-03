@@ -740,6 +740,11 @@ struct CollectionView: View {
                 .font(Theme.Typography.sectionTitle)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                // 099 · P5 — the leaf the ⌘K smoke flow reads to say the grid is
+                // showing the collection it asked for. On the `Text`, not the
+                // `HStack`, per `AccessibilityIdentifiers`' leaves-only rule.
+                .accessibilityIdentifier(AccessibilityID.collectionTitle(
+                    model.name(for: collectionID)))
             // The title tracks `collectionID` and is always correct, but the count
             // reads the shared `items` — redact it until this collection's load
             // resolves so it can't show the previous collection's count on switch.

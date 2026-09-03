@@ -74,6 +74,9 @@ struct AtelierRefsApp: App {
                 NewItemCommand()
             }
             CommandGroup(after: .sidebar) {
+                // View ▸ Go to… (⌘K, 099 · P5) — the quick switcher. Above Back
+                // because it is the larger of the two navigation verbs.
+                GoToCommand()
                 BackCommand()
             }
             CommandGroup(after: .saveItem) {
@@ -349,6 +352,28 @@ private struct KeyboardShortcutsCommand: View {
     var body: some View {
         Button(KeyMap.pageTitle) { nav?.showShortcuts = true }
             .keyboardShortcut("/", modifiers: .command)
+            .disabled(nav == nil)
+    }
+}
+
+/// View ▸ Go to… (⌘K, 099 · P5) — raises the quick switcher.
+///
+/// **A menu key equivalent, and that is what makes the feature work.** `NSMenu`
+/// matches a key equivalent BEFORE the event reaches the first responder — the
+/// platform behaviour that `DeleteCommands` documents as a hazard for a bare ⌫.
+/// Here it is the whole point: ⌘K has to open the panel from the collection grid,
+/// from inside the full-window item-detail overlay, and from a Space board, none of
+/// which would forward a key they do not recognise. ⌘K is bound nowhere else in the
+/// app (`KeyMap.collisions` asserts it), so nothing is being shadowed.
+///
+/// Observes ``NavModel`` as a focused OBJECT, the reason ``NewItemCommand`` does:
+/// the item's enabled state has to track whether a shell is up at all.
+private struct GoToCommand: View {
+    @FocusedObject private var nav: NavModel?
+
+    var body: some View {
+        Button("Go to…") { nav?.showSwitcher = true }
+            .keyboardShortcut("k", modifiers: .command)
             .disabled(nav == nil)
     }
 }

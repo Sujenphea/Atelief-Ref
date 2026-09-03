@@ -82,6 +82,15 @@ final class IngestionModel: ObservableObject {
     /// and nothing for a read model to reload.
     let smartCollections = SavedSearchesSidebarModel()
 
+    /// The ⌘K switcher's per-library MRU (099 · P5).
+    ///
+    /// Held here for ``smartCollections``' reason: it is bound to the open library
+    /// at bootstrap, exactly as the clipboard watcher's per-library preference is,
+    /// and the shell already has this model. Nothing in this file reads it — the
+    /// switcher records into it and ranks with it — so it is a reference this model
+    /// only OWNS, never consults.
+    let switcherRecents = SwitcherRecents()
+
     /// The selected folder's DIRECT items (decision F5).
     var items: [CollectionItemDetail] { contents.items }
     /// The collection ``items`` currently belong to — the identity a view checks to
@@ -720,6 +729,13 @@ final class IngestionModel: ObservableObject {
             // already reports in its own words.
             if let libraryID = try? LibraryIdentity.resolve(root: root) {
                 backup.activate(libraryID: libraryID)
+                // The ⌘K switcher's MRU is per-library for the third time on the
+                // same reasoning (099 · P5 / 016 §C): "the places I move between"
+                // is a fact about ONE library, and a shared list would put another
+                // library's collections at the top of this one's switcher. A
+                // library whose id can't be resolved simply gets no MRU and ranks
+                // by the shared ordering alone.
+                switcherRecents.activate(libraryID: libraryID)
             }
 
             await refreshFolders()

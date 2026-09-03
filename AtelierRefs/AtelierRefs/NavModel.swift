@@ -162,6 +162,13 @@ final class NavModel: ObservableObject {
     /// has no view of its own to hang a sheet on.
     @Published var showShortcuts = false
 
+    /// Whether the ⌘K quick switcher is up (099 · P5). Route state for
+    /// ``showShortcuts``' reason and one more of its own: the panel must open from
+    /// EVERY surface — the item-detail overlay and a Space board included — and a
+    /// `@State` on any pane would go away with that pane. The shell raises the
+    /// panel from this; see ``AppShellView``.
+    @Published var showSwitcher = false
+
     /// The membership id of the item shown in the full-window detail overlay, or
     /// `nil`. Reserved for 006; the collection screen keeps a local flag until
     /// then, but the field exists so the wiring is ready.
@@ -214,6 +221,31 @@ final class NavModel: ObservableObject {
     /// onto a collection that does not exist. Landing on Home instead is the
     /// honest answer and costs one click.
     func openSavedSearch(_ id: UUID) { selectSidebar(.savedSearch(id)) }
+
+    // MARK: - The ⌘K switcher (099 · P5)
+
+    /// Commit a quick-switcher choice: close the panel, remember the visit, go.
+    ///
+    /// **The order is the requirement, not an implementation detail.** ⌘K opens on
+    /// top of the full-window item-detail overlay and on top of a Space board, so a
+    /// destination committed from there has to POP THE OVERLAY FIRST — otherwise
+    /// the route changes underneath an overlay that is still up, and the user is
+    /// left looking at a picture from the collection they have just left.
+    /// ``selectSidebar(_:)`` already clears ``presentedItemID`` before it assigns
+    /// the selection (355), so routing THROUGH it rather than around it is what
+    /// keeps that ordering true for this caller too.
+    ///
+    /// The panel is closed before the navigation, so the keyboard is back on the
+    /// shell by the time the destination's pane mounts and can take it — the same
+    /// reason ``DestinationPicker`` commits and dismisses through one call site.
+    ///
+    /// Lives here rather than in ``AppShellView`` so the sequence is a test
+    /// (`SwitcherNavigationTests`) and not a paragraph.
+    func commitSwitcher(_ destination: SidebarItem, recents: SwitcherRecents) {
+        showSwitcher = false
+        recents.record(destination)
+        selectSidebar(destination)
+    }
 
     /// Go back one drill-down step (⌘[). A no-op at a sidebar root.
     func goBack() {

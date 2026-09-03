@@ -502,9 +502,22 @@ six-run sequence and the control.
   `DestinationPicker` discipline. Inside the detail overlay and on a Space board the
   panel still opens; the destination it commits pops the overlay first.
 - The smoke target gains: ⌘K → type the nested collection's name → Return → the grid
-  shows it.
+  shows it. **This flow is written but NOT gated** — [474](../.change-log/474-the-gate-stops-claiming-a-window.md)
+  took `App target (UI)` out of `verify.sh full`, so nothing runs it unless a person
+  types `./scripts/verify.sh ui`. The model tests carry the weight instead.
 
 **Verify:** `verify.sh` full.
+
+**Done** ([475](../.change-log/475-the-switcher-is-its-own-surface.md)). 011 · U4's open
+question is answered as planned — its own surface, the shared ordering — and the ranking
+it is built on is written down where it is implemented: **prefix > word-start >
+substring, then recents (most recent first), then the shared ordering**, with each tier
+and each sort key carrying its own test. The MRU is `library.<id>.switcherRecents`,
+matching `ClipboardWatcher.enabledKey(libraryID:)` (016 §C). Verbs are not in v1 and the
+changelog says why. **The ⌘K smoke flow was written and could NOT be observed passing:**
+`verify.sh ui` fails all four flows with *"the app opened no window"*, and a control run
+with this phase STASHED fails the unchanged launch flow the same way — 474's blocker, on
+`HEAD` as much as here.
 
 ## P6 — the floating reference palette
 
@@ -525,7 +538,10 @@ six-run sequence and the control.
   assumes an editing model).
 - The smoke target gains: open the palette → a second window exists at floating level
   → pick the nested collection → it shows a different collection than the main
-  window.
+  window. **Written but NOT gated**, as P5's flow is: `App target (UI)` left
+  `verify.sh full` in [474](../.change-log/474-the-gate-stops-claiming-a-window.md), so
+  a flow added here runs only under `./scripts/verify.sh ui`, by hand. Say so in the
+  changelog rather than implying coverage; and put the real assertions in `swift test`.
 
 **Verify:** `verify.sh` full.
 
@@ -708,7 +724,7 @@ supplied. 12A's rule applies to each. Effort M each.*
 | 22A | done — unplanned; the keychain read leaves the main actor (`@concurrent`, not merely `nonisolated`), and the UI suite stops starting an endpoint it never asserts | [471](../.change-log/471-the-token-leaves-the-main-actor-at-launch.md) |
 | P3 | done — one read model, one write funnel, one coalescer; 071 · 0a closed its own gate negatively | [472](../.change-log/472-the-feed-gets-a-model-of-its-own.md) |
 | P4 | done — a second read model mounted; 057's archive claim found FALSE and pinned; `App target (UI)` since blocked by 470's signing prompt (fails on `HEAD` too) | [473](../.change-log/473-the-saved-search-becomes-a-place.md) |
-| P5 | not started | — |
+| P5 | done — its own surface, the shared ordering; a documented three-tier ranking, a per-library MRU, no verbs; the smoke flow is written but ungated (474) | [475](../.change-log/475-the-switcher-is-its-own-surface.md) |
 | P6 | not started | — |
 | P7 | done — rebased onto `395e471`; 5A closed; 457–460 → 463–466 | [467](../.change-log/467-four-builders-and-the-numbers-that-collided.md) |
 | P8 | not started | — |
@@ -746,9 +762,16 @@ carries it and states the cost plainly: the failure mode moved from "a gate nobo
 pass" to "a warning nobody reads", and only the second is survivable.
 
 **The gate for every phase from here is `verify.sh full` at exit 0**, which now means
-**fourteen** stages passed, possibly with warnings named in the summary — P1 added
-`App target (Release)` (8A) and P2 added `App target (UI)` (10A), so `fast` is eleven and
-`full` is fourteen. A phase still does not commit without it.
+**thirteen** stages passed, possibly with warnings named in the summary. P1 added
+`App target (Release)` (8A) and P2 added `App target (UI)` (10A), which made `full`
+fourteen for four phases — and then **issue 23D took the UI stage back out**
+([474](../.change-log/474-the-gate-stops-claiming-a-window.md)): the runner must sign
+ad-hoc, so every rebuild is a binary macOS has never granted automation to, and a red
+that no code change can clear is a red people learn to re-run past. So `fast` is eleven,
+`full` is **thirteen**, and the smoke suite runs by hand with `./scripts/verify.sh ui`.
+A phase still does not commit without the gate — and a phase that ADDS a smoke flow
+(P5, P6) says in its changelog that the flow is written and not gated. *(Corrected in
+099 · P5; 474 changed the gate and left this paragraph saying fourteen.)*
 
 Two things this left for later. Re-capturing the Instagram fixture is still worth doing on
 its own merits — the fixture is genuinely stale and live sweeps may genuinely be broken —

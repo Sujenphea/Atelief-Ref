@@ -369,6 +369,19 @@ nonisolated enum KeyMap {
         // called "save", which is what leaves ⌘S free for the one thing there is.
         Shortcut([.character("s")], [.command], "Save this search…",
                  scope: .global, source: "LibrarySearch.swift (saveSearchButton)"),
+        // 099 · P5 — the quick switcher. `.global` in the strongest sense the word
+        // has here: a menu key equivalent is matched before ANY first responder, so
+        // this is the one chord that has to reach the panel from inside the
+        // item-detail overlay and from a Space board, which are the two surfaces
+        // that swallow bare keys. ⌘K was bound nowhere before this row, in any
+        // scope, and ``collisions(in:)`` is what keeps saying so.
+        //
+        // The panel's OWN keys — ↑ / ↓ / ↩ / esc — are deliberately not rows here,
+        // on `DestinationPicker`'s precedent: a transient picker's internal cursor
+        // is not an app binding a user needs listed, and a `.switcher` scope would
+        // add a shortcuts-sheet section that says only "the arrow keys work".
+        Shortcut([.character("k")], [.command], "Go to…",
+                 scope: .global, source: "AtelierRefsApp.swift (GoToCommand)"),
     ]
 
     // MARK: In a collection

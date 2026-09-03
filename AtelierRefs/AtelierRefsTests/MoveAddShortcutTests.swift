@@ -458,7 +458,10 @@ struct DestinationPickerCursorTests {
         let ids = [UUID(), UUID(), UUID()]
         #expect(CollectionDestinationList.step(from: nil, in: ids, by: 1) == ids.first)
         #expect(CollectionDestinationList.step(from: nil, in: ids, by: -1) == ids.last)
-        #expect(CollectionDestinationList.step(from: nil, in: [], by: 1) == nil)
+        // `[UUID]()` rather than `[]` since 099 · P5 made `step` generic over the
+        // row type: an empty literal with a `nil` cursor leaves the compiler nothing
+        // to infer the row type from. The assertion itself is unchanged.
+        #expect(CollectionDestinationList.step(from: nil, in: [UUID](), by: 1) == nil)
         // An id that has left the list (a folder deleted under the picker) re-enters
         // rather than stranding the cursor.
         #expect(CollectionDestinationList.step(from: UUID(), in: ids, by: 1) == ids.first)
