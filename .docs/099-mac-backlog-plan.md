@@ -644,6 +644,43 @@ reserved judgement, still open.
   scopes what is actually missing — the backlog names it, the docs say it shipped, and
   the agent settles which is true before writing anything.
 
+**Done** ([480](../.change-log/480-the-page-shows-its-neighbours.md)). **Two of the three
+premises above are wrong**, and both are 479's failure recurring: a plan written from a
+status line rather than the body under it.
+
+- **`Palette.filmstrip` was not reserved — it was DELETED.** `Theme.Colors.filmstrip`
+  (#1A1A1C) went in [352](../.change-log/352-floating-bars-one-system.md), which recorded
+  *"no consumers left after the top bar moved"* and the migration note *"Use
+  `Colors.field` for chrome"*. 041's *"reserved at `Theme.swift:39`"* outlived the token
+  by three and a half weeks (352 landed 2026-08-09; P9 read the line on 2026-09-03). The
+  strip was built from nothing, on `mediaBackdrop`.
+- **F3b was already shipped**, and 023's own commit list says so at its line 129
+  (`(F3b ✓)`). `SpaceView.openAssetDetail(_:)` / `spaceDetailOverlay(for:)` present a
+  fully decoupled `ItemDetailView` from an image-asset double-click. Scoped, not built,
+  per the phase brief. What is genuinely missing is not F3b but *"a board is not an
+  ordered set"* — no navigator, therefore no pager, no arrows and now no filmstrip; and
+  no `ItemDetailPost`, because `PostGroups` takes `CollectionItemDetail` and a board
+  holds `SpaceItemDetail`. 480 carries the full table.
+- Only the X fields held, exactly as 089 §117 described them. Their real shapes were
+  established by running the extension's own mappers over its fixtures: `threadId` a
+  **string** and `threadIndex` a **number** on all 8 items of the live thread capture;
+  `repostedBy` in **no committed fixture at all**; and **none of the three** on any of
+  the 15 items of the two bookmark fixtures — which is what almost every item in a real
+  library looks like.
+
+**One correction made in code rather than in prose.** The neighbours do **not** come
+*"through `DetailImageLoader`'s preload window"* and could not: that loader is the
+full-resolution cache, its window is `{prev, current, next}` — three, not five — and its
+budget is five entries at 384 MB, so five filmstrip thumbnails would fill it and evict
+the image the page is showing on every step. The strip draws from the shared
+`ThumbnailPipeline` at its own 48pt bucket, as `DetailFanSpread` does.
+
+**The filmstrip is not the rail [070](070-detail-fan-carousel-design.md) §4 rejected.**
+That entry ruled against a strip as a way of saying *"this post has four images"*, and 080
+shipped the pile and spread for that instead. This one says *where you are in the folder*
+— the pager's `12 / 60`, as pictures — and it is the only one of the two present for the
+ungrouped items that are the majority. Both are on the page and they count different sets.
+
 ## P10 — the color filter's "match all"
 
 *Effort S.*
@@ -828,7 +865,7 @@ supplied. 12A's rule applies to each. Effort M each.*
 | P6 | done — a second scene at floating level, ⇧⌘P, read-only `GridInteraction`, P5's ranking behind one filter; the drag-source rule moved to the read model. A space in the palette is the named follow-up | [476](../.change-log/476-the-palette-is-the-second-window.md) |
 | P7 | done — rebased onto `395e471`; 5A closed; 457–460 → 463–466 | [467](../.change-log/467-four-builders-and-the-numbers-that-collided.md) |
 | P8 | done — no code: audited and found already shipped 2026-08-10 (356–364); 080's and 078's status blocks corrected. `App target` red on all four gate runs, on a different timing flake each time, green in isolation | [479](../.change-log/479-the-phase-that-had-already-shipped.md) |
-| P9 | not started | — |
+| P9 | done — the filmstrip built from nothing (`Palette.filmstrip` was DELETED in 352, not reserved); three X rows read through `JSONValue`, nothing stored; **F3b was already shipped** and is scoped, not built | [480](../.change-log/480-the-page-shows-its-neighbours.md) |
 | P10 | done — the query grew `colorMatch`, the bridge stopped pinning it, ⇧⌘C opens the picker; no wheel (085) | [478](../.change-log/478-the-colours-learn-to-say-and.md) |
 | P11 | done — the quoted photo is excluded by a per-photo `statusId`; the signal had to be HARVESTED first, and the named fixture was the wrong artifact. Extension green (638, no drift). Its two red Swift stages were **disk pressure, not contention** — P10 found the data volume at 100 %, 798 MB free (478). The drift-check hole is still open | [477](../.change-log/477-the-anchor-says-whose-photo-it-is.md) |
 | P12 | not started | — |

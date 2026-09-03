@@ -30,7 +30,12 @@ shippable phases.
 6. **Tags ✦ icon** — a **manual user add-tag** affordance (no auto-tag/LLM service
    exists; none is built).
 7. **Filmstrip** — **deferred** to a separate task (needs neighbour thumbnail load;
-   `Palette.filmstrip` already reserved).
+   `Palette.filmstrip` already reserved). **Built** by
+   [099](./099-mac-backlog-plan.md) · P9
+   ([480](../.change-log/480-the-page-shows-its-neighbours.md)) — and the reservation
+   did not survive: `Theme.Colors.filmstrip` was **deleted** in
+   [352](../.change-log/352-floating-bars-one-system.md) once the top bar stopped using
+   it. The strip is drawn on `mediaBackdrop`.
 8. **Top bar** — match Figma; zoom controls move to an **image overlay**, title
    removed.
 
@@ -103,4 +108,8 @@ lifecycle in all three.
 ## Deferred
 
 - **Bottom filmstrip** — 5 neighbour thumbnails; own task (thumbnail-load work,
-  `Palette.filmstrip` reserved at `Theme.swift:39`).
+  ~~`Palette.filmstrip` reserved at `Theme.swift:39`~~ — that token was deleted in
+  [352](../.change-log/352-floating-bars-one-system.md) on 2026-08-09; this line outlived
+  it). **No longer deferred:** built by [099](./099-mac-backlog-plan.md) · P9 as
+  `DetailFilmstrip`, five run neighbours through the shared `ThumbnailPipeline`
+  ([480](../.change-log/480-the-page-shows-its-neighbours.md)).

@@ -1491,17 +1491,35 @@ private struct CollectionDetailHost: View {
                 // 023 · A3 — the same verb the grid menus offer, from the page.
                 setArchived: { model.setArchived($0, assetIDs: [detail.asset.id]) }),
             navigator: index.map { i in
-                ItemDetailNavigator(index: i, count: model.detailRun.count) { delta in
-                    let run = model.detailRun
-                    let target = i + delta
-                    if run.indices.contains(target) {
-                        // Stepping mutates ONLY the session — no `IngestionModel`
-                        // lead/selection write, so the grid does not re-render per
-                        // step. The lead is synced back once on close.
-                        session.step(to: run[target], in: run)
-                        model.recordView(assetID: run[target].asset.id)
-                    }
-                }
+                ItemDetailNavigator(
+                    index: i, count: model.detailRun.count,
+                    step: { delta in
+                        let run = model.detailRun
+                        let target = i + delta
+                        if run.indices.contains(target) {
+                            // Stepping mutates ONLY the session — no `IngestionModel`
+                            // lead/selection write, so the grid does not re-render per
+                            // step. The lead is synced back once on close.
+                            session.step(to: run[target], in: run)
+                            model.recordView(assetID: run[target].asset.id)
+                        }
+                    },
+                    // The bottom filmstrip's artwork (041). Read from `model.detailRun`
+                    // FRESH inside the closure rather than captured, for the reason
+                    // `step` just above reads it fresh: a reload can replace the run
+                    // while the page is open, and a strip drawn from a captured array
+                    // would show neighbours that have moved or gone.
+                    //
+                    // Bounds-checked here rather than trusted: the window is derived
+                    // from `count`, which was read one body pass earlier, so a run that
+                    // shrank in between can hand this an index off its end.
+                    filmstrip: ItemDetailFilmstrip(
+                        blobHash: { position in
+                            let run = model.detailRun
+                            guard run.indices.contains(position) else { return nil }
+                            return run[position].asset.blobHash
+                        },
+                        thumbnailURL: { model.thumbnailURL(forBlobHash: $0) }))
             },
             // The post the page is inside (080 §3.1). Gated on `groupCarousels` for
             // the same reason `detailRun` is (`IngestionModel.swift:559`): with

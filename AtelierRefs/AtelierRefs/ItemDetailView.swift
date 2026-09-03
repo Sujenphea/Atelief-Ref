@@ -46,6 +46,34 @@ private func linkAVKit() {
     _ = NSStringFromClass(AVPlayerView.self)
 }
 
+/// How the filmstrip reaches the artwork of a run item the page did NOT open
+/// ([041](../.docs/041-item-detail-redesign-plan.md) · *"Bottom — centered
+/// 5-thumbnail filmstrip"*).
+///
+/// **Two closures rather than an array of URLs**, for ``ItemDetailPost``'s reason
+/// (080 §2.1): ``AsyncThumbnail`` keys its cache on the HASH, so a bare `[URL?]`
+/// would miss the shared cache and re-decode a neighbour the grid behind the page
+/// has already decoded.
+///
+/// **Lazy BY INDEX rather than an array**, which is the difference from
+/// ``ItemDetailPost``: a post is at most a few dozen members and is materialised
+/// whole, but the run is the entire feed — thousands of items — and the strip wants
+/// five of them. Handing the page a `[String?]` of the run would rebuild that array
+/// on every body pass of every step, to read five entries out of it.
+struct ItemDetailFilmstrip {
+    /// The artwork hash of the run item at ABSOLUTE run index `i`.
+    ///
+    /// `nil` for an out-of-range index — a reload can shrink the run while the page
+    /// is open, exactly as it can shrink a post (080 §5 · T4.2) — or for a
+    /// media-less item (003 · O1), which draws a placeholder SLOT rather than a gap.
+    /// The slot is not a hole: the item is real, it is counted, and it can be
+    /// stepped to, which is the invariant ``ItemDetailPost/blobHashes`` learned the
+    /// hard way when it began life compacted.
+    let blobHash: (Int) -> String?
+    /// Resolve a hash to its on-disk thumbnail URL.
+    let thumbnailURL: (String) -> URL?
+}
+
 /// Prev/next stepping for the detail page. Absent (`nil`) when the item has no
 /// ordered set behind it — e.g. an asset opened from a Space board.
 struct ItemDetailNavigator {
@@ -55,6 +83,35 @@ struct ItemDetailNavigator {
     let count: Int
     /// Step the selection by `delta` (±1), clamped by the caller.
     let step: (Int) -> Void
+    /// The run's artwork, for the bottom filmstrip (041). `nil` on a host that
+    /// cannot supply neighbour thumbnails, which hides the strip entirely rather
+    /// than drawing a row of placeholders — so a new host gets today's page until
+    /// it opts in, and the strip is never a row of grey squares.
+    ///
+    /// It lives on the NAVIGATOR rather than beside ``ItemDetailPost`` because it is
+    /// a view of the same ordered set the arrows walk: the pager counts it, the
+    /// arrows step it, and the strip shows five of it. A second parallel value would
+    /// have let the two disagree about what "the run" is.
+    var filmstrip: ItemDetailFilmstrip? = nil
+}
+
+/// The run indices the bottom filmstrip draws, centred on the open item (041).
+///
+/// The SAME centre-and-clamp arithmetic as the spread's window, delegated rather than
+/// copied: this is where off-by-ones live, ``fanSpreadWindow`` already has them pinned
+/// across ten tests, and two implementations of "a window centred on the current item,
+/// clamped to the ends" would be two chances to get the last five items of a folder
+/// wrong. Only the `hidden` count is dropped on the way out — a folder of four thousand
+/// items would report "+3995", which is a true number and a useless one, where a post's
+/// "+8" is the whole point of saying it.
+///
+/// The load-bearing property is the spread's: the open item is inside the window at
+/// every position, or the strip is showing the user a slice of the folder they are not
+/// standing in.
+nonisolated func detailFilmstripWindow(
+    count: Int, currentIndex: Int, cap: Int
+) -> [Int] {
+    fanSpreadWindow(memberCount: count, currentIndex: currentIndex, cap: cap).indices
 }
 
 /// The post this item belongs to (307/309): its members in post order, the open
@@ -398,57 +455,65 @@ struct ItemDetailView: View {
             topBar
             Divider()
             HStack(spacing: 0) {
-                mediaArea
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    // The zoom's surface, and the whole reason this clip is HERE rather
-                    // than inside `ZoomableImage` where it started: a zoomed picture may
-                    // grow across the entire pane, right up to the sidebar's divider and
-                    // the top bar's. Clipped one level in, it could only ever fill the
-                    // rect it occupied at fit.
-                    //
-                    // The `lg` inset the picture is FITTED into is unchanged — it lives
-                    // on `mediaArea`'s own padding, inside this clip — so the pile, the
-                    // spread and the zoom controls still align to the same rect
-                    // (``mediaContentSize``). Only the growing does not stop there.
-                    //
-                    // Before the backgrounds and overlays on purpose: each is added
-                    // after this and so is NOT clipped, which keeps the pile's deliberate
-                    // 12pt swing-out past the artwork (080 §3.4).
-                    .clipped()
-                    // The art's stable dark ground, a shade below the panel: a light
-                    // image and a dark one then sit on the same tone instead of the
-                    // image's own edges reading as part of the chrome. `mediaBackdrop`
-                    // has claimed this surface in its doc since it was written; it
-                    // just was not applied, so the media sat on `panel`.
-                    // The resting pile (080 §3.4), BEHIND the artwork and ABOVE the
-                    // backdrop — hence between the two `.background`s, since each one
-                    // stacks under the last. It is laid against the FITTED rect, not the
-                    // pane: against the pane it would float detached on the long axis for
-                    // every image whose aspect ratio isn't the window's (313).
-                    .background(alignment: .center) { fanPile }
-                    .background(Theme.Colors.mediaBackdrop)
-                    // The spread sits OVER the artwork — it is the one piece of this
-                    // feature you click, so it cannot be a background like the pile.
-                    .overlay(alignment: .center) { fanSpread }
-                    // B3: measure the media area and report its FIT size + zoom up to
-                    // the `DetailSession`, which picks the decode tier. `zoom` (the
-                    // @State, not the transient pinch) only changes at a settle point
-                    // — button press or gesture end — so reporting on it decodes at
-                    // zoom SETTLE, never per pinch tick; the loader's bucket
-                    // quantization is the second line of defence against a decode storm.
-                    .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
-                        mediaPaneSize = size
-                        reportDisplayTarget()
-                    }
-                    .onChange(of: zoom) { _, _ in reportDisplayTarget() }
-                    // Zoom controls float over the media (image only) — the top bar
-                    // is Back + pager only now (041), matching the Figma frame. The
-                    // inset is `lg` to match `mediaArea`'s own padding, so the bar's
-                    // edges line up with the ARTWORK's; at `md` it overhung the
-                    // picture by 4pt.
-                    .overlay(alignment: .bottomTrailing) {
-                        if isImage { zoomControls.padding(Theme.Spacing.lg) }
-                    }
+                VStack(spacing: 0) {
+                    mediaArea
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        // The zoom's surface, and the whole reason this clip is HERE rather
+                        // than inside `ZoomableImage` where it started: a zoomed picture may
+                        // grow across the entire pane, right up to the sidebar's divider and
+                        // the top bar's. Clipped one level in, it could only ever fill the
+                        // rect it occupied at fit.
+                        //
+                        // The `lg` inset the picture is FITTED into is unchanged — it lives
+                        // on `mediaArea`'s own padding, inside this clip — so the pile, the
+                        // spread and the zoom controls still align to the same rect
+                        // (``mediaContentSize``). Only the growing does not stop there.
+                        //
+                        // Before the backgrounds and overlays on purpose: each is added
+                        // after this and so is NOT clipped, which keeps the pile's deliberate
+                        // 12pt swing-out past the artwork (080 §3.4).
+                        .clipped()
+                        // The art's stable dark ground, a shade below the panel: a light
+                        // image and a dark one then sit on the same tone instead of the
+                        // image's own edges reading as part of the chrome. `mediaBackdrop`
+                        // has claimed this surface in its doc since it was written; it
+                        // just was not applied, so the media sat on `panel`.
+                        // The resting pile (080 §3.4), BEHIND the artwork and ABOVE the
+                        // backdrop — hence between the two `.background`s, since each one
+                        // stacks under the last. It is laid against the FITTED rect, not the
+                        // pane: against the pane it would float detached on the long axis for
+                        // every image whose aspect ratio isn't the window's (313).
+                        .background(alignment: .center) { fanPile }
+                        .background(Theme.Colors.mediaBackdrop)
+                        // The spread sits OVER the artwork — it is the one piece of this
+                        // feature you click, so it cannot be a background like the pile.
+                        .overlay(alignment: .center) { fanSpread }
+                        // B3: measure the media area and report its FIT size + zoom up to
+                        // the `DetailSession`, which picks the decode tier. `zoom` (the
+                        // @State, not the transient pinch) only changes at a settle point
+                        // — button press or gesture end — so reporting on it decodes at
+                        // zoom SETTLE, never per pinch tick; the loader's bucket
+                        // quantization is the second line of defence against a decode storm.
+                        .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                            mediaPaneSize = size
+                            reportDisplayTarget()
+                        }
+                        .onChange(of: zoom) { _, _ in reportDisplayTarget() }
+                        // Zoom controls float over the media (image only) — the top bar
+                        // is Back + pager only now (041), matching the Figma frame. The
+                        // inset is `lg` to match `mediaArea`'s own padding, so the bar's
+                        // edges line up with the ARTWORK's; at `md` it overhung the
+                        // picture by 4pt.
+                        .overlay(alignment: .bottomTrailing) {
+                            if isImage { zoomControls.padding(Theme.Spacing.lg) }
+                        }
+                    // The bottom filmstrip (041), UNDER the media area rather than over
+                    // it: a laid-out row cannot disagree with its own hit region, and the
+                    // artwork's own bottom strip is already spoken for — that is where the
+                    // spread's hover zone lives (``DetailFanSpreadMetrics/hoverZoneHeight``).
+                    // Inside the left column, so the 298pt sidebar stays full height.
+                    filmstrip
+                }
                 Divider()
                 DetailSidebar(
                     asset: asset, source: source, post: post, tags: tags,
@@ -887,6 +952,26 @@ struct ItemDetailView: View {
             }
             .frame(width: fitted.width, height: fitted.height)
             .animation(Theme.Motion.gentle, value: open)
+        }
+    }
+
+    /// The bottom filmstrip — five neighbours in the run, or nothing (041).
+    ///
+    /// Three gates, and each one removes the strip rather than degrading it:
+    ///  · **no navigator** — a Space board has no ordered set, so there are no
+    ///    neighbours and the pager is absent for the same reason;
+    ///  · **no `filmstrip`** — the host wired a navigator but supplies no artwork, so
+    ///    the strip would be five placeholders saying nothing;
+    ///  · **`count <= 1`** — a run of one is the item you are looking at, and a strip
+    ///    holding a single thumbnail of the picture above it is pure chrome.
+    ///
+    /// Deliberately NOT gated on the zoom, unlike the pile and the spread — see
+    /// ``DetailFilmstrip`` for why a laid-out row must not come and go.
+    @ViewBuilder
+    private var filmstrip: some View {
+        if let navigator, let strip = navigator.filmstrip, navigator.count > 1 {
+            Divider()
+            DetailFilmstrip(navigator: navigator, strip: strip)
         }
     }
 
@@ -1682,6 +1767,159 @@ private struct DetailFanSpread: View {
     }
 }
 
+enum DetailFilmstripMetrics {
+    /// Five thumbnails, which is 041's own number (*"centered 5-thumbnail
+    /// filmstrip"*) and odd for the spread's reason: an odd cap puts the open item
+    /// dead centre at every position except the two ends.
+    static let cap = 5
+    /// A thumbnail's side in POINTS. Smaller than the spread's 64pt card on purpose
+    /// — the spread is a transient thing you reach for, the strip is permanent
+    /// chrome under the picture, and 070 §4's objection to a rail (*"permanently
+    /// eats vertical room from the artwork"*) is answered by spending as few points
+    /// as still leaves a photograph recognisable.
+    static let thumbSide: CGFloat = 48
+    /// The gap between neighbours. The strip is a ROW, not a fanned deck: the
+    /// spread's cards overlap to read as a pile, and these must not, or the strip
+    /// would be saying "post" where it means "folder".
+    static let spacing: CGFloat = 6
+    /// The strip's own breathing room above and below the thumbnails.
+    static let padding: CGFloat = Theme.Spacing.sm
+    /// The thumbnail's corner rounding — the spread's and the pile's, so all three
+    /// read as one family.
+    static let cornerRadius: CGFloat = Theme.Radius.card
+
+    /// The pixel bucket a thumbnail decodes at, from its own point size.
+    ///
+    /// The pipeline requires the caller to size itself — *"the cell never guesses its
+    /// own size (036 §4 C3)"* — and ``AsyncThumbnail/bucket`` defaults to the 512
+    /// ceiling. A 48pt thumb needs 96px on a 2× display, which snaps to the ladder's
+    /// bottom rung (128): taking the default would be SIXTEEN times the bitmap, five
+    /// times over, on every step through a cold folder.
+    static func bucket(scale: CGFloat) -> Int {
+        thumbnailPixelBucket(pointLongSide: thumbSide, scale: scale)
+    }
+}
+
+/// The bottom filmstrip: five neighbours in the RUN, centred on the open item, each a
+/// step away ([041](../.docs/041-item-detail-redesign-plan.md) · *"Bottom"*, deferred
+/// there and built here).
+///
+/// **This is not the rail 070 §4 rejected, and the distinction is the whole design.**
+/// That entry weighed a filmstrip as a way of saying *"this post has four images"* and
+/// ruled against it: it *"speaks a different visual language from the grid"* and *"for
+/// the common 2–4 image post it is a lot of chrome to say 'there are three of these'"*.
+/// 080 shipped the fanned pile and spread for that fact instead, and they stay. This
+/// strip answers a different question — *where am I in the folder* — which the pager's
+/// `12 / 60` states in digits and nothing on the page has ever shown as pictures. The
+/// two coexist because they count different sets: the spread's cards are members of one
+/// post, the strip's are neighbours in the feed, and the strip is the only one of them
+/// present for the overwhelming majority of items, which are ungrouped.
+///
+/// **Through the THUMBNAIL pipeline, not ``DetailImageLoader``.** 099 · P9 asked for the
+/// neighbours to come *"through `DetailImageLoader`'s existing preload window"*; that
+/// loader is the FULL-RESOLUTION cache, its window is {prev, current, next} — three, not
+/// five — and its budget is five entries at 384 MB (``detailImageCacheCountLimit``). Five
+/// filmstrip thumbnails driven through it would fill that budget by themselves and evict
+/// the very image the page is showing, on every step. So the strip draws from the shared
+/// ``ThumbnailPipeline`` at its own 48pt bucket, exactly as ``DetailFanSpread`` does.
+///
+/// What that buys is not "no decode" — the grid behind the page caches a CELL-sized
+/// bitmap, not a 48pt one — but ``AsyncThumbnail``'s two-step paint: a bucket-TOLERANT
+/// synchronous hit on the grid's larger bitmap draws the neighbour on the first frame,
+/// and the small exact bucket is then decoded off-main and swapped in. So a step never
+/// shows a hole, and what it costs is a 128px decode on a utility queue rather than a
+/// full-resolution one on the path the picture itself needs.
+///
+/// **Never hidden while zoomed**, unlike the pile and the spread. Those are overlays and
+/// can fade; this is a laid-out row, so removing it would grow the media pane mid-pinch —
+/// a lurch, a re-measure through `onGeometryChange`, and a fresh full-res decode at the
+/// new tier. A row that costs nothing to leave alone is left alone.
+private struct DetailFilmstrip: View {
+    let navigator: ItemDetailNavigator
+    let strip: ItemDetailFilmstrip
+
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        HStack(spacing: DetailFilmstripMetrics.spacing) {
+            ForEach(
+                detailFilmstripWindow(
+                    count: navigator.count, currentIndex: navigator.index,
+                    cap: DetailFilmstripMetrics.cap),
+                id: \.self
+            ) { position in
+                thumb(at: position)
+            }
+        }
+        .padding(.vertical, DetailFilmstripMetrics.padding)
+        // Centred under the artwork, as 041 asks. `maxWidth: .infinity` on the ROW
+        // rather than an offset, so the strip's frame and its pixels are the same
+        // rectangle — the lesson ``ItemDetailView/fanSpread`` documents at length.
+        .frame(maxWidth: .infinity)
+        // The artwork's own ground, so the strip reads as the floor of the media area
+        // rather than as a second panel butted against it.
+        .background(Theme.Colors.mediaBackdrop)
+    }
+
+    /// One neighbour. A `Button` for ``DetailFanSpread``'s reason: the thumbnails are
+    /// targets, and a button carries the focus ring and the accessibility action a bare
+    /// tap gesture does not.
+    private func thumb(at position: Int) -> some View {
+        let isCurrent = position == navigator.index
+        return Button {
+            // Through the navigator's OWN `step`, by delta — the same entry point the
+            // arrow keys and the pager buttons use, so a click on the strip cannot walk
+            // to a place the arrows could not. Every host already validates the target
+            // against its live run, so no second clamp is invented here.
+            //
+            // The open item is a no-op rather than a zero-delta step: `step(0)` is a
+            // legal call that would re-present the same item and bump its view count
+            // for a click that asked for nothing.
+            guard !isCurrent else { return }
+            navigator.step(position - navigator.index)
+        } label: {
+            artwork(at: position)
+                .frame(
+                    width: DetailFilmstripMetrics.thumbSide,
+                    height: DetailFilmstripMetrics.thumbSide)
+                .clipShape(RoundedRectangle(cornerRadius: DetailFilmstripMetrics.cornerRadius))
+                .overlay {
+                    RoundedRectangle(cornerRadius: DetailFilmstripMetrics.cornerRadius)
+                        .strokeBorder(
+                            isCurrent ? Theme.Colors.selectionMark : Theme.Colors.hairlineStrong,
+                            lineWidth: isCurrent ? 2 : 1)
+                }
+                // The open item is at full strength and its neighbours are dimmed, so
+                // "you are here" needs no badge — the strip's equivalent of the
+                // spread's raise, which a row has no room for.
+                .opacity(isCurrent ? 1 : 0.55)
+        }
+        .buttonStyle(.plain)
+        .help("Item \(position + 1) of \(navigator.count)")
+        .accessibilityLabel("Item \(position + 1) of \(navigator.count)")
+    }
+
+    /// A neighbour's artwork, or the placeholder a media-less item draws. `nil` is a
+    /// SLOT, not a gap — see ``ItemDetailFilmstrip/blobHash``.
+    @ViewBuilder
+    private func artwork(at position: Int) -> some View {
+        if let hash = strip.blobHash(position) {
+            AsyncThumbnail(
+                hash: hash, url: strip.thumbnailURL(hash),
+                cornerRadius: DetailFilmstripMetrics.cornerRadius,
+                bucket: DetailFilmstripMetrics.bucket(scale: displayScale))
+        } else {
+            RoundedRectangle(cornerRadius: DetailFilmstripMetrics.cornerRadius)
+                .fill(Theme.Colors.panel)
+                .overlay {
+                    Image(systemName: "doc")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.Colors.inkSecondary)
+                }
+        }
+    }
+}
+
 /// The right-hand details column (041 · Figma `6:4`): three sections — **Data**
 /// (saved + dimensions), **Source** (platform / author / title + Visit), and
 /// **Details** (Name, Note, Collections, Tags). The former in-panel Actions block
@@ -1750,8 +1988,84 @@ private struct DataSection: View {
     }
 }
 
-/// "Source" — platform / author / title / post, then a full-width Visit button that
-/// opens the original URL (041; the raw-URL + handle rows are gone).
+// MARK: - X repost / thread provenance (089)
+
+/// The handle of whoever REPOSTED the tweet this item came out of, or `nil`.
+///
+/// `bulk-twitter.js` unwraps a repost and saves the ORIGINAL's media, text, author and
+/// id — *"so a reposted tweet saves the original's media (not an empty 'RT @user…')"* —
+/// which leaves who reposted it as the one fact the unwrap would otherwise drop. It
+/// rides `rawMetadata.repostedBy` (`bulk-twitter.js:274`), written ONLY when there is
+/// one: *"a plain tweet's stored metadata stays exactly as it was rather than gaining a
+/// null key."*
+///
+/// [089](../.docs/089-x-post-fidelity-design.md) §Open listed this among three fields
+/// *"stored but unread by the app UI"*. It has been written since 310 and read by
+/// nothing until now; **nothing new is stored** to render it.
+///
+/// The same narrowness ``explicitPostGroupKey(for:)`` states about itself, for a milder
+/// reason — a wrong value here is a wrong LINE, not a fused post: a non-empty STRING
+/// only, trimmed, so a producer that writes `""` or a number contributes no row rather
+/// than a blank one.
+nonisolated func repostedBy(for source: Source) -> String? {
+    guard case let .object(fields) = source.rawMetadata,
+          case let .string(handle)? = fields["repostedBy"] else { return nil }
+    let trimmed = handle.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+/// The id of the THREAD this item's tweet belongs to — the head tweet's id — or `nil`.
+///
+/// `mapThread` stamps it on every item of an expanded X thread (`twitter-thread.js:210`),
+/// taking it from the first tweet that mapped to anything, so a whole thread shares one.
+///
+/// **A string only, and never a number.** A tweet id is a 64-bit snowflake — the real
+/// capture's is `1900000000000040001` — which is past `Double`'s 2^53 of exact integers,
+/// so a `.number` here could not be rendered back without corrupting the last digits.
+/// This is where the tolerance ``carouselIndex(for:)`` deliberately grants a quoted
+/// number would be a bug rather than a kindness: a small index survives the round trip
+/// and an id does not.
+nonisolated func threadID(for source: Source) -> String? {
+    guard case let .object(fields) = source.rawMetadata,
+          case let .string(id)? = fields["threadId"] else { return nil }
+    let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+/// This item's tweet's 0-based position in its thread, or `nil`.
+///
+/// Stamped beside ``threadID(for:)`` by the same pass — *"its position in the chain,
+/// media of one tweet sharing one index"* — so two images of thread part 3 both read 2,
+/// which is the fact: they are the same tweet.
+///
+/// Tolerant of a quoted number for ``carouselIndex(for:)``'s reason (`raw_metadata` is a
+/// JSON escape hatch written by JavaScript, and a producer that serialises `"0"` should
+/// not silently drop the row) — and unlike the id above, an index is small enough that
+/// the round trip is exact either way.
+///
+/// Negatives are rejected rather than clamped: there is no zeroth-minus-one tweet, and a
+/// negative would mean the stamp is wrong, which is better said by drawing no row than
+/// by rendering "Tweet 0".
+nonisolated func threadIndex(for source: Source) -> Int? {
+    guard case let .object(fields) = source.rawMetadata,
+          let raw = fields["threadIndex"] else { return nil }
+    let value: Int?
+    switch raw {
+    case let .number(number): value = Int(exactly: number.rounded())
+    case let .string(text): value = Int(text)
+    default: value = nil
+    }
+    guard let value, value >= 0 else { return nil }
+    return value
+}
+
+/// "Source" — platform / author / title / post, the X repost and thread stamps, then a
+/// full-width Visit button that opens the original URL (041; the raw-URL + handle rows
+/// are gone).
+///
+/// The last three rows are 089 §Open's — see ``repostedBy(for:)``, ``threadIndex(for:)``
+/// and ``threadID(for:)``. Every one of them is absent on almost every item, so the
+/// section a typical post draws is the one it drew before they existed.
 private struct SourceSection: View {
     let source: Source
     /// The post this item came out of (080 §3.3). It lives HERE, in Source, rather
@@ -1788,6 +2102,28 @@ private struct SourceSection: View {
             // artwork says a post is there; this row says which of it you are on.
             if let post, showsPostPosition(memberCount: post.memberCount) {
                 DetailRow("Post", "Image \(post.index + 1) of \(post.memberCount)")
+            }
+            // The three X fields 089 §Open recorded as "stored but unread by the app
+            // UI". Each is gated on its OWN presence, independently, because they do
+            // not travel together: a repost is not a thread and a thread is not a
+            // repost. The overwhelming majority of posts carry none of the three — a
+            // plain bookmarked tweet has no `repostedBy` and no thread stamp — and
+            // render exactly the section they rendered before this row existed.
+            if let reposter = repostedBy(for: source) {
+                DetailRow("Reposted by", reposter)
+            }
+            // 1-based for a reader, as the "Post" row directly above already is: the
+            // stamp counts from zero because it is an array position, and nobody
+            // walking a thread calls the first tweet "tweet 0".
+            if let position = threadIndex(for: source) {
+                DetailRow("Thread", "Tweet \(position + 1)")
+            }
+            // The head tweet's id — the thread's identity, and selectable, which is
+            // what makes it worth a row: it is the one stored fact that lets a reader
+            // find the thread again. 089 §Open notes the individual tweet's permalink
+            // is reconstructible but not stored, so this is not rendered as a link.
+            if let id = threadID(for: source) {
+                DetailRow("Thread ID", id)
             }
             if let onOpenSource {
                 VisitButton(action: onOpenSource)

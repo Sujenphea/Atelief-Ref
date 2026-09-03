@@ -1690,13 +1690,26 @@ struct LooseDetailOverlay: View {
                         // 023 · A3 — the same verb the grid menus offer, from the page.
                         setArchived: { model.setArchived($0, assetIDs: [asset.id]) }),
                     navigator: index.map { i in
-                        ItemDetailNavigator(index: i, count: results.count) { delta in
-                            let target = i + delta
-                            if results.indices.contains(target) {
-                                current = results[target]
-                                model.recordView(assetID: results[target].asset.id)
-                            }
-                        }
+                        ItemDetailNavigator(
+                            index: i, count: results.count,
+                            step: { delta in
+                                let target = i + delta
+                                if results.indices.contains(target) {
+                                    current = results[target]
+                                    model.recordView(assetID: results[target].asset.id)
+                                }
+                            },
+                            // The bottom filmstrip's artwork (041), off the SAME
+                            // `results` the pager counts and the arrows walk — and
+                            // bounds-checked, because the window is derived from a
+                            // `count` read one body pass earlier and a re-run of the
+                            // query can shrink the results in between.
+                            filmstrip: ItemDetailFilmstrip(
+                                blobHash: { position in
+                                    guard results.indices.contains(position) else { return nil }
+                                    return results[position].asset.blobHash
+                                },
+                                thumbnailURL: { model.thumbnailURL(forBlobHash: $0) }))
                     },
                     // The post the page is inside (080 §3.1), off the SAME grouping
                     // that produced `results` above. Search's synthetic membership
