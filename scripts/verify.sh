@@ -18,11 +18,30 @@
 #                               Seconds. Catches the class of break above.
 #   ./scripts/verify.sh         the full CI matrix: package tests, the
 #                               extension's node tests + drift check, the app's
-#                               build-and-test, the macOS UI smoke suite
-#                               (099 · P2), and a Release BUILD of the app
+#                               build-and-test, and a Release BUILD of the app
 #                               (099 · 8A — the only stage that compiles the
 #                               `#if DEBUG` guards' other side).
+#   ./scripts/verify.sh ui      the macOS UI smoke suite (099 · P2) ALONE.
+#                               Deliberately NOT part of `full` — see below.
 #
+# **Why the UI suite is not in the gate** (099 · issue 23, the user's call).
+# `AtelierRefsUITests` is real and it works; what does not work is running it
+# unattended. Its runner must be signed AD-HOC — an unsigned XCTest runner is
+# SIGKILLed before it connects — and an ad-hoc signature has no team, so its
+# designated requirement collapses to the exact cdhash. Every rebuild is
+# therefore a stranger to macOS, and the TCC automation grant and keychain ACL
+# that the previous build earned do not carry over. The observed failures are
+# `Test crashed with signal kill`, a 30 s main-thread block on a keychain prompt
+# nothing can answer (fixed separately in 471), and finally an automation session
+# that sets up and then sees NO WINDOWS in a demonstrably healthy app.
+#
+# None of that is a signal about the code, and a gate that reddens for reasons
+# the code cannot fix is a gate people learn to re-run past — the exact road 464
+# was written to get off. So it is out of `full` rather than warned-about: a UI
+# failure that DID mean something would otherwise be indistinguishable.
+#
+# Run it by hand with `verify.sh ui` after granting the prompts, or wire it back
+# into `full` once the runner signs with a stable identity (issue 23C).
 # Exit code is non-zero if any stage fails; every stage runs regardless, so one
 # failure does not hide the others (CI's `fail-fast: false`).
 
@@ -32,8 +51,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CI_FILE="${REPO_ROOT}/.github/workflows/ci.yml"
 MODE="${1:-full}"
 
-if [[ "${MODE}" != "fast" && "${MODE}" != "full" ]]; then
-    echo "usage: $0 [fast|full]" >&2
+if [[ "${MODE}" != "fast" && "${MODE}" != "full" && "${MODE}" != "ui" ]]; then
+    echo "usage: $0 [fast|full|ui]" >&2
     exit 2
 fi
 
@@ -234,6 +253,13 @@ extension_tests() {
 
 # --- Run --------------------------------------------------------------------
 
+if [[ "${MODE}" == "ui" ]]; then
+    # The UI suite alone, on purpose and by hand. See the header for why it is
+    # not in `full`. Expect to answer a macOS permission prompt after a rebuild.
+    printf '\033[1mverify.sh (ui) — the macOS smoke suite only\033[0m\n'
+    run_stage "App target (UI)" app_ui_tests
+else
+
 printf '\033[1mverify.sh (%s) — %d packages from ci.yml\033[0m\n' \
     "${MODE}" "${#PACKAGES[@]}"
 
@@ -243,12 +269,10 @@ done
 
 run_stage "App target" app_target
 
-# Both extra app stages are full-mode. The UI suite launches the app three times
-# and Release is a second whole-app compile; `fast` is meant to stay in the
-# seconds. Neither checks the kind of thing that changes between one edit and the
-# next — a window that opens, and guards on the other side of `#if DEBUG`.
+# Release is a full-mode stage: a second whole-app compile, and `fast` is meant
+# to stay in the seconds. The guards it checks are not the kind that change
+# between one edit and the next.
 if [[ "${MODE}" == "full" ]]; then
-    run_stage "App target (UI)" app_ui_tests
     run_stage "App target (Release)" app_release_build
 fi
 
@@ -257,6 +281,8 @@ fi
 if [[ "${MODE}" == "full" ]]; then
     run_warnable_stage "Extension" extension_tests
 fi
+
+fi  # end non-ui modes
 
 # --- Summary ----------------------------------------------------------------
 
