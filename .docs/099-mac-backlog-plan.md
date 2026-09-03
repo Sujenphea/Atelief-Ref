@@ -547,6 +547,34 @@ with this phase STASHED fails the unchanged launch flow the same way — 474's b
 
 **Verify:** `verify.sh` full.
 
+**Done** ([476](../.change-log/476-the-palette-is-the-second-window.md)). The backlog's
+claim was verified before anything was written and it was TRUE: `AtelierRefsApp` declared
+one `WindowGroup` and the standard `Settings` scene, and nothing else. It now declares a
+`Window("Reference Palette", id: "palette")` — a `Window` and not a `WindowGroup`, which
+is what makes 011's *one window, one focus* a property of the scene graph rather than a
+rule someone enforces. The key is **⇧⌘P**, chosen against `KeyMap` after P5's ⌘K
+(`shiftCommandPIsTheReferencePalette`); plain ⌘P is deliberately left to Print and
+`commandPIsFree` says so. `GridInteraction` (`allowsSelection` / `allowsContextMenu` /
+`allowsKeyboard`) is the read-only shape, defaulted to `.full` so no existing grid
+changed, and drag-out is deliberately NOT one of the flags. The picker is P5's
+`SwitcherModel` over P5's `SwitcherRanking` with ONE addition — `PaletteDestinations
+.canShow(_:)`, a `switch` with no `default` — and the seams P5 needed were two words:
+`SwitcherRow` became internal and took an `identifier`.
+
+**The inherited handoff turned out to be load-bearing.** P4 fixed `dragPayload` to stamp
+the loaded feed's id, but fixed it on `IngestionModel`, which reads exactly ONE read
+model. A second window would have re-created the bug one level up — a drag out of the
+palette carrying the MAIN window's collection, which `routeDrop` reads as a MOVE. The
+rule moved down to `CollectionReadModel.dragSourceID`; `IngestionModel` forwards and
+`SmartCollectionView` stopped spelling the sentinel itself.
+
+**The smoke flow is written and, as P5's was, could not be observed**
+(`testShiftCommandPOpensTheReferencePalette`): `App target (UI)` is out of the gate (474)
+and `verify.sh ui` cannot run at all on this machine (issue 23C). Two things it would not
+have asserted anyway are named in the flow's own doc comment: `.windowLevel(.floating)`
+has no accessibility surface, and "a second ⇧⌘P does not spawn a second palette" is a
+property of `Window` rather than of any code here.
+
 ## P7 — rebase onto 098 · P4, and the tree that lives in Browse · **done** ([467](../.change-log/467-four-builders-and-the-numbers-that-collided.md))
 
 *Decision 5A. Scheduled after P6; the user resequenced it to run after P1 (issue 19A),
@@ -727,7 +755,7 @@ supplied. 12A's rule applies to each. Effort M each.*
 | P3 | done — one read model, one write funnel, one coalescer; 071 · 0a closed its own gate negatively | [472](../.change-log/472-the-feed-gets-a-model-of-its-own.md) |
 | P4 | done — a second read model mounted; 057's archive claim found FALSE and pinned; `App target (UI)` since blocked by 470's signing prompt (fails on `HEAD` too) | [473](../.change-log/473-the-saved-search-becomes-a-place.md) |
 | P5 | done — its own surface, the shared ordering; a documented three-tier ranking, a per-library MRU, no verbs; the smoke flow is written but ungated (474) | [475](../.change-log/475-the-switcher-is-its-own-surface.md) |
-| P6 | not started | — |
+| P6 | done — a second scene at floating level, ⇧⌘P, read-only `GridInteraction`, P5's ranking behind one filter; the drag-source rule moved to the read model. A space in the palette is the named follow-up | [476](../.change-log/476-the-palette-is-the-second-window.md) |
 | P7 | done — rebased onto `395e471`; 5A closed; 457–460 → 463–466 | [467](../.change-log/467-four-builders-and-the-numbers-that-collided.md) |
 | P8 | not started | — |
 | P9 | not started | — |

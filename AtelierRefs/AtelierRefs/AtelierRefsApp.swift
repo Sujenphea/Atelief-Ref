@@ -28,10 +28,16 @@ struct AtelierRefsApp: App {
     /// would never see the change.
     @StateObject private var gridPrefs = GridViewPreferences()
     @StateObject private var updater = UpdaterController()
+    /// The floating reference palette's state (099 · P6, 011 · Cluster D). App
+    /// level for `model`'s and `gridPrefs`' reason and one more of its own: the
+    /// palette is a SEPARATE SCENE from the shell, and a state object owned by
+    /// either would give the other its own copy — so a sidebar row's "Open in
+    /// Palette" would set a destination the palette window could never see.
+    @StateObject private var palette = PaletteModel()
 
     var body: some Scene {
         WindowGroup {
-            ContentView(model: model, gridPrefs: gridPrefs)
+            ContentView(model: model, gridPrefs: gridPrefs, palette: palette)
         }
         // 006 — content runs full-height with the traffic lights overlaying the
         // sidebar rail (Figma); the standard title bar is hidden.
@@ -78,6 +84,12 @@ struct AtelierRefsApp: App {
                 // because it is the larger of the two navigation verbs.
                 GoToCommand()
                 BackCommand()
+                Divider()
+                // View ▸ Show Reference Palette (⇧⌘P, 099 · P6). Below the two
+                // navigation verbs and behind a separator, because it does not
+                // navigate: it opens a second window that stays where it is while
+                // you go elsewhere.
+                ShowPaletteCommand()
             }
             CommandGroup(after: .saveItem) {
                 SnapshotCommands()
@@ -117,6 +129,28 @@ struct AtelierRefsApp: App {
                 libraryStats: model.libraryStats,
                 gridPrefs: gridPrefs, clipboard: model.clipboard)
         }
+
+        // The floating reference palette (099 · P6 · 011 · Cluster D) — **the app's
+        // second window, and the line that makes "one window group" no longer true**.
+        //
+        // A `Window` and not a `WindowGroup`, which is the whole of 011's "one
+        // window, one focus": a `WindowGroup` opens a new instance per
+        // `openWindow(id:)` and a `Window` raises the one that exists. The rule is
+        // therefore a property of the scene graph rather than a check somebody has
+        // to remember to write.
+        //
+        // `.windowLevel(.floating)` is what "reference while working" means
+        // literally: the palette stays over the app the user is designing in.
+        // `.defaultSize` is a tall narrow strip (``PaletteLayout``) and resizability
+        // is left at the default — 011 asks for a compact window, not a fixed one,
+        // and a reference the user cannot make bigger is a reference they stop
+        // using. `.hiddenTitleBar` matches the shell (006).
+        Window("Reference Palette", id: PaletteModel.windowID) {
+            PaletteView(model: model, palette: palette)
+        }
+        .windowLevel(.floating)
+        .defaultSize(width: PaletteLayout.defaultWidth, height: PaletteLayout.defaultHeight)
+        .windowStyle(.hiddenTitleBar)
     }
 }
 
@@ -375,6 +409,32 @@ private struct GoToCommand: View {
         Button("Go to…") { nav?.showSwitcher = true }
             .keyboardShortcut("k", modifiers: .command)
             .disabled(nav == nil)
+    }
+}
+
+/// View ▸ Show Reference Palette (⇧⌘P, 099 · P6 · 011 · Cluster D).
+///
+/// **It is never disabled, and that is deliberate.** Every other command in this
+/// file reaches the app through a focused-scene value and disables when there is no
+/// shell — which is right for a verb that acts on what you are looking at. This one
+/// acts on a DIFFERENT window, and the case that matters is the one where the
+/// palette itself has the keyboard: the palette scene publishes no focused values,
+/// so a `@FocusedObject` gate here would grey out the item exactly when the user
+/// pressed ⇧⌘P to bring the palette back after clicking away from it.
+///
+/// `openWindow(id:)` on a ``Window`` scene raises the one instance rather than
+/// making a second (011's "one window"), so a second press is a focus, not a spawn.
+/// It does not change what the palette SHOWS — the palette remembers that itself
+/// (``PaletteModel/activate(libraryID:)``); only "Open in Palette" on a sidebar row
+/// re-points it.
+private struct ShowPaletteCommand: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Show Reference Palette") {
+            openWindow(id: PaletteModel.windowID)
+        }
+        .keyboardShortcut("p", modifiers: [.command, .shift])
     }
 }
 

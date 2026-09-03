@@ -16,7 +16,9 @@
 //  flakiest kind there is, and the reason to accept that cost is that a launch and a
 //  keystroke cannot be simulated any other way; anything that CAN be a `swift test`
 //  belongs there. That is also why there are no layout assertions here: nothing below
-//  reads a frame, a colour or a size. 099 · P5 added the ⌘K flow; P6 adds the palette.
+//  reads a frame, a colour or a size. 099 · P5 added the ⌘K flow, and P6 the palette's
+//  — which is also the first flow here that asserts something about TWO windows at
+//  once rather than about one.
 //
 //  **Nothing runs this target automatically any more.** [474] took `App target (UI)`
 //  out of `verify.sh full` — the runner must sign ad-hoc, an ad-hoc signature's
@@ -245,6 +247,112 @@ final class SmokeUITests: XCTestCase {
         attach(app, named: "switcher-committed")
     }
 
+    // MARK: - ⇧⌘P — the reference palette
+
+    /// ⇧⌘P opens the reference palette as a SECOND window, its picker finds the
+    /// nested collection, and the palette then shows something the main window does
+    /// not.
+    ///
+    /// **The last clause is the whole flow.** "A second window exists" is what ⌘,
+    /// already asserts; what a palette claims that nothing else in this app did is
+    /// that TWO WINDOWS CAN SHOW DIFFERENT FEEDS AT THE SAME TIME — which was the
+    /// point of 099 · 1A's per-window read model and could not be demonstrated until
+    /// there was a second window to demonstrate it in. So the flow ends with the
+    /// palette on `Concrete` and the shell still on Home, in the same screenshot.
+    ///
+    /// **Two things this flow deliberately does NOT assert, and neither is an
+    /// oversight:**
+    ///
+    ///  1. **The window's LEVEL.** `.windowLevel(.floating)` is a scene modifier and
+    ///     has no accessibility surface — XCUITest can ask for a window's frame and
+    ///     its elements, never its `NSWindow.Level`. There is no assertion to write,
+    ///     so this is a manual check (drag the palette over another app and see) and
+    ///     the changelog says so rather than this flow implying it.
+    ///  2. **That a second ⇧⌘P does not spawn a second palette.** It cannot spawn
+    ///     one: a `Window` scene has exactly one instance by construction, which is a
+    ///     property of the scene graph rather than of any code this suite could
+    ///     regress. Asserting a window count after a second press would be testing
+    ///     SwiftUI.
+    ///
+    /// **This flow is NOT gated.** [474](../../.change-log/474-the-gate-stops-claiming-a-window.md)
+    /// took `App target (UI)` out of `verify.sh full`, so nothing runs it unless a
+    /// person types `./scripts/verify.sh ui`. The palette's scope rule, its memory,
+    /// its picker's ranking and — the one that matters most — what a drag out of it
+    /// carries all carry their weight in `swift test` instead: `PaletteModelTests`,
+    /// `PaletteDragSourceTests`, `GridReadOnlyTests`.
+    @MainActor
+    func testShiftCommandPOpensTheReferencePalette() {
+        let app = launch()
+        let main = app.windows.firstMatch
+        XCTAssertTrue(main.waitForExistence(timeout: 60), "the app opened no window")
+        XCTAssertTrue(
+            app.buttons[Fixture.homeCard(Fixture.textures)].waitForExistence(timeout: 60),
+            "the seeded library never appeared")
+        let mainIdentifier = main.identifier
+
+        // Frontmost, then type — the rule the ⌘, flow paid for twice.
+        bringToFront(app)
+        app.typeKey("p", modifierFlags: [.command, .shift])
+
+        // The palette drew, and it is its own window rather than a panel over the
+        // shell: the control below is the only thing in the app that carries this
+        // identifier, and the window walk says which window has it.
+        let chooser = app.buttons[Fixture.paletteDestination]
+        XCTAssertTrue(
+            chooser.waitForExistence(timeout: 30), "⇧⌘P opened no reference palette")
+        let opened = app.windows.allElementsBoundByIndex
+            .filter { $0.identifier != mainIdentifier }
+        XCTAssertEqual(
+            opened.count, 1,
+            "⇧⌘P left \(opened.count) windows besides the one the app launched with")
+        XCTAssertTrue(
+            opened[0].buttons[Fixture.paletteDestination].exists,
+            "the window ⇧⌘P opened is not the reference palette")
+        attach(app, named: "palette-open")
+
+        // A fresh library has no remembered destination, so the palette opens empty
+        // and says so rather than showing a grid of nothing.
+        XCTAssertTrue(
+            app.staticTexts[Fixture.paletteEmpty].firstMatch.exists
+                || app.otherElements[Fixture.paletteEmpty].firstMatch.exists,
+            "a palette with nothing chosen did not say so")
+
+        XCTAssertTrue(
+            waitForHittable(chooser, timeout: 15),
+            "the palette's destination control never became clickable")
+        chooser.click()
+
+        // The picker is P5's ranking over a narrower list — so, as with ⌘K, the
+        // NESTED collection is reachable by typing without disclosing its parent.
+        XCTAssertTrue(
+            app.textFields[Fixture.paletteField].waitForExistence(timeout: 15),
+            "the palette's picker did not open")
+        app.typeText(Fixture.concrete)
+        let row = app.buttons[Fixture.paletteRow(Fixture.concrete)]
+        XCTAssertTrue(
+            row.waitForExistence(timeout: 15),
+            "the palette's picker did not offer “\(Fixture.concrete)”")
+        // …and a Space is never offered here, however the query is spelled — the
+        // palette's one addition to the shared search (011 · Cluster D).
+        XCTAssertFalse(
+            app.buttons[Fixture.paletteRow(Fixture.space)].exists,
+            "the palette offered a Space, which is not in v1")
+        attach(app, named: "palette-picker")
+
+        app.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
+
+        // The palette now names the nested collection…
+        XCTAssertTrue(
+            waitForLabel(chooser, containing: Fixture.concrete, timeout: 30),
+            "the palette did not switch to “\(Fixture.concrete)”")
+        // …while the MAIN window is still on Home, showing a card the palette is not.
+        // Two windows, two feeds, one library — which is the claim.
+        XCTAssertTrue(
+            app.buttons[Fixture.homeCard(Fixture.textures)].exists,
+            "the main window left Home when the palette changed subject")
+        attach(app, named: "palette-showing-nested")
+    }
+
     // MARK: - Fixtures
 
     /// The seeded library's names, and the identifiers the app puts on the elements that
@@ -280,6 +388,21 @@ final class SmokeUITests: XCTestCase {
         static func switcherRow(_ name: String) -> String { "switcher.row.\(name)" }
         /// `AccessibilityID.collectionTitle(_:)`.
         static func collectionTitle(_ name: String) -> String { "collection.title.\(name)" }
+
+        // 099 · P6 — the reference palette.
+
+        /// `FixtureLibrary.Names.space`. The palette must never offer it.
+        static let space = "Moodboard"
+        /// `AccessibilityID.paletteDestinationButton`.
+        static let paletteDestination = "palette.destination"
+        /// `AccessibilityID.paletteField`.
+        static let paletteField = "palette.field"
+        /// `AccessibilityID.paletteEmptyState`.
+        static let paletteEmpty = "palette.empty"
+        /// `AccessibilityID.paletteRow(_:)`. Spelled apart from `switcherRow` because
+        /// the two pickers share their ranking and their row VIEW — a flow that could
+        /// not tell them apart would pass while reading the wrong surface.
+        static func paletteRow(_ name: String) -> String { "palette.row.\(name)" }
     }
 
     /// Every collections-tree row, in the order the sidebar draws them.
@@ -386,6 +509,28 @@ final class SmokeUITests: XCTestCase {
             _ = element.waitForExistence(timeout: 0.2)
         }
         return !element.exists
+    }
+
+    /// Wait for an element's LABEL to contain `text` (099 · P6).
+    ///
+    /// The palette's title is a `Text` INSIDE the button that raises its picker, and
+    /// SwiftUI has already merged the two into one accessibility element — so the
+    /// name is readable as part of the button's label and is not an element of its
+    /// own. Putting an identifier on the inner `Text` would name a container's child,
+    /// which is the bug class `AccessibilityIdentifiers.swift`'s header exists to
+    /// forbid (098: `export.sent` on a `VStack` renamed everything inside it). So the
+    /// flow reads the label instead, and this is `waitForHittable`'s poll with the
+    /// condition changed — a state change, not a settling delay.
+    @MainActor
+    private func waitForLabel(
+        _ element: XCUIElement, containing text: String, timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists && element.label.contains(text) { return true }
+            _ = element.waitForExistence(timeout: 0.2)
+        }
+        return element.exists && element.label.contains(text)
     }
 
     @MainActor

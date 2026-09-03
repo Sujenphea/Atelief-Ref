@@ -28,6 +28,50 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
+// MARK: - What the grid lets you do (099 · P6)
+
+/// The three interaction verbs a grid host can be denied, as one value.
+///
+/// Every grid before 099 · P6 was fully interactive, and each surface said what it
+/// could not do by passing a no-op closure or a narrower menu style — which works
+/// while "cannot" means "has nothing to act on". The floating reference palette
+/// (011 · Cluster D) is the first surface whose grid is READ-ONLY as a design
+/// decision rather than as a consequence: it shows a collection you are *referring
+/// to* while you work in another app, and its whole job is to be glanceable and to
+/// be dragged out of.
+///
+/// So the denial is stated positively, once, rather than left as the absence of
+/// wiring: a reader of a call site sees `.readOnly` instead of inferring it from
+/// six closures that do nothing.
+///
+/// **Drag-out is not one of these flags, deliberately.** It stays on in every
+/// configuration, because a palette that could not be dragged out of would have no
+/// purpose at all — and it works with selection off for free, since
+/// ``MasonryGridCoordinator/beginDragHandoff(id:downEvent:)`` reads the PRESSED
+/// cell rather than the selection.
+struct GridInteraction: Equatable {
+    /// Clicks and the background marquee change the selection, and cells show the
+    /// enter-selection circle on hover. `false` also stops the grid taking first
+    /// responder on a click — there would be nothing for the keyboard to do.
+    var allowsSelection = true
+    /// Right-click (and the Menu key) build a context menu.
+    var allowsContextMenu = true
+    /// `keyDown` / `performKeyEquivalent` / the delete responder methods are read.
+    /// `false` falls THROUGH to `super` rather than swallowing, so the window's own
+    /// keys and the menu bar still work over a read-only grid — the rule
+    /// ``GridHostConfiguration/onDestinationVerb`` states for one letter, applied
+    /// to the whole keyboard.
+    var allowsKeyboard = true
+
+    /// Everything on — every grid that existed before 099 · P6, and the default,
+    /// so not one existing call site changed.
+    static let full = GridInteraction()
+
+    /// Look, and drag out. Nothing else (011 · Cluster D).
+    static let readOnly = GridInteraction(
+        allowsSelection: false, allowsContextMenu: false, allowsKeyboard: false)
+}
+
 // MARK: - Configuration
 
 /// Everything the host needs, as a plain value struct rebuilt on every SwiftUI
@@ -257,6 +301,13 @@ struct GridHostConfiguration {
     /// Defaulted to zero so the search grid — which keeps its own SwiftUI padding
     /// for now — and every prior caller are unchanged.
     var contentInsets = NSEdgeInsets()
+
+    // MARK: 099 · P6 — read-only reuse
+
+    /// What the pointer and the keyboard may do here (099 · P6). Defaulted to
+    /// ``GridInteraction/full`` so every grid built before the palette is unchanged;
+    /// the palette passes ``GridInteraction/readOnly``.
+    var interaction: GridInteraction = .full
 }
 
 /// A handle onto the live grid view, so whoever raised a popover over the grid can
@@ -713,6 +764,10 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     /// SAME reducer seam the SwiftUI `MarqueeCaptureLayer` used, and its hit-test
     /// reads the ANALYTIC frames (never live cell frames — the pixel-snap asterisk).
     private func makeMarqueeController(on collectionView: MasonryNSCollectionView) {
+        // A read-only grid has no selection to rubber-band into (099 · P6), so the
+        // controller is not built rather than built and then never fed: an unbuilt
+        // one cannot be reached by a path someone adds later.
+        guard configuration.interaction.allowsSelection else { return }
         let controller = GridMarqueeController(collectionView: collectionView)
         controller.itemIDs = { [weak self] in self?.items.map { $0.item.id } ?? [] }
         controller.frames = { [weak self] in self?.layout.solvedFrames ?? [] }
@@ -965,7 +1020,12 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         CellSelectionState(
             isSelected: selection.ids.contains(id),
             isCursor: selection.lead == id,
-            isSelecting: selection.isSelecting)
+            isSelecting: selection.isSelecting,
+            // 099 · P6 — the enter-selection circle is an INVITATION, and on a
+            // read-only grid it draws on hover for a gesture that does nothing.
+            // Passed per cell rather than set once because a cell is configured
+            // and reconciled from two places and only this value goes to both.
+            allowsSelection: configuration.interaction.allowsSelection)
     }
 
     /// The pixel bucket for a cell, from its ANALYTIC frame (the cell never
@@ -1099,6 +1159,17 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         guard let index = layout.hitTestIndex(at: point), items.indices.contains(index)
         else { return }
         let id = items[index].item.id
+        // A read-only grid (099 · P6) still has to CLASSIFY the press, because a
+        // drag out of it is the one thing it can do — so the threshold loop runs
+        // with the release already spoken for, which makes a click a no-op and a
+        // drag a hand-off. It does not take first responder: there is no keyboard
+        // verb here to focus for, and stealing the responder from whatever the
+        // palette's picker was using would be a bug with no upside.
+        guard configuration.interaction.allowsSelection else {
+            classifyClickOrDrag(
+                id: id, downEvent: event, consumesRelease: true, shift: false, command: false)
+            return
+        }
         // Focus follows the click, so keyboard nav works afterwards.
         collectionView?.window?.makeFirstResponder(collectionView)
 
@@ -1309,6 +1380,11 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     // MARK: Background mouse — marquee + click-to-clear (036 §4 A3)
 
     func gridBackgroundMouseDown(_ event: NSEvent) {
+        // A read-only grid has no marquee and nothing to clear (099 · P6). The
+        // controller is never built there, so the two lines below would already be
+        // no-ops — except `makeFirstResponder`, which is not, and which would take
+        // the keyboard away from the palette's picker for nothing.
+        guard configuration.interaction.allowsSelection else { return }
         // Focus the grid so keyboard nav works after a background click, matching a
         // cell click (A2). Then hand the down to the marquee controller.
         collectionView?.window?.makeFirstResponder(collectionView)
@@ -1327,6 +1403,10 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     // MARK: Context menu (036 §4 A3 — native NSMenu, hit-tested target)
 
     func gridMenu(for event: NSEvent) -> NSMenu? {
+        // 099 · P6 — a read-only grid offers no verbs, so it offers no menu. `nil`
+        // is the same answer a right-click on a gap already gives, which is why
+        // there is no third state to draw.
+        guard configuration.interaction.allowsContextMenu else { return nil }
         // Resolve the target cell from the cursor over the ANALYTIC frames (the same
         // query the marquee / C4 container menu ran). A gap → nil (no menu), parity
         // with right-clicking empty space. A non-pointer invocation (Menu key, no
@@ -1727,6 +1807,10 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     // MARK: Keyboard (036 §4 A2 — reuse GridNavigation + the reducer)
 
     func gridKeyDown(_ event: NSEvent) -> Bool {
+        // 099 · P6 — a read-only grid reads no key. `false` and not a swallow: the
+        // event falls through to `super` and on up the responder chain, so the
+        // palette window's own keys (and every menu equivalent) still work over it.
+        guard configuration.interaction.allowsKeyboard else { return false }
         // The detail page owns the keyboard while it is up (069). The grid keeps first
         // responder behind it, so anything consumed here is a key the page never sees —
         // which is what killed its ← / →. Falling through leaves Escape working exactly
@@ -1752,6 +1836,11 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
     }
 
     func gridPerformKeyEquivalent(_ event: NSEvent) -> Bool {
+        // 099 · P6 — see ``gridKeyDown(_:)``. This arm matters MORE than that one:
+        // `performKeyEquivalent` walks the VIEW hierarchy rather than the responder
+        // chain, so a read-only grid that answered here would claim ⌘⌫ for a window
+        // whose keyboard it does not own.
+        guard configuration.interaction.allowsKeyboard else { return false }
         let mods = event.modifierFlags
         guard mods.contains(.command) else { return false }
         let chars = event.charactersIgnoringModifiers ?? ""
@@ -1773,7 +1862,14 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         return execute(keyCommand: command)
     }
 
-    func gridDeleteCommand() { configuration.onRequestRemove() }
+    /// The bare-Delete responder method. Gated on the same flag as the other two
+    /// keyboard seams (099 · P6) — it arrives by a THIRD route (`deleteBackward:`
+    /// off the responder chain), which is exactly why the guard has to be repeated
+    /// here rather than assumed from `gridKeyDown`.
+    func gridDeleteCommand() {
+        guard configuration.interaction.allowsKeyboard else { return }
+        configuration.onRequestRemove()
+    }
 
     /// Run a decoded ``DeleteIntent`` against this grid's two seams — the ONE place
     /// the grid turns "which delete key" into "which verb", so the responder-method
@@ -1785,9 +1881,19 @@ final class MasonryGridCoordinator: NSObject, NSCollectionViewPrefetching,
         }
     }
 
-    func gridCopyCommand() { configuration.onCopy() }
+    func gridCopyCommand() {
+        guard configuration.interaction.allowsKeyboard else { return }
+        configuration.onCopy()
+    }
 
-    var gridHasSelection: Bool { !configuration.selectionStore.selection.ids.isEmpty }
+    /// Also what disables Edit ▸ Copy (`validateUserInterfaceItem`). A read-only
+    /// grid never has a selection, so this is `false` there by construction — but
+    /// it is stated rather than inferred, because the menu item's enabled state is
+    /// the only place a user could otherwise see a verb the palette does not have.
+    var gridHasSelection: Bool {
+        configuration.interaction.allowsSelection
+            && !configuration.selectionStore.selection.ids.isEmpty
+    }
 
     /// Execute a resolved ``GridKeyCommand``; returns whether it was HANDLED (an
     /// unhandled result falls through to `super.keyDown`). Selection commands route

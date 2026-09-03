@@ -91,6 +91,18 @@ final class IngestionModel: ObservableObject {
     /// only OWNS, never consults.
     let switcherRecents = SwitcherRecents()
 
+    /// The open library's identity, published once ``bootstrap()`` resolves it, or
+    /// `nil` when it could not be resolved (the same "no per-library preferences"
+    /// state the clipboard watcher and the switcher's MRU already live in).
+    ///
+    /// It exists because 099 · P6's ``PaletteModel`` is owned by the APP SCENE
+    /// rather than by this model — the palette is its own window and the two scenes
+    /// have to share one object — so it cannot be activated from inside `bootstrap`
+    /// the way `backup` and `switcherRecents` are. Publishing the id instead of
+    /// reaching for the palette keeps the dependency pointing the right way: this
+    /// model still knows nothing about the palette.
+    @Published private(set) var openLibraryID: String?
+
     /// The selected folder's DIRECT items (decision F5).
     var items: [CollectionItemDetail] { contents.items }
     /// The collection ``items`` currently belong to — the identity a view checks to
@@ -491,19 +503,19 @@ final class IngestionModel: ObservableObject {
     /// drop it reaches can only COPY (`routeDrop`'s `sourceless` arm). That is 057's
     /// rule for a smart collection's grid, reached through the feed that already
     /// states it rather than through a second rule beside it.
+    ///
+    /// **The rule itself moved down to the read model in 099 · P6**
+    /// (``CollectionReadModel/dragPayload(forCellItemID:)``), because the reference
+    /// palette is a second window with a second feed and had to answer the same
+    /// question about ITS rows. This is the main window's forward, so no call site
+    /// changed and there is still exactly one rule.
     func dragPayload(forCellItemID itemID: UUID) -> AssetDragPayload? {
-        let assetIDs = actionTargets(forCellItemID: itemID)
-        guard !assetIDs.isEmpty else { return nil }
-        return AssetDragPayload(assetIDs: assetIDs, sourceCollectionID: dragSourceID)
+        contents.dragPayload(forCellItemID: itemID)
     }
 
-    /// The collection a drag out of this window's grid comes FROM — the loaded
-    /// feed's id, or the membership-less sentinel when the feed has no memberships
-    /// or has not resolved one yet.
-    var dragSourceID: UUID {
-        guard contents.feed.carriesMembership else { return AssetDragPayload.nilSourceID }
-        return contents.loadedCollectionID ?? AssetDragPayload.nilSourceID
-    }
+    /// The collection a drag out of THIS window's grid comes FROM — the main
+    /// window's read model's answer. See ``CollectionReadModel/dragSourceID``.
+    var dragSourceID: UUID { contents.dragSourceID }
 
     /// A pending destructive delete awaiting the user's confirmation. Set by the
     /// three delete surfaces (inspector / grid / canvas); drives one shared
@@ -736,6 +748,11 @@ final class IngestionModel: ObservableObject {
                 // library whose id can't be resolved simply gets no MRU and ranks
                 // by the shared ordering alone.
                 switcherRecents.activate(libraryID: libraryID)
+                // The reference palette's memory of what it last showed is the
+                // FOURTH per-library preference on the same reasoning (099 · P6 /
+                // 016 §C). It is published rather than activated here because the
+                // palette model belongs to the App scene — see ``openLibraryID``.
+                openLibraryID = libraryID
             }
 
             await refreshFolders()

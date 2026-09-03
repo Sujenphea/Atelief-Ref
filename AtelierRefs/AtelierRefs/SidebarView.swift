@@ -23,6 +23,10 @@ import UniformTypeIdentifiers
 struct SidebarView: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
+    /// The reference palette (099 · P6). Carried, not observed — see
+    /// ``CollectionsOutlineView/palette`` for why: the sidebar SETS what the
+    /// palette shows and never reads it back.
+    let palette: PaletteModel
 
     /// Opens the `Settings` scene (⌘,) — the app's only settings surface.
     @Environment(\.openSettings) private var openSettings
@@ -336,6 +340,11 @@ struct SidebarView: View {
                         session: .rename(id: search.id), originalName: search.name)
                     smartFieldFocused = true
                 }
+                // 099 · P6 — the palette shows a saved search as readily as a
+                // collection: `CollectionFeed.savedSearch` is the read, and it is
+                // read-only there by construction (057 gives a query no manual
+                // order and no membership, which is the palette's whole posture).
+                Button("Open in Palette") { palette.show(.savedSearch(search.id)) }
                 Button("Delete", role: .destructive) {
                     model.smartCollections.requestDelete(id: search.id, name: search.name)
                 }
@@ -395,7 +404,7 @@ struct SidebarView: View {
                 // / Move to / Delete) lives in the coordinator; "New Subfolder" begins
                 // an inline draft there (214), Rename still uses the alert below.
                 CollectionsOutlineView(
-                    model: model, nav: nav, height: $outlineHeight,
+                    model: model, nav: nav, palette: palette, height: $outlineHeight,
                     draftRequest: collectionDraftRequest,
                     onRename: { id in
                         renameText = model.folders.first { $0.id == id }?.name ?? ""

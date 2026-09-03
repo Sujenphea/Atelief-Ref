@@ -95,6 +95,11 @@ struct CollectionDraftRequest: Equatable {
 struct CollectionsOutlineView: NSViewRepresentable {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
+    /// The reference palette (099 · P6) — the row menu's "Open in Palette" points it
+    /// at this collection. A plain reference and not an `@ObservedObject`: nothing
+    /// this view draws depends on the palette's state, and observing it would redraw
+    /// the whole collections tree every time the palette changed subject.
+    let palette: PaletteModel
     /// The measured content height, pushed back so the SwiftUI wrapper can size
     /// this non-scrolling view inside the sidebar's own ScrollView.
     @Binding var height: CGFloat
@@ -109,7 +114,7 @@ struct CollectionsOutlineView: NSViewRepresentable {
 
     func makeCoordinator() -> CollectionsOutlineCoordinator {
         CollectionsOutlineCoordinator(
-            model: model, nav: nav, onRename: onRename
+            model: model, nav: nav, palette: palette, onRename: onRename
         ) { [$height] h in
             // Written synchronously from expand/collapse (a click event) so the
             // frame grows in the SAME pass the rows appear — no one-frame glitch.
@@ -135,6 +140,7 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
 
     private let model: IngestionModel
     private let nav: NavModel
+    private let palette: PaletteModel
     private let onRename: (UUID) -> Void
     private let reportHeight: (CGFloat) -> Void
 
@@ -188,12 +194,13 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
     }
 
     init(
-        model: IngestionModel, nav: NavModel,
+        model: IngestionModel, nav: NavModel, palette: PaletteModel,
         onRename: @escaping (UUID) -> Void,
         reportHeight: @escaping (CGFloat) -> Void
     ) {
         self.model = model
         self.nav = nav
+        self.palette = palette
         self.onRename = onRename
         self.reportHeight = reportHeight
         super.init()
@@ -249,6 +256,14 @@ final class CollectionsOutlineCoordinator: NSObject, NSOutlineViewDataSource,
               !isDraftNode(node) else { return }
         let id = node.id
         menu.addItem(SidebarBlockMenuItem(title: "New Subfolder…") { [weak self] in self?.beginDraft(parentID: id) })
+        // 099 · P6 — put THIS collection in the floating reference palette (011 ·
+        // Cluster D). Above the Unsorted guard on purpose: Unsorted is protected
+        // from rename, move and delete because those change it, and looking at it
+        // changes nothing. It is also the one collection that is always there, so
+        // refusing it here would be the palette's least explicable gap.
+        menu.addItem(SidebarBlockMenuItem(title: "Open in Palette") { [weak self] in
+            self?.palette.show(.collection(id))
+        })
         // Unsorted is create-only: it is protected from rename, move and drag, and
         // it is the folder every removal re-homes to.
         guard !node.isUnsorted else { return }

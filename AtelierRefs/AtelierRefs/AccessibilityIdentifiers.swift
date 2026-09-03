@@ -104,3 +104,25 @@ extension AccessibilityID {
     /// should say `.firstMatch` and not depend on that.
     static func collectionTitle(_ name: String) -> String { "collection.title.\(name)" }
 }
+
+// MARK: - The reference palette (099 · P6)
+
+extension AccessibilityID {
+
+    /// The palette's one control: the title button that raises the picker. It is
+    /// also how a flow finds the palette WINDOW — the palette and the shell are on
+    /// screen at once, and nothing else in the app draws this.
+    static let paletteDestinationButton = "palette.destination"
+
+    /// The palette picker's query field. Spelled apart from ``switcherField`` on
+    /// purpose: the two pickers share their ranking and their row view, and a flow
+    /// that could not tell them apart would pass while typing into the wrong one.
+    static let paletteField = "palette.field"
+
+    /// One destination row in the palette's picker, by the name it shows.
+    static func paletteRow(_ name: String) -> String { "palette.row.\(name)" }
+
+    /// The palette's "nothing chosen" / "empty" card — what a flow asserts when it
+    /// means the palette is showing no destination.
+    static let paletteEmptyState = "palette.empty"
+}

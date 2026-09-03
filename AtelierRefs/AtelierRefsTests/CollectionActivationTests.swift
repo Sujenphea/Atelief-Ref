@@ -164,7 +164,8 @@ struct CollectionActivationTests {
         try await settle(on: old.id, model: model)
 
         let coordinator = CollectionsOutlineCoordinator(
-            model: model, nav: nav, onRename: { _ in }, reportHeight: { _ in })
+            model: model, nav: nav, palette: PaletteModel(),
+            onRename: { _ in }, reportHeight: { _ in })
         let outline = coordinator.makeOutlineView()
         pumpSwiftUI(coordinator, model, nav)
 

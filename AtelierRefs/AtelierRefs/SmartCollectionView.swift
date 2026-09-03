@@ -372,10 +372,15 @@ struct SmartCollectionView: View {
     /// The payload a cell drag carries. The sentinel source marks it
     /// membership-less, so every drop COPIES (adds) rather than moving — there is
     /// no collection to move out of.
-    private func dragPayload(for id: UUID) -> AssetDragPayload {
-        let ids = contents.actionTargets(forCellItemID: id)
-        return AssetDragPayload(
-            assetIDs: ids, sourceCollectionID: AssetDragPayload.nilSourceID)
+    ///
+    /// **099 · P6 took the sentinel out of this file.** It used to be spelled here,
+    /// which was correct but was a SECOND statement of a rule the feed already
+    /// makes: ``CollectionFeed/carriesMembership`` is `false` for a saved search, so
+    /// ``CollectionReadModel/dragSourceID`` answers `nilSourceID` for exactly this
+    /// grid without being told. Two spellings that agree today are two that can stop
+    /// agreeing; `savedSearchDragsCarryNoSource` asserts the one that is left.
+    private func dragPayload(for id: UUID) -> AssetDragPayload? {
+        contents.dragPayload(forCellItemID: id)
     }
 
     /// The ids a bare-key verb acts on: the selection while selecting, else the

@@ -21,6 +21,11 @@ struct ContentView: View {
     // Global grid-view preferences (011-B2 density) — persisted, one muscle memory
     // across every collection.
     @ObservedObject var gridPrefs: GridViewPreferences
+    /// The floating reference palette's state (099 · P6). Owned by the App scene and
+    /// passed through, not created here: the palette is its own scene and both have
+    /// to point at one object. The shell is the only thing that reads it — it is
+    /// what turns a sidebar row's "Open in Palette" into an `openWindow`.
+    @ObservedObject var palette: PaletteModel
     // Shell-level capture-feedback toasts (011-B4), overlaid over every screen.
     @StateObject private var toasts = ToastCenter()
     // Window-level moodboard export state (052 · B3): the save panel + off-main
@@ -33,7 +38,7 @@ struct ContentView: View {
     @AppStorage("AtelierDidCompleteOnboarding") private var didCompleteOnboarding = false
 
     var body: some View {
-        AppShellView(model: model, nav: nav, gridPrefs: gridPrefs)
+        AppShellView(model: model, nav: nav, gridPrefs: gridPrefs, palette: palette)
             // The moodboard export controller reaches the Space board's Export
             // button + the top-bar progress ring via the environment (052 · B3).
             .environmentObject(exportController)
@@ -318,5 +323,6 @@ private struct ExportReportToast: ViewModifier {
 }
 
 #Preview {
-    ContentView(model: IngestionModel(), gridPrefs: GridViewPreferences())
+    ContentView(
+        model: IngestionModel(), gridPrefs: GridViewPreferences(), palette: PaletteModel())
 }

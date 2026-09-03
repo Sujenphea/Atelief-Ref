@@ -18,12 +18,20 @@
 import AppKit
 import AtelierCore
 import AtelierIngestion
+import Combine
 import SwiftUI
 
 struct AppShellView: View {
     @ObservedObject var model: IngestionModel
     @ObservedObject var nav: NavModel
     @ObservedObject var gridPrefs: GridViewPreferences
+    /// The floating reference palette (099 · P6). The shell holds it for ONE job:
+    /// it is the only object here that can call `openWindow`, and the sidebar's
+    /// collections tree — which is where "Open in Palette" lives — is AppKit and
+    /// cannot reach a SwiftUI environment action. See ``paletteOpener``.
+    @ObservedObject var palette: PaletteModel
+
+    @Environment(\.openWindow) private var openWindow
 
     @State private var showSweeps = false
     /// Guards the one-shot load of the relaunch-seeded collection.
@@ -37,7 +45,7 @@ struct AppShellView: View {
         VStack(spacing: 0) {
             if model.hasPendingRestore { pendingRestoreBanner }
             HStack(spacing: 0) {
-                SidebarView(model: model, nav: nav)
+                SidebarView(model: model, nav: nav, palette: palette)
                 detailPanel
             }
         }
@@ -48,6 +56,28 @@ struct AppShellView: View {
         // to ZERO — it is an anchor, not a layer, and a background that spans the
         // window is a background that can be asked about a mouse.
         .background { switcherPanel.frame(width: 0, height: 0) }
+        // 099 · P6 — "Open in Palette" on a sidebar row raises the palette window.
+        //
+        // A pulse rather than a call, because the row's menu is an `NSMenu` built by
+        // `CollectionsOutlineCoordinator` and `openWindow` is a SwiftUI environment
+        // action: the coordinator can set model state and cannot call an action. So
+        // the model records the destination and bumps a counter, and this is the one
+        // place in the app that turns that into a window. A COUNTER and not a flag —
+        // see ``PaletteModel/show(_:)`` for why the second click would otherwise do
+        // nothing. The menu item's own route (⇧⌘P) does not come through here: it
+        // opens the palette without changing what it shows, and it must keep working
+        // when the shell is not the key window.
+        .onChange(of: palette.openPulse) { _, _ in
+            openWindow(id: PaletteModel.windowID)
+        }
+        // Bind the palette's per-library memory once the library opens (099 · P6).
+        // `onReceive` and not `onChange`: a `@Published` publisher replays its
+        // current value on subscribe, so this works whether bootstrap resolved the
+        // id before this view mounted or after — and `onChange` would only ever see
+        // the second case.
+        .onReceive(model.$openLibraryID.compactMap { $0 }) { libraryID in
+            palette.activate(libraryID: libraryID)
+        }
         .focusedSceneValue(\.navModel, nav)
         .focusedSceneValue(\.ingestionModel, model)
         // Publish the model as a focused OBJECT too (010 · Phase 1 undo): the Edit

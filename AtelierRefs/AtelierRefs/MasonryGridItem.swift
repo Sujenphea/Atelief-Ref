@@ -51,7 +51,25 @@ struct CellSelectionState: Equatable {
     /// Selection mode is active somewhere in the grid — circles show on ALL cells
     /// so any can be toggled (A2 wiring).
     var isSelecting = false
+    /// Whether this grid HAS a selection at all (099 · P6 ·
+    /// ``GridInteraction/allowsSelection``). `false` on the reference palette, and
+    /// the one thing it changes is the enter-selection circle, which is an
+    /// invitation: a circle that appears on hover and does nothing when clicked is
+    /// worse than no circle. The rings are unaffected — a grid that cannot select
+    /// never has anything selected to ring.
+    var allowsSelection = true
     static let inert = CellSelectionState()
+
+    /// Whether the enter-selection circle shows on a cell in this state, given
+    /// whether the pointer is over it.
+    ///
+    /// Pure, and separated from ``MasonryGridItem/updateCircleVisibility()`` so the
+    /// rule is a test rather than a screenshot (099 · P6). Three inputs, and the
+    /// interaction between them is the point: `allowsSelection` gates the other two
+    /// rather than being one more `||`.
+    func showsSelectionCircle(hovered: Bool) -> Bool {
+        allowsSelection && (isSelecting || hovered)
+    }
 }
 
 // MARK: - Interaction delegate (A2)
@@ -961,9 +979,10 @@ final class MasonryGridItem: NSCollectionViewItem {
 
     /// The circle shows while SELECTING (every cell is toggleable) or, when idle,
     /// only on the hovered cell — the exact SwiftUI rule
-    /// (`isSelecting || hoveredItemID == id`).
+    /// (`isSelecting || hoveredItemID == id`) — and never at all on a grid with no
+    /// selection to enter (099 · P6).
     private func updateCircleVisibility() {
-        circleButton.isHidden = !(currentSelection.isSelecting || isHovered)
+        circleButton.isHidden = !currentSelection.showsSelectionCircle(hovered: isHovered)
     }
 
     /// The mouse-down, forwarded VERBATIM from the cell view (A2). A circle click

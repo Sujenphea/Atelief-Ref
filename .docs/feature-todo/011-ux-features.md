@@ -140,6 +140,29 @@ space or collection as a mini grid/board while the user designs in another app.
   the palette gets a read-only projection of `AppServices` reads + thumbnail
   store, not a second full model. — *Effort: M; zero schema.*
 
+**Built** ([099 · P6](../099-mac-backlog-plan.md),
+[476](../../.change-log/476-the-palette-is-the-second-window.md)), with **two
+departures from the sketch above, both deliberate**:
+
+- **`Window`, not `WindowGroup(id:for:)`.** A `WindowGroup` opens a NEW instance per
+  `openWindow(id:)`; a `Window` raises the one that exists. Since this cluster's own
+  first rejection is *pinning multiple palettes (one window, one focus)*, the scene
+  type that cannot make a second one is the one that states the rule. The `for:
+  Space.ID.self` value type goes with it: what the palette shows is app-level state
+  (`PaletteModel`), remembered per library, not a value carried in a window's identity.
+- **A collection or a saved search, not "one chosen space or collection".** A Space in
+  the palette is NOT in v1. The reason is not effort: `CanvasHostView` is an editing
+  model end to end — placements, a selection, an undo stack, a drop router that writes
+  tile positions — so "a board, read-only" is a second renderer rather than a
+  configuration. `MasonryGridHost` took a read-only configuration for the price of
+  three flags. `PaletteDestinations.canShow(_:)` is where the refusal lives, as a
+  `switch` with no `default`, so a later phase has to answer for it.
+
+The risk named above did not materialise: the palette holds the SAME `IngestionModel`
+(the App scene owns it, as `Settings` already did) and its own `CollectionReadModel` —
+which is exactly the "read-only projection" this bullet asked for, built by 099 · 1A two
+phases earlier for a different reason.
+
 ## Notes on items (settled: rides 003)
 
 `asset.note TEXT NULL`, edited in [006]'s detail sidebar (`ItemNotesView`,
@@ -167,7 +190,8 @@ rebuild, not before; the UI slot in 006 can land earlier showing provenance only
    settle up front whether ⌘K is that list plus spaces plus verbs, or a genuinely
    separate surface.
 5. ~~**U5 (S–M) — favorites.**~~ **Shipped** (v19).
-6. **U6 (M) — floating palette.** After U1, which is done — so unblocked.
+6. ~~**U6 (M) — floating palette.**~~ **Shipped** (099 · P6, [476]) — see Cluster D's
+   status block for the two departures from the sketch.
 7. ~~**U7 — notes.**~~ **Shipped** (v10 `asset.note`, searchable from v12).
 
 ## Test strategy

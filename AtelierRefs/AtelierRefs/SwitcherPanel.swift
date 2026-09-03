@@ -173,11 +173,21 @@ struct SwitcherPanel: View {
 }
 
 /// One destination row: glyph, title, and where it lives.
-private struct SwitcherRow: View {
+///
+/// **Internal rather than `private` since 099 · P6**, which is the whole of the
+/// seam the reference palette's picker needed: two surfaces search one list of
+/// destinations, so they must not disagree about what a destination LOOKS like
+/// either. The palette hosts this row in its own popover with its own geometry and
+/// its own accessibility prefix; everything else about it is this file's.
+struct SwitcherRow: View {
     let candidate: SwitcherCandidate
     let isHighlighted: Bool
     let onHover: () -> Void
     let action: () -> Void
+    /// The row's accessibility identifier. Defaulted to the ⌘K panel's spelling; the
+    /// palette passes its own so a UI flow can say WHICH surface it found the row on
+    /// — both can be on screen at once.
+    var identifier: String?
 
     var body: some View {
         Button(action: action) {
@@ -208,7 +218,7 @@ private struct SwitcherRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier(AccessibilityID.switcherRow(candidate.title))
+        .accessibilityIdentifier(identifier ?? AccessibilityID.switcherRow(candidate.title))
         // Hover MOVES the cursor rather than drawing a second highlight, so the row
         // Return would take can never be ambiguous — the opposite trade to
         // `SelectionMenuRow`, which has a pointer-driven caller to stay quiet for.

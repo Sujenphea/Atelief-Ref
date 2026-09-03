@@ -382,6 +382,24 @@ nonisolated enum KeyMap {
         // add a shortcuts-sheet section that says only "the arrow keys work".
         Shortcut([.character("k")], [.command], "Go to…",
                  scope: .global, source: "AtelierRefsApp.swift (GoToCommand)"),
+        // 099 · P6 — the floating reference palette (011 · Cluster D). `.global`
+        // for the same structural reason ⌘K is: it is a menu key equivalent, so it
+        // is matched before any first responder and reaches the palette from the
+        // detail overlay and from a Space board too. It also has to work while the
+        // PALETTE itself is key — the palette window publishes no focused-scene
+        // values, so a chord that depended on one would go dead in the window it is
+        // meant to raise.
+        //
+        // **⇧⌘P, and it was chosen against this table rather than picked.** ⌘P is
+        // left alone because it is Print everywhere on this platform and this app
+        // has no Print item to argue with it — a user who reaches for ⌘P out of
+        // habit should get the system's answer, not a palette. ⇧⌘P is claimed by no
+        // row in any scope (the shift-command rows are ⇧⌘Z, ⇧⌘], ⇧⌘[ and ⇧⌘E, all
+        // `.space` except Redo), and `collisions(in:)` is what keeps saying so.
+        // ⌘K's own row is the near miss worth naming: P5 added it two commits ago,
+        // so ⌘-anything was re-checked here before this row was written.
+        Shortcut([.character("p")], [.command, .shift], "Show Reference Palette",
+                 scope: .global, source: "AtelierRefsApp.swift (ShowPaletteCommand)"),
     ]
 
     // MARK: In a collection

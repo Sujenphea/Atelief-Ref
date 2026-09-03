@@ -427,6 +427,36 @@ struct KeyMapContractTests {
         #expect(gridKeyCommand(characters: "x", modifiers: [.command]) == nil)
     }
 
+    // MARK: - 099 · P6 — the reference palette's chord
+
+    /// ⇧⌘P is a `.global` row and it is the only claim on that chord.
+    ///
+    /// `noCollisions` already proves the second half over the whole table, so what
+    /// this adds is the FIRST half: that the row exists, in the scope it has to be
+    /// in. A menu key equivalent has to be `.global` here — it is matched before any
+    /// first responder, and the palette must open from the item-detail overlay and
+    /// from a Space board, both of which swallow bare keys.
+    @Test("⇧⌘P opens the reference palette, and nothing else claims it")
+    func shiftCommandPIsTheReferencePalette() throws {
+        let chord = Chord(key: .character("p"), modifiers: [.command, .shift])
+        let rows = KeyMap.all.filter { $0.chords.contains(chord) }
+        #expect(rows.count == 1)
+        let row = try #require(rows.first)
+        #expect(row.scope == .global)
+        #expect(row.title == "Show Reference Palette")
+    }
+
+    /// **⌘P is deliberately left alone.** It is Print everywhere on this platform and
+    /// this app has no Print item to argue with it, so a user who reaches for it out
+    /// of habit gets the system's answer rather than a palette appearing. The row
+    /// above took the shifted chord for exactly this reason, and a later phase that
+    /// wants ⌘P has to delete this assertion to get it.
+    @Test("plain ⌘P is bound by nothing")
+    func commandPIsFree() {
+        let chord = Chord(key: .character("p"), modifiers: [.command])
+        #expect(!KeyMap.all.contains { $0.chords.contains(chord) })
+    }
+
     private func rows(for decoder: ShortcutDecoder) -> [Shortcut] {
         KeyMap.all.filter { $0.decoder == decoder }
     }

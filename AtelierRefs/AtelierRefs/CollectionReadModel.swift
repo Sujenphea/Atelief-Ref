@@ -538,6 +538,43 @@ final class CollectionReadModel: ObservableObject {
             cellAssetIDs: assetIDs(for: widenedForAction([itemID])))
     }
 
+    // MARK: - What a drag out of this feed comes FROM (099 · P3/P4, moved here in P6)
+
+    /// The collection a drag out of a grid over THIS feed comes from — the loaded
+    /// feed's id, or ``AssetDragPayload/nilSourceID`` when the feed carries no
+    /// memberships or has not resolved one yet.
+    ///
+    /// **This lives on the read model, and 099 · P6 is why.** P3 stamped the WRITING
+    /// model's import target here; P4 corrected it to the loaded feed's id — but it
+    /// corrected it on `IngestionModel`, reading `IngestionModel`'s OWN read model.
+    /// That is right for exactly one window. The reference palette is a second
+    /// window with a second feed and it drags out of what IT is showing, so asking
+    /// the shared model would have re-created the bug P4 fixed, one level up: a drag
+    /// out of the palette would claim the MAIN window's collection as its source,
+    /// and a drop onto a sidebar row would MOVE items out of a folder the user was
+    /// not looking at.
+    ///
+    /// So the rule moves to the object that knows the answer. `IngestionModel`
+    /// forwards, every existing caller is unchanged, and there is one rule rather
+    /// than two that happen to agree today.
+    ///
+    /// ``CollectionFeed/carriesMembership`` decides the fallback rather than a `nil`
+    /// check, for P4's reason: "there is no source" is a fact about the FEED, not
+    /// about whether a load has landed.
+    var dragSourceID: UUID {
+        guard feed.carriesMembership else { return AssetDragPayload.nilSourceID }
+        return loadedCollectionID ?? AssetDragPayload.nilSourceID
+    }
+
+    /// The payload a drag starting on the cell `itemID` carries: the Finder-scope
+    /// asset ids, stamped with ``dragSourceID``. `nil` when the cell has left the
+    /// feed — the grid host then falls back to a lone-cell payload.
+    func dragPayload(forCellItemID itemID: UUID) -> AssetDragPayload? {
+        let assetIDs = actionTargets(forCellItemID: itemID)
+        guard !assetIDs.isEmpty else { return nil }
+        return AssetDragPayload(assetIDs: assetIDs, sourceCollectionID: dragSourceID)
+    }
+
     // MARK: - In-place edits (no reload)
 
     /// Per-asset view-count deltas that have been PERSISTED (`recordViews`) but not
