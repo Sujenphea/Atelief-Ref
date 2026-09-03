@@ -16,13 +16,23 @@ this doc is still in the backlog:
 | U1 out-flow | **shipped, all three** | `AssetExport.swift` (+`AssetExportTests`), `AssetFilePromise.swift`, `AssetPasteboard.swift`; ⌘C in `4be6f88`. A2 batch export + A3 share sheet in `.change-log/385` — `AtelierExport/Assets/AssetFolderWriter.swift`, `AssetFolderExport.swift`, `AssetShare.swift` |
 | U2 justified grid + density | **shipped, as masonry** | `MasonryLayout/CollectionLayout/GridHost/GridItem/LayoutCache`, `GridDensity.swift`. Landed as a masonry layout rather than the justified-rows sketch below; marquee + keyboard nav consume its frames as planned (`MarqueeMath`, `GridNavigation`) |
 | U3 Quick Look + toasts | **shipped** | `QuickLookController.swift`, `ToastQueue.swift` (+`ToastQueueTests`) |
-| U4 ⌘K switcher + triage | **half shipped** | `M` / `A` triage landed (`.change-log/348`, `MoveAddShortcutTests`, `KeyMap`). **The ⌘K quick switcher does not exist** — no switcher type anywhere in the app target |
+| U4 ⌘K switcher + triage | **shipped** (2026-09-03) | `M` / `A` triage landed (`.change-log/348`, `MoveAddShortcutTests`, `KeyMap`). The ⌘K switcher landed in `.change-log/475` — `SwitcherModel.swift`, `SwitcherPanel.swift`, 50 tests. **Its own surface, the shared ordering**: U4's open question is answered, and `DestinationPicker` is untouched |
 | U5 favorites | **shipped** | schema **v19** `asset.is_favorite`, ⌘D, star chip, search token (`567c302`, `ServicesFavoritesTests`, `AppFavoritesTests`) |
-| U6 floating palette | **not started** | `AtelierRefsApp.swift:30` declares one `WindowGroup`; no auxiliary window, no `.windowLevel(.floating)` |
+| U6 floating palette | **shipped** (2026-09-03) | `.change-log/476` — a second scene, `Window("Reference Palette", id: "palette")` at `.windowLevel(.floating)`, read-only grid + drag-out, ⇧⌘P. A `Window` not a `WindowGroup`, so "one window, one focus" is the scene graph's property rather than a rule. A Space in the palette is the named follow-up |
 | U7 notes | **shipped** | schema **v10** `asset.note` + `AppServices.setNote` (`:2752`); searchable via v12 |
 
-So the live remainder is **U4's ⌘K switcher** and **U6's floating palette** —
-both M, both zero-schema, neither blocked by anything.
+~~So the live remainder is **U4's ⌘K switcher** and **U6's floating palette** —
+both M, both zero-schema, neither blocked by anything.~~
+
+**Amended 2026-09-03: both shipped, and this table has no live remainder.** U4 in
+[475](../../.change-log/475-the-switcher-is-its-own-surface.md), U6 in
+[476](../../.change-log/476-the-palette-is-the-second-window.md), under
+[099](../099-mac-backlog-plan.md)'s P5 and P6. Both were M and neither was blocked, as
+predicted. What each left undone is in its own changelog's closing section — and one
+caveat spans both: their XCUITest flows are **written but have never run**, because the
+UI suite left the gate (issue 23D) and `verify.sh ui` is blocked on the runner's ad-hoc
+signing (issue 23C). The unit tests carry the weight; nobody has watched either surface
+open.
 
 The `is_favorite` and `note` migration slots this doc speculated about are spent:
 `note` rode v10, `is_favorite` landed as its own v19. Schema impact from here is
