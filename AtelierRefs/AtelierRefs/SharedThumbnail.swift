@@ -298,6 +298,47 @@ struct ThumbnailTile: View {
     }
 }
 
+/// How a ``CoverCard``'s PLACEHOLDER is shaded — the card's only colour decision,
+/// and the whole of "cards with a distinct badge/tint" (057) in a palette that
+/// deliberately has no accent hue.
+///
+/// The three values are three steps of the same grey ladder, so they are
+/// distinguishable side by side without anything the theme does not already own:
+/// `mediaBackdrop` (0x141416) → `field` (0x2C2C30) → `selection` (0x3A3A40).
+/// `SmartCollectionExclusionTests` asserts the three differ, because "a distinct
+/// tint" that quietly resolved to the same colour twice would look exactly like a
+/// card that had simply been given the wrong kind.
+nonisolated enum CardTint: Equatable, Hashable, Sendable, CaseIterable {
+    /// An ordinary collection or space.
+    case plain
+    /// The protected Unsorted root — one step up, so the folder everything lands
+    /// in reads as not-quite-a-folder.
+    case accent
+    /// A smart collection (057) — a further step up, and the lightest of the
+    /// three, because it is the card that is not a container at all.
+    case smart
+
+    /// `@MainActor` because `Theme.Colors` is: this target defaults every
+    /// unannotated type to the main actor, and the palette is one of them. The
+    /// CASES stay `nonisolated` so a test can name a tint without hopping.
+    @MainActor
+    var fill: Color {
+        switch self {
+        case .plain: Theme.Colors.mediaBackdrop
+        case .accent: Theme.Colors.field
+        case .smart: Theme.Colors.selection
+        }
+    }
+
+    @MainActor
+    var ink: Color {
+        switch self {
+        case .plain: Theme.Colors.inkSecondary
+        case .accent, .smart: Theme.Colors.inkPrimary
+        }
+    }
+}
+
 /// A cover card for the Collections gallery / Spaces list: a large square cover
 /// thumbnail (or an SF-symbol placeholder) with a title and optional subtitle
 /// beneath. Tapping is handled by the caller wrapping this in a `Button`.
@@ -309,7 +350,9 @@ struct CoverCard: View {
     var coverURL: URL?
     /// SF Symbol drawn when there is no cover (folder vs board).
     var placeholderSymbol: String = "folder"
-    var accent: Bool = false
+    /// The placeholder's shading. Was a `accent: Bool` until 099 · P4 needed a
+    /// THIRD state and a second boolean would have made the pair able to disagree.
+    var tint: CardTint = .plain
     /// The cover's drawn side in POINTS, for the pixel bucket (036 §4 C3). The
     /// default is the widest a cover actually gets on the two surfaces that use
     /// this card: both lay out `GridItem(.adaptive(minimum: 150, maximum: 220))`
@@ -327,12 +370,12 @@ struct CoverCard: View {
                             pointLongSide: coverPointSide, scale: displayScale))
                 } else {
                     RoundedRectangle(cornerRadius: Theme.Radius.card)
-                        .fill(accent ? Theme.Colors.field : Theme.Colors.mediaBackdrop)
+                        .fill(tint.fill)
                         .aspectRatio(1, contentMode: .fit)
                         .overlay {
                             Image(systemName: placeholderSymbol)
                                 .font(.system(size: 34))
-                                .foregroundStyle(accent ? Theme.Colors.inkPrimary : Theme.Colors.inkSecondary)
+                                .foregroundStyle(tint.ink)
                         }
                 }
             }

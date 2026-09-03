@@ -124,6 +124,16 @@ struct AppShellView: View {
         // The model already suppresses an intent for the collection it has loaded, so
         // the ordinary undo (same collection, same window) publishes nothing and this
         // never fires.
+        // The smart collection on screen was deleted — from its own context menu,
+        // from a Home card, or from another window (099 · P4). Nothing else resets a
+        // dangling `.savedSearch` selection, which would leave the panel running a
+        // query that no longer exists and the sidebar with no highlighted row.
+        // `hasLoaded` rather than a non-empty guard: zero smart collections is an
+        // ordinary answer, and it is exactly the answer deleting the last one gives.
+        .onChange(of: model.smartCollections.searches) { _, searches in
+            nav.reconcileSavedSearches(
+                using: searches, hasLoaded: model.smartCollections.hasLoaded)
+        }
         .onChange(of: model.focusIntent) { _, intent in
             guard let intent else { return }
             guard nav.sidebarSelection != .collection(intent.collectionID) else { return }
@@ -202,6 +212,17 @@ struct AppShellView: View {
             LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: nil) {
                 spaceDestination(id)
             }
+        // A smart collection (099 · P4). Wrapped like every other pane so the
+        // toolbar height never shifts — and here the wrapper is load-bearing rather
+        // than merely uniform: its field is where "Save this search…" lives, and
+        // re-saving from an OPEN smart collection is how 057 says a rule is edited.
+        // `collectionID: nil` because a saved search is not a collection to scope a
+        // search TO; a query typed here runs over the whole library and leaves the
+        // smart collection, exactly as one typed on the shelf leaves the shelf.
+        case let .savedSearch(id):
+            LibrarySearchable(model: model, gridPrefs: gridPrefs, nav: nav, collectionID: nil) {
+                smartDestination(id)
+            }
         #if DEBUG
         // The token specimen sheet (see ``ThemeGalleryView``). Deliberately NOT wrapped
         // in `LibrarySearchable`: a search field over a page of swatches would be dead
@@ -249,6 +270,23 @@ struct AppShellView: View {
                 // same ViewBuilder branch, and the `@StateObject` `SpaceModel` only
                 // builds on a fresh identity — without this the panel keeps showing
                 // the previous space.
+                .id(id)
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private func smartDestination(_ id: UUID) -> some View {
+        if let services = model.services {
+            SmartCollectionView(
+                model: model, nav: nav, gridPrefs: gridPrefs,
+                services: services, searchID: id)
+                // Identity keyed to the search, for `spaceDestination`'s reason:
+                // `.savedSearch(A)` → `.savedSearch(B)` stays in this ViewBuilder
+                // branch, and the pane's `@StateObject` read model only builds on a
+                // fresh identity — without this the panel keeps the previous query's
+                // feed, its selection and its sort.
                 .id(id)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -700,6 +700,60 @@ struct LibraryArchiveRoundTripTests {
         #expect(summary.assets == 1)
         #expect(try await rig.targetItems("Design").map { $0.source.title } == ["Kept"])
     }
+
+    /// **A saved search does NOT cross the archive, and this is the assertion that
+    /// says so out loud** (099 · P4).
+    ///
+    /// [057](../../.docs/057-smart-collections-overview.md) says *"[081] export
+    /// includes `saved_search` rows in the manifest (portable); import replays
+    /// them"*. P4 went to confirm that round trip and found there is none:
+    /// `ArchiveManifest` carries `sources`, `assets` and `collections`, and no
+    /// fourth list. [081](../../.docs/081-backup-plan.md) itself never mentions
+    /// saved searches — the claim is 057's alone, written before the manifest was.
+    ///
+    /// **It was not added here, and the reason is structural rather than effort.**
+    /// A `SearchRules` blob references TAG IDS, and the manifest deliberately
+    /// carries no tag id at all: `TagEntry` is `(name, source)`, documented as
+    /// *"No tag id — an importer mints its own, so exporting ours would be data an
+    /// importer must ignore."* The importer likewise mints new collection ids and
+    /// maps by key. So a rules blob copied verbatim into a second library would
+    /// point at ids that exist in neither its tag table nor its collection table:
+    /// it would import as a smart collection matching the wrong things, or nothing,
+    /// and BADGE ITSELF as referencing deleted tags. Making it work needs a
+    /// rule-remapping design — tag ids in the manifest, or a name-keyed rule
+    /// translation — that no doc specifies.
+    ///
+    /// So the gap is pinned rather than papered over. The day someone adds
+    /// `saved_searches` to the manifest this test fails, and whoever does it has to
+    /// say what they did about the ids.
+    @Test("Saved searches do NOT yet cross the archive — the manifest has no rows for them")
+    func savedSearchesDoNotYetCrossTheArchive() async throws {
+        let rig = try RoundTripRig.make()
+        defer { rig.cleanup() }
+
+        let design = try await rig.source.createCollection(name: "Design")
+        let asset = try await rig.seedImage(bytes: "hero", into: design.id, title: "Hero")
+        let tag = try await rig.source.applyTag("ui", to: asset.id, source: .user)
+        _ = try await rig.source.createSavedSearch(
+            name: "UI refs",
+            rules: SearchRules(text: "hero", tagIDs: [tag.id], collectionID: design.id))
+        #expect(try await rig.source.savedSearches().count == 1)
+
+        try await rig.export()
+
+        // The manifest has three lists and there is no fourth: the JSON a reader
+        // would have to find `saved_search` rows in does not contain the words.
+        let manifestURL = rig.archive.appendingPathComponent(ArchiveLayout.manifestFilename)
+        let json = try String(contentsOf: manifestURL, encoding: .utf8)
+        #expect(!json.contains("saved_search"))
+        #expect(!json.contains("savedSearches"))
+
+        let summary = await rig.importIntoTarget()
+        #expect(summary.outcome == .succeeded)
+        // The pictures crossed. The query did not.
+        #expect(try await rig.targetItems("Design").count == 1)
+        #expect(try await rig.target.savedSearches().isEmpty)
+    }
 }
 
 // MARK: - The controller

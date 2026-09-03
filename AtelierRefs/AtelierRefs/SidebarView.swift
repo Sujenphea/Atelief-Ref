@@ -41,6 +41,14 @@ struct SidebarView: View {
     @State private var spaceRenameText = ""
     @State private var spacesExpanded = true
     @State private var collectionsExpanded = true
+    @State private var smartExpanded = true
+    /// The in-flight inline rename of a smart-collection row (099 · P4), through
+    /// the SAME ``SidebarEditState`` the two AppKit outlines drive their rename
+    /// sessions with — see ``smartSection`` for why this section is SwiftUI and
+    /// still shares that state machine.
+    @State private var smartEdit: SidebarEditState?
+    /// Focus for the inline field, so a rename opens with the caret in it.
+    @FocusState private var smartFieldFocused: Bool
     /// The AppKit outline trees' measured content heights (043 · Phase C), so each
     /// non-scrolling outline view can be framed inside the sidebar's own ScrollView.
     @State private var outlineHeight: CGFloat = 0
@@ -66,6 +74,12 @@ struct SidebarView: View {
         // this can run first and no-op while `services` is still nil); kept so a
         // re-mounted sidebar refreshes.
         .task { await model.refreshSpaces() }
+        // The same for the smart-collection list: `openFeed` owns the first read,
+        // this is the re-mount refresh (099 · P4).
+        .task {
+            guard let services = model.services else { return }
+            await model.smartCollections.load(services: services)
+        }
         // Rename a collection (inline creation replaced the create alerts — 214).
         .nameEntryAlert(
             "Rename Collection",
@@ -114,6 +128,10 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
                     navSection
                     spacesSection
+                    // Below Spaces (099 · P4 / decision 7A). Additive like Spaces —
+                    // hidden entirely until the user has saved a search — so a fresh
+                    // library's sidebar is unchanged.
+                    if !model.smartCollections.searches.isEmpty { smartSection }
                     collectionsSection
                 }
                 .padding(.horizontal, Theme.Spacing.lg)
@@ -242,6 +260,126 @@ struct SidebarView: View {
             .padding(.vertical, 7)
     }
 
+    // MARK: - Smart collections (099 · P4 / 057)
+
+    /// The Smart section: every saved search, flat, in SwiftUI.
+    ///
+    /// **Decision 7A — no reorder, therefore no `NSOutlineView`.** The two AppKit
+    /// outlines above exist for one reason each that this list does not have:
+    /// live drag reorder (and, for collections, nesting). A saved search has
+    /// neither — 057 · open question 2 keeps the list flat "until it hurts", and a
+    /// query has no `sortIndex` to drag into. Everything else those coordinators
+    /// buy (row chrome, hover, the inline field's state machine) is either a
+    /// `Theme` token or ``SidebarEditState``, and both are reachable from SwiftUI.
+    ///
+    /// **The trigger for extracting a generic outline coordinator is A THIRD
+    /// REORDERABLE SIDEBAR LIST.** Two are not evidence of a pattern —
+    /// `CollectionsOutlineView` and `SpacesOutlineView` already share every
+    /// primitive that could be shared (`SidebarOutlineKit`), and what is left in
+    /// each is its data source and its drag routing, which is exactly the part a
+    /// generic coordinator would have to be parameterised over. A third would make
+    /// the parameterisation cheaper than the copy; this section is not it, because
+    /// it does not reorder at all.
+    private var smartSection: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            // No "+": a smart collection is created by SAVING A SEARCH (057 — the
+            // search field IS the rule editor), so a "+" here would have to invent a
+            // rule-builder this version deliberately does not have.
+            sectionHeader("Smart", expanded: $smartExpanded)
+            if smartExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(model.smartCollections.searches) { search in
+                        smartRow(search)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func smartRow(_ search: SavedSearch) -> some View {
+        let selected = nav.sidebarSelection == .savedSearch(search.id)
+        if let edit = smartEdit, edit.isRenaming(search.id) {
+            smartRenameField(search, edit: edit)
+        } else {
+            Button {
+                nav.openSavedSearch(search.id)
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .font(.system(size: 13))
+                        .frame(width: 16)
+                    Text(search.name)
+                        .font(Theme.Typography.row)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                    if let badge = model.smartCollections.badge(id: search.id) {
+                        SmartCollectionBadgeLabel(badge: badge, showsSentence: false)
+                    }
+                }
+                .foregroundStyle(Theme.Colors.inkPrimary)
+                .padding(.horizontal, Theme.Spacing.sm)
+                .padding(.vertical, 7)
+                .background(rowHighlight(selected: selected))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .hoverHighlight(cornerRadius: Theme.Radius.chip, fill: Theme.Colors.hoverRow, padding: 0)
+            // Rename in place and delete through the shared confirmation — the two
+            // verbs the collection and space rows offer, minus every one that needs
+            // a membership (057). No "New Subfolder" (a query does not nest) and no
+            // "Move to" (there is nowhere to move it).
+            .contextMenu {
+                Button("Rename") {
+                    smartEdit = SidebarEditState(
+                        session: .rename(id: search.id), originalName: search.name)
+                    smartFieldFocused = true
+                }
+                Button("Delete", role: .destructive) {
+                    model.smartCollections.requestDelete(id: search.id, name: search.name)
+                }
+            }
+        }
+    }
+
+    /// The inline rename field, resolved through ``SidebarEditState`` — the same
+    /// state machine, and therefore the same rules, the two AppKit outlines use:
+    /// Escape cancels, an empty or whitespace-only name cancels, and a name that
+    /// ends up equal to the one it started with writes nothing (so no spurious
+    /// undo entry, and no pointless `updated_at` bump).
+    private func smartRenameField(_ search: SavedSearch, edit: SidebarEditState) -> some View {
+        TextField(
+            "Name",
+            text: Binding(
+                get: { smartEdit?.text ?? edit.text },
+                set: { smartEdit?.text = $0 }))
+            .textFieldStyle(.plain)
+            .font(Theme.Typography.row)
+            .foregroundStyle(Theme.Colors.inkPrimary)
+            .focused($smartFieldFocused)
+            .padding(.horizontal, Theme.Spacing.sm)
+            .padding(.vertical, 7)
+            .background(rowHighlight(selected: true))
+            .onSubmit { finishSmartEdit(committing: smartEdit?.text) }
+            .onExitCommand { finishSmartEdit(committing: nil) }
+            // Focus loss commits, Finder-style — the rule ``SidebarDraftCell``
+            // applies to the AppKit field.
+            .onChange(of: smartFieldFocused) { _, focused in
+                guard !focused, smartEdit != nil else { return }
+                finishSmartEdit(committing: smartEdit?.text)
+            }
+    }
+
+    private func finishSmartEdit(committing name: String?) {
+        guard let edit = smartEdit else { return }
+        smartEdit = nil
+        smartFieldFocused = false
+        guard case let .rename(id, newName) = edit.outcome(committing: name) else { return }
+        guard let services = model.services else { return }
+        Task { await model.smartCollections.rename(id: id, to: newName, services: services) }
+    }
+
     // MARK: - Collections
 
     private var collectionsSection: some View {
@@ -283,8 +421,12 @@ struct SidebarView: View {
 
     // MARK: - Shared rows
 
+    /// `add` is optional (099 · P4): the Smart section has no "+" because a smart
+    /// collection is created by saving a search, not by naming an empty one. A
+    /// header with a button that opened a rule builder nobody wrote would be worse
+    /// than a header without a button.
     private func sectionHeader(
-        _ title: String, expanded: Binding<Bool>, add: @escaping () -> Void
+        _ title: String, expanded: Binding<Bool>, add: (() -> Void)? = nil
     ) -> some View {
         HStack(spacing: Theme.Spacing.sm) {
             Button {
@@ -299,11 +441,13 @@ struct SidebarView: View {
             }
             .buttonStyle(HoverButtonStyle(cornerRadius: Theme.Radius.chip, padding: 6))
             Spacer()
-            Button(action: add) {
-                Image(systemName: "plus").font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Theme.Colors.inkSecondary)
+            if let add {
+                Button(action: add) {
+                    Image(systemName: "plus").font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.Colors.inkSecondary)
+                }
+                .buttonStyle(HoverButtonStyle(cornerRadius: Theme.Radius.chip, padding: 6))
             }
-            .buttonStyle(HoverButtonStyle(cornerRadius: Theme.Radius.chip, padding: 6))
         }
     }
 

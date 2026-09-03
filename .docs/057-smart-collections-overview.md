@@ -101,3 +101,48 @@ evaluate what parses).
 1. Smart collections in the [009] rail as *navigation* entries (read-only,
    non-drop)? (Recommend yes, visually separated.)
 2. Nesting/grouping of saved searches (recommend no — flat list until it hurts).
+
+## Status — V2 shipped in 099 · P4 ([473](../.change-log/473-the-saved-search-becomes-a-place.md))
+
+V1 (the table, the CRUD services, the versioned rules codec) shipped with 015's own
+work and has been covered by `ServicesSavedSearchTests` since. **V2 landed in
+099 · P4** and the app can now reach every one of those services:
+
+- A flat "Smart" section in the sidebar below Spaces (SwiftUI — 099 · decision 7A: no
+  reorder, so no `NSOutlineView`), inline rename, delete behind the shared
+  confirmation; Home cards **after** the real collections with their own `CardTint`.
+- The grid is a per-window `CollectionReadModel` on the saved-search feed. Sort is
+  007's modes minus `.manual`, DERIVED from `SortMode.allCases` rather than typed out.
+  Drag-reorder is off; drag-out and drag-to-a-collection work and resolve as a COPY,
+  because a query has no collection to move OUT of.
+- "Save this search…" is in the search field's toolbar (⌘S), enabled only on a
+  non-empty query. **Re-saving while a smart collection is open replaces THAT
+  search's rules** — this doc's "edit-by-rerunning-and-resaving", made concrete.
+- Both badges — *references a deleted tag*, *can't read this search* — are one value
+  drawn by one view on the sidebar row and the grid header alike.
+- The exclusions ("not drop targets", "excluded from Move to ▸ lists", "no manual
+  order") are asserted rather than left implicit, in `SmartCollectionExclusionTests`.
+
+### One claim in this doc is NOT true, and was not made true
+
+> [081] export includes `saved_search` rows in the manifest (portable); import
+> replays them.
+
+**`ArchiveManifest` carries no such rows**, and [081](081-backup-plan.md) never said it
+did — the claim is this doc's alone, written before the manifest was. It was not added
+in P4 because the shapes do not meet: the manifest deliberately carries **no tag id**
+(`TagEntry` is `(name, source)` — "an importer mints its own"), while `SearchRules`
+references tag ids, and the importer mints new collection ids too. A blob copied
+verbatim would point at ids present in neither table in the destination library, import
+as a smart collection matching the wrong things, and badge itself as referencing deleted
+tags. Making saved searches portable needs a rule-remapping design — tag ids in the
+manifest, or a name-keyed rule translation — that no doc specifies. The gap is asserted
+in `LibraryArchiveRoundTripTests.savedSearchesDoNotYetCrossTheArchive`, which fails the
+day someone adds the rows without deciding about the ids.
+
+### Open question 1, answered
+
+*Smart collections in the [009] rail as navigation entries (read-only, non-drop)?* —
+**yes**, and that is what the Smart section is: `SidebarItem.acceptsAssetDrops` returns
+`false` for `.savedSearch`, exhaustively and under test. Open question 2 (nesting)
+stays **no**; the list is flat.

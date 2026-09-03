@@ -138,6 +138,28 @@ struct ContentView: View {
                 Text("The board and its arrangement are removed. Your images stay in "
                      + "their collections, and you can undo this with ⌘Z.")
             }
+            // A smart collection's delete (099 · P4). The SAME shared confirmation
+            // shape as the two above — and it is confirmed for a reason the other
+            // two do not have: this one has no ⌘Z. Deleting a saved search removes
+            // the query and nothing else (057 — it has no FK to an asset or a tag,
+            // so it cannot cascade a picture away), which is precisely why there is
+            // no backup to register an inverse against. Irreversible and harmless is
+            // still irreversible.
+            .confirmationDialog(
+                "Delete “\(model.smartCollections.pendingDeletion?.name ?? "")”?",
+                isPresented: savedSearchDeletionConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    guard let services = model.services else { return }
+                    Task { await model.smartCollections.confirmDelete(services: services) }
+                }
+                .keyboardShortcut(.defaultAction)
+                Button("Cancel", role: .cancel) { model.smartCollections.cancelDelete() }
+            } message: {
+                Text("Only the saved search goes. Every image it was finding stays "
+                     + "exactly where it is — a smart collection holds nothing.")
+            }
     }
 
     /// Perform a toast's Jump (011-B4): ignore it if the target collection is
@@ -214,6 +236,13 @@ struct ContentView: View {
         Binding(
             get: { model.pendingSpaceDeletion != nil },
             set: { if !$0 { model.cancelSpaceDeletion() } })
+    }
+
+    /// The same bridge for a smart collection's staged delete (099 · P4).
+    private var savedSearchDeletionConfirmation: Binding<Bool> {
+        Binding(
+            get: { model.smartCollections.pendingDeletion != nil },
+            set: { if !$0 { model.smartCollections.cancelDelete() } })
     }
 }
 

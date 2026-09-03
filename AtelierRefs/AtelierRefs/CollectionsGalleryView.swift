@@ -57,6 +57,10 @@ struct CollectionsGalleryView: View {
     @State private var subfolderName = ""
     @State private var spaceRenameTarget: Space?
     @State private var spaceRenameText = ""
+    /// Rename a smart collection from its card menu (099 · P4) — through the same
+    /// ``nameEntryAlert`` the two above use.
+    @State private var smartRenameTarget: SavedSearch?
+    @State private var smartRenameText = ""
 
     // Home-card multi-selection via the shared grid reducer (048 · work item B):
     // cmd-click toggles, shift-click ranges over `orderIDs`, marquee replaces, ⌘A
@@ -92,6 +96,10 @@ struct CollectionsGalleryView: View {
                         spacesSection
                     }
                     collectionsSection
+                    // AFTER the real collections (057). Additive like Spaces.
+                    if !model.smartCollections.searches.isEmpty {
+                        smartSection
+                    }
                 }
                 .padding(Theme.Spacing.xl)
                 marqueeOverlay
@@ -171,6 +179,22 @@ struct CollectionsGalleryView: View {
                 spaceRenameTarget = nil
             },
             onCancel: { spaceRenameTarget = nil })
+        // Rename smart collection (099 · P4). The card menu's alert; the sidebar row
+        // renames INLINE instead, which is the same distinction the collections tree
+        // already draws between its own row (inline, 025 · S2) and this gallery.
+        .nameEntryAlert(
+            "Rename Smart Collection",
+            isPresented: smartRenameBinding, text: $smartRenameText, confirmLabel: "Rename",
+            onConfirm: { name in
+                if let target = smartRenameTarget, let services = model.services {
+                    Task {
+                        await model.smartCollections.rename(
+                            id: target.id, to: name, services: services)
+                    }
+                }
+                smartRenameTarget = nil
+            },
+            onCancel: { smartRenameTarget = nil })
         // Batch delete confirmation (one dialog for the whole marquee selection).
         .confirmationDialog(
             "Delete \(selection.ids.count) \(selection.ids.count == 1 ? "item" : "items")?",
@@ -251,7 +275,65 @@ struct CollectionsGalleryView: View {
                 coverHash: model.collectionCovers[collection.id],
                 coverURL: coverURL(for: collection.id),
                 placeholderSymbol: "folder",
-                accent: isUnsorted)
+                tint: isUnsorted ? .accent : .plain)
+        }
+    }
+
+    // MARK: - Smart collections section (099 · P4 / 057)
+
+    /// 057: *"cards with a distinct badge/tint AFTER the real collections"* — so
+    /// this sits below `collectionsSection`, and additive like Spaces: a library
+    /// with no saved searches sees no heading at all.
+    ///
+    /// A smart collection never has a cover, because a cover is set on a
+    /// MEMBERSHIP (`Set as Cover` writes `collection.cover_asset_id`) and a query
+    /// has none. Every card here is therefore the placeholder branch, which is
+    /// exactly where ``CardTint`` lives — the tint IS the distinction 057 asks for.
+    private var smartSection: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            sectionHeader("Smart", count: model.smartCollections.count)
+            LazyVGrid(columns: columns, spacing: 6) {
+                ForEach(model.smartCollections.searches) { search in
+                    Button {
+                        nav.openSavedSearch(search.id)
+                    } label: {
+                        smartCard(search)
+                    }
+                    .buttonStyle(.plain)
+                    // NOT selectable by the marquee, and not a `CardFrameReporter`.
+                    // The batch delete this gallery's ⌘⌫ runs is
+                    // `deleteCards(collectionIDs:spaceIDs:)` — two kinds, both with
+                    // their own recoverable delete. A saved search has neither an
+                    // undo nor a third parameter, and adding one to sweep queries up
+                    // in a marquee that was aimed at pictures is not a trade worth
+                    // making. Delete is on the card's own menu, where it is aimed.
+                    .contextMenu { smartMenu(for: search) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func smartCard(_ search: SavedSearch) -> some View {
+        CoverCard(
+            title: search.name,
+            subtitle: model.smartCollections.badge(id: search.id)?.sentence ?? "Saved search",
+            coverHash: nil,
+            coverURL: nil,
+            placeholderSymbol: model.smartCollections.badge(id: search.id)?.symbol
+                ?? "line.3.horizontal.decrease.circle",
+            tint: .smart)
+    }
+
+    private func smartMenu(for search: SavedSearch) -> some View {
+        Group {
+            Button("Rename…") {
+                smartRenameText = search.name
+                smartRenameTarget = search
+            }
+            Button("Delete", role: .destructive) {
+                model.smartCollections.requestDelete(id: search.id, name: search.name)
+            }
         }
     }
 
@@ -557,6 +639,10 @@ struct CollectionsGalleryView: View {
 
     private var spaceRenameBinding: Binding<Bool> {
         Binding(get: { spaceRenameTarget != nil }, set: { if !$0 { spaceRenameTarget = nil } })
+    }
+
+    private var smartRenameBinding: Binding<Bool> {
+        Binding(get: { smartRenameTarget != nil }, set: { if !$0 { smartRenameTarget = nil } })
     }
 }
 

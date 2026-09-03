@@ -15,6 +15,8 @@
 //  `CollectionReadModelTests.ingestBurstCollapses`.
 //
 
+import AtelierCore
+import AtelierIngestion
 import Foundation
 import Testing
 @testable import AtelierRefs
@@ -143,5 +145,77 @@ struct CoalescerThrottleTests {
         // A signal arriving straight after is inside the NEW window, not the old one.
         #expect(c.admit(a, interval: interval, at: t0 + .milliseconds(510))
                 == .hold(after: .milliseconds(490)))
+    }
+}
+
+// MARK: - The trailing run, cancelled (099 · P4 — P3's third handoff)
+
+@MainActor
+@Suite("Coalescer: the trailing run can be called off (099 · P4)", .timeLimit(.minutes(1)))
+struct CoalescerCancellationTests {
+
+    private let interval: Duration = .milliseconds(500)
+
+    /// The pure half. [472](../../.change-log/472-the-feed-gets-a-model-of-its-own.md)
+    /// closed by naming this: *"there is no token to cancel it with and nothing
+    /// asserts there is not one."* `cancelTrailing` is the token's other half —
+    /// without it a cancelled task leaves the key marked as owing a run, and every
+    /// signal for the rest of that window answers `.held`, waiting on a task that no
+    /// longer exists.
+    @Test("cancelling the owed run frees the key without moving its window")
+    func cancelTrailingFreesTheKey() {
+        var c = Coalescer<UUID?>()
+        let a = UUID()
+        let t0 = ContinuousClock.now
+        #expect(c.admit(a, interval: interval, at: t0) == .run)
+        #expect(c.admit(a, interval: interval, at: t0 + .milliseconds(100))
+                == .hold(after: .milliseconds(400)))
+        #expect(c.isHolding(a))
+
+        c.cancelTrailing(a)
+        #expect(!c.isHolding(a))
+        // The window itself did NOT move — nothing ran — so the next signal inside
+        // it owes a fresh trailing run measured from the ORIGINAL leading edge.
+        #expect(c.admit(a, interval: interval, at: t0 + .milliseconds(200))
+                == .hold(after: .milliseconds(300)))
+    }
+
+    @Test("cancelling a key that owes nothing is a no-op, not a reset")
+    func cancelTrailingOnAnIdleKey() {
+        var c = Coalescer<UUID?>()
+        let a = UUID()
+        let t0 = ContinuousClock.now
+        #expect(c.admit(a, interval: interval, at: t0) == .run)
+        c.cancelTrailing(a)
+        #expect(!c.isHolding(a))
+        // Still inside the window the leading edge opened.
+        #expect(c.admit(a, interval: interval, at: t0 + .milliseconds(10)) != .run)
+    }
+
+    /// The model half: the deferred reload is now a task the model HOLDS, so it can
+    /// be called off — and, because it captures `[weak self]`, a model that goes
+    /// away mid-window is not kept alive by its own debounce. That is what P3 meant
+    /// by "a real cost the moment a second window's model is short-lived".
+    @Test("a held ingest reload is owed, and can be called off")
+    func pendingIngestReloadIsCancellable() async throws {
+        let dbPath = NSTemporaryDirectory() + "coalescer-cancel-\(UUID().uuidString).sqlite"
+        let services = try AppServices(databasePath: dbPath)
+        let store = MediaStore(root: FileManager.default.temporaryDirectory)
+        let model = IngestionModel(services: services, store: store)
+        await model.refreshFolders()
+        let unsorted = model.unsortedFolderID
+
+        #expect(!model.hasPendingIngestReload(touching: unsorted))
+        model.refreshAfterIngest(touching: unsorted)            // leading edge — runs
+        #expect(!model.hasPendingIngestReload(touching: unsorted))
+        model.refreshAfterIngest(touching: unsorted)            // inside the window
+        #expect(model.hasPendingIngestReload(touching: unsorted))
+
+        model.cancelPendingIngestReloads()
+        #expect(!model.hasPendingIngestReload(touching: unsorted))
+        // …and the coalescer agrees, so the rest of the window is not spent waiting
+        // on a task that was cancelled.
+        model.refreshAfterIngest(touching: unsorted)
+        #expect(model.hasPendingIngestReload(touching: unsorted))
     }
 }

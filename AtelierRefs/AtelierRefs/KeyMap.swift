@@ -361,6 +361,14 @@ nonisolated enum KeyMap {
                  scope: .global, source: "AtelierRefsApp.swift:96 (Settings scene)"),
         Shortcut([.character("/")], [.command], pageTitle,
                  scope: .global, source: "AtelierRefsApp.swift (Help menu)"),
+        // 099 · P4. `.global` and not `.search`, because that is what it is: the
+        // control is a `ToolbarItem` on the scene, not a view inside the field, so
+        // its `keyboardShortcut` fires wherever the keyboard is. It is disabled
+        // whenever the query is empty — which is most of the time — so it cannot
+        // shadow a chord some surface wanted; and there is nothing else in this app
+        // called "save", which is what leaves ⌘S free for the one thing there is.
+        Shortcut([.character("s")], [.command], "Save this search…",
+                 scope: .global, source: "LibrarySearch.swift (saveSearchButton)"),
     ]
 
     // MARK: In a collection
@@ -614,6 +622,17 @@ nonisolated enum KeyMap {
         case .collection: return .collection
         case .space: return .space
         case .home: return .gallery
+        // A smart collection's pane IS a collection grid — the same
+        // `MasonryGridHost`, the same `gridKeyCommand`, the same arrows, ⌘A, Esc,
+        // ⌘± and `E` (099 · P4). It opens on the `.collection` section rather than
+        // earning one of its own, because a second section restating those rows
+        // would be a copy that drifts. The two rows the section carries that a
+        // saved search does NOT bind — ⌫ *Remove from this collection* and ⌘V
+        // *Paste into this collection* — are the two verbs that need a membership,
+        // and both are no-ops here rather than wrong: this is the same
+        // approximation the sheet already makes for the shelf and for search
+        // results, which fall through to `.global`.
+        case .savedSearch: return .collection
         default: return .global
         }
     }

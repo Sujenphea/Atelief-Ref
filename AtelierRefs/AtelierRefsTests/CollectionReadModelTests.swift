@@ -321,6 +321,111 @@ struct CollectionReadModelTests {
         #expect(model.items.allSatisfy { $0.item.id == $0.asset.id })
     }
 
+    /// **057's own named test** (*"Grid reuse: mid-triage vanish (item stops
+    /// matching) drives one reload, no crash, selection pruned"*).
+    ///
+    /// The saved search is `favoritesOnly`, so un-starring a hit is the smallest
+    /// real way to make an item stop matching WITHOUT deleting it — which is the
+    /// whole point: the asset is still in the library and still in its collection,
+    /// and the only thing that changed is whether it answers the query.
+    @Test("an item that stops matching vanishes on the next reload, selection pruned")
+    func savedSearchItemThatStopsMatchingVanishes() async throws {
+        let dbPath = NSTemporaryDirectory() + "read-model-vanish-\(UUID().uuidString).sqlite"
+        let services = try AppServices(databasePath: dbPath)
+        let collection = try await services.createCollection(name: "Refs")
+        let source = SourceDraft(
+            platform: .web, originalURL: "https://e/vanish", capturedAt: Date())
+        var assets: [Asset] = []
+        for hex in ["#112233", "#445566", "#778899"] {
+            let outcome = try await services.ingestContent(
+                .color(hex: hex), from: source, into: collection.id)
+            assets.append(outcome.asset)
+        }
+        // Two of the three match.
+        _ = try await services.setFavorite(true, for: [assets[0].id, assets[1].id])
+        let search = try await services.createSavedSearch(
+            name: "Starred", rules: SearchRules(favoritesOnly: true))
+
+        let store = GridSelectionStore()
+        let model = CollectionReadModel(feed: .savedSearch(services), selectionStore: store)
+        let recorder = EventRecorder(model.events.stream())
+        model.load(search.id)
+        await recorder.wait(forAtLeast: 1, where: Self.isLoad(of: search.id))
+        #expect(model.items.count == 2)
+
+        // The user is mid-triage with BOTH hits selected and one of them the lead.
+        let visible = model.items.map(\.item.id)
+        store.replace(GridSelection(
+            ids: Set(visible), anchor: visible.first, lead: visible.first))
+        #expect(store.selection.ids.count == 2)
+
+        // One of them stops matching — un-starred from anywhere, including this
+        // very grid. The asset is untouched otherwise.
+        _ = try await services.setFavorite(false, for: [assets[0].id])
+        model.reload()
+        await recorder.wait(forAtLeast: 2, where: Self.isLoad(of: search.id))
+
+        // It is gone from the feed…
+        #expect(model.items.count == 1)
+        #expect(!model.items.contains { $0.asset.id == assets[0].id })
+        #expect(model.items.first?.asset.id == assets[1].id)
+        // …the selection is pruned to the survivor, and the lead — which pointed at
+        // the row that left — falls away with it (009's stale-selection guard).
+        #expect(store.selection.ids == Set(model.items.map(\.item.id)))
+        #expect(store.selection.ids.count == 1)
+        #expect(store.selection.lead == nil || model.items.contains {
+            $0.item.id == store.selection.lead
+        })
+        // Nothing was deleted: the asset is still in its collection.
+        let survivors = try await services.collectionItems(
+            in: collection.id, sort: .newest, includeArchived: false)
+        #expect(survivors.count == 3)
+    }
+
+    /// 057 gives a smart collection 007's grid modes minus `.manual`, and
+    /// `evaluate(rules:)` passes no sort at all — so `.mostViewed` has to be
+    /// applied over the fetched page, by the one function that reproduces core's
+    /// `ORDER BY` byte for byte.
+    @Test("the saved-search feed honours Most Viewed, and Newest is the service's order")
+    func savedSearchFeedSorts() async throws {
+        let dbPath = NSTemporaryDirectory() + "read-model-sort-\(UUID().uuidString).sqlite"
+        let services = try AppServices(databasePath: dbPath)
+        let collection = try await services.createCollection(name: "Refs")
+        let source = SourceDraft(
+            platform: .web, originalURL: "https://e/vanish", capturedAt: Date())
+        var assets: [Asset] = []
+        for hex in ["#112233", "#445566", "#778899"] {
+            let outcome = try await services.ingestContent(
+                .color(hex: hex), from: source, into: collection.id)
+            assets.append(outcome.asset)
+        }
+        let search = try await services.createSavedSearch(name: "All", rules: SearchRules())
+        // The OLDEST asset is the most viewed, so the two orders cannot coincide.
+        try await services.recordViews([assets[0].id])
+        try await services.recordViews([assets[0].id])
+        try await services.recordViews([assets[1].id])
+
+        let newest = CollectionReadModel(
+            feed: .savedSearch(services, sort: .newest), selectionStore: GridSelectionStore())
+        let newestRecorder = EventRecorder(newest.events.stream())
+        newest.load(search.id)
+        await newestRecorder.wait(forAtLeast: 1, where: Self.isLoad(of: search.id))
+        // `.newest` IS the service's own order, untouched — asserted against the
+        // service rather than against a list retyped here, because three colours
+        // ingested in one millisecond tie on `created_at` and fall through to
+        // `id DESC`, which is not something a test should be predicting.
+        let serviceOrder = try await services.evaluateSavedSearch(id: search.id, limit: 500)
+        #expect(newest.items.map(\.asset.id) == serviceOrder.map(\.asset.id))
+
+        let viewed = CollectionReadModel(
+            feed: .savedSearch(services, sort: .mostViewed),
+            selectionStore: GridSelectionStore())
+        let viewedRecorder = EventRecorder(viewed.events.stream())
+        viewed.load(search.id)
+        await viewedRecorder.wait(forAtLeast: 1, where: Self.isLoad(of: search.id))
+        #expect(viewed.items.map(\.asset.id) == [assets[0].id, assets[1].id, assets[2].id])
+    }
+
     @Test("a saved-search feed refuses to reorder (057 — no manual order)")
     func savedSearchFeedRefusesReorder() async throws {
         let stub = StubFeed()

@@ -128,14 +128,35 @@ struct CollectionFeed {
     ///
     /// `limit` matches the search-results grid's own 500 (`LibrarySearch.swift`),
     /// so the two surfaces that show the same query show the same number of hits.
-    static func savedSearch(_ services: AppServices, limit: Int = 500) -> CollectionFeed {
+    ///
+    /// **`sort` is applied here, over the fetched page, and it has to be.** 057
+    /// gives a smart collection 007's grid modes minus `.manual`, but
+    /// `evaluate(rules:)` deliberately passes no `sort:` at all — sort is display,
+    /// not part of what a saved search MEANS (`SearchRules`' own header), and
+    /// `searchAssets`' `SearchSort` has only `.newest` and `.relevance` anyway.
+    /// So `.newest` IS the service's order, untouched, and `.mostViewed` is
+    /// `mostViewedSorted` — core's own `view_count DESC, created_at DESC, id DESC`,
+    /// reproduced byte-for-byte by the function that exists for exactly that
+    /// promise. A value rather than a closure over `id`, unlike
+    /// ``collection(_:sort:)``: a collection's mode is per-collection state the
+    /// writing model caches, while a smart collection's is the window's own and
+    /// the window rebuilds the feed when it changes.
+    static func savedSearch(
+        _ services: AppServices,
+        sort: SmartCollectionSort = .newest,
+        limit: Int = 500
+    ) -> CollectionFeed {
         CollectionFeed(
             carriesMembership: false,
             missingEntity: "saved_search",
             missingSentence: "That smart collection no longer exists.",
             read: { id in
                 let hits = try await services.evaluateSavedSearch(id: id, limit: limit)
-                return Page(items: looseItems(for: hits))
+                let rows = looseItems(for: hits)
+                switch sort {
+                case .newest: return Page(items: rows)
+                case .mostViewed: return Page(items: mostViewedSorted(rows))
+                }
             })
     }
 }

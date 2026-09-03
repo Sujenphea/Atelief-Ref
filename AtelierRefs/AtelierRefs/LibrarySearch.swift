@@ -383,6 +383,43 @@ final class LibrarySearchModel: ObservableObject {
     /// library, so the stale card leaves the results grid). A no-op when inactive.
     func rerun() { if isActive { runSearch() } }
 
+    /// Collection scope = the `.collection` tokens (16A) plus the This-collection
+    /// toggle when active, de-duplicated (a screen scoped to a collection the user
+    /// ALSO tokenized shouldn't list it twice).
+    private var queryScopeIDs: [UUID] {
+        var scopeIDs = selectedCollectionIDs
+        if let collectionID, scope == .thisCollection { scopeIDs.append(collectionID) }
+        return Array(NSOrderedSet(array: scopeIDs).array as? [UUID] ?? scopeIDs)
+    }
+
+    /// The KEYWORD-shaped query for the field's current state.
+    ///
+    /// What ``runSearch()`` runs in `.keyword` mode, and — since 099 · P4 — what
+    /// "Save this search…" hands to `SearchRules.init(query:)`. One construction
+    /// rather than two, because two would be the drift 4A's whole bridge exists to
+    /// prevent, reached one level higher up.
+    ///
+    /// **A `.meaning` query saves as its keyword filters, deliberately.** A
+    /// `SearchRules` has no semantic-mode field and cannot grow one usefully: 047's
+    /// `.meaning` arm ranks by cosine similarity against a model version, and
+    /// `evaluate(rules:)` runs `searchAssets` — the keyword path — for every saved
+    /// search. So what a save persists is the part of the query that is a FILTER,
+    /// which is the only part a rule has ever meant.
+    var keywordQuery: LibrarySearchQuery {
+        let (fts, tagNeedle) = Self.parse(query: text)
+        let hasFTS = !fts.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return LibrarySearchQuery(
+            text: fts,
+            tagIDs: selectedTagIDs,
+            tagNameContains: tagNeedle,
+            collectionIDs: queryScopeIDs,
+            favoritesOnly: favoritesOnly,
+            colorBuckets: selectedColorBuckets.map(\.rawValue),
+            // Rank by relevance while there's text to rank; a tokens-only /
+            // `tag:`-only query has nothing to score, so keep the recency order.
+            sort: hasFTS ? .relevance : .newest)
+    }
+
     private func runSearch() {
         queryTask?.cancel()
         guard isActive else {
@@ -390,14 +427,8 @@ final class LibrarySearchModel: ObservableObject {
             events.emit(.settled(version: resultsVersion))
             return
         }
-        let (fts, tagNeedle) = Self.parse(query: text)
+        let (fts, _) = Self.parse(query: text)
         let hasFTS = !fts.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        // Collection scope = the `.collection` tokens (16A) plus the
-        // This-collection toggle when active, de-duplicated (a screen scoped to a
-        // collection the user ALSO tokenized shouldn't list it twice).
-        var scopeIDs = selectedCollectionIDs
-        if let collectionID, scope == .thisCollection { scopeIDs.append(collectionID) }
-        scopeIDs = Array(NSOrderedSet(array: scopeIDs).array as? [UUID] ?? scopeIDs)
 
         // `.meaning` mode ranks the WHOLE raw text by semantic similarity (no `tag:`
         // parsing, no prefix/relevance sort — the embedder reads the concept), with
@@ -405,25 +436,15 @@ final class LibrarySearchModel: ObservableObject {
         // tokens-only query falls back to the keyword filter path.
         let query: LibrarySearchQuery
         let run: (LibrarySearchQuery) async throws -> [AssetDetail]
-        let colorBuckets = selectedColorBuckets.map(\.rawValue)
         if mode == .meaning, hasFTS {
             query = LibrarySearchQuery(
                 text: text, tagIDs: selectedTagIDs, tagNameContains: nil,
-                collectionIDs: scopeIDs, favoritesOnly: favoritesOnly,
-                colorBuckets: colorBuckets,
+                collectionIDs: queryScopeIDs, favoritesOnly: favoritesOnly,
+                colorBuckets: selectedColorBuckets.map(\.rawValue),
                 sort: .relevance)
             run = runSemanticQuery
         } else {
-            query = LibrarySearchQuery(
-                text: fts,
-                tagIDs: selectedTagIDs,
-                tagNameContains: tagNeedle,
-                collectionIDs: scopeIDs,
-                favoritesOnly: favoritesOnly,
-                colorBuckets: colorBuckets,
-                // Rank by relevance while there's text to rank; a tokens-only /
-                // `tag:`-only query has nothing to score, so keep the recency order.
-                sort: hasFTS ? .relevance : .newest)
+            query = keywordQuery
             run = runQuery
         }
         isRunning = true
@@ -607,6 +628,9 @@ struct LibrarySearchable<Content: View>: View {
     /// The detail page's run + grouping, memoized on `(resultsVersion, grouping)` so
     /// the page does not rebuild a whole `PostGroups` per body pass (080 §4).
     @State private var detailContexts = LooseDetailContextCache()
+    /// The "Save this search…" name prompt (099 · P4).
+    @State private var showSaveSearch = false
+    @State private var saveSearchName = ""
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -700,11 +724,25 @@ struct LibrarySearchable<Content: View>: View {
             ToolbarItem(placement: .primaryAction) {
                 ColorFilterPicker(search: search)
             }
+            // "Save this search…" (057 / 099 · P4) — on every pane, beside the
+            // field, because the field is the rule editor and this is its commit.
+            // Disabled while the query is empty; on an OPEN smart collection it
+            // re-rules that search instead of making a second one.
+            ToolbarItem(placement: .primaryAction) {
+                saveSearchButton
+            }
             ToolbarItem(placement: .primaryAction) {
                 SearchToolbarField(search: search)
                     .frame(width: searchFieldWidth)
             }
         }
+        // The name prompt for a NEW smart collection, through the app's one
+        // name-entry alert (043 · 6A) — the same field, blank-guard and reset every
+        // rename and create in the app uses.
+        .nameEntryAlert(
+            "Save Search",
+            isPresented: $showSaveSearch, text: $saveSearchName, confirmLabel: "Save",
+            onConfirm: { name in commitNewSavedSearch(named: name) })
         .task(id: model.isReady) {
             search.configure(services: model.services, collectionID: collectionID)
         }
@@ -722,6 +760,79 @@ struct LibrarySearchable<Content: View>: View {
         .onChange(of: search.tokens) { _, _ in search.tokensChanged() }
         .onChange(of: search.mode) { _, _ in search.modeChanged() }
         .onChange(of: search.scope) { _, _ in search.configure(services: model.services, collectionID: collectionID) }
+    }
+
+    // MARK: - Save this search… (057 / 099 · P4)
+
+    /// What pressing the save control means right now.
+    private var saveAction: SaveSearchAction {
+        saveSearchAction(isActive: search.isActive, sidebar: nav.sidebarSelection)
+    }
+
+    private var saveSearchButton: some View {
+        let action = saveAction
+        let name: String? = {
+            guard case .update(let id) = action else { return nil }
+            return model.smartCollections.search(id: id)?.name
+        }()
+        return Button {
+            switch action {
+            case .unavailable:
+                break
+            case .save:
+                saveSearchName = ""
+                showSaveSearch = true
+            case .update(let id):
+                commitRules(into: id)
+            }
+        } label: {
+            Image(systemName: "line.3.horizontal.decrease.circle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.Colors.inkSecondary)
+        }
+        .buttonStyle(HoverButtonStyle(cornerRadius: Theme.Radius.control, padding: 5))
+        .disabled(!action.isEnabled)
+        .opacity(action.isEnabled ? 1 : Theme.disabledOpacity)
+        .help(action.title(currentName: name))
+        .accessibilityLabel(action.title(currentName: name))
+        // ⌘S — the chord a Mac user reaches for to keep what is on screen, and free
+        // in this app's key map (there is nothing else to "save"). Recorded in
+        // `KeyMap` as a `.global` row, which is what it honestly is: a toolbar item
+        // lives on the scene, not on the field, so it fires wherever you are — and
+        // it is DISABLED whenever the query is empty, which is most of the time.
+        .keyboardShortcut("s", modifiers: .command)
+    }
+
+    /// Save the live query as a NEW smart collection, then go and look at it — a
+    /// save you cannot see the result of reads as a save that did not happen.
+    private func commitNewSavedSearch(named name: String) {
+        guard let services = model.services else { return }
+        let rules = SearchRules(query: search.keywordQuery)
+        Task {
+            guard let created = await model.smartCollections.create(
+                name: name, rules: rules, services: services) else { return }
+            // The field's query is now the smart collection's rule, and leaving the
+            // results grid up over it would show the same rows twice with only one
+            // of them named. Clearing first is also what makes the navigation land
+            // on the pane rather than behind a live query.
+            search.clearQuery()
+            nav.openSavedSearch(created.id)
+        }
+    }
+
+    /// Re-rule the OPEN smart collection from the live query (057: the search field
+    /// is the rule editor, and editing is "re-run and re-save").
+    ///
+    /// The field is cleared afterwards for the same reason the create path clears
+    /// it: the pane behind the results grid is now running exactly this query, so
+    /// leaving the grid up would hide the thing that just changed.
+    private func commitRules(into id: UUID) {
+        guard let services = model.services else { return }
+        let rules = SearchRules(query: search.keywordQuery)
+        Task {
+            await model.smartCollections.updateRules(id: id, rules: rules, services: services)
+            search.clearQuery()
+        }
     }
 }
 

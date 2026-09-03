@@ -67,6 +67,21 @@ final class IngestionModel: ObservableObject {
     /// ``CollectionFeed`` and never touch this one.
     let contents: CollectionReadModel
 
+    /// Every smart collection, its badge and its four verbs (099 · P4).
+    ///
+    /// Held here for the reason ``contents`` is, and for no more than that: the
+    /// sidebar, the Home gallery, the search field's "Save this search…" and the
+    /// delete confirmation in `ContentView` all need the SAME list, and every one
+    /// of them already has an `IngestionModel`. Threading a fifth object through
+    /// four view signatures would have bought nothing.
+    ///
+    /// It is a reference this model FORWARDS to and never reaches into — no verb
+    /// here writes a `saved_search` row and none of the boilerplate this model owns
+    /// (the undo stack, the write funnel, `libraryChanged`) applies to a query.
+    /// Deleting one touches no asset (057), so there is nothing for ⌘Z to reverse
+    /// and nothing for a read model to reload.
+    let smartCollections = SavedSearchesSidebarModel()
+
     /// The selected folder's DIRECT items (decision F5).
     var items: [CollectionItemDetail] { contents.items }
     /// The collection ``items`` currently belong to — the identity a view checks to
@@ -447,10 +462,38 @@ final class IngestionModel: ObservableObject {
     /// cell drags just itself — a single-item drag, **selection left untouched**
     /// (an idle drag leaves you idle, not stuck in selection mode). Returns `nil`
     /// only if the cell has vanished.
+    ///
+    /// **The source is the FEED's identity, not the import target (099 · P4).** It
+    /// used to stamp `selectedFolderID`, and P3 left that alone rather than change
+    /// it under cover of a refactor while naming it as the seam this phase must
+    /// look at. The two fields are different questions: `selectedFolderID` is
+    /// *where the next paste lands*, `loadedCollectionID` is *what these rows came
+    /// from* — and `sourceCollectionID` is read by `routeDrop` to decide MOVE vs
+    /// COPY and by `DropTarget.slot` to decide whether a drag is a reorder at all.
+    /// In one window on a collection they agree, which is why the bug was
+    /// invisible; the moment they do not — an undo has repointed the import target,
+    /// or a second window is showing something else — a drag out of the grid would
+    /// have moved items out of a folder the user was not looking at.
+    ///
+    /// ``CollectionFeed/carriesMembership`` decides the fallback rather than a
+    /// `nil` check, because "there is no source" is a fact about the FEED and not
+    /// about whether a load has landed: a membership-less feed has no collection to
+    /// move out of at all, so it stamps ``AssetDragPayload/nilSourceID`` and every
+    /// drop it reaches can only COPY (`routeDrop`'s `sourceless` arm). That is 057's
+    /// rule for a smart collection's grid, reached through the feed that already
+    /// states it rather than through a second rule beside it.
     func dragPayload(forCellItemID itemID: UUID) -> AssetDragPayload? {
         let assetIDs = actionTargets(forCellItemID: itemID)
         guard !assetIDs.isEmpty else { return nil }
-        return AssetDragPayload(assetIDs: assetIDs, sourceCollectionID: selectedFolderID)
+        return AssetDragPayload(assetIDs: assetIDs, sourceCollectionID: dragSourceID)
+    }
+
+    /// The collection a drag out of this window's grid comes FROM — the loaded
+    /// feed's id, or the membership-less sentinel when the feed has no memberships
+    /// or has not resolved one yet.
+    var dragSourceID: UUID {
+        guard contents.feed.carriesMembership else { return AssetDragPayload.nilSourceID }
+        return contents.loadedCollectionID ?? AssetDragPayload.nilSourceID
     }
 
     /// A pending destructive delete awaiting the user's confirmation. Set by the
@@ -509,6 +552,14 @@ final class IngestionModel: ObservableObject {
             self?.sortMode(for: id) ?? .manual
         }
         contents.follow(libraryChanged)
+        // The smart-collection list is read once the library is open, so the
+        // sidebar's Smart section and Home's cards have their answer before anyone
+        // looks (099 · P4). It is NOT subscribed to `libraryChanged`: a saved
+        // search's rows are re-evaluated by the read model showing it, and the LIST
+        // only changes when a saved-search verb ran — every one of which reloads it
+        // itself. Following the change stream would re-read the table on every
+        // asset move for a list that could not have moved.
+        Task { await smartCollections.load(services: services) }
     }
 
     /// The library's `snapshots/` directory, for the marker files that survive a
@@ -534,10 +585,21 @@ final class IngestionModel: ObservableObject {
         contentsErrorCancellable = contents.$lastError
             .compactMap { $0 }
             .sink { [weak self] message in self?.lastError = message }
+        // The same two hops for the smart-collection list (099 · P4), for exactly
+        // the same two reasons: the sidebar, Home and the delete confirmation all
+        // name `IngestionModel`, and a failed saved-search read is an alert like
+        // any other.
+        smartCancellable = smartCollections.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+        smartErrorCancellable = smartCollections.$lastError
+            .compactMap { $0 }
+            .sink { [weak self] message in self?.lastError = message }
     }
 
     private var contentsCancellable: AnyCancellable?
     private var contentsErrorCancellable: AnyCancellable?
+    private var smartCancellable: AnyCancellable?
+    private var smartErrorCancellable: AnyCancellable?
 
     // MARK: - Bootstrap
 
@@ -839,6 +901,24 @@ final class IngestionModel: ObservableObject {
     /// forty behind it collapse.
     private let ingestReloadInterval: Duration = .milliseconds(500)
 
+    /// The deferred trailing reload owed per key, held so it can be CANCELLED
+    /// (099 · P4 — P3's third handoff).
+    ///
+    /// The trailing run is a `Task` around a `Task.sleep`, and it used to capture
+    /// `self` strongly with no handle to stop it: a model went on existing for up
+    /// to the window after its last real reference had gone, and nothing said it
+    /// did. P3 recorded that as "harmless while the model lives as long as the
+    /// process; a real cost the moment a second window's model is short-lived,
+    /// which is P4" — and this phase is where the short-lived models arrive.
+    ///
+    /// Two changes, and the FIRST is the one that fixes the retention: the task
+    /// captures `[weak self]`, so a model can deallocate mid-window and the run
+    /// simply finds nothing to reload. The handle is what makes it also
+    /// *assertable* — ``hasPendingIngestReload(touching:)`` and
+    /// ``cancelPendingIngestReloads()`` turn "there is no token to cancel it with
+    /// and nothing asserts there is not one" into two lines a test can read.
+    private var trailingReloads: [UUID?: Task<Void, Never>] = [:]
+
     /// Bring the live UI back in step with a library some producer OTHER than the
     /// user just wrote to.
     ///
@@ -864,12 +944,41 @@ final class IngestionModel: ObservableObject {
         case .held:
             break                       // an earlier signal already owes the reload
         case .hold(let after):
-            Task {
+            // `.hold` is issued at most once per key per window, so there is never
+            // a live task here to replace — cancelled defensively rather than
+            // trusting that invariant from a distance.
+            trailingReloads[collectionID]?.cancel()
+            trailingReloads[collectionID] = Task { [weak self] in
                 try? await Task.sleep(for: after)
-                ingestReloads.release(collectionID, at: .now)
-                await publishChange(scope)
+                guard !Task.isCancelled, let self else { return }
+                self.trailingReloads[collectionID] = nil
+                self.ingestReloads.release(collectionID, at: .now)
+                await self.publishChange(scope)
             }
         }
+    }
+
+    /// Whether a trailing reload is still owed for `collectionID` — the seam that
+    /// makes the cancellation above assertable rather than merely written.
+    func hasPendingIngestReload(touching collectionID: UUID?) -> Bool {
+        trailingReloads[collectionID] != nil
+    }
+
+    /// Drop every owed trailing reload without running it.
+    ///
+    /// The teardown a window performs when it is going away and does not want a
+    /// reload landing on a model nobody is looking at any more. `[weak self]`
+    /// already means an unreferenced model cannot be KEPT ALIVE by one of these;
+    /// this is for the case where the model outlives the reason for the reload.
+    func cancelPendingIngestReloads() {
+        for (key, task) in trailingReloads {
+            task.cancel()
+            // …and tell the coalescer nothing is owed any more, or every signal
+            // inside the rest of this window would answer `.held` and wait on a
+            // task that no longer exists.
+            ingestReloads.cancelTrailing(key)
+        }
+        trailingReloads.removeAll()
     }
 
     /// Refresh the live UI after a browser capture: reload the visible folder when

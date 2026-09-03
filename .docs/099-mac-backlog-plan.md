@@ -450,6 +450,41 @@ Effort M.*
 
 **Verify:** `verify.sh` full.
 
+**Done** ([473](../.change-log/473-the-saved-search-becomes-a-place.md)). Landed as
+specified — the SwiftUI section, the read model's saved-search feed with 007's modes
+minus `.manual`, "Save this search…" (which re-rules the OPEN smart collection rather
+than making a second one), both badges on both surfaces, the exclusion assertions, the
+Home cards and a `KeyMap` row for ⌘S. **The trigger recorded for a generic outline
+coordinator is *a third reorderable sidebar list*** — two is not a pattern, and this
+section is not the third because it does not reorder at all. P3's three handoffs are
+all closed: the badges have a path, `dragPayload` stamps the FEED's id instead of the
+import target, and the coalescer's trailing run is `[weak self]` plus a cancellable
+handle (`Coalescer.cancelTrailing`).
+
+**One bullet above is FALSE and this phase is where it was found.** *"The archive
+manifest already carries `saved_search` rows ([081])"* — it does not, and
+[081](081-backup-plan.md) never said it did; the claim is
+[057](057-smart-collections-overview.md)'s alone. It was not simply added, because
+`ArchiveManifest.TagEntry` deliberately carries **no tag id** ("an importer mints its
+own") while `SearchRules` references tag ids — so a rules blob copied into a second
+library would point at ids that exist in neither its tag nor its collection table.
+Making it portable needs a rule-remapping design no doc specifies. The gap is asserted
+instead (`savedSearchesDoNotYetCrossTheArchive`), so the day someone adds the rows the
+test forces them to say what they did about the ids.
+
+**The gate passed at exit 0 on its first run and the machine has since stopped launching
+the app under test.** `App target (UI)` went red after the code was already verified, and
+a control run with the whole phase STASHED — a tree identical to `e4181e1` — fails all
+three smoke flows with `"the app opened no window"`, one MORE than it fails with the diff
+applied. That is 470's ad-hoc-signing blocker returning: this is the one stage that must
+sign ad-hoc (468), every rebuild presents a fresh signature, and an unattended
+`xcodebuild` cannot answer what the system raises. **Every phase from here that rebuilds
+the app will see a red `App target (UI)` on this machine until the prompt is answered at
+the keyboard or the login session is restarted** — the other thirteen stages, `App target`
+and `App target (Release)` included, are green on every run. See
+[473](../.change-log/473-the-saved-search-becomes-a-place.md)'s gate section for the
+six-run sequence and the control.
+
 ## P5 — the ⌘K quick switcher
 
 *Answers 011 · U4's open question: **its own surface, the shared ordering.** Effort M.*
@@ -671,8 +706,8 @@ supplied. 12A's rule applies to each. Effort M each.*
 | P2b | done — unplanned (20A); the two thumbnail suites stop asserting residency against `NSCache` | [469](../.change-log/469-the-cache-that-was-never-promised.md) |
 | P2c | done — unplanned (21A); `DetailImageCache` takes the same seam, 10 assertions across 8 tests. Committed after 22A cleared the `App target (UI)` blocker, on the same gate run | [470](../.change-log/470-the-second-cache-takes-the-same-seam.md) |
 | 22A | done — unplanned; the keychain read leaves the main actor (`@concurrent`, not merely `nonisolated`), and the UI suite stops starting an endpoint it never asserts | [471](../.change-log/471-the-token-leaves-the-main-actor-at-launch.md) |
-| P3 | not started | — |
-| P4 | not started | — |
+| P3 | done — one read model, one write funnel, one coalescer; 071 · 0a closed its own gate negatively | [472](../.change-log/472-the-feed-gets-a-model-of-its-own.md) |
+| P4 | done — a second read model mounted; 057's archive claim found FALSE and pinned; `App target (UI)` since blocked by 470's signing prompt (fails on `HEAD` too) | [473](../.change-log/473-the-saved-search-becomes-a-place.md) |
 | P5 | not started | — |
 | P6 | not started | — |
 | P7 | done — rebased onto `395e471`; 5A closed; 457–460 → 463–466 | [467](../.change-log/467-four-builders-and-the-numbers-that-collided.md) |

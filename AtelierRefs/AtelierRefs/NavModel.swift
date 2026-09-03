@@ -43,6 +43,18 @@ nonisolated enum SidebarItem: Hashable {
     case collection(UUID)
     /// A space selected in the sidebar's Spaces section.
     case space(UUID)
+    /// A smart collection — a saved search — selected in the sidebar's Smart
+    /// section (099 · P4 / [057](../../.docs/057-smart-collections-overview.md)).
+    ///
+    /// A top-level destination rather than a row in the collections tree, for the
+    /// reason 057 rejected a `type` flag on `collection`: it has no memberships,
+    /// no manual order, no nesting and it cannot hold a drop, so putting it in the
+    /// tree would invite every collection consumer to grow a discriminator check.
+    ///
+    /// Safe to add despite the relaunch restore, on ``theme``'s reasoning:
+    /// `restoredSelection()` only ever reconstructs `.home` or `.collection(_:)`
+    /// from `UserDefaults`, so nothing persists this.
+    case savedSearch(UUID)
     #if DEBUG
     /// The design-token specimen pane (``ThemeGalleryView``) — a DEBUG-only
     /// destination, so the sidebar row and the pane both compile out of a release
@@ -64,6 +76,34 @@ enum SidebarDraft: Equatable {
     case space
     /// A new collection — `parent == nil` is a root, else a subfolder of `parent`.
     case collection(parent: UUID?)
+}
+
+// MARK: - What a destination can be dropped ON (099 · P4)
+
+extension SidebarItem {
+    /// Whether assets may be DROPPED on this destination — the sidebar row, and
+    /// the pane behind it.
+    ///
+    /// Written down as one exhaustive `switch` rather than left implicit in which
+    /// views happen to attach an `.onDrop`, because 057 states the rule as a
+    /// prohibition ("not drop targets — you can't add to a query") and a
+    /// prohibition that lives only in the absence of code is one nobody can assert.
+    /// `SmartCollectionExclusionTests` walks every case.
+    ///
+    /// A collection and a space take drops (both have a membership to write);
+    /// Home, Capture, Archived, the theme pane and a smart collection do not. The
+    /// shelf's refusal is 023's — "an archive you can file into is just another
+    /// collection"; a smart collection's is 057's, and it is stronger: there is no
+    /// row a drop could even write.
+    var acceptsAssetDrops: Bool {
+        switch self {
+        case .collection, .space: true
+        case .home, .capture, .shelf, .savedSearch: false
+        #if DEBUG
+        case .theme: false
+        #endif
+        }
+    }
 }
 
 /// Route state for the app shell (004-P1). Holds the `NavigationStack` path and
@@ -167,6 +207,14 @@ final class NavModel: ObservableObject {
     /// Select an open space in the sidebar's Spaces section.
     func openSpace(_ id: UUID) { selectSidebar(.space(id)) }
 
+    /// Open a smart collection — a sidebar row's click, or a Home card's
+    /// (099 · P4). Deliberately NOT persisted as the relaunch destination: the
+    /// restore key is `AtelierLastCollectionID` and it reconstructs a
+    /// `.collection`, so writing a saved-search id into it would restore the app
+    /// onto a collection that does not exist. Landing on Home instead is the
+    /// honest answer and costs one click.
+    func openSavedSearch(_ id: UUID) { selectSidebar(.savedSearch(id)) }
+
     /// Go back one drill-down step (⌘[). A no-op at a sidebar root.
     func goBack() {
         guard !path.isEmpty else { return }
@@ -246,5 +294,49 @@ final class NavModel: ObservableObject {
             newSelection = .home
         }
         return (newSelection, newPath)
+    }
+
+    // MARK: - Smart-collection reconcile (099 · P4)
+
+    /// Reconcile the route against the live saved-search set — run on every
+    /// saved-search refresh, so deleting the smart collection you are looking at
+    /// does not leave the panel on a query that no longer exists.
+    ///
+    /// A SEPARATE entry point from ``reconcile(using:)`` rather than a third
+    /// argument to it, because the two run at different moments off different
+    /// publishers: the folder tree refreshes on every write through
+    /// `publishChange`, the saved-search list only when a saved-search verb ran.
+    /// Folding them together would mean either reconciling saved searches against
+    /// a list nobody had loaded, or reloading that list on every asset move.
+    ///
+    /// `hasLoaded` is the guard ``reconcile(using:)`` has to APPROXIMATE with
+    /// `!collections.isEmpty` — the database always has Unsorted, so a non-empty
+    /// folder list means "loaded". A saved-search list has no such floor: zero is a
+    /// perfectly ordinary answer, and it is exactly the answer produced by deleting
+    /// the last smart collection while looking at it. So the model states outright
+    /// whether its list is an answer, and this reads it rather than guessing.
+    func reconcileSavedSearches(using searches: [SavedSearch], hasLoaded: Bool) {
+        guard hasLoaded,
+              case .savedSearch(let id) = sidebarSelection,
+              !searches.contains(where: { $0.id == id })
+        else { return }
+        fallBackFromSavedSearch()
+    }
+
+    /// Leave a smart-collection route for Home — the deleted-row fallback, and the
+    /// one path that also handles "the last one was deleted".
+    ///
+    /// Home rather than the previous destination: there is no back stack for a
+    /// sidebar selection (`path` is within-collection drill-down only), and Home
+    /// is the one always-valid target — the same answer
+    /// ``reconciled(selection:path:existing:)`` gives a deleted collection.
+    func fallBackFromSavedSearch() {
+        guard case .savedSearch = sidebarSelection else { return }
+        // Same cleanup a delete-driven route change owes anywhere else (355): the
+        // pane unmounts, so its detail overlay's host goes with it.
+        presentedItemID = nil
+        sidebarSelection = .home
+        navigationPulse &+= 1
+        if !path.isEmpty { path = [] }
     }
 }

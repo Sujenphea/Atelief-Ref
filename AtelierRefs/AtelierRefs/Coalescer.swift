@@ -120,6 +120,18 @@ struct Coalescer<Key: Hashable> {
         windows[key] = Window(lastRun: now)
     }
 
+    /// Forget that `key` owes a trailing run, leaving the rest of its window
+    /// alone (099 · P4).
+    ///
+    /// The counterpart to ``release(_:at:)`` for the case where the deferred work
+    /// was CANCELLED rather than performed. Without it a cancelled run leaves the
+    /// key marked as owing one, and every further signal inside the same window
+    /// answers `.held` — waiting on a task that no longer exists. Deliberately not
+    /// `release`: the window's `lastRun` must not move, because nothing ran.
+    mutating func cancelTrailing(_ key: Key) {
+        windows[key]?.trailingScheduled = false
+    }
+
     /// Whether `key` currently owes a trailing run — the property a test asserts
     /// to show a burst collapsed rather than each signal running.
     func isHolding(_ key: Key) -> Bool {

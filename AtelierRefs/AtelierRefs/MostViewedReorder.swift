@@ -66,18 +66,7 @@ nonisolated func mostViewedReorder(
         return CollectionItemDetail(item: detail.item, asset: asset, source: detail.source)
     }
 
-    // Stable sort: Swift's `sorted(by:)` is NOT stable, so the ORIGINAL index is
-    // the final ascending tiebreak — making the comparator a strict total order,
-    // which yields a deterministic, stable result (elements equal on all three
-    // real keys keep their prior relative order).
-    let sorted = bumped
-        .enumerated()
-        .sorted { lhs, rhs in
-            mostViewedPrecedes(
-                lhs.element.asset, rhs.element.asset,
-                lhsIndex: lhs.offset, rhsIndex: rhs.offset)
-        }
-        .map(\.element)
+    let sorted = mostViewedSorted(bumped)
 
     // Skip the publish when the membership order is identical (the common case).
     // Counts baked into the copies are discarded here — order is all the grid
@@ -86,6 +75,31 @@ nonisolated func mostViewedReorder(
         return .unchanged
     }
     return .reordered(sorted)
+}
+
+/// Put `items` into core's Most-Viewed order, exactly.
+///
+/// Stable: Swift's `sorted(by:)` is NOT, so the ORIGINAL index is the final
+/// ascending tiebreak — which makes the comparator a strict total order and the
+/// result deterministic (elements equal on all three real keys keep their prior
+/// relative order).
+///
+/// Split out of ``mostViewedReorder(items:bumps:)`` in 099 · P4 with no change to
+/// what it does. A smart collection's grid offers Most Viewed like any other
+/// (057 — 007's modes minus `.manual`), but its rows come from `searchAssets`,
+/// whose `SearchSort` is `.newest | .relevance` and has no most-viewed arm at all.
+/// So the ordering happens here, over the fetched page — and it has to be THIS
+/// function rather than a second `sorted(by:)` beside it, because byte-identity
+/// with core's `ORDER BY` is the whole premise of the file (see the header).
+nonisolated func mostViewedSorted(_ items: [CollectionItemDetail]) -> [CollectionItemDetail] {
+    items
+        .enumerated()
+        .sorted { lhs, rhs in
+            mostViewedPrecedes(
+                lhs.element.asset, rhs.element.asset,
+                lhsIndex: lhs.offset, rhsIndex: rhs.offset)
+        }
+        .map(\.element)
 }
 
 /// Core's Most-Viewed comparator — `view_count DESC, created_at DESC, id DESC`
