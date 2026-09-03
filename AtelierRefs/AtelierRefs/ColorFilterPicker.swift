@@ -18,7 +18,26 @@
 //  piece of state, three views of it — the rule `FavoritesFilterChip` already
 //  follows.
 //
+//  **099 · P10 — the Any / All control, and the chord that reaches it.** 085 left
+//  one thing open and then closed it in prose: colours combine with `TagMatch`, the
+//  answer is `.any`, "`.all` is reachable through the API and has tests; no UI
+//  offers it yet". Four docs later that was still true — `searchAssets` took
+//  `colorMatch`, `SearchRules` stored it, the SQL switched on it, and the only way
+//  to say `.all` was to hand-write a rules blob. The control lives HERE, next to the
+//  chips it governs, and appears only once two chips are on, because below two the
+//  two modes select the same pictures. And the picker gains ⇧⌘C, which is the first
+//  keyboard route this surface has ever had: without it the Any / All control is
+//  behind a mouse-only popover, which is most of the way back to having no UI.
+//
+//  **The colour wheel is still out, and that is 085's call, not an omission.** Its
+//  risks section says a wheel "needs real Lab coordinates per swatch" and the v21
+//  table stores a palette bucket INTEGER and a coverage — an integer a wheel cannot
+//  be drawn from. Adding `l, a, b` columns is additive and the pass that would fill
+//  them already exists, so the door is open; opening it is a schema change and a
+//  re-derivation, which is a phase, not a control.
+//
 
+import AtelierCore
 import AtelierIngestion
 import SwiftUI
 
@@ -49,6 +68,16 @@ struct ColorFilterPicker: View {
         .help(helpText)
         .accessibilityLabel("Color filter")
         .accessibilityAddTraits(search.hasColorFilter ? [.isSelected] : [])
+        // ⇧⌘C — 099 · P10, and recorded in `KeyMap` as a `.global` row for the
+        // reason ⌘S's row gives: a `ToolbarItem` hangs off the scene, not off the
+        // field, so its chord fires wherever the keyboard is.
+        //
+        // **Shifted, because ⌘C is Copy.** Plain ⌘C is bound in `.collection` and
+        // on a Space board, and a `.global` row would be matched BEFORE either of
+        // them — the collision test would have said so, and the answer would have
+        // been to break copy-paste. ⇧⌘C is claimed by no row in any scope and is
+        // the letter of the thing it opens.
+        .keyboardShortcut("c", modifiers: [.command, .shift])
         // A popover rather than the suggestion dropdown's floated card: this one is
         // hung off a toolbar BUTTON with nothing to type into, so it can take first
         // responder freely — the reason the suggestion list cannot be one.
@@ -60,10 +89,16 @@ struct ColorFilterPicker: View {
     /// Names the colors that are on, so the tooltip answers "filtered by what?"
     /// without opening the popover. The chips in the field say the same thing, but
     /// they scroll out of a narrow field and this does not.
+    ///
+    /// The joiner is the MODE (099 · P10): "Red or Blue" and "Red and Blue" are
+    /// two different filters and the tooltip is the only place outside the open
+    /// popover that can tell them apart — the chips in the field cannot, because
+    /// they are one chip each.
     private var helpText: String {
         let selected = search.selectedColorBuckets
         guard !selected.isEmpty else { return "Filter by color" }
-        return "Filtering by \(selected.map(\.displayName).joined(separator: ", "))"
+        let joiner = search.colorMatch == .all ? " and " : " or "
+        return "Filtering by \(selected.map(\.displayName).joined(separator: joiner))"
     }
 }
 
@@ -111,6 +146,32 @@ private struct ColorFilterPalette: View {
                         isSelected: search.isColorSelected(bucket)
                     ) {
                         search.toggleColorFilter(bucket)
+                    }
+                }
+            }
+
+            // The Any / All control (099 · P10), and only once there are two
+            // colours for it to combine: with one chip on, both modes select the
+            // same pictures, so the control would be a switch with one position —
+            // the same dead affordance the "Clear colors" button below refuses to
+            // be. `showsColorMatchControl` owns that rule and is tested; this view
+            // only draws it.
+            //
+            // `DialogRow` + `SegmentedControl` are the app's popover vocabulary
+            // (see `DialogControls.swift`), so this row looks like every other
+            // labelled choice in the app rather than like a stock AppKit picker.
+            if search.showsColorMatchControl {
+                Divider()
+                DialogRow("Match") {
+                    SegmentedControl(
+                        selection: $search.colorMatch, values: [.any, .all],
+                        help: {
+                            $0 == .all
+                                ? "Only pictures showing every selected color"
+                                : "Pictures showing any of the selected colors"
+                        }
+                    ) {
+                        Text($0 == .all ? "All" : "Any")
                     }
                 }
             }

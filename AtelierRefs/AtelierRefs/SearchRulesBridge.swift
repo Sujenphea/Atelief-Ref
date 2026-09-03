@@ -51,13 +51,20 @@ import Foundation
 extension SearchRules {
     /// The stored rule for a live query — what "Save this search…" persists.
     ///
-    /// `tagMatch` and `colorMatch` are not read off the query because the query
-    /// cannot express them: the field ANDs tags and ORs colors, always (see
-    /// `LibrarySearchModel.selectedTagIDs` / `selectedColorBuckets`, and 085 · C3
-    /// for why picking red then blue reads as "red or blue"). They are pinned to
-    /// the live behaviour here, and `SearchRulesBridgeTests` asserts the two
-    /// constants against `searchAssets`' own defaults so a changed default cannot
-    /// leave saved searches quietly matching something else.
+    /// `tagMatch` is not read off the query because the query cannot express it:
+    /// the field ANDs tag tokens, always (see
+    /// `LibrarySearchModel.selectedTagIDs`). It is pinned to the live behaviour
+    /// here, and `SearchRulesBridgeTests` asserts the constant against
+    /// `searchAssets`' own default so a changed default cannot leave saved
+    /// searches quietly matching something else.
+    ///
+    /// **`colorMatch` used to be pinned the same way and is now READ (099 · P10).**
+    /// The pin was correct while the field had no Any / All control: a query that
+    /// could only ever mean `.any` had nothing else to hand over. Now that the
+    /// picker has one, pinning would be the 011 favorites bug exactly — a filter
+    /// the user can see, set and run, dropped on the way into storage — so the
+    /// field crosses, and the exhaustiveness canary counts it as MAPPED rather
+    /// than allowlisted.
     ///
     /// Normalization (trim text → nil when blank, de-duplicate ids first-seen)
     /// happens inside `SearchRules.init`, so a query built from a half-typed field
@@ -77,7 +84,7 @@ extension SearchRules {
             collectionID: query.collectionIDs.first,
             favoritesOnly: query.favoritesOnly,
             colorBuckets: query.colorBuckets,
-            colorMatch: .any)
+            colorMatch: query.colorMatch)
     }
 }
 
@@ -101,6 +108,7 @@ extension LibrarySearchQuery {
             collectionIDs: rules.collectionID.map { [$0] } ?? [],
             favoritesOnly: rules.favoritesOnly,
             colorBuckets: rules.colorBuckets,
+            colorMatch: rules.colorMatch,
             // `evaluate(rules:)` passes no sort, so a saved search runs at
             // `searchAssets`' default. Reconstructing `.relevance` from non-empty
             // text — which is what the LIVE field does — would make the rebuilt

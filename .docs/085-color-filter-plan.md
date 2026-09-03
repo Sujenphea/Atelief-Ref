@@ -165,8 +165,16 @@ it rather than invent a second one.
 "red or blue"; demanding both in one picture is the rare case, not the obvious one.
 So `colorMatch` defaults opposite to `tagMatch` — which is why its unknown-token
 fallback in the [379](../.change-log/379-the-palette-you-can-open.md) codec had to
-be read off its own field rather than copied from the tag one. `.all` is reachable
-through the API and has tests; no UI offers it yet.
+be read off its own field rather than copied from the tag one. ~~`.all` is reachable
+through the API and has tests; no UI offers it yet.~~
+
+**Amended 2026-09-03 — `.all` now has a UI** ([478](../.change-log/478-the-colours-learn-to-say-and.md),
+099 · P10). The sentence above was true for four docs: `searchAssets` took
+`colorMatch`, `SearchRules` stored it, the SQL switched on it, and the only way to
+say `.all` was to hand-write a rules blob. `ColorFilterPicker` now carries an
+Any / All control (shown once two chips are on, because below two the modes select
+the same pictures), `LibrarySearchQuery` carries the field, and the 099 · 4A bridge
+maps it instead of pinning `.any` on the way past. The default is unchanged.
 
 ## Phases
 
@@ -192,6 +200,9 @@ Nothing to do about archive: the conjunct rides the same query and inherits
 - **A color wheel is not reachable from this data.** It needs real Lab
   coordinates per swatch. Adding `l, a, b` columns is additive and the pass that
   would populate them is the one built in C1, so the door is open — deliberately
-  not opened now.
+  not opened now. *(Still true at 099 · P10, which is why that phase shipped the
+  Any / All control and no wheel: `asset_color` stores a bucket INTEGER and a
+  coverage, and a wheel cannot be drawn from an integer. Opening the door is a
+  schema change plus a re-derivation — a phase, not a control.)*
 - **The neutral gate is a judgement call** and the thing most likely to feel
   wrong in use. It gets its own tests and its threshold gets a named constant.

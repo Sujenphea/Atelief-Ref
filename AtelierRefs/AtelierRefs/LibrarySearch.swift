@@ -40,8 +40,10 @@ enum SearchToken: Identifiable, Hashable {
     /// A dominant-color filter (085 · C2) — an AND conjunct like a tag, carried as
     /// a token for the reason `.favorites` is: it lives, clears and renders with
     /// every other filter instead of needing a second piece of state. Multiple
-    /// color tokens OR (`colorMatch: .any`), so picking red then blue widens to
-    /// "red or blue" rather than demanding both in one picture.
+    /// color tokens OR by DEFAULT (`colorMatch: .any`), so picking red then blue
+    /// widens to "red or blue" rather than demanding both in one picture — and
+    /// since 099 · P10 the picker's Any / All control can say the other thing,
+    /// which is the mode `searchAssets` and `SearchRules` have always taken.
     case color(ColorBucket)
 
     /// The favorites token's synthetic id. Tokens are `Identifiable` by a real
@@ -101,10 +103,21 @@ struct LibrarySearchQuery: Equatable {
     /// The `.favorites` token (011 · U5) — an AND conjunct on `asset.is_favorite`,
     /// conjunct with the text / tag / collection arms above.
     var favoritesOnly: Bool = false
-    /// Raw ``ColorBucket`` values from `.color` tokens (085 · C2), ORed. Raw
-    /// integers rather than the enum because that is what the service takes —
-    /// AtelierCore filters the number and never learns what a color is.
+    /// Raw ``ColorBucket`` values from `.color` tokens (085 · C2), combined per
+    /// ``colorMatch``. Raw integers rather than the enum because that is what the
+    /// service takes — AtelierCore filters the number and never learns what a
+    /// color is.
     var colorBuckets: [Int] = []
+    /// How `colorBuckets` combine (099 · P10): `.any` shows a picture carrying
+    /// ANY of them, `.all` only one carrying every one.
+    ///
+    /// Defaulted to `.any` — `searchAssets`' own default, and the reading 085
+    /// settled ("red then blue" is a widening). It is a stored property rather
+    /// than a constant because that is precisely what was missing: the service,
+    /// the rules blob and the SQL have taken `colorMatch` since 085 · C1, and the
+    /// live query pinned `.any` on the way past, so `.all` was reachable from a
+    /// hand-written blob and from nothing a user could touch.
+    var colorMatch: TagMatch = .any
     /// `.relevance` when there's free text to rank, else `.newest`.
     var sort: SearchSort
 }
@@ -152,6 +165,19 @@ final class LibrarySearchModel: ObservableObject {
     @Published var scope: SearchScope = .all
     /// Free-text matching mode (047 · 3a): keyword FTS vs semantic meaning.
     @Published var mode: SearchMode = .keyword
+    /// How the selected color tokens combine (099 · P10) — the picker's Any / All
+    /// control.
+    ///
+    /// **Not a token, unlike every colour it governs.** A token is a filter; this
+    /// is how two of them read together, which is the same kind of thing as
+    /// ``mode`` and ``scope`` and lives beside them. Making it a token would have
+    /// put a chip in the field that removes itself when you click its `×` and
+    /// means nothing on its own.
+    ///
+    /// `.any` by default — `searchAssets`' default and 085's reading of "red then
+    /// blue". Inert while fewer than two colours are on, which is what
+    /// ``showsColorMatchControl`` is for.
+    @Published var colorMatch: TagMatch = .any
     /// Prefix-matched tag / collection suggestions for the current `text`.
     @Published private(set) var suggestions: [SearchToken] = []
     /// The current result set (bounded, newest-first).
@@ -257,6 +283,17 @@ final class LibrarySearchModel: ObservableObject {
     /// Whether any color filter is on — the picker button's active look.
     var hasColorFilter: Bool { !selectedColorBuckets.isEmpty }
 
+    /// Whether the Any / All control has two things to be a choice between
+    /// (099 · P10).
+    ///
+    /// One colour matches identically under both modes, and zero colours matches
+    /// nothing under either, so below two the control is a switch with one
+    /// position. `ColorFilterPicker` already refuses to draw "Clear colors" when
+    /// there is nothing to clear, for the reason its own comment gives — a
+    /// permanently visible control that does nothing most of the time is a dead
+    /// affordance — and this is that rule applied a second time, one colour later.
+    var showsColorMatchControl: Bool { selectedColorBuckets.count > 1 }
+
     /// Drop every color filter, leaving tags / collections / favorites / text
     /// alone (085 · C3). The field's `×` clears the whole query; this is the
     /// picker's own "start the colors over", which is a different intent and the
@@ -338,11 +375,25 @@ final class LibrarySearchModel: ObservableObject {
     /// The keyword/meaning mode changed: re-run (suggestions are keyword-only).
     func modeChanged() { runSearch() }
 
+    /// The Any / All colour mode changed: re-run (099 · P10). Its own hook rather
+    /// than a `tokens` mutation, because nothing about the token SET changed —
+    /// only what the set means together — and suggestions have nothing to say
+    /// about it.
+    func colorMatchChanged() { runSearch() }
+
     /// Reset everything (e.g. when a screen disappears).
+    ///
+    /// `colorMatch` goes back to `.any` here and NOWHERE else. This is the
+    /// whole-model reset — a new pane, a new query — so the default belongs to it;
+    /// `clearQuery` and ``clearColorFilters()`` deliberately leave it alone, the
+    /// way they already leave `scope` and `mode`, because "match all of them" is a
+    /// thing the user said about how they search rather than one of the filters
+    /// they are clearing.
     func reset() {
         queryTask?.cancel(); suggestTask?.cancel()
         text = ""; tokens = []; suggestions = []; results = []; isRunning = false
         queryFailed = false
+        colorMatch = .any
     }
 
     /// Dismiss the suggestion dropdown WITHOUT touching the query — e.g. the user
@@ -415,6 +466,7 @@ final class LibrarySearchModel: ObservableObject {
             collectionIDs: queryScopeIDs,
             favoritesOnly: favoritesOnly,
             colorBuckets: selectedColorBuckets.map(\.rawValue),
+            colorMatch: colorMatch,
             // Rank by relevance while there's text to rank; a tokens-only /
             // `tag:`-only query has nothing to score, so keep the recency order.
             sort: hasFTS ? .relevance : .newest)
@@ -441,6 +493,7 @@ final class LibrarySearchModel: ObservableObject {
                 text: text, tagIDs: selectedTagIDs, tagNameContains: nil,
                 collectionIDs: queryScopeIDs, favoritesOnly: favoritesOnly,
                 colorBuckets: selectedColorBuckets.map(\.rawValue),
+                colorMatch: colorMatch,
                 sort: .relevance)
             run = runSemanticQuery
         } else {
@@ -524,6 +577,7 @@ final class LibrarySearchModel: ObservableObject {
             collectionIDs: query.collectionIDs,
             favoritesOnly: query.favoritesOnly,
             colorBuckets: query.colorBuckets,
+            colorMatch: query.colorMatch,
             sort: query.sort,
             limit: 500)
     }
@@ -546,6 +600,7 @@ final class LibrarySearchModel: ObservableObject {
             collectionIDs: query.collectionIDs,
             favoritesOnly: query.favoritesOnly,
             colorBuckets: query.colorBuckets,
+            colorMatch: query.colorMatch,
             limit: 500)
     }
 
@@ -759,6 +814,7 @@ struct LibrarySearchable<Content: View>: View {
         .onChange(of: search.text) { _, _ in search.textChanged() }
         .onChange(of: search.tokens) { _, _ in search.tokensChanged() }
         .onChange(of: search.mode) { _, _ in search.modeChanged() }
+        .onChange(of: search.colorMatch) { _, _ in search.colorMatchChanged() }
         .onChange(of: search.scope) { _, _ in search.configure(services: model.services, collectionID: collectionID) }
     }
 

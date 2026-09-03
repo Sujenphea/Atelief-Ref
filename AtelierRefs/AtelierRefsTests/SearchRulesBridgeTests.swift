@@ -36,6 +36,10 @@ struct SearchRulesBridgeTests {
     /// Every dimension a rule can carry, all set to something non-default, and
     /// nothing set that a rule cannot carry — so `query → rules → query` is an
     /// identity and any loss is a bug rather than a documented drop.
+    ///
+    /// `colorMatch` is `.all` for exactly that reason (099 · P10): the default is
+    /// `.any`, and a fixture that left it there would round-trip through a bridge
+    /// that dropped the field entirely and never notice.
     private static let fullyPopulated = LibrarySearchQuery(
         text: "brutalist concrete",
         tagIDs: [tagA, tagB],
@@ -43,6 +47,7 @@ struct SearchRulesBridgeTests {
         collectionIDs: [collectionA],
         favoritesOnly: true,
         colorBuckets: [ColorBucket.red.rawValue, ColorBucket.blue.rawValue],
+        colorMatch: .all,
         sort: .newest)
 
     // MARK: - Round trip
@@ -66,7 +71,7 @@ struct SearchRulesBridgeTests {
         #expect(rules.collectionID == Self.collectionA)
         #expect(rules.favoritesOnly)
         #expect(rules.colorBuckets == [ColorBucket.red.rawValue, ColorBucket.blue.rawValue])
-        #expect(rules.colorMatch == .any)
+        #expect(rules.colorMatch == .all)
         #expect(rules.version == SearchRules.currentVersion)
     }
 
@@ -161,29 +166,86 @@ struct SearchRulesBridgeTests {
 
     // MARK: - The match modes are pinned to the live behaviour
 
-    @Test("tags AND and colors OR, matching the field and searchAssets' defaults")
+    @Test("tags AND is pinned; colors carry whatever the picker said")
     func matchModesArePinned() {
-        let rules = SearchRules(query: Self.fullyPopulated)
-        // The live field ANDs tag tokens and ORs color tokens (085 · C3). These two
-        // constants are the only fields the bridge invents rather than copies, so
-        // they are pinned against what the service does by default.
-        #expect(rules.tagMatch == .all)
-        #expect(rules.colorMatch == .any)
+        // The live field ANDs tag tokens, always — `tagMatch` is the ONE field the
+        // bridge still invents rather than copies, so it is pinned against what the
+        // service does by default.
+        #expect(SearchRules(query: Self.fullyPopulated).tagMatch == .all)
         #expect(SearchRules().tagMatch == .all)
+        // `colorMatch` was pinned to `.any` beside it until 099 · P10, for the same
+        // reason: the field could not express anything else. Now the picker can, so
+        // the pin is gone and the value CROSSES — pinning it today would be the 011
+        // favorites bug repeated, a filter the user set and storage discarded.
+        #expect(SearchRules(query: Self.fullyPopulated).colorMatch == .all)
+        var anyColors = Self.fullyPopulated
+        anyColors.colorMatch = .any
+        #expect(SearchRules(query: anyColors).colorMatch == .any)
+        // The service's own default is still what an unset rule means.
         #expect(SearchRules().colorMatch == .any)
     }
 
-    @Test("a rule written with the other match modes still rebuilds a runnable query")
+    @Test("a rule's tagMatch is unreachable from the live query; its colorMatch is not")
     func exoticMatchModesDegradeRatherThanCrash() {
-        // Nothing in the app writes these today, but a hand-edited blob or a newer
-        // build can. The live query has no field for them, so they are simply not
-        // reachable from the reconstructed query — it must not lose the tags too.
+        // `tagMatch: .any` is written by nothing in the app — a hand-edited blob or
+        // a newer build can. The live query has no field for it, so it is simply
+        // not reachable from the reconstructed query, which must not lose the tags
+        // on the way. `colorMatch: .all` used to sit in the same sentence and no
+        // longer does (099 · P10): the query has a field for it now, and carries it.
         let rules = SearchRules(
             tagIDs: [Self.tagA, Self.tagB], tagMatch: .any,
             colorBuckets: [ColorBucket.red.rawValue], colorMatch: .all)
         let query = LibrarySearchQuery(rules: rules)
         #expect(query.tagIDs == [Self.tagA, Self.tagB])
         #expect(query.colorBuckets == [ColorBucket.red.rawValue])
+        #expect(query.colorMatch == .all)
+        // …and re-saving that rebuilt query keeps the colours' mode while the tags'
+        // mode falls back to the live `.all`. Naming both halves is the point.
+        #expect(SearchRules(query: query).colorMatch == .all)
+        #expect(SearchRules(query: query).tagMatch == .all)
+    }
+
+    // MARK: - colorMatch, the field 099 · P10 added
+
+    /// Both modes, both directions, and through the blob — the test the phase's
+    /// brief asked for by name.
+    ///
+    /// The `.any` case is not padding: a bridge that hard-coded `.all` would pass
+    /// the `.all` case and fail this one, which is the mirror of the bug the pin
+    /// itself was.
+    @Test("the colour match mode crosses in both directions", arguments: [
+        TagMatch.any, TagMatch.all,
+    ])
+    func colorMatchCrossesBothWays(_ match: TagMatch) throws {
+        var query = Self.fullyPopulated
+        query.colorMatch = match
+
+        let rules = SearchRules(query: query)
+        #expect(rules.colorMatch == match)
+        #expect(LibrarySearchQuery(rules: rules).colorMatch == match)
+
+        // And the STORED form, which is what a saved search actually holds: the
+        // codec has a `color_match` key and this is what proves the bridge writes
+        // through it rather than only into memory.
+        let decoded = try #require(SearchRules.decoded(fromJSON: rules.encoded()))
+        #expect(decoded.colorMatch == match)
+        #expect(LibrarySearchQuery(rules: decoded) == query)
+    }
+
+    /// The canary's verdict on the new field, pinned rather than left to the
+    /// canary's own arithmetic.
+    ///
+    /// `exhaustiveness` below is satisfied by a field being in EITHER list, so a
+    /// later hand that finds it inconvenient could quiet the canary by moving
+    /// `colorMatch` into the allowlist and silently stop persisting it — which is
+    /// precisely the failure mode this suite exists for. This says which list it
+    /// belongs in.
+    @Test("colorMatch is MAPPED, not allowlisted away")
+    func colorMatchIsMappedNotAllowlisted() {
+        #expect(Self.queryMapped.contains("colorMatch"))
+        #expect(!Self.queryNotPersisted.contains("colorMatch"))
+        #expect(Self.rulesMapped.contains("colorMatch"))
+        #expect(!Self.rulesNotRepresentable.contains("colorMatch"))
     }
 
     // MARK: - Exhaustiveness — the canary
@@ -191,6 +253,7 @@ struct SearchRulesBridgeTests {
     /// Every stored property of `LibrarySearchQuery` the bridge reads or writes.
     private static let queryMapped: Set<String> = [
         "text", "tagIDs", "collectionIDs", "favoritesOnly", "colorBuckets",
+        "colorMatch",  // 099 · P10 — MAPPED, and `colorMatchIsMappedNotAllowlisted`
     ]
 
     /// Every stored property of `LibrarySearchQuery` the bridge deliberately does

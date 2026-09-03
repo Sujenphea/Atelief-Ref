@@ -457,6 +457,35 @@ struct KeyMapContractTests {
         #expect(!KeyMap.all.contains { $0.chords.contains(chord) })
     }
 
+    /// 099 · P10. The colour filter's popover is where the Any / All control lives,
+    /// and until this row the popover had no keyboard route at all — a control
+    /// reachable only by mouse is most of the way back to the "no UI" this phase
+    /// closed. `.global` because the binding is a `ToolbarItem`'s own
+    /// `keyboardShortcut` and a toolbar item hangs off the scene.
+    @Test("⇧⌘C opens the color filter, and nothing else claims it")
+    func shiftCommandCIsTheColorFilter() throws {
+        let chord = Chord(key: .character("c"), modifiers: [.command, .shift])
+        let rows = KeyMap.all.filter { $0.chords.contains(chord) }
+        #expect(rows.count == 1)
+        let row = try #require(rows.first)
+        #expect(row.scope == .global)
+        #expect(row.title == "Filter by color")
+    }
+
+    /// **The near miss the shift exists for.** Plain ⌘C is Copy, and it is bound
+    /// per surface — a grid and a board — never globally. A `.global` colour row on
+    /// the unshifted chord would be matched BEFORE both of them, which is the
+    /// collision `noCollisions` would have reported and the reason P10 took the
+    /// shifted chord instead of arguing with copy-paste.
+    @Test("plain ⌘C stays Copy, on its surfaces and nowhere global")
+    func commandCIsCopyAndStaysLocal() {
+        let chord = Chord(key: .character("c"), modifiers: [.command])
+        let rows = KeyMap.all.filter { $0.chords.contains(chord) }
+        #expect(!rows.isEmpty)
+        #expect(rows.allSatisfy { $0.scope != .global })
+        #expect(Set(rows.map(\.scope)) == [.collection, .space])
+    }
+
     private func rows(for decoder: ShortcutDecoder) -> [Shortcut] {
         KeyMap.all.filter { $0.decoder == decoder }
     }

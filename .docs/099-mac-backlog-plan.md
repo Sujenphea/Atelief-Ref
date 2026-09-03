@@ -634,6 +634,21 @@ carried through the 4A initialisers into `SearchRules.colorMatch`; a `KeyMap` ro
 tests for the query and the round-trip. The color wheel stays out: 085 says the stored
 data cannot drive one.
 
+**Done** ([478](../.change-log/478-the-colours-learn-to-say-and.md)). The backlog line
+was read against the code first, and **`colorMatch` already existed everywhere except
+the two places a user could reach**: `searchAssets` and `semanticSearchAssets` have
+taken it since 085 · C1, `SearchRules` has stored it since C3, the SQL switches on it
+and `evaluate(rules:)` passes it. What was missing was `LibrarySearchQuery.colorMatch`
+— so every live query ran the service's `.any` default — and the 4A bridge, which
+PINNED `.any` on the way into storage with a comment saying the query could not express
+anything else. That comment was true when P1 wrote it and this phase is what made it
+false. The exhaustiveness canary was confirmed to fail on the field before it was
+mapped, with the sentence it was written to print. The chord is **⇧⌘C** (plain ⌘C is
+Copy on two surfaces and a `.global` row would shadow both), and the control appears
+only once two chips are on, because below two the modes select the same pictures. The
+colour wheel stays out and [085](085-color-filter-plan.md)'s risk entry is amended to
+say so at this phase's name rather than leaving it looking forgotten.
+
 ## P11 — the extension's one TODO
 
 *Effort S. `extension/` only.*
@@ -795,8 +810,8 @@ supplied. 12A's rule applies to each. Effort M each.*
 | P7 | done — rebased onto `395e471`; 5A closed; 457–460 → 463–466 | [467](../.change-log/467-four-builders-and-the-numbers-that-collided.md) |
 | P8 | not started | — |
 | P9 | not started | — |
-| P10 | not started | — |
-| P11 | done — the quoted photo is excluded by a per-photo `statusId`; the signal had to be HARVESTED first, and the named fixture was the wrong artifact. Extension green (638, no drift); two Swift stages red under three-agent contention. The drift-check hole is still open | [477](../.change-log/477-the-anchor-says-whose-photo-it-is.md) |
+| P10 | done — the query grew `colorMatch`, the bridge stopped pinning it, ⇧⌘C opens the picker; no wheel (085) | [478](../.change-log/478-the-colours-learn-to-say-and.md) |
+| P11 | done — the quoted photo is excluded by a per-photo `statusId`; the signal had to be HARVESTED first, and the named fixture was the wrong artifact. Extension green (638, no drift). Its two red Swift stages were **disk pressure, not contention** — P10 found the data volume at 100 %, 798 MB free (478). The drift-check hole is still open | [477](../.change-log/477-the-anchor-says-whose-photo-it-is.md) |
 | P12 | not started | — |
 | P13 | not started | — |
 | P14 | not started | — |

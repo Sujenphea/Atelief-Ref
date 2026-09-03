@@ -624,4 +624,152 @@ struct LibrarySearchModelTests {
         m.clearColorFilters()
         #expect(m.tokens.isEmpty)
     }
+
+    // MARK: - The Any / All mode (099 · P10)
+
+    /// One query run reached a terminal, publishing state.
+    ///
+    /// Every wait in this section awaits THIS rather than polling the recorder
+    /// (099 · 11A: "where the object under test can SAY it finished … await the
+    /// signal; it is exact"). `LibrarySearchModel.events` has said so since P1;
+    /// the colour tests above it predate the signal and are left as they are.
+    /// The suite's `.timeLimit(.minutes(1))` is the outer bound.
+    private static let isSettled: @Sendable (LibrarySearchModel.Event) -> Bool = {
+        if case .settled = $0 { true } else { false }
+    }
+
+    /// The default is the service's default, and it is the one a fresh pane starts
+    /// at. 085 settled the reading ("red then blue" widens); this is where the app
+    /// agrees with it, and the assertion that a later hand cannot flip the default
+    /// without saying so.
+    @Test("colorMatch starts at .any and reaches the query as .any")
+    func colorMatchDefaultsToAny() async {
+        let recorder = Recorder()
+        let m = LibrarySearchModel()
+        #expect(m.colorMatch == .any)
+
+        m.runQuery = { q in recorder.queries.append(q); return [] }
+        let events = EventRecorder(m.events.stream())
+        m.toggleColorFilter(.red)
+        m.tokensChanged()
+        await events.wait(forAtLeast: 1, where: Self.isSettled)
+        #expect(recorder.queries.last?.colorMatch == .any)
+    }
+
+    /// The point of the whole phase: `.all` was reachable from `searchAssets` and
+    /// from a hand-written rules blob and from nothing else. It now leaves the
+    /// model on the query, which is the only path the service is ever reached by.
+    @Test("colorMatch .all rides the keyword query")
+    func colorMatchAllReachesTheQuery() async {
+        let recorder = Recorder()
+        let m = LibrarySearchModel()
+        m.runQuery = { q in recorder.queries.append(q); return [] }
+        let events = EventRecorder(m.events.stream())
+        m.colorMatch = .all
+        m.toggleColorFilter(.red)
+        m.toggleColorFilter(.blue)
+        m.tokensChanged()
+        await events.wait(forAtLeast: 1, where: Self.isSettled)
+
+        let q = recorder.queries.last
+        #expect(q?.colorMatch == .all)
+        // …and it did not disturb the buckets it governs, or the tags' own mode.
+        #expect(q?.colorBuckets == [ColorBucket.red.rawValue, ColorBucket.blue.rawValue])
+    }
+
+    /// The same trap the colour BUCKETS were tested for, one level up: a filter
+    /// still showing in the picker must not silently stop applying when the mode
+    /// flips to `.meaning`. `semanticSearchAssets` takes `colorMatch` too.
+    @Test("colorMatch rides the SEMANTIC query too")
+    func colorMatchReachesTheSemanticQuery() async {
+        let recorder = Recorder()
+        let m = LibrarySearchModel()
+        m.runQuery = { q in recorder.queries.append(q); return [] }
+        m.runSemanticQuery = { q in recorder.semanticQueries.append(q); return [] }
+        let events = EventRecorder(m.events.stream())
+        m.mode = .meaning
+        m.colorMatch = .all
+        m.tokens = [.color(.teal), .color(.brown)]
+        m.text = "brass"
+        m.textChanged()
+        await events.wait(forAtLeast: 1, where: Self.isSettled)
+        #expect(recorder.semanticQueries.last?.colorMatch == .all)
+    }
+
+    /// Changing the mode is a new SEARCH, not a repaint. Nothing about the token
+    /// set changed, so the `tokens` `onChange` cannot see it — `colorMatchChanged`
+    /// is the hook the pane calls, and this is the assertion that it re-queries.
+    @Test("colorMatchChanged re-runs the query with the new mode")
+    func colorMatchChangeRerunsTheQuery() async {
+        let recorder = Recorder()
+        let m = LibrarySearchModel()
+        m.runQuery = { q in recorder.queries.append(q); return [] }
+        let events = EventRecorder(m.events.stream())
+        m.tokens = [.color(.red), .color(.blue)]
+        m.tokensChanged()
+        await events.wait(forAtLeast: 1, where: Self.isSettled)
+        #expect(recorder.queries.count == 1)
+        #expect(recorder.queries.last?.colorMatch == .any)
+
+        m.colorMatch = .all
+        m.colorMatchChanged()
+        // The SECOND settle: the mode change started its own query, and this is
+        // the model saying that one published too.
+        await events.wait(forAtLeast: 2, where: Self.isSettled)
+        #expect(recorder.queries.count == 2, "the mode change is a new search")
+        #expect(recorder.queries.last?.colorMatch == .all)
+    }
+
+    /// The control appears only when it is a choice. With one colour the two modes
+    /// select the same pictures, so drawing it would be the dead affordance
+    /// `ColorFilterPicker` refuses to draw "Clear colors" as.
+    @Test("the Any / All control shows only once two colours are on")
+    func colorMatchControlNeedsTwoColours() {
+        let m = LibrarySearchModel()
+        #expect(m.showsColorMatchControl == false)
+
+        m.toggleColorFilter(.red)
+        #expect(m.showsColorMatchControl == false, "one colour matches the same either way")
+
+        m.toggleColorFilter(.blue)
+        #expect(m.showsColorMatchControl)
+
+        // A non-colour token must not count towards the pair.
+        m.toggleColorFilter(.blue)
+        m.tokens.append(.favorites)
+        #expect(m.showsColorMatchControl == false)
+    }
+
+    /// `reset()` is the whole-model reset — a new pane — so the default comes back
+    /// with it. `clearQuery` and `clearColorFilters` do NOT touch it, the way they
+    /// already leave `scope` and `mode`: "match all of them" is something the user
+    /// said about how they search, not one of the filters they are clearing.
+    @Test("reset restores .any; clearing the query or the colours does not")
+    func colorMatchResetRules() {
+        let m = LibrarySearchModel()
+        m.colorMatch = .all
+        m.toggleColorFilter(.red)
+        m.toggleColorFilter(.blue)
+
+        m.clearColorFilters()
+        #expect(m.colorMatch == .all, "the colours went; the reading of them stayed")
+
+        m.toggleColorFilter(.green)
+        m.text = "brass"
+        m.clearQuery()
+        #expect(m.colorMatch == .all)
+
+        m.reset()
+        #expect(m.colorMatch == .any)
+    }
+
+    /// The mode alone is not a query. Turning it to `.all` with nothing selected
+    /// must not make an empty pane start searching — `isActive` reads text and
+    /// tokens, and this pins that it stays that way.
+    @Test("the colour mode alone does not activate a search")
+    func colorMatchDoesNotActivate() {
+        let m = LibrarySearchModel()
+        m.colorMatch = .all
+        #expect(!m.isActive)
+    }
 }

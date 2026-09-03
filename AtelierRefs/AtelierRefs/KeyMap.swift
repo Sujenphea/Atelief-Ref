@@ -400,6 +400,24 @@ nonisolated enum KeyMap {
         // so ⌘-anything was re-checked here before this row was written.
         Shortcut([.character("p")], [.command, .shift], "Show Reference Palette",
                  scope: .global, source: "AtelierRefsApp.swift (ShowPaletteCommand)"),
+        // 099 · P10 — the colour filter's popover, which is where the Any / All
+        // control lives. `.global` for ⌘S's structural reason rather than ⌘K's:
+        // this is a `ToolbarItem`'s own `keyboardShortcut`, and a toolbar item
+        // hangs off the SCENE, not off the search field, so the chord is live
+        // wherever the keyboard is on a searchable pane. It is `.search` in spirit
+        // and `.global` in fact, and the table records facts.
+        //
+        // **⇧⌘C, and the shift is the whole decision.** Plain ⌘C is Copy, bound in
+        // `.collection` (`MasonryGridHost.swift:1617`) and on a board
+        // (`CanvasHostView.swift:1365`); a `.global` row would be matched before
+        // both of them, `collisions(in:)` would have said so, and the only way to
+        // keep the row would have been to break copy. ⇧⌘C is claimed by no row in
+        // any scope — the shift-command rows are ⇧⌘Z, ⇧⌘], ⇧⌘[, ⇧⌘E and P6's
+        // ⇧⌘P — and `shiftCommandCIsTheColorFilter` keeps saying so. The two
+        // near misses were checked by hand as well as by the test, because both
+        // were taken recently: ⌘K (P5) and ⇧⌘P (P6).
+        Shortcut([.character("c")], [.command, .shift], "Filter by color",
+                 scope: .global, source: "ColorFilterPicker.swift (ColorFilterPicker)"),
     ]
 
     // MARK: In a collection
