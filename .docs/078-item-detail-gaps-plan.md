@@ -2,8 +2,13 @@
 
 **Status: shipped** — I1 in `16e9fca`, I2 in `ef5201d`, I3 in `53d58bc`. Open
 questions 1 and 2 answered: ⌫ steps like ⌘⌫, and deleting the last item in a run
-steps back rather than closing. I4 ([070]'s carousel chip) remains deliberately
-optional and unbuilt.
+steps back rather than closing. **I4 ([070]'s carousel chip) was built too** — as
+`⧉ 2 of 4 in this post` beside the pager in
+[356](../.change-log/356-the-page-says-which-post.md), then moved into the sidebar's
+Source section as the "Post" row in
+[358](../.change-log/358-the-post-position-moves-to-the-sidebar.md), which deleted the
+chip and its narrow-width machinery. This line read "optional and unbuilt" until
+[479](../.change-log/479-the-phase-that-had-already-shipped.md).
 
 Two departures worth knowing. The step gate carries a **collection stamp** as
 well as an item id — an id-only gate steps to a stranger if you switch

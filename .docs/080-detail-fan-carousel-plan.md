@@ -1,6 +1,21 @@
 # 080 — The detail page's fan: settled plan
 
-**Status: planned, unbuilt.** Supersedes the open questions in
+**Status: shipped, all three increments.** §6 · 1 in
+[356](../.change-log/356-the-page-says-which-post.md) (`fd2d933`), §6 · 2 in
+[357](../.change-log/357-the-pile-follows-the-picture.md) (`6b637cc`), the position
+moved off the top bar in [358](../.change-log/358-the-post-position-moves-to-the-sidebar.md)
+(`b9ed033`), `blobHashes` re-aligned in [359](../.change-log/359-a-slot-per-member.md)
+(`0a72463`), and §6 · 3 — the spread this plan left gated — in
+[360](../.change-log/360-the-pile-opens.md), with 361–363 fixing its position, its scrub
+and its hit region. §5's T1–T4 are all pinned: `DetailFanPileTests`, `DetailPostTests`,
+`DetailFanSpreadTests`. **§7 is what is still open**: `fanPile` and `fanSpread` are gated
+on `isImage`, so a video on the page gets the sidebar row and no pile, and the row's copy
+says "Image" for every member whatever its kind. This header read *"planned, unbuilt"*
+until [479](../.change-log/479-the-phase-that-had-already-shipped.md), long after §3.3 and
+§3.5 had recorded the opposite — which is how [099](./099-mac-backlog-plan.md) · P8 came
+to plan a shipped phase.
+
+Supersedes the open questions in
 [070](./070-detail-fan-carousel-design.md), which stays as written — it is the
 exploration, this is the commitment. 070's precondition is met:
 [069](./069-detail-arrows-plan.md) shipped as

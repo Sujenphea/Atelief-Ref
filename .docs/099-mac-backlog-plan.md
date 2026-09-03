@@ -601,6 +601,17 @@ conflict.
 
 ## P8 — the detail page's post: the pile, the chip, the Post row
 
+> **Status: this phase was already built, and the plan below was written from two stale
+> status lines.** Audited file by file in
+> [479](../.change-log/479-the-phase-that-had-already-shipped.md): every deliverable
+> named here has been in the tree since **2026-08-10** — `fd2d933` (the chip),
+> `6b637cc` (`fitRect` + the pile), `b9ed033` (the position moves to the sidebar),
+> `0a72463` (a slot per member), changelogs 356–359. **Increment 3, the spread this
+> section says is "judged after these ship", shipped too** — 360, with 361–363 fixing
+> its position, its scrub and its hit region. 080's own §3.3 and §3.5 already said so;
+> only its header, and 078's, still read "unbuilt". No code was written for P8; the
+> commit is the correction to these three docs.
+
 *[080](080-detail-fan-carousel-plan.md) increments 1–2 as settled, plus
 [078](078-item-detail-gaps-plan.md) I4's chip. Effort M.*
 
@@ -609,6 +620,14 @@ pager; the sidebar's "Post" row; the resting pile with no images (080 §3.4). Th
 **spread** (080 §3.5) is judged after these ship, as 080 says. Video and tweet members
 ride the same post model — the backlog's "fan carousel for video and tweet members"
 is this phase's I2, not a separate feature. Tests per 080 §5.
+
+**What the audit found the phase does NOT close.** The chip beside the pager and the
+sidebar row are one fact and two chromes, not two deliverables: 358 replaced the first
+with the second after seeing it on screen. Video and tweet members ride the post model as
+**members** — counted, slotted, walked onto, jumped to — but `fanPile` and `fanSpread`
+are gated on `isImage`, so a video **on the page** gets the Source row and no pile or
+arc, and the row's copy says "Image" whatever the member's kind. Both are 080 §7's
+reserved judgement, still open.
 
 ## P9 — the detail page's remaining gaps
 
@@ -808,7 +827,7 @@ supplied. 12A's rule applies to each. Effort M each.*
 | P5 | done — its own surface, the shared ordering; a documented three-tier ranking, a per-library MRU, no verbs; the smoke flow is written but ungated (474) | [475](../.change-log/475-the-switcher-is-its-own-surface.md) |
 | P6 | done — a second scene at floating level, ⇧⌘P, read-only `GridInteraction`, P5's ranking behind one filter; the drag-source rule moved to the read model. A space in the palette is the named follow-up | [476](../.change-log/476-the-palette-is-the-second-window.md) |
 | P7 | done — rebased onto `395e471`; 5A closed; 457–460 → 463–466 | [467](../.change-log/467-four-builders-and-the-numbers-that-collided.md) |
-| P8 | not started | — |
+| P8 | done — no code: audited and found already shipped 2026-08-10 (356–364); 080's and 078's status blocks corrected. `App target` red on all four gate runs, on a different timing flake each time, green in isolation | [479](../.change-log/479-the-phase-that-had-already-shipped.md) |
 | P9 | not started | — |
 | P10 | done — the query grew `colorMatch`, the bridge stopped pinning it, ⇧⌘C opens the picker; no wheel (085) | [478](../.change-log/478-the-colours-learn-to-say-and.md) |
 | P11 | done — the quoted photo is excluded by a per-photo `statusId`; the signal had to be HARVESTED first, and the named fixture was the wrong artifact. Extension green (638, no drift). Its two red Swift stages were **disk pressure, not contention** — P10 found the data volume at 100 %, 798 MB free (478). The drift-check hole is still open | [477](../.change-log/477-the-anchor-says-whose-photo-it-is.md) |
