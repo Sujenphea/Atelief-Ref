@@ -79,8 +79,15 @@ private func url(_ hash: String) -> URL { URL(fileURLWithPath: "/tmp/atelier-det
 //  never residency.
 
 /// Stands in for ImageIO. Records decodes by hash and can BLOCK chosen hashes on a
-/// semaphore; a blocked decode re-checks `Task.isCancelled` after release, so a
-/// cancelled in-flight decode deterministically yields `nil` (nothing cached).
+/// ``DecodeLatch``; a blocked decode re-checks `Task.isCancelled` after release, so
+/// a cancelled in-flight decode deterministically yields `nil` (nothing cached).
+///
+/// The gate is a latch with a bounded wait, and it must stay one — this probe held
+/// a `DispatchSemaphore(value: 0)` until 099 · P21 and was leaking cooperative-pool
+/// threads out of this suite into the rest of the target. ``DecodeLatch`` carries
+/// the full account of why; the short version is that a surplus decode stranded on
+/// a counting semaphore parks an OS thread that no `.timeLimit` can reclaim, and
+/// the test that then fails is an innocent one in some other suite.
 // `nonisolated` to match the `@unchecked Sendable` it already claims: the probe's
 // `decode` is handed to `DetailImageLoader` as a `@Sendable` closure and runs off
 // the main actor. MainActor-by-default would otherwise infer isolation the
@@ -89,7 +96,7 @@ nonisolated private final class DecodeProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var calls: [String] = []
     private let blocked: Set<String>
-    private let gate = DispatchSemaphore(value: 0)
+    private let gate = DecodeLatch()
 
     init(blocking: Set<String> = []) { blocked = blocking }
 
@@ -116,7 +123,14 @@ nonisolated private final class DecodeProbe: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return calls.count
     }
-    func release() { gate.signal() }
+
+    /// True if a blocked decode gave up waiting for ``release()``. Every test that
+    /// blocks asserts this is false: it means the premise did not hold, and it is
+    /// the difference between a ten-second failure and a starved runner.
+    var timedOutWaitingForRelease: Bool { gate.timedOutWaiting }
+
+    /// Open the gate for every blocked hash, now and in future.
+    func release() { gate.open() }
 }
 
 // MARK: - Neighbours
@@ -305,6 +319,8 @@ struct DetailImageLoaderCoreTests {
         #expect(oks.count == 24)
         #expect(oks.allSatisfy { $0 })
         #expect(probe.callCount("a") == 1)
+        // If coalescing regressed, the surplus decodes are what would strand.
+        #expect(!probe.timedOutWaitingForRelease)
     }
 
     @Test("a promoted preload is awaited, not re-decoded")
@@ -322,6 +338,7 @@ struct DetailImageLoaderCoreTests {
 
         #expect(await image != nil)
         #expect(probe.callCount("a") == 1)   // the preload was joined, not re-run
+        #expect(!probe.timedOutWaitingForRelease)
     }
 
     @Test("retainOnly cancels a preload OUTSIDE the window, keeps one INSIDE")
@@ -334,12 +351,12 @@ struct DetailImageLoaderCoreTests {
         await loader.preload(hash: "keep", url: url("keep"), targetLongSidePx: nil)
         await loader.preload(hash: "drop", url: url("drop"), targetLongSidePx: nil)
         await loader.retainOnly(hashes: ["keep"])   // window keeps "keep", drops "drop"
-        probe.release()
-        probe.release()
+        probe.release()                             // one latch, both hashes
         await loader.waitForPendingWork()
 
         #expect(loader.cached(hash: "keep", targetLongSidePx: nil) != nil)
         #expect(loader.cached(hash: "drop", targetLongSidePx: nil) == nil)
+        #expect(!probe.timedOutWaitingForRelease)
     }
 
     @Test("retainOnly NEVER cancels a preload promoted to current — even with an empty window")
@@ -362,6 +379,7 @@ struct DetailImageLoaderCoreTests {
 
         #expect(await image != nil)
         #expect(probe.callCount("c") == 1)
+        #expect(!probe.timedOutWaitingForRelease)
     }
 
     @Test("a cached image is served without a second decode")

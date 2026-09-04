@@ -205,39 +205,25 @@ private nonisolated func makeImage(side: Int) -> CGImage {
 /// observe queueing, promotion and cancellation deterministically instead of by
 /// timing.
 ///
-/// Two properties of that block are load-bearing, and both are here because the
-/// original `DispatchSemaphore(value: 0)` version hung the entire test runner
-/// indefinitely instead of failing in seconds (`.change-log/330`):
-///
-///  • **It is a LATCH, not a counting semaphore.** ``release()`` opens the gate
-///    for good, so a decode that starts after it does not block. A counting
-///    semaphore released once leaves any *second* decode of a blocked hash
-///    waiting forever — and `Task.detached` runs on the cooperative pool, which
-///    is only `activeProcessorCount` threads wide, so each such waiter
-///    permanently retires a thread from the pool. `outstandingIsTheLatestWindow`
-///    leaked one on EVERY run that way.
-///  • **The wait is BOUNDED.** On timeout it sets ``timedOutWaitingForRelease``
-///    and proceeds, so the test reaches its assertions and fails rather than
-///    stalling the suite. An unbounded wait in a test body is what turns a
-///    seven-second failure into a silent nineteen-minute hang.
+/// The block is a ``DecodeLatch``: one-way, and bounded. Both properties are
+/// load-bearing, and both are there because the original
+/// `DispatchSemaphore(value: 0)` version hung the entire test runner indefinitely
+/// instead of failing in seconds (`.change-log/330`) — `outstandingIsTheLatestWindow`
+/// leaked a pool thread on EVERY run that way. `DecodeLatch` carries the full
+/// account, and since 099 · P21 it is shared with `DetailImageLoaderTests`, which
+/// had kept a private copy of the semaphore this one replaced and reproduced the
+/// same starvation from the other side of the target.
 ///
 // `nonisolated` to match its `@unchecked Sendable`: `decode` is handed to the
 // pipeline as a `@Sendable` closure and runs off the main actor.
 nonisolated private final class DecodeProbe: @unchecked Sendable {
-    /// How long a blocked decode waits for ``release()`` before giving up. Long
-    /// enough that a merely slow machine never trips it, short enough that the
-    /// suite still finishes.
-    static let releaseTimeout: TimeInterval = 10
-
-    /// Doubles as the mutex for everything below — `NSCondition` is an
-    /// `NSLocking`, and it drops the lock while waiting, so a blocked decode
-    /// never keeps another one from recording its call.
-    private let condition = NSCondition()
+    /// Guards the recorded calls only. The wait happens on ``gate``, outside this
+    /// lock, so a blocked decode never keeps another one from recording its call.
+    private let lock = NSLock()
     private var calls: [String] = []
-    private var blocked: Set<String> = []
     private var sawMainThread = false
-    private var released = false
-    private var timedOut = false
+    private let blocked: Set<String>
+    private let gate = DecodeLatch()
 
     init(blocking: Set<String> = []) { blocked = blocking }
 
@@ -245,57 +231,41 @@ nonisolated private final class DecodeProbe: @unchecked Sendable {
     func decode(url: URL, bucket: Int) -> DecodedThumbnail? {
         let hash = url.lastPathComponent
         let onMain = Thread.isMainThread
-        condition.lock()
+        lock.lock()
         calls.append(hash)
         if onMain { sawMainThread = true }
-        if blocked.contains(hash) {
-            let deadline = Date().addingTimeInterval(Self.releaseTimeout)
-            while !released {
-                if !condition.wait(until: deadline) {
-                    timedOut = true
-                    break
-                }
-            }
-        }
-        condition.unlock()
+        let shouldBlock = blocked.contains(hash)
+        lock.unlock()
+        if shouldBlock { gate.wait() }
         return DecodedThumbnail(image: makeImage(side: bucket))
     }
 
     /// True if ANY decode ran on the main thread — the property that must never
     /// hold, whatever else changes about scheduling.
     var everRanOnMainThread: Bool {
-        condition.lock()
-        defer { condition.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return sawMainThread
     }
 
     /// True if any blocked decode gave up waiting. Assert on it: it means the
     /// test's premise did not hold, and without the bound it would have hung.
-    var timedOutWaitingForRelease: Bool {
-        condition.lock()
-        defer { condition.unlock() }
-        return timedOut
-    }
+    var timedOutWaitingForRelease: Bool { gate.timedOutWaiting }
 
     func callCount(_ hash: String) -> Int {
-        condition.lock()
-        defer { condition.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return calls.filter { $0 == hash }.count
     }
 
     var totalCalls: Int {
-        condition.lock()
-        defer { condition.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return calls.count
     }
 
     /// Open the latch: every blocked decode proceeds, now and in future.
-    func release() {
-        condition.lock()
-        released = true
-        condition.broadcast()
-        condition.unlock()
-    }
+    func release() { gate.open() }
 }
 
 private func url(_ hash: String) -> URL { URL(fileURLWithPath: "/tmp/atelier-test/\(hash)") }

@@ -122,10 +122,22 @@ struct PollTests {
         #expect(await poll(timeout: .milliseconds(50)) { false } == false)
     }
 
+    // `flips` is the assertion here, not the clock. The condition goes true on the
+    // fourth evaluation, so a correct `poll` leaves `flips` in single figures
+    // whatever the timeout is — that is what "settles early" MEANS, and it is
+    // scale-free. The timeout is only the outer bound, and it was `.seconds(2)`
+    // until 099 · P21, which made this a wall-clock test by accident: three 1 ms
+    // sleeps have to resume inside two seconds, so ONE stalled `Task.sleep` fails
+    // it. That is not hypothetical — it is the most-named flake in this target
+    // (470, 471, 473, 475, 476, 478), and 478's run 5 caught the machine behind it
+    // with 798 MB of disk left. A bound generous enough that only a genuinely
+    // wedged machine trips it costs nothing: the test still returns in ~3 ms, and
+    // `flips <= 10` still fails loudly the day `poll` starts running the timeout
+    // out instead of settling.
     @Test("settles as soon as the condition becomes true")
     func settlesEarly() async {
         var flips = 0
-        let met = await poll(timeout: .seconds(2), interval: .milliseconds(1)) {
+        let met = await poll(timeout: .seconds(20), interval: .milliseconds(1)) {
             flips += 1
             return flips > 3
         }
