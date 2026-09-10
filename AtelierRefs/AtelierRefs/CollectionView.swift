@@ -1099,6 +1099,13 @@ struct CollectionView: View {
         case alreadyMembers
         /// Anything else — including no payload at all: the generic importer.
         case importExternal
+        /// A board copy carrying no assets — text boxes and frames only. Nothing in
+        /// it can become a reference, and the WORDS a board ⌘C now leaves for other
+        /// apps (464) must not be re-read here as importable content: a text box
+        /// reading `https://…` would otherwise import as a fresh link, from a ⌘V that
+        /// did nothing at all before. Silent — ⌘V of a text box into a grid is a
+        /// mistake, not an error.
+        case nothing
     }
 
     /// Whether the hidden ⌘V button carries its binding, given whether the detail page
@@ -1142,8 +1149,18 @@ struct CollectionView: View {
     /// "nil, not empty" (065 §2.4): a copy that carried no assets writes NO payload,
     /// and ``AssetDragPayload/internalMarker`` grants no drop semantics — neither may
     /// stop the chain, so both fall through to the importer.
-    static func resolvePaste(payload: AssetDragPayload?, target: UUID) -> PasteRoute {
-        guard let payload, !payload.assetIDs.isEmpty else { return .importExternal }
+    ///
+    /// `hasBoardElements` is the ONE thing allowed to stop it there (464): a board
+    /// copy of nothing but text boxes and frames writes no asset payload either, and
+    /// the importer would read the words beside it as external content. A MIXED board
+    /// copy is unaffected — its payload is present and non-empty, so it never reaches
+    /// this guard and its assets still add.
+    static func resolvePaste(
+        payload: AssetDragPayload?, target: UUID, hasBoardElements: Bool = false
+    ) -> PasteRoute {
+        guard let payload, !payload.assetIDs.isEmpty else {
+            return hasBoardElements ? .nothing : .importExternal
+        }
         guard payload.sourceCollectionID != target else { return .alreadyMembers }
         let source = payload.sourceCollectionID == AssetDragPayload.nilSourceID
             ? nil : payload.sourceCollectionID
@@ -1158,7 +1175,9 @@ struct CollectionView: View {
     ///    blob file URL sitting next to it and RE-IMPORT the asset as a fresh
     ///    `.localDrag` capture, losing its note, tags and provenance (019).
     /// 2. **Importable external content** — files, images, URLs — unchanged, so a
-    ///    file copied in Finder still imports exactly as before.
+    ///    file copied in Finder still imports exactly as before — unless the board
+    ///    carries a copy of nothing but board ELEMENTS, which is nothing this grid
+    ///    can hold and so is refused outright (464).
     ///
     /// This is the paste-side twin of ``handleDrop(_:)``, which has refused providers
     /// carrying `.assetIDs` since 192 for the same reason.
@@ -1188,7 +1207,8 @@ struct CollectionView: View {
         let pasteboard = NSPasteboard.general
         let target = importTargetID
         switch Self.resolvePaste(
-            payload: AssetDragPayload.decode(from: pasteboard), target: target) {
+            payload: AssetDragPayload.decode(from: pasteboard), target: target,
+            hasBoardElements: SpaceElementPayload.decode(from: pasteboard) != nil) {
         case let .add(assetIDs, source):
             // Stale ids (copy → delete → paste) fail CLOSED: `addAssets` throws
             // `.notFound` inside its transaction, so nothing is half-added, and
@@ -1196,6 +1216,8 @@ struct CollectionView: View {
             model.copyToCollection(assetIDs: assetIDs, to: target, from: source)
         case .alreadyMembers:
             model.reportAlreadyInCollection()
+        case .nothing:
+            return
         case .importExternal:
             let inputs = DirectInputReader.inputs(from: pasteboard, into: target, now: Date())
             dispatch(inputs: inputs, webURL: ImportPasteboard.firstWebURL(on: pasteboard))

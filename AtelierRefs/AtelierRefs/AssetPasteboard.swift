@@ -22,6 +22,14 @@ import Foundation
 nonisolated enum AssetPasteboardEntry: Equatable {
     case file(AssetExportItem)
     case text(String)
+
+    /// The words this entry contributes to a copy's plain-text flavour (464): a
+    /// `.text` entry's string, and NOTHING for a `.file` — a picture's bytes are
+    /// not words, and its file path is not what the user copied a picture for.
+    var text: String? {
+        if case .text(let string) = self { return string }
+        return nil
+    }
 }
 
 /// A selection resolved to ordered pasteboard entries plus the count of selected
@@ -127,6 +135,43 @@ extension AssetExport {
     }
 }
 
+/// The plain-text flavour of a copy (464) — what a ⌘C means to an app that only
+/// takes words: a message box, a note, a text field.
+///
+/// Two rules make it, both MEASURED against a real `NSPasteboard` rather than
+/// assumed:
+///
+/// 1. **Media are cut out, never described.** They already are, for free: an
+///    `NSURL` written to a pasteboard declares `public.file-url` and NOTHING else,
+///    so a file item contributes no string at all and a text field pasting a mixed
+///    copy never lands `/…/blobs/ab12.png`. Only pieces that ARE words go on — a
+///    board text box's string, a colour's hex, a link's URL.
+/// 2. **One joined string on ONE pasteboard item.** `string(forType:)` returns the
+///    CONCATENATION of every item's string, joined by a single `\n` — so N string
+///    items do reach the receiver, but separated by a newline this code never chose
+///    and in an order the item list happens to hold. Joining here instead means the
+///    copy says one thing, with our separator, in the selection's own order.
+enum CopyText {
+    /// A blank line between pieces: two text boxes are two paragraphs, and a piece
+    /// may itself span lines, so a single newline would run them together — which
+    /// is precisely what the pasteboard's own concatenation used to do.
+    static let separator = "\n\n"
+
+    /// Join `pieces` IN THE ORDER GIVEN — the caller's order is the selection's
+    /// own — trimming each and dropping the ones carrying nothing.
+    ///
+    /// `nil` rather than `""` when nothing survives, the "nil, not empty" rule the
+    /// two payloads already follow (065 §2.4): a copy with no words puts no string
+    /// item on the board at all, rather than an empty one for a receiver to paste
+    /// as a blank line.
+    static func joined(_ pieces: [String?]) -> String? {
+        let kept = pieces
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return kept.isEmpty ? nil : kept.joined(separator: separator)
+    }
+}
+
 /// Writes a resolved ``ExportSelection`` to an `NSPasteboard` per the 8A contract.
 /// Stateless — the general pasteboard is passed in so a scratch board can be used
 /// under test (11A).
@@ -136,29 +181,44 @@ enum AssetPasteboardWriter {
     /// - a `.file` entry writes its blob's **file URL** (Finder + drag-target apps),
     ///   and — only when a SINGLE image/video is copied — also the decoded `NSImage`
     ///   so editors get pixels; multi-select stays URL-only to avoid N eager decodes.
-    /// - a `.text` entry writes its string.
+    /// - every `.text` entry is joined into ONE trailing string item (464), rather
+    ///   than one item each: `string(forType:)` concatenates the items it finds with
+    ///   a `\n` of its own choosing, so N items let the PASTEBOARD decide how a copy
+    ///   of three colours reads. Last, so the file URL stays what an external
+    ///   receiver meets first.
     ///
-    /// Returns the number of entries written (0 for an empty selection, which still
-    /// clears the board). A single image whose `NSImage` fails to decode still
-    /// writes the file URL — the copy is never wholly lost to a decode failure.
+    /// `text` OVERRIDES those joined words for a caller holding pieces this
+    /// selection cannot see — a board, whose text boxes are not assets at all (464).
+    /// It is the whole selection's words or nothing: passing a `text` that omits an
+    /// asset's own words drops them, which is what a board wants when it has already
+    /// interleaved them into its z-order.
+    ///
+    /// Returns the number of ENTRIES written — the byte-side count the copy report
+    /// is about, which is 0 for a words-only copy. A selection with neither entries
+    /// nor words still clears the board. A single image whose `NSImage` fails to
+    /// decode still writes the file URL — the copy is never wholly lost to a decode
+    /// failure.
     @discardableResult
-    static func write(_ selection: ExportSelection, to pasteboard: NSPasteboard) -> Int {
+    static func write(
+        _ selection: ExportSelection, to pasteboard: NSPasteboard, text: String? = nil
+    ) -> Int {
         pasteboard.clearContents()
-        guard !selection.entries.isEmpty else { return 0 }
+        let words = text ?? CopyText.joined(selection.entries.map(\.text))
+        // Words with no entries is a real copy (a board's text boxes), not an empty
+        // one — only NEITHER is nothing to write.
+        guard !selection.entries.isEmpty || words != nil else { return 0 }
 
         let includeImageData = selection.entries.count == 1
         var objects: [NSPasteboardWriting] = []
         for entry in selection.entries {
-            switch entry {
-            case .file(let item):
-                objects.append(item.blobURL as NSURL)
-                if includeImageData, let image = NSImage(contentsOf: item.blobURL) {
-                    objects.append(image)
-                }
-            case .text(let string):
-                objects.append(string as NSString)
+            // `.text` entries are not written here — they are in `words` above.
+            guard case .file(let item) = entry else { continue }
+            objects.append(item.blobURL as NSURL)
+            if includeImageData, let image = NSImage(contentsOf: item.blobURL) {
+                objects.append(image)
             }
         }
+        if let words { objects.append(words as NSString) }
         pasteboard.writeObjects(objects)
         return selection.entries.count
     }

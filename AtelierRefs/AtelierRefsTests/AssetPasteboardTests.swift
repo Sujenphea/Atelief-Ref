@@ -539,4 +539,262 @@ struct GridPasteRoutingTests {
         // paste into a real target.
         #expect(AssetDragPayload.nilSourceID != target)
     }
+
+    @Test("a board copy of ELEMENTS ONLY is refused, not imported (464)")
+    func boardElementsAreRefused() {
+        // The board writes no asset payload for a text-box-only copy, so without
+        // the flag this falls to the importer — which would read the words beside
+        // it and capture a text box reading `https://…` as a fresh link.
+        #expect(CollectionView.resolvePaste(
+            payload: nil, target: target, hasBoardElements: true) == .nothing)
+        #expect(CollectionView.resolvePaste(
+            payload: .internalMarker, target: target, hasBoardElements: true) == .nothing)
+    }
+
+    @Test("a MIXED board copy still adds its assets — the flag never reaches it")
+    func boardElementsBesideAssetsStillAdd() {
+        let ids = [UUID()]
+        #expect(CollectionView.resolvePaste(
+            payload: AssetDragPayload(
+                assetIDs: ids, sourceCollectionID: AssetDragPayload.nilSourceID),
+            target: target, hasBoardElements: true)
+                == .add(assetIDs: ids, source: nil))
+    }
+
+    @Test("without board elements the guard is exactly what it was")
+    func noBoardElementsUnchanged() {
+        #expect(CollectionView.resolvePaste(
+            payload: nil, target: target, hasBoardElements: false) == .importExternal)
+    }
+}
+
+// MARK: - The plain-text flavour (464)
+//
+// ⌘C's third representation: the WORDS. Media are cut out of it — an image
+// contributes nothing rather than its file path — and every piece lands on ONE
+// pasteboard item, because a receiver reads item 0 and stops.
+
+@Suite("CopyText")
+struct CopyTextTests {
+
+    @Test("pieces join in the order given, separated by a blank line")
+    func joinsInOrder() {
+        #expect(CopyText.joined(["one", "two", "three"]) == "one\n\ntwo\n\nthree")
+    }
+
+    @Test("each piece is trimmed and the empty ones drop out")
+    func trimsAndDrops() {
+        #expect(CopyText.joined(["  hi  ", nil, "", "   ", "\n there \n"]) == "hi\n\nthere")
+    }
+
+    @Test("nothing survivable is nil, never an empty string (065 §2.4)")
+    func nothingIsNil() {
+        #expect(CopyText.joined([]) == nil)
+        #expect(CopyText.joined([nil, "", "   "]) == nil)
+    }
+
+    @Test("a single piece is itself — no separator, no decoration")
+    func singlePiece() {
+        #expect(CopyText.joined([nil, "just this"]) == "just this")
+    }
+
+    @Test("a file item carries no words of its own — media is cut out for free")
+    func fileItemHasNoString() {
+        // The measurement the design rests on: an `NSURL` on a pasteboard declares
+        // `public.file-url` and nothing else, so a copied picture contributes no
+        // string and a text field never pastes a blob path.
+        Fixture.withScratchPasteboard { pb in
+            pb.clearContents()
+            pb.writeObjects([URL(fileURLWithPath: "/tmp/blob-ab12.png") as NSURL])
+            #expect(pb.string(forType: .string) == nil)
+        }
+    }
+
+    @Test("the pasteboard concatenates N string items with a \\n of its own")
+    func pasteboardConcatenatesItems() {
+        // Why the pieces are joined HERE instead of written as one item each: left
+        // to the pasteboard, a copy of three colours reads with a separator this
+        // code never chose. Asserted so the day AppKit changes it is a red test,
+        // not a silently different paste.
+        Fixture.withScratchPasteboard { pb in
+            pb.clearContents()
+            pb.writeObjects(["a" as NSString, "b" as NSString])
+            #expect(pb.string(forType: .string) == "a\nb")
+        }
+    }
+}
+
+// MARK: - The writer's own plain-text join (464)
+
+@Suite("AssetPasteboardWriter: the plain-text flavour (464)", .serialized)
+struct AssetPasteboardWriterTextTests {
+
+    @Test("EVERY text entry pastes, as ONE item with OUR separator")
+    func allTextEntriesJoin() {
+        // Three colours used to go on as three string items, and the pasteboard
+        // then read them back joined by a `\n` this code never chose.
+        Fixture.withScratchPasteboard { pb in
+            let selection = ExportSelection(
+                entries: [.text("#ff0000"), .text("#00ff00"), .text("#0000ff")], skipped: 0)
+            #expect(AssetPasteboardWriter.write(selection, to: pb) == 3)
+            #expect(pb.string(forType: .string) == "#ff0000\n\n#00ff00\n\n#0000ff")
+            let strings = pb.readObjects(forClasses: [NSString.self], options: nil) as? [String] ?? []
+            #expect(strings == ["#ff0000\n\n#00ff00\n\n#0000ff"])
+        }
+    }
+
+    @Test("a mixed copy pastes the WORDS as text and the FILE as a file")
+    func mediaIsCutOutOfTheText() {
+        Fixture.withTempPNG { url in
+            Fixture.withScratchPasteboard { pb in
+                let selection = ExportSelection(
+                    entries: [
+                        .file(AssetExportItem(
+                            blobURL: url, filename: url.lastPathComponent, utType: .png)),
+                        .text("https://x.example"),
+                    ],
+                    skipped: 0)
+                AssetPasteboardWriter.write(selection, to: pb)
+                // The words only — the picture contributes none.
+                #expect(pb.string(forType: .string) == "https://x.example")
+                // …and the file is untouched: Finder and Preview see what they saw.
+                let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
+                #expect(urls.contains(url))
+            }
+        }
+    }
+
+    @Test("a media-only copy puts no string on the board at all")
+    func mediaOnlyWritesNoWords() {
+        Fixture.withTempPNG { url in
+            Fixture.withScratchPasteboard { pb in
+                let selection = ExportSelection(
+                    entries: [.file(AssetExportItem(
+                        blobURL: url, filename: url.lastPathComponent, utType: .png))],
+                    skipped: 0)
+                AssetPasteboardWriter.write(selection, to: pb)
+                #expect(pb.string(forType: .string) == nil)
+            }
+        }
+    }
+
+    @Test("a caller's own words REPLACE the ones the selection would have derived")
+    func callerTextOverrides() {
+        // The board's case: its text boxes are not assets, so it hands over the
+        // whole selection's words — interleaved in ITS order — and the derivation
+        // from the assets alone must not also go on.
+        Fixture.withScratchPasteboard { pb in
+            let selection = ExportSelection(entries: [.text("#ff0000")], skipped: 0)
+            AssetPasteboardWriter.write(
+                selection, to: pb, text: "a note\n\n#ff0000\n\nanother note")
+            #expect(pb.string(forType: .string) == "a note\n\n#ff0000\n\nanother note")
+        }
+    }
+
+    @Test("words with NO entries is still a copy — the board's text-only ⌘C")
+    func wordsWithoutEntriesStillWrite() {
+        Fixture.withScratchPasteboard { pb in
+            let written = AssetPasteboardWriter.write(
+                ExportSelection(entries: [], skipped: 0), to: pb, text: "just a text box")
+            // Zero ENTRIES — the byte-side count the report is about — but the
+            // words are on the board.
+            #expect(written == 0)
+            #expect(pb.string(forType: .string) == "just a text box")
+        }
+    }
+}
+
+// MARK: - The board's words (464)
+//
+// What a board ⌘C says to an app that takes nothing but text: the text boxes'
+// strings and the media-less assets' words, in z-order, with the media cut out.
+// Pure — no board, no model, no pasteboard.
+
+@Suite("SpaceView.copiedText")
+struct SpaceCopiedTextTests {
+
+    private func element(kind: SpaceItemKind, text: String?, z: Int) -> SpaceItemDetail {
+        SpaceItemDetail(
+            item: SpaceItem(
+                id: UUID(), spaceID: UUID(), kind: kind, assetID: nil,
+                x: 0, y: 0, w: 10, h: 10, z: z,
+                style: text.flatMap { ElementStyle(text: $0).jsonString() },
+                createdAt: Date(), updatedAt: Date()),
+            asset: nil, source: nil)
+    }
+
+    private func assetRow(_ asset: Asset, z: Int) -> SpaceItemDetail {
+        SpaceItemDetail(
+            item: SpaceItem(
+                id: UUID(), spaceID: UUID(), kind: .asset, assetID: asset.id,
+                x: 0, y: 0, w: 10, h: 10, z: z, style: nil,
+                createdAt: Date(), updatedAt: Date()),
+            asset: asset, source: Fixture.source())
+    }
+
+    @Test("a text box copies its string")
+    func textBoxCopiesItsString() {
+        #expect(SpaceView.copiedText(
+            [element(kind: .text, text: "hello", z: 0)], blobURL: { _ in nil }) == "hello")
+    }
+
+    @Test("a frame contributes nothing — its label is furniture, not content")
+    func frameLabelIsNotCopied() {
+        #expect(SpaceView.copiedText(
+            [element(kind: .frame, text: "Moodboard", z: 0)], blobURL: { _ in nil }) == nil)
+    }
+
+    @Test("an EMPTY text box drops out, and does not leave a blank line behind")
+    func emptyTextBoxDropsOut() {
+        let rows = [
+            element(kind: .text, text: "one", z: 0),
+            element(kind: .text, text: "   ", z: 1),
+            element(kind: .text, text: nil, z: 2),
+            element(kind: .text, text: "two", z: 3),
+        ]
+        #expect(SpaceView.copiedText(rows, blobURL: { _ in nil }) == "one\n\ntwo")
+    }
+
+    @Test("an image contributes nothing — the media is cut out of the words")
+    func imageIsCutOut() {
+        Fixture.withTempPNG { url in
+            let image = Fixture.asset(kind: .image, blobHash: "abcdef1234", mime: "image/png")
+            let rows = [assetRow(image, z: 0), element(kind: .text, text: "a caption", z: 1)]
+            #expect(SpaceView.copiedText(rows, blobURL: { _ in url }) == "a caption")
+        }
+    }
+
+    @Test("a media-LESS asset contributes its words, in the board's z-order")
+    func mediaLessAssetsContributeText() {
+        let color = Fixture.asset(kind: .color, payload: Fixture.colorPayload("#ff0000"))
+        let link = Fixture.asset(kind: .link, payload: Fixture.linkPayload("https://x.example"))
+        // Given out of z-order to prove the caller's order is what is honoured:
+        // `onCopyTiles` hands these over sorted, and nothing re-sorts them here.
+        let rows = [
+            assetRow(color, z: 0),
+            element(kind: .text, text: "between", z: 1),
+            assetRow(link, z: 2),
+        ]
+        #expect(SpaceView.copiedText(rows, blobURL: { _ in nil })
+                == "#ff0000\n\nbetween\n\nhttps://x.example")
+    }
+
+    @Test("a link that HAS an og:image is a picture, and copies as one")
+    func linkWithImageIsMedia() {
+        // The same rule the byte write uses (`pasteboardEntry`), so the two can
+        // never disagree about what this row is.
+        Fixture.withTempPNG { url in
+            let link = Fixture.asset(
+                kind: .link, blobHash: "abcdef1234", mime: "image/png",
+                payload: Fixture.linkPayload("https://x.example"))
+            #expect(SpaceView.copiedText([assetRow(link, z: 0)], blobURL: { _ in url }) == nil)
+        }
+    }
+
+    @Test("a selection with no words at all is nil, not an empty string")
+    func nothingIsNil() {
+        #expect(SpaceView.copiedText([], blobURL: { _ in nil }) == nil)
+        #expect(SpaceView.copiedText(
+            [element(kind: .frame, text: "Frame", z: 0)], blobURL: { _ in nil }) == nil)
+    }
 }

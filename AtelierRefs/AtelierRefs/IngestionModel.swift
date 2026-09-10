@@ -2251,19 +2251,38 @@ final class IngestionModel: ObservableObject {
     /// The report's counts stay about the BYTE representation — the honest number
     /// for other apps, and what keeps the "this won't paste into Figma" warning
     /// truthful — even though the private payload carries the whole selection.
+    ///
+    /// `alsoCopied` is rows that reached the pasteboard by a representation this
+    /// method knows nothing about — a board's frames and text boxes, carried by
+    /// ``SpaceElementPayload`` (065) — added to the report's `copied` (464). Without
+    /// it, ⌘C on a text box beside an image whose blob is missing said "Nothing to
+    /// copy", of a copy whose text went on the board perfectly well. An EMPTY text
+    /// box counts too: the element payload carries it faithfully, so it pastes back
+    /// intact, and calling it skipped would name a row that did not fail.
+    ///
+    /// An empty `assets` is a legitimate call, not a caller's mistake: the write
+    /// still CLEARS the pasteboard — which a board copy needs before it appends its
+    /// own two representations — and reports `alsoCopied` honestly.
+    ///
+    /// `text` is likewise the board's (464): the WORDS of a selection whose text
+    /// boxes this method never sees, replacing the words it would have derived from
+    /// the assets alone. Every other caller leaves it nil and gets exactly that
+    /// derivation.
     func copyToPasteboard(
-        assets: [(asset: Asset, source: Source?)], sourceCollectionID: UUID
+        assets: [(asset: Asset, source: Source?)], sourceCollectionID: UUID,
+        alsoCopied: Int = 0, text: String? = nil
     ) {
         let selection = AssetExport.exportSelection(
             assets: assets, blobURL: { self.blobURL(forAsset: $0) })
-        AssetPasteboardWriter.write(selection, to: .general)
+        AssetPasteboardWriter.write(selection, to: .general, text: text)
         // AFTER the write, which clears the board first (see `appendAssetIDs`), and
         // over the WHOLE selection — including entries the byte pass had to skip.
         AssetPasteboardWriter.appendAssetIDs(
             assets.map { $0.asset.id }, from: sourceCollectionID, to: .general)
         copyReportSeq += 1
         lastCopyReport = CopyReport(
-            copied: selection.entries.count, skipped: selection.skipped, seq: copyReportSeq)
+            copied: selection.entries.count + alsoCopied,
+            skipped: selection.skipped, seq: copyReportSeq)
     }
 
     /// Copy the `selection` (membership ids) out of `details` to the pasteboard, in
