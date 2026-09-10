@@ -286,9 +286,19 @@ struct CollectionView: View {
         grid
             // ⌘V pastes into this collection — a hidden shortcut-only button, kept in
             // the SwiftUI key path (the header's create button is the other entry).
+            //
+            // The binding is WITHDRAWN while the detail page is up, for 354's reason
+            // and on 354's rule: a key equivalent is dispatched before the event
+            // reaches the first responder, so a live binding here answers ⌘V pressed
+            // ON the page — where it means "paste into the Name / Note field", or
+            // nothing at all — by importing the board into the collection BEHIND the
+            // page. Withdrawn, the keystroke falls through to Edit ▸ Paste and the
+            // responder chain, which is the page's field editor when one is up and
+            // nobody when one is not.
             .background {
                 Button("Paste", action: paste)
-                    .keyboardShortcut("v", modifiers: .command)
+                    .keyboardShortcut(
+                        Self.pasteShortcut(detailPresented: nav.presentedItemID != nil))
                     .disabled(!model.isReady)
                     .hidden()
             }
@@ -1091,6 +1101,41 @@ struct CollectionView: View {
         case importExternal
     }
 
+    /// Whether the hidden ⌘V button carries its binding, given whether the detail page
+    /// is up.
+    ///
+    /// `nil` WITHDRAWS the key equivalent and leaves the button mounted — the shape
+    /// `SpaceView`'s undo / duplicate / z-order bindings already use while a text box is
+    /// being edited. Unmounting the button instead would be the trap that file documents
+    /// from the other side: a `keyboardShortcut` on a view that isn't rendered never
+    /// fires, so the binding would be gone on paths that never mount the background.
+    static func pasteShortcut(detailPresented: Bool) -> KeyboardShortcut? {
+        detailPresented ? nil : KeyboardShortcut("v", modifiers: .command)
+    }
+
+    /// Where a ⌘V that DID reach the button should go — the gate in front of
+    /// ``PasteRoute``, which only ever answers for the collection.
+    enum PasteDispatch: Equatable {
+        /// A field editor holds first responder: the toolbar search field, or the
+        /// sidebar's rename / draft cell. The keystroke is that field's.
+        case fieldEditor
+        /// Nobody is typing — the collection takes it, and ``resolvePaste`` decides how.
+        case collection
+        /// The library is still opening. The button is `disabled` on the same condition,
+        /// so this is the belt to that brace rather than a reachable state.
+        case ignore
+    }
+
+    /// Resolve a ⌘V against who holds the keyboard, BEFORE any pasteboard is read.
+    ///
+    /// The field editor is checked FIRST, ahead of readiness: typing in the search field
+    /// is not the library's to gate, and a ⌘V swallowed because the model happened to
+    /// still be opening would be the same bug in a narrower window.
+    static func resolvePasteDispatch(fieldEditorFocused: Bool, isReady: Bool) -> PasteDispatch {
+        if fieldEditorFocused { return .fieldEditor }
+        return isReady ? .collection : .ignore
+    }
+
     /// Resolve a ⌘V from the app-private payload on the board (if any) and the
     /// collection the paste targets.
     ///
@@ -1118,7 +1163,28 @@ struct CollectionView: View {
     /// This is the paste-side twin of ``handleDrop(_:)``, which has refused providers
     /// carrying `.assetIDs` since 192 for the same reason.
     private func paste() {
-        guard model.isReady else { return }
+        switch Self.resolvePasteDispatch(
+            fieldEditorFocused: isSearchFieldEditor(NSApp.keyWindow?.firstResponder),
+            isReady: model.isReady) {
+        case .ignore:
+            return
+        case .fieldEditor:
+            // Hand the keystroke back to the field being typed in. A key equivalent is
+            // dispatched before the field editor sees the event — the precedence
+            // `SpaceView`'s undo / duplicate / z-order bindings document as measured —
+            // so without this the search field and the sidebar's rename cell answer ⌘V
+            // by importing the clipboard into the collection behind them instead of
+            // pasting text. `sendAction(to: nil)` walks the responder chain, which is
+            // what Edit ▸ Paste would have done had the binding not been in front of it.
+            NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
+        case .collection:
+            pasteIntoCollection()
+        }
+    }
+
+    /// The collection's own ⌘V, once ``resolvePasteDispatch`` has ruled out a field
+    /// editor: decode the board and take one of ``PasteRoute``'s three branches.
+    private func pasteIntoCollection() {
         let pasteboard = NSPasteboard.general
         let target = importTargetID
         switch Self.resolvePaste(

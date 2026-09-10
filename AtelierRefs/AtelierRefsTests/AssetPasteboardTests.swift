@@ -14,6 +14,7 @@ import AppKit
 import AtelierArchive
 import AtelierCore
 import Foundation
+import SwiftUI
 import Testing
 import UniformTypeIdentifiers
 @testable import AtelierRefs
@@ -405,6 +406,59 @@ struct AssetPasteboardPayloadTests {
 
     private func item(_ url: URL) -> AssetExportItem {
         AssetExportItem(blobURL: url, filename: url.lastPathComponent, utType: .png)
+    }
+}
+
+// MARK: - Paste dispatch (who the ⌘V belongs to, before the board is read)
+
+/// The gate in FRONT of `resolvePaste`, added after a production report that the item
+/// detail page's Name / Note fields could not be pasted into: the keystroke imported the
+/// clipboard into the collection behind the page instead.
+///
+/// The cause is the precedence `SpaceView` documents as measured — a sibling
+/// `keyboardShortcut` is dispatched BEFORE the event reaches the first responder — so
+/// the grid's hidden ⌘V button answered for every text field in the window. Two rules
+/// close it, and they are asserted here rather than only against a live window: the
+/// binding is withdrawn while the page is up, and a ⌘V that still reaches the button
+/// while a field editor holds the keyboard is handed back to the responder chain.
+@Suite("Grid paste dispatch")
+struct GridPasteDispatchTests {
+
+    @Test("the binding is withdrawn while the detail page is up")
+    func withdrawnOnDetailPage() {
+        #expect(CollectionView.pasteShortcut(detailPresented: true) == nil)
+    }
+
+    @Test("…and carried on the grid")
+    func boundOnGrid() {
+        #expect(CollectionView.pasteShortcut(detailPresented: false)
+                == KeyboardShortcut("v", modifiers: .command))
+    }
+
+    @Test("a focused field editor keeps its own ⌘V")
+    func fieldEditorWins() {
+        #expect(CollectionView.resolvePasteDispatch(fieldEditorFocused: true, isReady: true)
+                == .fieldEditor)
+    }
+
+    @Test("the field editor is checked BEFORE readiness")
+    func fieldEditorBeatsUnready() {
+        // Typing in the search field is not the library's to gate: a ⌘V swallowed
+        // because the model was still opening is the same bug in a narrower window.
+        #expect(CollectionView.resolvePasteDispatch(fieldEditorFocused: true, isReady: false)
+                == .fieldEditor)
+    }
+
+    @Test("with nobody typing, the collection takes it")
+    func collectionOtherwise() {
+        #expect(CollectionView.resolvePasteDispatch(fieldEditorFocused: false, isReady: true)
+                == .collection)
+    }
+
+    @Test("an unopened library ignores the keystroke rather than importing")
+    func unreadyIgnores() {
+        #expect(CollectionView.resolvePasteDispatch(fieldEditorFocused: false, isReady: false)
+                == .ignore)
     }
 }
 
