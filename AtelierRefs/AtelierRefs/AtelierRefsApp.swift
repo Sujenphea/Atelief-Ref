@@ -53,6 +53,9 @@ struct AtelierRefsApp: App {
             // the focused model. Placed after the pasteboard verbs so it sits with
             // the other selection-scoped actions rather than beside Undo.
             CommandGroup(after: .pasteboard) {
+                // Edit ▸ Copy as Text (⌥⌘C, 465) — the words of the focused
+                // surface's selection, and nothing else on the pasteboard.
+                CopyAsTextCommand()
                 FavoriteCommand()
                 // Edit ▸ Remove / Delete (022 · D5) — the two verbs, named for the
                 // surface that has focus, so both are discoverable and ⌘⌫ is visible
@@ -231,6 +234,63 @@ extension FocusedValues {
     var deleteVerbs: DeleteVerbs? {
         get { self[DeleteVerbsKey.self] }
         set { self[DeleteVerbsKey.self] = newValue }
+    }
+}
+
+// MARK: - Edit ▸ Copy as Text (465)
+
+/// What the focused surface would copy AS WORDS — the menu half of ⌥⌘C.
+///
+/// A focused VALUE per surface, like ``DeleteVerbs`` and for the same reason: "what
+/// is selected" is exactly what the shared model does not know, so a command reading
+/// it would copy the collection grid's selection while a board had focus.
+///
+/// **Why the command exists at all.** ⌘C writes every flavour of a copy at once —
+/// the blob's file URL, its pixels, the app-private payloads, and the words — and
+/// lets the destination choose. But a destination chooses by asking
+/// `availableType(from:)` in ITS OWN preference order, and every app that can take a
+/// file asks for a file first. So a selection holding both a picture and a text box
+/// pastes as the picture (or a link to it) in Notes, Messages, Mail and every rich
+/// editor, and the words are never reached. They are on the pasteboard; nothing asks.
+/// This command is the other half of that choice, moved to where the user can make
+/// it: one string item, no file, no pixels.
+///
+/// `canCopy` is answered CHEAPLY (``AssetExport/mayHaveText(_:)``) because a menu
+/// item's `disabled` is evaluated on every body pass, not on click.
+struct CopyAsTextVerb {
+    /// Whether the selection holds any words at all. `false` greys the item out —
+    /// a selection of pure media has no text copy to make, and an item you can click
+    /// that then does nothing is worse than a greyed one (the rule `DeleteVerbs`
+    /// already applies to Remove).
+    let canCopy: Bool
+    /// Build the words and put them on the pasteboard. Run on CLICK, so the exact
+    /// rule — and its per-asset `fileExists` probe — is paid once, by a user who
+    /// asked for it.
+    let copy: () -> Void
+}
+
+private struct CopyAsTextVerbKey: FocusedValueKey {
+    typealias Value = CopyAsTextVerb
+}
+
+extension FocusedValues {
+    var copyAsText: CopyAsTextVerb? {
+        get { self[CopyAsTextVerbKey.self] }
+        set { self[CopyAsTextVerbKey.self] = newValue }
+    }
+}
+
+/// Edit ▸ Copy as Text (⌥⌘C, 465).
+///
+/// ⌥⌘C is safe to register as a key equivalent — unlike the bare ⌫ below it, it is
+/// nobody's text-entry key, and a text view that owns ⌘C has no claim on it.
+private struct CopyAsTextCommand: View {
+    @FocusedValue(\.copyAsText) private var verb
+
+    var body: some View {
+        Button("Copy as Text") { verb?.copy() }
+            .keyboardShortcut("c", modifiers: [.command, .option])
+            .disabled(!(verb?.canCopy ?? false))
     }
 }
 

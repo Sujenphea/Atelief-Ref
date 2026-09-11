@@ -798,3 +798,130 @@ struct SpaceCopiedTextTests {
             [element(kind: .frame, text: "Frame", z: 0)], blobURL: { _ in nil }) == nil)
     }
 }
+
+// MARK: - Copy as Text (465)
+//
+// ⌥⌘C's flavour: ONE string item and nothing else. The absence is the feature —
+// a file URL beside the words is a copy every rich editor reads as a file,
+// because `availableType(from:)` answers in the order the RECEIVER asks.
+
+@Suite("CopyText.write(only:)", .serialized)
+struct CopyTextOnlyTests {
+
+    @Test("writes the words and NOTHING else")
+    func writesOnlyTheWords() {
+        Fixture.withScratchPasteboard { pb in
+            #expect(CopyText.write(only: "the caption", to: pb))
+            #expect(pb.string(forType: .string) == "the caption")
+            #expect(pb.pasteboardItems?.count == 1)
+            #expect(pb.availableType(from: [.fileURL, .string]) == .string)
+            #expect(!pb.canReadObject(forClasses: [NSURL.self], options: nil))
+        }
+    }
+
+    @Test("replaces a rich copy rather than adding to one")
+    func clearsTheRichCopyFirst() {
+        // The failure this prevents: ⌘C then ⌥⌘C leaving the file URL behind, so
+        // the very apps this command exists for still paste the file.
+        Fixture.withTempPNG { url in
+            Fixture.withScratchPasteboard { pb in
+                AssetPasteboardWriter.write(
+                    ExportSelection(
+                        entries: [.file(AssetExportItem(
+                            blobURL: url, filename: url.lastPathComponent, utType: .png))],
+                        skipped: 0),
+                    to: pb)
+                AssetPasteboardWriter.appendAssetIDs([UUID()], from: UUID(), to: pb)
+                #expect(pb.canReadObject(forClasses: [NSURL.self], options: nil))
+
+                CopyText.write(only: "the caption", to: pb)
+                #expect(pb.string(forType: .string) == "the caption")
+                #expect(!pb.canReadObject(forClasses: [NSURL.self], options: nil))
+                #expect(AssetDragPayload.decode(from: pb) == nil)
+                #expect(SpaceElementPayload.decode(from: pb) == nil)
+            }
+        }
+    }
+}
+
+@Suite("AssetExport: the words of an asset selection (465)")
+struct AssetCopiedTextTests {
+
+    @Test("media-less assets contribute their words, in selection order")
+    func mediaLessAssetsJoin() {
+        let color = Fixture.asset(kind: .color, payload: Fixture.colorPayload("#ff0000"))
+        let link = Fixture.asset(kind: .link, payload: Fixture.linkPayload("https://x.example"))
+        #expect(AssetExport.copiedText(
+            assets: [(asset: color, source: nil), (asset: link, source: nil)],
+            blobURL: { _ in nil }) == "#ff0000\n\nhttps://x.example")
+    }
+
+    @Test("a picture contributes nothing — not even its path")
+    func pictureContributesNothing() {
+        Fixture.withTempPNG { url in
+            let image = Fixture.asset(kind: .image, blobHash: "abcdef1234", mime: "image/png")
+            let color = Fixture.asset(kind: .color, payload: Fixture.colorPayload("#00ff00"))
+            #expect(AssetExport.copiedText(
+                assets: [(asset: image, source: nil), (asset: color, source: nil)],
+                blobURL: { $0.id == image.id ? url : nil }) == "#00ff00")
+        }
+    }
+
+    @Test("a selection of pure media has no text copy at all")
+    func pureMediaIsNil() {
+        Fixture.withTempPNG { url in
+            let image = Fixture.asset(kind: .image, blobHash: "abcdef1234", mime: "image/png")
+            #expect(AssetExport.copiedText(
+                assets: [(asset: image, source: nil)], blobURL: { _ in url }) == nil)
+        }
+    }
+}
+
+@Suite("AssetExport.mayHaveText — the cheap menu predicate (465)")
+struct MayHaveTextTests {
+
+    @Test("agrees with the exact rule on every ordinary row")
+    func agreesWithTheExactRule() {
+        Fixture.withTempPNG { url in
+            let rows: [(Asset, URL?)] = [
+                (Fixture.asset(kind: .color, payload: Fixture.colorPayload("#ff0000")), nil),
+                (Fixture.asset(kind: .link, payload: Fixture.linkPayload("https://x.example")), nil),
+                (Fixture.asset(kind: .tweet, payload: Fixture.tweetPayload(id: "1", handle: "@a")), nil),
+                (Fixture.asset(kind: .image, blobHash: "abcdef1234", mime: "image/png"), url),
+                (Fixture.asset(kind: .video, blobHash: "abcdef1234", mime: "video/mp4"), url),
+                // A media-less kind whose payload will not parse reads as
+                // `.unknown` content: no bytes AND no words.
+                (Fixture.asset(kind: .color), nil),
+                // A link WITH an og:image is a picture: no words, either way.
+                (Fixture.asset(
+                    kind: .link, blobHash: "abcdef1234", mime: "image/png",
+                    payload: Fixture.linkPayload("https://x.example")), url),
+            ]
+            for (asset, blob) in rows {
+                let exact = AssetExport.pasteboardEntry(
+                    asset: asset, source: nil, blobURL: blob)?.text != nil
+                #expect(AssetExport.mayHaveText(asset) == exact,
+                        "disagreed on \(asset.kind)")
+            }
+        }
+    }
+
+    @Test("the ONE row the two disagree on: a claimed blob whose file is gone")
+    func disagreesOnAMissingBlob() {
+        // Documented, not accidental: the exact rule falls back to the link's URL,
+        // the cheap one greys the menu out. A library in this state is broken.
+        let orphan = Fixture.asset(
+            kind: .link, blobHash: "abcdef1234", mime: "image/png",
+            payload: Fixture.linkPayload("https://x.example"))
+        let missing = URL(fileURLWithPath: "/tmp/definitely-not-here-\(UUID().uuidString).png")
+        #expect(AssetExport.pasteboardEntry(
+            asset: orphan, source: nil, blobURL: missing)?.text == "https://x.example")
+        #expect(AssetExport.mayHaveText(orphan) == false)
+    }
+
+    @Test("an empty blobHash counts as no bytes, like a nil one")
+    func emptyHashIsNoBytes() {
+        let color = Fixture.asset(kind: .color, blobHash: "", payload: Fixture.colorPayload("#ff0000"))
+        #expect(AssetExport.mayHaveText(color))
+    }
+}

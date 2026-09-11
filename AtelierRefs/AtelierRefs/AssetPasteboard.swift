@@ -101,6 +101,41 @@ extension AssetExport {
         }
     }
 
+    /// The WORDS of an ordered asset selection (465) — Edit ▸ Copy as Text, where
+    /// `⌘C`'s rich flavours are deliberately absent.
+    ///
+    /// The same per-asset rule ``pasteboardEntry(asset:source:blobURL:)`` uses, so
+    /// what a text copy says about an asset never differs from what the fallback
+    /// string of a rich copy said: media contribute nothing, a colour its hex, a
+    /// link its URL, a tweet its permalink.
+    static func copiedText(
+        assets: [(asset: Asset, source: Source?)], blobURL: (Asset) -> URL?
+    ) -> String? {
+        CopyText.joined(assets.map { pair in
+            pasteboardEntry(
+                asset: pair.asset, source: pair.source,
+                blobURL: blobURL(pair.asset))?.text
+        })
+    }
+
+    /// Whether `asset` would contribute words — answered CHEAPLY, for menu
+    /// validation (465).
+    ///
+    /// A missing / empty `blobHash` stands in for "has no bytes to copy", which is
+    /// what ``pasteboardEntry(asset:source:blobURL:)`` establishes with a
+    /// `FileManager.fileExists` probe. The two disagree on exactly one row: one that
+    /// CLAIMS a blob whose file is gone — the exact rule falls back to the kind's
+    /// words, this one says no, and Copy as Text greys out on a library that is
+    /// already broken.
+    ///
+    /// Asking exactly would cost a `stat` per selected asset on every evaluation of
+    /// the menu's body — which for ⌘A over a large collection is every keystroke
+    /// that moves the selection. That is the trade, and it is why this is a separate
+    /// function with its own name rather than a quiet shortcut inside the other one.
+    static func mayHaveText(_ asset: Asset) -> Bool {
+        (asset.blobHash?.isEmpty ?? true) && textFallback(for: asset) != nil
+    }
+
     /// Map an ordered selection to its pasteboard entries, preserving order and
     /// counting the skips (7A). The single selection→entries assembly shared by
     /// grid, canvas, and detail (4A) — each surface only supplies its ordered
@@ -146,6 +181,14 @@ extension AssetExport {
 ///    so a file item contributes no string at all and a text field pasting a mixed
 ///    copy never lands `/…/blobs/ab12.png`. Only pieces that ARE words go on — a
 ///    board text box's string, a colour's hex, a link's URL.
+///
+///    **Being on the pasteboard is not the same as being reached** (465). A
+///    receiver picks by calling `availableType(from:)`, which answers in the order
+///    the RECEIVER asks — and every app that can take a file asks for a file first.
+///    So in Notes, Messages, Mail and every rich editor, a copy holding both a
+///    picture and a text box pastes the picture and never asks for these words.
+///    That is what Edit ▸ Copy as Text (⌥⌘C) exists for: the same words, with no
+///    file rep beside them to outrank them. See ``CopyText/write(only:to:)``.
 /// 2. **One joined string on ONE pasteboard item.** `string(forType:)` returns the
 ///    CONCATENATION of every item's string, joined by a single `\n` — so N string
 ///    items do reach the receiver, but separated by a newline this code never chose
@@ -169,6 +212,22 @@ enum CopyText {
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         return kept.isEmpty ? nil : kept.joined(separator: separator)
+    }
+
+    /// Put `text` on `pasteboard` and NOTHING else (465) — Edit ▸ Copy as Text.
+    ///
+    /// The whole point is the absence: a ⌘C that also writes a file URL is a copy
+    /// every file-capable app reads as a file, because `availableType(from:)` answers
+    /// in the order the RECEIVER asks and every rich editor asks for a file first.
+    /// One string item is the only way to hand such an app the words.
+    ///
+    /// No app-private types either: a text copy pasted back onto a board makes a text
+    /// box out of the words, rather than silently rebuilding a layout the user asked
+    /// to have as text.
+    @discardableResult
+    static func write(only text: String, to pasteboard: NSPasteboard) -> Bool {
+        pasteboard.clearContents()
+        return pasteboard.setString(text, forType: .string)
     }
 }
 

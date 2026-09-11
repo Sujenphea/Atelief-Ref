@@ -170,6 +170,24 @@ struct SpaceView: View {
                     .compactMap { content.detail(forTileID: $0)?.asset?.id }
                 model.requestDelete(assetIDs: assetIDs)
             }))
+        // Edit ▸ Copy as Text (⌥⌘C, 465) — the board's words: its text boxes, and
+        // the media-less assets among the selection, in z-order. `canCopy` reads
+        // `items` (cheap, and words need no geometry); the copy itself reads
+        // `placedItems`, whose z is the LIVE stacking a drag may have moved.
+        .focusedSceneValue(\.copyAsText, CopyAsTextVerb(
+            canCopy: space.selectedRows(from: space.items).contains { detail in
+                if let asset = detail.asset { return AssetExport.mayHaveText(asset) }
+                return detail.item.kind == .text
+                    && (detail.item.style.flatMap { ElementStyle(jsonString: $0)?.text }?
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            },
+            copy: {
+                let rows = space.selectedRows(from: space.placedItems)
+                    .sorted { $0.item.z < $1.item.z }
+                guard let words = Self.copiedText(
+                    rows, blobURL: { model.blobURL(forAsset: $0) }) else { return }
+                CopyText.write(only: words, to: .general)
+            }))
         // Expose the board's export to the File-menu command (052 · B3): default
         // config (PDF, single page) for the same selection-or-whole-board rows.
         .focusedSceneValue(\.exportMoodboard, ExportMoodboardAction {

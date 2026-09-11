@@ -12,6 +12,7 @@
 //
 
 import AppKit
+import AtelierArchive
 import AtelierCore
 import AtelierIngestion
 import SwiftUI
@@ -202,6 +203,28 @@ struct CollectionView: View {
         // this body already observes for handing the keyboard over.
         .focusedSceneValue(
             \.deleteVerbs, nav.presentedItemID == nil ? gridDeleteVerbs : nil)
+        // Edit ▸ Copy as Text (⌥⌘C, 465) — the words of the grid's selection: the
+        // colours' hex, the links' and tweets' URLs, and nothing for anything with
+        // a picture. Gated on the route exactly as the delete verbs are, so the
+        // page's own value answers while the page is up.
+        .focusedSceneValue(
+            \.copyAsText, nav.presentedItemID == nil ? gridCopyAsText : nil)
+    }
+
+    /// The grid's ⌥⌘C (465), over the SAME widened selection ⌘C copies
+    /// (``IngestionModel/itemIDsForAction(_:)``) and in the same feed order, so the
+    /// two commands never disagree about what "the selection" is.
+    private var gridCopyAsText: CopyAsTextVerb {
+        let ids = model.itemIDsForAction(model.selection.ids)
+        let selected = model.items.filter { ids.contains($0.item.id) }
+        return CopyAsTextVerb(
+            canCopy: selected.contains { AssetExport.mayHaveText($0.asset) },
+            copy: {
+                guard let words = AssetExport.copiedText(
+                    assets: selected.map { (asset: $0.asset, source: Optional($0.source)) },
+                    blobURL: { model.blobURL(forAsset: $0) }) else { return }
+                CopyText.write(only: words, to: .general)
+            })
     }
 
     /// The grid's ⌫ / ⌘⌫, as the Edit menu performs them — the selection, or the lead
@@ -1458,6 +1481,25 @@ private struct CollectionDetailHost: View {
         // is the gate here for the same reason `close()` reads it: it is the item the
         // user is actually looking at after any number of steps.
         .focusedSceneValue(\.deleteVerbs, session.state.map(pageDeleteVerbs))
+        // Edit ▸ Copy as Text (⌥⌘C, 465) on the item being LOOKED AT — the same
+        // "which item" rule as the verbs above, for the same reason: ← / → move the
+        // page without moving the grid's cursor.
+        .focusedSceneValue(\.copyAsText, session.state.map(pageCopyAsText))
+    }
+
+    /// The page's ⌥⌘C (465): the words of the one item on screen — a colour's hex, a
+    /// link's or tweet's URL — and nothing at all for a picture, which is what ⌘C is
+    /// for.
+    private func pageCopyAsText(for state: DetailSession.State) -> CopyAsTextVerb {
+        let detail = state.detail
+        return CopyAsTextVerb(
+            canCopy: AssetExport.mayHaveText(detail.asset),
+            copy: {
+                guard let words = AssetExport.copiedText(
+                    assets: [(asset: detail.asset, source: Optional(detail.source))],
+                    blobURL: { model.blobURL(forAsset: $0) }) else { return }
+                CopyText.write(only: words, to: .general)
+            })
     }
 
     /// The Edit-menu verbs for the item the page is SHOWING, routed through the same
