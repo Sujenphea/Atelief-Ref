@@ -979,10 +979,10 @@ struct SpaceView: View {
     ///  - a **text box** — its string;
     ///  - a **frame** — nothing. `style.text` is a frame's label: furniture that
     ///    names a region, not content the user copied;
-    ///  - an **asset** — whatever ``AssetExport/pasteboardEntry(asset:source:blobURL:)``
-    ///    calls text, so media are cut out by exactly the rule the byte write uses,
-    ///    and the two can never disagree about, say, a link that HAS an og:image
-    ///    (a picture — it copies as the picture, and contributes no words).
+    ///  - an **asset** — whatever ``AssetExport/copyEntry(asset:source:blobURL:)``
+    ///    calls text, so media are cut out by exactly the rule the byte write uses.
+    ///    A link card's words are its URL whether or not a preview was captured
+    ///    (466); only a picture or a video has nothing to say.
     ///
     /// Static and pure so the rule is testable without a board, a model or a
     /// pasteboard; `blobURL` is the one thing it cannot know on its own.
@@ -994,7 +994,7 @@ struct SpaceView: View {
                 guard detail.item.kind == .text else { return nil }
                 return detail.item.style.flatMap { ElementStyle(jsonString: $0)?.text }
             }
-            return AssetExport.pasteboardEntry(
+            return AssetExport.copyEntry(
                 asset: asset, source: detail.source, blobURL: blobURL(asset))?.text
         })
     }

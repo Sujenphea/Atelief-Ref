@@ -105,11 +105,14 @@ struct AssetPasteboardEntryTests {
         }
     }
 
-    // 052 · B1 regression (the "viktoroddy" tweet): a link/tweet whose IMAGE was
-    // captured (og:image / card image) renders as an image card, so ⌘C must copy the
-    // image FILE, not the URL text — otherwise a paste into Finder fails.
+    // 052 · B1 (the "viktoroddy" tweet): a link/tweet whose IMAGE was captured
+    // (og:image / card image) resolves to the image FILE, not the URL text.
+    //
+    // This is now the EXPORT rule and no longer the copy one (466). The originals
+    // export and the share sheet still mean the bytes on disk; ⌘C means the link,
+    // and `CopyEntryTests` below asserts the other half of that split.
 
-    @Test("a link with a captured og:image copies as the image file, not its URL")
+    @Test("a link with a captured og:image EXPORTS as the image file, not its URL")
     func linkWithImageIsFile() throws {
         try Fixture.withTempPNG { url in
             let entry = AssetExport.pasteboardEntry(
@@ -123,7 +126,7 @@ struct AssetPasteboardEntryTests {
         }
     }
 
-    @Test("a tweet with a captured card image copies as the image file, not its permalink")
+    @Test("a tweet with a captured card image EXPORTS as the image file, not its permalink")
     func tweetWithCardImageIsFile() throws {
         try Fixture.withTempPNG { url in
             let entry = AssetExport.pasteboardEntry(
@@ -779,15 +782,17 @@ struct SpaceCopiedTextTests {
                 == "#ff0000\n\nbetween\n\nhttps://x.example")
     }
 
-    @Test("a link that HAS an og:image is a picture, and copies as one")
-    func linkWithImageIsMedia() {
-        // The same rule the byte write uses (`pasteboardEntry`), so the two can
-        // never disagree about what this row is.
+    @Test("a link that HAS an og:image still says its URL (466)")
+    func linkWithImageStillSaysItsURL() {
+        // The same rule the byte write uses (`copyEntry`), so the two can never
+        // disagree about what this row is. Before 466 the preview silenced it and a
+        // board's words came back empty for a selection of nothing but link cards.
         Fixture.withTempPNG { url in
             let link = Fixture.asset(
                 kind: .link, blobHash: "abcdef1234", mime: "image/png",
                 payload: Fixture.linkPayload("https://x.example"))
-            #expect(SpaceView.copiedText([assetRow(link, z: 0)], blobURL: { _ in url }) == nil)
+            #expect(SpaceView.copiedText([assetRow(link, z: 0)], blobURL: { _ in url })
+                    == "https://x.example")
         }
     }
 
@@ -877,10 +882,10 @@ struct AssetCopiedTextTests {
     }
 }
 
-@Suite("AssetExport.mayHaveText — the cheap menu predicate (465)")
+@Suite("AssetExport.mayHaveText — the menu predicate (465, exact since 466)")
 struct MayHaveTextTests {
 
-    @Test("agrees with the exact rule on every ordinary row")
+    @Test("agrees with the copy rule on every row, blob or no blob")
     func agreesWithTheExactRule() {
         Fixture.withTempPNG { url in
             let rows: [(Asset, URL?)] = [
@@ -892,13 +897,16 @@ struct MayHaveTextTests {
                 // A media-less kind whose payload will not parse reads as
                 // `.unknown` content: no bytes AND no words.
                 (Fixture.asset(kind: .color), nil),
-                // A link WITH an og:image is a picture: no words, either way.
+                // A link WITH an og:image: words either way, since 466.
                 (Fixture.asset(
                     kind: .link, blobHash: "abcdef1234", mime: "image/png",
                     payload: Fixture.linkPayload("https://x.example")), url),
+                (Fixture.asset(
+                    kind: .tweet, blobHash: "abcdef1234", mime: "image/png",
+                    payload: Fixture.tweetPayload(id: "9", handle: "@b")), url),
             ]
             for (asset, blob) in rows {
-                let exact = AssetExport.pasteboardEntry(
+                let exact = AssetExport.copyEntry(
                     asset: asset, source: nil, blobURL: blob)?.text != nil
                 #expect(AssetExport.mayHaveText(asset) == exact,
                         "disagreed on \(asset.kind)")
@@ -906,22 +914,87 @@ struct MayHaveTextTests {
         }
     }
 
-    @Test("the ONE row the two disagree on: a claimed blob whose file is gone")
-    func disagreesOnAMissingBlob() {
-        // Documented, not accidental: the exact rule falls back to the link's URL,
-        // the cheap one greys the menu out. A library in this state is broken.
+    @Test("465's one disagreeing row \u{2014} a claimed blob whose file is gone \u{2014} agrees now")
+    func theOldDisagreementIsGone() {
+        // 465 had to accept this row disagreeing to keep the predicate cheap: the
+        // exact rule fell back to the link's URL, the cheap one greyed the menu out.
+        // 466 removed the trade \u{2014} a kind either has words or it does not, and no
+        // blob, present or missing, can take them away.
         let orphan = Fixture.asset(
             kind: .link, blobHash: "abcdef1234", mime: "image/png",
             payload: Fixture.linkPayload("https://x.example"))
         let missing = URL(fileURLWithPath: "/tmp/definitely-not-here-\(UUID().uuidString).png")
-        #expect(AssetExport.pasteboardEntry(
+        #expect(AssetExport.copyEntry(
             asset: orphan, source: nil, blobURL: missing)?.text == "https://x.example")
-        #expect(AssetExport.mayHaveText(orphan) == false)
+        #expect(AssetExport.mayHaveText(orphan))
+    }
+}
+
+// MARK: - The copy rule (466)
+//
+// ⌘C means the asset, not the bytes it happens to hold: a link card is a page, and
+// its preview is decoration the app fetched. The export rule is unchanged and still
+// asserted above \u{2014} the two now differ, deliberately.
+
+@Suite("AssetExport.copyEntry")
+struct CopyEntryTests {
+
+    @Test("a link with an og:image COPIES as its URL")
+    func linkCopiesAsItsURL() throws {
+        try Fixture.withTempPNG { url in
+            let link = Fixture.asset(
+                kind: .link, blobHash: "0f1e2d3c", mime: "image/png",
+                payload: Fixture.linkPayload("https://example.com/a"))
+            #expect(AssetExport.copyEntry(asset: link, source: nil, blobURL: url)
+                    == .text("https://example.com/a"))
+            // …while the export rule still resolves the same asset to its file.
+            guard case .file = try #require(
+                AssetExport.pasteboardEntry(asset: link, source: nil, blobURL: url)) else {
+                Issue.record("the export rule should still yield the og:image"); return
+            }
+        }
     }
 
-    @Test("an empty blobHash counts as no bytes, like a nil one")
-    func emptyHashIsNoBytes() {
-        let color = Fixture.asset(kind: .color, blobHash: "", payload: Fixture.colorPayload("#ff0000"))
-        #expect(AssetExport.mayHaveText(color))
+    @Test("a tweet with a card image COPIES as its permalink")
+    func tweetCopiesAsItsPermalink() {
+        Fixture.withTempPNG { url in
+            let tweet = Fixture.asset(
+                kind: .tweet, blobHash: "2e7cb391", mime: "image/png",
+                payload: Fixture.tweetPayload(id: "123", handle: "@viktoroddy"))
+            #expect(AssetExport.copyEntry(asset: tweet, source: nil, blobURL: url)
+                    == .text("https://x.com/viktoroddy/status/123"))
+        }
+    }
+
+    @Test("an image and a video are untouched — the picture IS the thing saved")
+    func mediaStillCopiesAsBytes() throws {
+        try Fixture.withTempPNG { url in
+            for kind in [AssetKind.image, .video] {
+                let asset = Fixture.asset(kind: kind, blobHash: "abcdef1234", mime: "image/png")
+                guard case .file = try #require(
+                    AssetExport.copyEntry(asset: asset, source: nil, blobURL: url)) else {
+                    Issue.record("expected .file for \(kind)"); return
+                }
+            }
+        }
+    }
+
+    @Test("a colour is its hex, as it always was")
+    func colorIsUnchanged() {
+        let color = Fixture.asset(kind: .color, payload: Fixture.colorPayload("#ff0000"))
+        #expect(AssetExport.copyEntry(asset: color, source: nil, blobURL: nil) == .text("#ff0000"))
+    }
+
+    @Test("a link whose payload will not parse falls through to its bytes")
+    func unparseablePayloadFallsBackToBytes() throws {
+        // `.unknown` content has no words to prefer, so the byte rule still answers
+        // — a row this broken should still copy whatever it does have.
+        try Fixture.withTempPNG { url in
+            let broken = Fixture.asset(kind: .link, blobHash: "0f1e2d3c", mime: "image/png")
+            guard case .file = try #require(
+                AssetExport.copyEntry(asset: broken, source: nil, blobURL: url)) else {
+                Issue.record("expected .file for an unparseable link with bytes"); return
+            }
+        }
     }
 }

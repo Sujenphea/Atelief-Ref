@@ -2272,8 +2272,12 @@ final class IngestionModel: ObservableObject {
         assets: [(asset: Asset, source: Source?)], sourceCollectionID: UUID,
         alsoCopied: Int = 0, text: String? = nil
     ) {
+        // The COPY rule (466), not the export one: a link card copies as its URL,
+        // an image as its bytes. The originals export and the share sheet still
+        // resolve the same selection the other way, through `exportSelection(from:…)`.
         let selection = AssetExport.exportSelection(
-            assets: assets, blobURL: { self.blobURL(forAsset: $0) })
+            assets: assets, blobURL: { self.blobURL(forAsset: $0) },
+            entry: AssetExport.copyEntry)
         AssetPasteboardWriter.write(selection, to: .general, text: text)
         // AFTER the write, which clears the board first (see `appendAssetIDs`), and
         // over the WHOLE selection — including entries the byte pass had to skip.

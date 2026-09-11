@@ -70,6 +70,40 @@ extension AssetExport {
         return textFallback(for: asset)
     }
 
+    /// The ⌘C rule (466): **a kind's own words beat bytes it merely acquired.**
+    ///
+    /// ``pasteboardEntry(asset:source:blobURL:)`` asks one question of every kind —
+    /// are there bytes? — and a link's og:image / a tweet's card image are bytes. So
+    /// copying a link card yielded a JPEG: a picture the user never chose, never saw
+    /// as a file, and could not name. 052 · B1 made that deliberate, reasoning from
+    /// how the tile RENDERS ("they render as image cards, so ⌘C must yield the
+    /// image"). A user reported the consequence — *"copy a link from a board pastes
+    /// an image instead"* — and the reasoning is what was wrong: how a tile looks is
+    /// not what the asset IS.
+    ///
+    /// A link asset is a page. Its identity is the URL, and the preview is
+    /// decoration the app fetched. An image asset is the opposite: the picture IS
+    /// the thing that was saved. So:
+    ///
+    ///  - `.link` / `.tweet` → the URL / permalink, **whether or not** a preview was
+    ///    captured. Every app in the loop agrees: a browser copies a URL, and Notes,
+    ///    Slack and Messages build their own card from one.
+    ///  - `.color` → its hex, as before (it never had bytes to prefer).
+    ///  - `.image` / `.video` → the file, exactly as before.
+    ///
+    /// **Copy only.** The originals folder export and the share sheet keep
+    /// ``pasteboardEntry(asset:source:blobURL:)``: exporting the ORIGINALS of a
+    /// collection means the bytes on disk, og:images included. And drag-out is a
+    /// different path entirely (file promises), so dragging a link card into Figma
+    /// still yields its picture — which is the one gesture that plausibly means
+    /// "I want that preview".
+    static func copyEntry(
+        asset: Asset, source: Source?, blobURL: URL?
+    ) -> AssetPasteboardEntry? {
+        textFallback(for: asset)
+            ?? pasteboardEntry(asset: asset, source: source, blobURL: blobURL)
+    }
+
     /// The words that stand in for an asset with no exportable bytes:
     /// - `.color` → the canonical `#rrggbb` hex.
     /// - `.link` → the saved URL.
@@ -104,51 +138,55 @@ extension AssetExport {
     /// The WORDS of an ordered asset selection (465) — Edit ▸ Copy as Text, where
     /// `⌘C`'s rich flavours are deliberately absent.
     ///
-    /// The same per-asset rule ``pasteboardEntry(asset:source:blobURL:)`` uses, so
-    /// what a text copy says about an asset never differs from what the fallback
-    /// string of a rich copy said: media contribute nothing, a colour its hex, a
-    /// link its URL, a tweet its permalink.
+    /// The same per-asset rule ``copyEntry(asset:source:blobURL:)`` uses, so what a
+    /// text copy says about an asset never differs from what the fallback string of
+    /// a rich copy said: media contribute nothing, a colour its hex, a link its URL,
+    /// a tweet its permalink — a preview image no longer silences the last two (466).
     static func copiedText(
         assets: [(asset: Asset, source: Source?)], blobURL: (Asset) -> URL?
     ) -> String? {
         CopyText.joined(assets.map { pair in
-            pasteboardEntry(
+            copyEntry(
                 asset: pair.asset, source: pair.source,
                 blobURL: blobURL(pair.asset))?.text
         })
     }
 
-    /// Whether `asset` would contribute words — answered CHEAPLY, for menu
-    /// validation (465).
+    /// Whether `asset` contributes words — for menu validation (465), and EXACT
+    /// since 466.
     ///
-    /// A missing / empty `blobHash` stands in for "has no bytes to copy", which is
-    /// what ``pasteboardEntry(asset:source:blobURL:)`` establishes with a
-    /// `FileManager.fileExists` probe. The two disagree on exactly one row: one that
-    /// CLAIMS a blob whose file is gone — the exact rule falls back to the kind's
-    /// words, this one says no, and Copy as Text greys out on a library that is
-    /// already broken.
-    ///
-    /// Asking exactly would cost a `stat` per selected asset on every evaluation of
-    /// the menu's body — which for ⌘A over a large collection is every keystroke
-    /// that moves the selection. That is the trade, and it is why this is a separate
-    /// function with its own name rather than a quiet shortcut inside the other one.
+    /// It reads ``textFallback(for:)``, which is precisely the first half of
+    /// ``copyEntry(asset:source:blobURL:)``: a kind either has words or it does not,
+    /// and no blob can take them away any more. So the menu's enabled state and the
+    /// copy it performs cannot disagree — where 465 had to accept one disagreeing
+    /// row (a claimed blob whose file was gone) for a cheap answer, there is now
+    /// nothing to trade. No `blobHash` test, and no `FileManager` probe: this is
+    /// evaluated on every pass of the menu's body, and ⌘A over a large collection
+    /// would otherwise have meant a `stat` per selected asset per keystroke.
     static func mayHaveText(_ asset: Asset) -> Bool {
-        (asset.blobHash?.isEmpty ?? true) && textFallback(for: asset) != nil
+        textFallback(for: asset) != nil
     }
 
     /// Map an ordered selection to its pasteboard entries, preserving order and
     /// counting the skips (7A). The single selection→entries assembly shared by
     /// grid, canvas, and detail (4A) — each surface only supplies its ordered
     /// `(asset, source)` pairs and a blob-URL resolver.
+    ///
+    /// `entry` is the per-asset RULE, and the one thing a caller may vary (466): a
+    /// ⌘C passes ``copyEntry(asset:source:blobURL:)``, where a link is its URL; the
+    /// originals export and the share sheet take the default, where a link is the
+    /// bytes it captured. Passed rather than branched on a flag so each call site
+    /// names the rule it means.
     static func exportSelection(
-        assets: [(asset: Asset, source: Source?)], blobURL: (Asset) -> URL?
+        assets: [(asset: Asset, source: Source?)], blobURL: (Asset) -> URL?,
+        entry: @MainActor (Asset, Source?, URL?) -> AssetPasteboardEntry?
+            = AssetExport.pasteboardEntry(asset:source:blobURL:)
     ) -> ExportSelection {
         var entries: [AssetPasteboardEntry] = []
         entries.reserveCapacity(assets.count)
         var skipped = 0
         for pair in assets {
-            if let entry = pasteboardEntry(
-                asset: pair.asset, source: pair.source, blobURL: blobURL(pair.asset)) {
+            if let entry = entry(pair.asset, pair.source, blobURL(pair.asset)) {
                 entries.append(entry)
             } else {
                 skipped += 1
