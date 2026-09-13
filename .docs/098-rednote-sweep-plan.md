@@ -108,6 +108,23 @@ Validated over **184 URLs** from both captures: drop-two agrees with `file_id`
 on **184/184**; last-segment disagrees on 36; and drop-two still works where
 `file_id` is `""` (all board covers).
 
+**Corrected 2026-09-14 (T4a).** This section, and `toRednoteOriginal`'s own doc
+comment, said the multi-segment keys were a note-detail concern and that a board
+cover was keyed `<id>` — one segment. Sanitizing the live capture disproved it.
+Across the 37 rows of one ordinary board:
+
+| cover key shape | rows |
+| --- | --- |
+| `<id>` | 15 |
+| `spectrum/<id>` | 16 |
+| `oss-sg/notes_pre_post/<id>` | 6 |
+
+So the last-segment rule 404'd on **22 of 37 rows of a plain board sweep**, not
+on some narrower slice of detail images. T0 was a larger fix than it was scoped
+as, and the drop-two rule is load-bearing on the cover pass itself — which is why
+the canary now asserts the *input* properties of its fixture (signed host, ≥3
+path segments, a surviving `!` suffix) rather than only the output.
+
 Prefer the unsigned original, keep the signed URL as `mediaUrlFallback` — the
 existing Pinterest `pickPinImages` shape, unchanged.
 
@@ -310,15 +327,30 @@ content_scripts + WAR for both domains. `bulk-context.js` recogniser (board id i
 `sweepLabel`, `sweepWarning`, `DRIVER_BUILDERS` map, `PLATFORM_PACING`. Plus the
 hook-sync test. **Effort M.**
 
-### T4 — fixtures + integration (R11, R12) — **partly done in T3**
-`drift.CHECKS.rednote` and `platform-registry.test.js` landed early: the registry
-test refused to let rednote be half-added, which is what it is for.
+### T4 — fixtures + integration (R11, R12) ✅ **shipped** (changelogs 483, 484)
+`drift.CHECKS.rednote` and `platform-registry.test.js` landed early in T3: the
+registry test refused to let rednote be half-added, which is what it is for.
 
-Remaining: sanitize the captures into `rednote-board.json` (parser) +
-`rednote-board-live.json` (canary) — the CLI currently reports rednote as
-NEVER VERIFIED — and `bulk-rednote-integration.test.js` covering pagination,
-`has_more:false`, **`cursor:"" does not loop`**, a 461 halting resumable, and
-dedup-skip on re-sweep. **Effort S–M.**
+**T4a — fixtures.** `rednote-board-live.json` (sanitized 37-note canary) and
+`rednote-board.json` (a trimmed first page). rednote now reports as a real PASS
+instead of `⊘ NEVER VERIFIED`. The sanitizer needed three fixes to get there, and
+the first is the one worth remembering: it rewrote CDN hosts to
+`sample2.example.com`, and `toRednoteOriginal` passes through anything not on
+`rednotecdn.com` — **the fixture would have exercised no rewrite at all while the
+canary went green.** Also: `nick_name` was not an identity key (only `nickname`
+was — D6's trap biting the sanitizer), leaking 6 display names; and rednote ships
+`interact_info` counts as pre-formatted strings (`"27.7K"`), which the
+number-only `_count` rule never saw. LEAKED 28 → 0. Re-sanitizing the IG and
+Pinterest raws reproduces their committed files byte for byte.
+
+**T4b — `bulk-rednote-integration.test.js`,** 14 cases proving parser, seam and
+engine compose: two-page union, `has_more:false`, **`cursor:"" terminates`** (in
+both the live-last-page and the `has_more:true` forms), an empty page that is
+*not* the end, a scroll wall, a 461 halting resumable with `cursor: null`
+checkpointed, dedup-skip, a cross-page duplicate, a coverless row dropped at the
+parser, and a foreign board's page — and its *refusal* — ignored by scope. Every
+load-bearing assertion was verified by mutation: each fails when the property it
+names is broken. 715 → 729 tests.
 
 ### T5 — K3b: note-open driving + detail parser (R13, R14, R7)
 Opt-in toggle, cover-only default, budgeted cost, known-set pre-check.

@@ -41,17 +41,18 @@ const CDN = /(^|\/\/|\.)rednotecdn\.com\//;
  *
  * A signed URL is `/<timestamp>/<signature>/<key>` — the first TWO segments are
  * signing material and everything after them is the object key. The key is NOT
- * always one segment: a note's `image_list` images are keyed
- * `oss-sg/spectrum/<id>` (three segments in the path, two of them part of the
- * key), while a board-feed cover is keyed `<id>` (one). Reading only the LAST
- * segment silently dropped the `oss-sg/spectrum/` prefix and built a 404, which
+ * always one segment, and NOT only on note-detail images: across the 37 rows of
+ * the live board feed the covers are keyed `<id>` on 15, `spectrum/<id>` on 16
+ * and `oss-sg/notes_pre_post/<id>` on 6. Reading only the LAST segment silently
+ * dropped those prefixes and built a 404 on 22 of 37 ordinary board rows, which
  * `mediaUrlFallback` then masked as a 5x quality loss (240 KB original -> 47 KB
  * signed webp) with no error — see 098 D2 / changelog 467.
  *
  * Verified over 184 URLs from two live captures (2026-09-13): dropping the two
  * signing segments agrees with the API's own `file_id` on all 184, where the
  * last-segment rule disagrees on 36. `file_id` is therefore not read here — it
- * would corroborate, not correct, and it is absent (`""`) on every board cover.
+ * would corroborate, not correct, and it is absent (`""`) on every board cover,
+ * which is precisely where the multi-segment keys are least expected.
  *
  * Idempotent: output always lands on `ORIGIN_HOST`, and a URL already there is
  * returned untouched rather than re-parsed (its path is a bare key, so dropping
