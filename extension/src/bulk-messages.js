@@ -69,6 +69,15 @@ export const HOOK_PROXY_REPLY_SOURCE = "atelier-x-proxy-reply";
 // (Instagram uses NO MAIN-world hook — its saved feed is replayed directly from the
 // content script via a credentialled fetch, 002 · O2 — so it needs no message tags.)
 
+/** rednote's envelope tags (098 T3). Same push→replay pair as X, and DELIBERATELY no
+ * proxy pair: the hook's request proxy replays stored headers onto a different URL, which
+ * works for X's URL-independent bearer token and cannot work for rednote, whose `X-s` is
+ * signed over the URL it was issued for (098 D1 — a hand-signed request came back 461).
+ * Duplicated as literals in rednote-hook.js (a MAIN-world classic script can't import) —
+ * KEEP IN SYNC, and `hook-sync.test.js` now enforces that rather than trusting it. */
+export const REDNOTE_FEED_MESSAGE_SOURCE = "atelier-rednote-feed";
+export const REDNOTE_REPLAY_SOURCE = "atelier-rednote-feed-replay";
+
 /** True if a runtime message belongs to the bulk protocol (so the SW listener can
  * ignore anything else and let other handlers run). */
 export function isBulkMessage(message) {

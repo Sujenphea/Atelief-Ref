@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 
 import {
   checkTimeline, checkBoardFeed, checkBoards, checkInstagramSaved, checkThreadDetail,
-  CHECKS, fixtureStaleReminder,
+  checkRednoteBoard, CHECKS, fixtureStaleReminder,
 } from "../src/drift.js";
 import { tweet, conversation } from "./fixtures/x-conversation.js";
 
@@ -188,10 +188,73 @@ test("a completely foreign payload is flagged, not thrown", () => {
 
 test("CHECKS registry wires each check to a --flag", () => {
   assert.deepEqual(Object.keys(CHECKS).sort(),
-    ["instagram", "pinterest-board", "pinterest-boards", "x", "x-thread"]);
+    ["instagram", "pinterest-board", "pinterest-boards", "rednote", "x", "x-thread"]);
   assert.equal(CHECKS.x.run, checkTimeline);
   assert.equal(CHECKS.instagram.run, checkInstagramSaved);
   assert.equal(CHECKS["x-thread"].run, checkThreadDetail);
+  assert.equal(CHECKS.rednote.run, checkRednoteBoard);
+});
+
+// MARK: - checkRednoteBoard (098 T3)
+//
+// rednote's check has no committed fixture yet (T4 sanitizes the live capture), so the CLI
+// reports it as awaited via CAPTURE_HINT. These tests prove the INVARIANTS are right
+// against synthetic pages shaped like the real one — the half that can be written today.
+
+/** A board-feed page in the real envelope, with the real "empty string" conventions. */
+const rednotePage = (notes, { hasMore = true, cursor = "cur1" } = {}) =>
+  ({ code: 0, success: true, msg: "成功", data: { has_more: hasMore, notes, cursor } });
+
+const rednoteRow = (id, over = {}) => ({
+  note_id: id, type: "normal", display_title: "t", xsec_token: "tok",
+  user: { user_id: "u", nick_name: "Someone" },
+  cover: {
+    file_id: "", url: "", width: 900, height: 1200,
+    url_pre: `http://sns-web-i10.rednotecdn.com/2026/sigA/${id}!nc_n_webp_prv_1`,
+    url_default: `http://sns-web-i10.rednotecdn.com/2026/sigB/${id}!nc_n_webp_mw_1`,
+    info_list: [],
+  },
+  ...over,
+});
+
+test("checkRednoteBoard passes a healthy board page", () => {
+  const result = checkRednoteBoard(rednotePage([rednoteRow("a"), rednoteRow("b")]));
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.signals, { notes: 2, items: 2, hasMore: true });
+});
+
+test("checkRednoteBoard catches a row that stopped yielding a cover", () => {
+  // The drift that matters most: `cover.url` is "" on every live row, so the sweep depends
+  // entirely on url_pre / url_default / info_list. Rename those and every item vanishes.
+  const broken = rednoteRow("b");
+  broken.cover = { file_id: "", url: "", info_list: [] };
+  const result = checkRednoteBoard(rednotePage([rednoteRow("a"), broken]));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /mapped 1 of 2 notes/);
+});
+
+test("checkRednoteBoard catches a rewrite that stops reaching the unsigned original", () => {
+  const row = rednoteRow("a");
+  // A key rule that no longer strips the signing prefix leaves us on the signed host.
+  row.cover.url_default = "http://sns-web-i10.rednotecdn.com/onlyone";
+  row.cover.url_pre = "";
+  const result = checkRednoteBoard(rednotePage([row]));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /not an unsigned origin-host url/);
+});
+
+test("checkRednoteBoard catches a lost author name", () => {
+  const result = checkRednoteBoard(rednotePage([rednoteRow("a", { user: { user_id: "u" } })]));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /no authorName/);
+});
+
+test("checkRednoteBoard verifies the terminator and the loop guard independently of input", () => {
+  // Both are asserted inside the check against synthesized pages, so they hold whatever
+  // capture is fed in — including a middle page that shows neither.
+  const result = checkRednoteBoard(rednotePage([rednoteRow("a")], { hasMore: true, cursor: "c" }));
+  assert.deepEqual(result.problems, []);
 });
 
 // MARK: - checkThreadDetail ([090] 1A)

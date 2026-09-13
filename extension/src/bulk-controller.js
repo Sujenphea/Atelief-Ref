@@ -16,7 +16,8 @@
 import { runSweep, classifyIngestResult } from "./bulk-engine.js";
 import { PLATFORM_PACING } from "./config.js";
 import {
-  BULK, START, TIMELINE_MESSAGE_SOURCE, TIMELINE_REPLAY_SOURCE, readStartMessage,
+  BULK, START, TIMELINE_MESSAGE_SOURCE, TIMELINE_REPLAY_SOURCE,
+  REDNOTE_FEED_MESSAGE_SOURCE, REDNOTE_REPLAY_SOURCE, readStartMessage,
 } from "./bulk-messages.js";
 import {
   pinterestBoardDriver, makeResourceFetch, scrapePinterestAppVersionFromDoc, readCookie,
@@ -25,11 +26,8 @@ import { createTwitterSource } from "./twitter-source.js";
 import { createThreadExpander, featuresFromURL, resolveQueryId } from "./twitter-detail-client.js";
 import { createHookProxyFetch } from "./hook-proxy.js";
 import { makeSavedFeedFetch, instagramSavedDriver } from "./bulk-instagram.js";
+import { createRednoteSource } from "./rednote-source.js";
 import { browser } from "./browser.js";
-
-/** Platforms the controller can build a driver for. A START for anything else is refused
- * with a typed error rather than silently mis-dispatched. */
-const SUPPORTED_PLATFORMS = new Set(["twitter", "pinterest", "instagram"]);
 
 /**
  * Orchestrate one sweep to completion (or a halt). Pure/injectable: `transport`
@@ -320,6 +318,59 @@ function buildInstagramDriver({ loc, fetchImpl, log = () => {} }) {
   return { driver: instagramSavedDriver({ fetchJson, host: loc.host }), dispose: () => {} };
 }
 
+/** Build the rednote board driver (098 T3): subscribe to the MAIN-world hook's board-feed
+ * messages and feed them to the push→pull source, which scrolls to page. Shaped like
+ * buildTwitterDriver — and deliberately smaller. There is no credential to harvest and no
+ * proxy to wire, because rednote's `X-s` is signed for the url it was issued for and
+ * cannot be replayed onto a follow-up (098 D1). `dispose` REMOVES the listener: without it
+ * every launch leaks another live listener feeding a dead source. */
+function buildRednoteDriver({ win, host, scope, log = () => {} }) {
+  const source = createRednoteSource({
+    host,
+    scope,
+    scroll: () => win.scrollTo(0, win.document.body.scrollHeight),
+    onExpandFailure: (error) => log("note expansion degraded to the cover:", String(error)),
+  });
+  const onMessage = (event) => {
+    if (event.source === win && event.data && event.data.source === REDNOTE_FEED_MESSAGE_SOURCE) {
+      source.onResponse(event.data.json, event.data.url);
+    }
+  };
+  win.addEventListener("message", onMessage);
+  // Replay what the page fetched BEFORE this listener existed — above all the first page,
+  // loaded on navigation. Without it a board whose notes all fit on page 1 captures
+  // nothing: the scroll only triggers the empty tail.
+  win.postMessage({ source: REDNOTE_REPLAY_SOURCE }, win.location.origin);
+  return { driver: source, dispose: () => win.removeEventListener("message", onMessage) };
+}
+
+/**
+ * Which builder serves which platform (098 R6). A MAP, not an if/else chain, for one
+ * reason worth stating: the chain ended in a bare `else` that fell through to Pinterest,
+ * so correctness depended on `SUPPORTED_PLATFORMS` and the chain agreeing — and a platform
+ * added to the guard but not the chain would silently run the PINTEREST driver, which is
+ * the exact failure the guard was written to prevent. Deriving the guard from these keys
+ * makes the two impossible to disagree, and removes the default branch entirely.
+ *
+ * Each builder takes the whole context and destructures what it needs; they genuinely
+ * need different things (a document, a location, a window, a transport), and forcing them
+ * into one signature would be a worse trade than one shared bag.
+ */
+const DRIVER_BUILDERS = Object.freeze({
+  twitter: ({ win, host, scope, transport, log }) =>
+    buildTwitterDriver({ win, host, scope, transport, log }),
+  instagram: ({ win, log }) =>
+    buildInstagramDriver({ loc: win.location, fetchImpl: win.fetch.bind(win), log }),
+  pinterest: ({ win }) =>
+    buildPinterestDriver({ doc: win.document, loc: win.location, fetchImpl: win.fetch.bind(win) }),
+  rednote: ({ win, host, scope, log }) => buildRednoteDriver({ win, host, scope, log }),
+});
+
+/** Platforms the controller can build a driver for — DERIVED from the builder map, so a
+ * platform can never be accepted without something to dispatch it to. Exported so
+ * `platform-registry.test.js` can hold every other registration point against it. */
+export const SUPPORTED_PLATFORMS = new Set(Object.keys(DRIVER_BUILDERS));
+
 /** Register the START-message listener on a page. Extracted so the guard + wiring are
  * one place; idempotent via a window flag so a re-injection (the cold-tab recovery in
  * bulk-dispatch.js) can't leave two listeners → two sweeps for one click. */
@@ -361,15 +412,8 @@ export function registerBulkController(win, browserApi) {
     const storage = makeChromeStorage(browserApi.storage.local);
     const host = win.location.host;
     const pacing = PLATFORM_PACING[spec.platform] || {};
-    let built;
-    if (spec.platform === "twitter") {
-      built = buildTwitterDriver({ win, host, scope: spec.scope, transport, log });
-    } else if (spec.platform === "instagram") {
-      built = buildInstagramDriver({ loc: win.location, fetchImpl: win.fetch.bind(win), log });
-    } else {
-      built = buildPinterestDriver({ doc: win.document, loc: win.location, fetchImpl: win.fetch.bind(win) });
-    }
-    const { driver, dispose } = built;
+    const { driver, dispose } = DRIVER_BUILDERS[spec.platform](
+      { win, host, scope: spec.scope, transport, log });
     log("driver built for", spec.platform, "on", host);
     // Per-platform engine pacing (13A): IG sweeps gentler; X/Pinterest inherit the globals.
     // (No per-item progress log — the app's Sweeps tab owns live progress; the final

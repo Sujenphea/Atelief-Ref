@@ -13,6 +13,9 @@ import { parseTimelinePage } from "./bulk-twitter.js";
 import { collectConversationTweets, selfThreadChain, mapThread } from "./twitter-thread.js";
 import { parseBoardFeedPage, parseBoardsPage, mapPinterestPin } from "./bulk-pinterest.js";
 import {
+  parseBoardFeedPage as parseRednoteBoardPage, detectRednoteChallenge, isBoardFeedRequest,
+} from "./bulk-rednote.js";
+import {
   parseSavedFeedPage, detectChallenge, isSavedFeedRequest, isCollectionFeedRequest, IG_MEDIA_TYPE,
 } from "./bulk-instagram.js";
 
@@ -304,12 +307,85 @@ export function checkInstagramSaved(json, { host = "www.instagram.com" } = {}) {
 }
 
 /** The registered checks, by the `--<name>` flag the CLI accepts. */
+/** rednote board feed: every row must still map to ONE cover-keyed item with a usable
+ * unsigned-original mediaUrl and a signed fallback, the challenge recognizer must not
+ * misfire on a normal page, the terminator must still terminate, and the route matcher
+ * must still tell the feed apart from the telemetry that rides beside it.
+ *
+ * The fan-out here is 1:1 by construction (a feed row holds ONE cover — no image list to
+ * walk), so unlike Instagram the interesting drift is not a count mismatch but a row that
+ * stops yielding an image at all: `cover.url` is `""` on every live row, so the usable
+ * URLs are `url_pre` / `url_default` / `info_list[]`, and a rename of those is exactly the
+ * change that would silently empty a sweep. */
+export function checkRednoteBoard(json, { host = "www.rednote.com" } = {}) {
+  let page;
+  try {
+    page = parseRednoteBoardPage(json, { host });
+  } catch (error) {
+    return verdict([`parseBoardFeedPage threw: ${String(error)}`], {});
+  }
+  const problems = [];
+  if (page.error) problems.push(`challenge recognizer misfired on a normal page (${page.error.kind})`);
+
+  const notes = (json && json.data && Array.isArray(json.data.notes)) ? json.data.notes : [];
+  if (notes.length > 0 && page.items.length === 0) {
+    problems.push("no items mapped from any note (data.notes[].cover shape moved?)");
+  }
+  if (page.items.length !== notes.length) {
+    problems.push(`mapped ${page.items.length} of ${notes.length} notes (a row stopped yielding a cover)`);
+  }
+  const ids = new Set(page.items.map((item) => item.sourceId));
+  if (ids.size !== page.items.length) problems.push("duplicate note_id sourceIds (key collision)");
+  if (page.items.some((item) => !item.mediaUrl)) {
+    problems.push("a mapped item has no mediaUrl (cover.url_pre/url_default/info_list moved?)");
+  }
+  // The rewrite is the whole value of the cover pass: the signed webp is a ~47 KB
+  // thumbnail, the unsigned original a ~240 KB full-res asset.
+  if (page.items.some((item) => !/^http:\/\/sns-i27\.rednotecdn\.com\//.test(item.mediaUrl || ""))) {
+    problems.push("a mediaUrl is not an unsigned origin-host url (the key rule moved?)");
+  }
+  if (page.items.some((item) => (item.mediaUrl || "").includes("!"))) {
+    problems.push("a transform suffix survived the rewrite");
+  }
+  if (page.items.some((item) => !item.mediaUrlFallback)) {
+    problems.push("an item lost its signed fallback (the bare original can 404)");
+  }
+  if (page.items.some((item) => !item.provenance.authorName)) {
+    problems.push("an item has no authorName (user.nick_name renamed?)");
+  }
+  // The terminator, checked against the LIVE shape rather than a belief about it.
+  const last = { code: 0, success: true, msg: "成功", data: { has_more: false, notes: [], cursor: "" } };
+  const lastPage = parseRednoteBoardPage(last, { host });
+  if (lastPage.error) problems.push("the genuine last page reads as a challenge");
+  if (!lastPage.endOfFeed) problems.push("has_more:false / cursor:\"\" no longer ends the feed");
+  const looping = parseRednoteBoardPage(
+    { code: 0, success: true, data: { has_more: true, notes: [], cursor: "" } }, { host });
+  if (!looping.endOfFeed) problems.push("an empty cursor with has_more:true no longer terminates (loop risk)");
+  // A refusal must still be recognised: rednote answers a rejected request with a success
+  // -shaped body, so the missing `data.notes` array is the load-bearing signal.
+  if (!detectRednoteChallenge({ code: 0, success: true, msg: "" })) {
+    problems.push("the 461-shaped refusal is no longer recognised as a challenge");
+  }
+  if (!isBoardFeedRequest("//webapi.rednote.com/api/sns/web/v1/board/note?board_id=x")) {
+    problems.push("isBoardFeedRequest no longer matches the board-feed route");
+  }
+  if (isBoardFeedRequest("https://t2.rnote.com/api/v2/collect")) {
+    problems.push("isBoardFeedRequest now matches telemetry traffic");
+  }
+  return verdict(problems, {
+    notes: notes.length,
+    items: page.items.length,
+    hasMore: !!(json && json.data && json.data.has_more),
+  });
+}
+
 export const CHECKS = {
   x: { label: "X timeline (Bookmarks/Likes)", run: checkTimeline },
   "x-thread": { label: "X thread (TweetDetail)", run: checkThreadDetail },
   "pinterest-board": { label: "Pinterest board feed", run: checkBoardFeed },
   "pinterest-boards": { label: "Pinterest boards list", run: checkBoards },
   instagram: { label: "Instagram saved feed", run: checkInstagramSaved },
+  rednote: { label: "rednote board feed", run: checkRednoteBoard },
 };
 
 /**

@@ -52,9 +52,15 @@ const FIXTURE = {
 };
 
 /** How to obtain the capture a fixture-less check needs, printed where it's actionable.
- * Empty today — every check has a committed fixture — but the mechanism stays: the next
- * parser added here starts life unverified, and should say so rather than pass silently. */
-const CAPTURE_HINT = {};
+ * The mechanism exists so a newly added parser starts life VISIBLY unverified rather than
+ * passing silently — which is exactly rednote's state until 098 T4 sanitizes the live
+ * capture into a committed fixture. */
+const CAPTURE_HINT = {
+  rednote:
+    "Open a rednote board logged in, DevTools > Network > Fetch/XHR, scroll to load a\n"
+    + "    second batch, and save the `/api/sns/web/v1/board/note` response. Then:\n"
+    + "    node scripts/sanitize-capture.js <raw.json> test/fixtures/rednote-board-live.json",
+};
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url));
 
 // The two producers' host tables. Resolved relative to THIS SCRIPT rather than to the

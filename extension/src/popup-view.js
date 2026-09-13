@@ -20,15 +20,33 @@ export function sweepLabel(spec) {
     }
     return "Sweep your Instagram saved posts";
   }
+  if (spec.platform === "rednote") {
+    // No board NAME is available: the board-feed response carries notes and a cursor, not
+    // a title, and the popup has only the URL. An id is honest; an invented name is not.
+    return "Sweep this rednote board (covers only)";
+  }
   return `Sweep board: ${spec.scope.replace(/^board:/, "")}`;
 }
 
 /** The account-risk warning the popup MUST show — behind an acknowledge gate — before a
  * sweep of `spec` can start, or null when none is needed (002 · B4, mandatory not
  * optional). Instagram's saved-posts sweep carries a real throttle/checkpoint risk to the
- * user's account (the dominant risk the whole feature is designed around); X and
- * Pinterest have no such gate. Pure so popup.js stays chrome/DOM glue. */
+ * user's account (the dominant risk the whole feature is designed around); rednote's
+ * carries the same risk AND a capability limit worth stating before the user waits out a
+ * sweep (098 D8 / R13 — covers only, no carousels, no video). X and Pinterest have no such
+ * gate. Pure so popup.js stays chrome/DOM glue. */
 export function sweepWarning(spec) {
+  if (spec && spec.platform === "rednote") {
+    return {
+      platform: "rednote",
+      text:
+        "rednote actively fingerprints browsing (it refused a scripted request with a 461 "
+        + "during development) and may throttle or block your account for automated "
+        + "browsing. This sweep paces itself gently and pauses if rednote refuses — but "
+        + "the risk is real, so sweep at your own risk. It saves ONE cover image per note: "
+        + "a note's other photos and its video are not captured.",
+    };
+  }
   if (spec && spec.platform === "instagram") {
     return {
       platform: "instagram",

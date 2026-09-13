@@ -35,6 +35,9 @@ export function platformForHost(hostname) {
   if (/(^|\.)pinterest\.[a-z.]+$/.test(host)) return "pinterest";
   if (/(^|\.)(x|twitter)\.com$/.test(host)) return "twitter";
   if (/(^|\.)instagram\.com$/.test(host)) return "instagram";
+  // One product, two domains — rednote.com (international) and xiaohongshu.com
+  // (mainland). Both are in host_permissions and both must resolve here.
+  if (/(^|\.)(rednote|xiaohongshu)\.com$/.test(host)) return "rednote";
   return null;
 }
 
@@ -132,6 +135,25 @@ export function resolveSweepSpec({ url, collageHref = null } = {}) {
     return { ok: false, reason: "instagram-not-saved" };
   }
 
+  if (platform === "rednote") {
+    // A board lives at `/board/<id>`. The id is a 24-char hex object id (verified in the
+    // live board-feed request: `board_id=69322476000000001202811f`) — NOT digits, so
+    // Pinterest's `/^\d+$/` rule cannot be reused here.
+    //
+    // The id is required, and it is required for a reason beyond labelling: the driver
+    // scopes on it (`matchesScope`), and the hook's replay buffer can hold pages from a
+    // board visited earlier in the same tab. Without the id we could not tell one board's
+    // replayed pages from another's, so a sweep that cannot name its board is refused.
+    const segments = splitPathname(parsed.pathname);
+    if (segments[0] !== "board") return { ok: false, reason: "rednote-not-a-board" };
+    const boardId = segments[1] && /^[0-9a-f]{16,32}$/i.test(segments[1]) ? segments[1] : null;
+    if (!boardId) return { ok: false, reason: "rednote-board-id-missing" };
+    return {
+      ok: true,
+      spec: { platform, input: { boardId }, scope: `board:${boardId}` },
+    };
+  }
+
   // Pinterest: must be a board page, and we must recover its board id.
   const board = pinterestBoardPath(parsed.pathname);
   if (!board) return { ok: false, reason: "not-a-board" };
@@ -159,4 +181,8 @@ export const REASON_MESSAGE = Object.freeze({
   "instagram-not-saved": "Open your Instagram saved posts (instagram.com/<you>/saved/) to start a sweep.",
   "instagram-saved-unrecognized":
     "Couldn't tell which saved feed this is — open your All posts (…/saved/all-posts/) or a specific collection to sweep.",
+  "rednote-not-a-board":
+    "This isn't a rednote board. Open a board (rednote.com/board/…) to start a sweep.",
+  "rednote-board-id-missing":
+    "Couldn't read this board's id from the URL — open the board from your profile and try again.",
 });

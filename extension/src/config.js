@@ -82,4 +82,15 @@ export const PLATFORM_PACING = Object.freeze({
     // re-walk in full. The controller arms it ONLY on a fresh + prior-clean sweep.
     reSweep: { STOP_AFTER_CONSECUTIVE_SKIPS: 30 },
   },
+  rednote: {
+    // Instagram's numbers, for the same reason: the live probe found rednote running an
+    // active risk-control layer (`as.rednote.com/api/sec/v1/shield/webprofile`,
+    // `xhsFingerprintV3`, an `x-rap-param` signature blob) that already refused a scripted
+    // request with HTTP 461. Sweep gently or not at all.
+    engine: { MAX_CONCURRENCY: 2, PACING_MS: 1500, PACING_JITTER_MS: 1200 },
+    // NO `reSweep` — early-stop stays DISARMED (098 R1/D8). Instagram earned that
+    // optimisation with a live-verified precondition: its saved feed is newest-SAVE-first,
+    // so a run of known items means the tail is known too. Board ordering is unverified,
+    // and copying the optimisation without the precondition silently truncates sweeps.
+  },
 });

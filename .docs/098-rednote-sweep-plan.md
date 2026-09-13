@@ -302,7 +302,7 @@ live capture. 667 → 695 tests.
 single-capture path already establishes that a short-lived credential does not
 belong in stored provenance.
 
-### T3 — `rednote-hook.js` + wiring (R5, R6)
+### T3 — `rednote-hook.js` + wiring (R5, R6) ✅ **shipped** (changelog 472)
 Matcher pinned to `/api/sns/web/v1/board/note` — **not** host-shaped
 (`t2.rnote.com`, `apm-fe.rnote.com` are telemetry on adjacent hosts). Manifest
 content_scripts + WAR for both domains. `bulk-context.js` recogniser (board id is
@@ -310,12 +310,15 @@ content_scripts + WAR for both domains. `bulk-context.js` recogniser (board id i
 `sweepLabel`, `sweepWarning`, `DRIVER_BUILDERS` map, `PLATFORM_PACING`. Plus the
 hook-sync test. **Effort M.**
 
-### T4 — fixtures + canaries (R11, R12, and R4's registry test)
-Sanitize the captures into `rednote-board.json` (parser) +
-`rednote-board-live.json` (canary). `drift.CHECKS.rednote`.
-`bulk-rednote-integration.test.js` — pagination, `has_more:false`,
-**`cursor:"" does not loop`**, 461 → halt resumable, dedup-skip on re-sweep.
-`platform-registry.test.js`. **Effort M.**
+### T4 — fixtures + integration (R11, R12) — **partly done in T3**
+`drift.CHECKS.rednote` and `platform-registry.test.js` landed early: the registry
+test refused to let rednote be half-added, which is what it is for.
+
+Remaining: sanitize the captures into `rednote-board.json` (parser) +
+`rednote-board-live.json` (canary) — the CLI currently reports rednote as
+NEVER VERIFIED — and `bulk-rednote-integration.test.js` covering pagination,
+`has_more:false`, **`cursor:"" does not loop`**, a 461 halting resumable, and
+dedup-skip on re-sweep. **Effort S–M.**
 
 ### T5 — K3b: note-open driving + detail parser (R13, R14, R7)
 Opt-in toggle, cover-only default, budgeted cost, known-set pre-check.
