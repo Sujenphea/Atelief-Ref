@@ -87,8 +87,16 @@ final class CanvasTextEditController: NSObject, NSTextViewDelegate {
         textView.delegate = self
         textView.string = style.string
         applyTypography(style)
+        appliedHugsWidth = style.hugsWidth
         textView.onCommandReturn = { [weak self] in self?.finish(commit: true) }
-        textView.onEscape = { [weak self] in self?.finish(commit: false) }
+        // Esc COMMITS, as it does in Figma: it ends the edit and keeps what was
+        // typed, leaving the box selected. It used to abandon the edit, which made ⎋ —
+        // the key people press to get out of a mode — the one gesture on this canvas
+        // that silently destroyed work. Getting the old text back is ⌘Z, which is where
+        // undo belongs. (A brand-new box typed into and then Esc'd with nothing in it
+        // still deletes: `canvasTextEditOutcome` decides that from the string, not from
+        // which key ended the edit.)
+        textView.onEscape = { [weak self] in self?.finish(commit: true) }
 
         scaleBox.addSubview(textView)
         host.addSubview(scaleBox)
@@ -98,9 +106,12 @@ final class CanvasTextEditController: NSObject, NSTextViewDelegate {
         engine.editingTileID = tileID
         reposition()
         takeFirstResponder()
-        // A just-created box shows its placeholder pre-selected so the first keystroke
-        // replaces it; an existing edit lands the caret at the end. UTF-16 length (not
-        // Character count) so the caret lands correctly after composed text.
+        // A just-created box selects whatever it was seeded with, so the first
+        // keystroke replaces it; an existing edit lands the caret at the end. UTF-16
+        // length (not Character count) so the caret lands correctly after composed
+        // text. (The app seeds a new box EMPTY today, which makes the select-all a
+        // no-op — it stays because the seed is the app's policy, not ours, and a host
+        // that does seed one must not have its first keystroke append to it.)
         if isNewlyCreated {
             textView.selectAll(nil)
         } else {
@@ -155,14 +166,30 @@ final class CanvasTextEditController: NSObject, NSTextViewDelegate {
 
     private var appliedTypography: Typography?
 
-    /// Rebuild the live glyphs iff the style's typography actually moved. Called on
-    /// every re-sync, because a restyle can arrive mid-edit — the format bubble is
-    /// anchored on the box being edited (062) — and because resetting the font also
-    /// resets the typing attributes, which must not happen on every unrelated sync.
-    func applyTypographyIfChanged() {
+    /// The width mode the overlay was last placed for. Tracked apart from
+    /// ``Typography`` because it changes no glyph — only which width they are measured
+    /// against — and the two therefore call for different work (see below).
+    private var appliedHugsWidth: Bool?
+
+    /// Take a restyle that arrived mid-edit. Called on every re-sync, because the
+    /// format bubble is anchored on the box being edited (062) and writes through the
+    /// model.
+    ///
+    /// The two halves are deliberately separate. Rebuilding the glyphs also resets the
+    /// typing attributes, so it must happen only when the typography really moved —
+    /// never on an unrelated sync. Flipping Auto ↔ Fixed width (063) moves no glyph at
+    /// all, but it changes the width ``reposition()`` measures against, so the overlay
+    /// has to be re-placed without touching the font. Folding the mode into
+    /// `Typography` would have re-set the font on every width flip; ignoring it left
+    /// the live box at its old width until the next keystroke.
+    func applyStyleIfChanged() {
         guard let style = engine.textStyle(forTileID: tileID) else { return }
-        guard Typography(style) != appliedTypography else { return }
-        applyTypography(style)
+        let typography = Typography(style)
+        let typographyMoved = typography != appliedTypography
+        let widthModeMoved = style.hugsWidth != appliedHugsWidth
+        appliedHugsWidth = style.hugsWidth
+        if typographyMoved { applyTypography(style) }
+        guard typographyMoved || widthModeMoved else { return }
         reposition()
     }
 

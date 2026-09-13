@@ -26,8 +26,11 @@ public final class CanvasEditorScaleBox: NSView {
     public override var isFlipped: Bool { true }
 }
 
-/// An `NSTextView` that intercepts ⌘↵ (commit) and Esc (cancel) ahead of the normal
-/// text-editing key handling. Everything else types as usual.
+/// An `NSTextView` that intercepts ⌘↵ and Esc ahead of the normal text-editing key
+/// handling. Everything else types as usual.
+///
+/// It reports the two keys and nothing more — what each one MEANS is the controller's
+/// (both end the edit today; only the controller knows that).
 public final class CanvasEditorTextView: NSTextView {
     public var onCommandReturn: (() -> Void)?
     public var onEscape: (() -> Void)?

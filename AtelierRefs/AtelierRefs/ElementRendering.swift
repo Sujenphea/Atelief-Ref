@@ -155,8 +155,21 @@ enum ElementRendering {
 
     // MARK: Default styles
 
+    /// A freshly-placed text box: **empty**, as in Figma.
+    ///
+    /// It used to be seeded with the literal `"Text"`, pre-selected so the first
+    /// keystroke replaced it. That reads fine if you type — but place a box and click
+    /// away without typing and the empty-box rule never fires (the string isn't
+    /// empty), so the board keeps a box that says "Text" and that nobody asked for.
+    /// An empty string routes the same abandonment through
+    /// ``canvasTextEditOutcome(text:isNewlyCreated:committed:)``'s `.deleted` arm, and
+    /// the box leaves no trace.
+    ///
+    /// An empty box does not collapse: ``TextShaper`` shapes an empty string as a lone
+    /// space, so a hugging one is born a caret's width wide and a line tall — which is
+    /// exactly the sliver-with-a-caret Figma drops where you click.
     static func defaultTextStyle() -> ElementStyle {
-        ElementStyle(text: "Text", fontSize: defaultFontSize, textColor: defaultTextColorHex)
+        ElementStyle(text: "", fontSize: defaultFontSize, textColor: defaultTextColorHex)
     }
 
     static func defaultFrameStyle() -> ElementStyle {

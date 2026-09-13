@@ -173,16 +173,18 @@ struct SpaceFormatChromeTests {
         #expect(SpaceTextChromeLayout.sizeSegmentWidth(label: "8") >= 26)
     }
 
-    @Test("the bubble's width counts all four segments and the gaps between them")
+    @Test("the bubble's width counts all five segments and the gaps between them")
     func bubbleWidthCountsEverythingItDraws() {
         // The panel's frame is set from this number: a gap left out of the sum is a
-        // gap squeezed out of the content at draw time.
+        // gap squeezed out of the content at draw time. This failed when the width-mode
+        // segment was added and the sum was not — which is exactly what it is for.
         let label = "24"
         let content = SpaceTextChromeLayout.alignWidth
+            + SpaceTextChromeLayout.widthModeWidth
             + SpaceTextChromeLayout.swatchSegmentWidth
             + SpaceTextChromeLayout.aaWidth
             + SpaceTextChromeLayout.sizeSegmentWidth(label: label)
-            + 3 * SpaceTextChromeLayout.segmentGap
+            + 4 * SpaceTextChromeLayout.segmentGap
             + 2 * SpaceTextChromeLayout.bubblePadding
         #expect(bubbleSize(label).width == content)
     }

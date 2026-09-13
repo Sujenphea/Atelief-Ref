@@ -98,6 +98,65 @@ struct HostToolKeyTests {
         #expect(host.editingTileID == 0)   // …and it did not disturb the edit
     }
 
+    // MARK: - Esc disarms
+
+    /// Figma's ⎋ drops back to the Move tool, and so does ours. Without it an armed
+    /// Text tool could only be cleared by placing a box or pressing `V` — so the user
+    /// who armed it by mistake had to make the mistake to get out of it.
+    @Test("Esc with a create tool armed asks for Select")
+    func escapeDisarmsACreateTool() {
+        for armed in [CanvasTool.text, .frame] {
+            let host = makeHost()
+            var tools: [CanvasTool] = []
+            host.tool = armed
+            host.onSelectTool = { tools.append($0) }
+
+            host.keyDown(with: keyDown("\u{1B}"))
+
+            #expect(tools == [.select])
+        }
+    }
+
+    /// Only claimed when it has something to do: with Select active ⎋ falls through to
+    /// the responder chain, where a sheet or a popover may want it.
+    @Test("Esc with Select active is not claimed")
+    func escapeIsLeftAloneUnderSelect() {
+        let host = makeHost()
+        var tools: [CanvasTool] = []
+        host.onSelectTool = { tools.append($0) }
+
+        host.keyDown(with: keyDown("\u{1B}"))
+
+        #expect(tools.isEmpty)
+    }
+
+    @Test("a modified Esc is not the disarm key")
+    func modifiedEscapeIsIgnored() {
+        let host = makeHost()
+        var tools: [CanvasTool] = []
+        host.tool = .text
+        host.onSelectTool = { tools.append($0) }
+
+        host.keyDown(with: keyDown("\u{1B}", .command))
+        host.keyDown(with: keyDown("\u{1B}", .option))
+
+        #expect(tools.isEmpty)
+    }
+
+    @Test("an open edit owns Esc — it never reaches the tool disarm")
+    func editingSuppressesTheDisarm() {
+        let host = makeHost()
+        host.tool = .text
+        var tools: [CanvasTool] = []
+        host.beginEditingText(tileID: 0, isNewlyCreated: false)
+        host.onSelectTool = { tools.append($0) }
+
+        host.keyDown(with: keyDown("\u{1B}"))
+
+        #expect(tools.isEmpty)
+        #expect(host.editingTileID == 0)
+    }
+
     /// The delete key is still claimed before the tool keys — but it now claims the
     /// REMOVE verb (022 · D3): a bare ⌫ drops the placement, and only ⌘⌫ leaves the
     /// library. See `HostDeleteKeyTests` for the full pair.

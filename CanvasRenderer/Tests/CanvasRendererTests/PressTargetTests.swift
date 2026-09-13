@@ -112,3 +112,45 @@ struct PressTargetTests {
         #expect(target(clickCount: 2, handle: (tileID: 7, handle: .top)) == .activate(tileID: 7))
     }
 }
+
+// MARK: - What a text rubber-band chose
+
+/// The width-only rule in `CanvasHostView.finishCreate`.
+///
+/// A regression suite. The gate used to demand BOTH a minimum width and a minimum
+/// height, which is a sensible test for a frame and a wrong one for text: a text box's
+/// height follows its wrapped glyphs, so the natural gesture — sweep out the column
+/// width you want, barely moving vertically — failed it. The drag was then reported as
+/// a click and the width the user had just drawn was thrown away.
+///
+/// `@MainActor` because ``CanvasHostView`` is — the rule is pure arithmetic, but it
+/// lives on the view whose gesture it belongs to.
+@MainActor
+@Suite("Text create — the drag's WIDTH is the only thing it chose")
+struct TextCreateGateTests {
+    private var edge: CGFloat { CanvasHostView.minCreateWorldEdge }
+
+    @Test("a wide, shallow band is a deliberate drag — the height is not a choice")
+    func shallowDragKeepsItsWidth() {
+        let band = CGRect(x: 0, y: 0, width: 400, height: 1)
+        #expect(CanvasHostView.textDragChoseWidth(worldRect: band))
+        // Zero height too: a perfectly horizontal sweep still states a width.
+        #expect(CanvasHostView.textDragChoseWidth(
+            worldRect: CGRect(x: 0, y: 0, width: 400, height: 0)))
+    }
+
+    @Test("a narrow drag is a click, however tall it is")
+    func narrowDragIsAClick() {
+        #expect(!CanvasHostView.textDragChoseWidth(
+            worldRect: CGRect(x: 0, y: 0, width: edge - 1, height: 500)))
+        #expect(!CanvasHostView.textDragChoseWidth(worldRect: .zero))
+    }
+
+    @Test("the minimum is inclusive, and it is the same edge a frame is held to")
+    func theThreshold() {
+        #expect(CanvasHostView.textDragChoseWidth(
+            worldRect: CGRect(x: 0, y: 0, width: edge, height: 0)))
+        #expect(!CanvasHostView.textDragChoseWidth(
+            worldRect: CGRect(x: 0, y: 0, width: edge.nextDown, height: 0)))
+    }
+}

@@ -54,7 +54,13 @@ public struct CanvasTextEditRequest: Equatable, Sendable {
 public enum CanvasTextEditOutcome: Equatable, Sendable {
     /// Write this string back. The app owns re-measuring and persisting.
     case committed(String)
-    /// Abandon the edit — no write (Esc, or the double-commit guard).
+    /// Abandon the edit — no write.
+    ///
+    /// **Esc no longer produces this.** ⎋ ends the edit *keeping* the text, as it does
+    /// in Figma, so the only thing that still asks for a cancel is a host calling
+    /// ``CanvasHostView/endEditingText(commit:)`` with `false`. The case stays because
+    /// that entry point is public and "abandon this edit" remains a coherent thing for
+    /// an app to want — it simply isn't bound to a key any more.
     case cancelled
     /// Remove the element entirely: an empty box the user had only just created, so it
     /// leaves no invisible orphan behind (054 §5.3).
@@ -65,7 +71,7 @@ public enum CanvasTextEditOutcome: Equatable, Sendable {
 
 /// The commit / cancel / delete decision for an inline edit (054 §5.3 · R8).
 ///
-/// - `committed == false` → `.cancelled` (Esc / abandoned): never write.
+/// - `committed == false` → `.cancelled` (an explicitly abandoned edit): never write.
 /// - empty text, newly created → `.deleted`: an untouched new box is removed.
 /// - empty text, pre-existing → `.committed("")`: an explicit clear is honoured (the
 ///   element stays; its string becomes empty).

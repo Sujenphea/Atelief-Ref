@@ -168,7 +168,17 @@ public final class CanvasHostView: NSView {
 
     /// The active tool. `.select` pans / selects / drags; `.frame` / `.text`
     /// rubber-band a new element instead.
-    public var tool: CanvasTool = .select
+    ///
+    /// Arming a tool moves no mouse — it comes from the picker or a bare key — so the
+    /// pointer would otherwise keep whatever answer the last `mouseMoved` gave it
+    /// until the user jiggled it. Refreshing on the set is what makes the crosshair
+    /// appear the instant the tool does.
+    public var tool: CanvasTool = .select {
+        didSet {
+            guard tool != oldValue else { return }
+            refreshHoverCursor()
+        }
+    }
 
     // MARK: Drop destination (059 · SP2 / 4A — external + library drops)
 
@@ -438,11 +448,11 @@ public final class CanvasHostView: NSView {
     private var resizeCandidate: (tileID: Int, handle: ResizeHandle)?
     /// Whether a live resize is in progress.
     private var isResizing = false
-    /// The handle the pointer is currently over, so `mouseMoved` only touches
-    /// `NSCursor` when the answer actually changes. Tracked as the HANDLE rather
-    /// than the cursor because `NSCursor.frameResize` vends a fresh instance per
-    /// call, which would make an identity comparison always differ.
-    private var hoveredHandle: ResizeHandle?
+    /// What the pointer is currently showing, so a hover only touches `NSCursor` when
+    /// the answer actually changes. A VALUE rather than the cursor itself because
+    /// `NSCursor.frameResize` vends a fresh instance per call, which would make an
+    /// identity comparison always differ.
+    private var hoverCursor: HoverCursor = .arrow
     /// Tracking area backing the hover cursor.
     private var hoverTrackingArea: NSTrackingArea?
 
@@ -544,7 +554,7 @@ public final class CanvasHostView: NSView {
             // A restyle mid-edit (the format bubble) arrives as a re-sync, so this is
             // where the live glyphs learn about it. The string is deliberately NOT
             // taken from the model — it belongs to the text view until the edit ends.
-            editor?.applyTypographyIfChanged()
+            editor?.applyStyleIfChanged()
             applyEditRequestIfNeeded()
         }
     }
@@ -643,10 +653,12 @@ public final class CanvasHostView: NSView {
         if newWindow == nil { endEditingForTeardown() }
     }
 
-    // MARK: Hover cursor (resize handles — 062)
+    // MARK: Hover cursor (resize handles — 062 · create crosshair)
 
     /// A handle is a small target, so the pointer has to say when it's over one —
     /// without the cursor change the 22pt grab zone is invisible and undiscoverable.
+    /// An armed create tool is invisible for the same reason, and answered the same
+    /// way (a crosshair over the whole canvas).
     /// `.inVisibleRect` keeps the area in step with scrolling/resizing on its own.
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -665,33 +677,81 @@ public final class CanvasHostView: NSView {
         updateHoverCursor(at: convert(event.locationInWindow, from: nil))
     }
 
+    /// Arriving over the canvas answers immediately rather than on the first move —
+    /// a create tool armed while the pointer was away from the view would otherwise
+    /// show the arrow until it happened to move.
+    public override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        updateHoverCursor(at: convert(event.locationInWindow, from: nil))
+    }
+
     public override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
         clearHoverCursor()
     }
 
-    /// Point the cursor at whatever handle is under `point` (or back to the arrow).
-    /// Suppressed mid-gesture: during a drag or resize the cursor belongs to that
-    /// gesture, and a create tool has its own meaning for a press.
+    /// What the pointer says about the press it would make here.
+    ///
+    /// An enum rather than an `NSCursor` because two of the four answers are not a
+    /// cursor this view sets: `.editor` means *someone else owns it*, and every
+    /// `.resize` answer is a fresh `NSCursor` instance (see ``hoverCursor``).
+    private enum HoverCursor: Equatable {
+        case arrow
+        /// A create tool is armed: the press draws a new element.
+        case crosshair
+        case resize(ResizeHandle)
+        /// Inside the open inline editor, where the text view vends its own I-beam.
+        case editor
+    }
+
+    /// Point the cursor at whatever is under `point`. Suppressed mid-gesture: during a
+    /// drag or a resize the cursor belongs to that gesture.
     private func updateHoverCursor(at point: CGPoint) {
-        guard !isResizing, !isDragging, !isMarqueeing, tool == .select, onResizeTile != nil else {
-            return
+        guard !isResizing, !isDragging, !isMarqueeing else { return }
+        apply(hoverCursor(at: point))
+    }
+
+    /// The pointer's answer for `point`, in precedence order. Split from ``apply(_:)``
+    /// so the decision is a pure read of the canvas's state.
+    private func hoverCursor(at point: CGPoint) -> HoverCursor {
+        // An armed create tool owns the WHOLE viewport, not just its empty parts:
+        // `canvasPressTarget` hands a create tool every press, over a tile or not, so
+        // the crosshair has to be everywhere the press means "draw here" — which is
+        // everywhere. This is Figma's affordance, and the reason the tool was
+        // previously undiscoverable: the arrow said "click to select" while the canvas
+        // meant "drag out a box".
+        guard tool == .select else { return .crosshair }
+        // Inside the box being edited the cursor belongs to the text view. Answering
+        // `.editor` rather than `.arrow` is what stops us stomping its I-beam.
+        if let editor, editor.contains(hostPoint: point) { return .editor }
+        guard onResizeTile != nil else { return .arrow }
+        return engine.resizeHandle(atScreenPoint: point).map { .resize($0.handle) } ?? .arrow
+    }
+
+    private func apply(_ next: HoverCursor) {
+        guard next != hoverCursor else { return }
+        hoverCursor = next
+        switch next {
+        case .arrow: NSCursor.arrow.set()
+        case .crosshair: NSCursor.crosshair.set()
+        case .resize(let handle): Self.cursor(for: handle).set()
+        case .editor: break // the text view has already set its own
         }
-        // Inside the box being edited the cursor belongs to the text view, which vends
-        // its own I-beam. Return without stomping it back to `.arrow`.
-        if let editor, editor.contains(hostPoint: point) {
-            hoveredHandle = nil
-            return
-        }
-        let handle = engine.resizeHandle(atScreenPoint: point)?.handle
-        guard handle != hoveredHandle else { return }
-        hoveredHandle = handle
-        (handle.map(Self.cursor(for:)) ?? .arrow).set()
+    }
+
+    /// Re-ask for the pointer's current position, for a cause that isn't a mouse move
+    /// (the tool changing under a stationary pointer). A no-op when the pointer is not
+    /// over this view — `mouseEntered` will ask again when it arrives.
+    private func refreshHoverCursor() {
+        guard let window else { return }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard bounds.contains(point) else { return }
+        updateHoverCursor(at: point)
     }
 
     private func clearHoverCursor() {
-        guard hoveredHandle != nil else { return }
-        hoveredHandle = nil
+        guard hoverCursor != .arrow else { return }
+        hoverCursor = .arrow
         NSCursor.arrow.set()
     }
 
@@ -740,8 +800,11 @@ public final class CanvasHostView: NSView {
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard editingTileID != nil else { return super.performKeyEquivalent(with: event) }
 
-        if event.keyCode == 53 { // Escape → abandon
-            endEditingText(commit: false)
+        if event.keyCode == 53 { // Escape → end the edit, keeping the text
+            // The same answer `CanvasEditorTextView.onEscape` gives — this path only
+            // runs for an edit that began before the host had a window, and the two
+            // must not disagree about what ⎋ means.
+            endEditingText(commit: true)
             return true
         }
         let command = event.modifierFlags.contains(.command)
@@ -1214,7 +1277,10 @@ public final class CanvasHostView: NSView {
 
         switch tool {
         case .text:
-            if worldRect.width < Self.minCreateWorldEdge || worldRect.height < Self.minCreateWorldEdge {
+            // **Width only** (see ``textDragChoseWidth(worldRect:)``). A text box's
+            // height is derived from its own glyphs, so the height of the rubber-band
+            // is not a thing the user can choose and must not be read as one.
+            if !Self.textDragChoseWidth(worldRect: worldRect) {
                 // A click, not a drag: report the origin and a ZERO size. The host has
                 // no business inventing a width here — only the app layer can measure
                 // text — so an empty rect is it saying "no width was chosen" and
@@ -1229,6 +1295,38 @@ public final class CanvasHostView: NSView {
             return
         }
         onCreateElement?(tool, worldRect)
+    }
+
+    /// Whether a text rubber-band of `worldRect` states a width the user chose.
+    ///
+    /// **Width alone decides it.** A text box's HEIGHT follows its wrapped text (062)
+    /// and no gesture can set it, so the natural way to draw one — a wide, shallow
+    /// band, because that is the shape the box will end up — used to fail a
+    /// both-dimensions test and be discarded as a click. The width the user had just
+    /// drawn went with it, and they got a hugging box at the press point instead.
+    /// Figma honours the width; so do we.
+    ///
+    /// Pure + static so the rule is pinned by a test rather than by the shape of an
+    /// `if` inside a gesture no test wants to build.
+    static func textDragChoseWidth(worldRect: CGRect) -> Bool {
+        worldRect.width >= minCreateWorldEdge
+    }
+
+    /// Abandon an in-progress rubber-band: the preview goes and the armed press is
+    /// forgotten, so the eventual mouse-UP has nothing to finish. Safe to call when no
+    /// create is in progress.
+    private func cancelCreate() {
+        createPreviewLayer?.removeFromSuperlayer()
+        createPreviewLayer = nil
+        createStartPoint = nil
+    }
+
+    /// Whether `event` is a bare Escape. Read from `charactersIgnoringModifiers`
+    /// rather than the keyCode, matching how every other key on this canvas is read,
+    /// and gated by the same ``isBareLetter(_:)`` modifier rule — ⎋ has no modified
+    /// meaning here, so ⌘⎋ and friends fall through to the responder chain.
+    private static func isEscape(_ event: NSEvent) -> Bool {
+        event.charactersIgnoringModifiers == "\u{1B}" && isBareLetter(event.modifierFlags)
     }
 
     private func makeCreatePreviewLayer() -> CALayer {
@@ -1385,6 +1483,21 @@ public final class CanvasHostView: NSView {
         // the host IS the responder. The delete keys are now INSIDE that gate too: a
         // text box in exactly that state used to lose its tile to a Backspace.
         guard editingTileID == nil else { super.keyDown(with: event); return }
+
+        // Esc disarms a create tool, as Figma's Esc drops back to the Move tool —
+        // otherwise Text stays armed until something is placed or `V` is pressed, and
+        // every click in between makes a box the user didn't want. A rubber-band
+        // already in progress is abandoned with it: nothing is reported, so the press
+        // that started it never becomes an element.
+        //
+        // Gated on `tool != .select` so Esc is only swallowed when it has something to
+        // do. With Select active it falls through to `super`, leaving the key free for
+        // whatever else the responder chain wants with it.
+        if Self.isEscape(event), tool != .select {
+            cancelCreate()
+            onSelectTool?(.select)
+            return
+        }
 
         // ⌫ drops the placement, ⌘⌫ leaves the library (022 · D3). This read used to
         // be `keyCode == 51 || keyCode == 117` with the modifiers never inspected, so

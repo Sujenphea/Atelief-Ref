@@ -139,7 +139,10 @@ struct HostEditingTests {
         #expect(finished == 0)
     }
 
-    @Test("Escape abandons: an untouched NEW box is deleted, an existing one cancelled")
+    /// ⎋ no longer reaches here — it commits, as it does in Figma (see
+    /// ``CanvasTextEditOutcome/cancelled``). What remains is the host's own
+    /// `endEditingText(commit: false)`, which is still an abandon.
+    @Test("an explicitly abandoned edit writes nothing")
     func cancelOutcomes() {
         let host = makeHost()
         var outcome: CanvasTextEditOutcome?

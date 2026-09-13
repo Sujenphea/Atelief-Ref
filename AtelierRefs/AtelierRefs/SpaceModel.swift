@@ -805,9 +805,11 @@ final class SpaceModel: ObservableObject {
     /// never born taller or shorter than its content — the same invariant every
     /// later edit maintains. A click-placed box arrives at a default width from the
     /// host, so this is the only place the created height is decided.
-    /// `string` overrides the placeholder — a text box pasted from the clipboard (065)
-    /// arrives with its content already set, so its height is derived from the REAL
-    /// text rather than from "Text" and then re-derived a moment later.
+    /// `string` seeds the content — a text box pasted from the clipboard (065) arrives
+    /// with its content already set, so its height is derived from the REAL text rather
+    /// than from an empty box and then re-derived a moment later. Left out, the box is
+    /// born empty (``ElementRendering/defaultTextStyle()``) and the caret is what the
+    /// user sees.
     func addText(worldRect: CGRect, string: String? = nil) {
         var style = ElementRendering.defaultTextStyle()
         if let string { style.text = string }

@@ -119,6 +119,8 @@ enum SpaceTextChromeLayout {
     static let aaWidth = SelectionBarIcon.width
     /// The alignment segment — one icon that mirrors the box's current alignment.
     static let alignWidth = SelectionBarIcon.width
+    /// The width-mode segment — one icon that mirrors whether the box hugs its text.
+    static let widthModeWidth = SelectionBarIcon.width
     /// The colour segment — a single dot showing the box's current colour.
     static let swatchSegmentWidth = SelectionBarIcon.width
     /// The bar's own gap. It is not the gap you SEE: each 30pt segment carries its
@@ -161,13 +163,14 @@ enum SpaceTextChromeLayout {
             height: 2 * Theme.Spacing.lg + rows * swatchSize + (rows - 1) * swatchGap)
     }
 
-    /// The bubble's size for a given point-size label: `align | ● | Aa | size`, four
-    /// segments and the three gaps between them — the panel's frame is set from this
-    /// number, so anything left out of it is squeezed out of the content.
+    /// The bubble's size for a given point-size label:
+    /// `align | width | ● | Aa | size`, five segments and the four gaps between them —
+    /// the panel's frame is set from this number, so anything left out of it is
+    /// squeezed out of the content.
     static func bubbleSize(sizeLabel: String) -> CGSize {
         CGSize(
-            width: bubblePadding * 2 + alignWidth + swatchSegmentWidth + aaWidth
-                + sizeSegmentWidth(label: sizeLabel) + 3 * segmentGap,
+            width: bubblePadding * 2 + alignWidth + widthModeWidth + swatchSegmentWidth
+                + aaWidth + sizeSegmentWidth(label: sizeLabel) + 4 * segmentGap,
             height: bubbleHeight)
     }
 
@@ -265,7 +268,8 @@ final class SpaceTextChromeAnchor: ObservableObject {
 
 // MARK: - The chrome
 
-/// The bubble over the canvas, for ONE text box: align · colour · font · size.
+/// The bubble over the canvas, for ONE text box:
+/// align · width · colour · font · size.
 struct SpaceFormatChrome: View {
     @ObservedObject var anchor: SpaceTextChromeAnchor
     /// The target's current style — seeds every control (checkmark, ring, label).
@@ -441,6 +445,20 @@ struct SpaceFormatChrome: View {
                     .font(.system(size: 13, weight: .medium))
             }
 
+            // Auto ↔ Fixed width (063), and the bubble's only segment that ACTS rather
+            // than opening a panel: the setting has two states, so a panel to choose
+            // between them would be a click to reach one click.
+            //
+            // It lives here because this is where the setting is wanted. The state was
+            // reachable from the day it shipped — ``ElementInspector`` has had a
+            // Width control all along — but only behind the selection bar's "Edit
+            // style" glyph, two layers from the box you are looking at, while a
+            // resize-handle drag silently turns hugging OFF (`SpaceModel.resizeTile`).
+            // A state a gesture can clear needs to be visible where the gesture is, and
+            // Figma keeps its resizing control beside the alignment for the same
+            // reason. The inspector's copy stays: both write the same field.
+            widthModeSegment
+
             // The colour segment shows the box's CURRENT colour and opens the eleven.
             // A strip of all of them was the first cut, and it made the chrome twice
             // the size of the thing it formats — 252pt of panel over a box that is
@@ -469,6 +487,33 @@ struct SpaceFormatChrome: View {
             }
         }
         .foregroundStyle(Theme.Colors.inkPrimary)
+    }
+
+    /// The width-mode toggle. Its icon is a READOUT of the current mode, the way the
+    /// align segment's is — a free double arrow when the box sizes itself, the same
+    /// arrow boxed in when the user owns the width.
+    ///
+    /// `isOn` stays `false` on purpose: in this bar that fill means *this segment's
+    /// panel is open*, and borrowing it to mean "auto" would make one highlight say two
+    /// different things along a row of five.
+    private var widthModeSegment: some View {
+        let hugs = style.hugsWidth
+        return Button {
+            // Any open panel belongs to the previous click, not this one.
+            closeAll()
+            change { $0.textAutoWidth = !hugs }
+        } label: {
+            BarGlyphSlot(
+                width: SpaceTextChromeLayout.widthModeWidth,
+                height: SpaceTextChromeLayout.segmentHeight,
+                isOn: false
+            ) {
+                Image(systemName: hugs ? "arrow.left.and.right" : "arrow.left.and.right.square")
+                    .font(.system(size: 13, weight: .medium))
+            }
+        }
+        .buttonStyle(.plain)
+        .help(hugs ? "Width: auto — click for fixed" : "Width: fixed — click for auto")
     }
 
     private func segment(
@@ -572,9 +617,10 @@ struct SwatchDotBody: View {
 /// The "Aa" panel: the font family list, and only that.
 ///
 /// It once carried weight, alignment, and the width toggle too. Alignment earned its
-/// own bubble segment; weight and width stayed where the inspector already offers
-/// them (``ElementInspector``) — so what the Aa segment opens is exactly what "Aa"
-/// says: which face the text is set in.
+/// own bubble segment, and width has now earned one as well (it is the state a resize
+/// drag silently clears, so it has to be visible beside the box); only WEIGHT stayed
+/// where the inspector already offers it (``ElementInspector``) — so what the Aa
+/// segment opens is exactly what "Aa" says: which face the text is set in.
 struct SpaceTextFontPanel: View {
     let style: ElementStyle
     let onChange: (ElementStyle) -> Void
