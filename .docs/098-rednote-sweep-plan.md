@@ -352,12 +352,72 @@ parser, and a foreign board's page — and its *refusal* — ignored by scope. E
 load-bearing assertion was verified by mutation: each fails when the property it
 names is broken. 715 → 729 tests.
 
-### T5 — K3b: note-open driving + detail parser (R13, R14, R7)
-Opt-in toggle, cover-only default, budgeted cost, known-set pre-check.
-**Effort L. Gated on Open question 2.**
+### T5 — K3b: note-open driving + detail parser ✅ **shipped** (changelogs 485, 486)
+Split the way T2 → T3 was split.
+
+**T5a — the pure detail parser.** `parseNoteDetail` fans out one item per
+`image_list[]` entry, `sourceId = <note_id>:<index>`, reusing `pickRednoteImage`
+and `rednoteAuthor`. Two judgement calls worth remembering: a `live_photo: true`
+entry **keeps the still** and flags it (Q4 defers the *motion*, which lives in
+`stream` — dropping the item would cost a real image), and a `video`-bearing note
+is **refused visibly** (`unsupported: "video"`, cover kept) rather than fanned
+out, because its poster is already ingested as `<note_id>` by the cover pass and
+fanning out would re-enqueue the same picture as `<note_id>:0` — two keys, two
+downloads, a dedup-skip that cannot see the duplicate. `items: []` with
+`unsupported` set means *keep the cover*, never "this note is empty". A `rednote-detail`
+drift check sits beside `rednote` the way `x-thread` sits beside `x`. 729 → 756 tests.
+
+**T5b — the driving.** `rednote-detail-client.js`, shaped after
+`twitter-detail-client.js`: it **clicks the note's own card link** rather than
+assigning `location` (which would tear down the content script and the sweep with
+it), closes with Escape, falls back to `history.back()` if the SPA routed rather
+than overlaid, and restores `scrollY` so the board keeps paging from where it was
+— in a `finally`, so a challenge still gives the board back. Correlation is by
+`parseNoteDetail().noteId` against the note opened, with mismatches discarded,
+except that a **refusal outranks correlation** (it carries no note id to
+correlate on). Budget `NOTE_OPEN_BUDGET = 400` opens/sweep at 1800 ms ± 1200;
+exhaustion is not a halt — the cover pass finishes and the sweep reports
+`partial`. 756 → 823 tests.
+
+### T5 addendum — R14's formula was not safe as written
+
+Two defects, both found while building, both fixed:
+
+**Mode-blindness (sweep level).** Cover items are keyed `<note_id>`, expanded
+children `<note_id>:<index>`, so after a cover-only sweep `knownNotes` holds
+*every note on the board* — a user who then enables the toggle has every
+note-open skipped and is told "complete, 0 new". The toggle would have done
+nothing on any board already swept, silently, inverting the failure R14 cured (a
+loud waste of budget). Fixed by recording the sweep's **mode** in the clean marker
+(`{ clean, mode }`, `"cover" | "expansion"`) and arming the pre-check only when the
+prior clean sweep was at least as rich as this one. A marker with no `mode` reads
+as unknown, arms nothing, and leaves `STOP_AFTER_CONSECUTIVE_SKIPS` untouched —
+tested against Instagram, not in the abstract.
+
+**Over-broad derivation (note level).** `id.split(":")[0]` over *every* known id
+cannot tell a cover from an expanded child, so a note that **degraded**, or that
+the **budget never reached**, reads as done. A board larger than the budget could
+therefore never be finished: every re-sweep would spend its whole budget
+re-opening notes already done. `knownNoteIndex` counts **only ids that are
+expanded children**. Same O(n)/O(1) cost, no `sourceId` change.
+
+The rejected `<note_id>:0` unification stays rejected, now on evidence rather
+than suspicion: the detail capture's `file_id`s are `oss-sg/spectrum/<id>` while
+board covers are 15/37 bare `<id>` — **cover ≠ `image_list[0]`**.
 
 ### T6 — K4: `selectStreamRung` + `videoCandidates[]` + 422 rung-advance
-**Effort M. Blocked on a `type: "video"` note capture.**
+**Effort M. Still blocked on a `type: "video"` note capture** — the one artifact
+this plan has never had. 81 % of the sampled board is video, so this is most of
+the content, not a tail case. Until it exists, `parseNoteDetail` refuses video
+notes and they degrade to the cover the K3a pass already captures.
+
+### Unverified without a live run
+`createPageNoteDriver` infers the board card's link shape and the overlay's close
+affordance; neither was captured. If either is wrong, every note-open degrades to
+its cover **loudly** — in the degradation count and the partial status line — and
+the cover pass is untouched. That, with D8's mode-aware acknowledge gate (the
+warning re-renders and the acknowledgement resets when the toggle moves), is why
+expansion is opt-in.
 
 ## Sizing
 
@@ -401,12 +461,11 @@ Cover-only is the default because of this table, not despite it.
 ## Open questions
 
 1. **Board URL path shape** — never recorded; needed for the recogniser.
-2. ~~**`sourceId` scheme across cover → expanded**~~ **Settled** — keys unchanged;
-   a derived `knownNotes` index, armed only after a clean prior sweep. See R14.
-   Still worth one cheap capture: open a note that IS on a saved board page and
-   check whether `cover` equals `image_list[0].file_id`, and whether a
-   `type: "video"` note's `image_list` holds the poster or is empty. That would
-   also unblock T6.
+2. ~~**`sourceId` scheme across cover → expanded**~~ **Settled and shipped** —
+   keys unchanged; an expanded-children-only `knownNoteIndex`, gated on a
+   mode-aware clean marker. See the T5 addendum. The `cover == image_list[0]`
+   half is **answered: no** (T5a). What a `type: "video"` note's `image_list`
+   holds is still open, and is the same capture T6 needs.
 3. **Entry point** — boards only (recommended), or also "My saves"?
 4. **Live Photos** — `image_list[].live_photo` exists. Defer.
 5. **Video ladder shape** — unverified; T6 blocked on one capture.
