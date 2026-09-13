@@ -46,9 +46,18 @@ test("loadCore publishes the installer on window (the per-site hook reads it the
 
 // MARK: - fetch path
 
+/** The body half of a fake `Response.clone()` — both accessors the real one has. */
+const cloneable = (json) => ({
+  json: async () => json,
+  text: async () => JSON.stringify(json),
+});
+
 /** A fake window scope with an injectable `fetch` returning a cloneable response. */
 function fakeScope(responseJson, extra = {}) {
-  const response = { clone: () => ({ json: async () => responseJson }), ...extra };
+  // A real `Response.clone()` exposes BOTH `json()` and `text()`; the hook reads text so
+  // it can size the replay buffer (098 R15). Model both or the fake diverges from the
+  // browser in a way that hides a working code path.
+  const response = { clone: () => cloneable(responseJson), ...extra };
   return { fetch: async () => response, __response: response };
 }
 
@@ -108,7 +117,7 @@ function fakeReplayScope() {
   const messageListeners = [];
   let nextJson = null;
   return {
-    fetch: async () => ({ clone: () => ({ json: async () => nextJson }) }),
+    fetch: async () => ({ clone: () => cloneable(nextJson) }),
     setJson: (j) => { nextJson = j; },
     addEventListener: (type, fn) => { if (type === "message") messageListeners.push(fn); },
     dispatch: (data) => { for (const fn of messageListeners) fn({ data }); },
@@ -131,6 +140,49 @@ test("installResponseHook: buffers forwarded responses and replays them on reque
 
   scope.dispatch({ source: "something-else" });   // unrelated message → no replay
   assert.equal(posted.length, 4);
+});
+
+test("installResponseHook: the replay buffer is bounded by SIZE, not only by count (098 R15)", async () => {
+  const posted = [];
+  const scope = fakeReplayScope();
+  // Room for 25 entries by count, but only ~3 of these by size — so the size bound is
+  // what bites. A count-only bound is why 25 X timeline pages (~871 KB each) could sit
+  // in the MAIN world for the life of a tab.
+  const big = "x".repeat(1000);
+  installResponseHook({
+    target: scope, isMatch, replaySource: REPLAY_SOURCE, bufferLimit: 25, byteLimit: 3500,
+    post: (m) => posted.push(m),
+  });
+  for (let i = 0; i < 10; i += 1) {
+    scope.setJson({ page: i, pad: big });
+    await scope.fetch(MATCH_URL);
+    await tick();
+  }
+
+  const before = posted.length;
+  scope.dispatch({ source: REPLAY_SOURCE });
+  const replayed = posted.slice(before).map((p) => p.json.page);
+  assert.ok(replayed.length < 10, "the size bound evicted, though the count bound had room");
+  assert.equal(replayed[replayed.length - 1], 9, "the most recent page is always kept");
+  assert.equal(replayed[0], 10 - replayed.length, "oldest first out");
+});
+
+test("installResponseHook: a single page larger than the whole budget is still replayable", async () => {
+  const posted = [];
+  const scope = fakeReplayScope();
+  installResponseHook({
+    target: scope, isMatch, replaySource: REPLAY_SOURCE, byteLimit: 10,
+    post: (m) => posted.push(m),
+  });
+  // The cap exists to stop ACCUMULATION. Evicting the only entry would mean a sweep on a
+  // feed with one big page replays nothing and stalls — worse than the memory it saves.
+  scope.setJson({ page: 0, pad: "y".repeat(5000) });
+  await scope.fetch(MATCH_URL);
+  await tick();
+
+  const before = posted.length;
+  scope.dispatch({ source: REPLAY_SOURCE });
+  assert.deepEqual(posted.slice(before).map((p) => p.json.page), [0]);
 });
 
 test("installResponseHook: the replay buffer is bounded (keeps only the most recent)", async () => {
@@ -338,7 +390,7 @@ function fakeProxyScope({ status = 200, json = { conversation: true } } = {}) {
     fetch: async (url, init) => {
       scope.fetchCalls.push({ url, init });
       if (scope.failNext) throw new Error(scope.failNext);
-      return { status, json: async () => json, clone: () => ({ json: async () => json }) };
+      return { status, json: async () => json, clone: () => cloneable(json) };
     },
     addEventListener: (type, fn) => { if (type === "message") listeners.push(fn); },
     postMessage: (data) => scope.replies.push(data),
@@ -470,7 +522,7 @@ function fakeSiteWindow(hostname) {
   const listeners = [];
   return {
     location: { hostname, origin: `https://${hostname}` },
-    fetch: async () => ({ clone: () => ({ json: async () => ({}) }) }),
+    fetch: async () => ({ clone: () => cloneable({}) }),
     addEventListener: (type, fn) => { if (type === "message") listeners.push(fn); },
     postMessage: () => {},
   };

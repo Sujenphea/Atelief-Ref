@@ -326,3 +326,47 @@ test("enumerate IGNORES the engine's resume cursor — resume is scroll-driven",
   const iterator = source.enumerate({ boardId: "99" }, { cursor: "somewhere-in-the-middle" });
   assert.deepEqual(ids(await collect(iterator)), ["a"]);
 });
+
+// MARK: - T1b additions
+
+test("the source DECLARES that its resume is scroll-driven (098 R1)", () => {
+  // The engine reads this to stop persisting a cursor it can never seek to. A rename
+  // here silently restores the misleading checkpoint, so it is asserted, not assumed.
+  assert.equal(makeSource().resumable, "scroll");
+});
+
+test("onExpandFailure reports a degraded page, and the page still yields (098 R7)", async () => {
+  const failures = [];
+  const boom = new Error("detail fetch failed");
+  const source = makeSource({
+    expandItems: async () => { throw boom; },
+    onExpandFailure: (error, items) => failures.push({ error, count: items.length }),
+  });
+  source.onResponse(page(["a", "b"], { endOfFeed: true }));
+
+  assert.deepEqual(ids(await collect(source.enumerate())), ["a", "b"]);
+  // Reported, not swallowed — and fail-open is unchanged, which is the whole point.
+  assert.deepEqual(failures, [{ error: boom, count: 2 }]);
+});
+
+test("onExpandFailure is NOT called when expansion succeeds", async () => {
+  let calls = 0;
+  const source = makeSource({
+    expandItems: async (items) => items,
+    onExpandFailure: () => { calls += 1; },
+  });
+  source.onResponse(page(["a"], { endOfFeed: true }));
+
+  await collect(source.enumerate());
+  assert.equal(calls, 0);
+});
+
+test("a THROW from onExpandFailure cannot kill the sweep it exists to describe", async () => {
+  const source = makeSource({
+    expandItems: async () => { throw new Error("expansion failed"); },
+    onExpandFailure: () => { throw new Error("and so did the reporter"); },
+  });
+  source.onResponse(page(["a"], { endOfFeed: true }));
+
+  assert.deepEqual(ids(await collect(source.enumerate())), ["a"]);
+});

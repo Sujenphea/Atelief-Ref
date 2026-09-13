@@ -47,6 +47,12 @@ export class SourceStallError extends Error {
  * @param opts.maxIdleRounds consecutive empty scrolls before a `StallError`.
  * @param opts.scope         the sweep's scope token (or null → accept all).
  * @param opts.StallError    the stall error class to throw (per-platform subclass).
+ * @param opts.onExpandFailure optional `(error, items) => void` — called when `expandItems`
+ *                           throws, so a DEGRADED page is counted and reported instead of
+ *                           being invisible. Expansion stays fail-open (see below); this
+ *                           only makes the loss observable. Guarded: a throw from it is
+ *                           swallowed, because a reporting hook must never be able to kill
+ *                           a sweep it exists to describe.
  * @param opts.expandItems   optional `async (items) => items` applied to a page's items
  *                           just before they're yielded. Runs on the PULL side, not in
  *                           `onResponse`: expansion can be async and can fail, and the
@@ -65,6 +71,7 @@ export function createInterceptSource({
   scope = null,
   StallError = SourceStallError,
   expandItems = null,
+  onExpandFailure = null,
 } = {}) {
   if (typeof parsePage !== "function") throw new Error("createInterceptSource requires parsePage");
 
@@ -109,8 +116,14 @@ export function createInterceptSource({
       if (expandItems && items.length > 0) {
         try {
           items = (await expandItems(items)) || page.items;
-        } catch {
+        } catch (error) {
           items = page.items;                     // expansion is a bonus, never a blocker
+          // ...but a silent bonus is how a sweep reports success having captured strictly
+          // less than it meant to (098 R7): for rednote a failed note-detail is 1 cover
+          // instead of 9 images. Report it; do not change the fail-open rule.
+          if (onExpandFailure) {
+            try { onExpandFailure(error, page.items); } catch { /* never kill the sweep */ }
+          }
         }
       }
       for (const item of items) yield item;
@@ -118,7 +131,13 @@ export function createInterceptSource({
     }
   }
 
-  // Conforms to the engine's BulkSource seam: `enumerate(input, { cursor })`. (Resume is
-  // scroll-driven; the cursor is informational — dedup-skip is the real resume safety net.)
-  return { enumerate: () => enumerate(), onResponse };
+  // Conforms to the engine's BulkSource seam: `enumerate(input, { cursor })` — except
+  // that `cursor` is IGNORED, because an intercept source cannot seek. It reads whatever
+  // the page fetches, and the page is driven by scrolling, not by a cursor we choose.
+  //
+  // `resumable: "scroll"` says so out loud (098 R1). Without it the engine persisted a
+  // cursor on every checkpoint that nothing would ever read back — a resume token that
+  // looked like a resume token and was not one. Dedup-skip is the real safety net: a
+  // resumed sweep re-walks from the top and re-skips what it already has.
+  return { enumerate: () => enumerate(), onResponse, resumable: "scroll" };
 }

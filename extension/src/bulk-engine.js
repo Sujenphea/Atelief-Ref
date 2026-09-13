@@ -171,11 +171,19 @@ export async function runSweep(driver, input, {
     ...config,
   };
 
+  // A driver that declares `resumable: "scroll"` (an intercept source) CANNOT seek to a
+  // cursor — it reads whatever the page fetches, and the page is driven by scrolling
+  // (098 R1). Persisting a cursor for one was writing a resume token nothing would ever
+  // read back, which reads as a working resume in the checkpoint and is not one. So for
+  // those drivers the cursor is neither seeded nor stored; the checkpoint still carries
+  // `counts` and (via the caller) `jobId`, which are the parts that do get used.
+  const scrollResumable = driver && driver.resumable === "scroll";
+
   // Resume: a prior checkpoint's cursor seeds enumeration; the app's dedup + the
   // known-set make any re-processed overlap idempotent, so an approximate resume
   // point is safe — it never double-ingests, only re-skips.
   let startCursor = null;
-  if (storage && checkpointKey) {
+  if (!scrollResumable && storage && checkpointKey) {
     const saved = await storage.load(checkpointKey);
     if (saved && saved.cursor != null) startCursor = saved.cursor;
   }
@@ -256,7 +264,9 @@ export async function runSweep(driver, input, {
     }
     if (advanced && storage && checkpointKey && committedSeq > lastSavedSeq) {
       try {
-        await storage.save(checkpointKey, { cursor: committedCursor, counts: { ...counts } });
+        await storage.save(checkpointKey, {
+          cursor: scrollResumable ? null : committedCursor, counts: { ...counts },
+        });
         lastSavedSeq = committedSeq; // mark saved ONLY on success
       } catch (error) {
         // A checkpoint write failure must NOT abort the sweep (8A) — it's a resume

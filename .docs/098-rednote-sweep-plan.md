@@ -241,7 +241,7 @@ rather than a preference.
 | R12 | `bulk-rednote-integration.test.js` — the `cursor: ""` loop is invisible to per-page tests |
 | R13 | Budget the cost; expansion becomes an opt-in popup toggle beside `resolveVideo`; cover-only is the default |
 | R14 | **Known-set pre-check before expansion** — see below |
-| R15 | Clear the hook replay buffer after a replay; bound it by bytes as well as count |
+| R15 | Bound the hook replay buffer by SIZE as well as count. **Narrowed during T1b**: clearing after a replay was dropped — a second sweep on the same tab would replay nothing and could stall where today it replays and dedup-skips. The size bound fixes the actual harm without touching replay semantics |
 | R16 | **Do nothing** about the per-item `SELECT status FROM job`. A real N+1, but a µs local PK read against a deliberate 1,500–2,700 ms pacing budget — optimising it measures the wrong thing |
 
 ### R14 — the gap, not a preference
@@ -287,9 +287,9 @@ The seam tested generically — fake `parsePage`/`scroll`/`sleep`. Must cover wh
 X never exercises: `expandItems` success/throw/degrade, and the **`pendingError`
 re-raise** (no production user, no test today). **Effort S–M. Do this first.**
 
-### T1b — seam changes (R1, R7, R15)
-`resumable: "scroll"`; `onExpandFailure`; replay-buffer clear + byte bound.
-Behaviour-preserving for X, now guarded by T1a. **Effort S.**
+### T1b — seam changes (R1, R7, R15) ✅ **shipped** (changelog 470)
+`resumable: "scroll"` + the engine honouring it; `onExpandFailure`; a size bound on
+the hook replay buffer. Behaviour-preserving for X. 661 → 667 tests.
 
 ### T2 — the pure parser: `bulk-rednote.js`, cover pass (R8, R10)
 `parseBoardFeedPage` → `{ items, endOfFeed, cursor }`; `pickRednoteImage`;
