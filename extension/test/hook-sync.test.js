@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import * as messages from "../src/bulk-messages.js";
-import { isBoardFeedRequest } from "../src/bulk-rednote.js";
+import { isBoardFeedRequest, isNoteDetailRequest } from "../src/bulk-rednote.js";
 import { matchesScope as twitterMatchesScope } from "../src/bulk-twitter.js";
 
 /**
@@ -73,6 +73,91 @@ test("rednote-hook.js's matcher agrees with the parser's, url for url", () => {
   ];
   for (const url of urls) {
     assert.equal(hookMatcher(url), isBoardFeedRequest(url), `disagreed on ${url || "(empty)"}`);
+  }
+});
+
+/**
+ * Run a hook the way Chrome does — on a HOST IT MATCHES, with hook-core's installer
+ * stubbed — and hand back the options it installed with.
+ *
+ * `liftFromHook` above deliberately runs on a non-matching host so the declarations can be
+ * read without installing; that answers "is the matcher right?" and NOT "is the right
+ * matcher the one that was installed?". Those came apart during 098 T5b: the hook grew a
+ * second, correct predicate that nothing passed to `installResponseHook`, and every
+ * constant-level assertion still passed while the note-detail responses were never
+ * forwarded at all.
+ */
+function installHook(file, hostname) {
+  const source = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+  let installed = null;
+  const win = {
+    location: { hostname, origin: `https://${hostname}` },
+    addEventListener() {},
+    postMessage() {},
+    __atelierInstallResponseHook: (options) => { installed = options; return true; },
+  };
+  new Function("window", "console", source)(win, { error() {} });
+  assert.ok(installed, `${file} did not install on ${hostname}`);
+  return installed;
+}
+
+test("rednote-hook.js INSTALLS the union matcher — board feed AND note detail", () => {
+  // What the hook declares is worth nothing if it hands hook-core something else. Installed
+  // with the board matcher alone, K3b's note-open responses are never forwarded: every note
+  // times out, degrades to its cover, and the sweep reports a full board at full cost.
+  const options = installHook("rednote-hook.js", "www.rednote.com");
+  const urls = [
+    "//webapi.rednote.com/api/sns/web/v1/board/note?board_id=1&cursor=a",
+    "https://webapi.rednote.com/api/sns/web/v1/feed",
+    "https://webapi.rednote.com/api/sns/web/v1/feed/homefeed",
+    "https://t2.rnote.com/api/v2/collect",
+    "",
+  ];
+  for (const url of urls) {
+    assert.equal(
+      options.isMatch(url),
+      isBoardFeedRequest(url) || isNoteDetailRequest(url),
+      `the INSTALLED matcher disagreed on ${url || "(empty)"}`);
+  }
+  assert.equal(options.isMatch("https://webapi.rednote.com/api/sns/web/v1/feed"), true,
+    "note-detail responses are not forwarded — expansion can never see one");
+  assert.equal(options.replaySource, messages.REDNOTE_REPLAY_SOURCE);
+});
+
+test("rednote-hook.js installs on BOTH domains and on neither anything else", () => {
+  // One product, two domains (098 D7). A hook that installs on one is a sweep that silently
+  // sees no responses on the other.
+  for (const host of ["www.rednote.com", "www.xiaohongshu.com"]) {
+    assert.ok(installHook("rednote-hook.js", host).isMatch);
+  }
+  assert.throws(() => installHook("rednote-hook.js", "rednote.com.evil.test"), /did not install/);
+});
+
+test("rednote-hook.js's note-detail matcher agrees with the parser's (098 T5b)", () => {
+  // K3b's expansion reads the note-detail POST the SPA issues when a note is opened. The
+  // hook decides what is FORWARDED and the controller routes by the same predicate, so a
+  // drift here means the detail response never reaches the expander — and every note-open
+  // times out and degrades to its cover, at full cost and with no visible cause.
+  const { isNoteDetailRequest: hookMatcher, isHookedRequest } =
+    liftFromHook("rednote-hook.js", ["isNoteDetailRequest", "isHookedRequest"]);
+  const urls = [
+    "https://webapi.rednote.com/api/sns/web/v1/feed",
+    "//webapi.rednote.com/api/sns/web/v1/feed/",
+    "https://webapi.rednote.com/api/sns/web/v1/feed?x=1",
+    // The near-misses the parser is deliberately narrow about: a prefix match would hand a
+    // homefeed page to `parseNoteDetail`, and a board page to the wrong parser entirely.
+    "https://webapi.rednote.com/api/sns/web/v1/feed/homefeed",
+    "https://webapi.rednote.com/api/sns/web/v1/feedback",
+    "https://webapi.rednote.com/api/sns/web/v1/board/note?board_id=1",
+    "https://t2.rnote.com/api/v2/collect",
+    "",
+  ];
+  for (const url of urls) {
+    assert.equal(hookMatcher(url), isNoteDetailRequest(url), `disagreed on ${url || "(empty)"}`);
+    // And what the hook actually installs is the UNION — miss either arm and one of the two
+    // passes gets no responses at all.
+    assert.equal(isHookedRequest(url), isBoardFeedRequest(url) || isNoteDetailRequest(url),
+      `the installed matcher disagreed on ${url || "(empty)"}`);
   }
 });
 

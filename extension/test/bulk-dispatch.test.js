@@ -35,7 +35,10 @@ test("happy path: send succeeds, no injection, returns the reply", async () => {
   assert.equal(injected, 0, "must not inject when the first send works");
   assert.equal(calls.length, 1);
   assert.equal(calls[0].type, START, "sends the START message");
-  assert.deepEqual(calls[0], { type: START, platform: "twitter", input: {}, scope: "bookmarks", resolveVideo: false });
+  assert.deepEqual(calls[0], {
+    type: START, platform: "twitter", input: {}, scope: "bookmarks",
+    resolveVideo: false, expandNotes: undefined,
+  });
 });
 
 test("a resolved error reply is returned as-is (not a transport failure → no retry)", async () => {

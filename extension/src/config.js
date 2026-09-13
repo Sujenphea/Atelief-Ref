@@ -50,6 +50,41 @@ export const BACKOFF_MAX_MS = 30_000;
 export const THREAD_PACING_MS = 1200;
 export const THREAD_PACING_JITTER_MS = 900;
 
+// ---------------------------------------------------------------------------
+// rednote note-open expansion (098 D4 / R13). The cost of K3b, stated as numbers
+// rather than as a warning: one SPA note-open per note, each one a page-driven
+// request against a site that already fingerprints browsing.
+// ---------------------------------------------------------------------------
+
+/** The CEILING on note-opens in one sweep. 098's cost table sizes a large board at
+ * ~400 notes, so this admits a whole board once and refuses to let a pathological or
+ * unbounded board turn one click into thousands of opens. Exhausting it is NOT a halt:
+ * the remaining notes keep their cover item, the cover pass finishes normally, and the
+ * sweep reports itself PARTIAL rather than pretending it expanded everything. A later
+ * re-sweep picks up where it stopped, because a note that only ever produced a cover has
+ * no `<note_id>:<index>` child for the known-set pre-check to skip it by. */
+export const NOTE_OPEN_BUDGET = 400;
+
+/** Base gap before each note-open, plus its jitter — the same shape as `PACING_MS` /
+ * `PACING_JITTER_MS` and the same reason as `THREAD_PACING_MS`: this is a SECOND request
+ * stream the engine's item pacing does not cover (the engine paces relays to the local
+ * app; these drive the origin). Gentler than X's, because rednote refused a scripted
+ * request with a 461 during development and 30 note-opens a minute is not browsing. */
+export const NOTE_OPEN_PACING_MS = 1800;
+export const NOTE_OPEN_PACING_JITTER_MS = 1200;
+
+/** How long to wait for a note's own `POST /v1/feed` response after opening it, and how
+ * often to look. A note that never answers must cost this much and no more: the whole
+ * point of a budget is undone by one open that hangs the sweep. On timeout the note keeps
+ * its cover and the sweep counts a degradation. */
+export const NOTE_OPEN_TIMEOUT_MS = 8000;
+export const NOTE_OPEN_POLL_MS = 250;
+
+/** How long to let the SPA settle after a click that opens (or closes) a note. Short —
+ * it is only there so the click and the route change are not issued in the same tick;
+ * the real waiting is `NOTE_OPEN_TIMEOUT_MS` against the intercepted response. */
+export const NOTE_OPEN_SETTLE_MS = 400;
+
 /** Per-item retry budget for a `retryableFailed` outcome. On exhaustion the item
  * is recorded `retryableFailed` (a later sweep re-attempts it) and the sweep moves
  * on — one bad item NEVER aborts the sweep `[C7]`. Distinct from a `halt` signal
@@ -88,6 +123,17 @@ export const PLATFORM_PACING = Object.freeze({
     // `xhsFingerprintV3`, an `x-rap-param` signature blob) that already refused a scripted
     // request with HTTP 461. Sweep gently or not at all.
     engine: { MAX_CONCURRENCY: 2, PACING_MS: 1500, PACING_JITTER_MS: 1200 },
+    // The note-open budget + pacing for K3b's expansion pass, threaded from here so the
+    // knobs for a platform live in one block. References the constants above rather than
+    // restating them — one value, two access paths, nothing to drift.
+    noteOpen: {
+      BUDGET: NOTE_OPEN_BUDGET,
+      PACING_MS: NOTE_OPEN_PACING_MS,
+      PACING_JITTER_MS: NOTE_OPEN_PACING_JITTER_MS,
+      TIMEOUT_MS: NOTE_OPEN_TIMEOUT_MS,
+      POLL_MS: NOTE_OPEN_POLL_MS,
+      SETTLE_MS: NOTE_OPEN_SETTLE_MS,
+    },
     // NO `reSweep` — early-stop stays DISARMED (098 R1/D8). Instagram earned that
     // optimisation with a live-verified precondition: its saved feed is newest-SAVE-first,
     // so a run of known items means the tail is known too. Board ordering is unverified,

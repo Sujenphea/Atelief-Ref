@@ -10,7 +10,9 @@ import assert from "node:assert/strict";
 
 import {
   sweepLabel, sweepWarning, startEnabled, terminalMessage, launchOutcome,
+  expansionOption, expansionShortfall,
 } from "../src/popup-view.js";
+import { NOTE_OPEN_BUDGET } from "../src/config.js";
 
 test("sweepLabel: X main bookmarks vs. a folder vs. a Pinterest board vs. IG saved", () => {
   assert.equal(
@@ -102,4 +104,107 @@ test("launchOutcome: a RESOLVED {ok:false} re-enables Start so the user can retr
 test("launchOutcome: a garbage/absent reply is treated as a failure (Start re-enabled)", () => {
   assert.deepEqual(launchOutcome(undefined), { status: "Error: unknown", enableStart: true });
   assert.deepEqual(launchOutcome({ ok: false }), { status: "Error: unknown", enableStart: true });
+});
+
+// MARK: - the rednote expansion toggle (098 R13 / T5b)
+
+test("expansionOption: offered on rednote, nowhere else", () => {
+  // A toggle on a platform with no expansion pass would be a checkbox that does nothing.
+  const option = expansionOption({ platform: "rednote", scope: "board:abc" });
+  assert.equal(option.platform, "rednote");
+  assert.ok(option.label.length > 0);
+  for (const platform of ["twitter", "instagram", "pinterest"]) {
+    assert.equal(expansionOption({ platform, scope: "x" }), null);
+  }
+  assert.equal(expansionOption(null), null);
+});
+
+test("expansionOption: the copy states the COST, and states the budget as a number", () => {
+  // The whole reason cover-only is the default is the cost table (098 §Cost budget). A
+  // label that only named the feature would sell the slow mode without pricing it.
+  const option = expansionOption({ platform: "rednote", scope: "board:abc" });
+  assert.match(option.label, /slower/i, "the label warns before the box is ticked");
+  assert.match(option.detail, /off by default/i);
+  assert.match(option.detail, new RegExp(String(NOTE_OPEN_BUDGET)), "the enforced ceiling is promised");
+  assert.match(option.detail, /video/i, "video notes keeping their cover is a stated limit");
+});
+
+test("expansionOption: the promised budget IS the enforced one", () => {
+  // Threaded from config rather than retyped: a popup that promised 400 while the expander
+  // stopped at 50 would be a lie with no test between it and the user.
+  const option = expansionOption({ platform: "rednote", scope: "board:abc" }, { budget: 7 });
+  assert.match(option.detail, /up to 7 per/);
+});
+
+test("sweepWarning: rednote's gate describes the MODE the user actually chose", () => {
+  // D8's gate is mandatory, not decorative. Acknowledging "one cover per note" and then
+  // running a page-open per note would make the acknowledgement meaningless.
+  const cover = sweepWarning({ platform: "rednote", scope: "board:abc" });
+  const expanded = sweepWarning({ platform: "rednote", scope: "board:abc", expandNotes: true });
+
+  for (const warning of [cover, expanded]) {
+    assert.equal(warning.platform, "rednote");
+    assert.match(warning.text, /461|throttle|block/i, "the account risk is named in both modes");
+  }
+  assert.match(cover.text, /ONE cover image per note/);
+  assert.match(expanded.text, /OPEN EVERY NOTE/);
+  assert.notEqual(cover.text, expanded.text, "the gate said the same thing about two different sweeps");
+});
+
+test("startEnabled: rednote stays gated in BOTH modes", () => {
+  for (const spec of [
+    { platform: "rednote", scope: "board:abc" },
+    { platform: "rednote", scope: "board:abc", expandNotes: true },
+  ]) {
+    assert.equal(startEnabled(spec, false), false);
+    assert.equal(startEnabled(spec, true), true);
+  }
+});
+
+test("sweepLabel: rednote names the platform without promising a mode", () => {
+  // The label is rendered once, before the toggle exists; a mode in it would go stale the
+  // moment the box is ticked.
+  const label = sweepLabel({ platform: "rednote", scope: "board:abc", input: { boardId: "abc" } });
+  assert.match(label, /rednote/i);
+  assert.doesNotMatch(label, /covers only/i);
+});
+
+// MARK: - `partial` as a first-class terminal outcome (098 R7)
+
+test("terminalMessage: a partial expansion reads differently from a complete one", () => {
+  // The thing R7 asks for, at the only place a user sees it. Before this, a sweep where
+  // forty notes quietly kept their cover produced the identical sentence to one where every
+  // note gave up its photos.
+  const full = terminalMessage({
+    status: "complete", counts: { ingested: 90 },
+    expansion: { expanded: 10, degraded: 0, budgetExhausted: false, partial: false },
+  });
+  const partial = terminalMessage({
+    status: "complete", counts: { ingested: 90 },
+    expansion: { expanded: 6, degraded: 4, budgetExhausted: false, budget: 400, partial: true },
+  });
+
+  assert.equal(full, "Done — 90 ingested.");
+  assert.notEqual(partial, full);
+  assert.match(partial, /partly expanded/);
+  assert.match(partial, /4 kept covers only/);
+});
+
+test("terminalMessage: a cover-only sweep is not reported as partial", () => {
+  assert.equal(
+    terminalMessage({ status: "complete", counts: { ingested: 37 }, expansion: null }),
+    "Done — 37 ingested.");
+});
+
+test("expansionShortfall: names the two reasons apart, because only one is actionable", () => {
+  // "Sweep again" fixes an exhausted budget and does nothing for a note that would not open.
+  assert.equal(expansionShortfall(null), null);
+  assert.equal(expansionShortfall({ partial: false, degraded: 0 }), null);
+  assert.match(
+    expansionShortfall({ partial: true, degraded: 0, budgetExhausted: true, budget: 400 }),
+    /400-note budget ran out — sweep again/);
+  assert.match(expansionShortfall({ partial: true, degraded: 3, budgetExhausted: false }), /3 kept covers only/);
+  const both = expansionShortfall({ partial: true, degraded: 3, budgetExhausted: true, budget: 400 });
+  assert.match(both, /3 kept covers only/);
+  assert.match(both, /budget ran out/);
 });

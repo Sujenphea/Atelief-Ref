@@ -27,7 +27,14 @@ export const START = "atelier-bulk-start";
 
 /** The sweep-spec fields the controller acts on. One list, referenced by both the
  * builder and the reader, so a rename can't desync the popup from the controller. */
-const START_FIELDS = Object.freeze(["platform", "input", "scope", "resolveVideo"]);
+const START_FIELDS = Object.freeze([
+  "platform", "input", "scope",
+  // The two user TOGGLES, folded in by the popup rather than by the resolver (see
+  // bulk-context.js's header): `resolveVideo` relays the resolved MP4 instead of the
+  // poster, `expandNotes` opens each rednote note for the rest of its images (098 R13 —
+  // opt-in, cover-only by default, because it costs one note-open per note).
+  "resolveVideo", "expandNotes",
+]);
 
 /** Build the `START` runtime message from a resolved sweep spec. The popup sends the
  * result; the controller reads it back with `readStartMessage`. */

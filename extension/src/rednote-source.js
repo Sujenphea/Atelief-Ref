@@ -25,9 +25,16 @@ export function createRednoteSource({
   maxIdleRounds = 4,
   scope = null,
   onExpandFailure = null,
+  // K3b's note-open expansion (098 D4), OPT-IN: omitted, the sweep is the cover pass and
+  // this file is exactly what it was. `isFatalExpandFailure` is what keeps the two kinds
+  // of expansion failure apart — a note that would not open degrades to its cover, a note
+  // rednote REFUSED halts the sweep resumable.
+  expandItems = null,
+  isFatalExpandFailure = null,
 } = {}) {
   return createInterceptSource({
     scroll, sleep, host, settleMs, maxIdleRounds, scope, onExpandFailure,
+    expandItems, isFatalExpandFailure,
     matchesScope,
     StallError: RednoteStallError,
     // `parseBoardFeedPage` never throws — a refusal comes back as `error`, which the

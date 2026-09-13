@@ -29,7 +29,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import { createRednoteSource } from "../src/rednote-source.js";
-import { parseBoardFeedPage } from "../src/bulk-rednote.js";
+import {
+  createNoteDetailWaiter, createNoteExpander, isRednoteChallenge, noteIdOf,
+} from "../src/rednote-detail-client.js";
+import { parseBoardFeedPage, parseNoteDetail } from "../src/bulk-rednote.js";
 import { ORIGIN_HOST } from "../src/extractors/rednote.js";
 import { runSweep, OUTCOMES } from "../src/bulk-engine.js";
 
@@ -37,6 +40,8 @@ import { runSweep, OUTCOMES } from "../src/bulk-engine.js";
 const PAGE1 = JSON.parse(readFileSync(new URL("./fixtures/rednote-board.json", import.meta.url)));
 /** The full 37-note capture — the row pool every composed page is built from. */
 const LIVE = JSON.parse(readFileSync(new URL("./fixtures/rednote-board-live.json", import.meta.url)));
+/** The live NOTE capture — nine images — re-addressed per test to the row being expanded. */
+const DETAIL = JSON.parse(readFileSync(new URL("./fixtures/rednote-note-detail.json", import.meta.url)));
 
 const HOST = "www.rednote.com";
 /** The board id off the live request URL — 24-char hex, NOT digits. */
@@ -457,4 +462,224 @@ test("rednote integration: the full 37-note capture sweeps to completion, one it
     assert.equal("xsecToken" in item.provenance, false, "a short-lived credential never enters provenance");
     assert.equal(JSON.stringify(item.provenance).includes(item.xsecToken), false, "no token leaked into provenance");
   }
+});
+
+// MARK: - K3b: note-open expansion, composed (098 T5b)
+//
+// The cover pass above is the unexpanded path and stays exactly as it was. These drive the
+// OTHER mode through the same real parser, real seam and real engine, with only the page
+// itself faked — `openNote` stands in for the click and delivers the note's own response,
+// which is precisely what the SPA does.
+
+/** The live note body, re-addressed to `noteId`. Only the id moves. */
+const detailFor = (noteId) => {
+  const body = clone(DETAIL);
+  body.data.items[0].note_card.note_id = noteId;
+  return body;
+};
+
+/** The detail refusal — the same 461 shape as the board feed's, on the note-detail
+ * envelope (`data.items` is what is missing here). */
+const detailRefusal = () => ({ code: 0, success: true, msg: "", data: {} });
+
+/** The sourceIds one note's expansion is EXPECTED to yield, derived from the parser. */
+const imageIdsOf = (noteId) =>
+  parseNoteDetail(detailFor(noteId), { host: HOST }).items.map((item) => item.sourceId);
+
+/**
+ * A rednote source with expansion ON: `pages` drive the board scroll exactly as above, and
+ * `answer(noteId)` decides what the page returns when that note is opened (a body, or null
+ * for a note that never answers).
+ */
+function expandingSource(pages = [], { answer = (noteId) => detailFor(noteId), armed = null, ...overrides } = {}) {
+  const state = { scrolls: 0, opened: [], closed: 0, sleeps: 0 };
+  const waiter = createNoteDetailWaiter();
+  const expander = createNoteExpander({
+    waiter,
+    host: HOST,
+    random: () => 0,
+    // A fake `sleep` that always resolves turns an UNBOUNDED wait for a note's response
+    // into a HANG rather than a failure, and a hanging suite reports nothing at all.
+    sleep: async () => { if ((state.sleeps += 1) > 50) throw new Error("the note-open wait never gave up"); },
+    pacingMs: 0,
+    pacingJitterMs: 0,
+    timeoutMs: 0,
+    openNote: async (item) => {
+      const noteId = noteIdOf(item);
+      state.opened.push(noteId);
+      const body = answer(noteId);
+      if (body) waiter.onDetail(body, `https://webapi.rednote.com/api/sns/web/v1/feed`);
+      return true;
+    },
+    closeNote: async () => { state.closed += 1; },
+    ...overrides,
+  });
+  if (armed) expander.arm({ knownSet: armed, armed: true });
+
+  let next = 0;
+  const source = createRednoteSource({
+    host: HOST,
+    scope: SCOPE,
+    sleep: async () => {},
+    maxIdleRounds: 3,
+    scroll: () => {
+      state.scrolls += 1;
+      if (next < pages.length) {
+        const [json, url] = pages[next];
+        next += 1;
+        source.onResponse(json, url);
+      }
+    },
+    expandItems: expander.expandItems,
+    isFatalExpandFailure: isRednoteChallenge,
+  });
+  return { source, expander, state };
+}
+
+test("rednote expansion: a note's cover is replaced by its images, and a video note keeps its cover", async () => {
+  // The whole of K3b in one sweep. Page 1 of the committed fixture is 2 video rows and 1
+  // image row; only the image row is opened, and it fans out to its nine images.
+  const { source, expander, state } = expandingSource([[lastPage(), feedUrl(PAGE1.data.cursor)]]);
+  source.onResponse(PAGE1, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  const imageRows = PAGE1.data.notes.filter((note) => note.type !== "video");
+  const videoRows = PAGE1.data.notes.filter((note) => note.type === "video");
+  assert.equal(result.status, "complete");
+  assert.deepEqual(state.opened, imageRows.map((note) => note.note_id), "only the image notes were opened");
+  assert.equal(state.closed, state.opened.length, "every opened note was closed — the board must keep scrolling");
+
+  // Feed order preserved, with each image row's single cover swapped for its images.
+  const expected = PAGE1.data.notes.flatMap((note) =>
+    (note.type === "video" ? [note.note_id] : imageIdsOf(note.note_id)));
+  assert.deepEqual(recorder.ids(), expected);
+  for (const id of videoRows.map((n) => n.note_id)) {
+    assert.equal(recorder.ids().includes(id), true, `the video note lost its cover (${id})`);
+  }
+  // Every expanded item is keyed `<note_id>:<index>` — a namespace of its own, which is
+  // what keeps a cover and its images from colliding.
+  const expanded = recorder.ids().filter((id) => id.includes(":"));
+  assert.equal(expanded.length, imageRows.length * imageIdsOf(imageRows[0].note_id).length);
+
+  const stats = expander.stats();
+  assert.equal(stats.expanded, imageRows.length);
+  assert.equal(stats.refused, videoRows.length);
+  assert.equal(stats.partial, false);
+});
+
+test("rednote expansion: a refused NOTE-OPEN halts the sweep resumable, like a refused board page", async () => {
+  // The asymmetry that matters (098 R7 / 485): `expandItems` degrades on a throw, which is
+  // right for a note that would not open and wrong for a refusal — degrading past one keeps
+  // opening notes against a session rednote has already flagged.
+  const store = new Map();
+  const storage = {
+    load: async (k) => store.get(k) ?? null,
+    save: async (k, v) => { store.set(k, v); },
+    remove: async (k) => { store.delete(k); },
+  };
+  const unreached = feed(FRESH_ROWS.slice(0, 3), { hasMore: false });
+  const { source, state } = expandingSource(
+    [[unreached, feedUrl(PAGE1.data.cursor)]],
+    { answer: () => detailRefusal() });
+  source.onResponse(PAGE1, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, {
+    ...engineOpts, relay: recorder.relay, storage, checkpointKey: "rednote:test",
+  });
+
+  assert.equal(result.status, "halted", "a refused note-open degraded to the cover instead of halting");
+  assert.match(result.error, /rednote refused the feed/);
+  assert.deepEqual(recorder.ids(), [], "the refused page's items are not drained against a flagged account");
+  assert.equal(state.closed, 1, "the board was given back even as the sweep halted");
+  for (const id of idsOf(unreached)) {
+    assert.equal(recorder.ids().includes(id), false, "the sweep kept paging after the refusal");
+  }
+});
+
+test("rednote expansion: a note that never answers keeps its cover and the sweep still completes", async () => {
+  const { source, expander } = expandingSource([[lastPage(), feedUrl(PAGE1.data.cursor)]], { answer: () => null });
+  source.onResponse(PAGE1, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  assert.deepEqual(recorder.ids(), idsOf(PAGE1), "every note fell back to exactly the cover pass's item");
+  const stats = expander.stats();
+  assert.equal(stats.degraded, PAGE1.data.notes.filter((n) => n.type !== "video").length);
+  assert.equal(stats.partial, true, "a sweep that captured less than it meant to must say so");
+});
+
+test("rednote expansion: an exhausted budget finishes the cover pass instead of halting", async () => {
+  // R13's rule. The notes past the ceiling are still swept, still relayed, still saved — at
+  // cover fidelity — and the sweep reports PARTIAL rather than pretending it expanded them.
+  const imageRows = LIVE.data.notes.filter((note) => note.type !== "video");
+  assert.ok(imageRows.length >= 3, "the live capture must have several image notes for this to bound anything");
+  const page = feed(imageRows, { hasMore: false });
+  const { source, expander, state } = expandingSource([[page, feedUrl()]], { budget: 1 });
+  source.onResponse(page, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete", "the budget is a ceiling on note-opens, not a halt");
+  assert.equal(state.opened.length, 1);
+  const expected = imageRows.flatMap((note, index) =>
+    (index === 0 ? imageIdsOf(note.note_id) : [note.note_id]));
+  assert.deepEqual(recorder.ids(), expected, "every note past the budget still ingested its cover");
+  const stats = expander.stats();
+  assert.equal(stats.budgetExhausted, true);
+  assert.equal(stats.partial, true);
+});
+
+test("rednote expansion: a re-sweep with the pre-check armed opens nothing and ingests nothing (098 R14)", async () => {
+  // The waste R14 exists to cure: without the pre-check this re-sweep re-opens every note,
+  // yields every image, and the engine dedup-skips all of them — full cost, zero result.
+  const imageRows = PAGE1.data.notes.filter((note) => note.type !== "video");
+  const known = new Set([
+    ...PAGE1.data.notes.filter((n) => n.type === "video").map((n) => n.note_id),   // video covers
+    ...imageRows.flatMap((note) => imageIdsOf(note.note_id)),                      // expanded images
+  ]);
+  const { source, expander, state } = expandingSource(
+    [[lastPage(), feedUrl(PAGE1.data.cursor)]], { armed: known });
+  source.onResponse(PAGE1, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, {
+    ...engineOpts, relay: recorder.relay, knownSet: known,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.deepEqual(state.opened, [], "a note whose images are already ingested was re-opened");
+  assert.deepEqual(recorder.ids(), [], "nothing was relayed");
+  assert.equal(result.counts.ingested, 0);
+  assert.equal(expander.stats().skippedKnown, imageRows.length);
+  // The video covers are known too, so they are SKIPPED by the engine rather than dropped
+  // by the expander — the two mechanisms compose without either double-counting.
+  assert.equal(result.counts.skipped, PAGE1.data.notes.length - imageRows.length);
+});
+
+test("rednote expansion: an armed re-sweep still opens a note that only ever gave up a cover", async () => {
+  // The mode trap, end to end. A note the LAST sweep degraded (or never reached) is known
+  // as `<note_id>` and owes its images; if the pre-check counted that, the toggle would be
+  // permanently inert on any board that was ever swept cover-only.
+  const imageRows = PAGE1.data.notes.filter((note) => note.type !== "video");
+  const known = new Set(PAGE1.data.notes.map((note) => note.note_id));   // a cover-only sweep
+  const { source, expander, state } = expandingSource(
+    [[lastPage(), feedUrl(PAGE1.data.cursor)]], { armed: known });
+  source.onResponse(PAGE1, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, {
+    ...engineOpts, relay: recorder.relay, knownSet: known,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.deepEqual(state.opened, imageRows.map((note) => note.note_id));
+  assert.deepEqual(recorder.ids(), imageRows.flatMap((note) => imageIdsOf(note.note_id)));
+  assert.equal(expander.stats().skippedKnown, 0);
+  assert.ok(result.counts.ingested > 0, "the expansion toggle silently did nothing on an already-swept board");
 });

@@ -22,7 +22,7 @@ import { platformForHost, REASON_MESSAGE, resolveSweepSpec } from "../src/bulk-c
 import { isAllowedMediaHost } from "../src/media-hosts.js";
 import { CHECKS } from "../src/drift.js";
 import { PLATFORM_PACING } from "../src/config.js";
-import { sweepLabel } from "../src/popup-view.js";
+import { sweepLabel, expansionOption } from "../src/popup-view.js";
 
 const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
 
@@ -124,5 +124,34 @@ test("a platform with per-platform pacing declares an engine block", () => {
   for (const [platform, pacing] of Object.entries(PLATFORM_PACING)) {
     assert.ok(SUPPORTED_PLATFORMS.has(platform), `pacing for unknown platform "${platform}"`);
     assert.ok(pacing.engine && typeof pacing.engine === "object", `${platform} pacing has no engine block`);
+  }
+});
+
+test("a platform offering the expansion toggle declares the pacing that bounds it", () => {
+  // 098 T5b adds a fifth unconnected place: a popup toggle, a pacing block, and the budget
+  // the toggle promises. Offer the toggle without the pacing entry and the expansion runs
+  // on the module defaults — no per-platform gap between note-opens against the one site
+  // known to refuse a scripted request.
+  for (const platform of SUPPORTED_PLATFORMS) {
+    const option = expansionOption({ platform, scope: "s", input: {} });
+    if (!option) continue;
+    const pacing = PLATFORM_PACING[platform];
+    assert.ok(pacing && pacing.noteOpen, `${platform} offers expansion with no PLATFORM_PACING.noteOpen`);
+    for (const key of ["BUDGET", "PACING_MS", "PACING_JITTER_MS", "TIMEOUT_MS", "POLL_MS"]) {
+      assert.equal(typeof pacing.noteOpen[key], "number", `${platform} noteOpen.${key}`);
+    }
+  }
+});
+
+test("every element popup.js reaches for exists in popup.html", () => {
+  // popup.js is thin DOM glue with no unit test of its own, and a missing id does not fail
+  // quietly: `els.expandRow.hidden = true` throws on null and the whole popup renders
+  // nothing but "Checking this tab…". Adding a row means adding it in two files.
+  const js = readFileSync(new URL("../src/popup.js", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../src/popup.html", import.meta.url), "utf8");
+  const ids = [...js.matchAll(/getElementById\("([^"]+)"\)/g)].map((m) => m[1]);
+  assert.ok(ids.length >= 10, "the id scan found nothing — the pattern moved");
+  for (const id of ids) {
+    assert.match(html, new RegExp(`id="${id}"`), `popup.html has no #${id}`);
   }
 });

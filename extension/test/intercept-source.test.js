@@ -370,3 +370,72 @@ test("a THROW from onExpandFailure cannot kill the sweep it exists to describe",
 
   assert.deepEqual(ids(await collect(source.enumerate())), ["a"]);
 });
+
+// MARK: - T5b: a REFUSED expansion is not a degraded one (098 D8)
+//
+// Fail-open is right when the expansion merely did not arrive and wrong when the origin
+// turned us away: rednote's note-open can come back as the same risk-control refusal the
+// board feed can, and degrading past one keeps opening notes against a flagged session.
+// The predicate is injected so the seam stays platform-blind — and so X, which supplies
+// none, behaves exactly as it did.
+
+test("an expandItems throw the caller calls FATAL is re-raised, not degraded", async () => {
+  const refusal = Object.assign(new Error("rednote refused the feed"), { challenge: true });
+  const source = makeSource({
+    expandItems: async () => { throw refusal; },
+    isFatalExpandFailure: (error) => error.challenge === true,
+  });
+  source.onResponse(page(["a", "b"], { endOfFeed: true }));
+
+  // The page's own items are NOT yielded: the engine halts resumable and a resume re-walks
+  // them with dedup-skip, which is the same trade the push-side fatal route makes.
+  const seen = [];
+  const thrown = await (async () => {
+    try {
+      for await (const item of source.enumerate()) seen.push(item.sourceId);
+      return null;
+    } catch (e) { return e; }
+  })();
+  assert.equal(thrown, refusal);
+  assert.deepEqual(seen, []);
+});
+
+test("a NON-fatal throw still degrades even when a predicate is supplied", async () => {
+  // The predicate must decide per error, not per sweep. A note that would not open is the
+  // common case and must never stop a 400-note sweep.
+  const failures = [];
+  const source = makeSource({
+    expandItems: async () => { throw new Error("the note never opened"); },
+    isFatalExpandFailure: (error) => error.challenge === true,
+    onExpandFailure: (error) => failures.push(error),
+  });
+  source.onResponse(page(["a"], { endOfFeed: true }));
+
+  assert.deepEqual(ids(await collect(source.enumerate())), ["a"]);
+  assert.equal(failures.length, 1);
+});
+
+test("with NO predicate, every expansion failure degrades — X's behaviour, unchanged", async () => {
+  const source = makeSource({
+    expandItems: async () => { throw Object.assign(new Error("refused"), { challenge: true }); },
+  });
+  source.onResponse(page(["a"], { endOfFeed: true }));
+
+  assert.deepEqual(ids(await collect(source.enumerate())), ["a"]);
+});
+
+test("a fatal expansion failure is NOT reported through onExpandFailure", async () => {
+  // `onExpandFailure` describes a sweep that captured less than it meant to. A refusal is
+  // not that — it is the sweep stopping — and logging it as a degradation would put a
+  // "degraded to the cover" line in front of the halt that actually happened.
+  const failures = [];
+  const source = makeSource({
+    expandItems: async () => { throw Object.assign(new Error("refused"), { challenge: true }); },
+    isFatalExpandFailure: () => true,
+    onExpandFailure: (error) => failures.push(error),
+  });
+  source.onResponse(page(["a"], { endOfFeed: true }));
+
+  await collect(source.enumerate()).catch(() => {});
+  assert.deepEqual(failures, []);
+});

@@ -27,6 +27,10 @@ import { createThreadExpander, featuresFromURL, resolveQueryId } from "./twitter
 import { createHookProxyFetch } from "./hook-proxy.js";
 import { makeSavedFeedFetch, instagramSavedDriver } from "./bulk-instagram.js";
 import { createRednoteSource } from "./rednote-source.js";
+import { isNoteDetailRequest } from "./bulk-rednote.js";
+import {
+  createNoteExpander, createPageNoteDriver, isRednoteChallenge,
+} from "./rednote-detail-client.js";
 import { browser } from "./browser.js";
 
 /**
@@ -37,11 +41,17 @@ import { browser } from "./browser.js";
  * @param spec.platform      "pinterest" | "twitter" (the job's platform).
  * @param spec.input         driver input (a board `{ boardId, boardUrl }` / X ignores it).
  * @param spec.resolveVideo  opt-in: relay the resolved MP4 instead of the poster.
- * @returns `{ jobId, caps, status, cursor, counts, error }`.
+ * @param spec.expandNotes   opt-in (rednote): open each note for the rest of its images.
+ * @param opts.expansion     the note-open expander when `expandNotes` is on, else null.
+ *                           `{ arm, stats }` — armed with the known-set once it is loaded
+ *                           (the pre-check cannot exist before then), read back afterwards
+ *                           so the sweep can report a PARTIAL expansion as a first-class
+ *                           outcome (098 R7) rather than a silent shortfall.
+ * @returns `{ jobId, caps, status, cursor, counts, expansion, error }`.
  */
 export async function runBulkSweep(spec, {
   transport, driver, storage = null, config = {}, onProgress = null, sleep, random, log = () => {},
-  earlyStopThreshold = null,
+  earlyStopThreshold = null, expansion = null,
 }) {
   const { platform, input, scope = null, totalEstimate = null, resolveVideo = false } = spec;
 
@@ -67,18 +77,36 @@ export async function runBulkSweep(spec, {
   const cleanMarkerKey = sweepCleanMarkerKey({ platform, scope, input });
   const freshStart = !prior;
   const engineConfig = { ...config };
-  if (earlyStopThreshold && freshStart && storage && storage.load) {
-    const lastClean = await storage.load(cleanMarkerKey);
-    if (lastClean && lastClean.clean === true) {
-      engineConfig.STOP_AFTER_CONSECUTIVE_SKIPS = earlyStopThreshold;
-      log("re-sweep early-stop armed (prior sweep clean), threshold", earlyStopThreshold);
-    }
+  // Read once, used by two optimisations with the same precondition (a FRESH sweep whose
+  // prior run of this scope closed clean): Instagram's early-stop, and rednote's
+  // note-level pre-check. Only read when one of them could be armed, so the storage call
+  // is not made on every sweep for nothing.
+  const lastClean = freshStart && storage && storage.load && (earlyStopThreshold || expansion)
+    ? await storage.load(cleanMarkerKey) : null;
+  const priorClean = !!lastClean && lastClean.clean === true;
+  if (earlyStopThreshold && priorClean) {
+    engineConfig.STOP_AFTER_CONSECUTIVE_SKIPS = earlyStopThreshold;
+    log("re-sweep early-stop armed (prior sweep clean), threshold", earlyStopThreshold);
   }
 
   const { jobId, caps } = await transport({
     type: BULK.open, platform, scope, totalEstimate, resumeJobId,
   });
   const knownSet = new Set(await transport({ type: BULK.known, jobId }));
+
+  // 098 R14 + the mode trap. The note-level pre-check stops a re-sweep re-opening ~400
+  // notes to ingest nothing, and it is armed only when the prior sweep of this scope closed
+  // clean AND was at least as RICH as this one — `sweepMode` records which pass ran, because
+  // a cover-only sweep leaves every note's `<note_id>` known and would otherwise skip every
+  // note-open of the first expansion sweep. See `armsNotePreCheck`.
+  if (expansion) {
+    const armed = priorClean && armsNotePreCheck(lastClean, sweepMode(spec));
+    expansion.arm({ knownSet, armed });
+    if (!armed) {
+      log("note-level pre-check disarmed — prior sweep was",
+        lastClean ? `${lastClean.mode || "an older build"} / clean=${lastClean.clean}` : "absent");
+    }
+  }
 
   // Stamp the (possibly reopened) jobId into every checkpoint the engine writes, so a
   // later resume can reopen this same job. The engine stays jobId-agnostic — it just
@@ -154,16 +182,61 @@ export async function runBulkSweep(spec, {
   // forcing the next sweep to full-walk and re-attempt the stray. Persisted separately from
   // the (now-cleared) checkpoint. Best-effort — a write failure only forgoes a future
   // optimisation, so it LOGs rather than failing an otherwise-successful sweep.
+  const expansionStats = expansion ? expansion.stats() : null;
   if (result.status === "complete" && storage && storage.save) {
     try {
       const clean = result.counts.retryableFailed === 0 && result.counts.permanentFailed === 0;
-      await storage.save(cleanMarkerKey, { clean });
+      // The MODE rides beside `clean` (098 R14's mode trap). Without it a marker says only
+      // "the last sweep of this board was failure-free" — which is true of a cover-only
+      // sweep and of an expansion sweep alike, and arming an expansion sweep's note-level
+      // pre-check off the former skips every note-open there is. A marker from an older
+      // build has no `mode` at all; that reads as UNKNOWN and arms nothing, while leaving
+      // the `clean` rule Instagram's early-stop uses exactly as it was.
+      await storage.save(cleanMarkerKey, { clean, mode: sweepMode(spec) });
     } catch (error) {
       log("clean-marker write failed (non-fatal — next sweep just full-walks):", String(error));
     }
   }
 
-  return { jobId, caps, ...result };
+  // A sweep where some notes expanded and some kept their cover is NOT the same sweep as
+  // one where all of them expanded, and before this it reported identically (098 R7). The
+  // stats ride out on the result so the popup, the log line and any caller can tell them
+  // apart — `expansion.partial` is the one field that answers it.
+  return { jobId, caps, ...result, expansion: expansionStats };
+}
+
+/** Which PASS this sweep runs: the baseline every platform has, or rednote's note-open
+ * expansion (098 D4). Recorded in the clean marker, and compared against the marker's on
+ * the next sweep. */
+export function sweepMode(spec) {
+  return spec && spec.expandNotes ? "expansion" : "cover";
+}
+
+/** How rich each recorded pass is. Ordered, because the question the pre-check asks is not
+ * "was the prior sweep the same?" but "did the prior sweep capture at least what this one
+ * is about to?". */
+const MODE_RANK = Object.freeze({ cover: 0, expansion: 1 });
+
+/**
+ * May this sweep trust the prior clean sweep's coverage enough to pre-check the known-set
+ * per NOTE (098 R14), given the marker it left?
+ *
+ *   prior expansion → this expansion : YES — the R14 case, the whole point.
+ *   prior cover     → this expansion : no  — every note still owes its images.
+ *   prior expansion → this cover     : no  — a cover was never keyed `<note_id>:<index>`
+ *                                            (the cover pass has no note-open to skip
+ *                                            anyway, so this arm is belt and braces).
+ *   no recorded mode                 : no  — a marker written by a build that predates
+ *                                            this field. UNKNOWN is not "cover" and is not
+ *                                            "expansion"; it arms nothing, and every rule
+ *                                            that existed before it keeps working.
+ *
+ * `clean` is the caller's to check — this answers only the coverage half.
+ */
+export function armsNotePreCheck(marker, mode) {
+  const prior = marker ? MODE_RANK[marker.mode] : undefined;
+  if (prior === undefined) return false;
+  return prior >= MODE_RANK[mode];
 }
 
 /** A stable per-target checkpoint key: the same board / bookmarks-set resumes across
@@ -318,22 +391,56 @@ function buildInstagramDriver({ loc, fetchImpl, log = () => {} }) {
   return { driver: instagramSavedDriver({ fetchJson, host: loc.host }), dispose: () => {} };
 }
 
-/** Build the rednote board driver (098 T3): subscribe to the MAIN-world hook's board-feed
+/** Build the rednote board driver (098 T3/T5b): subscribe to the MAIN-world hook's
  * messages and feed them to the push→pull source, which scrolls to page. Shaped like
  * buildTwitterDriver — and deliberately smaller. There is no credential to harvest and no
  * proxy to wire, because rednote's `X-s` is signed for the url it was issued for and
  * cannot be replayed onto a follow-up (098 D1). `dispose` REMOVES the listener: without it
- * every launch leaks another live listener feeding a dead source. */
-function buildRednoteDriver({ win, host, scope, log = () => {} }) {
+ * every launch leaks another live listener feeding a dead source.
+ *
+ * ONE hook stream, TWO destinations. The hook forwards the board feed and — when the note
+ * detail is being read — each note's own `POST /v1/feed`, on the same envelope tag. They
+ * are told apart here by URL: the board pages go to the source, a detail body goes to the
+ * expander's waiter. Routing on the url rather than on the payload is what stops a detail
+ * response being fed to `parseBoardFeedPage`, whose challenge detector would read a body
+ * with no `data.notes` as a REFUSAL and halt the sweep.
+ *
+ * Expansion is OFF unless the user asked for it (098 R13): with `expandNotes` false this
+ * function is exactly the cover-pass driver it was, no expander, no note-opens, no budget.
+ */
+function buildRednoteDriver({ win, host, scope, log = () => {}, expandNotes = false, noteOpen = {} }) {
+  const expansion = expandNotes
+    ? createNoteExpander({
+      host,
+      log,
+      budget: noteOpen.BUDGET,
+      pacingMs: noteOpen.PACING_MS,
+      pacingJitterMs: noteOpen.PACING_JITTER_MS,
+      timeoutMs: noteOpen.TIMEOUT_MS,
+      pollMs: noteOpen.POLL_MS,
+      ...createPageNoteDriver({ win, settleMs: noteOpen.SETTLE_MS, log }),
+    })
+    : null;
+
   const source = createRednoteSource({
     host,
     scope,
     scroll: () => win.scrollTo(0, win.document.body.scrollHeight),
     onExpandFailure: (error) => log("note expansion degraded to the cover:", String(error)),
+    expandItems: expansion ? expansion.expandItems : null,
+    // A note-detail REFUSAL is not a degradation (098 D8): it is the same risk-control
+    // answer the board feed can give, and degrading past one keeps opening notes against a
+    // session rednote has already flagged. The seam re-raises it and the engine halts
+    // resumable.
+    isFatalExpandFailure: expansion ? isRednoteChallenge : null,
   });
   const onMessage = (event) => {
     if (event.source === win && event.data && event.data.source === REDNOTE_FEED_MESSAGE_SOURCE) {
-      source.onResponse(event.data.json, event.data.url);
+      if (expansion && isNoteDetailRequest(event.data.url)) {
+        expansion.onDetail(event.data.json, event.data.url);
+      } else {
+        source.onResponse(event.data.json, event.data.url);
+      }
     }
   };
   win.addEventListener("message", onMessage);
@@ -341,7 +448,11 @@ function buildRednoteDriver({ win, host, scope, log = () => {} }) {
   // loaded on navigation. Without it a board whose notes all fit on page 1 captures
   // nothing: the scroll only triggers the empty tail.
   win.postMessage({ source: REDNOTE_REPLAY_SOURCE }, win.location.origin);
-  return { driver: source, dispose: () => win.removeEventListener("message", onMessage) };
+  return {
+    driver: source,
+    dispose: () => win.removeEventListener("message", onMessage),
+    expansion,
+  };
 }
 
 /**
@@ -363,7 +474,11 @@ const DRIVER_BUILDERS = Object.freeze({
     buildInstagramDriver({ loc: win.location, fetchImpl: win.fetch.bind(win), log }),
   pinterest: ({ win }) =>
     buildPinterestDriver({ doc: win.document, loc: win.location, fetchImpl: win.fetch.bind(win) }),
-  rednote: ({ win, host, scope, log }) => buildRednoteDriver({ win, host, scope, log }),
+  rednote: ({ win, host, scope, log, spec, pacing }) => buildRednoteDriver({
+    win, host, scope, log,
+    expandNotes: !!(spec && spec.expandNotes),
+    noteOpen: (pacing && pacing.noteOpen) || {},
+  }),
 });
 
 /** Platforms the controller can build a driver for — DERIVED from the builder map, so a
@@ -406,21 +521,22 @@ export function registerBulkController(win, browserApi) {
     // on: a bulk sweep is a rare, user-initiated action, and "why did my sweep do nothing"
     // is otherwise invisible. Every line is prefixed so it's easy to filter.
     const log = (...args) => { try { console.log("[Atelier bulk]", ...args); } catch { /* ignore */ } };
-    log("START", spec.platform, spec.scope || "", "resolveVideo=" + !!spec.resolveVideo);
+    log("START", spec.platform, spec.scope || "", "resolveVideo=" + !!spec.resolveVideo,
+      "expandNotes=" + !!spec.expandNotes);
 
     const transport = makeRuntimeTransport((m) => browserApi.runtime.sendMessage(m));
     const storage = makeChromeStorage(browserApi.storage.local);
     const host = win.location.host;
     const pacing = PLATFORM_PACING[spec.platform] || {};
-    const { driver, dispose } = DRIVER_BUILDERS[spec.platform](
-      { win, host, scope: spec.scope, transport, log });
+    const { driver, dispose, expansion = null } = DRIVER_BUILDERS[spec.platform](
+      { win, host, scope: spec.scope, transport, log, spec, pacing });
     log("driver built for", spec.platform, "on", host);
     // Per-platform engine pacing (13A): IG sweeps gentler; X/Pinterest inherit the globals.
     // (No per-item progress log — the app's Sweeps tab owns live progress; the final
     // `sweep SETTLED` line below carries the totals.)
     const earlyStopThreshold = (pacing.reSweep && pacing.reSweep.STOP_AFTER_CONSECUTIVE_SKIPS) || null;
-    runBulkSweep(spec, { transport, driver, storage, config: pacing.engine || {}, log, earlyStopThreshold })
-      .then((result) => { log("sweep SETTLED", result.status, result.earlyStopped ? "(early-stop)" : "", JSON.stringify(result.counts), result.error || ""); sendResponse({ ok: true, result }); })
+    runBulkSweep(spec, { transport, driver, expansion, storage, config: pacing.engine || {}, log, earlyStopThreshold })
+      .then((result) => { log("sweep SETTLED", result.status, result.earlyStopped ? "(early-stop)" : "", JSON.stringify(result.counts), result.expansion ? "expansion " + JSON.stringify(result.expansion) : "", result.error || ""); sendResponse({ ok: true, result }); })
       .catch((error) => { log("sweep THREW", String(error)); sendResponse({ ok: false, error: String(error) }); })
       .finally(() => { win.__atelierSweepInFlight = false; dispose(); }); // release guard + tear down listener
     return true; // async sendResponse

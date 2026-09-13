@@ -5,6 +5,8 @@
 // resolved sweep spec / a terminal sweep result to the exact copy the toolbar shows —
 // the kind of small string logic that silently rots when nothing exercises it.
 
+import { NOTE_OPEN_BUDGET } from "./config.js";
+
 /** The Start-button label for a resolved sweep spec: which feed this sweep targets.
  * X main bookmarks vs. an X bookmark FOLDER vs. a named Pinterest board. */
 export function sweepLabel(spec) {
@@ -23,9 +25,34 @@ export function sweepLabel(spec) {
   if (spec.platform === "rednote") {
     // No board NAME is available: the board-feed response carries notes and a cursor, not
     // a title, and the popup has only the URL. An id is honest; an invented name is not.
-    return "Sweep this rednote board (covers only)";
+    // What the sweep will CAPTURE is the expansion toggle's business, not the label's —
+    // the label would otherwise have to be re-rendered on every tick of a checkbox.
+    return "Sweep this rednote board";
   }
   return `Sweep board: ${spec.scope.replace(/^board:/, "")}`;
+}
+
+/** The per-note expansion toggle (098 D4 / R13), or null on a platform that has no such
+ * pass. Cover-only is the DEFAULT and this is what offers the other mode — so the copy has
+ * to carry the cost, not just name the feature: it is one page-open per note, it is the
+ * difference between minutes and an hour, and it is a much heavier automation footprint on
+ * a site that already fingerprints browsing. The budget is stated as a number because "it
+ * stops eventually" is not a thing a user can plan around.
+ *
+ * `budget` is threaded from config rather than retyped, so the number the popup promises
+ * and the number the expander enforces cannot drift. */
+export function expansionOption(spec, { budget = NOTE_OPEN_BUDGET } = {}) {
+  if (!spec || spec.platform !== "rednote") return null;
+  return {
+    platform: "rednote",
+    label: "Also open each note for its other photos (much slower)",
+    detail:
+      `Off by default. On, the sweep opens every note on the board — up to ${budget} per `
+      + "sweep — so it can save a note's whole photo set instead of just its cover. A large "
+      + "board takes tens of minutes rather than a few, and it is a far heavier automation "
+      + "footprint. Video notes and anything past the budget keep their cover, and the "
+      + "sweep says so when it finishes.",
+  };
 }
 
 /** The account-risk warning the popup MUST show — behind an acknowledge gate — before a
@@ -33,18 +60,30 @@ export function sweepLabel(spec) {
  * optional). Instagram's saved-posts sweep carries a real throttle/checkpoint risk to the
  * user's account (the dominant risk the whole feature is designed around); rednote's
  * carries the same risk AND a capability limit worth stating before the user waits out a
- * sweep (098 D8 / R13 — covers only, no carousels, no video). X and Pinterest have no such
- * gate. Pure so popup.js stays chrome/DOM glue. */
+ * sweep (098 D8 / R13) — and for rednote the copy depends on `spec.expandNotes`, because the
+ * two passes carry materially different footprints. X and Pinterest have no such gate. Pure
+ * so popup.js stays chrome/DOM glue. */
 export function sweepWarning(spec) {
   if (spec && spec.platform === "rednote") {
+    // The gate's copy follows the MODE, because the risk it is gating does: the cover pass
+    // is one intercepted response per ~30 notes, expansion is a page-open per note. Asking
+    // a user to acknowledge the first and then silently running the second would make the
+    // acknowledgement meaningless (098 D8 — the gate is mandatory, not decorative), so
+    // popup.js re-renders this and re-arms the checkbox whenever the toggle moves.
+    const expanding = spec.expandNotes === true;
     return {
       platform: "rednote",
       text:
         "rednote actively fingerprints browsing (it refused a scripted request with a 461 "
         + "during development) and may throttle or block your account for automated "
         + "browsing. This sweep paces itself gently and pauses if rednote refuses — but "
-        + "the risk is real, so sweep at your own risk. It saves ONE cover image per note: "
-        + "a note's other photos and its video are not captured.",
+        + "the risk is real, so sweep at your own risk. "
+        + (expanding
+          ? "You have asked it to OPEN EVERY NOTE for its other photos: that is one page-open "
+            + "per note (hundreds on a large board), far slower, and a much heavier footprint "
+            + "than the cover pass. Video notes still save only their cover."
+          : "It saves ONE cover image per note: a note's other photos and its video are not "
+            + "captured."),
     };
   }
   if (spec && spec.platform === "instagram") {
@@ -73,9 +112,27 @@ export function startEnabled(spec, acknowledged) {
  * `complete` → Done; an explicit Cancel → Stopped; every other halt is resumable. */
 export function terminalMessage(result) {
   const n = (result && result.counts && result.counts.ingested) || 0;
-  if (result && result.status === "complete") return `Done — ${n} ingested.`;
+  if (result && result.status === "complete") {
+    // 098 R7: a PARTIAL expansion is its own outcome. "Done — 412 ingested" is the same
+    // sentence whether every note gave up its photos or forty of them quietly kept just a
+    // cover, and the whole reason the toggle exists is the difference between those two.
+    const shortfall = expansionShortfall(result.expansion);
+    return shortfall ? `Done, partly expanded — ${n} ingested (${shortfall}).` : `Done — ${n} ingested.`;
+  }
   if (result && result.haltStatus === "halted") return `Stopped — ${n} ingested.`;
   return `Paused (resumable) — ${n} ingested.`;
+}
+
+/** How an expansion pass fell short, phrased for the status line, or null when it did not.
+ * Kept apart from `terminalMessage` so the two reasons a sweep can be partial — notes that
+ * would not expand, and a budget that ran out — are each named rather than collapsed into
+ * "partial". A user can act on the second (sweep again) and not on the first. */
+export function expansionShortfall(expansion) {
+  if (!expansion || !expansion.partial) return null;
+  const parts = [];
+  if (expansion.degraded > 0) parts.push(`${expansion.degraded} kept covers only`);
+  if (expansion.budgetExhausted) parts.push(`the ${expansion.budget}-note budget ran out — sweep again for the rest`);
+  return parts.join("; ") || "some notes kept covers only";
 }
 
 /** Map a dispatch reply to the popup's terminal UI state: `{ status, enableStart }`.

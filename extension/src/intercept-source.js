@@ -53,6 +53,15 @@ export class SourceStallError extends Error {
  *                           only makes the loss observable. Guarded: a throw from it is
  *                           swallowed, because a reporting hook must never be able to kill
  *                           a sweep it exists to describe.
+ * @param opts.isFatalExpandFailure optional `(error) => boolean`. Expansion is fail-open by
+ *                           default (below), which is right for work that did not come
+ *                           back and WRONG for work that was REFUSED: rednote's note-open
+ *                           can come back as the same risk-control refusal the board feed
+ *                           can (098 D8), and degrading past one keeps opening notes
+ *                           against a flagged session. When this says an expansion error
+ *                           is fatal it is RE-RAISED from `enumerate` — the same halt the
+ *                           push-side `page.error` route takes — instead of degrading.
+ *                           Omitted → nothing is fatal, which is exactly X's behaviour.
  * @param opts.expandItems   optional `async (items) => items` applied to a page's items
  *                           just before they're yielded. Runs on the PULL side, not in
  *                           `onResponse`: expansion can be async and can fail, and the
@@ -72,6 +81,7 @@ export function createInterceptSource({
   StallError = SourceStallError,
   expandItems = null,
   onExpandFailure = null,
+  isFatalExpandFailure = null,
 } = {}) {
   if (typeof parsePage !== "function") throw new Error("createInterceptSource requires parsePage");
 
@@ -117,6 +127,12 @@ export function createInterceptSource({
         try {
           items = (await expandItems(items)) || page.items;
         } catch (error) {
+          // A REFUSAL is not a shortfall. Fail-open assumes the expansion merely did not
+          // arrive; when the platform says the origin turned us away, degrading would keep
+          // the sweep asking. Re-raised here rather than routed through `pendingError`
+          // because the pull side is already where it belongs — the engine catches it,
+          // halts RESUMABLE, and the checkpoint survives.
+          if (isFatalExpandFailure && isFatalExpandFailure(error)) throw error;
           items = page.items;                     // expansion is a bonus, never a blocker
           // ...but a silent bonus is how a sweep reports success having captured strictly
           // less than it meant to (098 R7): for rednote a failed note-detail is 1 cover

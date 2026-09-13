@@ -16,8 +16,11 @@
 // `/collage-creation-tool/?boardId=<digits>` — which the popup reads from the DOM. That
 // button is the current board's, so no slug disambiguation is needed.
 //
-// `spec` carries NO `resolveVideo` — that's a user toggle the popup folds in before
-// building the start message; the resolver only decides WHAT can be swept, not HOW.
+// `spec` carries NO `resolveVideo` and NO `expandNotes` — those are user toggles the popup
+// folds in before building the start message; the resolver only decides WHAT can be swept,
+// not HOW. Both follow the same rule, deliberately: a toggle answers a question the page
+// cannot (does this user want the video bytes? the slow per-note expansion?), so putting
+// one here would make the resolver's answer depend on something it cannot see.
 
 import { splitPathname } from "./extractors/base.js";
 
