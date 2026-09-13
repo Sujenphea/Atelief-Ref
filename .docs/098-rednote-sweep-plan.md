@@ -222,79 +222,131 @@ actively. So:
 
 ---
 
+## Review outcomes (2026-09-13)
+
+Sixteen issues raised across architecture, code quality, tests and performance.
+Recorded here because several change the task ORDER, and one (R14) found a gap
+rather than a preference.
+
+| # | Decision |
+|---|---|
+| R1–R4 | Settled by the captures, not by argument: resume cannot be seekable; detail is required; the ladder is staged; registration gets a consistency test |
+| R5 | A test evaluates each MAIN-world hook in a sandbox and asserts its literal tags + matcher equal `bulk-messages.js` — replacing 8 "KEEP IN SYNC" comments with a gate |
+| R6 | `DRIVER_BUILDERS` map; derive `SUPPORTED_PLATFORMS` from its keys. Deletes the duplicated list AND the `else`-defaults-to-Pinterest branch |
+| R7 | `onExpandFailure` now (count + log the degradation); a first-class `partial` outcome is **on the K3b ship list**, not assumed |
+| R8 | One `pickRednoteImage` + one `rednoteAuthor` (both key spellings). Cross-platform pickers stay separate — their rules genuinely differ |
+| R9 | **`intercept-source.test.js` is written FIRST**, before R1/R7 touch the seam |
+| R10 | `detectRednoteChallenge` mirroring IG's, plus coverage of `pendingError` — a path with no production user and no test today |
+| R11 | Sanitize the real captures into the two-fixture split. Baseline staleness (72d vs 30d) noted, **not** queued |
+| R12 | `bulk-rednote-integration.test.js` — the `cursor: ""` loop is invisible to per-page tests |
+| R13 | Budget the cost; expansion becomes an opt-in popup toggle beside `resolveVideo`; cover-only is the default |
+| R14 | **Known-set pre-check before expansion** — see below |
+| R15 | Clear the hook replay buffer after a replay; bound it by bytes as well as count |
+| R16 | **Do nothing** about the per-item `SELECT status FROM job`. A real N+1, but a µs local PK read against a deliberate 1,500–2,700 ms pacing budget — optimising it measures the wrong thing |
+
+### R14 — the gap, not a preference
+
+`expandItems` runs inside `intercept-source.enumerate`, *before* the engine's
+known-set check skips the relay. So re-sweeping an already-captured board under
+K3b re-scrolls it, **re-opens all ~400 notes**, yields ~3,600 items, skips every
+one, and ingests nothing — full cost, zero result, with early-stop disarmed so
+nothing short-circuits it.
+
+The fix is to pre-check the known-set before opening a note. That is only cheap
+if the `sourceId` scheme makes "is this note done?" a lookup rather than a prefix
+scan over `noteId:index` entries — so **Open question 2 is now a design input to
+T5, not a follow-up.**
+
 ## Tasks
 
-### T0 — the `toRednoteOriginal` fix *(ships independently of everything below)*
-Drop-two-segments + `file_id` preference. Tests: both URL shapes, `file_id`
-empty vs populated, idempotence, non-rednote passthrough, unparseable input.
-Fixture rows lifted from the two captures. **Effort: S.**
+Ordering matters: T1a exists because T1b and T5 modify a seam that has no tests.
 
-### T1 — the pure parser: `bulk-rednote.js`, cover pass
-`parseBoardFeedPage(json, { host, cursor })` → `{ items, endOfFeed, cursor }`;
-`pickRednoteImage(imageish)`; `mapBoardNote(note, ctx)`; `cursorFromRequestURL(url)`
-(must handle the **protocol-relative** `//webapi…` form — `new URL()` throws on
-it). No browser API; unit-tested against the committed fixture. **Effort: M.**
+### T0 — the `toRednoteOriginal` fix ✅ **shipped** (changelog 468)
+Drop-two-segments; idempotence; short-path passthrough. 636 → 639 tests.
 
-### T2 — `rednote-hook.js` + wiring
-Thin config over `hook-core.js`: matcher pinned to `/api/sns/web/v1/board/note`
-(**not** host-shaped — `t2.rnote.com/api/v2/collect` and `apm-fe.rnote.com` are
-telemetry on adjacent hosts). Manifest content_scripts (MAIN `document_start` +
-ISOLATED loader) and WAR matches for both domains. `bulk-context.js` recogniser
-(board id is **24-char hex**, not digits — Pinterest's `/^\d+$/` cannot be
-copied), `REASON_MESSAGE`, `sweepLabel`, `sweepWarning`, `SUPPORTED_PLATFORMS`,
-`buildRednoteDriver`, `PLATFORM_PACING`. **Effort: M.**
+### T1a — `intercept-source.test.js` (R9, R10)
+The seam tested generically — fake `parsePage`/`scroll`/`sleep`. Must cover what
+X never exercises: `expandItems` success/throw/degrade, and the **`pendingError`
+re-raise** (no production user, no test today). **Effort S–M. Do this first.**
 
-### T3 — drift canary
-`drift.CHECKS.rednote` + a committed sanitized fixture
-(`node scripts/sanitize-capture.js`). Invariants: envelope shape, per-note cover
-resolves to an unsigned original, `has_more:false`/`cursor:""` terminates,
-`cover.url` being `""` does **not** drop the item, route matcher still matches.
-Plus T0's key rule. **Effort: S.**
+### T1b — seam changes (R1, R7, R15)
+`resumable: "scroll"`; `onExpandFailure`; replay-buffer clear + byte bound.
+Behaviour-preserving for X, now guarded by T1a. **Effort S.**
 
-### T4 — `platform-registry.test.js` (D7). **Effort: S.**
+### T2 — the pure parser: `bulk-rednote.js`, cover pass (R8, R10)
+`parseBoardFeedPage` → `{ items, endOfFeed, cursor }`; `pickRednoteImage`;
+`rednoteAuthor` (**`nick_name` and `nickname`**); `mapBoardNote`;
+`cursorFromRequestURL` (must handle the **protocol-relative** `//webapi…` form —
+`new URL()` throws on it); `detectRednoteChallenge` (461 / empty `msg` / code).
+**Effort M.**
 
-### T5 — K3b: note-open driving + detail parser. **Effort: L.** Gated on Open q2.
+### T3 — `rednote-hook.js` + wiring (R5, R6)
+Matcher pinned to `/api/sns/web/v1/board/note` — **not** host-shaped
+(`t2.rnote.com`, `apm-fe.rnote.com` are telemetry on adjacent hosts). Manifest
+content_scripts + WAR for both domains. `bulk-context.js` recogniser (board id is
+**24-char hex** — Pinterest's `/^\d+$/` cannot be copied), `REASON_MESSAGE`,
+`sweepLabel`, `sweepWarning`, `DRIVER_BUILDERS` map, `PLATFORM_PACING`. Plus the
+hook-sync test. **Effort M.**
 
-### T6 — K4: `selectStreamRung` + `videoCandidates[]` + 422 rung-advance.
-**Effort: M.** Blocked on a video-note capture.
+### T4 — fixtures + canaries (R11, R12, and R4's registry test)
+Sanitize the captures into `rednote-board.json` (parser) +
+`rednote-board-live.json` (canary). `drift.CHECKS.rednote`.
+`bulk-rednote-integration.test.js` — pagination, `has_more:false`,
+**`cursor:"" does not loop`**, 461 → halt resumable, dedup-skip on re-sweep.
+`platform-registry.test.js`. **Effort M.**
+
+### T5 — K3b: note-open driving + detail parser (R13, R14, R7)
+Opt-in toggle, cover-only default, budgeted cost, known-set pre-check.
+**Effort L. Gated on Open question 2.**
+
+### T6 — K4: `selectStreamRung` + `videoCandidates[]` + 422 rung-advance
+**Effort M. Blocked on a `type: "video"` note capture.**
 
 ## Sizing
 
-**T0 S · T1 M · T2 M · T3 S · T4 S** — a shippable cover sweep.
-**T5 L · T6 M** — full fidelity, separately schedulable.
+**T1a S–M · T1b S · T2 M · T3 M · T4 M** — a shippable, tested cover sweep.
+**T5 L · T6 M** — full fidelity, separately schedulable and separately gated.
+
+## Cost budget (R13)
+
+A 400-note board, at the adopted Instagram pacing:
+
+| | Cover pass | Full fidelity |
+|---|---|---|
+| Note-opens | 0 | ~400 (serial, ≥13 min) |
+| Items | ~400 | ~3,600 |
+| Relay time | ~5–9 min | ~45–80 min |
+| Bytes | ~88 MB | ~860 MB (multi-GB at 020's observed sizes) |
+
+Cover-only is the default because of this table, not despite it.
 
 ## Test strategy
 
-- Pure mappers/parsers exported and tested separately from transport, mirroring
-  `bulk-pinterest.test.js` — a response-shape drift breaks a test, not a live run.
-- Table tests for the key rule (both URL shapes), the author mapper (`nick_name`
-  **and** `nickname`), termination (`has_more:false`, `cursor:""`, empty page),
-  and codec selection (`ef*`-only → typed refusal).
-- Edge cases that must have named tests, because each is a real observed shape:
-  `cover.url === ""`, `cover.file_id === ""`, `num` not honoured, protocol-relative
-  request URLs, 461 → challenge-halt, a note with `image_list` absent.
+- Pure mappers/parsers exported and tested apart from transport, mirroring
+  `bulk-pinterest.test.js`.
+- Table tests: the key rule (both URL shapes), the author mapper (**both**
+  spellings), termination (`has_more:false`, `cursor:""`, empty page), codec
+  selection (`ef*`-only → typed refusal).
+- Named tests for every real observed shape: `cover.url === ""`,
+  `cover.file_id === ""`, `num` not honoured, protocol-relative request URLs,
+  461 → challenge-halt, `image_list` absent.
 - Engine/ledger/endpoint need no new coverage — platform-blind.
 
 ## Risks
 
-- **461/risk-control mid-sweep** — must halt resumable, not burn.
-- **Note-open driving is the fragile half** (D4); the cover pass does not depend
-  on it, which is why they are separate phases.
-- **`xsec_token` expiry** on a long-paused sweep — re-resolve from the feed, never
-  from a checkpoint.
-- **Two domains** (`rednote.com`, `xiaohongshu.com`) in every host match.
-- **Video may be most of a board** (81 % here) — a cover-only sweep of a video
-  board is a shelf of stills. Set expectations in the popup label.
+- **461 mid-sweep** — must halt resumable. First real user of `pendingError`.
+- **Note-open driving is the fragile half**; the cover pass does not depend on it.
+- **`xsec_token` expiry** on a long-paused sweep — re-resolve from the feed.
+- **Two domains** in every host match.
+- **Video may be most of a board** (81 % here) — say so in the popup label.
+- **Drift fixtures are 72 days stale** against a 30-day window (pre-existing).
 
 ## Open questions
 
-1. **Board URL path shape** — the capture gives `board_id=69322476000000001202811f`
-   in the query and `referrer: https://www.rednote.com/`, but the *page* URL was
-   never recorded. Needed for the `bulk-context.js` recogniser.
-2. **Cover→expanded `sourceId` migration** (D4). Re-sweeping an expanded board
-   after a cover-only pass re-ingests. Decide before K3b.
-3. **Sweep entry point** — boards only (recommended, mirrors Pinterest), or also
-   a user's "My saves"?
-4. **Live Photos** — `image_list[].live_photo` exists (`false` on the sample) and
-   each image carries a `stream` object. Never captured, never scoped. Defer.
-5. **Video ladder shape** — unverified; T6 is blocked on one capture.
+1. **Board URL path shape** — never recorded; needed for the recogniser.
+2. **`sourceId` scheme across cover → expanded** — now a **design input to T5**
+   (R14), not a follow-up. Cover `<note_id>` vs expanded `<note_id>:<index>`
+   must let a pre-expansion known-check be a lookup.
+3. **Entry point** — boards only (recommended), or also "My saves"?
+4. **Live Photos** — `image_list[].live_photo` exists. Defer.
+5. **Video ladder shape** — unverified; T6 blocked on one capture.
