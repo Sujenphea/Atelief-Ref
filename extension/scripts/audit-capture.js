@@ -45,6 +45,11 @@ const STRUCTURAL = [
   /^#[0-9a-fA-F]{3,8}$/,      // dominant_color hex — derived from pixels, names nobody
   /^\s+$/,                    // whitespace-only leaves
   /^-end-$/,                  // Pinterest's end-of-feed cursor sentinel — load-bearing
+  // Container/codec literals. `mp4` is a bare word with a DIGIT in it, so the lowercase
+  // rule cannot reach it and every rednote video rung's `format` reported as a leak.
+  // Enumerated rather than loosened: `^[a-z][a-z0-9]*$` would re-excuse `testing2` and
+  // `mariosworld343`, the exact two the lowercase rule was tightened for.
+  /^(mp4|m3u8|mpd|webm|mov|h264|h265|hevc|av1|avc1|hvc1|aac|mp3|opus)$/,
   // Hosts survive by design (see normaliseHost in the sanitizer). Listed explicitly so
   // that a host is a DECISION recorded here, not something the shape rules waved through.
   /^(www\.pinterest\.com|i\.pinimg\.com|instagram\.com|www\.instagram\.com|[a-z0-9-]+\.cdninstagram\.com|[a-z0-9-]+\.fbcdn\.net|x\.com|pbs\.twimg\.com|video\.twimg\.com)$/,

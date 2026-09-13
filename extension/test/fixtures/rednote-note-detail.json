@@ -30,7 +30,7 @@
      "user": {
       "user_id": "SAMPLE_TOKEN_2",
       "nickname": "sampleuser1",
-      "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE1",
+      "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE1",
       "xsec_token": "SAMPLE_TOKEN_3"
      },
      "image_list": [

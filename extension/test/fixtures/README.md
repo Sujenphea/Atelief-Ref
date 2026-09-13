@@ -24,6 +24,7 @@ size segment for the `/originals/` rewrite). Raw captures live in the gitignored
 | `rednote-board-live.json` (captured 2026-09-13) | `GET //webapi.rednote.com/api/sns/web/v1/board/note?board_id=…&cursor=…` | The **canary's** rednote capture — a whole live board page, `notes=37 items=37 hasMore=true`. A middle page: `num=30` returned **37** notes (page size is not honoured) and the next `cursor` is literally the **last row's `note_id`**. Rows carry ONE `cover` — no `imageList`, no `video`, no `stream` — which is why K3a fans out one item per **note**. `cover.url` and `cover.file_id` are `""` on **37/37**, so `url_pre` / `url_default` / `info_list[WB_PRV\|WB_DFT]` are the only usable urls. |
 | `rednote-board.json` | same | The **composed** board page: 3 notes lifted out of the sanitized live one, keys and nesting untouched. Deliberately a FIRST page (`has_more: true`, a populated `cursor`) so an integration test can page over it. The three cover keys are one, two and three segments deep — the `<id>`, `spectrum/<id>` and `oss-sg/notes_pre_post/<id>` shapes the live board sends, with synthetic segment names and verbatim depth — and one row is `type: "normal"` against two `type: "video"`. |
 | `rednote-note-detail.json` (captured 2026-09-13) | `POST webapi.rednote.com/api/sns/web/v1/feed` | The **canary's** rednote NOTE-DETAIL capture — one whole note, `images=9 items=9 noteType=normal`. The envelope is `data.items[0].note_card`, **not** `data.notes`, which is why the challenge recognizer takes the payload key as a parameter. Nine `image_list[]` entries, all 1242×1660, `live_photo: false`, `stream: {}`, **no `video` key** — so K3b fans out one item per **image**, keyed `<note_id>:<position>`. The image keys are `oss-sg/spectrum/<id>`: **multi-segment**, the shape the old last-segment rule 404'd on. `title` and `desc` exist only here — a board row carries only `display_title` — and the author is `user.nickname` where the feed says `user.nick_name`. |
+| `rednote-note-video.json` (captured 2026-09-14) | `POST webapi.rednote.com/api/sns/web/v1/feed` | The **canary's** rednote VIDEO capture — the one artifact 098 had never had, and the reason T6 was blocked. One `type: "video"` note: a **1-entry `image_list`** (the poster, already ingested by the cover pass as `<note_id>` — which is why `parseNoteDetail` refuses to fan a video note out) plus `video.media.stream`, an object of **four arrays** keyed `EF4`/`EF5`/`EF6`/`EF7`. **Only `EF4` is populated**, so the fixture fixes the rung shape and says nothing about the ordering BETWEEN buckets — `rednote-video.js` says so where a reader will see it. The one rung is `stream_type: 258`, `format: "mp4"`, 720×960, `master_url` on `sns-v11` with one `backup_urls[]` entry on `sns-v27`: same path, different shard. Those urls are served **already unsigned** (`/stream/1/110/258/<id>_258.mp4`) and `master_url` was fetched live — **206, `video/mp4`**. `video.media_v2` is a JSON **string** duplicating the whole media object and is never parsed. |
 | `pinterest-boardfeed.json` | `GET /resource/BoardFeedResource/get/` | `resource_response.data[]` pins (`id`, `images.{size}.url`, `board`, `videos`) + `bookmark` cursor. |
 | `instagram-saved.json` (captured 2026-07-15) | `GET instagram.com/api/v1/feed/saved/posts/` | `items[].media` — trimmed to **3 posts (1 image `media_type:1`, 1 reel `media_type:2`, 1 carousel `media_type:8`)**. Per-media `pk` (the fan-out dedup key, 002 · 1A), `image_versions2.candidates[]` (poster), `video_versions[]` (reel), `carousel_media[]` (child media, each its own `pk`). |
 | `instagram-saved-page2.json` (captured 2026-07-15) | `GET instagram.com/api/v1/feed/saved/posts/?max_id=…` | A second, richer page: **11 posts → 25 fanned-out items** (an 11-child carousel + 2- and 4-child carousels + 7 reels + 1 image). Stresses large-carousel fan-out; the `?max_id=` request URL **confirms the pagination param**. |
@@ -97,6 +98,40 @@ Two other things the rednote capture taught the sweep, both fixed there rather t
 detail `nickname` — and `Neurobin`, `LEE`, `ruirui`, `snow` are shape-identical to schema
 constants, so shape alone could never reach them), and **counts are not always numbers**
 (rednote ships `interact_info` counts pre-formatted as strings: `"27.7K"`, `"5,123"`).
+
+### rednote again: the UNSIGNED half of the same CDN
+The trap has now caught three fixtures in a row — 483 the CDN host, 485 the `!transform`
+suffix, 487 the `<timestamp>/<signature>` shape — and the video capture walked into the
+same one from the other side. rednote serves **video and subtitles with no signing prefix
+at all**, and with real route where a prefix would sit: `/stream/1/110/258/<id>_258.mp4`,
+where `stream` is the service, `1` the biz version, `110` the `biz_name` and `258` the
+`stream_type`. Sanitized to `/00/00/00/00/SAMPLE.mp4` the fixture still parsed and the
+canary still went green — while proving nothing at all about the two properties the video
+ladder rests on: that the chosen url is an unsigned path `toRednoteOriginal` leaves alone
+(487), and that the filename's `_<n>` suffix agrees with the rung's `stream_type` (020's
+undecodable manual pick was a `_330`; this one is a `_258`).
+
+So `syntheticUrl` gained a second branch beside the signing-prefix one: on a rednote CDN
+path with **no** signing prefix, a segment that is a bare lowercase word or a number under
+six digits is ROUTE and is kept verbatim — it cannot carry identity by construction, being
+the same two classes the value sweep already treats as schema — and the filename keeps its
+`_<stream_type>`. Everything else in those positions is still replaced. The one visible
+side effect on the existing fixtures is that avatar urls now read
+`/avatar/SAMPLE1` instead of `/00/SAMPLE1`; `rednote-board-live.json` and
+`rednote-note-detail.json` were re-sanitized so that re-running the sweep still reproduces
+them byte for byte, and re-sanitizing the Instagram and Pinterest raws reproduces **their**
+committed files unchanged. `audit-capture.js` also learned that `mp4` is a container
+literal: it is a bare word with a digit in it, so the lowercase rule could not reach it and
+every rung's `format` reported as a leak. Enumerated, not loosened — `^[a-z][a-z0-9]*$`
+would re-excuse `testing2` and `mariosworld343`.
+
+**`video.media_v2` is deliberately destroyed.** It is a JSON *string* duplicating the whole
+media object, and the sweep treats it as the long free text it looks like, so in the fixture
+it is `"Sample text N"`. That is not damage — it is what makes "read the structured form,
+never `media_v2`" **enforceable**: a parser that reached for it would produce nothing at all
+against this fixture. `size` is likewise synthetic (it clears the numeric-id floor), which
+is a happy accident worth keeping: a selector that sorted on it would be sorting on noise,
+and sorting on size is exactly what 020 rule 1 forbids.
 
 ### Refreshing a live fixture
 ```

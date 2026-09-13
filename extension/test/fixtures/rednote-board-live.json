@@ -15,7 +15,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_4",
      "nick_name": "sampleuser1",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE1",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE1",
      "xsec_token": "SAMPLE_TOKEN_5"
     },
     "cover": {
@@ -53,7 +53,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_6",
      "nick_name": "sampleuser2",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE4",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE4",
      "xsec_token": "SAMPLE_TOKEN_7"
     },
     "interact_info": {
@@ -97,7 +97,7 @@
     "note_id": "SAMPLE_TOKEN_10",
     "display_title": "Sample text 4",
     "user": {
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE7",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE7",
      "xsec_token": "SAMPLE_TOKEN_11",
      "user_id": "SAMPLE_TOKEN_12",
      "nick_name": "sampleuser3"
@@ -175,7 +175,7 @@
     "type": "video",
     "display_title": "Sample text 5",
     "user": {
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE12",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE12",
      "xsec_token": "SAMPLE_TOKEN_16",
      "user_id": "SAMPLE_TOKEN_17",
      "nick_name": "sampleuser4"
@@ -186,7 +186,7 @@
      "xsec_token": "SAMPLE_TOKEN_18",
      "user_id": "SAMPLE_TOKEN_19",
      "nick_name": "sampleuser5",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE13"
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE13"
     },
     "interact_info": {
      "comment_count": "0",
@@ -265,7 +265,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_24",
      "nick_name": "sampleuser6",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE18",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE18",
      "xsec_token": "SAMPLE_TOKEN_25"
     }
    },
@@ -273,7 +273,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_26",
      "nick_name": "sampleuser7",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE19",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE19",
      "xsec_token": "SAMPLE_TOKEN_27"
     },
     "interact_info": {
@@ -340,7 +340,7 @@
     "display_title": "Sample text 9",
     "user": {
      "nick_name": "sampleuser8",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE24",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE24",
      "xsec_token": "SAMPLE_TOKEN_31",
      "user_id": "SAMPLE_TOKEN_32"
     },
@@ -361,7 +361,7 @@
     "note_id": "SAMPLE_TOKEN_34",
     "type": "video",
     "user": {
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE25",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE25",
      "xsec_token": "SAMPLE_TOKEN_35",
      "user_id": "SAMPLE_TOKEN_36",
      "nick_name": "sampleuser9"
@@ -421,7 +421,7 @@
      "xsec_token": "SAMPLE_TOKEN_39",
      "user_id": "SAMPLE_TOKEN_40",
      "nick_name": "sampleuser10",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE28"
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE28"
     },
     "note_id": "SAMPLE_TOKEN_41",
     "display_title": "Sample text 11",
@@ -449,7 +449,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_42",
      "nick_name": "sampleuser11",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE31",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE31",
      "xsec_token": "SAMPLE_TOKEN_43"
     },
     "interact_info": {
@@ -494,7 +494,7 @@
      "xsec_token": "SAMPLE_TOKEN_46",
      "user_id": "SAMPLE_TOKEN_47",
      "nick_name": "sampleuser12",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE34"
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE34"
     },
     "cover": {
      "file_id": "",
@@ -540,7 +540,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_51",
      "nick_name": "sampleuser13",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE37",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE37",
      "xsec_token": "SAMPLE_TOKEN_52"
     },
     "interact_info": {
@@ -617,7 +617,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_56",
      "nick_name": "sampleuser14",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE42.jpg",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE42.jpg",
      "xsec_token": "SAMPLE_TOKEN_57"
     }
    },
@@ -655,7 +655,7 @@
      "relation": "none"
     },
     "user": {
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE45",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE45",
      "xsec_token": "SAMPLE_TOKEN_58",
      "user_id": "SAMPLE_TOKEN_59",
      "nick_name": "sampleuser15"
@@ -685,7 +685,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_64",
      "nick_name": "sampleuser16",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE46",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE46",
      "xsec_token": "SAMPLE_TOKEN_65"
     },
     "cover": {
@@ -713,7 +713,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_66",
      "nick_name": "sampleuser17",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE49",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE49",
      "xsec_token": "SAMPLE_TOKEN_67"
     },
     "cover": {
@@ -791,7 +791,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_71",
      "nick_name": "sampleuser18",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE54",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE54",
      "xsec_token": "SAMPLE_TOKEN_72"
     },
     "time": 1000036,
@@ -806,7 +806,7 @@
     "display_title": "Sample text 20",
     "user": {
      "nick_name": "sampleuser19",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE55",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE55",
      "xsec_token": "SAMPLE_TOKEN_76",
      "user_id": "SAMPLE_TOKEN_77"
     },
@@ -846,7 +846,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_78",
      "nick_name": "sampleuser20",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE58",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE58",
      "xsec_token": "SAMPLE_TOKEN_79"
     },
     "time": 1000039,
@@ -889,7 +889,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_82",
      "nick_name": "sampleuser21",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE61",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE61",
      "xsec_token": "SAMPLE_TOKEN_83"
     },
     "cover": {
@@ -950,7 +950,7 @@
      "xsec_token": "SAMPLE_TOKEN_87",
      "user_id": "SAMPLE_TOKEN_88",
      "nick_name": "sampleuser22",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE64"
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE64"
     },
     "cover": {
      "info_list": [
@@ -977,7 +977,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_90",
      "nick_name": "sampleuser23",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE67",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE67",
      "xsec_token": "SAMPLE_TOKEN_91"
     },
     "cover": {
@@ -1020,7 +1020,7 @@
    {
     "display_title": "Sample text 25",
     "user": {
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE70",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE70",
      "xsec_token": "SAMPLE_TOKEN_94",
      "user_id": "SAMPLE_TOKEN_95",
      "nick_name": "sampleuser24"
@@ -1070,7 +1070,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_100",
      "nick_name": "sampleuser25",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE73.jpg",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE73.jpg",
      "xsec_token": "SAMPLE_TOKEN_101"
     },
     "display_title": "Sample text 26",
@@ -1109,7 +1109,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_102",
      "nick_name": "sampleuser26",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE76",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE76",
      "xsec_token": "SAMPLE_TOKEN_103"
     },
     "cover": {
@@ -1189,7 +1189,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_108",
      "nick_name": "sampleuser27",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE81.jpg",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE81.jpg",
      "xsec_token": "SAMPLE_TOKEN_109"
     }
    },
@@ -1199,7 +1199,7 @@
     "xsec_token": "SAMPLE_TOKEN_110",
     "note_id": "SAMPLE_TOKEN_111",
     "user": {
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE82.jpg",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE82.jpg",
      "xsec_token": "SAMPLE_TOKEN_112",
      "user_id": "SAMPLE_TOKEN_113",
      "nick_name": "sampleuser28"
@@ -1266,7 +1266,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_116",
      "nick_name": "sampleuser29",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE87.jpg",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE87.jpg",
      "xsec_token": "SAMPLE_TOKEN_117"
     },
     "interact_info": {
@@ -1285,7 +1285,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_118",
      "nick_name": "sampleuser30",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE88",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE88",
      "xsec_token": "SAMPLE_TOKEN_119"
     },
     "cover": {
@@ -1331,7 +1331,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_123",
      "nick_name": "sampleuser31",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE91",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE91",
      "xsec_token": "SAMPLE_TOKEN_124"
     },
     "interact_info": {
@@ -1374,7 +1374,7 @@
      "xsec_token": "SAMPLE_TOKEN_126",
      "user_id": "SAMPLE_TOKEN_127",
      "nick_name": "sampleuser32",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE94"
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE94"
     },
     "interact_info": {
      "collected": false,
@@ -1418,7 +1418,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_118",
      "nick_name": "sampleuser30",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE88",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE88",
      "xsec_token": "SAMPLE_TOKEN_119"
     },
     "xsec_token": "SAMPLE_TOKEN_130",
@@ -1464,7 +1464,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_133",
      "nick_name": "sampleuser33",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE99",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE99",
      "xsec_token": "SAMPLE_TOKEN_134"
     },
     "cover": {
@@ -1506,7 +1506,7 @@
     "display_title": "Sample text 36",
     "user": {
      "nick_name": "sampleuser34",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE102",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE102",
      "xsec_token": "SAMPLE_TOKEN_137",
      "user_id": "SAMPLE_TOKEN_138"
     },
@@ -1550,7 +1550,7 @@
     "user": {
      "user_id": "SAMPLE_TOKEN_140",
      "nick_name": "sampleuser35",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE105",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE105",
      "xsec_token": "SAMPLE_TOKEN_141"
     },
     "interact_info": {
@@ -1597,7 +1597,7 @@
      "xsec_token": "SAMPLE_TOKEN_145",
      "user_id": "SAMPLE_TOKEN_146",
      "nick_name": "sampleuser36",
-     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE108"
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE108"
     },
     "cover": {
      "width": 720,

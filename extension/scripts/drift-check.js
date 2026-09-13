@@ -51,6 +51,7 @@ const FIXTURE = {
   "x-thread": "../test/fixtures/x-thread-detail.json",
   rednote: "../test/fixtures/rednote-board-live.json",
   "rednote-detail": "../test/fixtures/rednote-note-detail.json",
+  "rednote-video": "../test/fixtures/rednote-note-video.json",
 };
 
 /** How to obtain the capture a fixture-less check needs, printed where it's actionable.

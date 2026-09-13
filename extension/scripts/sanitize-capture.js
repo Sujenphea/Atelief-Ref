@@ -134,6 +134,12 @@ const counters = { url: 0, id: 0, token: 0, text: 0, handle: 0, code: 0, path: 0
 // covers were never rewritten proves the opposite of what the canary asks.
 const PLATFORM_HOST = /^(www\.)?(pinterest\.com|pinimg\.com|instagram\.com|cdninstagram\.com|fbcdn\.net|twimg\.com|x\.com|twitter\.com|rednote\.com|xiaohongshu\.com|rednotecdn\.com)$|\.(pinimg\.com|cdninstagram\.com|fbcdn\.net|twimg\.com|rednotecdn\.com)$/;
 const isBareHost = (s) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(s) && /\.[a-z]{2,}$/.test(s);
+// rednote's own CDN, post-normalisation (its hosts survive by design — see PLATFORM_HOST).
+const REDNOTE_CDN_HOST = /(^|\.)rednotecdn\.com$/;
+// A path segment that is ROUTE rather than content: a bare lowercase word, or a number too
+// short to be an id or an epoch. Deliberately narrow — `oss-sg`, `notes_pre_post` and every
+// object key fail it and are still replaced.
+const isRouteToken = (s) => /^[a-z]+$/.test(s) || /^\d{1,5}$/.test(s);
 
 function normaliseHost(h) {
   // A locale subdomain says where the capture was taken; the driver targets `www`.
@@ -173,12 +179,33 @@ function syntheticUrl(s) {
   // the same "proves the opposite of what the canary asks" trap the host and the `!`
   // suffix already fell into. The filler keeps the shape and stays all-zero.
   let i = 0;
+  // The UNSIGNED half of the same CDN, and the third time this sweep has flattened
+  // something the rednote rewrite is defined against. rednote serves video and subtitles
+  // with no signing prefix at all and REAL ROUTE in that position —
+  // `/stream/1/110/258/<id>_258.mp4` — where `stream` is the service, `1` the biz
+  // version, `110` the biz_name and `258` the stream_type. Sanitized to `/00/00/00/00/`
+  // the fixture still parses, but it can no longer show the one thing 098 T6 asks of it:
+  // that the selector's chosen url is an unsigned stream path `toRednoteOriginal` leaves
+  // alone, and that the rung's `_<stream_type>` suffix agrees with its `stream_type`
+  // field. A route segment cannot carry identity by construction — it is a bare lowercase
+  // word or a number under six digits, the same two classes the value sweep already
+  // treats as schema — so it is kept verbatim, and anything else in that position is
+  // still replaced.
+  let streamSuffix = "";
   if (depth >= 3 && /^\d{10,14}$/.test(raw[0]) && /^[0-9a-f]{32}$/i.test(raw[1])) {
     segs.push("000000000000", "0".repeat(32));
     i = 2;
+  } else if (REDNOTE_CDN_HOST.test(u.host)) {
+    for (; i < Math.max(depth - 1, 0); i++) segs.push(isRouteToken(raw[i]) ? raw[i] : "00");
+    // `_258` on the filename is the stream_type, not identity: it is the ONLY place the
+    // rung's codec discriminator appears in a url, and 020's undecodable manual pick was
+    // a `_330`. Kept beside the extension for the same reason the `!` directive is.
+    const bare = String(raw[depth - 1] || "").replace(/!.*$/, "");
+    const streamType = (bare.match(/_(\d{1,5})(?=\.[A-Za-z0-9]+$|$)/) || [, ""])[1];
+    if (streamType) streamSuffix = `_${streamType}`;
   }
   for (; i < Math.max(depth - 1, 0); i++) segs.push("00");
-  const last = `SAMPLE${n}${ext}${transform}`;
+  const last = `SAMPLE${n}${streamSuffix}${ext}${transform}`;
   return `${u.protocol}//${u.host}/${[...segs, last].join("/")}`;
 }
 

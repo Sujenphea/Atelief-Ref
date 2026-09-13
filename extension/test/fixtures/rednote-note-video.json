@@ -1,0 +1,221 @@
+{
+ "code": 0,
+ "success": true,
+ "msg": "Sample text 1",
+ "data": {
+  "items": [
+   {
+    "note_card": {
+     "interact_info": {
+      "liked": false,
+      "liked_count": "0",
+      "collected": true,
+      "share_count": "0",
+      "followed": false,
+      "collected_count": "0",
+      "comment_count": "0",
+      "relation": "none",
+      "nice_count": "0"
+     },
+     "video": {
+      "media": {
+       "video_id": 1000001,
+       "video": {
+        "stream_types": [
+         258
+        ],
+        "biz_name": 110,
+        "biz_id": "+100000000",
+        "duration": 77,
+        "md5": "SAMPLE_TOKEN_1",
+        "hdr_type": 0,
+        "drm_type": 0
+       },
+       "stream": {
+        "EF5": [],
+        "EF7": [],
+        "EF4": [
+         {
+          "volume": 0,
+          "audio_bitrate": 56000,
+          "psnr": 0,
+          "weight": 59,
+          "duration": 76134,
+          "video_codec": "EF4",
+          "video_duration": 76133,
+          "rotate": 0,
+          "backup_urls": [
+           "http://sns-v27.rednotecdn.com/stream/1/110/258/SAMPLE1_258.mp4"
+          ],
+          "vmaf": -1,
+          "quality_type": "HD",
+          "stream_desc": "SAMPLECODE1",
+          "avg_bitrate": 992337,
+          "audio_channels": 2,
+          "master_url": "http://sns-v11.rednotecdn.com/stream/1/110/258/SAMPLE2_258.mp4",
+          "hdr_type": 0,
+          "ssim": 0,
+          "stream_type": 258,
+          "format": "mp4",
+          "fps": 30,
+          "video_bitrate": 929800,
+          "audio_codec": "aac",
+          "audio_duration": 76115,
+          "default_stream": 0,
+          "width": 720,
+          "height": 960,
+          "size": 1000002
+         }
+        ],
+        "EF6": []
+       }
+      },
+      "image": {
+       "first_frame_fileid": "SAMPLE_TOKEN_2",
+       "thumbnail_fileid": "SAMPLE_TOKEN_3"
+      },
+      "capa": {
+       "duration": 76
+      },
+      "consumer": {
+       "origin_video_key": "SAMPLE_TOKEN_4"
+      },
+      "media_v2": "Sample text 2"
+     },
+     "at_user_list": [],
+     "note_id": "SAMPLE_TOKEN_5",
+     "image_list": [
+      {
+       "info_list": [
+        {
+         "image_scene": "WB_PRV",
+         "url": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/00/SAMPLE3!nd_prv_wlteh_webp_3"
+        },
+        {
+         "image_scene": "WB_DFT",
+         "url": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/00/SAMPLE4!nd_dft_wlteh_webp_3"
+        }
+       ],
+       "url_pre": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/00/SAMPLE3!nd_prv_wlteh_webp_3",
+       "stream": {},
+       "file_id": "SAMPLE_TOKEN_6",
+       "width": 2528,
+       "trace_id": "",
+       "url_default": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/00/SAMPLE4!nd_dft_wlteh_webp_3",
+       "live_photo": false,
+       "height": 3370,
+       "url": ""
+      }
+     ],
+     "tag_list": [
+      {
+       "name": "sampleuser1",
+       "type": "topic",
+       "id": "SAMPLE_TOKEN_7"
+      },
+      {
+       "id": "SAMPLE_TOKEN_8",
+       "name": "sampleuser2",
+       "type": "topic"
+      },
+      {
+       "id": "SAMPLE_TOKEN_9",
+       "name": "sampleuser3",
+       "type": "topic"
+      },
+      {
+       "type": "topic",
+       "id": "SAMPLE_TOKEN_10",
+       "name": "sampleuser4"
+      },
+      {
+       "type": "topic",
+       "id": "SAMPLE_TOKEN_11",
+       "name": "sampleuser5"
+      },
+      {
+       "id": "SAMPLE_TOKEN_12",
+       "name": "sampleuser6",
+       "type": "topic"
+      },
+      {
+       "id": "SAMPLE_TOKEN_13",
+       "name": "sampleuser7",
+       "type": "topic"
+      }
+     ],
+     "last_update_time": 1000003,
+     "ip_location": "Sample text 3",
+     "share_info": {
+      "un_share": false
+     },
+     "note_statement": "Sample text 4",
+     "type": "video",
+     "title": "Sample text 5",
+     "user": {
+      "user_id": "SAMPLE_TOKEN_14",
+      "nickname": "sampleuser8",
+      "avatar": "https://sns-avatar-qc.rednotecdn.com/avatar/SAMPLE5",
+      "xsec_token": "SAMPLE_TOKEN_15"
+     },
+     "desc": "Sample text 6",
+     "time": 1000004,
+     "note_translation": {
+      "image_trans_list": [
+       {
+        "image_index": 0,
+        "need_translation": true
+       }
+      ],
+      "title_language": "zh_cn",
+      "desc_language": "zh_cn",
+      "title_trans": "Sample text 7",
+      "desc_trans": "Sample text 8",
+      "tags_trans": [
+       {
+        "id": "SAMPLE_TOKEN_7",
+        "name": "sampleuser9",
+        "type": "topic"
+       },
+       {
+        "id": "SAMPLE_TOKEN_8",
+        "name": "sampleuser2",
+        "type": "topic"
+       },
+       {
+        "name": "sampleuser10",
+        "type": "topic",
+        "id": "SAMPLE_TOKEN_9"
+       },
+       {
+        "id": "SAMPLE_TOKEN_10",
+        "name": "sampleuser11",
+        "type": "topic"
+       },
+       {
+        "id": "SAMPLE_TOKEN_11",
+        "name": "sampleuser12",
+        "type": "topic"
+       },
+       {
+        "id": "SAMPLE_TOKEN_12",
+        "name": "sampleuser13",
+        "type": "topic"
+       },
+       {
+        "id": "SAMPLE_TOKEN_13",
+        "name": "sampleuser7",
+        "type": "topic"
+       }
+      ]
+     }
+    },
+    "ignore": false,
+    "id": "SAMPLE_TOKEN_5",
+    "model_type": "note"
+   }
+  ],
+  "current_time": 1000005,
+  "cursor_score": ""
+ }
+}

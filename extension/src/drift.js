@@ -20,7 +20,10 @@ import {
 // The origin host is IMPORTED, never re-typed: the check below asserts every swept
 // mediaUrl lands on the host the rewrite targets, and a second copy of the string would
 // keep this check green after the rewrite had moved somewhere else.
-import { ORIGIN_HOST as REDNOTE_ORIGIN_HOST } from "./extractors/rednote.js";
+import { ORIGIN_HOST as REDNOTE_ORIGIN_HOST, toRednoteOriginal } from "./extractors/rednote.js";
+import {
+  STREAM_REFUSAL, selectStreamRung, videoCandidates, videoLadder,
+} from "./rednote-video.js";
 import {
   parseSavedFeedPage, detectChallenge, isSavedFeedRequest, isCollectionFeedRequest, IG_MEDIA_TYPE,
 } from "./bulk-instagram.js";
@@ -467,6 +470,102 @@ export function checkRednoteNoteDetail(json, { host = "www.rednote.com" } = {}) 
   });
 }
 
+/** rednote VIDEO note (K4): the note's stream ladder must still yield an ordered list of
+ * fetchable mp4 urls, and the rung we would take must not be an obfuscated one.
+ *
+ * **This is the check that would have caught `ef51` before a live run** (020's test-strategy
+ * note asked for it by name). 020's manual harvest took the largest file, got a `_330`
+ * variant whose MP4 sample entry was fourcc `ef51`, and only found out when nothing could
+ * decode it. The codec assertion below is the JSON-layer half of that lesson: the rung we
+ * hand to `/ingest-video` must not carry a fourcc-shaped label, and an `ef*`-ONLY ladder
+ * must still refuse in a way the sweep can report rather than crash on.
+ *
+ * A SEPARATE entry from `rednote-detail`, not an extension of it, for the reason `x-thread`
+ * is separate from `x`: it is a different capture on its own clock, and it is the only one
+ * of the two that can answer for a `type: "video"` note. Running the video capture through
+ * `checkRednoteNoteDetail` would fail on a rule that is correct there — a video note's
+ * one-entry `image_list` is a poster, not a carousel, and `parseNoteDetail` deliberately
+ * refuses to fan it out (098 T5a).
+ *
+ * What it deliberately CANNOT check: whether the chosen url decodes. No JSON signal is
+ * trustworthy enough for that — the HTTP 422 from `/ingest-video` is the designed backstop,
+ * which is why `videoCandidates` is ordered and plural. */
+export function checkRednoteVideo(json, { host = "www.rednote.com" } = {}) {
+  const items = (json && json.data && Array.isArray(json.data.items)) ? json.data.items : [];
+  const card = items.length > 0 && items[0] ? items[0].note_card : null;
+  if (!card) return verdict(["the capture carries no note_card (data.items[0] moved?)"], {});
+
+  const problems = [];
+  const ladder = videoLadder(card);
+  if (!ladder) {
+    problems.push("no video.media.stream on the note (the ladder path moved, or this is not a video note)");
+    return verdict(problems, { noteType: card.type != null ? String(card.type) : null });
+  }
+
+  const selected = selectStreamRung(ladder);
+  const { candidates, rungs, refusal } = videoCandidates(ladder);
+  if (!selected.ok) problems.push(`no usable rung in the ladder (${selected.reason})`);
+  if (refusal) problems.push(`no candidate urls (${refusal})`);
+
+  if (selected.ok) {
+    if (String(selected.rung.format || "").toLowerCase() !== "mp4") {
+      problems.push(`the chosen rung is not an mp4 (${selected.rung.format}) — /ingest-video takes raw bytes`);
+    }
+    if (candidates[0] !== selected.rung.urls[0]) {
+      problems.push("the candidate list does not start at the chosen rung's master_url (ordering moved)");
+    }
+  }
+  for (const url of candidates) {
+    if (!/^https?:\/\/[^/]*rednotecdn\.com\//.test(url)) {
+      problems.push(`a candidate is not on the rednote CDN (${url}) — media-hosts would refuse it`);
+    }
+    // 487: rednote serves streams ALREADY UNSIGNED, with real route where a signing prefix
+    // would sit. A rewrite firing here would rehost a working 206 into a 404.
+    if (toRednoteOriginal(url) !== url) {
+      problems.push(`toRednoteOriginal rewrote an unsigned stream url (${url}) — 487 regressed`);
+    }
+  }
+  if (new Set(candidates).size !== candidates.length) problems.push("the candidate list repeats a url");
+
+  // The poster still has to be there: the cover pass already ingested it under `<note_id>`,
+  // and T6c must not enqueue it a second time (098 T5a's reason for refusing video notes).
+  const posters = Array.isArray(card.image_list) ? card.image_list : [];
+  if (posters.length === 0) {
+    problems.push("a video note carries no image_list (the poster the cover pass keys on is gone)");
+  }
+
+  // THE CODEC ASSERTION — the rules themselves, pinned independently of what this capture
+  // happens to hold, the same way `checkRednoteBoard` re-checks the terminator against a
+  // synthetic last page. It has to be written this way round: asserting that the CHOSEN
+  // rung is not an `ef??` fourcc would be unreachable, because `selectStreamRung` filters
+  // those out before it chooses — an assertion that can never fire is not an assertion.
+  // What can be checked is that it still filters. A capture whose own labels have changed
+  // shows up in the `codecs` signal below.
+  const efOnly = selectStreamRung({ EF4: [{ video_codec: "ef51", format: "mp4", master_url: "http://sns-v11.rednotecdn.com/stream/1/110/330/x_330.mp4" }] });
+  if (efOnly.ok || efOnly.reason !== STREAM_REFUSAL.undecodableCodec) {
+    problems.push("an ef*-only ladder no longer refuses — 020's cover-still-only case would ship an undecodable file");
+  }
+  const empty = selectStreamRung({ EF4: [], EF5: [], EF6: [], EF7: [] });
+  if (empty.ok || empty.reason !== STREAM_REFUSAL.emptyLadder) {
+    problems.push("an all-empty ladder no longer refuses with a stated reason");
+  }
+
+  return verdict(problems, {
+    noteType: card.type != null ? String(card.type) : null,
+    buckets: Object.keys(ladder).length,
+    populated: Object.values(ladder).filter((b) => Array.isArray(b) && b.length > 0).length,
+    rungs: rungs.length,
+    candidates: candidates.length,
+    // Reported so a label change is VISIBLE in the canary line even when nothing breaks:
+    // `EF4`…`EF7` today, and the day one of these reads as a four-character fourcc the
+    // rungs/candidates counts beside it will have dropped.
+    codecs: [...new Set(rungs.map((rung) => rung.codec))].join("|") || null,
+    bucket: selected.ok ? selected.bucket : null,
+    streamType: selected.ok ? selected.rung.streamType : null,
+    posters: posters.length,
+  });
+}
+
 export const CHECKS = {
   x: { label: "X timeline (Bookmarks/Likes)", run: checkTimeline },
   "x-thread": { label: "X thread (TweetDetail)", run: checkThreadDetail },
@@ -475,6 +574,7 @@ export const CHECKS = {
   instagram: { label: "Instagram saved feed", run: checkInstagramSaved },
   rednote: { label: "rednote board feed", run: checkRednoteBoard },
   "rednote-detail": { label: "rednote note detail", run: checkRednoteNoteDetail },
+  "rednote-video": { label: "rednote video ladder", run: checkRednoteVideo },
 };
 
 /**

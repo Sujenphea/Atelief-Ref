@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 
 import {
   checkTimeline, checkBoardFeed, checkBoards, checkInstagramSaved, checkThreadDetail,
-  checkRednoteBoard, checkRednoteNoteDetail, CHECKS, fixtureStaleReminder,
+  checkRednoteBoard, checkRednoteNoteDetail, checkRednoteVideo, CHECKS, fixtureStaleReminder,
 } from "../src/drift.js";
 import { tweet, conversation } from "./fixtures/x-conversation.js";
 
@@ -189,7 +189,7 @@ test("a completely foreign payload is flagged, not thrown", () => {
 test("CHECKS registry wires each check to a --flag", () => {
   assert.deepEqual(Object.keys(CHECKS).sort(),
     ["instagram", "pinterest-board", "pinterest-boards", "rednote", "rednote-detail",
-      "x", "x-thread"]);
+      "rednote-video", "x", "x-thread"]);
   assert.equal(CHECKS.x.run, checkTimeline);
   assert.equal(CHECKS.instagram.run, checkInstagramSaved);
   assert.equal(CHECKS["x-thread"].run, checkThreadDetail);
@@ -197,6 +197,11 @@ test("CHECKS registry wires each check to a --flag", () => {
   // The expansion endpoint gets its OWN entry beside the board's, the way `x-thread` sits
   // beside `x`: a second route on a second clock, which a board capture cannot answer for.
   assert.equal(CHECKS["rednote-detail"].run, checkRednoteNoteDetail);
+  // And the video ladder gets a THIRD, for the same reason again: `rednote-note-detail.json`
+  // is a `type: "normal"` note and cannot answer for a stream ladder, and the video capture
+  // would fail `checkRednoteNoteDetail`'s fan-out rule — which is correct there, since a
+  // video note's one-entry `image_list` is a poster (098 T5a).
+  assert.equal(CHECKS["rednote-video"].run, checkRednoteVideo);
 });
 
 // MARK: - checkRednoteBoard (098 T3)
@@ -359,6 +364,105 @@ test("checkRednoteNoteDetail verifies the degradation contract independently of 
   // Asserted inside the check against a synthesized absent note, so it holds whatever
   // capture is fed in — a healthy one can never exercise it.
   assert.deepEqual(checkRednoteNoteDetail(rednoteNote()).problems, []);
+});
+
+// MARK: - checkRednoteVideo (098 T6b)
+//
+// Same split again: these break a ladder on purpose and assert the check says so. The
+// canary proves the invariants match what rednote sends, over `rednote-note-video.json`.
+
+/** A `type: "video"` note in the real envelope: a poster in `image_list`, the ladder under
+ * `video.media.stream`, and `media_v2` present as the JSON STRING it really is. */
+const rednoteVideoNote = (stream = { EF4: [videoRung()], EF5: [], EF6: [], EF7: [] }, over = {}) => ({
+  code: 0, success: true, msg: "成功",
+  data: {
+    cursor_score: "", current_time: 1789278454517,
+    items: [{
+      id: "nv1", model_type: "note", ignore: false,
+      note_card: {
+        note_id: "nv1", type: "video", title: "t", desc: "d",
+        user: { user_id: "u", nickname: "Someone" },
+        image_list: [rednoteDetailImage(1)],
+        video: { media: { video_id: 1, video: { stream_types: [258] }, stream }, media_v2: "{}" },
+        tag_list: [], at_user_list: [], interact_info: {},
+        ...over,
+      },
+    }],
+  },
+});
+
+/** The live rung's shape (098 T6b), synthetic ids. */
+function videoRung(over = {}) {
+  return {
+    video_codec: "EF4", stream_type: 258, format: "mp4", width: 720, height: 960, size: 9443827,
+    master_url: "http://sns-v11.rednotecdn.com/stream/1/110/258/aaa_258.mp4",
+    backup_urls: ["http://sns-v27.rednotecdn.com/stream/1/110/258/aaa_258.mp4"],
+    ...over,
+  };
+}
+
+test("checkRednoteVideo passes a healthy ladder and reports the rung it would take", () => {
+  const result = checkRednoteVideo(rednoteVideoNote());
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.signals, {
+    noteType: "video", buckets: 4, populated: 1, rungs: 1, candidates: 2,
+    codecs: "EF4", bucket: "EF4", streamType: 258, posters: 1,
+  });
+});
+
+test("checkRednoteVideo catches the ladder path moving", () => {
+  // `video.media.stream` is the whole input. If rednote nests it elsewhere the sweep loses
+  // every video note silently, degrading each to its cover with no stated reason.
+  const result = checkRednoteVideo(rednoteVideoNote(undefined, { video: { media: {} } }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /no video\.media\.stream/);
+});
+
+test("checkRednoteVideo catches a chosen rung that is an obfuscated ef* codec", () => {
+  // THE ef51 ASSERTION — the thing 020 asked for by name, because its manual run only found
+  // out after downloading. A mixed ladder must drop the ef rung; an ef-only one must refuse.
+  const mixed = checkRednoteVideo(rednoteVideoNote({
+    EF4: [videoRung({ video_codec: "ef51" })], EF5: [videoRung({ video_codec: "EF5" })],
+  }));
+  assert.deepEqual(mixed.problems, [], "an ef rung beside a usable one is dropped, not a drift");
+  assert.equal(mixed.signals.bucket, "EF5");
+  const only = checkRednoteVideo(rednoteVideoNote({ EF4: [videoRung({ video_codec: "ef51" })] }));
+  assert.equal(only.ok, false);
+  assert.match(only.problems.join(" "), /undecodable_codec/);
+});
+
+test("checkRednoteVideo catches a rewrite that starts mangling an unsigned stream url", () => {
+  // 487 fixed `toRednoteOriginal` to leave `/stream/1/110/258/…` alone (input 206, rewrite
+  // 404). A depth-based rule would eat `stream/1` as signing material all over again.
+  const signed = "http://sns-web-i10.rednotecdn.com/202609131332/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/stream/x_258.mp4";
+  const result = checkRednoteVideo(rednoteVideoNote({
+    EF4: [videoRung({ master_url: signed, backup_urls: [] })],
+  }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /rewrote an unsigned stream url/);
+});
+
+test("checkRednoteVideo catches a candidate that leaves the rednote CDN", () => {
+  const result = checkRednoteVideo(rednoteVideoNote({
+    EF4: [videoRung({ master_url: "https://evil.example.com/a.mp4", backup_urls: [] })],
+  }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /not on the rednote CDN/);
+});
+
+test("checkRednoteVideo catches a video note that lost its poster", () => {
+  // The cover pass already ingested the poster as `<note_id>`; if `image_list` empties, the
+  // note has nothing to degrade TO when the ladder refuses.
+  const result = checkRednoteVideo(rednoteVideoNote(undefined, { image_list: [] }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /carries no image_list/);
+});
+
+test("checkRednoteVideo verifies the refusal contract independently of input", () => {
+  // Asserted inside the check against synthesized ladders, so both rules hold whatever
+  // capture is fed in — a healthy note exercises neither.
+  assert.deepEqual(checkRednoteVideo(rednoteVideoNote()).problems, []);
 });
 
 // MARK: - checkThreadDetail ([090] 1A)
