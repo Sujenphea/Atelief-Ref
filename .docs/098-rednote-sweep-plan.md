@@ -405,58 +405,79 @@ The rejected `<note_id>:0` unification stays rejected, now on evidence rather
 than suspicion: the detail capture's `file_id`s are `oss-sg/spectrum/<id>` while
 board covers are 15/37 bare `<id>` — **cover ≠ `image_list[0]`**.
 
-### T6 — K4: `selectStreamRung` + `videoCandidates[]` + 422 rung-advance
-**Effort M. Still blocked on a `type: "video"` note capture** — the one artifact
-this plan has never had. 81 % of the sampled board is video, so this is most of
-the content, not a tail case. Until it exists, `parseNoteDetail` refuses video
-notes and they degrade to the cover the K3a pass already captures.
+### T6 — K4: the video ladder ✅ **shipped** (changelogs 487, 488, 490)
+Unblocked 2026-09-14 by a `type: "video"` note detail capture, and split into
+three commits.
+
+**T6a — a second silent 404, and it was not latent.** The video `master_url` is
+**already unsigned** (`sns-v11.rednotecdn.com/stream/1/110/258/…_258.mp4`), but
+`toRednoteOriginal` asked only "are there ≥3 path segments" and so stripped
+`stream/1/` and rehosted it on the image origin. Verified live: the URL as sent
+returns 206 `video/mp4`, the rewritten one 404. The guard now tests the real
+invariant — the first two segments must *look like* signing material
+(`/^\d{10,14}$/` then `/^[0-9a-f]{32}$/i`), validated over 138 distinct URLs with
+`file_id` agreeing 40/40 and no image answer changed. **This was reachable
+today**, not merely latent: the single-capture path runs `largestMedia(harvest,
+CDN)` with no `kind` filter, and `harvest.js` emits `kind: "video-src"`. A second
+unsigned family exists too — subtitles, signed by `?sign=` query — which is the
+stronger argument that signed-in-path is the special case.
+
+**T6b — the selector.** `selectStreamRung` drops url-less, non-mp4 and
+`ef??`-fourcc rungs, orders buckets `EF4`…`EF7` with unknown names last, never by
+size (020 rule 1), and returns a typed refusal (`no_ladder` / `empty_ladder` /
+`no_usable_rung` / `undecodable_codec`). **`ef*` is a four-character fourcc
+(`ef51`), not the three-character bucket label (`EF4`)** — relaxing the guard to
+`/^ef/i` breaks 21 tests, because it would refuse every rung rednote has ever
+sent. `videoCandidates` is `master_url` then `backup_urls[]` per rung — D5
+predated the discovery that `backup_urls[]` exists. 020 rule 3 is enforced
+structurally: the property is **non-enumerable**, so `JSON.stringify`,
+`structuredClone` and spread all drop it, and a guard test runs the real
+`runSweep` asserting no stream url reaches a checkpoint.
+
+**T6c — the ingest walk.** `planCapture` grows an ordered `videoCandidates[]`
+(one element for the other three platforms — the saved result gained no field, so
+`sw.test.js`'s `deepEqual` assertions pass unchanged, which is the cheapest proof
+of identity). `ingestOne` walks it: **422 → advance** (020 rule 2), CDN 404/410 →
+advance (the candidate is gone; retrying spends four backoffs on a dead url), a
+non-video body or over-cap clip → advance, transport failure → stop (it says
+nothing about the rung). Bounded at `MAX_VIDEO_CANDIDATES = 4`, since each
+attempt is a whole download. Exhaustion is `{ status: "skipped" }` — a typed
+skip with the cover kept, never a failed item.
+
+Video notes now yield `<note_id>:v`, **not** a fanned-out poster: a video note's
+one-entry `image_list` is the same picture the cover pass already ingested as
+`<note_id>`, so fanning out would be one picture, two keys, two downloads and a
+dedup-skip that cannot see the duplicate. `:v` registers as an expanded child
+under `knownNoteIndex`'s real predicate, so a captured video note is not
+re-opened. An **`ef*`-only note is re-opened** on the next expansion sweep, on
+purpose: 020 B3 saw one note serve a different ladder minutes apart, so a refusal
+is a fact about one visit, not about the note.
+
+`resolveVideo` gains no sibling: `expandNotes` decides whether notes open,
+`resolveVideo` whether a video note is one of them. Off/off is the cover pass;
+on/off is T5b exactly; on/on adds the streams — and because that is ~5× the
+note-opens on an 81 %-video board, D8's risk gate re-renders and resets its
+acknowledgement on the video checkbox too. `refused` and `streamRefused` are
+counted apart and neither is `partial`: a sweep that read the ladder did what it
+set out to do.
 
 ### Unverified without a live run
-`createPageNoteDriver` infers the board card's link shape and the overlay's close
-affordance; neither was captured. If either is wrong, every note-open degrades to
-its cover **loudly** — in the degradation count and the partial status line — and
-the cover pass is untouched. That, with D8's mode-aware acknowledge gate (the
-warning re-renders and the acknowledgement resets when the toggle moves), is why
-expansion is opt-in.
-
-## Sizing
-
-**T1a S–M · T1b S · T2 M · T3 M · T4 M** — a shippable, tested cover sweep.
-**T5 L · T6 M** — full fidelity, separately schedulable and separately gated.
-
-## Cost budget (R13)
-
-A 400-note board, at the adopted Instagram pacing:
-
-| | Cover pass | Full fidelity |
-|---|---|---|
-| Note-opens | 0 | ~400 (serial, ≥13 min) |
-| Items | ~400 | ~3,600 |
-| Relay time | ~5–9 min | ~45–80 min |
-| Bytes | ~88 MB | ~860 MB (multi-GB at 020's observed sizes) |
-
-Cover-only is the default because of this table, not despite it.
-
-## Test strategy
-
-- Pure mappers/parsers exported and tested apart from transport, mirroring
-  `bulk-pinterest.test.js`.
-- Table tests: the key rule (both URL shapes), the author mapper (**both**
-  spellings), termination (`has_more:false`, `cursor:""`, empty page), codec
-  selection (`ef*`-only → typed refusal).
-- Named tests for every real observed shape: `cover.url === ""`,
-  `cover.file_id === ""`, `num` not honoured, protocol-relative request URLs,
-  461 → challenge-halt, `image_list` absent.
-- Engine/ledger/endpoint need no new coverage — platform-blind.
-
-## Risks
-
-- **461 mid-sweep** — must halt resumable. First real user of `pendingError`.
-- **Note-open driving is the fragile half**; the cover pass does not depend on it.
-- **`xsec_token` expiry** on a long-paused sweep — re-resolve from the feed.
-- **Two domains** in every host match.
-- **Video may be most of a board** (81 % here) — say so in the popup label.
-- **Drift fixtures are 72 days stale** against a 30-day window (pre-existing).
+- **`createPageNoteDriver`** infers the board card's link shape and the overlay's
+  close affordance; neither was captured, and it now drives video notes too. A
+  failure degrades **loudly** — the degradation count and the partial status line
+  — and leaves the cover pass untouched. With D8's gate, that is why expansion is
+  opt-in.
+- **Only `EF4` has ever been populated.** Between-bucket ordering and the
+  422-advance *between* rungs have never met a real multi-rung ladder; those tests
+  use invented shapes and are labelled as such. The within-rung walk across
+  `backup_urls[]` is the half the live capture covers. The 422 backstop is what
+  makes a wrong guess recoverable rather than fatal.
+- **No capture carries a fourcc in `video_codec`**, so `ef*` → `streamRefused` →
+  re-open is exercised by tests alone.
+- `master_url` was fetched live from a browser (206, `video/mp4`), **not** from
+  the service worker's cookie-less cross-origin fetch.
+- The **board URL path shape** (`/board/<24-hex>`) is still inferred — Open
+  question 1. A wrong shape makes the popup refuse every board.
 
 ## Open questions
 
@@ -468,4 +489,7 @@ Cover-only is the default because of this table, not despite it.
    holds is still open, and is the same capture T6 needs.
 3. **Entry point** — boards only (recommended), or also "My saves"?
 4. **Live Photos** — `image_list[].live_photo` exists. Defer.
-5. **Video ladder shape** — unverified; T6 blocked on one capture.
+5. ~~**Video ladder shape**~~ **Answered** (2026-09-14 capture) — four buckets
+   `EF4`/`EF5`/`EF6`/`EF7`, each an array; `master_url` already unsigned, plus
+   `backup_urls[]`. Only `EF4` populated in the one capture, so ordering between
+   buckets remains untested. See T6.
