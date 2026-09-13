@@ -520,6 +520,62 @@ test("toRednoteOriginal: strips signing segments + `!` suffix, is idempotent, pa
   assert.equal(toRednoteOriginal(null), null);
 });
 
+// The key is EVERYTHING after the two signing segments, which is not always one
+// segment. Reading only the last one dropped `oss-sg/spectrum/` and produced a
+// verified 404 (098 D2 / changelog 467) — masked by `mediaUrlFallback` as a
+// silent 5x quality loss rather than a visible failure, which is why it needs a
+// regression test rather than a comment. Both URLs below are verbatim from the
+// live captures of 2026-09-13.
+test("toRednoteOriginal: a MULTI-SEGMENT key keeps every segment (the 404 regression)", () => {
+  assert.equal(
+    toRednoteOriginal(
+      "http://sns-web-i10.rednotecdn.com/202609131347/0bdf336689816bd1691a3c351e3be0ab"
+      + "/oss-sg/spectrum/1040g3ug324rbosk72m005qk4p310rhpvdg92bqg!nd_dft_wlteh_webp_3"),
+    // Verified live: this returns 200 image/jpeg 240,729 B. Dropping `oss-sg/spectrum/`
+    // returns 404.
+    "http://sns-i27.rednotecdn.com/oss-sg/spectrum/1040g3ug324rbosk72m005qk4p310rhpvdg92bqg");
+  // A board-feed cover is single-segment and must keep working unchanged.
+  assert.equal(
+    toRednoteOriginal(
+      "http://sns-web-i10.rednotecdn.com/202609131332/43d5d4fbe9c41cf7739cdb99c9da6a47"
+      + "/1040g2sg323m6dg190oeg45k492l2qtne6ac1ld0!nc_n_webp_prv_1"),
+    "http://sns-i27.rednotecdn.com/1040g2sg323m6dg190oeg45k492l2qtne6ac1ld0");
+});
+
+test("rednote: a note-detail image (multi-segment key) captures full-res, not the webp", () => {
+  // The end-to-end shape of the 467 bug: `mediaUrlFallback` always loads, so a
+  // broken `mediaUrl` never surfaced as an error — the capture just silently
+  // became the 47 KB signed webp instead of the 240 KB original. Both fields are
+  // asserted together because it is the PAIR that made the fault invisible.
+  const signed =
+    "http://sns-web-i10.rednotecdn.com/202609131347/0bdf336689816bd1691a3c351e3be0ab"
+    + "/oss-sg/spectrum/1040g3ug324rbosk72m005qk4p310rhpvdg92bqg!nd_dft_wlteh_webp_3";
+  const h = harvest({
+    url: "https://www.rednote.com/explore/6a9f696e000000000d020daa",
+    media: [img(signed, 1242, 1660)],
+  });
+  const p = extractProvenance(h);
+  assert.equal(
+    p.mediaUrl,
+    "http://sns-i27.rednotecdn.com/oss-sg/spectrum/1040g3ug324rbosk72m005qk4p310rhpvdg92bqg");
+  assert.equal(p.mediaUrlFallback, signed);
+});
+
+test("toRednoteOriginal: idempotent on a multi-segment key, and leaves short paths alone", () => {
+  const bare = "http://sns-i27.rednotecdn.com/oss-sg/spectrum/1040g3ug324rbosk72m005qk4p310rhpvdg92bqg";
+  // Re-running the rule must not eat the `oss-sg/spectrum/` prefix a second time.
+  assert.equal(toRednoteOriginal(bare), bare);
+  assert.equal(toRednoteOriginal(toRednoteOriginal(bare)), bare);
+  // Too short to be `<ts>/<sig>/<key>` — an avatar is not a signed note asset, so
+  // it is left exactly as it is rather than rewritten onto the origin host.
+  assert.equal(
+    toRednoteOriginal("https://sns-avatar-qc.rednotecdn.com/avatar/tiny.jpg"),
+    "https://sns-avatar-qc.rednotecdn.com/avatar/tiny.jpg");
+  assert.equal(
+    toRednoteOriginal("https://sns-web-i10.rednotecdn.com/onlyone"),
+    "https://sns-web-i10.rednotecdn.com/onlyone");
+});
+
 // MARK: - shared full-resolution rewrites (base.js, 6A)
 // The exact rules the DOM extractors AND the future bulk JSON mappers reuse.
 

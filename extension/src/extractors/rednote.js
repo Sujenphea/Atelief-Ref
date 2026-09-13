@@ -6,8 +6,8 @@
 // the note URL comes from the right-clicked link (`/explore/{noteId}`) when the
 // capture starts from a feed or board, else the live URL; og:* is stale/generic.
 //
-// MEDIA (verified 2026-07-31 against a live note): the page renders a SIGNED,
-// RESIZED webp —
+// MEDIA (verified 2026-07-31 against a live note, re-verified 2026-09-13 against
+// two live captures): the page renders a SIGNED, RESIZED webp —
 //   https://sns-web-i10.rednotecdn.com/<ts>/<sig>/<key>!nc_n_webp_mw_1
 // — typically a 270 px thumbnail. Dropping the timestamp/signature segments and
 // the `!…` transform suffix, and asking a plain image node for the bare key —
@@ -16,6 +16,10 @@
 // up). So the bare form is preferred and the signed webp is kept as
 // `mediaUrlFallback`, the same prefer-original/keep-fallback rule Pinterest uses
 // for `/originals/`.
+//
+// `<key>` IS NOT ALWAYS ONE SEGMENT — a note's `image_list` images are keyed
+// `oss-sg/spectrum/<id>`. See `toRednoteOriginal` below; getting this wrong is a
+// silent 404 masked by the fallback, not a visible failure.
 
 import {
   hostname, hostIs, firstMeta, pathSegments, splitPathname, liveURL, firstPostURL,
@@ -30,20 +34,40 @@ const CDN = /(^|\/\/|\.)rednotecdn\.com\//;
 
 /**
  * Rewrite a rednote CDN URL to its unsigned full-resolution original, or return
- * `src` unchanged when it is not a rednote CDN URL / is unparseable.
+ * `src` unchanged when it is not a signed rednote CDN URL / is unparseable.
  *
- * The object key is the LAST path segment with any `!<transform>` suffix removed;
- * every preceding segment is signing material. Already-bare URLs rewrite to
- * themselves, so this is idempotent.
+ * A signed URL is `/<timestamp>/<signature>/<key>` — the first TWO segments are
+ * signing material and everything after them is the object key. The key is NOT
+ * always one segment: a note's `image_list` images are keyed
+ * `oss-sg/spectrum/<id>` (three segments in the path, two of them part of the
+ * key), while a board-feed cover is keyed `<id>` (one). Reading only the LAST
+ * segment silently dropped the `oss-sg/spectrum/` prefix and built a 404, which
+ * `mediaUrlFallback` then masked as a 5x quality loss (240 KB original -> 47 KB
+ * signed webp) with no error — see 098 D2 / changelog 467.
+ *
+ * Verified over 184 URLs from two live captures (2026-09-13): dropping the two
+ * signing segments agrees with the API's own `file_id` on all 184, where the
+ * last-segment rule disagrees on 36. `file_id` is therefore not read here — it
+ * would corroborate, not correct, and it is absent (`""`) on every board cover.
+ *
+ * Idempotent: output always lands on `ORIGIN_HOST`, and a URL already there is
+ * returned untouched rather than re-parsed (its path is a bare key, so dropping
+ * two segments would mangle a multi-segment one). A path too short to hold a
+ * signing prefix AND a key (`/avatar/<id>`) is likewise left alone.
  */
 export function toRednoteOriginal(src) {
   if (!src || !CDN.test(src)) return src || null;
   try {
     const url = new URL(src);
-    if (!hostIs(url.hostname.toLowerCase(), "rednotecdn.com")) return src;
+    const host = url.hostname.toLowerCase();
+    if (!hostIs(host, "rednotecdn.com")) return src;
+    // Already canonical — the only URLs on this host are bare keys.
+    if (host === ORIGIN_HOST) return src;
     const segments = splitPathname(url.pathname);
-    const last = segments[segments.length - 1] || "";
-    const key = last.split("!")[0];
+    // Fewer than three segments cannot be `<timestamp>/<signature>/<key>`, so
+    // there is no signing prefix to strip and nothing to canonicalize.
+    if (segments.length < 3) return src;
+    const key = segments.slice(2).join("/").split("!")[0];
     if (!key) return src;
     return `http://${ORIGIN_HOST}/${key}`;
   } catch {

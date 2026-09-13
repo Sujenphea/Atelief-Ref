@@ -47,7 +47,7 @@ is empty on every row.
   sweep, T5 note-open expansion, T6 video ladder.
 - `.change-log/467-the-board-only-ever-had-covers.md` (new)
 
-No code changed yet.
+No code changed yet — the fix itself lands in [468](468-the-key-was-never-the-last-segment.md).
 
 ## Migration notes
 
