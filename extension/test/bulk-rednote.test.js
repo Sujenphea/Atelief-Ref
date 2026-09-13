@@ -8,7 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 
 import {
   BOARD_FEED_PATH, RednoteChallengeError, boardIdFromRequestURL, cursorFromRequestURL,
@@ -16,12 +16,14 @@ import {
   parseBoardFeedPage, pickRednoteImage, rednoteAuthor,
 } from "../src/bulk-rednote.js";
 
-/** The live capture, when it is present. It lives in the gitignored `resources/` until
- * T4 sanitizes it into a committed fixture, so these tests SKIP rather than fail on a
- * fresh clone — but they must not skip silently on the machine that has it. */
-const LIVE = new URL("../../resources/rednote-board-page2.json", import.meta.url);
-const live = existsSync(LIVE) ? JSON.parse(readFileSync(LIVE, "utf8")) : null;
-const withLive = (name, fn) => test(name, { skip: live ? false : "no live capture" }, fn);
+/** The live capture of 2026-09-13, sanitized into a COMMITTED fixture by 098 T4. It used
+ * to be read out of the gitignored `resources/`, so the four tests below skipped on every
+ * machine but one — which is the same thing as not having them. The sanitizer preserves
+ * structure exactly (key names, nesting, array lengths, path depth, the `!transform`
+ * suffix) and replaces only leaf values, so every property asserted here is still a
+ * property of what rednote sent; the literal ids are synthetic and are never asserted. */
+const LIVE = new URL("./fixtures/rednote-board-live.json", import.meta.url);
+const live = JSON.parse(readFileSync(LIVE, "utf8"));
 
 /** The real envelope, minimally reconstructed for the cases the capture cannot show. */
 const feed = (notes, { hasMore = true, cursor = "abc123" } = {}) =>
@@ -266,7 +268,24 @@ test("parseBoardFeedPage RETURNS the challenge as `error` and never throws it", 
 
 // MARK: - against the live capture
 
-withLive("the live board page parses to one item per note, all distinct", () => {
+test("the live fixture still carries a SIGNED, multi-segment cover url", () => {
+  // The fixture is only worth having if it still exercises the rewrite. A sanitizer that
+  // flattened these paths, or dropped the `!transform` suffix, would leave every check
+  // below passing VACUOUSLY — `toRednoteOriginal` returns a short path untouched, so a
+  // two-segment cover would "pass" the unsigned-original assertion by never being
+  // rewritten at all. Asserted on the INPUT, where a future re-capture would break it.
+  for (const note of live.data.notes) {
+    for (const url of [note.cover.url_pre, note.cover.url_default]) {
+      const { pathname, hostname } = new URL(url);
+      assert.notEqual(hostname, "sns-i27.rednotecdn.com", "a cover url must still be signed");
+      assert.ok(pathname.split("/").filter(Boolean).length >= 3,
+        `a signed cover needs <timestamp>/<signature>/<key>: ${url}`);
+      assert.ok(url.includes("!"), `the transform suffix must survive sanitization: ${url}`);
+    }
+  }
+});
+
+test("the live board page parses to one item per note, all distinct", () => {
   const page = parseBoardFeedPage(live, { host: "www.rednote.com" });
   const notes = live.data.notes;
   assert.equal(page.error, null);
@@ -277,7 +296,7 @@ withLive("the live board page parses to one item per note, all distinct", () => 
   assert.equal(page.endOfFeed, false, "this capture is a middle page");
 });
 
-withLive("every live cover resolves to an UNSIGNED original with a signed fallback", () => {
+test("every live cover resolves to an UNSIGNED original with a signed fallback", () => {
   const page = parseBoardFeedPage(live);
   for (const item of page.items) {
     assert.match(item.mediaUrl, /^http:\/\/sns-i27\.rednotecdn\.com\//, item.mediaUrl);
@@ -287,18 +306,29 @@ withLive("every live cover resolves to an UNSIGNED original with a signed fallba
   }
 });
 
-withLive("every live row yields an author name and a title, and no token leaks", () => {
+test("every live row yields an author name and a title, and no token leaks", () => {
   const page = parseBoardFeedPage(live);
   assert.equal(page.items.every((i) => i.provenance.authorName), true, "nick_name read");
   assert.equal(page.items.every((i) => i.provenance.title), true, "display_title read");
   assert.equal(page.items.every((i) => i.xsecToken), true, "the token is available to K3b");
-  const serialized = JSON.stringify(page.items.map((i) => i.provenance));
-  for (const item of page.items) {
-    assert.equal(serialized.includes(item.xsecToken), false, "no xsec_token in provenance");
+  // Compared as VALUES, not as substrings of the serialized page. A substring test on the
+  // real capture happened to be safe; on the sanitized one the synthetic ids are
+  // sequential, so `SAMPLE_TOKEN_3` is a substring of `SAMPLE_TOKEN_30` and every run
+  // "found" a leak that was not there. The property being asserted was always "no
+  // provenance field IS a token".
+  const tokens = new Set(page.items.map((i) => i.xsecToken));
+  const provenanceValues = new Set();
+  (function collect(node) {
+    if (Array.isArray(node)) return node.forEach(collect);
+    if (node && typeof node === "object") return Object.values(node).forEach(collect);
+    if (typeof node === "string") provenanceValues.add(node);
+  })(page.items.map((i) => i.provenance));
+  for (const token of tokens) {
+    assert.equal(provenanceValues.has(token), false, "no xsec_token in provenance");
   }
 });
 
-withLive("the live capture's video-heavy mix is carried through to rawMetadata", () => {
+test("the live capture's video-heavy mix is carried through to rawMetadata", () => {
   const page = parseBoardFeedPage(live);
   const kinds = page.items.reduce((acc, i) => {
     acc[i.provenance.rawMetadata.kind] = (acc[i.provenance.rawMetadata.kind] || 0) + 1;

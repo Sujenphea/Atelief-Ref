@@ -197,9 +197,11 @@ test("CHECKS registry wires each check to a --flag", () => {
 
 // MARK: - checkRednoteBoard (098 T3)
 //
-// rednote's check has no committed fixture yet (T4 sanitizes the live capture), so the CLI
-// reports it as awaited via CAPTURE_HINT. These tests prove the INVARIANTS are right
-// against synthetic pages shaped like the real one — the half that can be written today.
+// These tests prove the INVARIANTS are right against synthetic pages shaped like the real
+// one: each one BREAKS a page in a specific way and asserts the check says so, which no
+// healthy capture can demonstrate. The other half — that the invariants match what rednote
+// actually sends — is the canary's, and since 098 T4 it runs over a committed fixture
+// (`rednote-board-live.json`) rather than being reported as awaited.
 
 /** A board-feed page in the real envelope, with the real "empty string" conventions. */
 const rednotePage = (notes, { hasMore = true, cursor = "cur1" } = {}) =>

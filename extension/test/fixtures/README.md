@@ -21,6 +21,8 @@ size segment for the `/originals/` rewrite). Raw captures live in the gitignored
 | `pinterest-boards-live.json` (captured 2026-08-14) | same | The **canary's** boards capture — a straight live response, 4 boards, terminal (`bookmark: "-end-"`). |
 | `pinterest-boardfeed-live.json` (captured 2026-08-14) | same | The **canary's** board-feed capture — a whole live page, `pins=25 mapped=24 hasBookmark=true`. The 25th entry is **not a pin**: Pinterest interleaves `type: "story"` modules (here `story_type: "related_interests_module"`, a "More ideas" card with an 8-char id and no `images`) into `data[]`, and `mapPinterestPin` correctly returns `null` for them. **`mapped` < `pins` is expected, not drift.** |
 | `instagram-saved-live.json` (captured 2026-08-14) | `GET instagram.com/api/v1/feed/saved/posts/` | The **canary's** IG capture: 3 whole posts (image / reel / 2-child carousel) lifted byte-for-byte out of a 21-post, 1.84 MB live page, plus `more_available: true` + a populated `next_max_id`. Parses to `posts=3 items=4 videos=3 endOfFeed=false`. |
+| `rednote-board-live.json` (captured 2026-09-13) | `GET //webapi.rednote.com/api/sns/web/v1/board/note?board_id=…&cursor=…` | The **canary's** rednote capture — a whole live board page, `notes=37 items=37 hasMore=true`. A middle page: `num=30` returned **37** notes (page size is not honoured) and the next `cursor` is literally the **last row's `note_id`**. Rows carry ONE `cover` — no `imageList`, no `video`, no `stream` — which is why K3a fans out one item per **note**. `cover.url` and `cover.file_id` are `""` on **37/37**, so `url_pre` / `url_default` / `info_list[WB_PRV\|WB_DFT]` are the only usable urls. |
+| `rednote-board.json` | same | The **composed** board page: 3 notes lifted out of the sanitized live one, keys and nesting untouched. Deliberately a FIRST page (`has_more: true`, a populated `cursor`) so an integration test can page over it. The three cover keys are one, two and three segments deep — the `<id>`, `spectrum/<id>` and `oss-sg/notes_pre_post/<id>` shapes the live board sends, with synthetic segment names and verbatim depth — and one row is `type: "normal"` against two `type: "video"`. |
 | `pinterest-boardfeed.json` | `GET /resource/BoardFeedResource/get/` | `resource_response.data[]` pins (`id`, `images.{size}.url`, `board`, `videos`) + `bookmark` cursor. |
 | `instagram-saved.json` (captured 2026-07-15) | `GET instagram.com/api/v1/feed/saved/posts/` | `items[].media` — trimmed to **3 posts (1 image `media_type:1`, 1 reel `media_type:2`, 1 carousel `media_type:8`)**. Per-media `pk` (the fan-out dedup key, 002 · 1A), `image_versions2.candidates[]` (poster), `video_versions[]` (reel), `carousel_media[]` (child media, each its own `pk`). |
 | `instagram-saved-page2.json` (captured 2026-07-15) | `GET instagram.com/api/v1/feed/saved/posts/?max_id=…` | A second, richer page: **11 posts → 25 fanned-out items** (an 11-child carousel + 2- and 4-child carousels + 7 reels + 1 image). Stresses large-carousel fan-out; the `?max_id=` request URL **confirms the pagination param**. |
@@ -59,6 +61,24 @@ untouched, and it is what the canary runs (`FIXTURE.x`). It answers the only que
 the canary asks — *does a response X sent today still parse* — and can be replaced
 wholesale with a newer capture without touching a single test. `checkTimeline` still runs
 over the composed fixture in `drift.test.js`, so both stay covered.
+
+### rednote: the CDN host, the path depth and the `!` suffix are load-bearing
+`toRednoteOriginal` returns its input **unchanged** unless the host ends in
+`rednotecdn.com`, and it builds the unsigned original by dropping the **first two** path
+segments of `/<timestamp>/<signature>/<key>` and stripping the `!transform` suffix. The
+first pass of the sanitizer normalised the host to `sample2.example.com` and dropped the
+suffix, which did not merely blur a signal — it switched the whole rewrite off, so a
+fixture built from it would have proved the **opposite** of what the canary asks. The
+sweep now keeps rednote's CDN hosts (`PLATFORM_HOST`, alongside `i.pinimg.com` and the
+twimg split), keeps the `!…` directive beside the file extension, and still replaces every
+segment. `bulk-rednote.test.js` asserts that on the INPUT — signed host, ≥ 3 segments, a
+surviving `!` — so a future re-capture cannot quietly go vacuous.
+
+Two other things the rednote capture taught the sweep, both fixed there rather than here:
+**display names are collected under `nick_?name`** (the feed spells it `nick_name`, note
+detail `nickname` — and `Neurobin`, `LEE`, `ruirui`, `snow` are shape-identical to schema
+constants, so shape alone could never reach them), and **counts are not always numbers**
+(rednote ships `interact_info` counts pre-formatted as strings: `"27.7K"`, `"5,123"`).
 
 ### Refreshing a live fixture
 ```

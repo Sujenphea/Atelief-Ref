@@ -49,18 +49,19 @@ const FIXTURE = {
   "pinterest-boards": "../test/fixtures/pinterest-boards-live.json",
   instagram: "../test/fixtures/instagram-saved-live.json",
   "x-thread": "../test/fixtures/x-thread-detail.json",
+  rednote: "../test/fixtures/rednote-board-live.json",
 };
 
 /** How to obtain the capture a fixture-less check needs, printed where it's actionable.
  * The mechanism exists so a newly added parser starts life VISIBLY unverified rather than
- * passing silently — which is exactly rednote's state until 098 T4 sanitizes the live
- * capture into a committed fixture. */
-const CAPTURE_HINT = {
-  rednote:
-    "Open a rednote board logged in, DevTools > Network > Fetch/XHR, scroll to load a\n"
-    + "    second batch, and save the `/api/sns/web/v1/board/note` response. Then:\n"
-    + "    node scripts/sanitize-capture.js <raw.json> test/fixtures/rednote-board-live.json",
-};
+ * passing silently — rednote spent 098 T3 in exactly that state and 098 T4 cleared it.
+ *
+ * EMPTY is the healthy state, not a dead mechanism: every registered check now has a
+ * committed fixture. The next parser added to `CHECKS` lands here with no fixture, prints
+ * the generic `pass --<flag> <live capture>` line, and is reported as AWAITING until
+ * someone sanitizes a real response — give it an entry saying where that response comes
+ * from, and delete the entry again once the fixture is committed. */
+const CAPTURE_HINT = {};
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url));
 
 // The two producers' host tables. Resolved relative to THIS SCRIPT rather than to the

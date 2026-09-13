@@ -26,8 +26,11 @@ import {
   largestMedia, ogImage,
 } from "./base.js";
 
-/** The plain image node that serves unsigned, untransformed originals. */
-const ORIGIN_HOST = "sns-i27.rednotecdn.com";
+/** The plain image node that serves unsigned, untransformed originals. Exported because
+ * the drift canary asserts every swept `mediaUrl` lands on it (`checkRednoteBoard`), and
+ * the two must agree by construction — a hardcoded copy there would go on passing after
+ * this one moved, which is the exact drift that check exists to catch. */
+export const ORIGIN_HOST = "sns-i27.rednotecdn.com";
 
 /** Any rednote CDN URL (images `sns-i*` / `sns-web-i*`, video `sns-v*`). */
 const CDN = /(^|\/\/|\.)rednotecdn\.com\//;

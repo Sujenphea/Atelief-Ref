@@ -15,6 +15,10 @@ import { parseBoardFeedPage, parseBoardsPage, mapPinterestPin } from "./bulk-pin
 import {
   parseBoardFeedPage as parseRednoteBoardPage, detectRednoteChallenge, isBoardFeedRequest,
 } from "./bulk-rednote.js";
+// The origin host is IMPORTED, never re-typed: the check below asserts every swept
+// mediaUrl lands on the host the rewrite targets, and a second copy of the string would
+// keep this check green after the rewrite had moved somewhere else.
+import { ORIGIN_HOST as REDNOTE_ORIGIN_HOST } from "./extractors/rednote.js";
 import {
   parseSavedFeedPage, detectChallenge, isSavedFeedRequest, isCollectionFeedRequest, IG_MEDIA_TYPE,
 } from "./bulk-instagram.js";
@@ -341,8 +345,10 @@ export function checkRednoteBoard(json, { host = "www.rednote.com" } = {}) {
   }
   // The rewrite is the whole value of the cover pass: the signed webp is a ~47 KB
   // thumbnail, the unsigned original a ~240 KB full-res asset.
-  if (page.items.some((item) => !/^http:\/\/sns-i27\.rednotecdn\.com\//.test(item.mediaUrl || ""))) {
-    problems.push("a mediaUrl is not an unsigned origin-host url (the key rule moved?)");
+  const onOriginHost = (url) => String(url || "").startsWith(`http://${REDNOTE_ORIGIN_HOST}/`);
+  if (page.items.some((item) => !onOriginHost(item.mediaUrl))) {
+    problems.push(`a mediaUrl is not an unsigned origin-host url`
+      + ` (expected ${REDNOTE_ORIGIN_HOST} — the key rule moved?)`);
   }
   if (page.items.some((item) => (item.mediaUrl || "").includes("!"))) {
     problems.push("a transform suffix survived the rewrite");

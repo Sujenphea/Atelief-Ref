@@ -78,7 +78,12 @@ const isMoney = (s) => /[$\u20ac\u00a3\u00a5]/.test(s) && /\d/.test(s);
 // `author_name` was missing and leaked `mariosworld343`; `site_name` names the source
 // brand of a pin. Collection is broad on purpose — a false positive costs one synthetic
 // string, a false negative is a leak.
-const IDENTITY_KEY = /username|full_name|biography|^name$|nickname|profile_grid|owner_name|author_name|site_name|creator|pinner/i;
+// `nick_?name` covers BOTH of rednote's spellings — the board feed says `nick_name`, note
+// detail says `nickname` (098 D6) — and the underscored one is why this is here: the
+// 2026-09-13 board capture carried `Neurobin`, `LEE`, `ruirui` and `snow`, display names
+// that are shape-identical to the schema constants below and so survived every value
+// rule. Exactly the class the note at the top of this section describes.
+const IDENTITY_KEY = /username|full_name|biography|^name$|nick_?name|profile_grid|owner_name|author_name|site_name|creator|pinner/i;
 const identity = new Set();
 
 function collectIdentity(node, key = "") {
@@ -123,7 +128,11 @@ const counters = { url: 0, id: 0, token: 0, text: 0, handle: 0, code: 0, path: 0
 // pin, and keeping those both reveals what was pinned and smuggles handles through
 // wholesale (`mightyape` survived inside `mightyape.co.nz`, `creativebysanchez` inside its
 // own domain) because the audit matches substrings.
-const PLATFORM_HOST = /^(www\.)?(pinterest\.com|pinimg\.com|instagram\.com|cdninstagram\.com|fbcdn\.net|twimg\.com|x\.com|twitter\.com)$|\.(pinimg\.com|cdninstagram\.com|fbcdn\.net|twimg\.com)$/;
+// rednote is the sharpest case for keeping a platform host: `toRednoteOriginal` returns
+// its input UNCHANGED unless the host ends in `rednotecdn.com`, so replacing the host does
+// not merely blur a signal — it switches the entire rewrite off, and a fixture whose
+// covers were never rewritten proves the opposite of what the canary asks.
+const PLATFORM_HOST = /^(www\.)?(pinterest\.com|pinimg\.com|instagram\.com|cdninstagram\.com|fbcdn\.net|twimg\.com|x\.com|twitter\.com|rednote\.com|xiaohongshu\.com|rednotecdn\.com)$|\.(pinimg\.com|cdninstagram\.com|fbcdn\.net|twimg\.com|rednotecdn\.com)$/;
 const isBareHost = (s) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(s) && /\.[a-z]{2,}$/.test(s);
 
 function normaliseHost(h) {
@@ -142,15 +151,22 @@ function syntheticUrl(s) {
   let u;
   try { u = new URL(s); } catch { return "https://example.invalid/SAMPLE"; }
   u.host = normaliseHost(u.host);
-  const ext = (u.pathname.match(/\.(jpg|jpeg|png|gif|webp|mp4|m3u8|webm)$/i) || [])[0] || "";
+  // A `!…` suffix on the last segment is a CDN rendering directive, not identity:
+  // rednote's signed urls end `!nc_n_webp_mw_1`, and stripping it is half of what
+  // `toRednoteOriginal` does. Dropped, the fixture cannot show the strip happening — the
+  // canary's "no transform suffix survived the rewrite" check would pass on a url that
+  // never had one. Kept verbatim, beside the extension, for the same reason.
+  const transform = (u.pathname.match(/!.*$/) || [])[0] || "";
+  const ext = (u.pathname.replace(/!.*$/, "").match(/\.(jpg|jpeg|png|gif|webp|mp4|m3u8|webm)$/i) || [])[0] || "";
   // Host and path DEPTH are load-bearing (the Pinterest mapper rewrites the size segment
-  // to /originals/; the X mapper splits on the pbs/video host). Keep both; replace the
-  // segments themselves.
+  // to /originals/; the X mapper splits on the pbs/video host; rednote's key rule drops
+  // the first two segments of `<timestamp>/<signature>/<key>`, so a flattened path would
+  // turn that rewrite into a passthrough). Keep both; replace the segments themselves.
   const depth = u.pathname.split("/").filter(Boolean).length;
   const n = ++counters.url;
   const segs = [];
   for (let i = 0; i < Math.max(depth - 1, 0); i++) segs.push("00");
-  const last = `SAMPLE${n}${ext}`;
+  const last = `SAMPLE${n}${ext}${transform}`;
   return `${u.protocol}//${u.host}/${[...segs, last].join("/")}`;
 }
 
@@ -199,7 +215,14 @@ function walk(node, key = "") {
     for (const [k, v] of Object.entries(node)) out[k] = walk(v, k);
     return out;
   }
-  if (typeof node === "string") return replaceString(node);
+  if (typeof node === "string") {
+    // A count is not always a number. rednote ships `interact_info` counts as STRINGS,
+    // already formatted for display — `"27.7K"`, `"5,123"`, `"795"` — so the numeric rule
+    // below never saw them and every one survived the sweep verbatim. Same key-assisted
+    // rule, same reasoning, the other type.
+    if (COUNT_KEY.test(key)) return "0";
+    return replaceString(node);
+  }
   if (typeof node === "number" && Number.isFinite(node)) {
     // Engagement counts are keyed, not shaped — a like count and a pixel width are the
     // same shape. This is the one key-assisted rule in the sweep, and it is stated

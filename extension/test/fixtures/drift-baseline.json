@@ -36,6 +36,14 @@
       "fixtures": ["pinterest-boards-live.json", "pinterest-boardfeed-live.json"],
       "note": "Re-verified live 2026-08-14. X-APP-VERSION DRIFTS INTRADAY, not on a release cadence: 194583e and be501f2 were observed FOUR HOURS APART on the same day (and 1df0da9 42 days before). Treat the value here as a sample, never a constant — it is scraped at runtime and never sent from here. The SOLE 403 gatekeeper on /resource/ is still x-pinterest-pws-handler (019 T10, reconfirmed): omit it -> 403, send it -> 200. NEW: the value is presence-checked, NOT route-matched — BoardsResource returned 200 for BOTH 'www/[username].js' and 'www/[username]/[slug].js', so the boards path is no longer blocked on discovering its own handler. Bracketed segments stay literal (never interpolated). Capture host was REDACTED, normalised to www.pinterest.com in the fixture."
     },
+    "rednote": {
+      "capturedAt": "2026-09-13",
+      "staleAfterDays": 30,
+      "route": "/api/sns/web/v1/board/note",
+      "fixture": "rednote-board-live.json",
+      "originHost": "sns-i27.rednotecdn.com",
+      "note": "Board feed is GET //webapi.rednote.com/api/sns/web/v1/board/note?board_id=<24-hex>&num=30&cursor=<hex> \u2014 the XHR path reports it PROTOCOL-RELATIVE. Never requested by us: rednote signs every call from the URL + a live timestamp and a hand-signed attempt came back HTTP 461, so the page issues its own calls and the hook forwards them (098 D1). The capture is a MIDDLE page: 37 notes for num=30 (page size is not honoured), has_more true, and the next cursor is literally the LAST row's note_id. Row shape is nine keys with ONE cover \u2014 no imageList, no video, no stream \u2014 which is why K3a fans out one item per NOTE. cover.url and cover.file_id are \"\" on 37/37, so url_pre / url_default / info_list[WB_PRV|WB_DFT] are the only usable urls and a rename of those is what would silently empty a sweep. Cover keys are NOT all single-segment: 15/37 are <id>, 16/37 spectrum/<id>, 6/37 oss-sg/notes_pre_post/<id>, so the drop-the-first-two-segments key rule is load-bearing here, not only on note detail. Sanitized by the key-INDEPENDENT value sweep; the rednote CDN hosts, the path DEPTH and the !transform suffix survive by design (the rewrite is a no-op without them) and nothing else does \u2014 audit-capture reports LEAKED: 0."
+    },
     "instagram": {
       "capturedAt": "2026-08-14",
       "staleAfterDays": 14,
