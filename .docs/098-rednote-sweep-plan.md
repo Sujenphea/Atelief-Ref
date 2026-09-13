@@ -291,12 +291,16 @@ re-raise** (no production user, no test today). **Effort S–M. Do this first.**
 `resumable: "scroll"` + the engine honouring it; `onExpandFailure`; a size bound on
 the hook replay buffer. Behaviour-preserving for X. 661 → 667 tests.
 
-### T2 — the pure parser: `bulk-rednote.js`, cover pass (R8, R10)
-`parseBoardFeedPage` → `{ items, endOfFeed, cursor }`; `pickRednoteImage`;
-`rednoteAuthor` (**`nick_name` and `nickname`**); `mapBoardNote`;
-`cursorFromRequestURL` (must handle the **protocol-relative** `//webapi…` form —
-`new URL()` throws on it); `detectRednoteChallenge` (461 / empty `msg` / code).
-**Effort M.**
+### T2 — the pure parser: `bulk-rednote.js`, cover pass (R8, R10) ✅ **shipped** (changelog 471)
+`parseBoardFeedPage`, `pickRednoteImage` (serves cover AND `image_list`),
+`rednoteAuthor` (both spellings), `mapBoardNote`, `cursorFromRequestURL` /
+`boardIdFromRequestURL` (protocol-relative safe), `matchesScope`,
+`isBoardFeedRequest`, `detectRednoteChallenge`. 28 tests, 12 of them against the
+live capture. 667 → 695 tests.
+
+`xsec_token` rides as a LOCAL `BulkItem` field, never inside `provenance` — the
+single-capture path already establishes that a short-lived credential does not
+belong in stored provenance.
 
 ### T3 — `rednote-hook.js` + wiring (R5, R6)
 Matcher pinned to `/api/sns/web/v1/board/note` — **not** host-shaped
