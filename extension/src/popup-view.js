@@ -50,8 +50,9 @@ export function expansionOption(spec, { budget = NOTE_OPEN_BUDGET } = {}) {
       `Off by default. On, the sweep opens every note on the board — up to ${budget} per `
       + "sweep — so it can save a note's whole photo set instead of just its cover. A large "
       + "board takes tens of minutes rather than a few, and it is a far heavier automation "
-      + "footprint. Video notes and anything past the budget keep their cover, and the "
-      + "sweep says so when it finishes.",
+      + "footprint. Anything past the budget keeps its cover, and the sweep says so when it "
+      + "finishes. Video notes keep their cover too unless you also tick \u201cDownload full "
+      + "video\u201d, which opens them for their stream as well.",
   };
 }
 
@@ -71,6 +72,11 @@ export function sweepWarning(spec) {
     // acknowledgement meaningless (098 D8 — the gate is mandatory, not decorative), so
     // popup.js re-renders this and re-arms the checkbox whenever the toggle moves.
     const expanding = spec.expandNotes === true;
+    // The VIDEO toggle changes the expansion footprint as much as the expansion toggle
+    // changes the cover pass's, and on this platform more: the sampled board is 81 % video,
+    // so opening video notes too is several times the note-opens of photos alone. A gate
+    // that described the smaller sweep and then ran the larger one would be decorative.
+    const video = spec.resolveVideo === true;
     return {
       platform: "rednote",
       text:
@@ -81,7 +87,11 @@ export function sweepWarning(spec) {
         + (expanding
           ? "You have asked it to OPEN EVERY NOTE for its other photos: that is one page-open "
             + "per note (hundreds on a large board), far slower, and a much heavier footprint "
-            + "than the cover pass. Video notes still save only their cover."
+            + "than the cover pass. "
+            + (video
+              ? "Video notes are opened too, for their stream — on a board that is mostly "
+                + "video, that is several times as many note-opens as photos alone."
+              : "Video notes are not opened at all and still save only their cover.")
           : "It saves ONE cover image per note: a note's other photos and its video are not "
             + "captured."),
     };

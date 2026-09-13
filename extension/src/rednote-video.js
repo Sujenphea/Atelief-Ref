@@ -272,3 +272,21 @@ export function withVideoCandidates(item, ladder) {
   });
   return item;
 }
+
+/**
+ * Read back a list `withVideoCandidates` attached, or null when there is none.
+ *
+ * The ONE legitimate reader, named so it is countable. `withVideoCandidates` makes the
+ * property non-enumerable precisely so no copy, clone or serialization can carry it
+ * (020 B3 — never checkpoint a stream list); reading it BY NAME is the single path that
+ * still works, and everything that does so is on the live sweep's relay leg, where the
+ * ladder was resolved seconds earlier from the response it rode in on.
+ *
+ * Copied on the way out so the frozen array cannot be handed to a caller that might try to
+ * keep it, and so the value that crosses `runtime.sendMessage` is a plain array rather than
+ * a reference into the item.
+ */
+export function readVideoCandidates(item) {
+  const list = item && item.videoCandidates;
+  return Array.isArray(list) && list.length > 0 ? [...list] : null;
+}

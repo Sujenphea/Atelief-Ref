@@ -32,7 +32,7 @@ import {
 } from "./pinterest-video.js";
 import { fetchWithTimeout } from "./net.js";
 import { planCapture, isTextCard, CAPTURE_KIND } from "./capture-plan.js";
-import { MAX_VIDEO_BYTES } from "./config.js";
+import { MAX_VIDEO_BYTES, MAX_VIDEO_CANDIDATES } from "./config.js";
 import { isBulkMessage } from "./bulk-messages.js";
 import { handleBulkMessage } from "./bulk-sw.js";
 import { openJob, fetchKnownSources, completeJob } from "./bulk-endpoint.js";
@@ -119,10 +119,19 @@ export async function downloadAndIngestVideo(
   provenance, mp4Url, token, { fetchImpl = fetch, jobId = null, sourceId = null, maxBytes = null } = {}
 ) {
   const response = await fetchWithTimeout(mp4Url, {}, { fetchImpl });
-  if (!response.ok) throw new Error(`video HTTP ${response.status} for ${mp4Url}`);
+  // Every throw below is TAGGED (`videoStage`, and `httpStatus` where there is one), because
+  // `ingestOne` now has to tell "this rung is bad, take the next one" from "the network is
+  // down, stop walking" — and a thrown string message is not something to re-parse. See
+  // `videoCandidateVerdict`.
+  if (!response.ok) {
+    throw Object.assign(new Error(`video HTTP ${response.status} for ${mp4Url}`),
+      { videoStage: "download", httpStatus: response.status });
+  }
   const contentType = response.headers.get("content-type") || "";
   if (contentType && !contentType.startsWith("video/")) {
-    throw new Error(`non-video response (${contentType})`);
+    // No `httpStatus`: the request was fine and the BODY is not a video (a CDN error page,
+    // a rehosted still). Another shard of the same rung, or the next rung, may serve.
+    throw Object.assign(new Error(`non-video response (${contentType})`), { videoStage: "download" });
   }
   // Reject an over-cap clip from its declared size BEFORE reading the body, so a
   // huge MP4 isn't fully downloaded only for the server to 413 it. (Absent on a
@@ -131,7 +140,8 @@ export async function downloadAndIngestVideo(
   const limit = maxBytes || MAX_VIDEO_BYTES;
   const declaredBytes = Number(response.headers.get("content-length") || 0);
   if (declaredBytes > limit) {
-    throw new Error(`video too large (${declaredBytes} > ${limit} bytes)`);
+    throw Object.assign(new Error(`video too large (${declaredBytes} > ${limit} bytes)`),
+      { videoStage: "download" });
   }
   const blob = await response.blob();
   // Resolved host, not the hard-coded 47321 (301) — the dev build listens on 47322.
@@ -140,8 +150,56 @@ export async function downloadAndIngestVideo(
     token,
     provenanceHeader: buildProvenanceHeader(provenance, { jobId, sourceId }),
   }), { token });
-  if (status !== 200) throw new Error(body.error || `ingest HTTP ${status}`);
+  if (status !== 200) {
+    throw Object.assign(new Error(body.error || `ingest HTTP ${status}`),
+      { videoStage: "ingest", httpStatus: status });
+  }
   return { deduplicated: !!body.deduplicated };
+}
+
+/**
+ * What a failed video candidate means for the ladder: `"advance"` (try the next candidate)
+ * or `"stop"` (this failure is not the rung's fault — stop walking).
+ *
+ * 020 rule 2 is the whole reason this exists: **`thumbnailFailed` means "advance the
+ * ladder", not "fail the item"**, and the HTTP 422 from `/ingest-video` is precisely the
+ * undecodable-rung signal. The manual harvest learned it by shipping an `ef51` stream that
+ * nothing could decode; the 422 is the app telling us that from the other side, and it must
+ * never become a `permanentFailed`.
+ *
+ * The three cases, each decided rather than defaulted:
+ *
+ *   · **422 from the ingest** → ADVANCE. The bytes arrived and the app could not read them.
+ *     Nothing about the next rung is implied by that, so try it. Any OTHER ingest status
+ *     stops: a 401/403 is a bad token (session-wide — walking the ladder would burn the
+ *     whole board against it), a 5xx is our own app being unwell, a 413 means the next rung
+ *     is likely bigger, not smaller.
+ *   · **404 / 410 from the CDN** → ADVANCE, and deliberately NOT "retryable". 020 B3 is the
+ *     evidence: the same note served a DIFFERENT ladder on two visits minutes apart, so a
+ *     stream url that 404s is a rung that has moved, not a hiccup. Retrying the same url
+ *     cannot fix it, and the fix it CAN have is sitting next in the list — a backup shard
+ *     carrying the same object, or the next rung entirely. A retryable classification would
+ *     spend the item's four backoff attempts re-fetching a url that is gone.
+ *   · **A transport failure** (the fetch threw: DNS, timeout, abort) → STOP. It says nothing
+ *     about this rung, so walking the rest of the ladder means N dead requests instead of
+ *     one, and the engine ALREADY has the right mechanism: the item is re-relayed with
+ *     backoff, which re-resolves the ladder from the note's response — which is what 020 B3
+ *     asks for anyway. Same for any CDN status that is not 404/410 (a 429 or 5xx is the
+ *     CDN's state, not this rung's; a 401/403 is an auth wall the engine halts on).
+ *
+ * A `download` failure with NO status is the third shape: the response was fine and its
+ * body was not usable (a non-video content-type, or an over-cap clip). That is a property
+ * of THIS candidate, so it advances.
+ */
+export function videoCandidateVerdict(error) {
+  const stage = error && error.videoStage;
+  const status = error && error.httpStatus;
+  if (stage === "ingest") return status === 422 ? "advance" : "stop";
+  if (stage === "download") {
+    if (status == null) return "advance";
+    return status === 404 || status === 410 ? "advance" : "stop";
+  }
+  return "stop";
 }
 
 /** Real implementations the core uses; overridden wholesale in tests. */
@@ -238,10 +296,15 @@ export async function captureCore(harvest, context, token, deps = defaultDeps) {
  * single-item capture omits them. Fail-OPEN on video: a RESOLVED video that then
  * fails to download/ingest is UNEXPECTED → loud log, then falls back to the still
  * image, so a capture is never worse than before. Pure/injectable — no browser API.
+ *
+ * `videoCandidates` is the ORDERED fallback ladder behind `mp4Url` (098 D5): a 422 from
+ * `/ingest-video` advances to the next one rather than failing the item (020 rule 2).
+ * Absent for the three platforms that resolve a single url, so their walk is one attempt.
  */
 export async function ingestOne(
   provenance,
-  { token, mp4Url = null, jobId = null, sourceId = null, caps = null, content = null } = {},
+  { token, mp4Url = null, videoCandidates = [], jobId = null, sourceId = null,
+    caps = null, content = null } = {},
   deps = defaultDeps
 ) {
   // Server byte caps (13A): a bulk relay carries the job's authoritative limits so the
@@ -253,7 +316,7 @@ export async function ingestOne(
   // The DECISION (096 § D7) — which URLs, in what order, video or still, text card or not.
   // Shared with tier 3, which consumes the same plan and hands it to the native handler
   // instead of fetching here. This function keeps only the localhost transport.
-  const plan = planCapture(provenance, { mp4Url, content });
+  const plan = planCapture(provenance, { mp4Url, content, videoCandidates });
 
   // Nothing to capture. `captureCore` asks the same question before it spends a token
   // check or a video resolution, so this is unreachable from there — but `ingestOne` is
@@ -266,16 +329,71 @@ export async function ingestOne(
     return { status: "no-image", reason: plan.reason };
   }
 
-  if (plan.videoUrl) {
-    try {
-      const { deduplicated } = await deps.downloadAndIngestVideo(
-        provenance, plan.videoUrl, token, { jobId, sourceId, maxBytes: maxVideoBytes });
-      return { status: "saved", kind: "video", deduplicated };
-    } catch (error) {
-      // A resolved video should normally ingest — log loudly, but still fall back to the
-      // still candidates the plan carried alongside it.
-      deps.logError("resolved video failed to download/ingest → image fallback:", error);
+  // WALK the candidate list (098 D5). For X, Instagram and Pinterest that list is one
+  // element — the single url they resolved — so this loop runs once and does exactly what
+  // the single `try` before it did. rednote hands over a whole ladder, and a 422 advances
+  // it: WITHIN a rung first (`master_url`, then each `backup_urls[]` entry — the same object
+  // on another CDN shard), then between rungs. The order is `rednote-video.js`'s and is
+  // walked as given; re-deriving it here would be a second copy of 020 rule 1.
+  let videoSkip = null;
+  if (plan.kind === CAPTURE_KIND.video) {
+    // Bounded (020's ladder is plural in two directions and each attempt is a whole
+    // download): past the cap the honest answer is the cover still, not a longer walk.
+    const ladder = plan.videoCandidates.slice(0, MAX_VIDEO_CANDIDATES);
+    let attempts = 0;
+    let verdict = "advance";
+    let lastError = null;
+    for (const url of ladder) {
+      attempts += 1;
+      try {
+        const { deduplicated } = await deps.downloadAndIngestVideo(
+          provenance, url, token, { jobId, sourceId, maxBytes: maxVideoBytes });
+        // The SAME result shape a single-try ingest returned before the walk existed — no
+        // `attempt` field, deliberately: three of the four platforms pass a one-element
+        // list, and a result that differed by platform would be a second thing to keep in
+        // step. Which rung won is in the log line above it, where a diagnostic belongs.
+        return { status: "saved", kind: "video", deduplicated };
+      } catch (error) {
+        lastError = error;
+        verdict = videoCandidateVerdict(error);
+        if (verdict === "advance" && attempts < ladder.length) {
+          // Quiet: a refused rung is the ladder working, not a fault. The LOUD line is the
+          // one below, when the whole ladder is spent.
+          deps.log(`video candidate ${attempts}/${ladder.length} refused → advancing:`, String(error));
+          continue;
+        }
+        break;
+      }
     }
+    videoSkip = {
+      reason: verdict === "advance" ? "video-ladder-exhausted" : "video-failed",
+      attempts,
+      candidates: plan.videoCandidates.length,
+      message: String(lastError || "no video candidate"),
+    };
+    // A resolved video should normally ingest, so both endings are UNEXPECTED and loud —
+    // but the still candidates the plan carried alongside it are still tried below.
+    deps.logError(
+      verdict === "advance"
+        ? `every video candidate was refused (${attempts} of ${plan.videoCandidates.length}) → still fallback:`
+        : "resolved video failed to download/ingest → still fallback:",
+      lastError);
+  }
+
+  // EXHAUSTING THE LADDER IS A TYPED SKIP, NOT A FAILED ITEM (020, Risks & edge cases: "the
+  // honest outcome is cover-still-only for that note; record it as a typed skip, do not fail
+  // the sweep"). When the plan carries still candidates — every X / Instagram / Pinterest
+  // video, whose poster IS the fallback — the fail-open path below keeps the cover and this
+  // never fires. It fires for a rednote stream item, which deliberately carries no still:
+  // its poster is already ingested under `<note_id>` by the cover pass, and re-enqueueing it
+  // here would be the exact one-picture-two-keys duplicate 098 T5a refused video notes to
+  // avoid. `classifyIngestResult` maps this to `skipped`, so the note keeps its cover, the
+  // sweep stays clean, and nothing is recorded as permanently failed.
+  //
+  // (A video plan with CONTENT but no still still falls through to the fetch below, exactly
+  // as it did before this walk existed — unreachable today, and not this change's to move.)
+  if (videoSkip && plan.urlCandidates.length === 0 && !content) {
+    return { status: "skipped", reason: videoSkip.reason, video: videoSkip };
   }
 
   // Build the POST body. A media-less content item (a text-only tweet has NO card
@@ -331,6 +449,13 @@ export function presentation(result) {
   switch (result.status) {
     case "no-image":
       return { text: "?", color: "#e08c00", title: "No image found on this page." };
+    case "skipped":
+      // A typed skip, not an error: every video candidate was refused and there was no
+      // still to fall back to. Warning-coloured like `no-image`, because nothing was saved
+      // and nothing is broken. Unreachable from single-item capture today (every platform
+      // it serves carries a poster), and mapped anyway so the tail cannot fall through to
+      // the generic "Capture failed."
+      return { text: "?", color: "#e08c00", title: "No usable video — the still was kept." };
     case "no-token":
       return { text: "KEY", color: "#e08c00", title: "Set your Atelier token in the extension options." };
     case "saved":

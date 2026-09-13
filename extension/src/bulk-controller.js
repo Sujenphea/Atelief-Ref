@@ -31,6 +31,7 @@ import { isNoteDetailRequest } from "./bulk-rednote.js";
 import {
   createNoteExpander, createPageNoteDriver, isRednoteChallenge,
 } from "./rednote-detail-client.js";
+import { readVideoCandidates } from "./rednote-video.js";
 import { browser } from "./browser.js";
 
 /**
@@ -40,7 +41,13 @@ import { browser } from "./browser.js";
  *
  * @param spec.platform      "pinterest" | "twitter" (the job's platform).
  * @param spec.input         driver input (a board `{ boardId, boardUrl }` / X ignores it).
- * @param spec.resolveVideo  opt-in: relay the resolved MP4 instead of the poster.
+ * @param spec.resolveVideo  opt-in: relay the resolved MP4 instead of the poster. On
+ *                           rednote it also decides whether a VIDEO note is worth opening
+ *                           at all — the ladder exists only in a note-detail response, so
+ *                           the two toggles compose: `expandNotes` alone opens notes and
+ *                           takes their photos, both together also takes their streams, and
+ *                           `resolveVideo` alone changes nothing (a cover-only sweep never
+ *                           fetches a note detail, so no ladder is ever seen).
  * @param spec.expandNotes   opt-in (rednote): open each note for the rest of its images.
  * @param opts.expansion     the note-open expander when `expandNotes` is on, else null.
  *                           `{ arm, stats }` — armed with the known-set once it is loaded
@@ -130,6 +137,20 @@ export async function runBulkSweep(spec, {
       // tweet; null for image-only drivers (Pinterest) → the plain image path.
       content: item.content || null,
       mp4Url: resolveVideo ? (item.provenance?.rawMetadata?.videoUrl || null) : null,
+      // THE STREAM LADDER, and the one place it is allowed to travel (098 D5 / 020 B3).
+      //
+      // `provenance` is persisted — it ships to the app and a checkpointed item would carry
+      // it — and a stored `master_url` comes back 404 or points at a rung that is no longer
+      // right, because the same note served a DIFFERENT ladder on two visits minutes apart.
+      // So the ladder never enters provenance. It rides on the item as a NON-ENUMERABLE
+      // property (`withVideoCandidates`), which every copy a checkpoint or a clone could
+      // make silently drops, and `readVideoCandidates` is the single reader that asks for it
+      // by name. From here it is a field on ONE runtime message, resolved seconds ago from
+      // the response it arrived on, and nothing downstream stores it.
+      //
+      // Gated on the same `resolveVideo` toggle as `mp4Url`, because it means the same
+      // thing: relay the resolved video rather than the still.
+      videoCandidates: resolveVideo ? readVideoCandidates(item) : null,
       // Thread the server's authoritative byte caps (from job open, 13A) so the SW can
       // reject an over-cap image/video from its declared size BEFORE downloading it,
       // instead of streaming a doomed file only for the app to 413 it.
@@ -408,11 +429,18 @@ function buildInstagramDriver({ loc, fetchImpl, log = () => {} }) {
  * Expansion is OFF unless the user asked for it (098 R13): with `expandNotes` false this
  * function is exactly the cover-pass driver it was, no expander, no note-opens, no budget.
  */
-function buildRednoteDriver({ win, host, scope, log = () => {}, expandNotes = false, noteOpen = {} }) {
+function buildRednoteDriver({
+  win, host, scope, log = () => {}, expandNotes = false, resolveVideo = false, noteOpen = {},
+}) {
   const expansion = expandNotes
     ? createNoteExpander({
       host,
       log,
+      // The video toggle composes with the expansion toggle rather than duplicating it
+      // (098 T6c): expansion decides whether notes are OPENED at all, `resolveVideo`
+      // decides whether a video note has anything worth opening it for. Off, a video note
+      // is refused unopened exactly as it was in T5b; on, it is opened for its stream.
+      resolveVideo,
       budget: noteOpen.BUDGET,
       pacingMs: noteOpen.PACING_MS,
       pacingJitterMs: noteOpen.PACING_JITTER_MS,
@@ -477,6 +505,7 @@ const DRIVER_BUILDERS = Object.freeze({
   rednote: ({ win, host, scope, log, spec, pacing }) => buildRednoteDriver({
     win, host, scope, log,
     expandNotes: !!(spec && spec.expandNotes),
+    resolveVideo: !!(spec && spec.resolveVideo),
     noteOpen: (pacing && pacing.noteOpen) || {},
   }),
 });

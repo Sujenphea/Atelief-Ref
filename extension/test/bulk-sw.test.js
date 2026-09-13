@@ -53,8 +53,12 @@ test("relay: runs ingestOne with token + jobId/sourceId, defaults mp4Url null", 
     { type: BULK.relay, provenance: prov, jobId: "J", sourceId: "pin-9" }, d);
   assert.deepEqual(result, { status: "saved", deduplicated: false });
   assert.equal(d.calls.relay.prov, prov);
+  // A relay carrying no ladder passes an EMPTY one, not undefined: `planCapture` spreads it
+  // and `ingestOne` slices it, so "absent" and "empty" must be the same thing all the way
+  // down rather than two shapes one of them happens to tolerate.
   assert.deepEqual(d.calls.relay.opts,
-    { token: "TOK", mp4Url: null, content: null, jobId: "J", sourceId: "pin-9", caps: null });
+    { token: "TOK", mp4Url: null, videoCandidates: [], content: null,
+      jobId: "J", sourceId: "pin-9", caps: null });
 });
 
 test("relay: threads a tweet content descriptor to ingestOne (003 · C3 bulk)", async () => {
@@ -119,6 +123,48 @@ test("relay: refuses when the VIDEO url is off-allowlist even if the image host 
     { type: BULK.relay, provenance: prov, jobId: "J", sourceId: "t-1", mp4Url: "https://evil.example/x.mp4" }, d);
   assert.equal(result.status, "blocked-host");
   assert.equal(d.calls.relay, undefined);
+});
+
+test("relay: threads the ordered video ladder through to ingestOne (098 D5)", async () => {
+  const d = deps();
+  const prov = { platform: "rednote", mediaUrl: null, mediaUrlFallback: null, rawMetadata: {} };
+  const ladder = [
+    "http://sns-v11.rednotecdn.com/stream/1/110/258/a_258.mp4",
+    "http://sns-v27.rednotecdn.com/stream/1/110/258/a_258.mp4",
+  ];
+  await handleBulkMessage(
+    { type: BULK.relay, provenance: prov, jobId: "J", sourceId: "n1:v", videoCandidates: ladder }, d);
+  assert.deepEqual(d.calls.relay.opts.videoCandidates, ladder, "order is the contract, not a set");
+});
+
+test("relay: EVERY rung of the ladder goes through the SSRF guard, not just the first", async () => {
+  // The ladder arrives on a page-supplied response and the SW fetches it in the
+  // authenticated session with host_permissions — so a guard that checked only `mp4Url`
+  // would leave the rung-advance as an unguarded way to reach any host at all.
+  const d = deps();
+  const prov = { platform: "rednote", mediaUrl: null, rawMetadata: {} };
+  const result = await handleBulkMessage({
+    type: BULK.relay, provenance: prov, jobId: "J", sourceId: "n1:v",
+    videoCandidates: [
+      "http://sns-v11.rednotecdn.com/stream/1/110/258/a_258.mp4",
+      "http://127.0.0.1:47321/secret",          // the backup is the hostile one
+    ],
+  }, d);
+  assert.equal(result.status, "blocked-host");
+  assert.match(result.message, /127\.0\.0\.1/);
+  assert.equal(d.calls.relay, undefined, "nothing was fetched");
+});
+
+test("relay: a rednote stream item with no still still reaches ingestOne", async () => {
+  // Its poster is a SEPARATE item (`<note_id>`), so this one carries no media urls at all —
+  // and the guard must not read "nothing to block" as "nothing to do".
+  const d = deps();
+  const prov = { platform: "rednote", mediaUrl: null, mediaUrlFallback: null, rawMetadata: {} };
+  const result = await handleBulkMessage({
+    type: BULK.relay, provenance: prov, jobId: "J", sourceId: "n1:v",
+    videoCandidates: ["http://sns-v11.rednotecdn.com/stream/1/110/258/a_258.mp4"],
+  }, d);
+  assert.deepEqual(result, { status: "saved", deduplicated: false });
 });
 
 test("complete: forwards the status (defaults to complete)", async () => {

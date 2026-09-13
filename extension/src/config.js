@@ -85,6 +85,22 @@ export const NOTE_OPEN_POLL_MS = 250;
  * the real waiting is `NOTE_OPEN_TIMEOUT_MS` against the intercepted response. */
 export const NOTE_OPEN_SETTLE_MS = 400;
 
+/**
+ * How many VIDEO candidates one item may try before it gives up (098 D5 / 020 rule 2).
+ *
+ * The 422 from `/ingest-video` means "advance the ladder", and a ladder is now plural in
+ * two directions at once: rungs, and each rung's `master_url` + `backup_urls[]`. Without a
+ * ceiling a note offering four buckets of several rungs each, every one with backups, turns
+ * ONE item into dozens of full video DOWNLOADS — each up to the 512 MB cap — before it is
+ * allowed to fall back to its cover. That is a retry storm against a site that already
+ * fingerprints browsing (098 D8), and the bytes are the expensive part, not the requests.
+ *
+ * Four, because the only ladder ever captured is one rung of two urls: four admits the
+ * whole of it plus a second rung's master and backup, which is two genuine codec attempts.
+ * Past that the honest answer is 020's — keep the cover still and record a typed skip.
+ */
+export const MAX_VIDEO_CANDIDATES = 4;
+
 /** Per-item retry budget for a `retryableFailed` outcome. On exhaustion the item
  * is recorded `retryableFailed` (a later sweep re-attempts it) and the sweep moves
  * on — one bad item NEVER aborts the sweep `[C7]`. Distinct from a `halt` signal

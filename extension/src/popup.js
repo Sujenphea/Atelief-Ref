@@ -54,16 +54,23 @@ function showReason(reason) {
 }
 
 /** The spec as the user has currently configured it — the resolved spec plus the toggles.
- * The expansion toggle is folded in HERE as well as at launch because the risk gate's copy
- * depends on it (098 D8): the acknowledgement has to describe the sweep that will run. */
+ * BOTH toggles are folded in HERE as well as at launch because the risk gate's copy depends
+ * on them (098 D8): the acknowledgement has to describe the sweep that will run, and on
+ * rednote the video toggle decides whether the 81 % of notes that are video get opened. */
 function configuredSpec(spec) {
-  return { ...spec, expandNotes: !!(els.expandNotes && els.expandNotes.checked) };
+  return {
+    ...spec,
+    expandNotes: !!(els.expandNotes && els.expandNotes.checked),
+    resolveVideo: !!(els.resolveVideo && els.resolveVideo.checked),
+  };
 }
 
 /** Render (or re-render) the account-risk gate for the currently configured sweep.
  * Ticking the expansion box escalates the footprint from one intercepted response per ~30
  * notes to a page-open per note, so the acknowledgement is RESET and Start re-disabled —
- * an acknowledgement of the cover pass is not an acknowledgement of this one. */
+ * an acknowledgement of the cover pass is not an acknowledgement of this one. Ticking the
+ * VIDEO box escalates it again on rednote (it is what opens the video notes), so it
+ * re-renders through here too. */
 function showWarning(spec) {
   const warning = sweepWarning(configuredSpec(spec));
   if (warning) {
@@ -82,6 +89,7 @@ function showTarget(spec) {
   els.target.textContent = sweepLabel(spec);
   els.reason.hidden = true;
   els.videoRow.hidden = false;
+  els.resolveVideo.addEventListener("change", () => showWarning(spec));
 
   // The per-note expansion toggle (098 R13) — rednote only, OFF by default, with its cost
   // spelled out beside it rather than discovered after a 40-minute sweep.
@@ -127,7 +135,7 @@ function launch(tabId, spec) {
   // overwrite with a terminal/error line only if the popup is still open.
   els.status.textContent = "Sweeping… watch the app's Sweeps tab. Safe to close this popup.";
   dispatchStart({
-    spec: { ...configuredSpec(spec), resolveVideo: els.resolveVideo.checked },
+    spec: configuredSpec(spec),   // both toggles — the SAME spec the gate described
     sendMessage: (message) => browser.tabs.sendMessage(tabId, message),
     injectScript: () => browser.scripting.executeScript({ target: { tabId }, files: ["src/bulk-loader.js"] }),
   })

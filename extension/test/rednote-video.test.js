@@ -18,8 +18,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
-  STREAM_BUCKET_ORDER, STREAM_REFUSAL, isUndecodableCodec, selectStreamRung, videoCandidates,
-  videoLadder, withVideoCandidates,
+  STREAM_BUCKET_ORDER, STREAM_REFUSAL, isUndecodableCodec, readVideoCandidates,
+  selectStreamRung, videoCandidates, videoLadder, withVideoCandidates,
 } from "../src/rednote-video.js";
 import { toRednoteOriginal } from "../src/extractors/rednote.js";
 import { runSweep, OUTCOMES } from "../src/bulk-engine.js";
@@ -308,6 +308,22 @@ test("an attached candidate list survives property access and NOTHING else", () 
   assert.deepEqual(Object.keys(item), ["sourceId", "cursor"]);
   assert.throws(() => { item.videoCandidates = ["http://evil"]; }, "the list is not writable");
   assert.throws(() => item.videoCandidates.push("http://evil"), "the list is frozen");
+});
+
+test("readVideoCandidates is the ONE reader, and it copies rather than lends", () => {
+  // The non-enumerable property is invisible to every copy (above); this is the single path
+  // that still reaches it, used by the controller when it builds the relay message. It hands
+  // back a plain, mutable array so nothing downstream is holding the frozen original — and
+  // null, not [], when there is nothing, so "no ladder" is one value everywhere.
+  const item = withVideoCandidates({ sourceId: "n1" }, liveLadder);
+  const read = readVideoCandidates(item);
+  assert.deepEqual(read, videoCandidates(liveLadder).candidates);
+  read.push("http://mutated");
+  assert.deepEqual([...item.videoCandidates], videoCandidates(liveLadder).candidates,
+    "the reader handed out a reference into the item");
+  assert.equal(readVideoCandidates(withVideoCandidates({ sourceId: "n2" }, ladder())), null);
+  assert.equal(readVideoCandidates({ sourceId: "n3" }), null, "a plain item has no ladder");
+  assert.equal(readVideoCandidates(null), null);
 });
 
 test("a refused ladder attaches an EMPTY list and the reason", () => {

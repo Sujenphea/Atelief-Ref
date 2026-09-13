@@ -85,6 +85,70 @@ test("a video alongside content keeps the content for the fallback path", () => 
 });
 
 // ---------------------------------------------------------------------------
+// The ordered video ladder (098 D5 / T6c)
+// ---------------------------------------------------------------------------
+
+test("a single resolved video still plans as ONE candidate — the other three platforms", () => {
+  // The behaviour-identity claim, stated as a property rather than trusted: X, Instagram and
+  // Pinterest resolve exactly one url and pass no ladder, so their plan's list has one
+  // element and its head is the url they resolved. A caller that walks the list does
+  // precisely what a caller that tried `videoUrl` did.
+  const plan = planCapture(prov(), { mp4Url: "https://video/x.mp4" });
+  assert.deepEqual(plan.videoCandidates, ["https://video/x.mp4"]);
+  assert.equal(plan.videoUrl, plan.videoCandidates[0]);
+});
+
+test("a ladder rides behind mp4Url, in the order it was given", () => {
+  const plan = planCapture(prov({ platform: "rednote" }), {
+    mp4Url: "https://v/master.mp4",
+    videoCandidates: ["https://v/master.mp4", "https://v/backup.mp4", "https://v/rung2.mp4"],
+  });
+  assert.equal(plan.kind, CAPTURE_KIND.video);
+  // Deduped, and the duplicate here is the REAL one: a caller that both resolved a url and
+  // handed over the ladder it came from would otherwise buy the rung-advance a second try
+  // against a url that had just failed.
+  assert.deepEqual(plan.videoCandidates,
+    ["https://v/master.mp4", "https://v/backup.mp4", "https://v/rung2.mp4"]);
+  assert.equal(new Set(plan.videoCandidates).size, plan.videoCandidates.length);
+  assert.equal(plan.videoUrl, "https://v/master.mp4");
+
+  // …and a resolved url that is NOT in the ladder still LEADS it. A caller that resolved one
+  // url said which one it wanted tried first; appending it would make the ladder outrank the
+  // answer the caller already had.
+  const distinct = planCapture(prov(), {
+    mp4Url: "https://v/resolved.mp4", videoCandidates: ["https://v/a.mp4", "https://v/b.mp4"],
+  });
+  assert.deepEqual(distinct.videoCandidates,
+    ["https://v/resolved.mp4", "https://v/a.mp4", "https://v/b.mp4"]);
+});
+
+test("a ladder with NO mp4Url is still a video plan, headed by its first rung", () => {
+  // rednote's shape: nothing resolves a single url, the whole ladder arrives at once.
+  const plan = planCapture(prov({ platform: "rednote", mediaUrl: null }), {
+    videoCandidates: ["https://v/a.mp4", "https://v/b.mp4"],
+  });
+  assert.equal(plan.kind, CAPTURE_KIND.video);
+  assert.equal(plan.videoUrl, "https://v/a.mp4");
+  assert.deepEqual(plan.urlCandidates, [], "a stream item carries no still — the cover is a separate item");
+});
+
+test("an EMPTY ladder is not a video plan", () => {
+  // The refused-ladder case (`ef*`-only, empty buckets). It must fall through to the still
+  // candidates, not become a video plan with nothing to fetch.
+  const plan = planCapture(prov(), { videoCandidates: [] });
+  assert.equal(plan.kind, CAPTURE_KIND.image);
+  assert.deepEqual(plan.videoCandidates, []);
+  const nothing = planCapture(prov({ mediaUrl: null }), { videoCandidates: [] });
+  assert.equal(nothing.kind, CAPTURE_KIND.none);
+  assert.equal(nothing.reason, "no-media");
+});
+
+test("non-string ladder entries are dropped rather than planned", () => {
+  const plan = planCapture(prov(), { videoCandidates: [null, "", 7, "https://v/ok.mp4"] });
+  assert.deepEqual(plan.videoCandidates, ["https://v/ok.mp4"]);
+});
+
+// ---------------------------------------------------------------------------
 // The media-host guard (096 § D6) — opt-in, and why
 // ---------------------------------------------------------------------------
 
@@ -157,11 +221,16 @@ test("the plan shape is total — every field present on every kind", () => {
     planCapture(prov({ mediaUrl: null })),
   ];
   for (const plan of plans) {
-    for (const key of ["kind", "videoUrl", "urlCandidates", "content", "blocked", "reason"]) {
+    for (const key of ["kind", "videoUrl", "videoCandidates", "urlCandidates", "content", "blocked", "reason"]) {
       assert.ok(key in plan, `${plan.kind} plan is missing ${key}`);
     }
     assert.ok(Array.isArray(plan.urlCandidates));
     assert.ok(Array.isArray(plan.blocked));
+    // ALWAYS an array — `ingestOne` slices it unconditionally, so "no video" and "an empty
+    // ladder" have to be the same shape rather than two the caller must tell apart.
+    assert.ok(Array.isArray(plan.videoCandidates));
+    assert.equal(plan.videoUrl, plan.videoCandidates[0] ?? null,
+      "videoUrl must always be the head of the list, or there are two answers to one question");
   }
 });
 
@@ -175,6 +244,9 @@ test("reason is null unless the kind is none", () => {
 test("planCapture does not mutate the provenance it is given", () => {
   const p = prov({ mediaUrlFallback: "B" });
   const snapshot = JSON.stringify(p);
-  planCapture(p, { mp4Url: "V", content: CONTENT, isAllowedHost: isAllowedMediaHost });
+  planCapture(p, {
+    mp4Url: "V", content: CONTENT, isAllowedHost: isAllowedMediaHost,
+    videoCandidates: ["V", "W"],
+  });
   assert.equal(JSON.stringify(p), snapshot);
 });

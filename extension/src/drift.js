@@ -15,14 +15,14 @@ import { parseBoardFeedPage, parseBoardsPage, mapPinterestPin } from "./bulk-pin
 import {
   parseBoardFeedPage as parseRednoteBoardPage, parseNoteDetail as parseRednoteNoteDetail,
   detectRednoteChallenge, detectRednoteDetailChallenge, isBoardFeedRequest,
-  isNoteDetailRequest,
+  isNoteDetailRequest, videoSourceId,
 } from "./bulk-rednote.js";
 // The origin host is IMPORTED, never re-typed: the check below asserts every swept
 // mediaUrl lands on the host the rewrite targets, and a second copy of the string would
 // keep this check green after the rewrite had moved somewhere else.
 import { ORIGIN_HOST as REDNOTE_ORIGIN_HOST, toRednoteOriginal } from "./extractors/rednote.js";
 import {
-  STREAM_REFUSAL, selectStreamRung, videoCandidates, videoLadder,
+  STREAM_REFUSAL, readVideoCandidates, selectStreamRung, videoCandidates, videoLadder,
 } from "./rednote-video.js";
 import {
   parseSavedFeedPage, detectChallenge, isSavedFeedRequest, isCollectionFeedRequest, IG_MEDIA_TYPE,
@@ -533,6 +533,10 @@ export function checkRednoteVideo(json, { host = "www.rednote.com" } = {}) {
   if (posters.length === 0) {
     problems.push("a video note carries no image_list (the poster the cover pass keys on is gone)");
   }
+  if (posters.length > 1) {
+    problems.push(`a video note carries ${posters.length} image_list entries — the one-entry`
+      + " shape T6c's refusal-to-fan-out rests on has changed");
+  }
 
   // THE CODEC ASSERTION — the rules themselves, pinned independently of what this capture
   // happens to hold, the same way `checkRednoteBoard` re-checks the terminator against a
@@ -548,6 +552,49 @@ export function checkRednoteVideo(json, { host = "www.rednote.com" } = {}) {
   const empty = selectStreamRung({ EF4: [], EF5: [], EF6: [], EF7: [] });
   if (empty.ok || empty.reason !== STREAM_REFUSAL.emptyLadder) {
     problems.push("an all-empty ladder no longer refuses with a stated reason");
+  }
+
+  // THE T6c HALF: what the sweep actually enqueues for this note, under both settings of
+  // the video toggle. Everything above checks the ladder; this checks that the ladder
+  // reaches an item — and, just as load-bearing, that the POSTER never does.
+  const covered = parseRednoteNoteDetail(json, { host });
+  if (covered.unsupported !== "video" || covered.items.length !== 0) {
+    problems.push(
+      `with video off, a video note must still refuse with "video" and fan out NOTHING `
+      + `(got ${covered.items.length} items / ${covered.unsupported}) — its image_list is `
+      + "the poster the cover pass already ingested as <note_id>");
+  }
+
+  const resolved = parseRednoteNoteDetail(json, { host, resolveVideo: true });
+  if (resolved.unsupported || resolved.error) {
+    problems.push(`with video on, the note yielded no stream (${resolved.unsupported || resolved.error})`);
+  } else if (resolved.items.length !== 1) {
+    problems.push(`a video note fanned out ${resolved.items.length} items — it must contribute ONE stream`);
+  } else {
+    const stream = resolved.items[0];
+    if (stream.sourceId !== videoSourceId(resolved.noteId)) {
+      problems.push(`the stream item is keyed ${stream.sourceId}, not ${videoSourceId(resolved.noteId)}`
+        + " — knownNoteIndex counts a note as expanded by the colon, so this is what stops"
+        + " every video note being re-opened on every sweep");
+    }
+    if (stream.mediaUrl || stream.mediaUrlFallback) {
+      problems.push("the stream item carries a still — the poster would ingest twice, once"
+        + " as <note_id> and once as <note_id>:v (the duplicate 098 T5a refused video notes for)");
+    }
+    if (!posters.some((image) => image.url_default || image.url_pre)) {
+      problems.push("the poster carries no usable url — the cover the stream falls back to is gone");
+    }
+    const attached = readVideoCandidates(stream);
+    if (!attached || attached.join("|") !== candidates.join("|")) {
+      problems.push("the stream item's attached candidate list is not the ladder's ordered urls");
+    }
+    // 020 B3, enforced where it would actually bite: `provenance` is what ships to the app
+    // and what a checkpointed item would carry, and a stored stream url comes back 404 or
+    // points at a rung that has rotated away.
+    const stored = JSON.stringify(stream.provenance);
+    if (candidates.some((url) => stored.includes(url)) || /rednotecdn\.com\/stream\//.test(stored)) {
+      problems.push("a stream url reached the item's PROVENANCE — 020 B3 says never store one");
+    }
   }
 
   return verdict(problems, {

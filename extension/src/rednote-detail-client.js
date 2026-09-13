@@ -35,6 +35,7 @@
 // implementation of those two and is the only part that needs a real page.
 
 import { parseNoteDetail } from "./bulk-rednote.js";
+import { STREAM_REFUSAL } from "./rednote-video.js";
 import {
   NOTE_OPEN_BUDGET, NOTE_OPEN_PACING_MS, NOTE_OPEN_PACING_JITTER_MS,
   NOTE_OPEN_TIMEOUT_MS, NOTE_OPEN_POLL_MS, NOTE_OPEN_SETTLE_MS,
@@ -108,6 +109,14 @@ export function noteIdOf(item) {
  *
  * So only ids that ARE an expanded child contribute. A note is skipped when a previous
  * sweep ingested at least one of its images, and never merely because its cover exists.
+ *
+ * **What counts as a child is the `:`, not the digit** — which is what let 098 T6c key a
+ * video note's stream `<note_id>:v` and have it register here for free, with no change to
+ * this function and no migration of anything already ingested. A video note whose stream
+ * was captured is skipped on the next sweep like any expanded note; one whose ladder gave
+ * nothing registers nothing and IS re-opened, which is deliberate — 020 B3 observed the
+ * same note serving a different ladder minutes apart, so a refusal is a fact about one
+ * visit's ladder and not about the note.
  * The sweep-level mode marker (`bulk-controller.js`) gates whether this index is consulted
  * at all; this is what makes it precise per NOTE, and it is also what lets a board larger
  * than the note-open budget make progress — the notes the budget never reached have no
@@ -135,28 +144,40 @@ export function knownNoteIndex(knownSet) {
  * not on the page, which is a degradation, not an error); `closeNote()` puts the board
  * back. Both are injected — see `createPageNoteDriver`.
  *
+ * `resolveVideo` is the sweep's existing video toggle, threaded in because it decides
+ * whether a video note has anything to give: with it off, a video note's only contribution
+ * would be its poster, which the cover pass already has, so opening it buys a guaranteed
+ * refusal at the price of a paced note-open — and 30 of the 37 rows of the sampled board
+ * are video. With it on, the note is opened for its STREAM (098 T6c).
+ *
  * Per note, in order, and every arm of it is a decision:
  *
  *   · no note id            → keep the cover. Nothing to open, nothing to correlate on.
- *   · `kind: "video"`       → keep the cover, count a REFUSAL, and do not open it at all.
- *                             `parseNoteDetail` refuses video notes anyway (T6 is blocked
- *                             on a live video capture), so opening one buys a guaranteed
- *                             refusal at the price of a paced note-open — and 30 of the 37
- *                             rows of the sampled board are video. Refusals are counted
- *                             apart from degradations precisely so an 81 %-video board
- *                             does not report every sweep as partial for doing exactly
- *                             what it was designed to do.
  *   · already expanded      → yield NOTHING. Not the cover: the cover's `<note_id>` key was
  *                             never ingested for this note (its children were), so
  *                             re-emitting it would mint a brand-new item on every re-sweep.
+ *                             Checked FIRST, ahead of the video arm: a note whose stream is
+ *                             already captured must not be re-opened whatever kind it is,
+ *                             and since T6c a video note CAN have been expanded.
+ *   · `kind: "video"`, video off → keep the cover, count a REFUSAL, and do not open it at
+ *                             all. Refusals are counted apart from degradations precisely
+ *                             so an 81 %-video board does not report every sweep as partial
+ *                             for doing exactly what it was designed to do.
  *   · budget exhausted      → keep the cover, and keep going. The cover pass finishes.
  *   · otherwise             → pace, open, await, parse, fan out.
  */
+/** The `unsupported` reasons that mean "this note's STREAM was refused" rather than "this
+ * note's expansion went wrong". Derived from `STREAM_REFUSAL` rather than retyped, so a new
+ * refusal reason is counted correctly the day it is added instead of silently landing in
+ * `degraded` and turning every sweep partial. */
+const STREAM_REFUSALS = new Set(Object.values(STREAM_REFUSAL));
+
 export function createNoteExpander({
   waiter = createNoteDetailWaiter(),
   openNote,
   closeNote = async () => {},
   host = "www.rednote.com",
+  resolveVideo = false,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   random = Math.random,
   log = () => {},
@@ -170,6 +191,14 @@ export function createNoteExpander({
   let knownNotes = null;
   const counts = {
     opened: 0, expanded: 0, degraded: 0, refused: 0, skippedKnown: 0, images: 0,
+    // Split out from `images` since T6c: a stream is not a picture, and a board that
+    // reported "37 images" for 30 videos and 7 carousels would be telling the user
+    // something false about what it saved.
+    streams: 0,
+    // A video note that WAS opened and whose ladder gave nothing usable — 020's
+    // cover-still-only outcome. Counted apart from `refused` (never opened) because the
+    // two cost different things: this one spent a paced note-open.
+    streamRefused: 0,
   };
   const reasons = Object.create(null);
   let budgetExhausted = false;
@@ -194,7 +223,7 @@ export function createNoteExpander({
    */
   async function awaitDetail(noteId, xsecToken) {
     const match = (json) => {
-      const parsed = parseNoteDetail(json, { host, xsecToken });
+      const parsed = parseNoteDetail(json, { host, xsecToken, resolveVideo });
       // A refusal has no note to correlate on and must never be silently discarded as
       // "somebody else's response" — it is the one body that outranks correlation.
       if (parsed.error) return { error: parsed.error };
@@ -239,8 +268,8 @@ export function createNoteExpander({
         ? item.provenance.rawMetadata.kind : null;
 
       if (!noteId) { note("no_note_id"); counts.degraded += 1; out.push(item); continue; }
-      if (kind === "video") { note("video"); counts.refused += 1; out.push(item); continue; }
       if (knownNotes && knownNotes.has(noteId)) { counts.skippedKnown += 1; continue; }
+      if (kind === "video" && !resolveVideo) { note("video"); counts.refused += 1; out.push(item); continue; }
       if (counts.opened >= budget) {
         if (!budgetExhausted) {
           budgetExhausted = true;
@@ -263,12 +292,29 @@ export function createNoteExpander({
         // A video that slipped past the board row's `kind` (the row said image, the note
         // says video) is the same deliberate refusal, not a failure of this sweep.
         if (parsed.unsupported === "video") counts.refused += 1;
+        // A ladder that yielded nothing is 020's cover-still-only outcome — a TYPED SKIP,
+        // not a shortfall. It does not make the sweep partial: the note was opened, its
+        // ladder was read, and there was no decodable stream in it. Calling that "partly
+        // expanded" would put an 81 %-video board back where T5b's `refused`/`degraded`
+        // split took it out of — reporting partial on every sweep for working correctly.
+        else if (STREAM_REFUSALS.has(parsed.unsupported)) counts.streamRefused += 1;
         else counts.degraded += 1;
         out.push(item);
         continue;
       }
       counts.expanded += 1;
-      counts.images += parsed.items.length;
+      if (parsed.noteKind === "video") {
+        // The cover rides ALONGSIDE the stream, not replaced by it. Two reasons, and the
+        // second is the load-bearing one: the poster is a real picture at a key
+        // (`<note_id>`) the cover pass already uses, so keeping it costs one dedup-skip and
+        // nothing else; and the stream's ladder can still be exhausted at INGEST time, long
+        // after this parse, at which point 020's "keep the cover still" has to already be
+        // true. It is — the cover is a separate item that ingests on its own.
+        counts.streams += parsed.items.length;
+        out.push(item);
+      } else {
+        counts.images += parsed.items.length;
+      }
       out.push(...parsed.items);
     }
     return out;
@@ -293,8 +339,17 @@ export function createNoteExpander({
      *
      * `partial` is the load-bearing field: true when this sweep expanded LESS than it set
      * out to — a note that would not open or would not answer, or a budget that ran out.
-     * A video refusal is not a shortfall (expansion was never possible for it; T6 is what
-     * lifts that), and a note skipped because it was already expanded is not one either.
+     *
+     * Two things are deliberately NOT shortfalls, and T6c re-examined both rather than
+     * inheriting them. A note skipped because it was already expanded is not one. And
+     * neither kind of video refusal is one: `refused` is a note the sweep was told not to
+     * open (the video toggle is off — expansion was never on offer for it), and
+     * `streamRefused` is a note that WAS opened and whose ladder held no decodable stream,
+     * which is 020's typed skip — the sweep did everything it set out to do and the content
+     * is not there in a form we can take. Counting either as partial would report an
+     * 81 %-video board as partly expanded on every single sweep, which is the failure T5b's
+     * split exists to prevent. Both are counted and both are named in `reasons`, so a user
+     * who wants the number can have it without the status line crying wolf.
      */
     stats: () => ({
       mode: "expansion",

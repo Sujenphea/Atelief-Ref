@@ -151,6 +151,31 @@ test("sweepWarning: rednote's gate describes the MODE the user actually chose", 
   assert.notEqual(cover.text, expanded.text, "the gate said the same thing about two different sweeps");
 });
 
+test("sweepWarning: the gate also follows the VIDEO toggle, which is what opens video notes", () => {
+  // 098 T6c: on a board that is 81 % video, ticking "Download full video" alongside
+  // expansion multiplies the note-opens several times over. D8's gate is mandatory rather
+  // than decorative, so acknowledging the smaller sweep must not silently authorise this one.
+  const base = { platform: "rednote", scope: "board:abc", expandNotes: true };
+  const photos = sweepWarning(base);
+  const withVideo = sweepWarning({ ...base, resolveVideo: true });
+
+  assert.notEqual(photos.text, withVideo.text, "the gate said the same thing about two different sweeps");
+  assert.match(photos.text, /not opened at all/i);
+  assert.match(withVideo.text, /opened too/i);
+  // The cover pass is unaffected by the video box — it never fetches a note detail, so no
+  // ladder is ever seen and no note is ever opened.
+  assert.equal(
+    sweepWarning({ platform: "rednote", scope: "board:abc" }).text,
+    sweepWarning({ platform: "rednote", scope: "board:abc", resolveVideo: true }).text);
+});
+
+test("expansionOption: the copy says video notes need the OTHER toggle too", () => {
+  // The one thing a user cannot discover from the expansion label alone: expansion opens
+  // notes, the video toggle decides whether a VIDEO note is one of them.
+  const option = expansionOption({ platform: "rednote", scope: "board:abc" });
+  assert.match(option.detail, /video notes keep their cover too unless/i);
+});
+
 test("startEnabled: rednote stays gated in BOTH modes", () => {
   for (const spec of [
     { platform: "rednote", scope: "board:abc" },

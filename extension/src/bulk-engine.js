@@ -71,6 +71,9 @@ function isRetryableHttp(status) {
  * `result.httpStatus` when a caller supplies it (forward-compatible — absent
  * today, so the safe status-based defaults apply and sharpen for free later):
  *   saved            → ingested / deduped
+ *   skipped          → skipped (a typed per-item skip the relay decided — today: every
+ *                      video candidate refused, with no still to fall back to). Never a
+ *                      failure, so it cannot mark the sweep unclean.
  *   unreachable      → retryableFailed + HALT (the local app is down → pause the
  *                      whole sweep; the user resumes when it's back)
  *   fetch-error      → retryableFailed (transient CDN hiccup / throttle). A hard
@@ -100,6 +103,19 @@ export function classifyIngestResult(result) {
         appStatus: app,
       };
     }
+    case "skipped":
+      // A TYPED SKIP from the relay (098 D5 / 020 Risks): every video candidate was refused
+      // and there was no still to fall back to, so this item captured nothing — on purpose.
+      // It is NOT a failure: a permanentFailed would mark the sweep unclean and wall the
+      // note off behind the next run's known-set optimisations, and a retryableFailed would
+      // spend four backoff attempts re-walking a ladder that just said no. 020 names the
+      // outcome ("record it as a typed skip, do not fail the sweep") and this is where the
+      // engine agrees with it.
+      //
+      // It joins the dedup skips in `counts.skipped`, and therefore in the consecutive-skip
+      // run that arms Instagram's early-stop. Harmless: that optimisation is Instagram-only
+      // and Instagram video items always carry a poster, so this arm cannot fire there.
+      return { outcome: OUTCOMES.skipped, signal: "continue" };
     case "unreachable":
       return { outcome: OUTCOMES.retryableFailed, signal: "halt" };
     case "fetch-error":

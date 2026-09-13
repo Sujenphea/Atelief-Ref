@@ -27,6 +27,7 @@
 
 import { makeProvenance } from "./extractors/base.js";
 import { toRednoteOriginal } from "./extractors/rednote.js";
+import { videoCandidates, videoLadder, withVideoCandidates } from "./rednote-video.js";
 
 /** The board-feed path. Pinned to the PATH, deliberately not to a host: rednote's own
  * telemetry rides adjacent hosts the page also calls (`t2.rnote.com/api/v2/collect`,
@@ -306,8 +307,29 @@ export function parseBoardFeedPage(json, { host = "www.rednote.com" } = {}) {
 /** A note that produced no items but was NOT a refusal — the caller keeps its cover item
  * rather than treating the note as empty. Every one of these is a per-note degradation
  * the sweep should count and log (098 R7's `onExpandFailure`), never a silent drop. */
-const detailRefusal = (unsupported, noteId = null) =>
-  ({ items: [], noteId, unsupported, error: null });
+const detailRefusal = (unsupported, noteId = null, noteKind = null) =>
+  ({ items: [], noteId, noteKind, unsupported, error: null });
+
+/** The suffix that keys a video note's STREAM item: `<note_id>:v` (098 T6c).
+ *
+ * A LETTER, beside the image children's `<note_id>:0…:n`, and the whole decision is in that
+ * one character. Three properties had to hold at once:
+ *
+ *   · It must contain a `:`, because `knownNoteIndex` counts a note as expanded only when a
+ *     known id has one (`id.indexOf(":") > 0`). Upgrading the COVER item in place — keying
+ *     the stream `<note_id>` — would leave no expanded child at all, and every video note
+ *     on an 81 %-video board would be re-opened on every future sweep, burning the 400-note
+ *     budget forever. That is the exact failure the T5 addendum exists to prevent.
+ *   · It must not collide with an image index, now or later. `:v` cannot be a number, so a
+ *     note that one day carries both a stream and a carousel keys them apart for free.
+ *   · It must leave `<note_id>` — the cover the K3a pass already ingested — untouched. It
+ *     does: the stream is a SECOND item beside the poster, not a replacement for it, which
+ *     is also what makes "exhaust the ladder, keep the cover" true rather than aspirational.
+ */
+export const VIDEO_SOURCE_SUFFIX = "v";
+
+/** The stream item's key for a note. One spelling, one place. */
+export const videoSourceId = (noteId) => `${noteId}:${VIDEO_SOURCE_SUFFIX}`;
 
 /**
  * Map ONE `image_list[]` entry to a `BulkItem`, or null when it yields no usable URL.
@@ -369,9 +391,91 @@ export function mapNoteImage(image, ctx) {
 }
 
 /**
- * Parse one intercepted note-detail response into `{ items, noteId, unsupported, error }`.
+ * Map a VIDEO note's stream ladder to ONE `BulkItem` carrying the note's mp4 — or a typed
+ * refusal (098 T6c, K4).
  *
- *   · `items`       — one per `image_list[]` entry, keyed `<note_id>:<index>`.
+ * Returns `{ item, refusal }`: exactly one of them is set. `refusal` is a `STREAM_REFUSAL`
+ * reason from `rednote-video.js`, and every one of them means the same thing to the caller —
+ * keep the poster the cover pass already captured and record a typed skip. 020 names that
+ * outcome for an `ef*`-only note: "the honest outcome is cover-still-only for that note;
+ * record it as a typed skip, do not fail the sweep."
+ *
+ * Three things the item deliberately does NOT have:
+ *
+ *   · **No `mediaUrl`.** A video note's `image_list` is ONE entry — the poster — and the
+ *     cover pass has already ingested that exact picture as `<note_id>`. Giving this item
+ *     the poster as a still fallback would make a failed stream re-download it under a
+ *     second key: one picture, two keys, a dedup-skip that cannot see the duplicate. That
+ *     is the whole reason 098 T5a refused video notes, and lifting the refusal must not
+ *     lift it by re-introducing the duplicate. With no still, an exhausted ladder is a
+ *     typed skip (`sw.js`), and the poster survives at `<note_id>` where it already was.
+ *   · **No stream url in `rawMetadata`.** 020 B3: the same note offered a DIFFERENT ladder
+ *     on two visits minutes apart, so a persisted `master_url` comes back 404 or points at
+ *     a rung that is no longer right. `provenance` IS persisted — it is what ships to the
+ *     app and what a checkpointed item would carry — so the ladder rides OUTSIDE it, on the
+ *     non-enumerable property `withVideoCandidates` attaches. What is kept here is the
+ *     rung's DESCRIPTION (bucket, stream type, dimensions): facts about the chosen rung
+ *     that cannot rot into a dead fetch, and the only way the "stream_type is the real
+ *     discriminator" hypothesis could ever gather evidence.
+ *   · **No re-sorting.** `videoCandidates` has already ordered the ladder (020 rule 1:
+ *     by codec bucket, never by size). This hands that order on untouched.
+ */
+export function mapNoteVideo(note, ctx) {
+  const ladder = videoLadder(note);
+  const { rungs, refusal } = videoCandidates(ladder);
+  if (refusal) return { item: null, refusal };
+
+  const chosen = rungs[0];
+  const item = {
+    sourceId: videoSourceId(ctx.noteId),
+    mediaUrl: null,
+    mediaUrlFallback: null,
+    cursor: ctx.cursor ?? null,
+    xsecToken: ctx.xsecToken ?? null,
+    provenance: makeProvenance({
+      platform: "rednote",
+      originalURL: `https://${ctx.host}/explore/${ctx.noteId}`,
+      mediaUrl: null,
+      mediaUrlFallback: null,
+      authorHandle: ctx.author.handle,
+      authorName: ctx.author.name,
+      title: ctx.title,
+      rawMetadata: {
+        noteId: ctx.noteId,
+        kind: "video",
+        noteType: ctx.noteType,
+        userId: ctx.author.userId,
+        width: chosen.width,
+        height: chosen.height,
+        // The rung we took, described rather than linked. `streamBucket` is the
+        // `EF4`…`EF7` label selection ran on; `streamType` is the numeric type 020's
+        // undecodable pick (`_330`) and this capture's working one (258) disagree on.
+        streamBucket: chosen.bucket,
+        streamType: chosen.streamType,
+        // How many rungs the ladder offered, so a note that quietly lost its alternatives
+        // is visible in stored provenance without any url being stored.
+        streamRungs: rungs.length,
+        desc: ctx.desc,
+      },
+    }),
+  };
+  // The ladder is attached NON-ENUMERABLY, and that is the whole of where it lives: frozen,
+  // invisible to every copy a checkpoint or a message could make, readable only by name
+  // (`readVideoCandidates`). See `withVideoCandidates`.
+  return { item: withVideoCandidates(item, ladder), refusal: null };
+}
+
+/**
+ * Parse one intercepted note-detail response into
+ * `{ items, noteId, noteKind, unsupported, error }`.
+ *
+ *   · `items`       — one per `image_list[]` entry, keyed `<note_id>:<index>`; or, for a
+ *                     video note with `resolveVideo` on, the ONE stream item keyed
+ *                     `<note_id>:v` (see `mapNoteVideo`).
+ *   · `noteKind`    — `"video"` | `"image"` | null. The caller branches on it for one
+ *                     reason: a video note's cover item must RIDE ALONGSIDE its stream
+ *                     rather than be replaced by it (the poster is the fallback 020 asks
+ *                     for when the ladder fails at ingest time, long after this parse).
  *   · `noteId`      — the note this body is about, for the caller to check against the
  *                     note it opened (the hook's replay buffer can hand over a detail
  *                     response from an EARLIER note in the same tab — the same hazard
@@ -394,23 +498,39 @@ export function mapNoteImage(image, ctx) {
  *   `no_note`         `data.items` is empty — deleted, private, or withheld.
  *   `no_note_card`    the item arrived without its card.
  *   `no_note_id`      the card cannot be keyed, so no `<note_id>:<index>` exists.
- *   `video`           see below.
+ *   `video`           a video note with `resolveVideo` off — see below.
+ *   `no_ladder` · `empty_ladder` · `no_usable_rung` · `undecodable_codec`
+ *                     a video note with `resolveVideo` ON whose stream ladder yielded
+ *                     nothing. `STREAM_REFUSAL`'s own vocabulary, unwrapped rather than
+ *                     collapsed, so the sweep can say which.
  *   `no_images`       `image_list` missing or empty.
  *   `no_usable_images` every entry was there but none yielded a URL.
  *
- * **Video notes are refused, not fanned out** (`unsupported: "video"`), and that is a
- * decision rather than an omission. T6 is blocked on a live `type: "video"` capture, so
- * the shape of a video note's `image_list` is unverified — and on the reading that is most
- * likely (it holds the poster), fanning it out would enqueue `<note_id>:0` carrying the
- * SAME poster image the cover pass already ingested as `<note_id>`: one picture, two keys,
- * two downloads, and a dedup-skip that cannot see the duplicate. Refusing degrades to the
- * cover, which for a video note is exactly what K3a already captures — so the refusal
- * costs nothing today and is visible in the degradation count when T6 arrives to lift it.
+ * **A video note's `image_list` is NEVER fanned out** (098 T6c). The live capture settled
+ * what T5a could only suspect: a `type: "video"` note carries exactly ONE `image_list`
+ * entry, and it is the poster — the same picture the cover pass already ingested as
+ * `<note_id>`. Fanning it out would enqueue `<note_id>:0` for one picture under a second
+ * key: two downloads and a dedup-skip that cannot see the duplicate. So T6c lifts the
+ * refusal WITHOUT lifting that: a video note contributes its STREAM (`<note_id>:v`), or
+ * nothing at all.
+ *
+ * `resolveVideo` is the existing popup toggle, meaning what it has always meant — relay the
+ * resolved MP4 rather than the still. OFF (the default), a video note is refused exactly as
+ * it was before T6c: `unsupported: "video"`, cover kept, no stream. ON, the ladder is read
+ * and the stream item is built; when the ladder yields nothing the `unsupported` reason is
+ * the `STREAM_REFUSAL` string that says WHICH nothing (`undecodable_codec` is 020's
+ * `ef*`-only, cover-still-only case by name).
  */
-export function parseNoteDetail(json, { host = "www.rednote.com", xsecToken = null } = {}) {
+export function parseNoteDetail(
+  json,
+  { host = "www.rednote.com", xsecToken = null, resolveVideo = false } = {}
+) {
   const challenge = detectRednoteDetailChallenge(json);
   if (challenge) {
-    return { items: [], noteId: null, unsupported: null, error: new RednoteChallengeError(challenge) };
+    return {
+      items: [], noteId: null, noteKind: null, unsupported: null,
+      error: new RednoteChallengeError(challenge),
+    };
   }
 
   const entry = json.data.items[0];
@@ -421,30 +541,39 @@ export function parseNoteDetail(json, { host = "www.rednote.com", xsecToken = nu
   const noteId = note.note_id != null && note.note_id !== "" ? String(note.note_id) : null;
   if (!noteId) return detailRefusal("no_note_id");
 
-  // A `video` key anywhere on the card outranks `type`: the key is the payload, the type
-  // is a label, and a label can be renamed without the payload moving.
   const noteType = note.type != null ? String(note.type) : null;
-  if (note.video != null || noteType === "video") return detailRefusal("video", noteId);
-
-  const images = Array.isArray(note.image_list) ? note.image_list : [];
-  if (images.length === 0) return detailRefusal("no_images", noteId);
-
   const ctx = {
     noteId, host, xsecToken, noteType,
     author: rednoteAuthor(note.user),
     title: note.title || null,
     desc: note.desc || null,
-    imageCount: images.length,
   };
+
+  // A `video` key anywhere on the card outranks `type`: the key is the payload, the type
+  // is a label, and a label can be renamed without the payload moving.
+  if (note.video != null || noteType === "video") {
+    // The toggle the user actually set. Off, this is T5a unchanged — and it is also the
+    // cheaper answer, because the expander then never spends a paced note-open on a note
+    // whose only contribution it has been told not to take.
+    if (!resolveVideo) return detailRefusal("video", noteId, "video");
+    const { item, refusal } = mapNoteVideo(note, ctx);
+    if (!item) return detailRefusal(refusal, noteId, "video");
+    return { items: [item], noteId, noteKind: "video", unsupported: null, error: null };
+  }
+
+  const images = Array.isArray(note.image_list) ? note.image_list : [];
+  if (images.length === 0) return detailRefusal("no_images", noteId, "image");
+
   const items = [];
   images.forEach((image, index) => {
-    const item = mapNoteImage(image, { ...ctx, index });
+    const item = mapNoteImage(image, { ...ctx, index, imageCount: images.length });
     if (item) items.push(item);
   });
 
   return {
     items,
     noteId,
+    noteKind: "image",
     unsupported: items.length === 0 ? "no_usable_images" : null,
     error: null,
   };

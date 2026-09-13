@@ -42,6 +42,8 @@ const PAGE1 = JSON.parse(readFileSync(new URL("./fixtures/rednote-board.json", i
 const LIVE = JSON.parse(readFileSync(new URL("./fixtures/rednote-board-live.json", import.meta.url)));
 /** The live NOTE capture — nine images — re-addressed per test to the row being expanded. */
 const DETAIL = JSON.parse(readFileSync(new URL("./fixtures/rednote-note-detail.json", import.meta.url)));
+/** The live VIDEO note capture — one EF4 rung with one backup, and one poster (098 T6b). */
+const VIDEO = JSON.parse(readFileSync(new URL("./fixtures/rednote-note-video.json", import.meta.url)));
 
 const HOST = "www.rednote.com";
 /** The board id off the live request URL — 24-char hex, NOT digits. */
@@ -58,6 +60,8 @@ const clone = (value) => structuredClone(value);
 
 /** Live rows that are NOT on page 1, so a composed page 2 is provably new content. */
 const PAGE1_IDS = PAGE1.data.notes.map((note) => note.note_id);
+/** Page 1's video rows, by id — 2 of its 3 notes. */
+const VIDEO_IDS = new Set(PAGE1.data.notes.filter((note) => note.type === "video").map((n) => n.note_id));
 const FRESH_ROWS = LIVE.data.notes.filter((note) => !PAGE1_IDS.includes(note.note_id));
 
 /**
@@ -567,6 +571,69 @@ test("rednote expansion: a note's cover is replaced by its images, and a video n
   assert.equal(stats.expanded, imageRows.length);
   assert.equal(stats.refused, videoRows.length);
   assert.equal(stats.partial, false);
+});
+
+/** The live VIDEO detail body, re-addressed to `noteId`. */
+function videoDetailFor(noteId) {
+  const body = clone(VIDEO);
+  body.data.items[0].note_card.note_id = noteId;
+  return body;
+}
+
+test("rednote K4: with the video toggle on, a video note relays its cover AND its stream", async () => {
+  // T6c end to end: board page → expander → engine → relay. Page 1 of the committed fixture
+  // is 2 video rows and 1 image row, so this exercises both fan-outs in one sweep and pins
+  // the thing that must never happen — the poster arriving twice.
+  const { source, expander, state } = expandingSource(
+    [[lastPage(), feedUrl(PAGE1.data.cursor)]],
+    {
+      resolveVideo: true,
+      answer: (noteId) => (VIDEO_IDS.has(noteId) ? videoDetailFor(noteId) : detailFor(noteId)),
+    });
+  source.onResponse(PAGE1, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  // EVERY note is opened now, not just the image ones — which is exactly the escalation the
+  // popup's risk gate re-renders for when the video box is ticked.
+  assert.deepEqual(state.opened.sort(), PAGE1.data.notes.map((n) => n.note_id).sort());
+  assert.equal(state.closed, state.opened.length, "every opened note was closed");
+
+  const expected = PAGE1.data.notes.flatMap((note) =>
+    (note.type === "video" ? [note.note_id, `${note.note_id}:v`] : imageIdsOf(note.note_id)));
+  assert.deepEqual(recorder.ids(), expected);
+
+  // The duplicate 098 T5a refused video notes to avoid: one picture, two keys. Every id is
+  // relayed once, and no video note ever produces an image-indexed child.
+  assert.equal(new Set(recorder.ids()).size, recorder.ids().length, "an id was relayed twice");
+  for (const id of VIDEO_IDS) {
+    assert.equal(recorder.ids().includes(`${id}:0`), false, `the poster was fanned out for ${id}`);
+  }
+
+  const stats = expander.stats();
+  assert.equal(stats.expanded, PAGE1.data.notes.length);
+  assert.equal(stats.streams, VIDEO_IDS.size);
+  assert.equal(stats.refused, 0, "a video note is no longer refused when the toggle asks for its stream");
+  assert.equal(stats.partial, false);
+});
+
+test("rednote K4: with the video toggle OFF, a video note is untouched by T6c", async () => {
+  // The composition claim: `expandNotes` alone is exactly the sweep T5b shipped. Asserted
+  // beside the test above so the two modes are compared rather than described.
+  const { source, expander, state } = expandingSource(
+    [[lastPage(), feedUrl(PAGE1.data.cursor)]],
+    { answer: (noteId) => (VIDEO_IDS.has(noteId) ? videoDetailFor(noteId) : detailFor(noteId)) });
+  source.onResponse(PAGE1, feedUrl());
+
+  const recorder = recordingRelay();
+  await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.deepEqual(state.opened, PAGE1.data.notes.filter((n) => n.type !== "video").map((n) => n.note_id),
+    "a video note costs no note-open when its stream was not asked for");
+  assert.equal(recorder.ids().some((id) => id.endsWith(":v")), false);
+  assert.equal(expander.stats().refused, VIDEO_IDS.size);
 });
 
 test("rednote expansion: a refused NOTE-OPEN halts the sweep resumable, like a refused board page", async () => {

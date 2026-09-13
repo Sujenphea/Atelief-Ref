@@ -12,6 +12,7 @@ import {
   runBulkSweep, sweepCheckpointKey, sweepCleanMarkerKey, sweepMode, armsNotePreCheck,
 } from "../src/bulk-controller.js";
 import { BULK } from "../src/bulk-messages.js";
+import { videoCandidates, withVideoCandidates } from "../src/rednote-video.js";
 
 function item(sourceId, videoUrl = null) {
   return {
@@ -142,6 +143,90 @@ test("runBulkSweep: relays a resolved MP4 only when resolveVideo is opt-in", asy
   await runBulkSweep(
     { platform: "twitter", input: {} }, { transport, driver: driver2, ...engineOpts }); // resolveVideo false
   assert.deepEqual(seen, [null]); // poster only
+});
+
+// MARK: - the rednote stream ladder: it reaches the relay, and NOTHING else (098 D5 / 020 B3)
+
+/** A rednote stream item as `parseNoteDetail` builds one: no still (its poster is a separate
+ * item at `<note_id>`), and the ladder attached non-enumerably. */
+const LADDER = {
+  EF4: [{
+    video_codec: "EF4", format: "mp4", stream_type: 258, width: 720, height: 960,
+    master_url: "http://sns-v11.rednotecdn.com/stream/1/110/258/a_258.mp4",
+    backup_urls: ["http://sns-v27.rednotecdn.com/stream/1/110/258/a_258.mp4"],
+  }],
+};
+
+const streamItem = () => withVideoCandidates({
+  sourceId: "note1:v",
+  mediaUrl: null,
+  mediaUrlFallback: null,
+  cursor: "cur-note1",
+  provenance: { platform: "rednote", mediaUrl: null, rawMetadata: { noteId: "note1", kind: "video" } },
+}, LADDER);
+
+test("runBulkSweep: the stream ladder rides the relay message, only with resolveVideo", async () => {
+  const seen = [];
+  const { transport } = fakeTransport({
+    relayFor: (_id, message) => { seen.push(message.videoCandidates); return { status: "saved", deduplicated: false }; },
+  });
+
+  await runBulkSweep(
+    { platform: "rednote", input: {}, scope: "board:b", resolveVideo: true, expandNotes: true },
+    { transport, driver: driverOf([streamItem()]), ...engineOpts });
+  assert.deepEqual(seen, [videoCandidates(LADDER).candidates],
+    "ordered, master before backup — the contract ingestOne walks");
+
+  seen.length = 0;
+  await runBulkSweep(
+    { platform: "rednote", input: {}, scope: "board:b", expandNotes: true },
+    { transport, driver: driverOf([streamItem()]), ...engineOpts });
+  assert.deepEqual(seen, [null], "the same toggle that gates mp4Url gates the ladder behind it");
+});
+
+test("runBulkSweep: NO stream url reaches a saved checkpoint (020 B3), driven end to end", async () => {
+  // The rule that made the list non-enumerable: the same note served a DIFFERENT ladder on
+  // two visits minutes apart, so a checkpointed `master_url` comes back 404 or points at a
+  // rung that is no longer right. `rednote-video.test.js` proves the engine drops it; this
+  // proves the CONTROLLER — which reads it by name to build the relay message — does not
+  // reintroduce it on the way past.
+  const saves = [];
+  const storage = {
+    async load() { return null; },
+    async save(_key, value) { saves.push(JSON.stringify(value)); },
+    async remove() {},
+  };
+  const { transport } = fakeTransport();
+
+  await runBulkSweep(
+    { platform: "rednote", input: {}, scope: "board:b", resolveVideo: true, expandNotes: true },
+    { transport, driver: driverOf([streamItem()]), storage, ...engineOpts });
+
+  const urls = videoCandidates(LADDER).candidates;
+  assert.ok(saves.length > 0, "the sweep must actually have written, or this proves nothing");
+  assert.ok(urls.length > 0);
+  for (const saved of saves) {
+    for (const url of urls) assert.equal(saved.includes(url), false, `${url} in ${saved}`);
+    assert.equal(saved.includes("rednotecdn.com/stream/"), false, saved);
+  }
+});
+
+test("runBulkSweep: the ladder never enters the PROVENANCE the relay ships", async () => {
+  // The other persisted surface: provenance is what reaches the app and what a checkpointed
+  // item would carry. The ladder travels as its own message field, beside it, never in it.
+  const seen = [];
+  const { transport } = fakeTransport({
+    relayFor: (_id, message) => { seen.push(message); return { status: "saved", deduplicated: false }; },
+  });
+
+  await runBulkSweep(
+    { platform: "rednote", input: {}, scope: "board:b", resolveVideo: true, expandNotes: true },
+    { transport, driver: driverOf([streamItem()]), ...engineOpts });
+
+  const [message] = seen;
+  const stored = JSON.stringify(message.provenance);
+  for (const url of videoCandidates(LADDER).candidates) assert.equal(stored.includes(url), false);
+  assert.ok(message.videoCandidates.length > 0, "…and it did travel, so this is not vacuous");
 });
 
 // MARK: - Stable checkpoint key (cross-run resume)

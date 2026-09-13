@@ -14,8 +14,11 @@ import {
   BOARD_FEED_PATH, NOTE_DETAIL_PATH, RednoteChallengeError, boardIdFromRequestURL,
   cursorFromRequestURL, detectRednoteChallenge, detectRednoteDetailChallenge,
   isBoardFeedRequest, isNoteDetailRequest, mapBoardNote, mapNoteImage, matchesScope,
-  parseBoardFeedPage, parseNoteDetail, pickRednoteImage, rednoteAuthor,
+  mapNoteVideo, parseBoardFeedPage, parseNoteDetail, pickRednoteImage, rednoteAuthor,
+  videoSourceId, VIDEO_SOURCE_SUFFIX,
 } from "../src/bulk-rednote.js";
+import { readVideoCandidates, STREAM_REFUSAL, videoCandidates } from "../src/rednote-video.js";
+import { knownNoteIndex } from "../src/rednote-detail-client.js";
 
 /** The live capture of 2026-09-13, sanitized into a COMMITTED fixture by 098 T4. It used
  * to be read out of the gitignored `resources/`, so the four tests below skipped on every
@@ -524,18 +527,143 @@ test("a live_photo entry still yields its STILL, flagged for the deferred motion
   assert.equal(page.items[1].provenance.rawMetadata.kind, "image");
 });
 
-// MARK: - video notes (T6 is blocked; this must degrade visibly)
+// MARK: - video notes: the stream, and NEVER the poster (098 T6c)
+
+/** The live video capture — one populated `EF4` bucket, one rung, one `backup_urls` entry,
+ * and an `image_list` of exactly ONE poster. */
+const videoLive = JSON.parse(readFileSync(
+  new URL("./fixtures/rednote-note-video.json", import.meta.url), "utf8"));
+const videoCard = () => structuredClone(videoLive.data.items[0].note_card);
+/** The live video card re-wrapped in this file's envelope helper, so a video test reads the
+ * same way as every other test here. */
+const videoDetail = (over = {}) => detail(Object.assign(videoCard(), over));
 
 test("a video-typed note is REFUSED with a reason, not fanned out into poster duplicates", () => {
-  // A video note's cover is already ingested by K3a as `<note_id>`. If its image_list holds
-  // that same poster, fanning out would enqueue it again as `<note_id>:0` — one picture,
-  // two keys, two downloads, and a dedup-skip that cannot see the duplicate. T6 lifts this
-  // once a real video note has been captured; until then the refusal is the honest answer.
+  // A video note's cover is already ingested by K3a as `<note_id>`, and the live capture
+  // settled what T5a could only suspect: its `image_list` is ONE entry, the same poster.
+  // Fanning out would enqueue it again as `<note_id>:0` — one picture, two keys, two
+  // downloads, and a dedup-skip that cannot see the duplicate. T6c lifts the refusal
+  // WITHOUT lifting that; with the video toggle off it is still exactly this.
   const page = parseNoteDetail(detail(card({ type: "video" })));
   assert.deepEqual(page.items, []);
   assert.equal(page.unsupported, "video");
   assert.equal(page.error, null, "a video note is not a refusal by rednote");
   assert.equal(page.noteId, "nd1", "the caller still learns WHICH note degraded");
+});
+
+test("the LIVE video note's poster is never fanned out, with the toggle off or on", () => {
+  // The property the whole T5a/T6c argument rests on, asserted against the real capture
+  // rather than against a card this file invented.
+  assert.equal(videoCard().image_list.length, 1, "the premise: a video note carries ONE poster");
+  const off = parseNoteDetail(videoDetail());
+  assert.deepEqual(off.items, []);
+  assert.equal(off.unsupported, "video");
+
+  const on = parseNoteDetail(videoDetail(), { resolveVideo: true });
+  assert.equal(on.items.length, 1);
+  const posterUrls = videoCard().image_list[0];
+  for (const item of on.items) {
+    assert.equal(item.mediaUrl, null, "the stream item must carry no still");
+    assert.equal(item.mediaUrlFallback, null);
+    assert.notEqual(item.sourceId, `${on.noteId}:0`, "…and must never take an image index");
+  }
+  assert.ok(posterUrls.url_default, "the poster is still there — on the COVER item, at <note_id>");
+});
+
+test("with the video toggle on, a video note contributes its STREAM, keyed <note_id>:v", () => {
+  const page = parseNoteDetail(videoDetail(), { resolveVideo: true, host: "www.rednote.com" });
+  assert.equal(page.error, null);
+  assert.equal(page.unsupported, null);
+  assert.equal(page.noteKind, "video");
+  assert.equal(page.items.length, 1, "one stream, not one per rung");
+
+  const stream = page.items[0];
+  assert.equal(stream.sourceId, videoSourceId(page.noteId));
+  assert.equal(stream.sourceId, `${page.noteId}:${VIDEO_SOURCE_SUFFIX}`);
+  assert.equal(stream.provenance.rawMetadata.kind, "video");
+  assert.equal(stream.provenance.rawMetadata.noteId, page.noteId);
+  assert.equal(stream.provenance.originalURL, `https://www.rednote.com/explore/${page.noteId}`);
+});
+
+test("the stream key registers as an EXPANDED CHILD — the re-open trap, closed", () => {
+  // Checked against the real `knownNoteIndex` predicate, not against a description of it:
+  // it counts a note as expanded by the COLON, so `<note_id>:v` registers and the cover's
+  // bare `<note_id>` still does not. Upgrading the cover in place would have left no child
+  // at all, and every video note on an 81 %-video board would be re-opened every sweep.
+  const page = parseNoteDetail(videoDetail(), { resolveVideo: true });
+  const noteId = page.noteId;
+  assert.equal(knownNoteIndex(new Set([page.items[0].sourceId])).has(noteId), true);
+  assert.equal(knownNoteIndex(new Set([noteId])).has(noteId), false,
+    "a cover alone must never read as expanded — that is the mode trap T5b fixed");
+});
+
+test("the stream's candidate list is attached OUT of provenance (020 B3)", () => {
+  const page = parseNoteDetail(videoDetail(), { resolveVideo: true });
+  const stream = page.items[0];
+  const expected = videoCandidates(videoCard().video.media.stream).candidates;
+  assert.ok(expected.length > 1, "the live rung has a backup, or the ordering claim is untested");
+  assert.deepEqual(readVideoCandidates(stream), expected);
+
+  // `provenance` is what ships to the app and what a checkpointed item would carry. 020 B3:
+  // the same note served a DIFFERENT ladder minutes apart, so a stored url comes back 404.
+  const stored = JSON.stringify(stream.provenance);
+  for (const url of expected) assert.equal(stored.includes(url), false, url);
+  assert.doesNotMatch(stored, /rednotecdn\.com\/stream\//);
+  // …and the whole ITEM, serialized the way a checkpoint would serialize it, loses it too.
+  assert.equal(JSON.parse(JSON.stringify(stream)).videoCandidates, undefined);
+  assert.equal(structuredClone(stream).videoCandidates, undefined);
+});
+
+test("the rung is DESCRIBED in provenance — facts that cannot rot into a dead fetch", () => {
+  // The stream_type hypothesis (098 T6b: one good sample at 258, one bad at 020's _330)
+  // can only ever gather evidence if what we took is recorded. A url would rot; an integer
+  // and a bucket label cannot.
+  const page = parseNoteDetail(videoDetail(), { resolveVideo: true });
+  const raw = page.items[0].provenance.rawMetadata;
+  const rung = videoCard().video.media.stream.EF4[0];
+  assert.equal(raw.streamBucket, "EF4");
+  assert.equal(raw.streamType, rung.stream_type);
+  assert.equal(raw.width, rung.width);
+  assert.equal(raw.height, rung.height);
+  assert.equal(raw.streamRungs, 1);
+});
+
+test("a video note whose ladder gives nothing refuses with WHICH nothing, cover kept", () => {
+  // 020's Risks entry: an `ef*`-only note is cover-still-only — a typed skip, never a sweep
+  // failure. The reason is `STREAM_REFUSAL`'s own vocabulary, unwrapped rather than
+  // collapsed into one word, because "there was no ladder" and "every rung is obfuscated"
+  // are different facts about the note.
+  const cases = [
+    [{ EF4: [], EF5: [], EF6: [], EF7: [] }, STREAM_REFUSAL.emptyLadder],
+    [{ EF4: [{ video_codec: "ef51", format: "mp4", master_url: "http://sns-v11.rednotecdn.com/stream/1/110/330/x_330.mp4" }] },
+      STREAM_REFUSAL.undecodableCodec],
+    [{ EF4: [{ format: "m3u8", master_url: "http://sns-v11.rednotecdn.com/stream/1/110/258/x.m3u8" }] },
+      STREAM_REFUSAL.noUsableRung],
+  ];
+  for (const [stream, reason] of cases) {
+    const note = videoCard();
+    note.video.media.stream = stream;
+    const page = parseNoteDetail(detail(note), { resolveVideo: true });
+    assert.deepEqual(page.items, [], reason);
+    assert.equal(page.unsupported, reason);
+    assert.equal(page.noteKind, "video", "still a video note, so the caller keeps its cover");
+    assert.equal(page.error, null, "a refused ladder is not a refusal BY rednote");
+  }
+  // A `type: video` card with no `video` key at all — the ladder path moved, or the label lies.
+  const bare = parseNoteDetail(detail(card({ type: "video" })), { resolveVideo: true });
+  assert.equal(bare.unsupported, STREAM_REFUSAL.noLadder);
+});
+
+test("mapNoteVideo on its own: a refusal returns no item, and never a half-built one", () => {
+  const ctx = { noteId: "nd1", host: "www.rednote.com", xsecToken: "t",
+    noteType: "video", author: { handle: null, name: "n", userId: "u" }, title: null, desc: null };
+  const refused = mapNoteVideo({ type: "video" }, ctx);
+  assert.equal(refused.item, null);
+  assert.equal(refused.refusal, STREAM_REFUSAL.noLadder);
+  const made = mapNoteVideo(videoCard(), ctx);
+  assert.equal(made.refusal, null);
+  assert.equal(made.item.sourceId, "nd1:v");
+  assert.equal(made.item.xsecToken, "t", "the cover's token is threaded on, as for an image child");
 });
 
 test("a `video` KEY outranks the type label — the payload decides, not the name", () => {
@@ -618,14 +746,26 @@ test("the yield invariant: no items ⟺ a stated reason", () => {
     detail(card()), detail(card({ type: "video" })), detail(card({ image_list: [] })),
     detail(card({ note_id: null })), detail(null, { items: [] }),
     detail(card({ image_list: [detailImage(1, { url_pre: "", url_default: "", info_list: [] })] })),
+    // The T6c arms, under BOTH settings of the toggle: the live video note, and one whose
+    // ladder is empty.
+    videoDetail(), emptyLadderDetail(),
   ];
   for (const body of bodies) {
-    const page = parseNoteDetail(body);
-    assert.equal(page.error, null);
-    assert.equal(page.items.length === 0, page.unsupported !== null,
-      `empty-vs-reason disagree: ${page.items.length} items, unsupported=${page.unsupported}`);
+    for (const resolveVideo of [false, true]) {
+      const page = parseNoteDetail(body, { resolveVideo });
+      assert.equal(page.error, null);
+      assert.equal(page.items.length === 0, page.unsupported !== null,
+        `empty-vs-reason disagree: ${page.items.length} items, unsupported=${page.unsupported}`);
+    }
   }
 });
+
+/** The live video card with every bucket emptied — a ladder that is there and holds nothing. */
+function emptyLadderDetail() {
+  const note = videoCard();
+  note.video.media.stream = { EF4: [], EF5: [], EF6: [], EF7: [] };
+  return detail(note);
+}
 
 // MARK: - mapNoteImage on its own
 

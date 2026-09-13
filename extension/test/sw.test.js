@@ -10,7 +10,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { captureCore, ingestOne, fetchImage, presentation, downloadAndIngestVideo } from "../src/sw.js";
+import {
+  captureCore, ingestOne, fetchImage, presentation, downloadAndIngestVideo,
+  videoCandidateVerdict,
+} from "../src/sw.js";
+import { MAX_VIDEO_CANDIDATES } from "../src/config.js";
 
 const PROV = {
   platform: "twitter",
@@ -331,6 +335,164 @@ test("ingestOne: a resolved video that fails to ingest falls back to the image (
   assert.equal(calls.logError.length, 1);
 });
 
+// MARK: - the video ladder: 422 advances, and what does not (098 D5 / 020 rule 2)
+
+/** An error shaped exactly as `downloadAndIngestVideo` throws it. Built through the real
+ * function below as well, so this helper cannot drift into describing a shape nothing
+ * produces. */
+const videoError = (fields) => Object.assign(new Error("x"), fields);
+
+/** A `downloadAndIngestVideo` that fails each url per `plan` and records the order tried. */
+function ladderDeps(plan, over = {}) {
+  const tried = [];
+  const { deps, calls } = makeDeps({
+    downloadAndIngestVideo: async (_prov, url) => {
+      tried.push(url);
+      const outcome = plan[url];
+      if (outcome instanceof Error) throw outcome;
+      if (typeof outcome === "function") throw outcome();
+      return { deduplicated: false };
+    },
+    ...over,
+  });
+  return { deps, calls, tried };
+}
+
+const REDNOTE = { platform: "rednote", mediaUrl: null, mediaUrlFallback: null, rawMetadata: {} };
+
+test("videoCandidateVerdict: only a 422 and a gone url advance the ladder", () => {
+  // The table is the decision, and each row is a different reason for the same or a
+  // different answer — so a change to any one of them fails here with a name.
+  assert.equal(videoCandidateVerdict(videoError({ videoStage: "ingest", httpStatus: 422 })), "advance");
+  // Not every ingest failure is the rung's fault: a bad token is session-wide, a 5xx is our
+  // own app, a 413 means the NEXT rung is likelier bigger than smaller.
+  for (const status of [401, 403, 413, 500, 503]) {
+    assert.equal(videoCandidateVerdict(videoError({ videoStage: "ingest", httpStatus: status })), "stop", String(status));
+  }
+  // A gone url is gone: 020 B3 saw the same note serve a different ladder minutes apart, so
+  // retrying THIS url cannot help and the next one can.
+  assert.equal(videoCandidateVerdict(videoError({ videoStage: "download", httpStatus: 404 })), "advance");
+  assert.equal(videoCandidateVerdict(videoError({ videoStage: "download", httpStatus: 410 })), "advance");
+  // A CDN that is throttling or walled is not a statement about this rung.
+  for (const status of [401, 403, 429, 500]) {
+    assert.equal(videoCandidateVerdict(videoError({ videoStage: "download", httpStatus: status })), "stop", String(status));
+  }
+  // A fine response with an unusable body (non-video type, over-cap clip) — this candidate's
+  // own problem, so advance.
+  assert.equal(videoCandidateVerdict(videoError({ videoStage: "download" })), "advance");
+  // A transport failure carries no stage at all: the fetch never got an answer.
+  assert.equal(videoCandidateVerdict(new TypeError("Failed to fetch")), "stop");
+  assert.equal(videoCandidateVerdict(null), "stop");
+});
+
+test("downloadAndIngestVideo tags its throws so the verdict can read them", async () => {
+  // The other half of the table above: these are the errors that actually reach it. Asserted
+  // through the REAL function, or `videoCandidateVerdict` would be a table about nothing.
+  const gone = await downloadAndIngestVideo({}, "https://v/x.mp4", "t", {
+    fetchImpl: async () => ({ ok: false, status: 404, headers: { get: () => "" } }),
+  }).then(() => null, (e) => e);
+  assert.equal(videoCandidateVerdict(gone), "advance");
+
+  const html = await downloadAndIngestVideo({}, "https://v/x.mp4", "t", {
+    fetchImpl: async () => ({ ok: true, headers: { get: (h) => h === "content-type" ? "text/html" : "" } }),
+  }).then(() => null, (e) => e);
+  assert.equal(videoCandidateVerdict(html), "advance", "a CDN error page is this candidate's problem");
+
+  const walled = await downloadAndIngestVideo({}, "https://v/x.mp4", "t", {
+    fetchImpl: async () => ({ ok: false, status: 403, headers: { get: () => "" } }),
+  }).then(() => null, (e) => e);
+  assert.equal(videoCandidateVerdict(walled), "stop");
+});
+
+test("ingestOne: a 422 advances to the next candidate, in the order given", async () => {
+  // 020 rule 2 by name: the 422 from /ingest-video IS the undecodable-rung signal, and it
+  // must advance the ladder rather than fail the item.
+  const urls = ["https://v/master.mp4", "https://v/backup.mp4", "https://v/rung2.mp4"];
+  const { deps, tried } = ladderDeps({
+    [urls[0]]: videoError({ videoStage: "ingest", httpStatus: 422 }),
+    [urls[1]]: videoError({ videoStage: "ingest", httpStatus: 422 }),
+  });
+
+  const result = await ingestOne(REDNOTE, { token: "T", videoCandidates: urls }, deps);
+
+  assert.deepEqual(result, { status: "saved", kind: "video", deduplicated: false });
+  assert.deepEqual(tried, urls, "the walk is the list's order — within a rung before between rungs");
+});
+
+test("ingestOne: a 404 advances; a transport failure does NOT", async () => {
+  const urls = ["https://v/a.mp4", "https://v/b.mp4"];
+  const { tried } = ladderDeps({});
+  const gone = ladderDeps({ [urls[0]]: videoError({ videoStage: "download", httpStatus: 404 }) });
+  await ingestOne(REDNOTE, { token: "T", videoCandidates: urls }, gone.deps);
+  assert.deepEqual(gone.tried, urls, "a gone url is exactly what the next candidate is for");
+
+  const dead = ladderDeps({ [urls[0]]: new TypeError("Failed to fetch") });
+  const result = await ingestOne(REDNOTE, { token: "T", videoCandidates: urls }, dead.deps);
+  assert.deepEqual(dead.tried, [urls[0]],
+    "a dead network says nothing about the rung — walking it would be N dead requests, not one");
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "video-failed", "…and it is not reported as an exhausted ladder");
+  assert.equal(tried.length, 0);
+});
+
+test("ingestOne: exhausting every candidate is a typed SKIP, not a failed item", async () => {
+  // 020, Risks & edge cases: "the honest outcome is cover-still-only for that note; record
+  // it as a typed skip, do not fail the sweep." The cover is kept because it is a separate
+  // item (`<note_id>`), already ingested by the cover pass.
+  const urls = ["https://v/a.mp4", "https://v/b.mp4"];
+  const { deps, tried, calls } = ladderDeps({
+    [urls[0]]: videoError({ videoStage: "ingest", httpStatus: 422 }),
+    [urls[1]]: videoError({ videoStage: "ingest", httpStatus: 422 }),
+  });
+
+  const result = await ingestOne(REDNOTE, { token: "T", videoCandidates: urls }, deps);
+
+  assert.deepEqual(tried, urls);
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "video-ladder-exhausted");
+  assert.equal(result.video.attempts, 2);
+  assert.equal(result.video.candidates, 2);
+  assert.ok(calls.logError.length > 0, "a wholly-spent ladder is loud — it is not the happy path");
+});
+
+test("ingestOne: a still fallback beats the typed skip — the three other platforms", async () => {
+  // Behaviour-identity: a video tweet/pin carries a poster, so an exhausted video falls back
+  // to it exactly as it always did, and never reaches the skip above.
+  const { deps } = ladderDeps({ "https://v/x.mp4": videoError({ videoStage: "ingest", httpStatus: 422 }) });
+  const result = await ingestOne(PROV, { token: "T", mp4Url: "https://v/x.mp4" }, deps);
+  assert.equal(result.status, "saved");
+  assert.equal(result.kind, "image");
+});
+
+test("ingestOne: the walk is BOUNDED — a ladder of backups is not a retry storm", async () => {
+  // Each attempt is a whole video download (up to the 512 MB cap), so the ceiling is about
+  // bytes as much as requests.
+  const urls = Array.from({ length: MAX_VIDEO_CANDIDATES + 6 }, (_, i) => `https://v/${i}.mp4`);
+  const plan = Object.fromEntries(urls.map((u) => [u, videoError({ videoStage: "ingest", httpStatus: 422 })]));
+  const { deps, tried } = ladderDeps(plan);
+
+  const result = await ingestOne(REDNOTE, { token: "T", videoCandidates: urls }, deps);
+
+  assert.equal(tried.length, MAX_VIDEO_CANDIDATES);
+  assert.deepEqual(tried, urls.slice(0, MAX_VIDEO_CANDIDATES));
+  assert.equal(result.status, "skipped");
+  assert.equal(result.video.candidates, urls.length, "the skip says how many it never reached");
+});
+
+test("ingestOne: a one-element ladder behaves exactly like the single try it replaced", async () => {
+  // The seam is shared with three platforms that pass one url; this pins that the loop did
+  // not change what they get on either path.
+  const { deps: ok } = ladderDeps({});
+  assert.deepEqual(await ingestOne(PROV, { token: "T", mp4Url: "https://v/x.mp4" }, ok),
+    { status: "saved", kind: "video", deduplicated: false });
+
+  const { deps: bad, tried } = ladderDeps({ "https://v/x.mp4": new Error("boom") });
+  const result = await ingestOne(PROV, { token: "T", mp4Url: "https://v/x.mp4" }, bad);
+  assert.deepEqual(tried, ["https://v/x.mp4"]);
+  assert.equal(result.status, "saved");
+  assert.equal(result.kind, "image", "fail-open to the still, unchanged");
+});
+
 // MARK: - presentation
 
 test("presentation maps every status to a badge", () => {
@@ -341,6 +503,9 @@ test("presentation maps every status to a badge", () => {
   assert.equal(presentation({ status: "saved", kind: "image", deduplicated: true }).title, "Already saved.");
   assert.equal(presentation({ status: "ingest-error", message: "x" }).text, "ERR");
   assert.equal(presentation({ status: "unreachable" }).text, "ERR");
+  // A typed skip is a warning, not an error: nothing saved and nothing broken.
+  assert.equal(presentation({ status: "skipped" }).text, "?");
+  assert.notEqual(presentation({ status: "skipped" }).title, presentation({ status: "no-image" }).title);
 });
 
 // MARK: - fetchImage

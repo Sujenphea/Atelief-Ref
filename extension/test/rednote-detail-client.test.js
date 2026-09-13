@@ -27,6 +27,8 @@ import { mapBoardNote, parseNoteDetail } from "../src/bulk-rednote.js";
 const DETAIL = JSON.parse(readFileSync(new URL("./fixtures/rednote-note-detail.json", import.meta.url)));
 /** The trimmed board page, for real cover rows to expand FROM. */
 const BOARD = JSON.parse(readFileSync(new URL("./fixtures/rednote-board.json", import.meta.url)));
+/** The live VIDEO note capture — one `EF4` rung, one backup, one poster (098 T6b). */
+const VIDEO = JSON.parse(readFileSync(new URL("./fixtures/rednote-note-video.json", import.meta.url)));
 
 const HOST = "www.rednote.com";
 const clone = (value) => structuredClone(value);
@@ -46,6 +48,13 @@ function coverItem(row, overrides = {}) {
   const note = clone(row);
   Object.assign(note, overrides);
   return mapBoardNote(note, { host: HOST, cursor: "cur" });
+}
+
+/** The live VIDEO detail body, re-addressed to `noteId` — the mirror of `detailFor`. */
+function videoDetailFor(noteId) {
+  const body = clone(VIDEO);
+  body.data.items[0].note_card.note_id = noteId;
+  return body;
 }
 
 const NORMAL_ROW = BOARD.data.notes.find((note) => note.type === "normal");
@@ -302,6 +311,156 @@ test("a video note is never opened — the parser would refuse it anyway", async
   // A refusal is NOT a shortfall of this sweep: expansion was never possible for a video
   // note. Counting it as one would make every sweep of an 81 %-video board report partial.
   assert.equal(stats.partial, false);
+});
+
+// MARK: - video notes, once the video toggle lets them expand (098 T6c)
+
+test("with resolveVideo on, a video note IS opened and yields its cover AND its stream", async () => {
+  const video = coverItem(VIDEO_ROW);
+  const { expander, state } = scripted({
+    resolveVideo: true,
+    open: (item, waiter) => { waiter.onDetail(videoDetailFor(noteIdOf(item))); return true; },
+  });
+
+  const out = await expander.expandItems([video]);
+
+  assert.deepEqual(state.opened, [video.sourceId], "the toggle is what makes opening it worth a note-open");
+  // BOTH, and in this order. The cover is the poster at `<note_id>` — a real picture, and
+  // the thing 020's "keep the cover still" falls back to when the ladder is exhausted at
+  // INGEST time, which is long after this parse and cannot be undone from here.
+  assert.deepEqual(ids(out), [video.sourceId, `${video.sourceId}:v`]);
+  assert.equal(out[0], video, "the cover item is passed through untouched, not rebuilt");
+  assert.equal(out[1].mediaUrl, null, "and the stream carries no still, so the poster ingests ONCE");
+
+  const stats = expander.stats();
+  assert.equal(stats.expanded, 1);
+  assert.equal(stats.streams, 1);
+  assert.equal(stats.images, 0, "a stream is not a picture — a count that said otherwise would lie");
+  assert.equal(stats.refused, 0);
+  assert.equal(stats.partial, false);
+});
+
+test("a re-sweep does NOT re-open a video note whose stream was captured", async () => {
+  // The budget-burn trap the T5 addendum exists to prevent, at the one key T6c added. The
+  // pre-check is armed from the REAL known-set the app returns, through the real
+  // `knownNoteIndex`, so this asserts the predicate rather than a description of it.
+  const video = coverItem(VIDEO_ROW);
+  const { expander, state } = scripted({
+    resolveVideo: true,
+    open: (item, waiter) => { waiter.onDetail(videoDetailFor(noteIdOf(item))); return true; },
+  });
+  expander.arm({ knownSet: new Set([`${video.sourceId}:v`]), armed: true });
+
+  const out = await expander.expandItems([video]);
+
+  assert.deepEqual(state.opened, [], "a note whose stream is already ingested must not be re-opened");
+  assert.deepEqual(out, [], "…and must yield nothing — re-emitting its cover would mint a new item");
+  assert.equal(expander.stats().skippedKnown, 1);
+  assert.equal(state.sleeps.length, 0, "a skipped note costs no pacing either");
+});
+
+test("an already-expanded video note is SKIPPED even with the video toggle off", async () => {
+  // The known-set pre-check runs ahead of the video refusal, and the order is load-bearing
+  // for the accounting: a note whose stream a previous sweep captured has nothing left to
+  // do, and counting it as a fresh REFUSAL would report an 81 %-video board as refusing
+  // hundreds of notes it had already finished.
+  const video = coverItem(VIDEO_ROW);
+  const { expander, state } = scripted();      // resolveVideo off — the T5b default
+  expander.arm({ knownSet: new Set([`${video.sourceId}:v`]), armed: true });
+
+  const out = await expander.expandItems([video]);
+
+  assert.deepEqual(out, []);
+  assert.deepEqual(state.opened, []);
+  const stats = expander.stats();
+  assert.equal(stats.skippedKnown, 1);
+  assert.equal(stats.refused, 0, "a finished note is not a refusal");
+});
+
+test("a COVER-only video note is still re-opened — the mode trap, unchanged by :v", async () => {
+  // The other half of the same predicate: `<note_id>` alone never reads as expanded, so a
+  // board swept cover-only does not silently skip every note-open of the first video sweep.
+  const video = coverItem(VIDEO_ROW);
+  const { expander, state } = scripted({
+    resolveVideo: true,
+    open: (item, waiter) => { waiter.onDetail(videoDetailFor(noteIdOf(item))); return true; },
+  });
+  expander.arm({ knownSet: new Set([video.sourceId]), armed: true });
+
+  await expander.expandItems([video]);
+
+  assert.deepEqual(state.opened, [video.sourceId]);
+});
+
+test("a ladder that yields nothing keeps the cover, counts a STREAM REFUSAL, and is not partial", async () => {
+  // 020's cover-still-only case. The note WAS opened and its ladder read; there is simply no
+  // decodable stream in it. Calling that "partly expanded" would report an 81 %-video board
+  // as partial on every sweep for working exactly as designed — the failure T5b's
+  // refused/degraded split was written to prevent, in a new coat.
+  const video = coverItem(VIDEO_ROW);
+  const efOnly = (noteId) => {
+    const body = videoDetailFor(noteId);
+    body.data.items[0].note_card.video.media.stream = { EF4: [], EF5: [], EF6: [], EF7: [] };
+    return body;
+  };
+  const { expander, state } = scripted({
+    resolveVideo: true,
+    open: (item, waiter) => { waiter.onDetail(efOnly(noteIdOf(item))); return true; },
+  });
+
+  const out = await expander.expandItems([video]);
+
+  assert.deepEqual(out, [video], "the cover the K3a pass captured is what the note keeps");
+  assert.equal(state.opened.length, 1);
+  const stats = expander.stats();
+  assert.equal(stats.streamRefused, 1);
+  assert.equal(stats.degraded, 0, "a refused ladder is not a degradation of this sweep");
+  assert.equal(stats.refused, 0, "…nor the never-opened kind");
+  assert.equal(stats.partial, false);
+  assert.equal(stats.reasons.empty_ladder, 1, "and it says WHICH nothing");
+});
+
+test("a refused ladder leaves no child, so the NEXT sweep opens the note again", async () => {
+  // Stated as a test because it is a cost, and a deliberate one: 020 B3 saw the same note
+  // serve a DIFFERENT ladder on two visits minutes apart, so a refusal is a fact about one
+  // visit's ladder, not about the note. Recording it as permanently done would wall the note
+  // off forever on the strength of a list that demonstrably rotates. The cost is one
+  // note-open per refused note per sweep, bounded by the budget.
+  const video = coverItem(VIDEO_ROW);
+  const { expander } = scripted({
+    resolveVideo: true,
+    open: (item, waiter) => {
+      const body = videoDetailFor(noteIdOf(item));
+      body.data.items[0].note_card.video.media.stream = { EF4: [] };
+      waiter.onDetail(body);
+      return true;
+    },
+  });
+
+  const out = await expander.expandItems([video]);
+
+  assert.deepEqual(ids(out), [video.sourceId]);
+  assert.equal(knownNoteIndex(new Set(ids(out))).has(video.sourceId), false,
+    "nothing this note produced registers as expanded, so a re-sweep tries the ladder again");
+});
+
+test("an IMAGE note is unchanged by the video toggle — its cover is still replaced", async () => {
+  // The composition claim, from the other side: `resolveVideo` decides what a VIDEO note
+  // contributes and nothing else. A carousel's children still supersede its cover.
+  const cover = coverItem(NORMAL_ROW);
+  const { expander } = scripted({
+    resolveVideo: true,
+    open: (item, waiter) => { waiter.onDetail(detailFor(noteIdOf(item))); return true; },
+  });
+
+  const out = await expander.expandItems([cover]);
+
+  assert.equal(out.includes(cover), false);
+  assert.ok(out.length > 1);
+  assert.ok(out.every((item) => item.sourceId.startsWith(`${cover.sourceId}:`)));
+  const stats = expander.stats();
+  assert.equal(stats.images, out.length);
+  assert.equal(stats.streams, 0);
 });
 
 test("a note the BOARD called an image and the DETAIL calls video is refused, not degraded", async () => {
