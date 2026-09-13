@@ -63,7 +63,7 @@ the canary asks — *does a response X sent today still parse* — and can be re
 wholesale with a newer capture without touching a single test. `checkTimeline` still runs
 over the composed fixture in `drift.test.js`, so both stay covered.
 
-### rednote: the CDN host, the path depth and the `!` suffix are load-bearing
+### rednote: the CDN host, the signing-prefix SHAPE and the `!` suffix are load-bearing
 `toRednoteOriginal` returns its input **unchanged** unless the host ends in
 `rednotecdn.com`, and it builds the unsigned original by dropping the **first two** path
 segments of `/<timestamp>/<signature>/<key>` and stripping the `!transform` suffix. The
@@ -72,13 +72,22 @@ suffix, which did not merely blur a signal — it switched the whole rewrite off
 fixture built from it would have proved the **opposite** of what the canary asks. The
 sweep now keeps rednote's CDN hosts (`PLATFORM_HOST`, alongside `i.pinimg.com` and the
 twimg split), keeps the `!…` directive beside the file extension, and still replaces every
-segment. `bulk-rednote.test.js` asserts that on the INPUT — signed host, ≥ 3 segments, a
-surviving `!` — so a future re-capture cannot quietly go vacuous.
+segment.
 
-The note-detail fixture needed **no further sanitizer change** — the host, the
+Path **depth** used to be enough; it no longer is. The rewrite fires on the *shape* of the
+first two segments — 10–14 digits then a 32-char hex digest — because rednote's video
+streams are served **already unsigned** with real path in that position
+(`/stream/1/110/258/<id>_258.mp4`), and a depth test rehosts them into a 404. So
+`syntheticUrl` replaces a signing prefix with same-shaped filler
+(`/000000000000/00000…0/`) rather than the `00/00` it gives every other segment, and
+`bulk-rednote.test.js` asserts the SHAPE on the INPUT — signed host, a real
+`<timestamp>/<signature>` prefix, a surviving `!` — so neither a re-capture nor a
+sanitizer change can quietly go vacuous.
+
+The note-detail fixture needed **no further sanitizer change** beyond that — the host, the
 five-segment path depth and the `!` suffix all survived the sweep as it already stood,
 and `audit-capture.js` printed `LEAKED: 0` first time. `bulk-rednote.test.js` asserts
-the same three input properties over every `image_list[].url_pre` / `url_default` /
+the same input properties over every `image_list[].url_pre` / `url_default` /
 `info_list[].url`, and additionally that the rewritten key is still **multi-segment** —
 on the detail endpoint a flat key would mean the drop-two rule had quietly become the
 last-segment rule again, which is the bug 098 T0 shipped to fix.

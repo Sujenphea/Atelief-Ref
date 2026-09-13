@@ -35,9 +35,19 @@ export const ORIGIN_HOST = "sns-i27.rednotecdn.com";
 /** Any rednote CDN URL (images `sns-i*` / `sns-web-i*`, video `sns-v*`). */
 const CDN = /(^|\/\/|\.)rednotecdn\.com\//;
 
+/** True when a path's first two segments are signing material AND something is left
+ * over to be the key. Live shapes: `202609131332` (yyyyMMddHHmm) then 32 hex, matched
+ * case-insensitively because a hex digest is case-insensitive by definition. The width
+ * bounds sit loosely around what the captures show; see `toRednoteOriginal` for why
+ * strict wins. */
+function hasSigningPrefix(segments) {
+  return segments.length >= 3
+    && /^\d{10,14}$/.test(segments[0]) && /^[0-9a-f]{32}$/i.test(segments[1]);
+}
+
 /**
- * Rewrite a rednote CDN URL to its unsigned full-resolution original, or return
- * `src` unchanged when it is not a signed rednote CDN URL / is unparseable.
+ * Rewrite a SIGNED rednote CDN URL to its unsigned full-resolution original, or
+ * return `src` unchanged — already unsigned, not rednote, or unparseable.
  *
  * A signed URL is `/<timestamp>/<signature>/<key>` — the first TWO segments are
  * signing material and everything after them is the object key. The key is NOT
@@ -48,16 +58,34 @@ const CDN = /(^|\/\/|\.)rednotecdn\.com\//;
  * `mediaUrlFallback` then masked as a 5x quality loss (240 KB original -> 47 KB
  * signed webp) with no error — see 098 D2 / changelog 467.
  *
- * Verified over 184 URLs from two live captures (2026-09-13): dropping the two
- * signing segments agrees with the API's own `file_id` on all 184, where the
- * last-segment rule disagrees on 36. `file_id` is therefore not read here — it
- * would corroborate, not correct, and it is absent (`""`) on every board cover,
- * which is precisely where the multi-segment keys are least expected.
+ * WHICH URLs get that rewrite is decided by the SHAPE of the first two segments,
+ * never by segment COUNT. "Three or more segments" was the earlier test and it is
+ * the same mistake one level up, because rednote serves video and subtitles
+ * ALREADY UNSIGNED, with real path where a signing prefix would sit:
+ * `/stream/1/110/258/<id>_258.mp4` and `/subtitle/1/110/1/<id>_12.srt` (signed by
+ * a `?sign=` query, if at all). A count test eats `stream/1` as signing material
+ * and rehosts a working 206 into a 404 — verified live 2026-09-14, input 206
+ * `video/mp4`, rewrite 404. The shape test is deliberately strict because the two
+ * failure directions are not symmetric: declining to strip yields the signed URL,
+ * which still loads at lower resolution, while stripping what is not a signature
+ * yields a URL that does not exist.
+ *
+ * Host is NOT part of the test. `sns-web-i10` happens to serve every signed URL
+ * in the captures and `sns-v11`/`sns-v27`/`sns-subtitle-s10` the unsigned ones,
+ * but an enumerated shard list is one new shard away from being wrong, and the
+ * signing shape is the actual invariant.
+ *
+ * Verified over the three live captures (2026-09-14): 138 distinct CDN URLs, of
+ * which the shape test strips 94 and passes 44 through, changing the answer on
+ * exactly the 5 unsigned stream/subtitle URLs. Where the API publishes its own
+ * `file_id` (40 URLs) the stripped key equals it 40/40. `file_id` is still not
+ * read here — it would corroborate, not correct, and it is `""` on all 37 board
+ * covers, precisely where the multi-segment keys are least expected.
  *
  * Idempotent: output always lands on `ORIGIN_HOST`, and a URL already there is
  * returned untouched rather than re-parsed (its path is a bare key, so dropping
  * two segments would mangle a multi-segment one). A path too short to hold a
- * signing prefix AND a key (`/avatar/<id>`) is likewise left alone.
+ * signing prefix AND a key (`/avatar/<id>`) cannot match the shape either.
  */
 export function toRednoteOriginal(src) {
   if (!src || !CDN.test(src)) return src || null;
@@ -68,9 +96,9 @@ export function toRednoteOriginal(src) {
     // Already canonical — the only URLs on this host are bare keys.
     if (host === ORIGIN_HOST) return src;
     const segments = splitPathname(url.pathname);
-    // Fewer than three segments cannot be `<timestamp>/<signature>/<key>`, so
-    // there is no signing prefix to strip and nothing to canonicalize.
-    if (segments.length < 3) return src;
+    // No signing prefix to strip: the path is already the object key, whether it
+    // is a `/stream/…` mp4 or a two-segment `/avatar/<id>`. Leave it alone.
+    if (!hasSigningPrefix(segments)) return src;
     const key = segments.slice(2).join("/").split("!")[0];
     if (!key) return src;
     return `http://${ORIGIN_HOST}/${key}`;

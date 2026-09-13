@@ -19,7 +19,7 @@ import { twitter, toStatusPermalink, belongsToStatus } from "../src/extractors/t
 import { pinterest } from "../src/extractors/pinterest.js";
 import { instagram, toPostPermalink } from "../src/extractors/instagram.js";
 import { cosmos } from "../src/extractors/cosmos.js";
-import { rednote, toRednoteOriginal } from "../src/extractors/rednote.js";
+import { rednote, toRednoteOriginal, ORIGIN_HOST } from "../src/extractors/rednote.js";
 
 /** Build a harvest fixture. */
 function harvest({ url, title = "Fallback", canonical = null, metas = {}, media = [] }) {
@@ -432,7 +432,7 @@ test("rednote: noteId from /explore/{id}, media rewritten to the unsigned origin
     metas: { "og:site_name": "小红书", "og:title": "Editorial grid study" },
     media: [
       img("https://sns-avatar-qc.rednotecdn.com/avatar/tiny.jpg", 48, 48),
-      img("https://sns-web-i10.rednotecdn.com/1717000000/9f3c1d/1040g2sg31key!nc_n_webp_mw_1", 1200, 1600),
+      img("https://sns-web-i10.rednotecdn.com/202609131332/43d5d4fbe9c41cf7739cdb99c9da6a47/1040g2sg31key!nc_n_webp_mw_1", 1200, 1600),
     ],
   });
   const p = extractProvenance(h);
@@ -443,7 +443,7 @@ test("rednote: noteId from /explore/{id}, media rewritten to the unsigned origin
   assert.equal(p.mediaUrl, "http://sns-i27.rednotecdn.com/1040g2sg31key");
   assert.equal(
     p.mediaUrlFallback,
-    "https://sns-web-i10.rednotecdn.com/1717000000/9f3c1d/1040g2sg31key!nc_n_webp_mw_1");
+    "https://sns-web-i10.rednotecdn.com/202609131332/43d5d4fbe9c41cf7739cdb99c9da6a47/1040g2sg31key!nc_n_webp_mw_1");
   assert.equal(p.authorName, "小红书");
   assert.equal(p.title, "Editorial grid study");
   assert.deepEqual(p.rawMetadata, { noteId: "6650a1b2c3d4e5f600000001" });
@@ -452,7 +452,7 @@ test("rednote: noteId from /explore/{id}, media rewritten to the unsigned origin
 test("rednote: the rednote.com domain and /discovery/item/{id} both resolve a note", () => {
   const h = harvest({
     url: "https://www.rednote.com/discovery/item/6650a1b2c3d4e5f600000002",
-    media: [img("https://sns-web-i5.rednotecdn.com/1/s/keyB!nc_n_webp_mw_1", 900, 1200)],
+    media: [img("https://sns-web-i5.rednotecdn.com/202609131332/43d5d4fbe9c41cf7739cdb99c9da6a47/keyB!nc_n_webp_mw_1", 900, 1200)],
   });
   const p = extractProvenance(h);
   assert.equal(p.platform, "rednote");
@@ -464,11 +464,11 @@ test("rednote FROM A BOARD: right-clicked note link + image → note URL + that 
   const h = harvest({
     url: "https://www.xiaohongshu.com/board/6650000000000000000000ff", // the board, NOT a note
     canonical: "https://www.xiaohongshu.com/",
-    media: [img("https://sns-web-i10.rednotecdn.com/1/s/other!nc_n_webp_mw_1", 800, 800)],
+    media: [img("https://sns-web-i10.rednotecdn.com/202609131332/43d5d4fbe9c41cf7739cdb99c9da6a47/other!nc_n_webp_mw_1", 800, 800)],
   });
   const context = {
     linkUrl: "https://www.xiaohongshu.com/explore/6650a1b2c3d4e5f600000003?xsec_token=ABC",
-    srcUrl: "https://sns-web-i10.rednotecdn.com/1717/9f3c/clickedKey!nc_n_webp_mw_1",
+    srcUrl: "https://sns-web-i10.rednotecdn.com/202609131332/43d5d4fbe9c41cf7739cdb99c9da6a47/clickedKey!nc_n_webp_mw_1",
   };
   const p = extractProvenance(h, context);
   // The `xsec_token` query is dropped by cleanURL — a short-lived credential has
@@ -507,7 +507,9 @@ test("rednote: match covers both domains and their subdomains, but not a suffix 
 
 test("toRednoteOriginal: strips signing segments + `!` suffix, is idempotent, passes others through", () => {
   assert.equal(
-    toRednoteOriginal("https://sns-web-i10.rednotecdn.com/1717000000/9f3c1d/keyA!nc_n_webp_mw_1"),
+    toRednoteOriginal(
+      "https://sns-web-i10.rednotecdn.com/202609131332"
+      + "/43d5d4fbe9c41cf7739cdb99c9da6a47/keyA!nc_n_webp_mw_1"),
     "http://sns-i27.rednotecdn.com/keyA");
   // Already bare → itself (idempotent, so a re-run of the rule is harmless).
   assert.equal(
@@ -574,6 +576,94 @@ test("toRednoteOriginal: idempotent on a multi-segment key, and leaves short pat
   assert.equal(
     toRednoteOriginal("https://sns-web-i10.rednotecdn.com/onlyone"),
     "https://sns-web-i10.rednotecdn.com/onlyone");
+});
+
+// Not every rednote CDN URL is signed. Video streams and subtitles are served with
+// REAL PATH where a signing prefix would sit — `stream/1/…`, `subtitle/1/…` — so the
+// "three or more segments" test that used to gate the rewrite ate `stream/1` as if it
+// were `<timestamp>/<signature>` and rehosted a working file onto a key that does not
+// exist. Verified live 2026-09-14: a ranged GET of the input is 206 `video/mp4`, of the
+// drop-two rewrite 404. Nothing feeds these URLs here yet, which is exactly why the
+// guard needs a test — the fault would arrive with the video ladder, already shipped.
+test("toRednoteOriginal: an ALREADY-UNSIGNED path is returned untouched (the stream 404)", () => {
+  const unsigned = [
+    // `master_url` and `backup_urls[0]` of the live video note, verbatim.
+    "http://sns-v11.rednotecdn.com/stream/1/110/258/01ea96475c7839f001037001a05b180502_258.mp4",
+    "http://sns-v27.rednotecdn.com/stream/1/110/258/01ea96475c7839f001037001a05b180502_258.mp4",
+    // The same family from the same note: signed by a `?sign=` QUERY, not by path.
+    "https://sns-subtitle-s10.rednotecdn.com/subtitle/1/110/1"
+    + "/01ea96475c7839f001037003a05b1783e6_12.srt?sign=3c5cd06cceedae2c7b4882da165997c7",
+  ];
+  for (const src of unsigned) {
+    assert.equal(
+      toRednoteOriginal(src), src,
+      `${src} carries no signing prefix — rewriting it onto the origin host is a 404`);
+    assert.ok(
+      !toRednoteOriginal(src).includes(ORIGIN_HOST),
+      `${src} must not be rehosted onto ${ORIGIN_HOST}`);
+  }
+});
+
+// The property the two cases above and the board covers share is the SHAPE of the first
+// two segments, not how many segments follow them. Pinning it as a matched pair is what
+// stops the guard sliding back to a count: both inputs have five segments and only the
+// signed one may be stripped.
+test("toRednoteOriginal: the rewrite turns on signing SHAPE, not segment count", () => {
+  const signed = "http://sns-web-i10.rednotecdn.com/202609131347"
+    + "/9b18d6eb1af3e2b0f7cb503690495580/oss-sg/spectrum/1040g3ug324rbosk72m005qk4p310rhpvdg92bqg";
+  assert.equal(
+    toRednoteOriginal(signed),
+    "http://sns-i27.rednotecdn.com/oss-sg/spectrum/1040g3ug324rbosk72m005qk4p310rhpvdg92bqg");
+  const unsigned = "http://sns-v11.rednotecdn.com/stream/1/110/258/x_258.mp4";
+  assert.equal(toRednoteOriginal(unsigned), unsigned);
+  // A hex digest is case-insensitive by definition, so the same signature in upper case
+  // is the same signing prefix. Every live one is lower — this pins the tolerance as
+  // deliberate rather than leaving the flag untested.
+  assert.equal(
+    toRednoteOriginal("http://sns-web-i10.rednotecdn.com/202609131332"
+      + "/43D5D4FBE9C41CF7739CDB99C9DA6A47/keyA"),
+    `http://${ORIGIN_HOST}/keyA`);
+
+  // Each half of the prefix is load-bearing on its own: a real 32-hex signature behind a
+  // non-numeric first segment is still not a signing prefix, and a real timestamp in
+  // front of something that is not a 32-hex digest is not one either. Both directions
+  // fail SAFE — the signed URL comes back and still loads, just resized.
+  const passthrough = [
+    // signature-shaped second segment, non-numeric first
+    "http://sns-web-i10.rednotecdn.com/oss-sg/43d5d4fbe9c41cf7739cdb99c9da6a47/key",
+    // timestamp-shaped first segment, signature too short
+    "http://sns-web-i10.rednotecdn.com/202609131332/43d5d4fb/key",
+    // timestamp-shaped first segment, signature too long
+    "http://sns-web-i10.rednotecdn.com/202609131332/43d5d4fbe9c41cf7739cdb99c9da6a470/key",
+    // timestamp-shaped first segment, second segment not hex at all
+    "http://sns-web-i10.rednotecdn.com/202609131332/notahexdigestnotahexdigestnotahe/key",
+    // the whole first segment must be digits, not merely start with them
+    "http://sns-web-i10.rednotecdn.com/202609131332x/43d5d4fbe9c41cf7739cdb99c9da6a47/key",
+    // a signing prefix with NOTHING behind it is not a key — rewriting this would
+    // hand back a bare `http://sns-i27.rednotecdn.com/`, which is not an image
+    "http://sns-web-i10.rednotecdn.com/202609131332/43d5d4fbe9c41cf7739cdb99c9da6a47",
+    // nor is a third segment that is ALL transform suffix: it survives the depth test
+    // and then strips to the empty key, which is the same bare origin host
+    "http://sns-web-i10.rednotecdn.com/202609131332/43d5d4fbe9c41cf7739cdb99c9da6a47/!nd_prv",
+  ];
+  for (const src of passthrough) {
+    assert.equal(
+      toRednoteOriginal(src), src,
+      `${src} has no `+"`<timestamp>/<signature>`"+` prefix and must not be rewritten`);
+  }
+});
+
+// The video note's own poster is an ordinary signed image and must keep canonicalizing —
+// the tightened guard has to reject the stream WITHOUT rejecting the still beside it. The
+// expectation is the API's own `file_id` for that entry, which is the oracle the rewrite
+// is checked against wherever the response publishes one (40/40 across the captures).
+test("toRednoteOriginal: the video note's poster still resolves to its file_id", () => {
+  const fileId = "spectrum/1040g34o324ieufpe0m105pj9n4ngu8ggrsklugg";
+  assert.equal(
+    toRednoteOriginal(
+      "http://sns-web-i10.rednotecdn.com/202609140721/7f8f87bb04bb890aeb80a82b5d8c9beb"
+      + "/spectrum/1040g34o324ieufpe0m105pj9n4ngu8ggrsklugg!nd_prv_wlt"),
+    `http://${ORIGIN_HOST}/${fileId}`);
 });
 
 // MARK: - shared full-resolution rewrites (base.js, 6A)

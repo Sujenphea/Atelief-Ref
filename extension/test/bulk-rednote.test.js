@@ -36,11 +36,11 @@ const row = (over = {}) => ({
   user: { user_id: "u1", nick_name: "Someone", avatar: "a", xsec_token: "utok" },
   cover: {
     file_id: "", url: "", width: 900, height: 1200, trace_id: "",
-    url_pre: "http://sns-web-i10.rednotecdn.com/2026/sigA/keyA!nc_n_webp_prv_1",
-    url_default: "http://sns-web-i10.rednotecdn.com/2026/sigB/keyA!nc_n_webp_mw_1",
+    url_pre: "http://sns-web-i10.rednotecdn.com/202609131332/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/keyA!nc_n_webp_prv_1",
+    url_default: "http://sns-web-i10.rednotecdn.com/202609131332/b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2/keyA!nc_n_webp_mw_1",
     info_list: [
-      { image_scene: "WB_PRV", url: "http://sns-web-i10.rednotecdn.com/2026/sigA/keyA!nc_n_webp_prv_1" },
-      { image_scene: "WB_DFT", url: "http://sns-web-i10.rednotecdn.com/2026/sigB/keyA!nc_n_webp_mw_1" },
+      { image_scene: "WB_PRV", url: "http://sns-web-i10.rednotecdn.com/202609131332/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/keyA!nc_n_webp_prv_1" },
+      { image_scene: "WB_DFT", url: "http://sns-web-i10.rednotecdn.com/202609131332/b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2/keyA!nc_n_webp_mw_1" },
     ],
   },
   ...over,
@@ -121,7 +121,7 @@ test("pickRednoteImage prefers the DEFAULT rendering and keeps the signed url as
   const { mediaUrl, mediaUrlFallback } = pickRednoteImage(row().cover);
   assert.equal(mediaUrl, "http://sns-i27.rednotecdn.com/keyA");
   // sigB is url_default — the default rendering wins over the preview.
-  assert.equal(mediaUrlFallback, "http://sns-web-i10.rednotecdn.com/2026/sigB/keyA!nc_n_webp_mw_1");
+  assert.equal(mediaUrlFallback, "http://sns-web-i10.rednotecdn.com/202609131332/b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2/keyA!nc_n_webp_mw_1");
 });
 
 test("pickRednoteImage survives cover.url being the empty string on every row", () => {
@@ -134,7 +134,7 @@ test("pickRednoteImage survives cover.url being the empty string on every row", 
 test("pickRednoteImage falls back through info_list when the direct fields are missing", () => {
   const cover = {
     url: "", url_pre: "", url_default: "",
-    info_list: [{ image_scene: "WB_DFT", url: "http://sns-web-i10.rednotecdn.com/2026/sig/keyZ!x" }],
+    info_list: [{ image_scene: "WB_DFT", url: "http://sns-web-i10.rednotecdn.com/202609131332/c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3/keyZ!x" }],
   };
   assert.equal(pickRednoteImage(cover).mediaUrl, "http://sns-i27.rednotecdn.com/keyZ");
 });
@@ -150,8 +150,8 @@ test("pickRednoteImage serves a note-detail image_list entry — the SAME shape 
   const entry = {
     live_photo: false, height: 1660, width: 1242, url: "", stream: {},
     file_id: "oss-sg/spectrum/1040g3ug324rbosk72m005qk4p310rhpvdg92bqg", trace_id: "",
-    url_pre: "http://sns-web-i10.rednotecdn.com/202609131347/9b18d6eb/oss-sg/spectrum/1040g3ug324rbosk72m005qk4p310rhpvdg92bqg!nd_prv_wlteh_webp_3",
-    url_default: "http://sns-web-i10.rednotecdn.com/202609131347/0bdf3366/oss-sg/spectrum/1040g3ug324rbosk72m005qk4p310rhpvdg92bqg!nd_dft_wlteh_webp_3",
+    url_pre: "http://sns-web-i10.rednotecdn.com/202609131347/9b18d6eb1af3e2b0f7cb503690495580/oss-sg/spectrum/1040g3ug324rbosk72m005qk4p310rhpvdg92bqg!nd_prv_wlteh_webp_3",
+    url_default: "http://sns-web-i10.rednotecdn.com/202609131347/0bdf336689816bd1691a3c351e3be0ab/oss-sg/spectrum/1040g3ug324rbosk72m005qk4p310rhpvdg92bqg!nd_dft_wlteh_webp_3",
     info_list: [],
   };
   assert.equal(
@@ -269,17 +269,27 @@ test("parseBoardFeedPage RETURNS the challenge as `error` and never throws it", 
 
 // MARK: - against the live capture
 
+/** A `/<timestamp>/<signature>/` prefix, by SHAPE — the thing `toRednoteOriginal` now
+ * tests for, and the thing the sanitizer has to preserve. Depth is not enough: rednote's
+ * unsigned `/stream/1/110/…` is five segments deep and must never be rewritten. */
+function hasSigningPrefix(url) {
+  const segments = new URL(url).pathname.split("/").filter(Boolean);
+  return segments.length >= 3
+    && /^\d{10,14}$/.test(segments[0]) && /^[0-9a-f]{32}$/i.test(segments[1]);
+}
+
 test("the live fixture still carries a SIGNED, multi-segment cover url", () => {
   // The fixture is only worth having if it still exercises the rewrite. A sanitizer that
-  // flattened these paths, or dropped the `!transform` suffix, would leave every check
-  // below passing VACUOUSLY — `toRednoteOriginal` returns a short path untouched, so a
-  // two-segment cover would "pass" the unsigned-original assertion by never being
-  // rewritten at all. Asserted on the INPUT, where a future re-capture would break it.
+  // flattened these paths, replaced the signing prefix with filler of the wrong shape, or
+  // dropped the `!transform` suffix would leave every check below passing VACUOUSLY —
+  // `toRednoteOriginal` returns an unsigned path untouched, so such a cover would "pass"
+  // the unsigned-original assertion by never being rewritten at all. Asserted on the
+  // INPUT, where a future re-capture (or a sanitizer change) would break it.
   for (const note of live.data.notes) {
     for (const url of [note.cover.url_pre, note.cover.url_default]) {
-      const { pathname, hostname } = new URL(url);
+      const { hostname } = new URL(url);
       assert.notEqual(hostname, "sns-i27.rednotecdn.com", "a cover url must still be signed");
-      assert.ok(pathname.split("/").filter(Boolean).length >= 3,
+      assert.ok(hasSigningPrefix(url),
         `a signed cover needs <timestamp>/<signature>/<key>: ${url}`);
       assert.ok(url.includes("!"), `the transform suffix must survive sanitization: ${url}`);
     }
@@ -358,8 +368,8 @@ const detailLive = JSON.parse(readFileSync(DETAIL, "utf8"));
 const detailImage = (n, over = {}) => ({
   live_photo: false, height: 1660, width: 1242, url: "", stream: {}, trace_id: "",
   file_id: `oss-sg/spectrum/key${n}`,
-  url_pre: `http://sns-web-i10.rednotecdn.com/2026/sigA/oss-sg/spectrum/key${n}!nd_prv_wlteh_webp_3`,
-  url_default: `http://sns-web-i10.rednotecdn.com/2026/sigB/oss-sg/spectrum/key${n}!nd_dft_wlteh_webp_3`,
+  url_pre: `http://sns-web-i10.rednotecdn.com/202609131332/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/oss-sg/spectrum/key${n}!nd_prv_wlteh_webp_3`,
+  url_default: `http://sns-web-i10.rednotecdn.com/202609131332/b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2/oss-sg/spectrum/key${n}!nd_dft_wlteh_webp_3`,
   info_list: [],
   ...over,
 });
@@ -644,9 +654,11 @@ test("the live detail fixture still carries SIGNED, multi-segment image urls", (
       const { pathname, hostname } = new URL(url);
       assert.notEqual(hostname, "sns-i27.rednotecdn.com", "a detail url must still be signed");
       assert.ok(hostname.endsWith("rednotecdn.com"), `not a rednote CDN host: ${url}`);
-      // `<timestamp>/<signature>/oss-sg/spectrum/<id>` — five live, and ≥3 is what makes
-      // the drop-two rule fire at all.
-      assert.ok(pathname.split("/").filter(Boolean).length >= 3, `too flat to be signed: ${url}`);
+      // `<timestamp>/<signature>/oss-sg/spectrum/<id>` — five live. The drop-two rule
+      // fires on the SHAPE of the first two segments, so that is what is asserted: a
+      // five-segment path alone proves nothing (`/stream/1/110/258/x.mp4` is one).
+      assert.ok(hasSigningPrefix(url), `no signing prefix to strip: ${url}`);
+      assert.equal(pathname.split("/").filter(Boolean).length, 5, `expected a 5-segment path: ${url}`);
       assert.ok(url.includes("!"), `the transform suffix must survive sanitization: ${url}`);
     }
   }

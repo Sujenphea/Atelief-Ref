@@ -216,8 +216,8 @@ const rednoteRow = (id, over = {}) => ({
   user: { user_id: "u", nick_name: "Someone" },
   cover: {
     file_id: "", url: "", width: 900, height: 1200,
-    url_pre: `http://sns-web-i10.rednotecdn.com/2026/sigA/${id}!nc_n_webp_prv_1`,
-    url_default: `http://sns-web-i10.rednotecdn.com/2026/sigB/${id}!nc_n_webp_mw_1`,
+    url_pre: `http://sns-web-i10.rednotecdn.com/202609131332/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/${id}!nc_n_webp_prv_1`,
+    url_default: `http://sns-web-i10.rednotecdn.com/202609131332/b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2/${id}!nc_n_webp_mw_1`,
     info_list: [],
   },
   ...over,
@@ -291,8 +291,8 @@ function rednoteDetailImage(n, over = {}) {
   return {
     live_photo: false, width: 1242, height: 1660, url: "", stream: {}, info_list: [],
     file_id: `oss-sg/spectrum/key${n}`,
-    url_pre: `http://sns-web-i10.rednotecdn.com/2026/sigA/oss-sg/spectrum/key${n}!nd_prv_wlteh_webp_3`,
-    url_default: `http://sns-web-i10.rednotecdn.com/2026/sigB/oss-sg/spectrum/key${n}!nd_dft_wlteh_webp_3`,
+    url_pre: `http://sns-web-i10.rednotecdn.com/202609131332/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/oss-sg/spectrum/key${n}!nd_prv_wlteh_webp_3`,
+    url_default: `http://sns-web-i10.rednotecdn.com/202609131332/b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2/oss-sg/spectrum/key${n}!nd_dft_wlteh_webp_3`,
     ...over,
   };
 }

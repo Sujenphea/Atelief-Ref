@@ -162,10 +162,22 @@ function syntheticUrl(s) {
   // to /originals/; the X mapper splits on the pbs/video host; rednote's key rule drops
   // the first two segments of `<timestamp>/<signature>/<key>`, so a flattened path would
   // turn that rewrite into a passthrough). Keep both; replace the segments themselves.
-  const depth = u.pathname.split("/").filter(Boolean).length;
+  const raw = u.pathname.split("/").filter(Boolean);
+  const depth = raw.length;
   const n = ++counters.url;
   const segs = [];
-  for (let i = 0; i < Math.max(depth - 1, 0); i++) segs.push("00");
+  // …and so is the SHAPE of that signing prefix, now that `toRednoteOriginal` strips on
+  // shape rather than on depth: rednote's video streams are unsigned (`/stream/1/…`) and
+  // depth alone cannot tell them from a signed image. `00/00` is not a
+  // `<timestamp>/<signature>`, so a fixture sanitized to it would pass STRAIGHT THROUGH —
+  // the same "proves the opposite of what the canary asks" trap the host and the `!`
+  // suffix already fell into. The filler keeps the shape and stays all-zero.
+  let i = 0;
+  if (depth >= 3 && /^\d{10,14}$/.test(raw[0]) && /^[0-9a-f]{32}$/i.test(raw[1])) {
+    segs.push("000000000000", "0".repeat(32));
+    i = 2;
+  }
+  for (; i < Math.max(depth - 1, 0); i++) segs.push("00");
   const last = `SAMPLE${n}${ext}${transform}`;
   return `${u.protocol}//${u.host}/${[...segs, last].join("/")}`;
 }
