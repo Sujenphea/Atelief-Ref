@@ -133,12 +133,39 @@ swift_package() {
     fi
 }
 
+# **The app target's tests run SERIALLY** (`-parallel-testing-enabled NO`), and
+# that is a correctness requirement rather than a concession to flakiness.
+#
+# `AtelierRefsTests` is HOSTED IN THE APP: each runner process launches a real
+# AtelierRefs, which boots `IngestionModel` and binds the capture endpoint on a
+# FIXED port (`IngestionModel.capturePort()` — `CaptureServer.defaultPort`, or
+# `+1` for a `.dev` bundle id). Two runner processes therefore race for one
+# socket, and the loser logs
+#
+#     [FlyingFox] server error: SocketError. Bind(48): Address already in use
+#
+# …and runs on with `captureEndpointRunning == false`. They also share one
+# sandbox container. Two hosts of this app are not independent, so running two of
+# them concurrently is unsound however green it happens to come out.
+#
+# It is also what the gate's remaining intermittent failure looks like: a flat
+# `60.000 s` against a suite's one-minute `.timeLimit`, naming an arbitrary
+# `@MainActor` test — twice a *synchronous* one, which cannot hang and can only
+# fail to START, i.e. something else was holding the main actor. That is
+# `.change-log/482`'s signature A, which 482 fixed for the cooperative pool (its
+# bounded `DecodeLatch` is still the only blocking primitive in the target). The
+# main-actor equivalent was never found: it did not reproduce in four serial
+# attempts, under 2x-core CPU load, or with the capture port deliberately held.
+# So this does NOT claim to have fixed it — it removes the concurrency the
+# failures only ever appeared under, and makes the stage deterministic.
+#
+# The cost is ~45 s, measured: 46 s serial against ~90 s parallel.
 app_target() {
     local action="build"
     local -a extra=()
     if [[ "${MODE}" == "full" ]]; then
         action="test"
-        extra=(-only-testing:AtelierRefsTests)
+        extra=(-only-testing:AtelierRefsTests -parallel-testing-enabled NO)
     fi
 
     # Log to a file and grep the FILE, rather than piping xcodebuild through

@@ -221,6 +221,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Show Xcode
         run: xcodebuild -version
+      # Serial, deliberately. AtelierRefsTests is hosted IN the app, so each
+      # runner process launches a real AtelierRefs that binds the capture
+      # endpoint on a fixed port and opens one shared sandbox container — two
+      # hosts are not independent, and the loser of the bind race runs on with a
+      # dead endpoint. See scripts/verify.sh's app_target for the full account
+      # and for what this does and does not claim about .change-log/482.
       - name: Build + unit test (UI tests excluded)
         run: |
           xcodebuild test \
@@ -228,5 +234,6 @@ jobs:
             -scheme AtelierRefs \
             -destination 'platform=macOS' \
             -only-testing:AtelierRefsTests \
+            -parallel-testing-enabled NO \
             -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO
