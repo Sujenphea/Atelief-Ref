@@ -355,3 +355,159 @@ struct SpaceTextAutoWidthTests {
         #expect(item(model, fixed).w == 200)
     }
 }
+
+// MARK: - The mid-edit flip (the 8 × 441 bug)
+
+/// A regression suite for the worst bug 063's design allowed: **"Fixed" froze a width
+/// nobody could see.**
+///
+/// While a box hugs its text, the width on screen lives only in the renderer's
+/// display-only span (`CanvasEngine.setEditingBoxSpan`, which writes no row). So until
+/// an edit commits, the model's width is whatever the box was BORN at. Turning hugging
+/// off re-derives geometry with `hugsWidth == false`, and `autosizedFrame` answers
+/// "the width you already have" — the birth width.
+///
+/// Measured, on a click-placed box holding "Hello world this is a caption":
+///
+/// | | stored | on screen |
+/// |---|---|---|
+/// | after typing | 8 | 207 |
+/// | after Fixed  | **8** | 207 (stale span) |
+/// | after commit | **8 × 441** | 8 × 441 |
+///
+/// The stale span is why nobody saw it coming: the override outlived the mode that
+/// justified it, so the box looked right until the edit ended.
+///
+/// `live:` is the fix — the renderer hands over the frame it is drawing and the string
+/// it is holding, and the freeze lands on those. These tests pass that bundle directly
+/// rather than standing a canvas up: what is being pinned is what `SpaceModel` does
+/// with it, which is where the bug was.
+@MainActor
+@Suite("SpaceModel mid-edit restyle — the live box, not the committed one")
+struct SpaceTextLiveEditRestyleTests {
+
+    private func makeModel() async throws -> SpaceModel {
+        let dbPath = NSTemporaryDirectory() + "space-liveedit-\(UUID().uuidString).sqlite"
+        let services = try AppServices(databasePath: dbPath)
+        let store = MediaStore(root: FileManager.default.temporaryDirectory)
+        let space = try await services.createSpace(name: "Text Board")
+        let model = SpaceModel(spaceID: space.id, services: services, store: store)
+        await model.load()
+        return model
+    }
+
+    private func item(_ model: SpaceModel, _ id: UUID) -> SpaceItem {
+        model.items.first { $0.item.id == id }!.item
+    }
+
+    /// A click-placed box: born hugging, born empty, and never committed — exactly the
+    /// state the bug needed.
+    private func seedClicked(_ model: SpaceModel) async -> UUID {
+        model.addText(worldRect: CGRect(origin: .zero, size: .zero))
+        await model.waitForWrites()
+        return model.selectedItemID!
+    }
+
+    private static let caption = "Hello world this is a caption"
+
+    /// The box as the renderer would be drawing it after the caption is typed: the
+    /// hugged width of the LIVE string, which is the number the user can see.
+    private func liveBox(_ model: SpaceModel, _ id: UUID) -> SpaceModel.LiveEdit {
+        var style = model.style(forItemID: id)
+        style.text = Self.caption
+        let measured = TextMetrics.size(
+            for: ElementRendering.textStyle(for: style), hugging: true, outerWidth: 0)
+        let pad = TextMetrics.padding
+        return SpaceModel.LiveEdit(
+            frame: CGRect(x: 0, y: 0,
+                          width: measured.width + 2 * pad, height: measured.height + 2 * pad),
+            text: Self.caption)
+    }
+
+    @Test("the birth width is tiny — which is what made the bug so violent")
+    func aBornBoxIsBarelyWide() async throws {
+        let model = try await makeModel()
+        let id = await seedClicked(model)
+        let born = item(model, id).w
+        let live = liveBox(model, id).frame.width
+        #expect(born < 20)
+        #expect(live > 100, "the typed caption is an order of magnitude wider than the box's row")
+    }
+
+    @Test("Fixed freezes the width ON SCREEN, not the width in the row")
+    func fixedFreezesTheLiveWidth() async throws {
+        let model = try await makeModel()
+        let id = await seedClicked(model)
+        let live = liveBox(model, id)
+
+        var style = model.style(forItemID: id)
+        style.textAutoWidth = false
+        model.updateStyle(itemID: id, style: style, live: live)
+        await model.waitForWrites()
+        await model.load()
+
+        let frozen = item(model, id)
+        #expect(frozen.w == Double(live.frame.width))
+        // The bug, stated as the thing that must not happen again.
+        #expect(frozen.w > 100, "froze the box's birth width instead of the one on screen")
+        #expect(frozen.h < 100, "an 8pt column wraps the caption into a 441pt sliver")
+    }
+
+    @Test("without the live bundle it still freezes the row — the seam is what fixes it")
+    func theSeamIsLoadBearing() async throws {
+        let model = try await makeModel()
+        let id = await seedClicked(model)
+
+        var style = model.style(forItemID: id)
+        style.textAutoWidth = false
+        model.updateStyle(itemID: id, style: style)   // no `live:` — the old behaviour
+        await model.waitForWrites()
+        await model.load()
+
+        // Not an endorsement: this pins WHY `live:` exists. With no editor open this is
+        // the correct answer (the row IS the truth); mid-edit it was the bug.
+        #expect(item(model, id).w < 20)
+    }
+
+    @Test("a mid-edit restyle measures the typed words, not the committed ones")
+    func geometryFollowsTheLiveString() async throws {
+        let model = try await makeModel()
+        let id = await seedClicked(model)
+        let live = liveBox(model, id)
+
+        // Still hugging; only the point size changes. The height must come from the
+        // caption in the editor, not from the empty string still on the row.
+        var style = model.style(forItemID: id)
+        style.fontSize = 32
+        model.updateStyle(itemID: id, style: style, live: live)
+        await model.waitForWrites()
+        await model.load()
+
+        let restyled = item(model, id)
+        #expect(restyled.w > Double(live.frame.width),
+                "32pt text hugs wider than the 16pt measurement handed in")
+        #expect(model.style(forItemID: id).text == Self.caption,
+                "the typed words ride along, so the row and its size agree")
+    }
+
+    @Test("undoing a mid-edit restyle reverts the STYLE and keeps the sentence")
+    func undoKeepsTheTypedWords() async throws {
+        let model = try await makeModel()
+        let id = await seedClicked(model)
+        let live = liveBox(model, id)
+
+        var style = model.style(forItemID: id)
+        style.fontSize = 32
+        model.updateStyle(itemID: id, style: style, live: live)
+        await model.waitForWrites()
+        await model.load()
+
+        model.undo()
+        await model.waitForWrites()
+        await model.load()
+
+        #expect(model.style(forItemID: id).fontSize == ElementRendering.defaultFontSize)
+        #expect(model.style(forItemID: id).text == Self.caption,
+                "undoing a font change must not also undo what was being typed")
+    }
+}

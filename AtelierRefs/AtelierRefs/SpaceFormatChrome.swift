@@ -264,6 +264,26 @@ final class SpaceTextChromeAnchor: ObservableObject {
         let frame = tileID.flatMap { host?.screenFrame(forTileID: $0) }
         if frame != screenFrame { screenFrame = frame }
     }
+
+    /// What the renderer is currently showing for the tracked box — its drawn WORLD
+    /// frame and the string the open editor holds — or `nil` when either is
+    /// unavailable (no host, no tracked tile, no open edit).
+    ///
+    /// The anchor vends it because the anchor is the one object that already holds both
+    /// halves of the question: the host, and which tile the chrome is pointed at. A
+    /// restyle from the bubble hands this to ``SpaceModel/updateStyle(itemID:style:live:)``
+    /// so the write lands on the geometry and the words the user can see, rather than
+    /// on the last committed ones.
+    ///
+    /// `nil` is not a failure — it is the ordinary "this box is not being edited" case,
+    /// where the model's own live content is already the freshest truth there is.
+    func liveEdit() -> SpaceModel.LiveEdit? {
+        guard let tileID, let host,
+              let frame = host.liveWorldFrame(forTileID: tileID),
+              let text = host.liveEditingText(forTileID: tileID)
+        else { return nil }
+        return SpaceModel.LiveEdit(frame: frame, text: text)
+    }
 }
 
 // MARK: - The chrome

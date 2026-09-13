@@ -411,6 +411,28 @@ public final class CanvasHostView: NSView {
         engine.screenFrame(forTileID: id)
     }
 
+    /// The WORLD frame a tile is drawn at right now — stored geometry plus any live
+    /// override (drag / resize / open editor). See
+    /// ``CanvasEngine/liveWorldFrame(forTileID:)`` for why the app needs this and not
+    /// just the stored frame.
+    public func liveWorldFrame(forTileID id: Int) -> CGRect? {
+        engine.liveWorldFrame(forTileID: id)
+    }
+
+    /// The string the open inline editor currently holds for `id`, or `nil` when no
+    /// editor owns that tile.
+    ///
+    /// **Lent for MEASUREMENT, never for persistence by the renderer.** While an edit
+    /// is open the text view owns the string and the model's copy is stale by
+    /// definition — so an app that re-derives a box's size mid-edit (a restyle from the
+    /// format bubble) would otherwise measure the *last committed* words and write a
+    /// size for text the box no longer holds. The app still decides what, if anything,
+    /// to store; this only stops it having to guess.
+    public func liveEditingText(forTileID id: Int) -> String? {
+        guard let editor, editor.tileID == id else { return nil }
+        return editor.currentText
+    }
+
     /// Whether a tile is currently within the culled-visible set.
     public func isTileVisible(_ id: Int) -> Bool { engine.isVisible(tileID: id) }
 

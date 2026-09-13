@@ -129,8 +129,31 @@ public enum TextMetrics {
             return size(for: style, maxWidth: max(1, outerWidth - 2 * padding))
         }
         let free = size(for: style, maxWidth: nil)
-        guard free.width > maxAutoWidth else { return free }
+        guard free.width > maxAutoWidth else {
+            return CGSize(
+                width: max(free.width, minAutoWidth(forPointSize: CGFloat(style.fontSize))),
+                height: free.height)
+        }
         return size(for: style, maxWidth: maxAutoWidth)
+    }
+
+    /// The narrowest an auto-width box's TEXT may measure, for a given point size.
+    ///
+    /// An empty string measures **zero** wide. ``TextShaper`` substitutes a lone space
+    /// so the box keeps one line of HEIGHT, but a space carries no advance width, so
+    /// the box came out `2 × padding` — 8 world units of pure inset with a zero-width
+    /// text container inside it. That is not a caret, it is a hairline, and it is what
+    /// a freshly-placed box looks like before the first keystroke.
+    ///
+    /// Proportional to the point size rather than a constant, so a 96pt heading's empty
+    /// box is proportionate to its own glyphs instead of a speck. Half an em is roughly
+    /// a digit's width in the system face — enough to see and to aim at.
+    ///
+    /// It floors the measurement rather than the box, so the ONE rule the app and the
+    /// inline editor share stays the one place this is decided (the same reason the
+    /// `maxAutoWidth` cap lives here).
+    public static func minAutoWidth(forPointSize size: CGFloat) -> CGFloat {
+        max(1, (size * 0.5).rounded())
     }
 }
 

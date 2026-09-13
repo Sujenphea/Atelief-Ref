@@ -230,6 +230,25 @@ public final class CanvasEngine {
         tile(withID: id)?.worldFrame
     }
 
+    /// The world frame a tile is **drawn at right now** — its stored frame plus every
+    /// transient override in force: a drag's offset, a live resize, and an open
+    /// editor's derived height / auto-width span.
+    ///
+    /// The third of the trio, and the one that was missing. ``storedWorldFrame`` is
+    /// what the model has, ``screenFrame`` is that under the camera, and this is what
+    /// the user can actually see — in the model's own units, so the app can hand it
+    /// back as geometry.
+    ///
+    /// It exists because a display-only override can become the user's decision. While
+    /// a box hugs its text its width lives HERE and nowhere else (``setEditingBoxSpan``
+    /// writes no row), so the moment the user says "fixed", the number to freeze is
+    /// this one — not the stored width, which is still whatever the box was born at.
+    /// Freezing the stored one shrank a typed box back to its 8pt birth size and then
+    /// wrapped the text into it.
+    public func liveWorldFrame(forTileID id: Int) -> CGRect? {
+        tile(withID: id).map(displayWorldFrame(for:))
+    }
+
     /// Whether a tile is in the culled-visible set right now — i.e. whether the user
     /// can actually see it. The peer of ``screenFrame(forTileID:)``, split out so
     /// "where is it" and "can it be seen" are never conflated again.

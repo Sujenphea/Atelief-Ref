@@ -1116,30 +1116,81 @@ final class SpaceModel: ObservableObject {
     /// (never a host rebuild), so any visible restyle — geometry OR style-only — bumps
     /// ``renderRevision`` once as its redraw signal. Undoable — the prior style (and
     /// geometry, when it changed) is captured and restored, flicker-free, on undo.
-    func updateStyle(itemID: UUID, style newStyle: ElementStyle) {
+    func updateStyle(itemID: UUID, style newStyle: ElementStyle, live: LiveEdit? = nil) {
         guard var item = items.first(where: { $0.item.id == itemID })?.item else { return }
-        let oldStyle = style(forItemID: itemID)
+        var oldStyle = style(forItemID: itemID)
 
         // Geometry truth is the LIVE content: a drag / arrange persists with
         // `reload: false`, leaving `items` x/y/w/h stale until the next reload (see
         // ``livePlacement``). Anchor the restyle + auto-size on the live rect so an
         // edit after a move can't snap the element back to its pre-move position.
-        let oldPlacement = livePlacement(itemID, in: content())
+        //
+        // …and while an EDIT is open, even the live content is behind: the box's drawn
+        // width and its string both live in the renderer until the edit commits. `live`
+        // carries both, and anchoring on it is what makes "fixed" freeze the width the
+        // user is looking at (see ``LiveEdit``).
+        let rowPlacement = livePlacement(itemID, in: content())
+        var oldPlacement = rowPlacement
+        if let live {
+            oldPlacement = Placement(
+                x: Double(live.frame.minX), y: Double(live.frame.minY),
+                w: Double(live.frame.width), h: Double(live.frame.height), z: oldPlacement.z)
+            // The words the box actually holds, on BOTH sides of the undo. Not writing
+            // them would persist a size derived from text the row does not carry;
+            // writing them on one side only would make undoing a font change also undo
+            // the sentence the user was in the middle of.
+            oldStyle.text = live.text
+        }
+        var newStyle = newStyle
+        if let live { newStyle.text = live.text }
+
         item.x = oldPlacement.x; item.y = oldPlacement.y
         item.w = oldPlacement.w; item.h = oldPlacement.h; item.z = oldPlacement.z
 
-        let newPlacement: Placement? = autosizedFrame(item: item, style: newStyle).map {
+        let derived: Placement? = autosizedFrame(item: item, style: newStyle).map {
             Placement(x: Double($0.minX), y: Double($0.minY),
                       w: Double($0.width), h: Double($0.height), z: item.z)
         }
+        // `autosizedFrame` answers `nil` for "the derived size already equals the one I
+        // was given" — which, without `live`, correctly means there is nothing to write.
+        // With `live` the anchor is NOT the row: the row is behind by everything the
+        // open editor has done, so "already equals the anchor" is still news to it.
+        // Falling through to no-geometry there is exactly how the first cut of this fix
+        // still committed an 8pt box — the live width was used to measure against and
+        // then thrown away.
+        let newPlacement: Placement? = derived ?? (oldPlacement != rowPlacement ? oldPlacement : nil)
         let geomChanged = newPlacement != nil
         guard oldStyle != newStyle || geomChanged else { return }
 
         let name = item.kind == .text ? "Restyle Text" : "Restyle"
-        applyRestyle(itemID, newStyle, placement: newPlacement)
+        let committedNew = newStyle
+        let committedOld = oldStyle
+        applyRestyle(itemID, committedNew, placement: newPlacement)
         registerReversible(name,
-            primary: { self.applyRestyle(itemID, newStyle, placement: newPlacement) },
-            inverse: { self.applyRestyle(itemID, oldStyle, placement: geomChanged ? oldPlacement : nil) })
+            primary: { self.applyRestyle(itemID, committedNew, placement: newPlacement) },
+            inverse: { self.applyRestyle(itemID, committedOld, placement: geomChanged ? oldPlacement : nil) })
+    }
+
+    /// What the RENDERER is showing for a text box whose edit is open, and the model
+    /// does not yet know (062 · 063).
+    ///
+    /// Two facts, together because they are useless apart. While an edit is open the
+    /// text view owns the string, and a hugging box's width lives in the engine's
+    /// display-only span — neither reaches a row until the edit commits. So a restyle
+    /// that lands mid-edit is measuring the wrong text against the wrong width unless
+    /// it is handed both.
+    ///
+    /// The case that made this necessary: click the Text tool, type a caption, then
+    /// press **Fixed** in the format bubble. "Fixed" freezes a width, and the only
+    /// width the model could see was the box's 8pt birth size — so the caption was
+    /// re-wrapped into 8 points and the box committed as an 8 × 441 sliver. The width
+    /// the user was looking at (207) existed only in the renderer.
+    ///
+    /// `frame` is ``CanvasHostView/liveWorldFrame(forTileID:)``; `text` is
+    /// ``CanvasHostView/liveEditingText(forTileID:)``.
+    struct LiveEdit: Equatable {
+        var frame: CGRect
+        var text: String
     }
 
     // MARK: - Errors

@@ -143,6 +143,10 @@ final class CanvasTextEditController: NSObject, NSTextViewDelegate {
         scaleBox.frame.contains(point)
     }
 
+    /// The string the text view holds right now — the live truth while this edit is
+    /// open, which the model's row does not have until the edit commits.
+    var currentText: String { textView.string }
+
     // MARK: - Typography
 
     /// Everything the live glyphs are built from EXCEPT the string. The string belongs
@@ -228,8 +232,22 @@ final class CanvasTextEditController: NSObject, NSTextViewDelegate {
         }
         // A tile the provider no longer has is a torn-down board, not a scrolled one —
         // nothing to place the overlay over, so hold still and let teardown run.
-        guard let frame = engine.screenFrame(forTileID: tileID),
-              var style = engine.textStyle(forTileID: tileID) else { return }
+        guard var style = engine.textStyle(forTileID: tileID) else { return }
+
+        // Drop any auto-width span left over from when this box hugged — BEFORE the
+        // frame is read, so the rest of this pass measures against the width the box
+        // actually has rather than the one a stale override was still asserting.
+        //
+        // The clear used to be missing entirely, and that is what made the auto→fixed
+        // bug invisible: the override outlived the mode that justified it, so the
+        // canvas kept drawing (and this method kept wrapping to) the hugged width long
+        // after the model had been given a different one. Nothing looked wrong until
+        // the edit ended and `editingTileID = nil` dropped the span — at which point
+        // the box snapped to a width nobody had seen. A no-op when there is no span:
+        // `setEditingBoxSpan` compares before it syncs.
+        if !style.hugsWidth { engine.setEditingBoxSpan(minX: nil, width: nil) }
+
+        guard let frame = engine.screenFrame(forTileID: tileID) else { return }
         hasPositioned = true
         let scale = max(0.0001, engine.transform.scale)
 

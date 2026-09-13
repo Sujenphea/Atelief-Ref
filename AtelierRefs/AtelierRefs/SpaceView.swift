@@ -581,7 +581,17 @@ struct SpaceView: View {
                     showFont: $showFontPanel,
                     showSize: $showSizePanel,
                     showColor: $showColorPanel,
-                    onChange: { space.updateStyle(itemID: target.itemID, style: $0) })
+                    // `live:` is what keeps a mid-edit restyle honest. The bubble is
+                    // only ever up while a box is being EDITED, so the model's own row
+                    // is stale by definition here — the drawn width and the typed
+                    // string both live in the renderer until the edit commits. Read
+                    // them BEFORE the write, so "Fixed" freezes the width on screen
+                    // rather than the box's birth size.
+                    onChange: { style in
+                        space.updateStyle(
+                            itemID: target.itemID, style: style,
+                            live: chromeAnchor.liveEdit())
+                    })
                     // Deferred: `onAppear` runs inside the view update, and the anchor
                     // publishes — the same "Publishing changes from within view
                     // updates" trap `ElementInspector.onDisappear` already dodges.
