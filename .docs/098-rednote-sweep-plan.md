@@ -254,8 +254,26 @@ nothing short-circuits it.
 
 The fix is to pre-check the known-set before opening a note. That is only cheap
 if the `sourceId` scheme makes "is this note done?" a lookup rather than a prefix
-scan over `noteId:index` entries — so **Open question 2 is now a design input to
-T5, not a follow-up.**
+scan over `noteId:index` entries.
+
+**Settled (2026-09-13): derive a note-level index, gate it on the clean marker.**
+At sweep start, alongside the known-set:
+`knownNotes = new Set([...knownSet].map((id) => id.split(":")[0]))` — O(n) once,
+O(1) per note, and **no change to the `sourceId` scheme**, so nothing already
+ingested needs migrating.
+
+The residual risk is a note captured PARTIALLY (a sweep that died after 3 of 9
+images looks "done"). That is handled by the precondition that already exists for
+exactly this shape of optimisation: `sweepCleanMarkerKey`
+(`bulk-controller.js:182`) records whether the prior run of this scope closed
+failure-free, and Instagram already gates its early-stop on it. **Arm the
+pre-check only when the prior sweep closed clean.**
+
+Rejected: keying the cover as `<note_id>:0` to unify the namespace — it depends on
+`cover == image_list[0]`, which is unverified, and 30 of 37 sampled notes are
+`type: "video"`, where the cover is a poster that may not be in `image_list` at
+all. Rejected: recording an expected image count — the count is not in the feed
+row, so learning it requires the note-open the check exists to avoid.
 
 ## Tasks
 
@@ -344,9 +362,12 @@ Cover-only is the default because of this table, not despite it.
 ## Open questions
 
 1. **Board URL path shape** — never recorded; needed for the recogniser.
-2. **`sourceId` scheme across cover → expanded** — now a **design input to T5**
-   (R14), not a follow-up. Cover `<note_id>` vs expanded `<note_id>:<index>`
-   must let a pre-expansion known-check be a lookup.
+2. ~~**`sourceId` scheme across cover → expanded**~~ **Settled** — keys unchanged;
+   a derived `knownNotes` index, armed only after a clean prior sweep. See R14.
+   Still worth one cheap capture: open a note that IS on a saved board page and
+   check whether `cover` equals `image_list[0].file_id`, and whether a
+   `type: "video"` note's `image_list` holds the poster or is empty. That would
+   also unblock T6.
 3. **Entry point** — boards only (recommended), or also "My saves"?
 4. **Live Photos** — `image_list[].live_photo` exists. Defer.
 5. **Video ladder shape** — unverified; T6 blocked on one capture.
