@@ -1,4 +1,4 @@
-// Atelier Capture — rednote board-feed parser + push→pull source (098 T2, K3a).
+// Atelier Capture — rednote board-feed + note-detail parsers (098 T2/T5a, K3a + K3b).
 //
 // The board feed is INTERCEPTED, never requested: rednote signs every API call with an
 // `X-s` derived from the URL and an `X-t` timestamp, and a hand-signed request was tried
@@ -16,7 +16,9 @@
 // is the whole shape of K3a and it is forced by the data: a feed row has nine keys and
 // holds a single `cover` — no `imageList`, no `video`, no `stream`. Doc 020 planned a
 // per-carousel-image fan-out from this response; that data is not in it. Carousels and
-// video need a per-note detail fetch (K3b, 098 D4), which is a separate phase.
+// video need a per-note detail fetch (K3b, 098 D4) — which is `parseNoteDetail` at the
+// foot of this file, fanning out one item per `image_list[]` entry. The DRIVING that
+// produces those responses (opening each note through the SPA) is a separate half again.
 //
 // A yielded `BulkItem` matches the engine seam:
 //   { sourceId, mediaUrl, mediaUrlFallback, provenance, cursor, xsecToken }
@@ -36,10 +38,23 @@ export const BOARD_FEED_PATH = "/api/sns/web/v1/board/note";
  * reject. */
 const URL_BASE = "https://www.rednote.com";
 
+/** The note-detail path (098 D4, K3b). A POST where the board feed is a GET, and signed
+ * the same way — so it too is intercepted and never issued. Pinned to the path for the
+ * same reason as above. */
+export const NOTE_DETAIL_PATH = "/api/sns/web/v1/feed";
+
 /** True for a board-feed request URL (absolute or protocol-relative, ± query). */
 export function isBoardFeedRequest(url) {
   return typeof url === "string" &&
     new RegExp(`${BOARD_FEED_PATH.replace(/\//g, "\\/")}(?:$|[/?])`).test(url);
+}
+
+/** True for a note-detail request URL. Matched on the path ENDING, not merely containing,
+ * `…/v1/feed`: rednote ships a family of feed routes below it (`/v1/feed/…`), and a
+ * prefix match would hand this parser a homefeed page whose payload it cannot read. */
+export function isNoteDetailRequest(url) {
+  return typeof url === "string" &&
+    new RegExp(`${NOTE_DETAIL_PATH.replace(/\//g, "\\/")}\\/?(?:$|[?#])`).test(url);
 }
 
 /** One query parameter off a board-feed request URL, or null. Tolerates the
@@ -84,27 +99,46 @@ export class RednoteChallengeError extends Error {
 }
 
 /**
- * Recognize a response that is NOT a normal board page → a challenge kind, else null.
+ * Recognize a response that is NOT a normal rednote payload → a challenge kind, else null.
  *
  * The hook forwards responses status-blind (it has no HTTP status to give us), so this
- * reads the BODY alone. A healthy page is `{ code: 0, success: true, data: { notes: [] } }`
- * — and note that the genuine LAST page is `has_more: false, notes: [], cursor: ""`, an
- * empty ARRAY, so an exhausted feed is not mistaken for a refusal.
+ * reads the BODY alone. A healthy body is `{ code: 0, success: true, data: { <payload>: [] } }`
+ * — and note that the board feed's genuine LAST page is `has_more: false, notes: [],
+ * cursor: ""`, an empty ARRAY, so an exhausted feed is not mistaken for a refusal.
  *
  * Deliberately biased toward halting. A false halt costs the user a resume; a false
  * CONTINUE keeps hammering a session rednote has already flagged. The observed refusal
  * (HTTP 461 during the 2026-09-13 signing experiment) came back `success: true, code: 0,
  * msg: ""` where every genuine response says `msg: "成功"` — a rejection wearing a success
- * shape — which is why the presence of a real `data.notes` array, not the status fields,
- * is the load-bearing check.
+ * shape — which is why the presence of a real payload ARRAY, not the status fields, is the
+ * load-bearing check.
+ *
+ * `payloadKey` is the ONE thing that differs between the two rednote endpoints the sweep
+ * reads: the board feed answers with `data.notes`, note detail with `data.items`. It is a
+ * parameter rather than a second copy of this function because the envelope rules above
+ * were all learned the hard way and a copy would inherit only the ones that were true on
+ * the day it was made (098 D6).
  */
-export function detectRednoteChallenge(json) {
+function detectChallengeKind(json, payloadKey) {
   if (!json || typeof json !== "object") return "unparseable";
   if (json.code != null && json.code !== 0) return `code_${json.code}`;
   if (json.success === false) return "request_failed";
   const data = json.data;
-  if (!data || typeof data !== "object" || !Array.isArray(data.notes)) return "no_feed_payload";
+  if (!data || typeof data !== "object" || !Array.isArray(data[payloadKey])) return "no_feed_payload";
   return null;
+}
+
+/** The board feed's refusal recognizer — `data.notes` is the payload that must be there. */
+export function detectRednoteChallenge(json) {
+  return detectChallengeKind(json, "notes");
+}
+
+/** The note-detail refusal recognizer — same envelope, `data.items` instead. Note what it
+ * does NOT cover: an `items: []` is a note that did not come back (deleted, private,
+ * gone), not a refusal, and is handled by `parseNoteDetail` as a per-note degradation. A
+ * deleted note must not halt a 400-note sweep. */
+export function detectRednoteDetailChallenge(json) {
+  return detectChallengeKind(json, "items");
 }
 
 /**
@@ -246,4 +280,172 @@ export function parseBoardFeedPage(json, { host = "www.rednote.com" } = {}) {
     if (item) items.push(item);
   }
   return { items, endOfFeed: data.has_more !== true || !cursor, cursor, error: null };
+}
+
+// ---------------------------------------------------------------------------
+// K3b — note detail (098 D4): one BulkItem per image_list[] entry
+// ---------------------------------------------------------------------------
+//
+// The detail body arrives the same way the board feed does — the SPA opens a note, issues
+// its own correctly signed `POST /api/sns/web/v1/feed`, and the hook forwards the
+// response. Nothing here requests anything; this half is pure (098 T5a), and the driving
+// that produces the responses is T5b's.
+//
+// Envelope, verified live 2026-09-13 (`resources/rednote-note-02.json`):
+//   { code, success, msg, data: { cursor_score, items: [ { id, model_type, note_card } ],
+//                                 current_time } }
+// with `note_card` carrying `type · note_id · title · desc · time · last_update_time ·
+// ip_location · user · image_list[] · tag_list · at_user_list · share_info ·
+// interact_info · note_translation`. NO note-level `xsec_token` and, on this `normal`
+// note, NO `video` key.
+//
+// The fan-out is per IMAGE (`<note_id>:<index>`), the Instagram carousel shape, because
+// the detail response is the first place a note's images exist at all — the board row
+// carries one cover and nothing else (098 D3).
+
+/** A note that produced no items but was NOT a refusal — the caller keeps its cover item
+ * rather than treating the note as empty. Every one of these is a per-note degradation
+ * the sweep should count and log (098 R7's `onExpandFailure`), never a silent drop. */
+const detailRefusal = (unsupported, noteId = null) =>
+  ({ items: [], noteId, unsupported, error: null });
+
+/**
+ * Map ONE `image_list[]` entry to a `BulkItem`, or null when it yields no usable URL.
+ *
+ * `ctx` carries the note-level fields every image of a note shares (`noteId`, `author`,
+ * `title`, `desc`, `host`, `xsecToken`, `imageCount`) plus this entry's `index`.
+ *
+ * The index is the entry's POSITION IN THE ARRAY, never a count of items produced so far.
+ * If image 4 of 9 ever loses its URL, images 5–9 must keep the keys they had on the last
+ * sweep, or a re-sweep re-ingests every one of them under shifted ids.
+ */
+export function mapNoteImage(image, ctx) {
+  if (!image || typeof image !== "object") return null;
+  const { mediaUrl, mediaUrlFallback } = pickRednoteImage(image);
+  if (!mediaUrl) return null;
+
+  return {
+    sourceId: `${ctx.noteId}:${ctx.index}`,
+    mediaUrl,
+    mediaUrlFallback,
+    cursor: ctx.cursor ?? null,
+    // Local field, never provenance — the same rule the cover pass follows, and the reason
+    // is the same: a short-lived credential has no business being stored. The detail body
+    // carries no note-level token of its own (only `user.xsec_token`, which authorizes the
+    // AUTHOR's profile, not this note), so it is threaded in from the cover item that the
+    // note-open started from.
+    xsecToken: ctx.xsecToken ?? null,
+    provenance: makeProvenance({
+      platform: "rednote",
+      originalURL: `https://${ctx.host}/explore/${ctx.noteId}`,
+      mediaUrl,
+      mediaUrlFallback,
+      authorHandle: ctx.author.handle,
+      authorName: ctx.author.name,
+      title: ctx.title,
+      rawMetadata: {
+        noteId: ctx.noteId,
+        kind: "image",
+        // The note's literal `type`. Carried rather than collapsed so a kind rednote
+        // invents later shows up in stored provenance instead of vanishing into "image".
+        noteType: ctx.noteType,
+        userId: ctx.author.userId,
+        width: image.width ?? null,
+        height: image.height ?? null,
+        imageIndex: ctx.index,
+        imageCount: ctx.imageCount,
+        // 098 Open question 4 defers Live Photos. Deferred means the MOTION half: the
+        // entry's urls still serve a perfectly good still, so the still is captured and
+        // flagged, rather than the whole image being dropped for the sake of the part we
+        // are not taking. The motion lives in the entry's `stream`, which nothing reads
+        // yet; this flag is how a later pass finds the notes worth revisiting.
+        livePhoto: image.live_photo === true,
+        // `desc` and `title` exist ONLY on the detail response — the board row has just
+        // `display_title` — so this is the one chance to record them.
+        desc: ctx.desc,
+      },
+    }),
+  };
+}
+
+/**
+ * Parse one intercepted note-detail response into `{ items, noteId, unsupported, error }`.
+ *
+ *   · `items`       — one per `image_list[]` entry, keyed `<note_id>:<index>`.
+ *   · `noteId`      — the note this body is about, for the caller to check against the
+ *                     note it opened (the hook's replay buffer can hand over a detail
+ *                     response from an EARLIER note in the same tab — the same hazard
+ *                     `matchesScope` guards on the board pass).
+ *   · `unsupported` — non-null when the note yielded nothing for a reason that is NOT a
+ *                     refusal. **`items: []` with `unsupported` set means "keep this
+ *                     note's cover item"**, not "this note is empty": the cover pass has
+ *                     already captured something usable for it and expansion must degrade
+ *                     to that, never replace it with nothing (098 D4 / R7).
+ *   · `error`       — a `RednoteChallengeError` when the BODY is not a detail payload at
+ *                     all. Unlike `unsupported`, this one must be re-raised so the sweep
+ *                     halts resumable; degrading past a refusal keeps opening notes
+ *                     against a session rednote has already flagged.
+ *
+ * Never throws, for the reason `parseBoardFeedPage` never throws: a throw is swallowed by
+ * the intercept seam as an unparseable capture, and a swallowed challenge is a sweep that
+ * keeps running against a flagged account (098 R10).
+ *
+ * The `unsupported` reasons, all of them observed-shape-driven:
+ *   `no_note`         `data.items` is empty — deleted, private, or withheld.
+ *   `no_note_card`    the item arrived without its card.
+ *   `no_note_id`      the card cannot be keyed, so no `<note_id>:<index>` exists.
+ *   `video`           see below.
+ *   `no_images`       `image_list` missing or empty.
+ *   `no_usable_images` every entry was there but none yielded a URL.
+ *
+ * **Video notes are refused, not fanned out** (`unsupported: "video"`), and that is a
+ * decision rather than an omission. T6 is blocked on a live `type: "video"` capture, so
+ * the shape of a video note's `image_list` is unverified — and on the reading that is most
+ * likely (it holds the poster), fanning it out would enqueue `<note_id>:0` carrying the
+ * SAME poster image the cover pass already ingested as `<note_id>`: one picture, two keys,
+ * two downloads, and a dedup-skip that cannot see the duplicate. Refusing degrades to the
+ * cover, which for a video note is exactly what K3a already captures — so the refusal
+ * costs nothing today and is visible in the degradation count when T6 arrives to lift it.
+ */
+export function parseNoteDetail(json, { host = "www.rednote.com", xsecToken = null } = {}) {
+  const challenge = detectRednoteDetailChallenge(json);
+  if (challenge) {
+    return { items: [], noteId: null, unsupported: null, error: new RednoteChallengeError(challenge) };
+  }
+
+  const entry = json.data.items[0];
+  if (!entry || typeof entry !== "object") return detailRefusal("no_note");
+  const note = entry.note_card;
+  if (!note || typeof note !== "object") return detailRefusal("no_note_card");
+
+  const noteId = note.note_id != null && note.note_id !== "" ? String(note.note_id) : null;
+  if (!noteId) return detailRefusal("no_note_id");
+
+  // A `video` key anywhere on the card outranks `type`: the key is the payload, the type
+  // is a label, and a label can be renamed without the payload moving.
+  const noteType = note.type != null ? String(note.type) : null;
+  if (note.video != null || noteType === "video") return detailRefusal("video", noteId);
+
+  const images = Array.isArray(note.image_list) ? note.image_list : [];
+  if (images.length === 0) return detailRefusal("no_images", noteId);
+
+  const ctx = {
+    noteId, host, xsecToken, noteType,
+    author: rednoteAuthor(note.user),
+    title: note.title || null,
+    desc: note.desc || null,
+    imageCount: images.length,
+  };
+  const items = [];
+  images.forEach((image, index) => {
+    const item = mapNoteImage(image, { ...ctx, index });
+    if (item) items.push(item);
+  });
+
+  return {
+    items,
+    noteId,
+    unsupported: items.length === 0 ? "no_usable_images" : null,
+    error: null,
+  };
 }

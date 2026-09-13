@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 
 import {
   checkTimeline, checkBoardFeed, checkBoards, checkInstagramSaved, checkThreadDetail,
-  checkRednoteBoard, CHECKS, fixtureStaleReminder,
+  checkRednoteBoard, checkRednoteNoteDetail, CHECKS, fixtureStaleReminder,
 } from "../src/drift.js";
 import { tweet, conversation } from "./fixtures/x-conversation.js";
 
@@ -188,11 +188,15 @@ test("a completely foreign payload is flagged, not thrown", () => {
 
 test("CHECKS registry wires each check to a --flag", () => {
   assert.deepEqual(Object.keys(CHECKS).sort(),
-    ["instagram", "pinterest-board", "pinterest-boards", "rednote", "x", "x-thread"]);
+    ["instagram", "pinterest-board", "pinterest-boards", "rednote", "rednote-detail",
+      "x", "x-thread"]);
   assert.equal(CHECKS.x.run, checkTimeline);
   assert.equal(CHECKS.instagram.run, checkInstagramSaved);
   assert.equal(CHECKS["x-thread"].run, checkThreadDetail);
   assert.equal(CHECKS.rednote.run, checkRednoteBoard);
+  // The expansion endpoint gets its OWN entry beside the board's, the way `x-thread` sits
+  // beside `x`: a second route on a second clock, which a board capture cannot answer for.
+  assert.equal(CHECKS["rednote-detail"].run, checkRednoteNoteDetail);
 });
 
 // MARK: - checkRednoteBoard (098 T3)
@@ -257,6 +261,104 @@ test("checkRednoteBoard verifies the terminator and the loop guard independently
   // capture is fed in — including a middle page that shows neither.
   const result = checkRednoteBoard(rednotePage([rednoteRow("a")], { hasMore: true, cursor: "c" }));
   assert.deepEqual(result.problems, []);
+});
+
+// MARK: - checkRednoteNoteDetail (098 T5a)
+//
+// Same split as above: these prove the INVARIANTS fire, against notes broken on purpose;
+// the canary proves they match what rednote sends, over `rednote-note-detail.json`.
+
+/** A note-detail body in the real envelope (`data.items[0].note_card`). */
+const rednoteNote = (over = {}) => ({
+  code: 0, success: true, msg: "成功",
+  data: {
+    cursor_score: "", current_time: 1789278454517,
+    items: [{
+      id: "nd1", model_type: "note", ignore: false,
+      note_card: {
+        note_id: "nd1", type: "normal", title: "t", desc: "d",
+        user: { user_id: "u", nickname: "Someone" },
+        image_list: [rednoteDetailImage(1), rednoteDetailImage(2)],
+        tag_list: [], at_user_list: [], interact_info: {},
+        ...over,
+      },
+    }],
+  },
+});
+
+/** The live key shape: `<timestamp>/<signature>/oss-sg/spectrum/<id>`. */
+function rednoteDetailImage(n, over = {}) {
+  return {
+    live_photo: false, width: 1242, height: 1660, url: "", stream: {}, info_list: [],
+    file_id: `oss-sg/spectrum/key${n}`,
+    url_pre: `http://sns-web-i10.rednotecdn.com/2026/sigA/oss-sg/spectrum/key${n}!nd_prv_wlteh_webp_3`,
+    url_default: `http://sns-web-i10.rednotecdn.com/2026/sigB/oss-sg/spectrum/key${n}!nd_dft_wlteh_webp_3`,
+    ...over,
+  };
+}
+
+test("checkRednoteNoteDetail passes a healthy note and reports its fan-out", () => {
+  const result = checkRednoteNoteDetail(rednoteNote());
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.signals, { images: 2, items: 2, noteType: "normal" });
+});
+
+test("checkRednoteNoteDetail catches an image that stopped yielding a url", () => {
+  // The fan-out IS the feature here — `image_list` is the only place a note's carousel
+  // exists — so an entry that silently stops resolving costs a picture nobody notices.
+  const result = checkRednoteNoteDetail(rednoteNote({
+    image_list: [rednoteDetailImage(1),
+      rednoteDetailImage(2, { url_pre: "", url_default: "", info_list: [] })],
+  }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /fanned out 1 of 2 images/);
+});
+
+test("checkRednoteNoteDetail catches a rewrite that stops reaching the unsigned original", () => {
+  const result = checkRednoteNoteDetail(rednoteNote({
+    image_list: [rednoteDetailImage(1, {
+      url_pre: "", url_default: "http://sns-web-i10.rednotecdn.com/onlyone",
+    })],
+  }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /not an unsigned origin-host url/);
+});
+
+test("checkRednoteNoteDetail catches two images collapsing onto ONE url", () => {
+  // The failure mode a per-item URL check cannot see: nine entries, one picture, eight
+  // items dedup-skipped as duplicates of each other.
+  const same = rednoteDetailImage(1);
+  const result = checkRednoteNoteDetail(rednoteNote({ image_list: [same, { ...same }] }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /SAME mediaUrl/);
+});
+
+test("checkRednoteNoteDetail catches a lost author name", () => {
+  // A null author fails nothing loudly on its own, which is why it is an invariant.
+  const result = checkRednoteNoteDetail(rednoteNote({ user: { user_id: "u" } }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /no authorName/);
+  // But the FEED's spelling is not a drift: `rednoteAuthor` deliberately reads both
+  // `nickname` and `nick_name` (098 D6), so a note arriving with the other one is still a
+  // healthy note. Pinned here because the obvious test to write is the opposite one.
+  assert.deepEqual(
+    checkRednoteNoteDetail(rednoteNote({ user: { user_id: "u", nick_name: "x" } })).problems, []);
+});
+
+test("checkRednoteNoteDetail reports a video note as a capture problem, not a pass", () => {
+  // A video-bearing note is refused by the parser (T6 is blocked on a real capture), so a
+  // canary run over one would see zero items. It must say WHY rather than read as drift in
+  // the image path — and it must never read as ok.
+  const result = checkRednoteNoteDetail(rednoteNote({ type: "video" }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /no items fanned out from 2 images \(video\)/);
+});
+
+test("checkRednoteNoteDetail verifies the degradation contract independently of input", () => {
+  // Asserted inside the check against a synthesized absent note, so it holds whatever
+  // capture is fed in — a healthy one can never exercise it.
+  assert.deepEqual(checkRednoteNoteDetail(rednoteNote()).problems, []);
 });
 
 // MARK: - checkThreadDetail ([090] 1A)

@@ -23,6 +23,7 @@ size segment for the `/originals/` rewrite). Raw captures live in the gitignored
 | `instagram-saved-live.json` (captured 2026-08-14) | `GET instagram.com/api/v1/feed/saved/posts/` | The **canary's** IG capture: 3 whole posts (image / reel / 2-child carousel) lifted byte-for-byte out of a 21-post, 1.84 MB live page, plus `more_available: true` + a populated `next_max_id`. Parses to `posts=3 items=4 videos=3 endOfFeed=false`. |
 | `rednote-board-live.json` (captured 2026-09-13) | `GET //webapi.rednote.com/api/sns/web/v1/board/note?board_id=…&cursor=…` | The **canary's** rednote capture — a whole live board page, `notes=37 items=37 hasMore=true`. A middle page: `num=30` returned **37** notes (page size is not honoured) and the next `cursor` is literally the **last row's `note_id`**. Rows carry ONE `cover` — no `imageList`, no `video`, no `stream` — which is why K3a fans out one item per **note**. `cover.url` and `cover.file_id` are `""` on **37/37**, so `url_pre` / `url_default` / `info_list[WB_PRV\|WB_DFT]` are the only usable urls. |
 | `rednote-board.json` | same | The **composed** board page: 3 notes lifted out of the sanitized live one, keys and nesting untouched. Deliberately a FIRST page (`has_more: true`, a populated `cursor`) so an integration test can page over it. The three cover keys are one, two and three segments deep — the `<id>`, `spectrum/<id>` and `oss-sg/notes_pre_post/<id>` shapes the live board sends, with synthetic segment names and verbatim depth — and one row is `type: "normal"` against two `type: "video"`. |
+| `rednote-note-detail.json` (captured 2026-09-13) | `POST webapi.rednote.com/api/sns/web/v1/feed` | The **canary's** rednote NOTE-DETAIL capture — one whole note, `images=9 items=9 noteType=normal`. The envelope is `data.items[0].note_card`, **not** `data.notes`, which is why the challenge recognizer takes the payload key as a parameter. Nine `image_list[]` entries, all 1242×1660, `live_photo: false`, `stream: {}`, **no `video` key** — so K3b fans out one item per **image**, keyed `<note_id>:<position>`. The image keys are `oss-sg/spectrum/<id>`: **multi-segment**, the shape the old last-segment rule 404'd on. `title` and `desc` exist only here — a board row carries only `display_title` — and the author is `user.nickname` where the feed says `user.nick_name`. |
 | `pinterest-boardfeed.json` | `GET /resource/BoardFeedResource/get/` | `resource_response.data[]` pins (`id`, `images.{size}.url`, `board`, `videos`) + `bookmark` cursor. |
 | `instagram-saved.json` (captured 2026-07-15) | `GET instagram.com/api/v1/feed/saved/posts/` | `items[].media` — trimmed to **3 posts (1 image `media_type:1`, 1 reel `media_type:2`, 1 carousel `media_type:8`)**. Per-media `pk` (the fan-out dedup key, 002 · 1A), `image_versions2.candidates[]` (poster), `video_versions[]` (reel), `carousel_media[]` (child media, each its own `pk`). |
 | `instagram-saved-page2.json` (captured 2026-07-15) | `GET instagram.com/api/v1/feed/saved/posts/?max_id=…` | A second, richer page: **11 posts → 25 fanned-out items** (an 11-child carousel + 2- and 4-child carousels + 7 reels + 1 image). Stresses large-carousel fan-out; the `?max_id=` request URL **confirms the pagination param**. |
@@ -73,6 +74,14 @@ sweep now keeps rednote's CDN hosts (`PLATFORM_HOST`, alongside `i.pinimg.com` a
 twimg split), keeps the `!…` directive beside the file extension, and still replaces every
 segment. `bulk-rednote.test.js` asserts that on the INPUT — signed host, ≥ 3 segments, a
 surviving `!` — so a future re-capture cannot quietly go vacuous.
+
+The note-detail fixture needed **no further sanitizer change** — the host, the
+five-segment path depth and the `!` suffix all survived the sweep as it already stood,
+and `audit-capture.js` printed `LEAKED: 0` first time. `bulk-rednote.test.js` asserts
+the same three input properties over every `image_list[].url_pre` / `url_default` /
+`info_list[].url`, and additionally that the rewritten key is still **multi-segment** —
+on the detail endpoint a flat key would mean the drop-two rule had quietly become the
+last-segment rule again, which is the bug 098 T0 shipped to fix.
 
 Two other things the rednote capture taught the sweep, both fixed there rather than here:
 **display names are collected under `nick_?name`** (the feed spells it `nick_name`, note

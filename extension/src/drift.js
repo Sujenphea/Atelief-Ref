@@ -13,7 +13,9 @@ import { parseTimelinePage } from "./bulk-twitter.js";
 import { collectConversationTweets, selfThreadChain, mapThread } from "./twitter-thread.js";
 import { parseBoardFeedPage, parseBoardsPage, mapPinterestPin } from "./bulk-pinterest.js";
 import {
-  parseBoardFeedPage as parseRednoteBoardPage, detectRednoteChallenge, isBoardFeedRequest,
+  parseBoardFeedPage as parseRednoteBoardPage, parseNoteDetail as parseRednoteNoteDetail,
+  detectRednoteChallenge, detectRednoteDetailChallenge, isBoardFeedRequest,
+  isNoteDetailRequest,
 } from "./bulk-rednote.js";
 // The origin host is IMPORTED, never re-typed: the check below asserts every swept
 // mediaUrl lands on the host the rewrite targets, and a second copy of the string would
@@ -385,6 +387,86 @@ export function checkRednoteBoard(json, { host = "www.rednote.com" } = {}) {
   });
 }
 
+/** rednote note detail (K3b): the note-open response must still fan out to ONE item per
+ * `image_list[]` entry, positionally keyed, each landing on the unsigned origin host.
+ *
+ * The drift that matters here is different from the board's. There the fan-out is 1:1 and
+ * a moved field empties a row; here the fan-out IS the feature — `image_list` is the only
+ * place a note's carousel exists at all — so the signal is a count that stops matching the
+ * array it came from, and a `<note_id>:<index>` key that stops being positional (which
+ * would re-key every image of every note and defeat dedup-skip wholesale).
+ *
+ * Registered as its own check, beside `x-thread` rather than folded into `rednote`, for
+ * the same reason: it is a SECOND endpoint on a different clock, and a board capture
+ * cannot answer for it. */
+export function checkRednoteNoteDetail(json, { host = "www.rednote.com" } = {}) {
+  let page;
+  try {
+    page = parseRednoteNoteDetail(json, { host });
+  } catch (error) {
+    return verdict([`parseNoteDetail threw: ${String(error)}`], {});
+  }
+  const problems = [];
+  if (page.error) problems.push(`challenge recognizer misfired on a normal note (${page.error.kind})`);
+
+  const items = (json && json.data && Array.isArray(json.data.items)) ? json.data.items : [];
+  const card = items.length > 0 && items[0] ? items[0].note_card : null;
+  const images = card && Array.isArray(card.image_list) ? card.image_list : [];
+  if (images.length === 0) {
+    problems.push("the capture carries no image_list (note_card.image_list renamed, or a video note?)");
+  }
+  if (images.length > 0 && page.items.length === 0) {
+    problems.push(`no items fanned out from ${images.length} images (${page.unsupported || "unknown"})`);
+  }
+  if (images.length > 0 && page.items.length !== images.length) {
+    problems.push(`fanned out ${page.items.length} of ${images.length} images (an entry lost its url)`);
+  }
+  if (page.noteId && page.items.some((item, index) => item.sourceId !== `${page.noteId}:${index}`)) {
+    problems.push("a sourceId is not <note_id>:<position> (dedup against a prior sweep would break)");
+  }
+  const urls = new Set(page.items.map((item) => item.mediaUrl));
+  if (urls.size !== page.items.length) {
+    problems.push("two images resolved to the SAME mediaUrl (the key rule collapsed them)");
+  }
+  const onOriginHost = (url) => String(url || "").startsWith(`http://${REDNOTE_ORIGIN_HOST}/`);
+  if (page.items.some((item) => !onOriginHost(item.mediaUrl))) {
+    problems.push(`a mediaUrl is not an unsigned origin-host url`
+      + ` (expected ${REDNOTE_ORIGIN_HOST} — the key rule moved?)`);
+  }
+  if (page.items.some((item) => (item.mediaUrl || "").includes("!"))) {
+    problems.push("a transform suffix survived the rewrite");
+  }
+  if (page.items.some((item) => !item.mediaUrlFallback)) {
+    problems.push("an item lost its signed fallback (the bare original can 404)");
+  }
+  // `nickname` here, `nick_name` on the feed — the 098 D6 trap, which fails as a null
+  // author rather than as an error.
+  if (page.items.some((item) => !item.provenance.authorName)) {
+    problems.push("an item has no authorName (user.nickname renamed to something else?)");
+  }
+  // A note that yields nothing must always say why, or expansion replaces a good cover
+  // with nothing.
+  const mute = parseRednoteNoteDetail(
+    { code: 0, success: true, data: { items: [] } }, { host });
+  if (mute.error || !mute.unsupported) {
+    problems.push("an absent note no longer degrades with a stated reason");
+  }
+  if (!detectRednoteDetailChallenge({ code: 0, success: true, msg: "" })) {
+    problems.push("the 461-shaped refusal is no longer recognised on the detail endpoint");
+  }
+  if (!isNoteDetailRequest("https://webapi.rednote.com/api/sns/web/v1/feed")) {
+    problems.push("isNoteDetailRequest no longer matches the note-detail route");
+  }
+  if (isNoteDetailRequest("https://webapi.rednote.com/api/sns/web/v1/board/note")) {
+    problems.push("isNoteDetailRequest now matches the board feed");
+  }
+  return verdict(problems, {
+    images: images.length,
+    items: page.items.length,
+    noteType: card && card.type != null ? String(card.type) : null,
+  });
+}
+
 export const CHECKS = {
   x: { label: "X timeline (Bookmarks/Likes)", run: checkTimeline },
   "x-thread": { label: "X thread (TweetDetail)", run: checkThreadDetail },
@@ -392,6 +474,7 @@ export const CHECKS = {
   "pinterest-boards": { label: "Pinterest boards list", run: checkBoards },
   instagram: { label: "Instagram saved feed", run: checkInstagramSaved },
   rednote: { label: "rednote board feed", run: checkRednoteBoard },
+  "rednote-detail": { label: "rednote note detail", run: checkRednoteNoteDetail },
 };
 
 /**

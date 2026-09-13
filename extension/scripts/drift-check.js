@@ -50,6 +50,7 @@ const FIXTURE = {
   instagram: "../test/fixtures/instagram-saved-live.json",
   "x-thread": "../test/fixtures/x-thread-detail.json",
   rednote: "../test/fixtures/rednote-board-live.json",
+  "rednote-detail": "../test/fixtures/rednote-note-detail.json",
 };
 
 /** How to obtain the capture a fixture-less check needs, printed where it's actionable.
